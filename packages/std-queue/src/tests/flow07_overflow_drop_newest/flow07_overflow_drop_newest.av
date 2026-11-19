@@ -1,0 +1,16 @@
+//! proves `overflow: .drop_newest` accepts a full ring's send and drops
+//! the arriving item: the waiting one is kept and the queue holds one.
+use @std.queue.{queue, key, Overflow}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+queue<Job> jobs {
+    capacity: 1
+    lease: ms(60000)
+    overflow: Overflow.drop_newest
+}
+let _ = jobs.home().send(Job { n: 1 }, key("k"))
+let second = jobs.home().send(Job { n: 2 }, key("k")) catch null
+let taken = jobs.home().take() catch null
+"${second != null} ${taken!.item.n} ${jobs.home().depth() catch 0 - 1}"

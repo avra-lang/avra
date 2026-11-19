@@ -1,0 +1,106 @@
+//! A store in memory, standing in for the one on disk, shared by the engine's tests.
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question}
+use frontier.{Frontier, FrontierFile, FrontierLearned, files_kept, frontier_over, frontier_written}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use input_stamps.{InputStamp}
+use query_engine.{AnswerStore, answers_print}
+use saved_layout.{SavedBytes, SavedSource, saved_bytes_in_memory}
+
+export type StoreInMemory = {
+    /// Each compiler's records and questions, by its print: a store answers only the print it
+    /// answers for, as a store on disk reads only the packs kept under it.
+    printed: Cell<Map<string, PrintedAnswers>>,
+    /// The print this store answers for now.
+    print: Cell<string>,
+    /// Every answer's bytes, by their hash: what a record of any print names.
+    answers: HashKeyedTable<Bytes>,
+    /// Each binary's frontier files, by its print, each as one run of octets.
+    frontiers: Cell<Map<string, List<FrontierFile>>>,
+    /// Every input held by a stamp.
+    stamps: Cell<List<InputStamp>>,
+}
+
+/// What one compiler kept: its records by question, and each question it asked.
+export type PrintedAnswers = { records: HashKeyedTable<List<AnswerRecord>>, questions: HashKeyedTable<Question> }
+
+/// A compiler's answers with nothing kept yet.
+fn no_answers() -> PrintedAnswers {
+    let records: HashKeyedTable<List<AnswerRecord>> = hash_keyed_table()
+    let questions: HashKeyedTable<Question> = hash_keyed_table()
+    PrintedAnswers { records: records, questions: questions }
+}
+
+export fn store_in_memory() -> StoreInMemory {
+    let printed: Cell<Map<string, PrintedAnswers>> = Cell.new({})
+    let answers: HashKeyedTable<Bytes> = hash_keyed_table()
+    let frontiers: Cell<Map<string, List<FrontierFile>>> = Cell.new({})
+    let stamps: Cell<List<InputStamp>> = Cell.new([])
+    StoreInMemory {
+        printed: printed,
+        print: Cell.new(""),
+        answers: answers,
+        frontiers: frontiers,
+        stamps: stamps,
+    }
+}
+
+impl StoreInMemory {
+    /// The answers kept under the print this store answers for.
+    fn answering() -> PrintedAnswers {
+        let print = self.print.get()
+        let kept? = [a for p, a in self.printed.get() if answers_print(print, p)].first() else {
+            let fresh = no_answers()
+            self.printed.put(print, fresh)
+            return fresh
+        }
+        kept
+    }
+}
+
+impl AnswerStore for StoreInMemory {
+    fn answering_for(print: string) { self.print.set(print) }
+
+    fn input_stamps() -> List<InputStamp> { self.stamps.get() }
+
+    fn keep_input_stamps(stamps: List<InputStamp>) { self.stamps.set(stamps) }
+
+    fn records_of(question: ContentHash) -> List<KeptRecord> { [record.kept() for record in self.answering().records.get(question) ?? []] }
+
+    fn keep_record(asked: Question, record: AnswerRecord) {
+        let kept = self.answering()
+        kept.questions.put(asked.known_as, asked)
+        kept.records.put(asked.known_as, (kept.records.get(asked.known_as) ?? []).concat([record]))
+    }
+
+    fn question_known_as(question: ContentHash) -> Question? { self.answering().questions.get(question) }
+
+    fn answer_bytes(answer: ContentHash) -> SavedBytes? {
+        let bytes? = self.answers.get(answer) else { return null }
+        saved_bytes_in_memory(bytes)
+    }
+
+    fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) { self.answers.put(answer, bytes) }
+
+    fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.answers.put(answer, bytes) }
+
+    fn frontier_of(print: string) -> Frontier? { frontier_over(self.frontiers.get().get(print) ?? []) }
+
+    /// Writes what was learned at once, and keeps only the files the frontier then reads.
+    fn keep_frontier(print: string, learned: FrontierLearned) {
+        let write? = frontier_written(self.frontier_of(print), learned, 0, false) else { return }
+        let octets = write.runs.bytes()
+        let files = (self.frontiers.get().get(print) ?? [])
+            .concat(
+                [
+                    FrontierFile {
+                        kind: write.kind,
+                        id: write.id,
+                        source: SavedSource.InMemory(octets),
+                        length: octets.length,
+                    },
+                ],
+            )
+        let kept = files_kept(files)
+        self.frontiers.put(print, files.filter((f) -> kept.any(it.same_as(f.id))))
+    }
+}

@@ -1,0 +1,65 @@
+// A field a node's value holds and its tape doesn't is read back as its default, and a place is
+// written among the places; a field with neither is refused by name.
+use @std.meta.{Annotation, Code, Field, Kind, Type as MetaType}
+use tape_derive.{TapeLanguage, TreeVerbs, taped_declared}
+use value_shapes.{FieldRole, Reading}
+
+fn field(name: string, kind: Kind) -> Field { Field { name: name, ty: kind.spelled(), at: null, kind: kind } }
+
+fn record(name: string, fields: List<Field>) -> MetaType {
+    MetaType { name: name, fields: fields, variants: [], at: null, module: "m" }
+}
+
+/// `@placed("seat_at", "seat_place") type m.Seat = { index: int }`
+fn seat() -> MetaType {
+    record("Seat", [field("index", Kind.Int)]) with { annotations: [Annotation { name: "placed", args: ["seat_at", "seat_place"], at: null }] }
+}
+
+fn declared(name: string) -> MetaType? { if name == "Seat" { seat() } else { null } }
+
+/// A language that keeps `off` off its tapes.
+fn role_of(f: Field) -> FieldRole { if f.name == "off" { .Carried } else { .Written } }
+
+fn unchanged(code: Code, _node: string) -> Code { code }
+
+fn language() -> TapeLanguage {
+    TapeLanguage {
+        tree: "Tree",
+        reading: Reading { declared: declared, role: role_of, places: true },
+        verbs: TreeVerbs {
+            node: (_tree: Code, id: Code, node: string) -> unchanged(id, node),
+            place: (_tree: Code, id: Code, node: string) -> unchanged(id, node),
+            added: (_tree: Code, node: Code, _place: Code, name: string) -> unchanged(node, name),
+            facts_written: (_tree: Code, _tape: Code, id: Code, _node: string) -> quote { let _ = ${id} },
+            facts_read: (_tree: Code, _tape: Code, id: Code, _node: string) -> quote { let _ = ${id} },
+        },
+    }
+}
+
+fn refusals(off: Field) -> List<string> {
+    [d.message for d in taped_declared(record("Node", [field("kept", Kind.Int), off]), language()).problems]
+}
+
+spec "a field the tape doesn't hold" {
+    given "no default, and a type the tree doesn't mint" {
+        then "the derive refuses it, naming it" {
+            let words = refusals(field("off", Kind.Int))
+            words.length == 1 && words[0].contains("`Node.off`")
+        }
+    }
+    given "a default" {
+        then "nothing is refused" { refusals(field("off", Kind.Int) with { default: quote { 0 } }).is_empty() }
+    }
+    given "a place" {
+        then "nothing is refused" { refusals(field("off", Kind.Named("Seat", []))).is_empty() }
+    }
+}
+
+spec "a field the tape writes" {
+    given "a value with no bytes" {
+        then "the derive refuses it, naming it, since a tape holds everything its tree does" {
+            let words = refusals(field("act", Kind.Ptr))
+            words.length == 1 && words[0].contains("`Node.act`") && words[0].contains("no bytes")
+        }
+    }
+}

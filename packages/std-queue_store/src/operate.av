@@ -1,0 +1,400 @@
+//! Operating a queue with no program: what the database holds of each
+//! queue — the terms its home was last opened under, its counts, its
+//! items as records — and the two things an operator does to one item.
+//!
+//!     let all = queues(ctx.db)?
+//!     let items = peek(ctx.db, "emails")?
+//!     let _ = retry(ctx.db, "undeliverable", items[0].id)?
+//!
+//! `retry` hands an item out again now: a live one skips the rest of its
+//! backoff, and a letter's item goes back to the queue it was buried out
+//! of, a fresh item there. `discard` lets an item go, and its name with
+//! it, so its sender may send it again. An item a worker holds under a
+//! live lease is neither: the lease decides it.
+//!
+//! Every read here writes nothing, so a database no home opened answers
+//! no queue rather than being made into one.
+use @std.json.{Json}
+use @std.queue.{HomeError, Terms}
+use @std.sqlite.{Db, Row, sql}
+use @std.time.{Duration, Time, ms, now}
+use fault.{homed}
+use letters.{dead_parts}
+use readout.{read_out}
+use rows.{order_coded, overflow_coded, read_mark}
+use @std.relation.stable.{CodecFault, reader}
+use unread.{aside_count}
+
+/// One queue as the database holds it: its name, the terms and the span
+/// it remembers a named send for as its home was last opened under
+/// them — absent where no home of this build's numbering recorded any —
+/// whether its items are letters, and its counts. `waiting` no take has
+/// reached, `owed` every item still owed a fate, `held` under a live
+/// lease, `delayed` not yet due, `unreadable` set aside.
+export type Standing = {
+    name: string,
+    terms: Terms?,
+    dedupe: Duration?,
+    opened_at: Time?,
+    letter: bool,
+    waiting: int,
+    owed: int,
+    held: int,
+    delayed: int,
+    unreadable: int,
+}
+
+/// Where an item stands: waiting to be taken, not yet due, held by a
+/// worker under a live lease, held past its lease and due to be taken
+/// again, or released and backing off.
+export enum Stage { Waiting, Delayed, Held, Lapsed, Backing }
+
+/// One item as an operator reads it. `item` is its record, read through
+/// the descriptor of the shape it was written under, and absent where
+/// that descriptor cannot be followed.
+export type Peeked = {
+    id: string,
+    key: string,
+    stage: Stage,
+    attempt: int,
+    epoch: int,
+    sent_at: Time,
+    ready_at: Time?,
+    leased_until: Time?,
+    reader: string?,
+    shape: int,
+    item: Json?,
+}
+
+/// What an operator's verb did: it acted, answering the id the item now
+/// has; no item of the queue has the id; a worker holds the item until
+/// the instant named; or the letter could not be read back into an item.
+export enum Acted { Done(id: string), Missing, Held(until: Time), Unread }
+
+/// Every queue the database holds, by name.
+export fn queues(db: Db, clock: fn() -> Time = now) -> Result<List<Standing>, HomeError> {
+    if !homed_here(db)? { return .Ok([]) }
+    let t = clock()
+    [standing_row(db, r, t)? for r in homed(db.all(sql(list_queues)))?]
+}
+
+/// The queue named `name`, or absent when the database holds none of it.
+export fn queue_named(db: Db, name: string, clock: fn() -> Time = now) -> Result<
+    Standing?,
+    HomeError,
+> {
+    if !homed_here(db)? { return .Ok(null) }
+    let row? = homed(db.first(sql(one_queue, [.Text(name)])))? else { return .Ok(null) }
+    .Ok(standing_row(db, row, clock())?)
+}
+
+/// The queues whose items are letters.
+export fn letters(db: Db, clock: fn() -> Time = now) -> Result<List<Standing>, HomeError> {
+    .Ok((queues(db, clock)?).filter(it.letter))
+}
+
+/// Up to `limit` items of `queue`, oldest first, after the item `after`
+/// names when one does. An `after` no item of this database was given
+/// is refused.
+export fn peek(
+    db: Db,
+    queue: string,
+    limit: int = 50,
+    after: string? = null,
+    clock: fn() -> Time = now,
+) -> Result<List<Peeked>, HomeError> {
+    if !homed_here(db)? { return .Ok([]) }
+    let mark = mark_of(db)?
+    let from = if after == null { 0 } else { row_named(mark, after!) ?? 0 - 1 }
+    if from < 0 { return .Err(HomeError.Refused(not_ours(after!))) }
+    let t = clock()
+    let shapes: Cell<Map<string, string>> = Cell.new({})
+    [peeked(db, mark, r, t, shapes)? for r in homed(db.all(sql(page, [.Text(queue), .Int(from), .Int(if limit < 0 { 0 } else { limit })])))?]
+}
+
+/// Hand the item `id` of `queue` out again now: a live one with the rest
+/// of its backoff skipped, a letter's item as a fresh one of the queue
+/// it was buried out of. One transaction.
+export fn retry(db: Db, queue: string, id: string, clock: fn() -> Time = now) -> Result<
+    Acted,
+    HomeError,
+> {
+    if !homed_here(db)? { return .Ok(Acted.Missing) }
+    let mark = mark_of(db)?
+    let row? = row_named(mark, id) else { return .Ok(Acted.Missing) }
+    transacted(db, () -> retried(db, mark, queue, row, clock()))
+}
+
+/// Let the item `id` of `queue` go, and forget the name it was sent
+/// under. One transaction.
+export fn discard(db: Db, queue: string, id: string, clock: fn() -> Time = now) -> Result<
+    Acted,
+    HomeError,
+> {
+    if !homed_here(db)? { return .Ok(Acted.Missing) }
+    let mark = mark_of(db)?
+    let row? = row_named(mark, id) else { return .Ok(Acted.Missing) }
+    transacted(db, () -> discarded(db, mark, queue, row, clock()))
+}
+
+// ── Reading ──
+
+/// Whether a home was ever opened on the database: its mark stands.
+fn homed_here(db: Db) -> Result<bool, HomeError> {
+    .Ok(homed((homed(db.scalar(sql(mark_stands)))?).int())? == 1)
+}
+
+fn mark_of(db: Db) -> Result<string, HomeError> {
+    .Ok("${homed((homed(db.scalar(sql(read_mark)))?).text())?}-")
+}
+
+/// A queue's row read into its standing at the instant `t`.
+fn standing_row(db: Db, r: Row, t: Time) -> Result<Standing, HomeError> {
+    let name = homed(r.text(0))?
+    let terms? = homed(db.first(sql(terms_of, [.Text(name)])))? else {
+        return .Ok(standing_of(db, name, r, t, null, null, null, false)?)
+    }
+    let shape = homed(terms.int(7))?
+    let letter = dead_parts(described_shape(db, shape)? ?? "") != null
+    .Ok(
+        standing_of(
+            db,
+            name,
+            r,
+            t,
+            kept_terms(name, terms)?,
+            span_of(homed(terms.int(5))?),
+            Time { ns: homed(terms.int(6))? },
+            letter,
+        )?,
+    )
+}
+
+fn standing_of(
+    db: Db,
+    name: string,
+    r: Row,
+    t: Time,
+    terms: Terms?,
+    dedupe: Duration?,
+    opened_at: Time?,
+    letter: bool,
+) -> Result<Standing, HomeError> {
+    .Ok(
+        Standing {
+            name: name,
+            terms: terms,
+            dedupe: dedupe,
+            opened_at: opened_at,
+            letter: letter,
+            waiting: homed(r.int(1))?,
+            owed: homed(r.int(2))?,
+            held: counted(db, held_count, name, t)?,
+            delayed: counted(db, delayed_count, name, t)?,
+            unreadable: aside_count(db, name)?,
+        },
+    )
+}
+
+/// A terms row as the terms it names; absent where its numbers are
+/// another build's.
+fn kept_terms(name: string, row: Row) -> Result<Terms?, HomeError> {
+    let overflow? = overflow_coded(homed(row.int(3))?) else { return .Ok(null) }
+    let lease? = span_of(homed(row.int(1))?) else { return .Ok(null) }
+    let order? = order_coded(homed(row.int(4))?) else { return .Ok(null) }
+    .Ok(
+        Terms {
+            capacity: homed(row.int(0))?,
+            lease: lease,
+            retries: homed(row.int(2))?,
+            dead: "${name}/dead",
+            overflow: overflow,
+            order: order,
+        },
+    )
+}
+
+/// A span a row keeps in milliseconds; absent past the range a span
+/// holds.
+fn span_of(n: int) -> Duration? {
+    if n < 0 || n > longest_ms { null } else { ms(n) }
+}
+
+/// The longest span, in milliseconds.
+const longest_ms: int = 9223372036854
+
+fn counted(db: Db, text: string, name: string, t: Time) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(text, [.Text(name), .Int(t.ns)])))?).int())
+}
+
+/// The descriptor kept for the shape `shape`, or absent where none is.
+fn described_shape(db: Db, shape: int) -> Result<string?, HomeError> {
+    let row? = homed(db.first(sql(find_shape, [.Int(shape)])))? else { return .Ok(null) }
+    .Ok(homed(row.text(0))?)
+}
+
+/// One item row as an operator reads it. `shapes` keeps each shape's
+/// descriptor once it was read.
+fn peeked(db: Db, mark: string, r: Row, t: Time, shapes: Cell<Map<string, string>>) -> Result<
+    Peeked,
+    HomeError,
+> {
+    let shape = homed(r.int(2))?
+    let descriptor = shapes.get().get("${shape}") ?? described_shape(db, shape)? ?? ""
+    shapes.put("${shape}", descriptor)
+    let ready = homed(r.int(5))?
+    let leased = int_or_null(r, 8)
+    let epoch = homed(r.int(7))?
+    .Ok(
+        Peeked {
+            id: "${mark}${homed(r.int(0))?}",
+            key: homed(r.text(1))?,
+            stage: stage_of(t, epoch, ready, leased),
+            attempt: homed(r.int(6))?,
+            epoch: epoch,
+            sent_at: Time { ns: homed(r.int(4))? },
+            ready_at: if ready == first_instant { null } else { Time { ns: ready } },
+            leased_until: if leased == null { null } else { Time { ns: leased! } },
+            reader: text_or_null(r, 9),
+            shape: shape,
+            item: read_out(descriptor, blob_at(r, 3)),
+        },
+    )
+}
+
+/// Where an item of these columns stands at the instant `t`.
+fn stage_of(t: Time, epoch: int, ready: int, leased: int?) -> Stage {
+    let until? = leased else {
+        if ready <= t.ns { return Stage.Waiting }
+        return if epoch == 0 { Stage.Delayed } else { Stage.Backing }
+    }
+    if until > t.ns { Stage.Held } else { Stage.Lapsed }
+}
+
+/// A column's octets; none where it holds anything else.
+fn blob_at(r: Row, at: int) -> Bytes {
+    match r.values[at] { .Blob(b) -> b, .Int(_) or .Text(_) or .Real(_) or .Null -> "".bytes() }
+}
+
+fn int_or_null(r: Row, at: int) -> int? {
+    match r.values[at] { .Int(n) -> n, .Text(_) or .Real(_) or .Blob(_) or .Null -> null }
+}
+
+fn text_or_null(r: Row, at: int) -> string? {
+    match r.values[at] { .Text(v) -> v, .Int(_) or .Real(_) or .Blob(_) or .Null -> null }
+}
+
+// ── Acting ──
+
+/// The item `row`: its queue, shape, body, key and lease end, or absent
+/// when no item of `queue` has that row.
+type Found = { shape: int, body: Bytes, key: string, leased: int? }
+
+fn found(db: Db, queue: string, row: int) -> Result<Found?, HomeError> {
+    let r? = homed(db.first(sql(find_item, [.Int(row), .Text(queue)])))? else { return .Ok(null) }
+    .Ok(
+        Found {
+            shape: homed(r.int(0))?,
+            body: blob_at(r, 1),
+            key: homed(r.text(2))?,
+            leased: int_or_null(r, 3),
+        },
+    )
+}
+
+/// The lease a found item is held under past `t`, if any.
+fn held_past(f: Found, t: Time) -> Acted? {
+    let until? = f.leased else { return null }
+    if until > t.ns { Acted.Held(Time { ns: until }) } else { null }
+}
+
+fn retried(db: Db, mark: string, queue: string, row: int, t: Time) -> Result<Acted, HomeError> {
+    let f? = found(db, queue, row)? else { return .Ok(Acted.Missing) }
+    let held = held_past(f, t)
+    if held != null { return .Ok(held!) }
+    let parts? = dead_parts(described_shape(db, f.shape)? ?? "") else {
+        let _ = homed(db.run(sql(due_now, [.Int(row), .Int(first_instant)])))?
+        return .Ok(Acted.Done("${mark}${row}"))
+    }
+    let back? = buried_out(f.body) else { return .Ok(Acted.Unread) }
+    let _ = homed(
+        db
+            .run(
+                sql(
+                    refiled,
+                    [
+                        .Text(back.origin),
+                        .Text(f.key),
+                        .Int(parts.item_shape),
+                        .Blob(back.item),
+                        .Int(t.ns),
+                        .Int(first_instant),
+                    ],
+                ),
+            ),
+    )?
+    let fresh = db.last_insert_rowid()
+    let _ = homed(db.run(sql(drop_item, [.Int(row)])))?
+    .Ok(Acted.Done("${mark}${fresh}"))
+}
+
+fn discarded(db: Db, mark: string, queue: string, row: int, t: Time) -> Result<Acted, HomeError> {
+    let f? = found(db, queue, row)? else { return .Ok(Acted.Missing) }
+    let held = held_past(f, t)
+    if held != null { return .Ok(held!) }
+    let _ = homed(db.run(sql(drop_item, [.Int(row)])))?
+    let _ = homed(db.run(sql(forget_name, [.Text(queue), .Text("${mark}${row}")])))?
+    .Ok(Acted.Done("${mark}${row}"))
+}
+
+/// A letter's item octets and the queue it was buried out of.
+type Buried = { item: Bytes, origin: string }
+
+/// What a letter's octets say it buried: its item's octets and the first
+/// queue of its path; absent where they are no letter.
+fn buried_out(body: Bytes) -> Buried? {
+    match unburied(body) { .Ok(b) -> b, .Err(_) -> null }
+}
+
+fn unburied(body: Bytes) -> Result<Buried, CodecFault> {
+    let r = reader(body)
+    let item = r.octets()?
+    let fate = r.count()?
+    if fate == 0 { let _ = r.octets()? }
+    if fate != 0 && fate != 1 { fail CodecFault.NotVariant }
+    if r.count()? < 1 { fail CodecFault.Truncated }
+    Buried { item: item, origin: r.text()? }
+}
+
+// ── The statements ──
+
+const mark_stands: string = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'FlowMark'"
+
+const list_queues: string = "SELECT \"queue\", \"waiting\", \"owed\" FROM \"FlowRoom\" ORDER BY \"queue\""
+
+const one_queue: string = "SELECT \"queue\", \"waiting\", \"owed\" FROM \"FlowRoom\" WHERE \"queue\" = ?1"
+
+const terms_of: string = "SELECT \"capacity\", \"lease\", \"retries\", \"overflow\", \"order\", \"dedupe\", \"opened_at\", \"shape\" FROM \"FlowTerms\" WHERE \"queue\" = ?1"
+
+const held_count: string = "SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" > ?2"
+
+const delayed_count: string = "SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" IS NULL AND \"epoch\" = 0 AND \"ready_at\" > ?2"
+
+const page: string = "SELECT \"id\", \"key\", \"shape\", CAST(\"body\" AS BLOB), \"sent_at\", \"ready_at\", \"attempt\", \"epoch\", \"leased_until\", \"reader\" FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"id\" > ?2 ORDER BY \"id\" LIMIT ?3"
+
+const find_item: string = "SELECT \"shape\", CAST(\"body\" AS BLOB), \"key\", \"leased_until\" FROM \"FlowItem\" WHERE \"id\" = ?1 AND \"queue\" = ?2"
+
+/// A live item due now, its lease and backoff gone, its attempts kept.
+const due_now: string = "UPDATE \"FlowItem\" SET \"ready_at\" = ?2, \"leased_until\" = NULL, \"reader\" = NULL WHERE \"id\" = ?1"
+
+const refiled: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)"
+
+const drop_item: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = ?1"
+
+const forget_name: string = "DELETE FROM \"FlowSeen\" WHERE \"queue\" = ?1 AND \"answer\" = ?2"
+
+// ── The voices ──
+
+fn not_ours(id: string) -> string {
+    "`after:` names an item of this database, and `${id}` is none"
+}

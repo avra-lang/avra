@@ -1,0 +1,840 @@
+//! THE ROUTER — a route is a GRAMMAR over the request target, and a
+//! handler keeps its own typed record. The framer's boundary is the
+//! contract: the target arrives already framed, its CTL and SP
+//! refused, and the router never re-reads the head — nor converts it,
+//! since a grammar reads octets and the span is what the framer left.
+//!
+//! THE TABLE IS COMPILED ONCE, INTO AN INDEX AND NEVER A POLICY. A
+//! trie keyed on the hash of each literal segment narrows what a
+//! target could match; the grammar reader still decides, and
+//! SPECIFICITY decides which of the routes that answer does. So the
+//! table answers exactly what a scan down the same list answers —
+//! route for route, on every target — while costing the same whether
+//! the list holds three routes or three hundred.
+//!
+//! A ROUTE'S SPECIFICITY IS ITS PATTERN'S, SEGMENT BY SEGMENT from the
+//! first: a literal above a hole always, and a hole's rank is its
+//! type's — `{id: int}` above `{slug}` above `{path...}`. Written order
+//! breaks only a true tie, so embedding a list of routes never changes
+//! which one answers.
+//!
+//! A HOLE IS ONE SEGMENT, and the table holds it structurally: a
+//! route is reached only at the depth its own pattern has, so
+//! `/ideas/{id}` is never offered `/ideas/7/extra` and cannot bind a
+//! capture that invented a segment.
+//!
+//! UNLESS THE HOLE SAYS OTHERWISE, and it says so in the format's own
+//! words. `{name...}` is the GREEDY mark — the hole takes its literal
+//! at the LAST occurrence rather than the first — and on a final hole
+//! the two are the same position, because a suffix anchor already
+//! fixes that hole's end. So the mark STATES what the hole does
+//! rather than changing it, `tailed` declares the route that carries
+//! it, and the pattern reads exactly as its grammar does. `faults`
+//! names a door and a pattern that disagree.
+//!
+//! A ROUTE WRITTEN AS A DECLARATION — `get "/static/{path...}" { … }`
+//! — has no door but its pattern, so there the mark DECLARES: the
+//! components come through `declared`, which reads the reach off it.
+//!
+//! A CAPTURE HOLDS RAW OCTETS. Nothing is percent-decoded, so `%2F`
+//! is not a separator and `/ideas/{id}` binds `a%2Fb` whole. A
+//! handler that means to use a capture as a path decodes it itself,
+//! through `@std/url`'s `decoded`, and judges what comes out — the
+//! router hands over what was sent.
+//!
+//! THE QUERY IS THE REQUEST'S, NOT THE ROUTE'S. A grammar is
+//! POSITIONAL and ORDERED; a query is KEYED and order-independent, so
+//! `"/search?q={q}"` would swallow `&page=2` into its capture and
+//! refuse `?page=2&q=cats`, the same request written the other way
+//! round. A ROUTE MATCHES THE PATH — `Request.path()`, the PATH
+//! COMPONENT of the target in whichever form it arrived — and the
+//! handler reads `Request.query()` beside it. A router that matched
+//! the whole target would let a `/` inside `?redirect=/home` add a
+//! segment and make its own route vanish, and would answer `/p` and
+//! `http://h/p` from two different routes for one resource.
+//!
+//! A TARGET THAT NAMES NO RESOURCE IS NOT ROUTED. `OPTIONS *` asks
+//! about the server and CONNECT's target is a tunnel's destination, so
+//! `path()` answers absent for both and the table is never walked —
+//! a 404, which is the same value a target nothing answers earns.
+//!
+//! ONE RECORD TYPE PER ROUTE, AND ONE PLACE IT IS ERASED. `routed` is
+//! generic over the record; the table holds the erased handler, so
+//! routes whose records differ live in one list while every handler
+//! takes a `Request<R>` — the request, its route's record at `params`.
+use @std.http_message.message.{Method}
+use @std.meta.{Code, Format}
+use client.{method_word}
+use http.{Request, Unrouted, Response, Respond, status, separates, falls_under}
+
+/// HOW FAR A ROUTE REACHES, and what its pattern's braces mean. A
+/// DECLARED thing in every case: the door a route came through says
+/// which of these it is, and nothing is inferred from the text.
+export enum Reach {
+    /// A static path — the pattern IS the target, brace for brace. A
+    /// path may legally contain braces, and reading one as a hole
+    /// would have the table key on nothing and the law cry wolf.
+    Literal
+    /// A grammar, matching targets of its own width exactly. A hole
+    /// is one segment.
+    Width
+    /// A grammar whose last hole takes the REST: it matches targets
+    /// of its own width and every width beyond.
+    Rest
+}
+
+/// One route: the method it answers, the pattern it was declared
+/// with — kept so a route an earlier one already answers can be
+/// named — how far it reaches, and its handler, with the record type
+/// already erased.
+///
+/// `reads` IS THE READER WITHOUT THE HANDLER: whether this route's
+/// grammar takes a target, asked without answering it. It is what lets
+/// a table name the methods a path takes when the request's own is not
+/// among them. A route that states none reads nothing, and lends its
+/// method to no refusal.
+export type Route = {
+    method: Method,
+    pattern: string,
+    reach: Reach,
+    serve: fn(Request<Unrouted>, Bytes) -> Response?,
+    reads: fn(Bytes) -> bool = reads_nothing,
+}
+
+fn reads_nothing(_t: Bytes) -> bool { false }
+
+/// Whether a grammar's reader takes a target.
+fn reading<R>(read: fn(Bytes) -> R?) -> fn(Bytes) -> bool { (t: Bytes) -> read(t) != null }
+
+/// Whether a `{` in this pattern opens a hole or is an octet.
+fn holes_bind(reach: Reach) -> bool {
+    match reach { .Literal -> false, .Width or .Rest -> true }
+}
+
+/// Whether this route's last hole takes the remaining segments.
+fn takes_rest(reach: Reach) -> bool {
+    match reach { .Literal or .Width -> false, .Rest -> true }
+}
+
+/// A route from a grammar's reader and a TYPED handler. ABSENCE from
+/// `serve` means THIS ROUTE DOES NOT ANSWER THAT TARGET; a 404 the
+/// handler chose is a Response like any other, and the two must not
+/// be the same value.
+export fn routed<R>(
+    method: Method,
+    pattern: string,
+    read: fn(Bytes) -> R?,
+    serve: fn(Request<R>) -> Response,
+) -> Route {
+    Route {
+        method: method,
+        pattern: pattern,
+        reach: .Width,
+        serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+        reads: reading(read),
+    }
+}
+
+/// A route with NO HOLES — `/health`, `/metrics`, `/`. A grammar
+/// names the fields its holes bind and refuses to bind none, so a
+/// static path has no grammar and needs none: its reader is an octet
+/// compare against the path it was declared with, and its handler
+/// takes no record because there is nothing to read.
+export fn fixed(method: Method, path: string, serve: Handler) -> Route {
+    let want = path.bytes()
+    Route {
+        method: method,
+        pattern: path,
+        reach: .Literal,
+        serve: (q: Request<Unrouted>, t: Bytes) -> if t == want { serve(q) } else { null },
+        reads: (t: Bytes) -> t == want,
+    }
+}
+
+/// A ROUTE WHOSE LAST HOLE TAKES THE REST — `/static/{path...}`
+/// given `/static/css/app.css` binds `css/app.css`. It matches
+/// targets of its own width and every width beyond.
+///
+/// THE DOOR DECLARES AND THE PATTERN STATES, and `faults` names a
+/// disagreement. `...` is the format's own GREEDY mark, meaning the
+/// hole takes its literal at the LAST occurrence rather than the
+/// first; on a final hole the two are the same position, because a
+/// suffix anchor already fixes that hole's end. So the mark states
+/// what the hole does instead of changing it, the pattern reads
+/// EXACTLY as its grammar does, and the router is not reading a
+/// marker only it understands.
+export fn tailed<R>(
+    method: Method,
+    pattern: string,
+    read: fn(Bytes) -> R?,
+    serve: fn(Request<R>) -> Response,
+) -> Route {
+    Route {
+        method: method,
+        pattern: pattern,
+        reach: .Rest,
+        serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+        reads: reading(read),
+    }
+}
+
+/// A route whose PATTERN declares its reach: a last hole marked `...`
+/// takes the rest, any other reaches its own width. The door a route
+/// written as a declaration (`get "/static/{path...}" { … }`) comes
+/// through, where the pattern is the whole declaration.
+export fn declared<R, T: Respond>(
+    method: Method,
+    pattern: string,
+    read: fn(Bytes) -> R?,
+    serve: fn(Request<R>) -> T,
+) -> Route {
+    Route {
+        method: method,
+        pattern: pattern,
+        reach: if marks_rest(pattern) { .Rest } else { .Width },
+        serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+        reads: reading(read),
+    }
+}
+
+// ── Routes as declarations ──────────────────────────────────────
+
+// `get "/ideas/{id}" { req -> … }` — a route of one method at a
+// pattern: the pattern mints its record, and the handler takes the
+// request under it (`req.params.id`), or its fields by name
+// (`{ params -> params.id }`).
+
+export component get(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
+    }
+}
+
+export component post(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
+    }
+}
+
+export component put(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
+    }
+}
+
+export component patch(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
+    }
+}
+
+/// `group "/api" { get "/ideas" { … } }` — routes under a prefix. Its
+/// body lists routes, groups and routers in the order they answer.
+export component group(prefix: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote { Mounted { found: prefixed(${self.prefix}, gathered(collect { ${self.body} })) } }
+    }
+}
+
+/// `router tasks { get "/" { … } }` — a named group of routes with no
+/// prefix, declared once and listed by its name wherever routes go: in a
+/// server, a group or another router.
+export component router {
+    lines: List<dyn Routes> = []
+}
+
+impl Routes for router {
+    fn routes() -> List<Route> { gathered(self.lines) }
+}
+
+/// What a body of routes may list: a route, a group, a router. The body
+/// lists them in the order they answer.
+export trait Routes {
+    fn routes() -> List<Route>
+}
+
+impl Routes for Route {
+    fn routes() -> List<Route> { [self] }
+}
+
+/// A group's routes, already under its prefix.
+export type Mounted = { found: List<Route> }
+
+impl Routes for Mounted {
+    fn routes() -> List<Route> { self.found }
+}
+
+/// A list of routes as one item of a body of routes: `server app { mounted(routes) }`.
+export fn mounted(routes: List<Route>) -> Mounted { Mounted { found: routes } }
+
+/// The routes a body lists, in order, each item standing for its own.
+export fn gathered(items: List<dyn Routes>) -> List<Route> {
+    mut all: List<Route> = []
+    for item in items { all = all.concat(item.routes()) }
+    all
+}
+
+export component delete(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
+    }
+}
+
+/// Routes under a prefix: each pattern begins with it, and each route
+/// reads what follows it in the target.
+export fn prefixed(prefix: string, routes: List<Route>) -> List<Route> { [placed(prefix, r) for r in routes] }
+
+/// A route under a prefix. A route's own `/` is the prefix itself — a
+/// collection lives at `/tasks`, and `/tasks/` is another target nothing answers.
+fn placed(prefix: string, r: Route) -> Route {
+    let under = prefix.bytes()
+    if r.pattern == "/" && !prefix.is_empty() {
+        return r with { pattern: prefix, serve: exactly(under, r.serve), reads: (t: Bytes) -> t == under && r.reads("/".bytes()) }
+    }
+    r with { pattern: prefix + r.pattern, serve: beneath(under, r.serve), reads: (t: Bytes) -> falls_under(t, under) && r.reads(t.slice(under.length, t.length)) }
+}
+
+/// `serve`, asked about the prefix alone as the root door it is.
+fn exactly(prefix: Bytes, serve: fn(Request<Unrouted>, Bytes) -> Response?) -> fn(Request<Unrouted>, Bytes) -> Response? {
+    (q: Request<Unrouted>, t: Bytes) -> if t == prefix { serve(q, "/".bytes()) } else { null }
+}
+
+/// A route's reader past a prefix — absent for a target that is not
+/// beneath it, segment by segment.
+fn beneath(prefix: Bytes, serve: fn(Request<Unrouted>, Bytes) -> Response?) -> fn(Request<Unrouted>, Bytes) -> Response? {
+    (q: Request<Unrouted>, t: Bytes) -> if falls_under(t, prefix) { serve(q, t.slice(prefix.length, t.length)) } else { null }
+}
+
+/// The handler's answer as the reply it becomes, or absence when the
+/// target is not this route's.
+fn responded<R, T: Respond>(found: R?, q: Request<Unrouted>, serve: fn(Request<R>) -> T) -> Response? {
+    let params? = found else { return null }
+    serve(
+        Request { raw: q.raw, head: q.head, body: q.body, peer: q.peer, params: params, set: q.set },
+    )
+        .response()
+}
+
+// ── Segments ────────────────────────────────────────────────────
+
+/// Where each segment of `b` ends — one entry per segment, always at
+/// least one, the last past the final octet.
+fn cuts(b: Bytes) -> List<int> { [i for i in 0..b.length + 1 if separates(b, i)] }
+
+/// Where the segment ending at `cs[j]` begins.
+fn opened(cs: List<int>, j: int) -> int { if j == 0 { 0 } else { cs[j - 1] + 1 } }
+
+/// How many `/`-separated segments a target or a pattern has. The
+/// table holds this law structurally — a route is only ever offered a
+/// target of its own width — and this states it for a caller who
+/// wants to ask.
+export fn segments(b: Bytes) -> int { cuts(b).length }
+
+/// A pattern's segments as text, cut where the table cuts them.
+fn pieces(pattern: string) -> List<string> {
+    let cs = cuts(pattern.bytes())
+    [pattern.substring(opened(cs, j), c) for j, c in cs]
+}
+
+/// One octet folded into FNV-1a.
+fn mixed(h: int, octet: int) -> int { (h ^ octet).wrapping_mul(1099511628211) }
+
+fn seed() -> int { 0 - 3750763034362895579 }
+
+/// The fold over one span of octets.
+fn hashed(b: Bytes, from: int, to: int) -> int {
+    mut h = seed()
+    mut i = from
+    // LICENSED loops.push_loop: a fold over octets, one runtime call per byte
+    while i < to {
+        h = mixed(h, b.at(i))
+        i = i + 1
+    }
+    h
+}
+
+// ── The compiled table ──────────────────────────────────────────
+
+/// One segment of a pattern: a LITERAL, keyed by its octets' hash, or
+/// a HOLE. `key` is read only when `hole` is false, and `tail` only
+/// ever marks the LAST segment of a route that takes the rest.
+///
+/// `rank` IS HOW GENERAL THE SEGMENT IS, and it is what the most
+/// specific route answers by: 0 a literal, 1 a hole whose type is
+/// NARROW — it refuses spans any text takes — 2 a hole any span
+/// answers, 3 the rest. A hole's rank is its TYPE'S, so the ladder is
+/// the type ladder: `7` is a literal, `{id: int}` a number, `{slug}`
+/// any text, and `{path...}` a remainder.
+type Seg = { hole: bool, key: int, tail: bool, rank: int }
+
+/// Where a shape's tail begins, or -1 when it has none.
+fn tail_at(shape: List<Seg>) -> int {
+    if shape.last()!.tail { return shape.length - 1 }
+    0 - 1
+}
+
+/// One trie node. `rows` are the routes that END here, MOST SPECIFIC
+/// FIRST — which is what makes the table answer what a scan down the
+/// same list would, and it does not depend on the order the routes were
+/// written. `keys` is sorted ascending and `kids` is parallel to it, so
+/// a step is a binary search over unboxed ints; `wild` is the step for
+/// a segment no key names, and is -1 when no route has a hole here.
+type Node = { rows: List<int>, keys: List<int>, kids: List<int>, wild: int }
+
+/// A ROUTE TABLE COMPILED ONCE. Nothing here narrows wrongly: a route
+/// is dropped only where a LITERAL segment differs from the target's,
+/// which no reader could have matched. Everything that widens the
+/// candidate set — a hole, two literals whose hashes collide — costs
+/// a parse the reader then refuses, and never an answer.
+///
+/// A ROUTE THAT TAKES THE REST answers at every depth past its own,
+/// so it is CARRIED DOWN the trie at build time and merged into every
+/// deeper node's rows by specificity, as every node's rows are.
+/// Nothing accumulates at dispatch, and where a target outruns the trie
+/// entirely the walk lands on a node that answers the carried routes
+/// and steps to itself.
+export type Table = { routes: List<Route>, nodes: List<Node>, root: int }
+
+/// Compile the table. Belongs in a `once fn` — the cost is paid at
+/// the first request and never again.
+///
+/// THE NODES ARE BUILT BEFORE THE TABLE HOLDS THEM. `built` fills the
+/// list through its seat, so a literal reading that list beside the
+/// call would answer whatever the field order happened to be.
+export fn compiled(routes: List<Route>) -> Table {
+    mut nodes: List<Node> = []
+    let root = built(nodes, [shaped(r) for r in routes], [i for i in 0..routes.length], 0, [])
+    Table { routes: routes, nodes: nodes, root: root }
+}
+
+/// The node for `cands` at depth `d`, its children built first.
+/// `carried` are the routes that take the rest and reached their tail
+/// ABOVE this depth, so they answer here and at every depth below.
+/// Every list is filtered from the candidates the caller ordered, so
+/// every node's rows are ranked once, by `most_specific_first`.
+///
+/// A LITERAL KID CARRIES THE HOLES TOO: a route with a hole at `d`
+/// matches that literal segment as well, so it rides both branches
+/// and a step that finds a key needs no second look.
+fn built(
+    mut nodes: List<Node>,
+    shapes: List<List<Seg>>,
+    cands: List<int>,
+    d: int,
+    carried: List<int>,
+) -> int {
+    let down = sorted_distinct(carried.concat([r for r in cands if tail_at(shapes[r]) == d]))
+    let live = [r for r in cands if shapes[r].length > d && tail_at(shapes[r]) != d]
+    let segs = [shapes[r][d] for r in live]
+    let keys = sorted_distinct([s.key for s in segs if !s.hole])
+    let kids = [built(nodes, shapes, [live[j] for j, s in segs if s.hole || s.key == k], d + 1, down) for k in keys]
+    let holes = [live[j] for j, s in segs if s.hole]
+    nodes
+        .push(
+            Node {
+                rows: most_specific_first(
+                    shapes,
+                    sorted_distinct(carried.concat([r for r in cands if shapes[r].length == d])),
+                ),
+                keys: keys,
+                kids: kids,
+                wild: wild_of(nodes, shapes, holes, d, down),
+            },
+        )
+    nodes.length - 1
+}
+
+/// Routes ordered for answering: a route whose segments are more
+/// specific answers first — at the first segment where two differ, a
+/// literal before a hole before the rest — and declaration order breaks
+/// only a true tie. So embedding order never changes which route answers.
+fn most_specific_first(shapes: List<List<Seg>>, rows: List<int>) -> List<int> {
+    mut out: List<int> = []
+    // LICENSED loops.push_loop: an insertion sort folds its answer back in
+    for r in rows {
+        let at = [x for x in out if !tighter(shapes[r], shapes[x])].length
+        out = out.slice(0, at).concat([r]).concat(out.slice(at, out.length))
+    }
+    out
+}
+
+/// Whether route `a` is strictly more specific than `b`, segment by
+/// segment from the first.
+fn tighter(a: List<Seg>, b: List<Seg>) -> bool {
+    let shared = if a.length < b.length { a.length } else { b.length }
+    let at = [i for i in 0..shared].find(a[it].rank != b[it].rank)
+    if at == null { return false }
+    a[at!].rank < b[at!].rank
+}
+
+/// The step for a segment no key names: the holes' subtree, else a
+/// node answering the carried routes forever, else nothing.
+fn wild_of(
+    mut nodes: List<Node>,
+    shapes: List<List<Seg>>,
+    holes: List<int>,
+    d: int,
+    down: List<int>,
+) -> int {
+    if !holes.is_empty() { return built(nodes, shapes, holes, d + 1, down) }
+    if down.is_empty() { return 0 - 1 }
+    resting(nodes, down)
+}
+
+/// A node that answers `down` and steps to ITSELF — where a target
+/// outruns every literal route and only the rest-takers remain.
+fn resting(mut nodes: List<Node>, down: List<int>) -> int {
+    nodes.push(Node { rows: down, keys: [], kids: [], wild: nodes.length })
+    nodes.length - 1
+}
+
+/// The distinct values of `xs`, ascending — what makes a node's keys
+/// answerable by binary search. Built once per node, at compile time.
+fn sorted_distinct(xs: List<int>) -> List<int> {
+    mut out: List<int> = []
+    // LICENSED loops.push_loop: an insertion sort folds its answer back in
+    for x in xs {
+        if !out.contains(x) { out = inserted(out, x) }
+    }
+    out
+}
+
+fn inserted(xs: List<int>, x: int) -> List<int> {
+    let at = [i for i in 0..xs.length].find(xs[it] > x) ?? xs.length
+    xs.slice(0, at).concat([x]).concat(xs.slice(at, xs.length))
+}
+
+/// A route's segments. In a GRAMMAR pattern a segment holding a `{`
+/// is a HOLE — the reader owns what is around it, and the table stops
+/// keying on a segment it cannot know. In a STATIC path a brace is an
+/// octet like any other and the segment keys exactly.
+fn shaped(r: Route) -> List<Seg> {
+    let b = r.pattern.bytes()
+    let cs = cuts(b)
+    let ps = pieces(r.pattern)
+    [seg_of(b, ps[j], opened(cs, j), c, r.reach, j == cs.length - 1) for j, c in cs]
+}
+
+/// One segment, keyed by its octets and ranked by its type.
+fn seg_of(b: Bytes, seg: string, from: int, to: int, reach: Reach, last: bool) -> Seg {
+    let tail = last && takes_rest(reach)
+    if holes_bind(reach) && holed(b, from, to) {
+        let rank = when {
+            tail -> 3
+            narrow_span(seg) -> 1
+            _ -> 2
+        }
+        return Seg { hole: true, key: 0, tail: tail, rank: rank }
+    }
+    Seg { hole: false, key: hashed(b, from, to), tail: tail, rank: if tail { 3 } else { 0 } }
+}
+
+/// Whether a segment's hole reads a NARROW span — its type refuses
+/// what any text takes. A format's hole reads its span as `string` or
+/// as `int`, so `int` is the whole narrow class: `{id: int}` outranks
+/// `{slug}` and `{slug: string}`, which answer every span alike.
+///
+/// IT READS THE SEGMENT'S SPELLING, because a pattern's text is all a
+/// route carries of its grammar — the same text the table keys its
+/// literals by.
+fn narrow_span(seg: string) -> bool {
+    let open = seg.index_of("{")
+    let shut = seg.index_of("}")
+    if open < 0 || shut < open { return false }
+    let body = seg.substring(open + 1, shut)
+    let colon = body.index_of(":")
+    if colon < 0 { return false }
+    body.substring(colon + 1, body.length).trim() == "int"
+}
+
+fn holed(b: Bytes, from: int, to: int) -> bool {
+    let brace = b.index_of(open_brace(), from)
+    brace >= 0 && brace < to
+}
+
+once fn open_brace() -> Bytes { "{".bytes() }
+
+// ── The dispatch ────────────────────────────────────────────────
+
+/// THE DISPATCH: the first route the table still offers whose method
+/// and target both answer.
+///
+/// The target is the FRAMED SPAN, never a string: the framer's
+/// boundary holds to the door, and a grammar reads octets. A target
+/// that is not UTF-8 matches no route and earns a 404 rather than a
+/// 400 — the framer ADMITS `obs-text`, so such a target is well
+/// formed and simply unrouted. A target nothing answers is a 404
+/// either way, which is a VALUE: the router refuses nothing here.
+///
+/// A TARGET WITH NO PATH IS THE SAME 404, and the table is not walked
+/// at all: `OPTIONS *` and CONNECT's authority name no resource, so
+/// there is nothing to match them against.
+///
+/// A HEAD NO HEAD ROUTE ANSWERS IS ITS GET (RFC 9110 §9.3.2): the GET
+/// route answers it, and the server writes that answer's head alone.
+///
+/// A TARGET ONLY ANOTHER METHOD'S ROUTE READS IS A 405 (RFC 9110
+/// §15.5.6), its `allow` naming every method the path takes. The
+/// readers are asked only once no route has answered, so a request a
+/// route answers costs what it did without them.
+export fn dispatch(t: Table, q: Request<Unrouted>) -> Response {
+    let target? = q.path() else { return status(404) }
+    let node = landed(t, target)
+    if node < 0 { return status(404) }
+    served_as(t, node, q, target, q.head.method) ?? as_get(t, node, q, target) ?? unserved(
+        t,
+        node,
+        target,
+    )
+}
+
+/// The answer for a target no route answered: a 405 naming the methods
+/// whose routes read it, or a 404 when none does.
+fn unserved(t: Table, node: int, target: Bytes) -> Response {
+    let allow = allowed(
+        [t.routes[i].method for i in t.nodes[node].rows if t.routes[i].reads(target)],
+    )
+    if allow.is_empty() { return status(404) }
+    status(405).with_header("allow", allow.join(", "))
+}
+
+/// The words of the methods a path takes, in one order whatever the
+/// table's: HEAD stands beside GET, since a GET route answers both.
+fn allowed(taken: List<Method>) -> List<string> {
+    [method_word(m)! for m in worded() if taken.contains(m) || m == Method.Head && taken.contains(Method.Get)]
+}
+
+/// Every method that has a word, in the order `allow` lists them.
+fn worded() -> List<Method> {
+    [
+        Method.Get,
+        Method.Head,
+        Method.Post,
+        Method.Put,
+        Method.Delete,
+        Method.Patch,
+        Method.Options,
+        Method.Connect,
+        Method.Trace,
+    ]
+}
+
+/// The first route at `node` declared for `m` that answers.
+fn served_as(t: Table, node: int, q: Request<Unrouted>, target: Bytes, m: Method) -> Response? {
+    for i in t.nodes[node].rows {
+        let r = t.routes[i]
+        if r.method == m {
+            let answer: Response? = r.serve(q, target)
+            if answer != null { return answer }
+        }
+    }
+    null
+}
+
+/// A HEAD that no HEAD route answers is answered as its GET: every
+/// general-purpose server supports both (RFC 9110 §9.1), and the loop
+/// sends the length and none of the body.
+fn as_get(t: Table, node: int, q: Request<Unrouted>, target: Bytes) -> Response? {
+    if q.head.method != Method.Head { return null }
+    served_as(t, node, q, target, Method.Get)
+}
+
+/// The node a target lands on, or -1 when the walk falls off the
+/// table. ONE PASS over the octets, allocating nothing: a segment's
+/// hash is folded as the walk crosses it and spent at its end.
+fn landed(t: Table, b: Bytes) -> int {
+    mut node = t.root
+    mut h = seed()
+    mut i = 0
+    // LICENSED loops.push_loop: a descent folds over octets and stops early
+    while i <= b.length {
+        if separates(b, i) {
+            node = step_to(t.nodes[node], h)
+            if node < 0 { return 0 - 1 }
+            h = seed()
+        } else {
+            h = mixed(h, b.at(i))
+        }
+        i = i + 1
+    }
+    node
+}
+
+/// One step: the kid whose key is `key`, else the hole's kid, else -1.
+fn step_to(n: Node, key: int) -> int {
+    mut lo = 0
+    mut hi = n.keys.length
+    // LICENSED loops.push_loop: a binary search halves, it does not walk elements
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if n.keys[mid] == key { return n.kids[mid] }
+        if n.keys[mid] < key { lo = mid + 1 } else { hi = mid }
+    }
+    n.wild
+}
+
+// ── The law over a table ────────────────────────────────────────
+
+/// WHAT IS WRONG WITH A TABLE: a mistake of the program's declarations,
+/// decidable from the routes alone and quiet in a running server.
+///
+/// AN OVERLAP: two routes of ONE SPECIFICITY that may answer a common
+/// target, so written order decides between them for the targets both
+/// match. Where the earlier matches every target the later does, the
+/// later never answers; where the two only meet on some, the later
+/// answers the rest, and order still answers for the meeting. A more
+/// specific route is no overlap — it answers first wherever it stands.
+///
+/// A POSITION'S RANK IS ITS TYPE'S, so two holes of one rank are only
+/// ever told apart by order: `{id: int}` against `{num: int}` is not
+/// two routes, and `v{n: int}` against `{n: int}` is one route that
+/// is partly unreachable. Only LITERALS can be told disjoint — a
+/// hole's span is not a set a declaration can enumerate — so this law
+/// refuses what it cannot prove apart rather than inventing a
+/// disjointness no reader could check.
+///
+/// A REST DISAGREEMENT: `tailed` promises the remaining segments to a
+/// hole and the pattern must say so with `...`; `routed` promises one
+/// width and its pattern must not.
+export enum RouteFault {
+    Overlap(first: Route, second: Route)
+    Unmarked(route: Route)
+    Unclaimed(route: Route)
+}
+
+/// Every fault of a table, in declaration order.
+export fn route_faults(routes: List<Route>) -> List<RouteFault> {
+    [f for j in 0..routes.length for f in faults_of(routes, j)]
+}
+
+/// The faults route `j` brings to the table.
+fn faults_of(routes: List<Route>, j: int) -> List<RouteFault> {
+    let r = routes[j]
+    let above = overshadowed_by(routes, j)
+    let unmarked: RouteFault? = if takes_rest(r.reach) && !marks_rest(r.pattern) { .Unmarked(r) } else { null }
+    let unclaimed: RouteFault? = if r.reach == Reach.Width && marks_rest(r.pattern) { .Unclaimed(r) } else { null }
+    let overlap: RouteFault? = if above != null { .Overlap(routes[above!], r) } else { null }
+    [f! for f in [unmarked, unclaimed, overlap] if f != null]
+}
+
+/// A table's faults in words, one per fault.
+export fn faults(routes: List<Route>) -> List<string> {
+    [told(f) for f in route_faults(routes)]
+}
+
+fn overshadowed_by(routes: List<Route>, j: int) -> int? {
+    [k for k in 0..j].find(shadows(routes[it], routes[j]))
+}
+
+/// Whether a pattern's LAST segment carries a greedy hole. Anywhere
+/// in that segment counts — `{path...}` and `{path...}.png` both take
+/// the rest, the second anchoring its own end.
+fn marks_rest(pattern: string) -> bool { pieces(pattern).last()!.contains(rest_mark()) }
+
+/// The format's greedy mark, closing its hole.
+fn rest_mark() -> string { "...}" }
+
+fn shadows(a: Route, b: Route) -> bool {
+    if a.method != b.method { return false }
+    let x = shaped(a)
+    let y = shaped(b)
+    alike(x, y) && coincide(x, y)
+}
+
+/// Whether two routes are equally specific, segment for segment: only then
+/// does order decide between them.
+fn alike(a: List<Seg>, b: List<Seg>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it].rank == b[it].rank)
+}
+
+/// Whether two equally specific routes may answer one target. Only two
+/// LITERALS can be disjoint, and only by differing; a hole of either
+/// rank is taken to meet every hole of its own rank, since nothing a
+/// declaration says proves what spans a type refuses.
+fn coincide(a: List<Seg>, b: List<Seg>) -> bool {
+    [i for i in 0..a.length].all(a[it].hole || b[it].hole || a[it].key == b[it].key)
+}
+
+/// Whether every target `b` matches, `a` matches too — asked segment
+/// by segment, over the same segments the table descends.
+///
+/// A STATIC path covers one target and nothing else, braces included,
+/// so it covers another route only by being the same path. A
+/// REST-TAKING route covers every width past its own, so it needs
+/// only its prefix to cover and a last segment that answers anything;
+/// and no route of fixed width can cover one that takes the rest,
+/// because there is always a deeper target it does not reach.
+fn covers(a: Route, b: Route) -> bool {
+    if a.reach == Reach.Literal { return b.reach == Reach.Literal && a.pattern == b.pattern }
+    if takes_rest(b.reach) && !takes_rest(a.reach) { return false }
+    let x = pieces(a.pattern)
+    let y = pieces(b.pattern)
+    if takes_rest(a.reach) { return y.length >= x.length && open_hole(x.last()!) && covers_upto(x, y, x.length - 1) }
+    x.length == y.length && covers_upto(x, y, x.length)
+}
+
+/// Whether `a`'s first `n` segments each cover `b`'s.
+fn covers_upto(x: List<string>, y: List<string>, n: int) -> bool {
+    [covers_seg(x[j], y[j]) for j in 0..n].all(it)
+}
+
+fn covers_seg(a: string, b: string) -> bool { open_hole(a) || a == b }
+
+/// A segment that is exactly one hole binding a name and NO TYPE —
+/// `{id}` — which every segment answers.
+///
+/// IT ASKS ABOUT THE TYPE RATHER THAN ASSUMING THERE IS NONE. A hole
+/// that reads its span (`{id: int}`) can REFUSE one, so it covers no
+/// segment but its own spelling; a hole beside a literal (`v{major}`)
+/// covers only what that literal admits. Both are excluded by the
+/// rule itself, which is what keeps this the COVERAGE question —
+/// whether the later route is answered by nothing at all.
+fn open_hole(seg: string) -> bool {
+    seg.starts_with("{") &&
+        seg.index_of("}") == seg.length - 1 &&
+        !seg.contains(":") &&
+        !seg.substring(1, seg.length).contains("{")
+}
+
+// ── Voices ──────────────────────────────────────────────────────
+
+/// A fault's voice.
+export fn told(f: RouteFault) -> string {
+    match f {
+        .Overlap(first, second) -> clash(first, second),
+        .Unmarked(r) -> unmarked(r),
+        .Unclaimed(r) -> unclaimed(r),
+    }
+}
+
+/// An overlap's voice, by whether the earlier route answers EVERY
+/// target the later does: then the later is answered by nothing, and
+/// otherwise the two meet on some.
+fn clash(earlier: Route, later: Route) -> string {
+    if covers(earlier, later) { unreachable(later, earlier) } else { shared(earlier, later) }
+}
+
+/// A route by method and pattern.
+fn named_route(r: Route) -> string { "${method_word(r.method) ?? "?"} ${r.pattern}" }
+
+fn unreachable(later: Route, earlier: Route) -> string {
+    "`${named_route(later)}` is unreachable — `${named_route(earlier)}` is declared above it and matches every target it does"
+}
+
+fn shared(earlier: Route, later: Route) -> string {
+    "`${named_route(later)}` and `${named_route(earlier)}` are equally specific and match some of the same targets — nothing but written order would separate them; narrow one, or drop one"
+}
+
+fn unmarked(r: Route) -> string {
+    "`${named_route(r)}` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+}
+
+fn unclaimed(r: Route) -> string {
+    "`${named_route(r)}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
+}

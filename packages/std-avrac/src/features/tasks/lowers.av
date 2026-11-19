@@ -1,0 +1,209 @@
+//! The lowering rules of `spawn` and `within`. `spawn`: the runtime is handed a box over the body's
+//! task lift, which answers the body's value in a one-cell list, then what the body captures; the
+//! scope holding the task joins it as it ends. `within`: the body lowers inline in a one-turn loop
+//! whose scope arms the deadline and ends it, so a `return` or a `?` out of the body ends it too, and
+//! an unwind it asked for leaves the loop rather than the fn; after the loop, the deadline it ran
+//! past, or the body's answer. `produce`: its block spawned holding the channel's sink, which each
+//! `yield` feeds and its end closes, the channel's source answered; `channel`: the pair opened.
+use core.{
+    BinOp,
+    Bound,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    RtFlag,
+    SignedType,
+    TypeHead,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{Lambda}
+
+impl Lowers for Spawn {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(self.body) else { return cx.unlowered(e) }
+        let parts? = cx.store.lambda_parts(self.body) else { return cx.unlowered(e) }
+        if cx.store.expr_span(self.body) == null { return cx.missed_as("a spawn no source wrote") }
+        let lift = cx.lift(thunk(parts.body), ty, self.body, cx.program, true)
+        cx.kept_lift(lift)
+        let task = cx
+            .fn_box(cx.laid_out(ty), lift.body.symbol, [cx.lane_of(name) for name in lift.lanes], ty)
+        cx.call_row(cx.layout_at(e), rt_sig_of("avra_task_spawn")!, [task])
+    }
+}
+
+impl Lowers for Within {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let whole? = cx.type_at(e) else { return cx.unlowered(e) }
+        let body? = cx.type_at(cx.meaning_of(self.body)) else { return cx.unlowered(e) }
+        let span? = cx.type_at(self.limit) else { return cx.unlowered(e) }
+        let ms? = cx.method(span, "ms") else { return cx.missed_as("a `within` whose limit has no `ms`") }
+        let limit = cx.lower(self.limit)
+        let millis = cx.call_fn(Layout.Word, ms, [limit])
+        let answer = cx.seeded_cell(cx.laid_out(body), cx.hollow_of(body))
+        let landing = cx.seeded_cell(Layout.Word, cx.const_int(0))
+        cx.loop_start()
+        cx.unwritten()
+        cx.loop_cond(cx.const_bool(true))
+        cx.within_opened(millis, landing)
+        cx.stored(answer, cx.lower(self.body))
+        cx.within_closed()
+        cx.jumped(false)
+        cx.loop_end()
+        let landed = cx
+            .bin(Layout.Truth, BinOp.Ne, cx.loaded(Layout.Word, landing), cx.const_int(0))
+        cx
+            .region(landed, cx.laid_out(whole)) { cx -> cx.failure_of(whole, timed_out(cx, whole, limit)) } else { cx ->
+                answered_unless_unwinding(cx, whole, body, answer)
+            }
+    }
+}
+
+/// The body's answer, made the `Ok` of `whole`; still unwinding, the frames outside have run and the
+/// fn leaves.
+fn answered_unless_unwinding(mut cx: Lowering, whole: SignedType, body: SignedType, answer: Reg) -> Reg {
+    cx
+        .region(cx.flag_read(RtFlag.Unwinding), cx.laid_out(whole)) { cx ->
+            cx.unwound_exit()
+            cx.hollow_of(whole)
+        } else { cx -> cx.lifted(cx.loaded(cx.laid_out(body), answer), body, whole) }
+}
+
+/// The `TimedOut` the deadline answers: the span it was given, and the frames the unwind left.
+fn timed_out(mut cx: Lowering, whole: SignedType, limit: Reg) -> Reg {
+    let late = whole.args[1]
+    let fields? = cx.fields_of(late) else { return cx.missed_as("a `TimedOut` that is no record") }
+    let frames? = fields.last()?.ty else { return cx.missed_as("a `TimedOut` without its frames") }
+    cx.record_packed(cx.laid_out(late), [limit, frames_left(cx, frames)])
+}
+
+/// The unwind's frames, read back as the list they are.
+fn frames_left(mut cx: Lowering, frames: SignedType) -> Reg {
+    let frame? = frames.listed() else { return cx.missed_as("a `TimedOut` whose frames are no list") }
+    let n = cx.call_row(Layout.Word, rt_sig_of("avra_unwind_count")!, [])
+    let out = cx.call_row(cx.laid_out(frames), rt_sig_of("avra_array_sized")!, [n])
+    let w = cx.walk_count(cx.const_int(0), n)
+    let here = cx.walk_turn(w)
+    cx.push_slot(out, cx.call_row(cx.laid_out(frame), rt_sig_of("avra_unwind_at")!, [here]))
+    cx.loop_end()
+    out
+}
+
+impl Lowers for Produce {
+    /// `produce<T>(cap) { … }`: `@std/task`'s `open_channel<T>(cap)`, the block spawned HERE, in the
+    /// reader's frame, holding the channel's sink and closing it once its block ends, and the channel's
+    /// source answered with that task as its `work`, so the scope holding the source settles it.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let source? = cx.type_at(e) else { return cx.unlowered(e) }
+        let body? = cx.type_at(self.body) else { return cx.unlowered(e) }
+        let parts? = cx.store.lambda_parts(self.body) else { return cx.unlowered(e) }
+        if cx.store.expr_span(self.body) == null { return cx.missed_as("a produce no source wrote") }
+        let chan? = opened_channel(cx, source, self.cap) else { return cx.missed_as("a produce whose channel isn't opened") }
+        let sink? = field_of(cx, chan.reg, chan.ty, "sink") else { return cx.missed_as("a channel without its sink") }
+        cx.opened()
+        cx.bind(PRODUCER_SINK, Bound.Value(sink.reg, sink.ty))
+        let lift = cx
+            .lift_ended(thunk(parts.body), body, self.body, cx.program, true) { cx -> sink_called(cx, "close", []) }
+        cx.kept_lift(lift)
+        let task = cx
+            .fn_box(cx.laid_out(body), lift.body.symbol, [cx.lane_of(name) for name in lift.lanes], body)
+        cx.closed()
+        let ran = owned_type("Task") with { args: [body.answer ?? owned_type("void")] }
+        let work = cx.call_row(cx.laid_out(ran), rt_sig_of("avra_task_spawn")!, [task])
+        let read? = field_of(cx, chan.reg, chan.ty, "source") else { return cx.missed_as("a channel without its source") }
+        working(cx, read, work) ?? cx.missed_as("a source without its `work`")
+    }
+}
+
+impl Lowers for Emit {
+    /// `yield x`: the enclosing producer's sink takes `x`; its `send` parks while the channel is full,
+    /// so `yield` IS the backpressure point.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let sink? = cx.bound(PRODUCER_SINK) else { return cx.missed_as("a `yield` no producer encloses") }
+        let item? = sink.type().args.first() else { return cx.missed_as("a `yield` into a sink of no element") }
+        sink_called(cx, "send", [cx.lowered_into(self.value, item)])
+        cx.hollow_of(owned_type("void"))
+    }
+}
+
+impl Lowers for Channel {
+    /// `channel<T>(cap)`: `@std/task`'s `open_channel<T>(cap)`, answered whole. No task is spawned and
+    /// nobody closes it: the pair ends at its sink's `close()`.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let elem? = ty.args.first() else { return cx.unlowered(e) }
+        let chan? = channel_of(cx, ty with { args: [elem] }, elem, self.cap) else { return cx.missed_as("a channel that isn't opened") }
+        chan.reg
+    }
+}
+
+/// A block as the lambda of no seats a task runs.
+fn thunk(body: ExprId) -> Lambda { Lambda { params: [], body: body } }
+
+/// A value and its type.
+type Typed = { reg: Reg, ty: SignedType }
+
+/// The channel a producer of `source`, a `@std/task` `Source<T>`, is built on, of capacity `cap`.
+fn opened_channel(mut cx: Lowering, source: SignedType, cap: ExprId?) -> Typed? {
+    let elem? = source.args.first() else { return null }
+    channel_of(cx, source with { head: sibling(source.head, "Channel")?, args: [elem] }, elem, cap)
+}
+
+/// The `Channel<elem>` of type `chan`: one call of `@std/task`'s `open_channel<elem>(cap)`, the one
+/// carrier `produce` and `channel` share; a capacity unwritten is the rendezvous, nothing.
+fn channel_of(mut cx: Lowering, chan: SignedType, elem: SignedType, cap: ExprId?) -> Typed? {
+    let home? = home_of(chan.head) else { return null }
+    let named? = (cx.program.named)("open_channel", home) else { return null }
+    let open? = match named { .Fn(c) -> c, rest -> null } else { return null }
+    let unit? = cx.laid_unit(open, [elem], [owned_type("int")]) else { return null }
+    let size = if cap == null { cx.const_int(0) } else { cx.lower(cap!) }
+    Typed { reg: cx.call_fn(cx.laid_out(chan), unit, [size]), ty: chan }
+}
+
+/// The type the file declaring `head` declares as `name`.
+fn sibling(head: TypeHead, name: string) -> TypeHead? {
+    match head { .Declared(file, _) -> TypeHead.Declared(file, name), rest -> null }
+}
+
+/// Where names read in the file declaring `head` are looked up.
+fn home_of(head: TypeHead) -> string? {
+    match head {
+        .Declared(file, _) -> "${file.package_name}:${file.path_in_package}",
+        rest -> null,
+    }
+}
+
+/// The field `name` of the record `v` of `ty`, with its type.
+fn field_of(mut cx: Lowering, v: Reg, ty: SignedType, name: string) -> Typed? {
+    let fields? = cx.fields_of(ty) else { return null }
+    let n? = fields.find_index(it.name == name) else { return null }
+    let laid? = cx.seat_layouts(fields) else { return null }
+    Typed { reg: cx.field_read(v, ty, laid, n), ty: fields[n].ty! }
+}
+
+/// The producer's sink's fn field `name` called with `args`, its answer read by nobody.
+fn sink_called(mut cx: Lowering, name: string, args: List<Reg>) {
+    let bound? = cx.bound(PRODUCER_SINK) else { return cx.missed("a producer without its sink") }
+    let sink = cx.held(bound)
+    let verb? = field_of(cx, sink, bound.type(), name) else { return cx.missed("a sink without its `${name}`") }
+    let _ = cx
+        .called_code(
+            cx.laid_out(verb.ty.answer ?? owned_type("void")),
+            cx.code_of(verb.reg),
+            verb.reg,
+            args,
+            verb.ty,
+        )
+}
+
+/// A copy of the source `read` with `task` as its `work`, the field the scope holding it settles.
+fn working(mut cx: Lowering, read: Typed, task: Reg) -> Reg? {
+    let fields? = cx.fields_of(read.ty) else { return null }
+    let n? = fields.find_index(it.name == "work") else { return null }
+    let laid? = cx.seat_layouts(fields) else { return null }
+    let copy = cx.record_copied(cx.laid_out(read.ty), read.reg, laid)
+    cx.field_rewritten(copy, laid, n, task)
+    copy
+}

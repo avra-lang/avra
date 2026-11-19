@@ -1,0 +1,25 @@
+//! The ranges semantics: dispatch only. A range's bounds are ordinary
+//! expressions walked in place; the value wears the builtin
+//! `Type.Range` — a two-slot box, its own identity so a method row can
+//! name a range receiver without a string tag.
+use core.{ExprId, Type, TypeId, Reg}
+use features.{ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{Range}
+
+impl Meaning for Range {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        cx.walk(self.lo)
+        cx.walk(self.hi)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        if !range_bound(cx, self.lo, "starts") || !range_bound(cx, self.hi, "ends") { return cx.error_type }
+        cx.view.types.intern(Type.Range)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        let dst = cx.array_sized(Type.Range, cx.const_int(2))
+        cx.push_slot(dst, cx.reg_of(self.lo))
+        cx.push_slot(dst, cx.reg_of(self.hi))
+        dst
+    }
+}

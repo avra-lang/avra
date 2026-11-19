@@ -1,0 +1,96 @@
+// proves: a parse that traps while an answer lands is that view's failure and nothing more: the view says so, the
+// entry's other views are still told, the request is no longer out, the cache's snapshot is current, and the next ask and
+// answer behave as if nothing had happened — eval == native.
+use @std.ui.app.{Async, Fetch, fetch, fetched, running}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{Screen, headless}
+use @std.http_message.message.{Header, Reply, Request}
+use @std.text.{repeat}
+use @std.time.{ms}
+
+state version: int = 1
+state breaking: bool = true
+
+fn serve(_r: Request) -> Result<Reply, string> {
+    .Ok(
+        Reply {
+            status: 200,
+            headers: [Header { name: "etag", value: "\"v${version}\"" }],
+            body: repeat("x", version).bytes(),
+        },
+    )
+}
+
+fn read_at(i: int) -> int {
+    let xs = [10, 20]
+    xs[i]
+}
+
+/// A parse that traps while `breaking` holds.
+fn parsed(r: Reply) -> Result<int, string> {
+    if breaking { return .Ok(read_at(5)) }
+    .Ok(r.body.length)
+}
+
+/// A parse that never traps.
+fn sound(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(n) -> "ready ${n}",
+    }
+}
+
+/// The loop's cache hands `seen` the lines of each snapshot.
+fn watched(seen: Cell<List<string>>) {
+    let on? = running() else { return }
+    on.observed.watching((s) -> seen.set(s.lines()))
+}
+
+/// Whether the last snapshot the cache handed its watcher names the `/rows` entry.
+fn names_rows(seen: Cell<List<string>>) -> bool { seen.get().any(it.contains("/rows")) }
+
+fn outs() -> string {
+    let on? = running() else { return "no loop" }
+    "asks ${on.observed.asks.get()}"
+}
+
+let page: Fetch<int> = fetch()
+let sibling: Fetch<int> = fetch()
+let screen = headless(
+    () -> item {
+        items: [
+            button "Load" {
+                on press {
+                    let _ = fetched(page, Request.get("/rows"), parsed)
+                    let _ = fetched(sibling, Request.get("/rows"), sound)
+                }
+            },
+        ]
+    },
+)
+screen.wired(serve)
+screen
+    .running(
+        () -> {
+            let seen: Cell<List<string>> = Cell.new([])
+            watched(seen)
+            let _ = screen.press("Load")
+            screen.advance(ms(10))
+            println(
+                "the parse traps as the answer lands: ${words(page.state())} | its sibling: ${words(sibling.state())}",
+            )
+            println("the snapshot names the entry: ${names_rows(seen)}")
+            breaking = false
+            version = 2
+            let _ = screen.press("Load")
+            screen.advance(ms(10))
+            println(
+                "asked again, the parse sound: ${words(page.state())} loading ${page.is_loading()} | ${outs()}",
+            )
+            println("the snapshot follows: ${names_rows(seen)}")
+        },
+    )

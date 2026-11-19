@@ -1,0 +1,112 @@
+//! WHAT A GENERATOR SAID ABOUT THE DECLARATION IT RAN OVER: each problem a run kept, refused where it
+//! points — or at the declaration, where it points nowhere, or into another file — in the old path's
+//! words: `@std/meta`'s `delegate` over a `collect enum` as `collect_enum.self`; an annotation's under
+//! its own kind, its package's, or `annotation.said`, and as `annotation.kind` where that kind is no
+//! word. A warning is a declaration's word for its users, and isn't said here; nor is a run that
+//! didn't happen because the annotation writes the wrong count of arguments, which its seats' law says.
+use core.{Span, StmtId, SyntaxArena, is_kind_word, user_kind}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.annotations.{annotation_said, could_not_run, kind_unworded}
+use features.collects.{delegation_refused}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The generator `@std/meta` runs over a `collect enum` once per trait it names.
+const DELEGATING: string = "delegate"
+
+/// Every problem a generator kept about a declaration of the written item `at` of `file`.
+fn problems_said(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if !item_held(engine, file, at) { return [] }
+    let kept = [p for p in file_problems(engine, file) if p.item == at && !p.warning && !p.unrun]
+    if kept.is_empty() { return [] }
+    let miscounted = [f.args[0] for f in miscounted_annotations(engine, file, at)]
+    let mine = [p for p in kept if !(p.trapped && miscounted.contains(p.by))]
+    let item = read_item(engine, file, at)
+    [problem_found(engine, item.store, item.stmts, file, p) for p in mine]
+}
+
+/// The problem `p` as its law finds it: its place, its kind, and its words carried whole. Where it
+/// points, it points at a place of its file as the file counts it — in whichever item stands there.
+fn problem_found(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+    file: SourceFileAddress,
+    p: KeptProblem,
+) -> Found {
+    let declared = declaring_span(store, stmts, p.owner)
+    let pointed = if p.at != null && p.home == spelled_file(file) { placed_in_item(engine, file, p.at!) } else { null }
+    if p.unplaced {
+        return carried(
+            annotation_span(store, stmts, p.by) ?? declared,
+            "annotation.unplaceable",
+            fill_unplaced(p.message),
+        )
+    }
+    if p.trapped {
+        return carried(
+            annotation_span(store, stmts, p.by) ?? declared,
+            "annotation.unsettled",
+            could_not_run(p.message),
+        )
+    }
+    if p.by == DELEGATING {
+        return pointed_or(
+            pointed,
+            declared,
+            "collect_enum.self",
+            delegation_refused(p.message, p.owner, p.help),
+        )
+    }
+    if p.kind != null && !is_kind_word(p.kind!) {
+        return carried(
+            annotation_span(store, stmts, p.by) ?? declared,
+            "annotation.kind",
+            kind_unworded(p.by, p.kind!, p.message),
+        )
+    }
+    pointed_or(
+        pointed,
+        declared,
+        user_kind(p.from, p.kind) ?? "annotation.said",
+        annotation_said(p.message, p.by, p.help),
+    )
+}
+
+/// A finding in `kind` where a problem points, in the item standing there, else at `declared` in its
+/// own item; its voice's words carried whole.
+fn pointed_or(pointed: PlaceInItem?, declared: Span?, kind: string, v: Voice) -> Found {
+    let there? = pointed else { return carried(declared, kind, v) }
+    carried(span_of(there.at), kind, v) with { item: there.item }
+}
+
+/// The statement among `stmts` declaring `name`, where it stands.
+fn declaring_span(store: SyntaxArena, stmts: List<StmtId>, name: string) -> Span? {
+    let s? = stmts.find((x: StmtId) -> store.declared_name(x) == name) ?? stmts.first() else { return null }
+    store.stmt_span(s)
+}
+
+/// Where the annotation `@${name}` stands on a statement among `stmts`.
+fn annotation_span(store: SyntaxArena, stmts: List<StmtId>, name: string) -> Span? {
+    [a.span for s in stmts for a in store.annotations_of(s) if a.name == name].first() ?? null
+}
+
+/// A finding at `at` in `kind`, its voice's words carried whole.
+fn carried(at: Span?, kind: string, v: Voice) -> Found { Found { at: at, args: [v.message, v.label ?? "", v.help ?? ""], kind: kind } }
+
+/// a generator's problem with a declaration refuses it
+export law generator_problem_said {
+    kind: "collect_enum.self"
+    reads: problems_said
+    voice: problem_words
+    witness: "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\ntrait Rank {\n    fn versus(other: Self) -> int\n}\n@numbered(0)\ntype Dot = { at: int }\nimpl Rank for Dot {\n    fn versus(other: Dot) -> int { self.at - other.at }\n}\ncollect enum Item: Rank = @numbered in self by it.mark.args[0] dense\n1\n"
+}
+
+fn problem_words(a: List<string>) -> Voice {
+    Voice {
+        message: a[0],
+        label: if a[1].is_empty() { null } else { a[1] },
+        help: if a[2].is_empty() { null } else { a[2] },
+    }
+}

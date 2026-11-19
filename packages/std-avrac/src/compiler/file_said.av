@@ -1,0 +1,66 @@
+//! WHAT A FILE SAID, as one answer: the cases it declares, and its warnings and rule
+//! findings as facts — never rendered. The print renders them, through the one renderer.
+use core.{flatten, FileId}
+use @std.relation.{query, codec}
+use diagnostics.{Diag, new_source_file, by_position}
+use compiler.findings.{finding_at}
+
+/// A file's saying: its cases and its facts.
+@codec
+export type FileSaid = { cases: List<CaseCall>, facts: FileFacts }
+
+/// What a file says: its analysis's warnings and its rule findings, and its cases.
+@query
+fn file_said(ws: Workspace, f: FileId) -> FileSaid { ws.saying(f) }
+
+impl Workspace {
+    fn saying(f: FileId) -> FileSaid {
+        let a = self.analysis(f)
+        FileSaid {
+            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(f)],
+            facts: FileFacts {
+                warnings: [d for d in self.file_voices(f) if is_warning(d)],
+                rules: rule_findings(analysed(a), a.view.stmts),
+            },
+        }
+    }
+
+    /// What a held file says when no kept answer stands for it: nothing known, kept nowhere, so the
+    /// derivation reads the file.
+    fn unsaid() -> FileSaid {
+        self.query_db().unkept()
+        FileSaid { cases: [], facts: FileFacts { warnings: [], rules: null } }
+    }
+
+    /// A file's diagnostics in pipeline order, each pass's from its own answer: its parse, its
+    /// names, its signatures, its methods, and its bodies by position.
+    fn file_voices(f: FileId) -> List<Diag> {
+        flatten(
+            [
+                parse_said(self, f),
+                self.resolved(f).voices.list,
+                sig_said(self, f),
+                method_clashes(self, f),
+                by_position(flatten([self.typed(d).voices.list for d in self.bodies_of(f)])),
+            ],
+        )
+    }
+
+    /// What a file said under `want`, rendered over its texts now: under a diagnostics want
+    /// its rule findings beside its warnings, and as rows. None where a fact places nowhere.
+    fn said_now(f: FileId, want: Want) -> Said? {
+        let path = self.decls.file(f).path
+        let fs = file_said(self, f)
+        let found? = fs.facts.rules else { return null }
+        if want is .Diagnostics { let _ = file_laws(self, f) }
+        let rules = match want { .Diagnostics -> found, .Binary -> [] }
+        let warnings? = self.facts_said(fs.facts.warnings, rules) else { return null }
+        let src = new_source_file(path, self.listed_text(path))
+        Said {
+            path: path,
+            warnings: warnings,
+            cases: fs.cases,
+            findings: flatten([finding_at(src, d.kind, d.primary.loc) for d in rules]),
+        }
+    }
+}

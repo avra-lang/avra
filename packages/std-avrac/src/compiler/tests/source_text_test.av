@@ -1,0 +1,550 @@
+// The AST source projection: its output parses, reaches a fixed point
+// after one projection, and keeps the structure readers depend on.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.compiler.format.{
+    render_statement,
+    render_expression,
+    render_source_of,
+    lossless_defect,
+}
+use @std.avrac.core.{Expr, Stmt, new_node_store}
+use @std.avrac.testing.{projected}
+
+fn stable(source: string) -> bool {
+    let out = projected(source)
+    out != "<parse refused>" && projected(out) == out && same_tree(source, out)
+}
+
+fn same_tree(source: string, projected: string) -> bool {
+    let before = parse_source(source)
+    let after = parse_source(projected)
+    if !before.voices.list.is_empty() ||
+        !after.voices.list.is_empty() ||
+        before.stmts.length != after.stmts.length {
+        return false
+    }
+    for j, stmt in before.stmts {
+        if before.store.stmt_fingerprint(stmt) != after.store.stmt_fingerprint(after.stmts[j]) { return false }
+    }
+    true
+}
+
+// Canonical input in the printer's block layout: fmt of each is itself.
+const WITHIN_SECS: string = "use @std.time.{secs}\nlet w = within secs(10) {\n    1\n}\nw"
+const WITHIN_MS: string = "use @std.time.{ms}\nlet w = within ms(5) {\n    1\n}\nw"
+
+spec "source text" {
+    given "a host fn — an `extern fn` with a body" {
+        then "it prints as it was written" {
+            let source = "extern fn avra_ui_event(who: int, what: int) -> int { who + what }"
+            let p = parse_source(source)
+            render_source_of(p.store, p.stmts, source) == source
+        }
+        then "it is not the fn its body alone would be" {
+            !same_tree("extern fn told(n: int) -> int { n }\n", "fn told(n: int) -> int { n }\n")
+        }
+        then "beside a bodiless extern, each keeps its own form" {
+            stable(
+                "extern fn avra_dom_frame(frame: Bytes)\n\nextern fn avra_seat(room: int) -> Bytes {\n    avra_dom_frame(\"x\".bytes())\n    \"y\".bytes()\n}\n",
+            )
+        }
+    }
+    given "a re-export — `export use`" {
+        then "it prints as it was written" {
+            let source = "export use util.{twice, heavy}"
+            let p = parse_source(source)
+            render_source_of(p.store, p.stmts, source) == source
+        }
+        then "it is not the import its names alone would be" {
+            !same_tree("export use util.{twice}\n", "use util.{twice}\n")
+        }
+        then "beside an import, each keeps its own form" {
+            stable("use util.{twice}\n\nexport use util.{heavy}\n")
+        }
+    }
+    given "a head before an empty body" {
+        then "a range ending in a name keeps its parentheses" { stable("fn f(n: int) {\n    for k in (0..n) {}\n}") }
+        then "a list named bare keeps its parentheses" { stable("fn f(xs: List<int>) {\n    for x in (xs) {}\n}") }
+        then "a `while` comparing to a name keeps its parentheses" { stable("fn f(n: int) {\n    mut i = 0\n    while (i < n) {}\n}") }
+        then "an `if` comparing to a name keeps its parentheses" { stable("fn f(n: int) {\n    if (0 < n) {}\n}") }
+        then "a head before a body that holds a statement needs none" {
+            projected("fn f(n: int) {\n    for k in (0..n) {\n        let _ = k\n    }\n}") == "fn f(n: int) {\n    for k in 0..n {\n        let _ = k\n    }\n}"
+        }
+    }
+    given "a within limit is spelled as written" {
+        then "a span call is canonical: fmt of it is itself" {
+            projected(WITHIN_SECS) == WITHIN_SECS
+        }
+        then "a millisecond span is canonical: fmt of it is itself" {
+            projected(WITHIN_MS) == WITHIN_MS
+        }
+    }
+    given "a small program" {
+        then "layout and precedence have one canonical spelling" {
+            projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") == "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
+        }
+    }
+    given "the statement surface" {
+
+        then "a component instance a member follows keeps its group" {
+            stable("let v = (component { }).describe()\n")
+        }
+        then "a doc-only edit changes the statement fingerprint" {
+            let before = parse_source("/// a\nfn f() -> int { 1 }")
+            let after = parse_source("/// b\nfn f() -> int { 1 }")
+            before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
+        }
+        then "an empty documentation line survives as `///`" {
+            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
+                stable("///\nfn a() -> int { 1 }") &&
+                projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
+                stable("/// a\n///\nfn a() -> int { 1 }")
+        }
+        then "documentation survives annotations, modifiers, and nested trait members" {
+            let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
+            projected(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" &&
+                stable(source)
+        }
+        then "a generic impl keeps its own type parameters — LOSSLESS, not merely stable" {
+            let plain = "impl Traced<E> {\n    fn get() -> E {\n        self.value\n    }\n}"
+            let forred = "impl Convert<X> for Box<T> {\n    fn f() -> int {\n        1\n    }\n}"
+            projected(plain) == plain &&
+                stable(plain) &&
+                projected(forred) == forred &&
+                stable(forred)
+        }
+        then "declarations, control flow and effects reach a fixed point" {
+            stable(
+                """
+@memo("key", 3)
+export fn choose<T: Show>(mut x: int, f: fn(mut int) -> bool) -> int {
+    let plain = 1
+    mut changing: int = 2
+    const local: int = 3
+    changing = changing + local
+    let _ = f(changing)
+    while changing < 5 {
+        changing = changing + 1
+    }
+    if changing == 5 {
+        changing = 6
+    } else {
+        changing = 7
+    }
+    let found? = maybe else {
+        return 0
+    }
+    for i in 0..3 {
+        changing = changing + i
+    }
+    for j, item in items {
+        changing = changing + j
+    }
+    defer cleanup()
+    errdefer report(changing)
+    return changing
+}
+
+extern fn host(mut value: i64) -> i64
+
+type Pair<T> = {
+    left: T,
+    right: T = fallback,
+}
+
+enum Choice<T> {
+    none
+    one(T)
+    named(value: T)
+}
+
+trait Measure {
+    fn size(self) -> int
+    static fn empty() -> int { 0 }
+}
+
+impl Measure for Pair {
+    fn size(self) -> int { self.left }
+}
+
+use @std.math.{min, max}
+let least = min(1, 2)
+let most = max(1, 2)
+
+spec "printer fixture" {
+    given "a group" {
+        then "one case" { true }
+    }
+    then "top case" { true }
+}
+
+fail problem
+""",
+            )
+        }
+    }
+    given "a spec's `given` blocks" {
+        then "a blank line between two `given` blocks stands where it was written" {
+            let source = "spec \"s\" {\n    given \"a\" {\n        then \"t1\" { true }\n    }\n\n    given \"b\" {\n        then \"t2\" { true }\n    }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
+        }
+        then "a comment between two `given` blocks stands at the `given`'s own depth, not the `then`'s" {
+            let source = "spec \"s\" {\n    given \"a\" {\n        then \"t1\" { true }\n    }\n    // between\n    given \"b\" {\n        then \"t2\" { true }\n    }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
+        }
+        then "the same blank line before a bare `then` (an empty group) already stood at the right depth" {
+            let source = "spec \"s\" {\n    then \"a\" { true }\n\n    then \"b\" { true }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
+        }
+        then "a comment quoting source with a brace stays whole — the brace inside it is not syntax" {
+            let source = "spec \"s\" {\n    given \"a\" {\n        then \"t1\" { true }\n    }\n    given \"b\" {\n        // like `f { x }`, not a real brace\n        // a second line, still before `then`\n        then \"t2\" { true }\n    }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
+        }
+    }
+    given "the expression surface" {
+
+        then "literals, aggregates, branches and postfixes reach a fixed point" {
+            stable(
+                """
+let scalar = 12 + 3.5 * 2
+let text = "before ${value} after"
+let truth = !false || true && false
+let list = [1, 2, 3]
+let each = [x * 2 for i, x in list if i > 0]
+let range = [x for x in 0..4]
+let map = {"a": 1, "b": 2}
+let access = map["a"] + point.x
+let branch = if truth { 1 } else { 2 }
+let choice = when {
+    truth -> 1
+    false -> 2
+    _ -> 3
+}
+let record = Pair { left: 1, right: 2 }
+let changed = record with { right: 4 }
+let variant = .named(4)
+let matched = match variant {
+    .none -> 0
+    .one(x) or .named(x) -> x
+    .guarded(x) if x > 0 -> x
+    true -> 1
+    "x" -> 2
+    7 -> 3
+    rest -> 4
+}
+let absent = null
+let fallback = absent ?? 9
+let optional = match absent {
+    value? -> value
+    null -> 0
+}
+let closure = (mut x: int) -> x + 1
+let called = closure(2)
+let chained = absent?.size()
+let forced = absent!
+let tagged = variant is .named
+let propagated = result?
+let caught = result catch error -> 0
+let selected = result catch .bad(reason) -> reason
+let many = result catch {
+    .bad(reason) -> reason
+    .worse -> 0
+}
+let pinned = convert<int>(called)
+""",
+            )
+        }
+        then "arithmetic and comparisons reach a fixed point" {
+            stable(
+                """
+let sub = 8 - 3
+let div = 8 / 2
+let mod = 8 % 3
+let ne = a != b
+let lt = a < b
+let le = a <= b
+let ge = a >= b
+""",
+            )
+        }
+        then "a no-capacity primitive keeps its empty argument list — `channel<T>()` is the rendezvous, `channel<T>` is no spelling" {
+            stable("let bare = channel<int>()\nlet held = channel<int>(8)")
+        }
+        then "bitwise operators reach a fixed point" {
+            stable(
+                """
+let bits = (a & b) | (c ^ d)
+let left = a << 2
+let right = a >> 2
+""",
+            )
+        }
+        then "binary grouping edges reach a fixed point" {
+            stable(
+                """
+let product = (1 + 2) * 3
+let association = 1 - (2 - 3)
+""",
+            )
+        }
+        then "rest patterns, optional properties and catch-any reach a fixed point" {
+            stable(
+                """
+let rest_arm = match value {
+    .one(rest) -> 1
+    _ -> 0
+}
+let chained_property = optional?.field
+let recovered = result catch 0
+""",
+            )
+        }
+        then "`.type(T)` read back over a `?.`-propagate chain, not only a plain receiver, reaches a fixed point" {
+            stable(
+                """
+let plain = n.type(int)
+let chained = some?.type(List<string?>)
+""",
+            )
+        }
+        then "an `else if` chain in a block's tail position stays a chain, not a nested block" {
+            projected(
+                "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}",
+            ) == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}"
+        }
+        then "a comment in the chain's first branch does not block a later link from chaining" {
+            projected(
+                "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}",
+            ) == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}"
+        }
+        then "a WRITTEN `else { if … }`, in a block's tail position, keeps its braces" {
+            stable(
+                "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else {\n        if b == 2 {\n            2\n        } else {\n            3\n        }\n    }\n}",
+            )
+        }
+        then "a written `else { if … }` as an if-EXPRESSION's else value keeps its braces too" {
+            stable(
+                "let tag = if a < 15 {\n    \"small\"\n} else {\n    if b == 1 {\n        \"big-one\"\n    } else {\n        \"big\"\n    }\n}",
+            )
+        }
+    }
+    given "degenerate shapes" {
+
+        then "an empty program is already canonical" {
+            stable("")
+        }
+        then "empty and singleton containers and bodies reach a fixed point" {
+            stable(
+                """
+fn empty() {}
+fn bare_return() {
+    return
+}
+type Empty<T> = {}
+enum Nothing<T> {}
+trait Marker {}
+impl Empty {}
+spec "empty" {}
+while false {}
+if true {}
+for item in [] {}
+let empty_list = []
+let one_list = [1]
+let empty_map = {}
+let one_map = {"one": 1}
+let one_when = when { _ -> 1 }
+""",
+            )
+        }
+    }
+    given "recovery nodes" {
+
+        then "their projection is explicit and parseable" {
+            mut store = new_node_store()
+            let expr = store.alloc_expr(Expr.Error)
+            let stmt = store.alloc_stmt(Stmt.Error)
+            render_expression(store, expr) == "__error" &&
+                render_statement(store, stmt) == "__error" &&
+                stable(render_statement(store, stmt))
+        }
+    }
+    given "a value call whose subject is a name" {
+
+        then "parentheses keep it distinct from a direct declaration call" {
+            mut store = new_node_store()
+            let callee = store.alloc_expr(Expr.Ident("f"))
+            let arg = store.alloc_expr(Expr.IntLit(1))
+            let call = store.alloc_expr(Expr.CallValue(callee, [arg]))
+            render_expression(store, call) == "(f)(1)"
+        }
+    }
+    given "a folded negative literal under a postfix" {
+
+        then "its group survives projection" {
+            stable("let field = (-3).magnitude")
+        }
+    }
+    given "a format pattern with escaped braces" {
+
+        then "a doubled brace keeps matching its own literal text, not a hole" {
+            stable(
+                "fn seen(line: string) -> string {\n    match line {\n        \"a{{b}}c\" -> \"escaped\",\n        _ -> \"other\",\n    }\n}",
+            )
+        }
+    }
+    given "a trailing blank line before EOF" {
+
+        then "the blank line survives the printer, not just the statements" {
+            let source = "let x = 1\n\n"
+            let p = parse_source(source)
+            p.voices.list.is_empty() && "${render_source_of(p.store, p.stmts, source)}\n" == source
+        }
+    }
+    given "a triple-quoted raw string" {
+
+        then "its own delimiter survives, not the escaped form its twin reads identically" {
+            kept("let text = \"\"\"hello\nworld\"\"\"")
+        }
+    }
+    given "a grammar declaration's pattern" {
+
+        then "`grammar Name = \"…\"` survives, not the record it desugars to" {
+            kept("grammar R = \"{a} {b}\"")
+        }
+    }
+    given "an expression-position grammar literal" {
+
+        then "`grammar { … }`'s own DSL text survives, not its expansion" {
+            kept("let g = grammar {\n    primary = \"x\" -> ident()\n}")
+        }
+    }
+    given "a trait member's seat default" {
+        then "survives" {
+            kept(
+                "trait Grows {\n    fn grown(by: int = 10) -> int\n    static fn scaled(n: int, by: int = 2) -> int\n}",
+            )
+        }
+    }
+    given "a component declaration and instantiation" {
+
+        then "the head, fields and fns survive, and the instantiation — not the record and the literal they make" {
+            kept(
+                "component C(h: int) {\n    a: int\n    b: int = 1\n    fn f() -> int {\n        1\n    }\n}",
+            )
+        }
+        then "a type parameter's bound survives" {
+            kept("component C<K, T: Named>(h: T) {\n    k: K\n}")
+        }
+    }
+    given "a component made of statements" {
+
+        then "its fields, its body in order with its comments, and its fns survive" {
+            projected(
+                "component C(h: int) {\n    a: int = 1\n    // first\n    \"x\"\n    // then\n    if self.a > 1 { \"y\" }\n    fn f() -> int {\n        1\n    }\n}",
+            ) == "component C(h: int) {\n    a: int = 1\n    // first\n    \"x\"\n    // then\n    if self.a > 1 {\n        \"y\"\n    }\n    fn f() -> int {\n        1\n    }\n}"
+        }
+        then "its body keeps its written layout, comments between its statements included" {
+            kept(
+                "component C(h: int) {\n    a: int = 1\n    // first\n    \"x\"\n    // then\n    for n in [1, 2] { \"\${n}\" }\n    fn f() -> int {\n        1\n    }\n}",
+            )
+        }
+    }
+    given "a table literal" {
+
+        then "the header and its column alignment survive, not the list it desugars to" {
+            kept("type Row = { a: int, b: int }\nlet t = table<Row> {\n    a | b\n    1 | 2\n}")
+        }
+    }
+    given "the written-layout rule — a list, a map or a struct literal wrapped across lines" {
+
+        then "a wrapped list keeps one element per line, a comment between two of them included" {
+            kept("let xs = [\n    1,\n    // two\n    2,\n]")
+        }
+        then "a wrapped map keeps one entry per line, a comment between two of them included" {
+            kept("let m = {\n    \"a\": 1,\n    // b next\n    \"b\": 2,\n}")
+        }
+        then "a wrapped struct literal keeps one field per line, a comment between two of them included" {
+            kept(
+                "type P = { a: int, b: int }\nlet p = P {\n    a: 1,\n    // b field\n    b: 2,\n}",
+            )
+        }
+        then "a flat list, map or struct literal stays flat" {
+            kept("let xs = [1, 2, 3]") &&
+                kept("let m = {\"a\": 1, \"b\": 2}") &&
+                kept("type P = { a: int, b: int }\nlet p = P { a: 1, b: 2 }")
+        }
+    }
+    given "a raw body's own span, when it holds a hole" {
+
+        then "a quote's internal blank line stays inside it — never relocated past the closing brace it never reached" {
+            kept(
+                "fn generated(t: int) -> int {\n    quote {\n        impl \${t} {\n            fn a() -> int { 1 }\n\n            fn b() -> int { 2 }\n        }\n    }\n}",
+            )
+        }
+        then "the same law with the hole trailing, and a comment in place of the blank line" {
+            kept(
+                "fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}",
+            )
+        }
+    }
+    given "a `within` — its limit as written" {
+
+        then "a method-call limit prints whole, never the receiver it hangs on" {
+            kept("let x = within bounds.narrower(2) { f() }")
+        }
+        then "a field-read limit prints whole, never the record it hangs on" {
+            kept("let x = within self.timing.idle { f() }")
+        }
+        then "the printed form is the same tree, so formatting twice moves nothing" {
+            stable("let x = within bounds.narrower(2) { f() }")
+        }
+    }
+    given "the width layout — a construct with no written form of its own decides against canonical_width" {
+
+        then "a call whose arguments overflow the line wraps one per line, from its own exact column" {
+            let source = "fn f() -> int {\n    some_function_call_name_that_is_fairly_long(argument_one, argument_two, argument_three, argument_four)\n}"
+            stable(source) &&
+                projected(source)
+                    .contains(
+                        "some_function_call_name_that_is_fairly_long(\n        argument_one,\n        argument_two,",
+                    )
+        }
+        then "the running column measures a statement's own prefix, not just its indent — a short call overflows only because of a long binding name before it" {
+            let source = "fn f() -> int {\n    let this_is_a_rather_long_binding_name_for_testing_column = compute(alpha, beta, gamma, delta, epsilon, zeta_value)\n    0\n}"
+            stable(source) && projected(source).contains("compute(\n        alpha,\n        beta,")
+        }
+        then "a method chain that overflows the line breaks one link per line, leading its own dot" {
+            let source = "fn f() -> int {\n    builder_object.first_method_call(alpha).second_method_call(beta).third_method_call(gamma).answer()\n}"
+            stable(source) &&
+                projected(source)
+                    .contains(
+                        "builder_object\n        .first_method_call(alpha)\n        .second_method_call(beta)",
+                    )
+        }
+        then "a short chain that fits stays flat" {
+            let source = "fn f() -> int {\n    builder_object.first_method_call(1).answer()\n}"
+            stable(source) &&
+                projected(source).contains("builder_object.first_method_call(1).answer()")
+        }
+        then "a type argument list that overflows the line wraps one type per line" {
+            let source = "fn f() -> int {\n    let holder: Map<string, List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>> = {}\n    0\n}"
+            stable(source) &&
+                projected(source)
+                    .contains(
+                        "Map<\n        string,\n        List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>,\n    >",
+                    )
+        }
+    }
+}

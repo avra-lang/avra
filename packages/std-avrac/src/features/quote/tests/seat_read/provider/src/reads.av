@@ -1,0 +1,32 @@
+use @std.meta.{Type, Field, Directive, Decls, name}
+
+fn seat_of(f: Field) -> Decls { quote { fn _(${f.name}: ${f.ty}) {} } }
+
+/// Methods whose seats are named through holes and read back through
+/// holes: spread and summed, spread and rebuilt as the row, and a
+/// lambda's own param.
+export trait Reads {
+    static fn derive(t: Type) -> List<Directive> {
+        let seats = [seat_of(f) for f in t.fields]
+        let inits = [quote { W { ${f.name}: ${name(f.name)} } } for f in t.fields]
+        let a = t.fields[0].name
+        let b = t.fields[1].name
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        static fn tens(..${seats}) -> int { ${name(a)} * 10 + ${name(b)} }
+                        static fn made(..${seats}) -> ${t} { ${t} { ..${inits} } }
+                        static fn doubled(v: int) -> int {
+                            let f = (${a}: int) -> ${name(a)} * 2
+                            f(v)
+                        }
+                    }
+                },
+            },
+        ]
+    }
+}

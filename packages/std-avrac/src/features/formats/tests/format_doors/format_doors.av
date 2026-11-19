@@ -1,0 +1,62 @@
+// proves: a grammar's record parses, prints and spells its pattern — a
+// literal head and suffix, lazy and greedy holes, an `int` hole, a hole that
+// is empty, a literal that prefixes the next one, and the misses each law
+// makes: a short subject, a missing piece, an int out of range.
+grammar V = "v{major: int}.{minor: int}"
+grammar L = "{m} {p}"
+grammar G = "{a...}-{b}"
+grammar P = "/{dir}/{file}"
+grammar K = "{k}=={v}"
+
+fn shown(v: V?) -> string {
+    let held? = v else { return "-" }
+    "${held.major}.${held.minor}"
+}
+
+fn split(l: L?) -> string {
+    let held? = l else { return "-" }
+    "${held.m}|${held.p}"
+}
+
+fn greedy(g: G?) -> string {
+    let held? = g else { return "-" }
+    "${held.a}|${held.b}"
+}
+
+fn path(p: P?) -> string {
+    let held? = p else { return "-" }
+    "${held.dir}|${held.file}"
+}
+
+fn kv(k: K?) -> string {
+    let held? = k else { return "-" }
+    "${held.k}|${held.v}"
+}
+
+let parsed = [
+    shown(V.parse("v3.14")),
+    shown(V.parse("vx.1")),
+    shown(V.parse("v1")),
+    shown(V.parse("v99999999999999999999.1")),
+    shown(V.parse("v-2.0")),
+    split(L.parse("GET /x y")),
+    split(L.parse("nope")),
+    greedy(G.parse("1-2-3")),
+    greedy(G.parse("-")),
+    path(P.parse("/a/")),
+    path(P.parse("/a/b/c")),
+    path(P.parse("//")),
+    kv(K.parse("a===b")),
+    kv(K.parse("==")),
+]
+
+let printed = [
+    V.print(V { major: -1, minor: 0 }) ?? "?",
+    L.print(L { m: "a b", p: "c" }) ?? "?",
+    L.print(L { m: "a", p: "b c" }) ?? "?",
+    G.print(G { a: "x-y", b: "z" }) ?? "?",
+    G.print(G { a: "x", b: "y-z" }) ?? "?",
+    K.print(K { k: "a=", v: "b" }) ?? "?",
+]
+
+"${parsed.join(" ")} | ${printed.join(" ")} | ${V.pattern()} ${G.pattern()} ${K.pattern()}"

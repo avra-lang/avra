@@ -1,0 +1,145 @@
+//! `model_form<T>` over a record that holds records: each drawn as a
+//! fieldset of its own fields, read back as the nested tree the decode
+//! takes — an issue beside the field it names, a secret masked at any
+//! depth, an untouched option left null, and a list of records spoken
+//! for rather than drawn.
+use @std.meta.{derive}
+use @std.validate.{Decode, length}
+use @std.ui.forms.{model_form, model_table}
+use @std.ui.headless.{Screen, headless}
+
+@derive(Decode)
+type Address = { @length(min: 2) city: string, @secret code: string? = null }
+
+@derive(Decode)
+type Order = { item: string, ship: Address, bill: Address? = null, lines: List<Address> = [] }
+
+@derive(Decode)
+type Account = { owner: string, order: Order }
+
+@derive(Decode)
+type Link = { label: string, next: Link? = null }
+
+fn order_form(got: Cell<string>) -> Screen {
+    headless(
+        () -> model_form<Order> {
+            on submit { o ->
+                got
+                    .set(
+                        "${o.item} ${o.ship.city} ${o.ship.code ?? "-"} ${o.bill?.city ?? "none"} ${o.lines.length}",
+                    )
+            }
+        },
+    )
+}
+
+fn account_form(got: Cell<string>) -> Screen {
+    headless(
+        () -> model_form<Account> { on submit { a -> got.set("${a.owner} ${a.order.item} ${a.order.ship.city}") } },
+    )
+}
+
+fn link_form() -> Screen { headless(() -> model_form<Link> {}) }
+
+fn orders(rows: List<Order>) -> Screen { headless(() -> model_table<Order> rows) }
+
+/// The fieldset an address draws, at the indent it stands at.
+fn address(name: string, city: string) -> string {
+    "    column key=\"${name}\"\n      fieldset title=\"${name}\"\n        list\n          column key=\"city\"\n            field \"city\" ${city}placeholder=\"\"\n          column key=\"code\"\n            field \"code\" placeholder=\"\" masked\n"
+}
+
+const lines_voice: string = "    column key=\"lines\"\n      text \"`lines` holds a list of records, which has no fixed fields for a form to draw\"\n"
+
+spec "std/ui model_form — nested records" {
+    given "an order holding addresses" {
+        then "draws each address as a fieldset of its fields, and speaks for the list it cannot draw" {
+            order_form(Cell.new("")).text() == "form\n  list\n    column key=\"item\"\n      field \"item\" placeholder=\"\"\n" +
+                address("ship", "") +
+                address("bill", "") +
+                lines_voice +
+                "  button \"Save\" submits"
+        }
+        then "a submit hands the order its address decoded, the untouched option null" {
+            let got = Cell.new("")
+            let page = order_form(got)
+            page.fill("item", "pen") &&
+                page.fill("city", "Oslo") &&
+                page.fill("code", "k9") &&
+                page.submit("item") &&
+                got.get() == "pen Oslo k9 none 0"
+        }
+        then "an issue stands beside the nested field it names, and nothing is handed" {
+            let got = Cell.new("")
+            let page = order_form(got)
+            page.fill("item", "pen") &&
+                page.fill("city", "O") &&
+                page.submit("item") &&
+                got.get() == "" &&
+                page
+                    .text()
+                    .contains(
+                        "            field \"city\" value=\"O\" placeholder=\"\" invalid\n            text \"must be at least 2 characters\"\n",
+                    )
+        }
+    }
+    given "a secret inside a nested record" {
+        then "is a masked input, never echoing what was typed" {
+            let page = order_form(Cell.new(""))
+            page.fill("code", "k9") &&
+                page.text().contains("field \"code\" value=\"••\" placeholder=\"\" masked")
+        }
+        then "a table shows the nested fields under their path, and never the secret" {
+            orders([Order { item: "pen", ship: Address { city: "Oslo", code: "k9" } }])
+                .text()
+                .starts_with(
+                    "column\n  row\n    text \"item\"\n    text \"ship.city\"\n    text \"bill.city\"\n    text \"lines\"\n  row\n    text \"pen\"\n    text \"Oslo\"\n    text\n",
+                )
+        }
+    }
+    given "an optional nested record" {
+        then "touched in part, is decoded whole, its owed field refused by name" {
+            let got = Cell.new("")
+            let page = order_form(got)
+            page.fill("item", "pen") &&
+                page.fill("city", "Oslo") &&
+                page.fill("code", "z", nth: 1) &&
+                page.submit("item") &&
+                got.get() == "" &&
+                page
+                    .text()
+                    .contains(
+                        "            field \"city\" placeholder=\"\" invalid\n            text \"is required\"\n",
+                    )
+        }
+        then "filled, is handed" {
+            let got = Cell.new("")
+            let page = order_form(got)
+            page.fill("item", "pen") &&
+                page.fill("city", "Oslo") &&
+                page.fill("city", "Rome", nth: 1) &&
+                page.submit("item") &&
+                got.get() == "pen Oslo - Rome 0"
+        }
+    }
+    given "a record two levels deep" {
+        then "nests its fieldsets, and a submit hands the whole tree" {
+            let got = Cell.new("")
+            let page = account_form(got)
+            page.fill("owner", "Ada") &&
+                page.fill("item", "pen") &&
+                page.fill("city", "Oslo") &&
+                page.submit("owner") &&
+                got.get() == "Ada pen Oslo" &&
+                page
+                    .text()
+                    .contains(
+                        "    column key=\"order\"\n      fieldset title=\"order\"\n        list\n          column key=\"item\"\n",
+                    )
+        }
+    }
+    given "a record that holds its own type" {
+        then "draws that field by its spelling, so the form ends" {
+            link_form().text() == "form\n  list\n    column key=\"label\"\n      field \"label\" placeholder=\"\"\n    column key=\"next\"\n      field \"next\" placeholder=\"\"\n  button \"Save\" submits"
+        }
+    }
+}

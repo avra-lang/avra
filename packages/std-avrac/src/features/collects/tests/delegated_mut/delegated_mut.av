@@ -1,0 +1,33 @@
+// proves: a delegated method takes a `mut` seat from a `mut` binding and
+// reaches each member record's own impl with it.
+use @std.meta.{Named}
+
+fn node(_t: Named, _rank: int) {}
+
+trait Size {
+    fn size() -> int
+    fn bump(mut by: int) -> int
+}
+
+@node(0)
+type Dot = { at: int }
+
+impl Size for Dot {
+    fn size() -> int { 1 }
+    fn bump(mut by: int) -> int { by + self.at }
+}
+
+@node(1)
+type Line = { from: int, to: int }
+
+impl Size for Line {
+    fn size() -> int { self.to - self.from }
+    fn bump(mut by: int) -> int { by + self.to }
+}
+
+collect enum Shape: Size = @node in self by it.mark.args[0] dense
+
+let d = Shape.Dot(4)
+let l = Shape.Line(2, 9)
+mut three = 3
+"${d.size()} ${l.size()} ${d.bump(three)} ${l.bump(three)}"

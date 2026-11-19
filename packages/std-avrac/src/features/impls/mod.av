@@ -1,0 +1,63 @@
+//! Methods and behavior contracts. An `impl Target { fns… }` block
+//! gives a declared type its methods: every fn under it is a method,
+//! `self` — a keyword, never written in the parameter list — is its
+//! receiver, typed as the target and riding seat 0; the fn LOWERS
+//! under a qualified name (`Target.method`), and a call `v.name(args)`
+//! — parsed in the ladder, the paren witness telling it from a
+//! property — resolves PROVABLY at typing through the receiver's
+//! type. Never a runtime lookup (spec 4.5). `mut fn` DECLARES that a
+//! method writes its receiver: a trait sig's contract, an inherent
+//! method's documentation (ROADMAP: the inout receiver).
+use features.{LanguageFeature, KeywordRemedy}
+use features.impls.{default_override}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode, Remedy}
+
+export fn impls() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind                   | summary                                                                        | remedy
+        "type.method"          | "a method call resolves through the receiver's impl"                           | Remedy.Fix
+        "type.impl"            | "an impl block serves one declared type"                                       | Remedy.Help
+        "type.orphan"          | "an impl lives in its type's package, or its trait's"                          | Remedy.Help
+        "type.builtin_name"    | "an impl on a builtin type adds names, never changes one"                      | Remedy.Help
+        "type.trait"           | "an impl-for answers every trait method, exactly"                              | Remedy.Help
+        "type.trait_member"    | "a trait names each member once"                                               | Remedy.Help
+        "type.mut_fn"          | "`mut fn` marks a method — it lives in an impl or a trait"                   | Remedy.Help
+        "type.static_fn"       | "`static fn` marks a method with no receiver — a plain fn needs no mark"     | Remedy.Help
+        "resolve.receiver"     | "`self` names a method's receiver"                                             | Remedy.Help
+        "resolve.nested_impl"  | "impl and trait blocks live at the top level"                                  | Remedy.Help
+        "resolve.impl_member"  | "an `impl` block holds `fn` declarations only"                                 | Remedy.Help
+        "type.receiver"        | "a writing method is called on a `mut` place"                                  | Remedy.Help
+        "type.alias_copy"      | "a `mut` local copies a place — a write through it will not reach the place" | Remedy.Help
+        "type.seat"            | "a `mut` seat is handed a `mut` place, one root per seat"                      | Remedy.Help
+        "type.contract_write"  | "a method writes only under a `mut fn` contract"                               | Remedy.Help
+        "type.mut_fn_unused"   | "`mut fn` on a method that never writes"                                       | Remedy.Help
+        "type.state_seat"      | "a `state` seat is a free fn's — a method has no caller's cell to reach"     | Remedy.Help
+        "type.seat_unused"     | "a `mut` seat the fn never writes through"                                     | Remedy.Help
+        "type.static_name"     | "a `static fn` and a variant of the same type cannot share a name"             | Remedy.Help
+        "type.derive_contract" | "a trait's `derive` takes one declaration and answers `List<Directive>`"       | Remedy.Help
+        "shape.identity_clash" | "two variants of one type fold to one identity"                                | Remedy.Help
+    }
+    let words = table<KeywordRemedy> {
+        word     | help
+        "self"   | "`self` is implicit in a method — drop it from the parameter list"
+        "static" | "`static fn` declares a method with no receiver — in an `impl`, or a trait's associated fn"
+    }
+    LanguageFeature impls {
+        gram: grammar {
+            stmt = "impl" of:NAME ( "<" of_args:type ( "," of_args:type )* ","? ">" )? "for" target:NAME ( "<" target_args:type ( "," target_args:type )* ","? ">" )? "{" ( fns:stmt | BREAK )* "}" END -> Stmt.ImplDecl
+            stmt = "impl" target:NAME ( "<" target_args:type ( "," target_args:type )* ","? ">" )? "{" ( fns:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.ImplDecl
+            stmt = "trait" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "{" ( BREAK | fns:member )* "}" END @recover(sync_to: "END") -> Stmt.TraitDecl
+            member = ( is_static:"static" )? ( is_mutating:"mut" )? "fn" name:NAME "(" ( params:tseat ( "," params:tseat )* ","? )? ")" ( "->" ret:type )? ( body:block )? -> Stmt.FnDecl
+            tseat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax
+            mparam = ( constant:"const" )? ( mutable:"mut" )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
+            mtparam = name:NAME ( ":" NAME )? -> Record.ParamSyntax
+            stmt = is_static:"static" "fn" name:NAME ( "<" tparams:mtparam ( "," tparams:mtparam )* ","? ">" )? "(" ( params:mparam ( "," params:mparam )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
+            stmt = is_mutating:"mut" "fn" name:NAME ( "<" tparams:mtparam ( "," tparams:mtparam )* ","? ">" )? "(" ( params:mparam ( "," params:mparam )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
+            primary = "self" -> Expr.Receiver
+        }
+        diags: codes
+        remedies: words
+    }
+    impls
+}

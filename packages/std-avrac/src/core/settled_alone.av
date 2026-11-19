@@ -1,0 +1,62 @@
+//! WHETHER A NODE SETTLES ALONE, AT COMPILE TIME: what it reads is only what the compiler knows —
+//! literals, declarations, `const`s, and what the node binds itself. A value from outside it (a
+//! local, a parameter, `self`, a capture) exists only in a run. One judgement: each path describes
+//! the names the node reads from its own resolution, and this answers for both.
+
+/// How a name a node reads was bound, as a settlement judges it: by the program; by a statement;
+/// by a lambda's seat or a pattern standing at a place; or from outside, in a run.
+export enum ReadBound {
+    Declared
+    Stated(stmt: StmtId)
+    Within(at: Span?)
+    Outside
+}
+
+/// Whether a node written at `at` that reads `reads` settles alone: each read is the program's, a
+/// `const`'s or a statement's inside the node, or a lambda's seat or a pattern strictly inside it —
+/// a binder that stands at the node itself was bound outside it.
+export fn settles_alone(store: SyntaxArena, at: Span, reads: List<ReadBound>) -> bool {
+    reads.all((r) -> read_settles(store, at, r))
+}
+
+fn read_settles(store: SyntaxArena, at: Span, r: ReadBound) -> bool {
+    match r {
+        .Declared -> true,
+        .Stated(s) -> store.const_value(s) != null || held_in(at, store.stmt_span(s)),
+        .Within(inner) -> held_within(at, inner),
+        .Outside -> false,
+    }
+}
+
+/// How the binding `b` the resolver gave a read is bound.
+export fn binding_read(store: SyntaxArena, b: Binding) -> ReadBound {
+    match b {
+        .Decl(_) or .TypeParam(_) -> ReadBound.Declared,
+        .Def(s) or .Index(s) -> ReadBound.Stated(s),
+        .Pattern(arm, _) or .LambdaParam(arm, _) -> ReadBound.Within(store.expr_span(arm)),
+        .Param(_) or .Receiver or .Capture(_, _) -> ReadBound.Outside,
+    }
+}
+
+/// How the name typing read in `r` is bound: a read that crosses a lambda is a capture.
+export fn name_read(store: SyntaxArena, r: NameRead) -> ReadBound {
+    if !r.crossed.is_empty() { return ReadBound.Outside }
+    let b? = r.binder else { return ReadBound.Declared }
+    match b {
+        .Stmt(i) -> ReadBound.Stated(StmtId { index: i }),
+        .Expr(i) -> ReadBound.Within(store.expr_span(ExprId { index: i })),
+        .Pat(i) -> ReadBound.Within(store.pat_span(PatId { index: i })),
+        .Seat(_) or .Receiver -> ReadBound.Outside,
+    }
+}
+
+fn held_in(at: Span, inner: Span?) -> bool {
+    let sp? = inner else { return false }
+    sp.lo >= at.lo && sp.hi <= at.hi
+}
+
+/// Held in the node and smaller than it.
+fn held_within(at: Span, inner: Span?) -> bool {
+    let sp? = inner else { return false }
+    held_in(at, sp) && (sp.lo != at.lo || sp.hi != at.hi)
+}

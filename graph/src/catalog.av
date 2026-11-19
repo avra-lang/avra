@@ -1,0 +1,94 @@
+use schema.{Model, Shape, Property, Registration}
+use @std.json.{Json, field, to_text}
+use data.{before, digest}
+
+export type Catalog = { models: List<Model>, fingerprint: string, document: string }
+
+impl Catalog {
+    static fn collected(registrations: List<Registration>) -> Result<Catalog, string> {
+        let models = ordered([r.make() for r in registrations])
+        for i, m in models {
+            if m.validator_hash == null { fail "a durable model needs a compiler validation fingerprint: ${m.name}" }
+            if m.assertion_hash == null { fail "a durable model needs a compiler field-validation fingerprint: ${m.name}" }
+            if models.slice(0, i).any(it.name == m.name) { fail "model names must be unique: ${m.name}" }
+            for p in m.properties {
+                for target in p.shape.targets() {
+                    if !models.any(it.name == target) { fail "${m.name}.${p.name} names an unregistered model: ${target}" }
+                }
+            }
+        }
+        let document = to_text(Json.Arr([m.describe() for m in models]))
+        Catalog { models: models, document: document, fingerprint: digest(document) }
+    }
+
+    fn model(name: string) -> Result<Model, string> {
+        let found? = self.models.find(it.name == name) else { fail "unknown model: ${name}" }
+        found
+    }
+}
+
+impl Model {
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("name", Json.Str(self.name)),
+                    field("description", Json.Str(self.description)),
+                    field("properties", Json.Arr([p.describe() for p in self.properties])),
+                    field("rules", Json.Arr([Json.Str(r) for r in self.rules])),
+                    field("validator_hash", Json.Str(self.validator_hash ?? "")),
+                    field("assertion_hash", Json.Str(self.assertion_hash ?? "")),
+                ],
+            )
+    }
+}
+
+impl Property {
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("name", Json.Str(self.name)),
+                    field("shape", self.shape.describe()),
+                    field("description", Json.Str(self.description)),
+                    field("rules", Json.Arr([Json.Str(r) for r in self.rules])),
+                    field(
+                        "default_source",
+                        if self.default_source == null { Json.Null } else { Json.Str(self.default_source!) },
+                    ),
+                ],
+            )
+    }
+}
+
+impl Shape {
+    fn describe() -> Json {
+        match self {
+            .Text -> Json.Str("string"),
+            .Integer -> Json.Str("integer"),
+            .Number -> Json.Str("number"),
+            .Boolean -> Json.Str("boolean"),
+            .Optional(inner) -> Json.Obj([field("optional", inner.describe())]),
+            .Many(inner) -> Json.Obj([field("list", inner.describe())]),
+            .Reference(target) -> Json.Obj([field("reference", Json.Str(target))]),
+            .Embedded(model) -> Json.Obj([field("embedded", Json.Str(model))]),
+        }
+    }
+
+    fn targets() -> List<string> {
+        match self {
+            .Text or .Integer or .Number or .Boolean -> [],
+            .Optional(inner) or .Many(inner) -> inner.targets(),
+            .Reference(target) or .Embedded(target) -> [target],
+        }
+    }
+}
+
+fn ordered(xs: List<Model>) -> List<Model> {
+    if xs.length < 2 { return xs }
+    let pivot = xs[0]
+    let tail = xs.slice(1, xs.length)
+    ordered([x for x in tail if before(x.name, pivot.name)])
+        .concat([pivot])
+        .concat(ordered([x for x in tail if !before(x.name, pivot.name)]))
+}

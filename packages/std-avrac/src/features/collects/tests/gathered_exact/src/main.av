@@ -1,0 +1,24 @@
+// proves: the compiler's own `@derive(Exact)` — a node enum's exact
+// equality — runs over a GATHERED enum whose members stand in another
+// file: every variant gets its arm, every payload its comparison.
+use @std.meta.{derive, Named}
+use @std.avrac.core.{Exact}
+use pats.{pat_node}
+
+export type PatId = { index: int }
+
+export type SyntaxArena = { pats: List<Pat> }
+
+impl SyntaxArena {
+    fn pat(id: PatId) -> Pat { self.pats[id.index] }
+}
+
+@derive(Exact)
+export collect enum Pat = @pat_node in package by it.mark.args[0] dense
+
+let arena = SyntaxArena { pats: [Pat.Wild, Pat.Bind("x"), Pat.Bind("x"), Pat.Bind("y")] }
+let same = arena.exact_pat(Pat.Opt(PatId { index: 1 }, true), Pat.Opt(PatId { index: 2 }, true))
+let under = arena.exact_pat(Pat.Opt(PatId { index: 1 }, true), Pat.Opt(PatId { index: 3 }, true))
+let flag = arena.exact_pat(Pat.Opt(PatId { index: 1 }, true), Pat.Opt(PatId { index: 1 }, false))
+let kind = arena.exact_pat(Pat.Wild, Pat.Lit(0))
+"${same} ${under} ${flag} ${kind} ${arena.exact_pat(Pat.Lit(7), Pat.Lit(7))}"

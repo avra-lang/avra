@@ -1,0 +1,174 @@
+use models.{models}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use data.{encoded}
+use @std.json.{Json}
+
+fn located(id: string, model: string, value: string, locator: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(value)?, locator: stored_value(locator)? }
+}
+
+fn publication(g: Graph, id: string, records: List<Record>) -> Result<Publication, string> {
+    Publication {
+        id: id,
+        producer: "agent",
+        scope: "input:1",
+        input: "input:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn locator_round_trip() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                [
+                    located(
+                        "w1",
+                        "WorkItem",
+                        "{\"title\":\"Review\"}",
+                        "{\"source\":\"mail:1\",\"section\":\"body\",\"span\":[12,18]}",
+                    )?,
+                ],
+            )?,
+        )?
+    let locator = (g.explain("w1", "title")?).item(0).member("locator")
+    locator.member("source").text() == "mail:1" &&
+        locator.member("section").text() == "body" &&
+        locator.member("span").items().length == 2
+}
+
+fn absent_locator() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                [
+                    Record {
+                        id: "w1",
+                        model: "WorkItem",
+                        value: stored_value("{\"title\":\"Review\"}")?,
+                    },
+                ],
+            )?,
+        )?
+    match (g.explain("w1", "title")?).item(0).member("locator") { .Null -> true, rest -> false }
+}
+
+fn locator_is_opaque() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                [
+                    located(
+                        "w1",
+                        "WorkItem",
+                        "{\"title\":\"Review\"}",
+                        "{\"attachment\":{\"name\":\"a.pdf\",\"pages\":[2,3]}}",
+                    )?,
+                ],
+            )?,
+        )?
+    (g.explain("w1", "title")?)
+        .item(0)
+        .member("locator")
+        .member("attachment")
+        .member("pages")
+        .items()
+        .length == 2
+}
+
+fn locator_is_identity() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    let record = located("w1", "WorkItem", "{\"title\":\"Review\"}", "{\"section\":\"body\"}")?
+    let p = publication(g, "one", [record])?
+    let revision = g.publish(p)?
+    let replay = g.publish(p)? == revision
+    let changed = match g
+        .publish(p with { records: [record with { locator: stored_value("{\"section\":\"metadata\"}")? }] }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    replay && changed && g.revision()? == revision
+}
+
+fn one_locator_per_record() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                [
+                    located(
+                        "w1",
+                        "WorkItem",
+                        "{\"title\":\"Review\",\"status\":\"open\"}",
+                        "{\"section\":\"header\"}",
+                    )?,
+                ],
+            )?,
+        )?
+    let title = (g.explain("w1", "title")?).item(0).member("locator").member("section").text() == "header"
+    let status = (g.explain("w1", "status")?).item(0).member("locator").member("section").text() == "header"
+    title && status
+}
+
+fn stale_support_keeps_locator() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                [located("w1", "WorkItem", "{\"title\":\"Old\"}", "{\"section\":\"body\"}")?],
+            )?,
+        )?
+    g.observe("input:1", "mail:1 revised")?
+    let history = g.explain("w1", "title")?
+    history.items().length == 1 &&
+        history.item(0).member("active").truth() == false &&
+        history.item(0).member("locator").member("section").text() == "body"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph evidence locators" {
+    given "opaque source locations travel with the claims a run supports" {
+        then "a locator returns unchanged through explain" { passed(locator_round_trip()) }
+        then "an absent locator stays absent" { passed(absent_locator()) }
+        then "the engine stores a locator without interpreting it" { passed(locator_is_opaque()) }
+        then "the locator is part of the replay identity" { passed(locator_is_identity()) }
+        then "one record's locator covers each property it supplies" { passed(one_locator_per_record()) }
+        then "withdrawn support keeps its locator" { passed(stale_support_keeps_locator()) }
+    }
+}

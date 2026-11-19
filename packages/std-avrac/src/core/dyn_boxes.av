@@ -1,0 +1,206 @@
+//! A VALUE BOXED AS A TRAIT: a `dyn` box holds the value, then the table its type gives the trait —
+//! the code of each method the trait declares, in the trait's order, then the type's tag — laid out
+//! once as the binary's own data, one table for each type and trait. A call through the box reads
+//! the table, then the code at its method's place, and hands it the value; a method that may write
+//! its receiver is handed the box itself, opened, and writes the value where the box holds it.
+
+/// A method a trait declares, as a call through a `dyn` box reads it: its name, whether it writes its
+/// receiver, whether a call hands it its arguments by position into seats that promise nothing, its
+/// seats as a call fills them, and the member as the trait's own, whose seat defaults a call leaving
+/// a seat out reaches.
+export type TraitMember = { name: string, writes: bool, plain: bool, seats: List<CalledSeat> = [], callee: CalledFn? = null }
+
+impl Lowering {
+    /// `r`, a value of `from`, boxed as the trait `into` names: a value laid inline crossed into a box
+    /// of its own, each method's code then one that reads it back out first. A method of a generic
+    /// type is the unit `from`'s type arguments reach.
+    mut fn dyn_boxed(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        let members? = (self.program.traits)(into) else { return self.missed_as("a lift into `${into.spelled()}`") }
+        if from.generic() { return self.missed_as(unbounded_asked("a `dyn` box over a type parameter")) }
+        let callees = [self.boxed_method(from, m.name) for m in members]
+        let lacking? = [m.name for j, m in members if callees[j] == null].first() else { return self.boxed_over(r, from, into, members, [c! for c in callees]) }
+        self.missed_as(unwritten_member(from, into, lacking))
+    }
+
+    /// The method `name` of `from` as a `dyn` box over it calls it: the unit its type's arguments reach.
+    fn boxed_method(from: SignedType, name: string) -> CalledFn? {
+        let callee? = (self.program.method)(from, name) else { return null }
+        self.instantiated_on(callee, from, name)
+    }
+
+    /// `r`, a value of `from`, boxed as `into`, whose methods `members` are `callees` for `from`.
+    mut fn boxed_over(
+        r: Reg,
+        from: SignedType,
+        into: SignedType,
+        members: List<TraitMember>,
+        callees: List<CalledFn>,
+    ) -> Reg {
+        let inline = !self.layout_of(r).one_word()
+        let entries = [when {
+            members[j].writes -> self.written_entry(c, from, members[j].name)
+            inline -> self.read_back_entry(c, from, members[j].name)
+            _ -> c.symbol
+        } for j, c in callees]
+        if entries.any(it == null) { return self.missed_as("a `dyn` box over a value laid inline whose method writes a seat") }
+        let tag? = self.type_tag(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
+        let identity? = self.type_identity(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
+        self.box_marked(from, into, callees)
+        for c in callees { self.reached(c) }
+        let methods = self
+            .laid_static(
+                Layout.Boxed(BoxKind.List),
+                table_named(identity, self.type_identity(into) ?? into.spelled()),
+                [StaticBox.Slots([Slot.Code(e!) for e in entries].concat([Slot.Int(tag)]))],
+            )
+        self.box_typed(methods, into)
+        let dst = self
+            .call_row(self.laid_out(into), rt_sig_of("avra_array_sized")!, [self.const_int(2)])
+        self.run_row(rt_sig_of("avra_array_push")!, [dst, if inline { self.crossed(r) } else { r }])
+        self.run_row(rt_sig_of("avra_array_push")!, [dst, methods])
+        self.box_typed(dst, into)
+        dst
+    }
+
+    /// The table the `dyn` box `v` holds: its type's code for each method of the trait, then its tag.
+    mut fn dyn_table(v: Reg) -> Reg { self.proven_read(Layout.Boxed(BoxKind.List), v, 1) }
+
+    /// The code the `dyn` box `v` holds for the method at `at` among its trait's.
+    mut fn dyn_code(v: Reg, at: int) -> Reg { self.proven_read(Layout.Word, self.dyn_table(v), at) }
+
+    /// The code a `dyn` box over an inline value of `from` holds for its method `name`, `callee`: a
+    /// unit taking the box the value crossed in, then the method's seats, that reads the value back
+    /// out and calls the method with it. Absent where the method's signature isn't known or a seat is
+    /// written through.
+    mut fn read_back_entry(callee: CalledFn, from: SignedType, name: string) -> string? {
+        let signed? = (self.program.checked.method_of)(from, name) else { return null }
+        if signed.seats.any(it.mutable) { return null }
+        let symbol = "${callee.symbol}\$v"
+        if self.program.lifts.get().any(it.symbol == symbol) { return symbol }
+        let answer = signed.answer ?? owned_type("void")
+        mut shim = lowering(self.store, self.program, self.types, self.seats, answer) with { names: self.names }
+        let box = shim.mint(Layout.Boxed(BoxKind.List))
+        let seats = [shim.mint(shim.laid_out(s.ty)) for s in signed.seats.drop(1)]
+        shim.scope_enter()
+        let r = shim
+            .call_fn(
+                shim.laid_out(answer),
+                callee,
+                [shim.uncrossed(box, shim.laid_out(from))].concat(seats),
+            )
+        self.shim_kept(shim, symbol, seats.length, r, answer)
+    }
+
+    /// The code a `dyn` box over a value of `from` holds for its method `name` that may write its
+    /// receiver, `callee`: a unit taking the opened box, then the method's seats, that hands the
+    /// method the value where the box holds it — one that rides a pointer opened unique in the box,
+    /// any other in a cell of its own, written back into the box once the method returns. Absent
+    /// where the method's signature isn't known or a seat is written through.
+    mut fn written_entry(callee: CalledFn, from: SignedType, name: string) -> string? {
+        let signed? = (self.program.checked.method_of)(from, name) else { return null }
+        if signed.seats.drop(1).any(it.mutable) { return null }
+        let symbol = "${callee.symbol}\$w"
+        if self.program.lifts.get().any(it.symbol == symbol) { return symbol }
+        let answer = signed.answer ?? owned_type("void")
+        mut shim = lowering(self.store, self.program, self.types, self.seats, answer)
+        let box = shim.mint(Layout.Boxed(BoxKind.List))
+        let seats = [shim.mint(shim.laid_out(s.ty)) for s in signed.seats.drop(1)]
+        shim.scope_enter()
+        let l = shim.laid_out(from)
+        let opened = !shim.place_handed(from)
+        let held = when {
+            opened -> shim.call_row(l, rt_sig_of("avra_slot_unique")!, [box, shim.const_int(0)])
+            l.one_word() -> shim.proven_read(l, box, 0)
+            _ -> shim.uncrossed(shim.proven_read(Layout.Boxed(BoxKind.List), box, 0), l)
+        }
+        let handed = if opened { held } else { shim.celled(held, from, shim.laid_out(cell_of(from))) }
+        let r = shim.call_fn(shim.laid_out(answer), callee, [handed].concat(seats))
+        if !opened {
+            let after = shim.proven_read(l, handed, 0)
+            shim
+                .slot_written(
+                    box,
+                    shim.const_int(0),
+                    if l.one_word() { after } else { shim.crossed(after) },
+                    true,
+                )
+        }
+        self.shim_kept(shim, symbol, seats.length, r, answer)
+    }
+
+    /// The shim `shim`, its `seats` seats after the box and its value `r` of `answer` made, ended and
+    /// kept among the program's lifts as `symbol`, what of it wasn't lowered noted here: its symbol.
+    mut fn shim_kept(mut shim: Lowering, symbol: string, seats: int, r: Reg, answer: SignedType) -> string {
+        shim.scope_exit(r)
+        shim.emit(Ins.RetVal(r))
+        for m in shim.missing.get() { self.missed(m) }
+        self
+            .program
+            .lifts
+            .push(
+                LiftedBody {
+                    lo: 0,
+                    hi: 0,
+                    symbol: symbol,
+                    params: shim.layouts.get().take(1 + seats),
+                    answer: shim.laid_out(answer),
+                    ins: shim.ins.get(),
+                    layouts: shim.layouts.get(),
+                    callees: shim.callees.get(),
+                    tests: shim.tests.get(),
+                    boxed: shim.boxed.get(),
+                    shared: true,
+                },
+            )
+        symbol
+    }
+
+    /// The type tag the `dyn` box `v`, of the trait type `ty`, holds: its table's, past the code of each
+    /// method its trait declares.
+    mut fn dyn_tag(v: Reg, ty: SignedType) -> Reg { self.proven_read(Layout.Word, self.dyn_table(v), (self.program.traits)(ty)?.length ?? 0) }
+
+    /// The value the `dyn` box `v` holds, read as the `of` its tag says it is: a value laid inline out
+    /// of the box it crossed in.
+    mut fn dyn_held(v: Reg, of: SignedType) -> Reg {
+        let l = self.laid_out(of)
+        if l.one_word() { return self.proven_read(l, v, 0) }
+        self.uncrossed(self.proven_read(Layout.Boxed(BoxKind.List), v, 0), l)
+    }
+
+    /// The tag a `dyn` box holds for a value of `ty`: its identity's fingerprint, the same in every
+    /// unit and every run; `ty` kept among the types tagged.
+    mut fn type_tag(ty: SignedType) -> int? {
+        let tag? = self.tag_of_type(ty) else { return null }
+        if !self.program.tagged.get().any(it.spelled() == ty.spelled()) { self.program.tagged.push(ty) }
+        tag
+    }
+
+    /// The tag a `dyn` box holds for a value of `ty`, as `type_tag` names it, nothing kept.
+    fn tag_of_type(ty: SignedType) -> int? {
+        let identity? = self.type_identity(ty) else { return null }
+        fp_str(identity)
+    }
+
+    /// WHICH TYPE `ty` IS, its arguments included: the symbol it is declared by, then each argument's
+    /// identity in order — what a `dyn` box's tag and its table's name both answer, so two instances
+    /// of one generic type never meet. Absent for a type no symbol names.
+    fn type_identity(ty: SignedType) -> string? {
+        let symbol? = (self.program.type_symbol)(ty) else { return null }
+        if ty.args.is_empty() { return symbol }
+        "${symbol}<${[self.type_identity(a) ?? a.spelled() for a in ty.args].join(",")}>"
+    }
+}
+
+/// What the name of a type's table for a trait begins with.
+export const VTABLE: string = "vt\$"
+
+/// The name of the table the type whose identity is `from` gives the trait whose identity is `into`.
+fn table_named(from: string, into: string) -> string { "${VTABLE}${from}\$${into}" }
+
+/// Whether the static named `name` is a type's table for a trait, which only a `dyn` box of that
+/// trait holds.
+export fn vtable_named(name: string) -> bool { name.starts_with(VTABLE) }
+
+/// Why a `dyn` box of `from` as `into` isn't lowered: `from` gives no body this layer reaches for the
+/// trait's method `name`.
+fn unwritten_member(from: SignedType, into: SignedType, name: string) -> string { "a `dyn` box of `${from.spelled()}` as `${into.spelled()}`, whose method `${name}` it gives no body this layer reaches" }

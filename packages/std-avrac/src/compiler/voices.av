@@ -1,0 +1,1094 @@
+//! Workspace diagnostics and the small shared projections they read.
+//! Moved out of the workspace god-object.
+use core.{
+    StmtId,
+    Span,
+    Param,
+    Mark,
+    TypeRegistry,
+    SyntaxArena,
+    ModulePath,
+    FileId,
+    ExprId,
+    fp,
+    fp_list,
+    fp_str,
+    mix_final,
+    joined,
+    closest,
+    some_list,
+    flatten,
+    sorted_texts,
+    TypeId,
+    Type,
+    same_file,
+    TypeRef,
+    spelled,
+    Binding,
+}
+use compiler.families.{Family}
+use features.{
+    BlockWords,
+    DeclFacts,
+    Unsettled,
+    Settlement,
+    MetaVal,
+    MetaHeap,
+    nothing,
+    FileView,
+    spelled_type,
+    BlockGrammar,
+    NameFacts,
+    Cap,
+    Asked as NullableAsk,
+    SeatValue,
+}
+use core.{Instanced, ComponentWord, Instancing}
+use features.{no_kind}
+use core.{default_mark}
+use @std.meta.{
+    Node,
+    Field as MetaField,
+    Spelled as MetaSpelled,
+    Param as MetaParam,
+    Mark as MetaMark,
+    MarkArg as MetaMarkArg,
+    Kind,
+    Annotation as MetaAnnotation,
+    Code as MetaCode,
+}
+use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of, Ids, indexed_ids}
+use @std.grammar.{ready}
+use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
+use diagnostics.{defect_at, unread_behind}
+use diagnostics.{Diag, Voice, refusal, said_as}
+use @std.errors.{Loc}
+use @std.testing.{words}
+use compiler.store.{Store, Stored}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
+
+// ── voices ──
+
+/// A dependency's `[link.raw]`, refused. The whole point of the
+/// typed rows is that a package nobody read cannot put an option on
+/// the linker's line; the hatch is the program's own.
+fn borrowed_raw(pkg: Package) -> Diag { raw_borrowed(pkg.at, pkg.key) }
+
+/// The dependency `key`, named at `at`, asking for raw linker options.
+export fn raw_borrowed(at: Loc?, key: string) -> Diag {
+    refusal(
+        "manifest.borrowed_raw",
+        at,
+        "`${key}` asks for raw linker options, and `[link.raw]` is the program's own",
+        "this dependency",
+        "a dependency names what it needs — `objects`, `search`, `libs` under `[link]`; a raw option belongs in the manifest of the program being built",
+    )
+}
+
+fn package_form(at: Loc?, m: ModulePath) -> Diag { said_as("resolve.package_form", at, packageless(m)) }
+
+/// A `use` of `m`, whose path names no package.
+export fn packageless(m: ModulePath) -> Voice {
+    Voice {
+        message: "`${m.text()}` names no package — a package is `@scope.name`",
+        label: "in this use",
+        help: "write the scope and the name, then the module: `@scope.name.a.{x}`",
+    }
+}
+
+fn no_module(at: Loc?, m: ModulePath) -> Diag { said_as("resolve.no_module", at, moduleless(m)) }
+
+/// A `use` of `m`, which no directory or file under the source root is.
+export fn moduleless(m: ModulePath) -> Voice {
+    Voice {
+        message: "no module `${m.text()}` under the package's source root",
+        label: "in this use",
+        help: "a module is a directory of `.av` files or one `.av` file, named from `src/` — `${m.dir_under("")}` was looked for",
+    }
+}
+
+fn reexport_unreached(at: Loc?, m: ModulePath, item: string) -> Diag { said_as("resolve.reexport_unreached", at, unreached_reexport(m.text(), item)) }
+
+/// A re-export of `item` from the module `module`, behind which no declaration stands.
+export fn unreached_reexport(module: string, item: string) -> Voice {
+    Voice {
+        message: "`${module}` re-exports `${item}`, and no declaration stands behind it",
+        label: "in this use",
+        help: "a re-export names a declaration — import `${item}` from the module that declares it, or break the re-export cycle",
+    }
+}
+
+fn reexport_cycle(at: Loc?, home: string, other: string) -> Diag {
+    refusal(
+        "resolve.reexport_cycle",
+        at,
+        "`${other}` already uses `${home}`, so re-exporting from it here would close a package cycle",
+        "in this use",
+        "packages never depend in a cycle — re-export both from a facade package above them, made of `export use` lines",
+    )
+}
+
+fn reexport_twice(at: Loc?, name: string) -> Diag { said_as("resolve.reexport_twice", at, surface_taken(name)) }
+
+/// A re-export of `name`, which its module's surface already holds.
+export fn surface_taken(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is already on this module's surface",
+        label: "re-exported here",
+        help: "a module exports each name once — re-export this one under another name with `as`",
+    }
+}
+
+/// `own_test` says the asker is one of `m`'s own tests, which reads the
+/// module's private names too — so the name is declared there at all.
+/// `unread` is a parse error in one of `m`'s files: the name may be
+/// declared where nothing could be read, so the refusal points there.
+fn not_exported(
+    at: Loc?,
+    m: ModulePath,
+    item: string,
+    exports: List<string>,
+    own_test: bool,
+    unread: Diag?,
+) -> Diag {
+    let d = said_as("resolve.not_exported", at, unexported(m, item, exports, own_test))
+    let root? = unread else { return d }
+    unread_behind(d, "`${m.text()}`", root, item)
+}
+
+/// A `use` of `item` from `m`, whose surface — `exports`, and its private names too where `own_test`
+/// — holds no such name.
+export fn unexported(m: ModulePath, item: string, exports: List<string>, own_test: bool) -> Voice {
+    Voice {
+        message: if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
+        label: "in this use",
+        help: exports_help(item, exports, own_test),
+    }
+}
+
+/// What a module's surface offers in place of the name asked for: the
+/// nearest export, then every export — or, when there is none, how one is made.
+fn exports_help(item: string, exports: List<string>, own_test: bool) -> string {
+    if exports.is_empty() { return "it exports nothing — mark the declaration `export` to share it" }
+    let near = joined(["did you mean `${n.name}`? " for n in some_list(closest(item, exports))], "")
+    let known = joined(exports, ", ")
+    if own_test { return "${near}a module's own tests read its private names as well as its exports: ${known}" }
+    "${near}its exports: ${known}"
+}
+
+fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag { said_as("resolve.private_apart", at, apart_to_test(m, item, files)) }
+
+/// A test's `use` of `item` from `m`, which each of `files` declares privately.
+export fn apart_to_test(m: ModulePath, item: string, files: List<string>) -> Voice {
+    Voice {
+        message: "`${item}` is private to each of ${joined(["`${f}`" for f in files], " and ")} in `${m.text()}` — a test reads a private name its module declares once",
+        label: "in this use",
+        help: "rename one declaration, or test each through a name its own file exports",
+    }
+}
+
+fn module_ambiguous(at: Loc?, m: ModulePath) -> Diag { said_as("resolve.module_ambiguous", at, module_twofold(m)) }
+
+/// A `use` of `m`, which is both a directory and a file under the root.
+export fn module_twofold(m: ModulePath) -> Voice {
+    Voice {
+        message: "`${m.text()}` is both a directory and a file under the root",
+        label: "in this use",
+        help: "a module is one or the other — keep `${m.dir_under("")}/` or `${m.dir_under("")}.av`",
+    }
+}
+
+fn listed_twice(at: Loc?, item: string) -> Diag { said_as("resolve.import_clash", at, listed_again(item)) }
+
+/// A `use` that lists `item` twice.
+export fn listed_again(item: string) -> Voice {
+    Voice {
+        message: "`${item}` is listed twice",
+        label: "in this use",
+        help: "list each name once — drop the repeat",
+    }
+}
+
+fn unpackaged_use(at: Loc?) -> Diag { said_as("resolve.unpackaged", at, use_unpackaged()) }
+
+/// A `use` line in a file that stands in no package.
+export fn use_unpackaged() -> Voice {
+    Voice {
+        message: "this file is not in a package — `use` needs a root",
+        label: "this use",
+        help: "put an `avra.toml` at the package root, this file under its `src/`",
+    }
+}
+
+/// The instructions one settlement may run before it is refused.
+
+/// An annotation answer's structural fingerprint for early cutoff.
+fn lift_hash(r: LiftResult) -> int {
+    match r {
+        .Crossed(c) -> fp(77, [meta_hash(c.heap, c.answer)]),
+        .Refused(why) -> fp(47, [unsettled_hash(why)]),
+    }
+}
+
+/// A crossed value's structural fingerprint, the heap followed — what
+/// the evaluator's fingerprinting is to a recalculation's early cutoff.
+fn meta_hash(heap: MetaHeap, v: MetaVal) -> int {
+    match v {
+        .Int(n) -> fp(74, [n]),
+        .Float(bits) -> fp(75, [bits]),
+        .Bool(b) -> fp(76, [if b { 1 } else { 0 }]),
+        .Text(s) -> fp(78, [fp_str(s)]),
+        .Node(id) -> fp(79, [meta_hash(heap, x) for x in heap.nodes[id]]),
+        .Map(id) -> fp(
+            81,
+            [
+                fp_list([fp_str(k) for k in heap.maps[id].keys]),
+                fp_list([meta_hash(heap, x) for x in heap.maps[id].values]),
+            ],
+        ),
+        .Absent -> fp(83, []),
+        .Gone -> fp(124, []),
+        .Octets(xs) -> fp(125, [fp_list(xs)]),
+    }
+}
+
+fn settlement_hash(s: Settlement) -> int {
+    match s {
+        .Held(value) -> fp(41, [value.fingerprint]),
+        .Refused(why) -> fp(73, [unsettled_hash(why)]),
+    }
+}
+
+fn unsettled_hash(why: Unsettled) -> int {
+    match why {
+        .Reach(words) -> fp(59, [fp_str(words)]),
+        .Budget(words) -> fp(61, [fp_str(words)]),
+        .Trap(words) -> fp(67, [fp_str(words)]),
+        .Param(words) -> fp(84, [fp_str(words)]),
+        .Spoken -> fp(71, []),
+        .Recursive -> fp(123, []),
+    }
+}
+
+/// A shape by position — unspelled past the signature's end, which
+/// is a declaration the crossing reached before its own sig.
+fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
+    if j >= rows.length { return [] }
+    rows[j]
+}
+
+fn kind_at(kinds: List<Kind>, j: int) -> Kind {
+    if j >= kinds.length { return no_kind() }
+    kinds[j]
+}
+
+/// A DECLARED PARAMETER AS A `Field`. A record's field and an enum
+/// payload are the SAME shape crossing, so one writer makes both —
+/// a payload's name, its spelling and its shape cannot come from two
+/// places and disagree, which is the property the crossing suite
+/// asserts positionally.
+fn crossed_field(v: FileView, origin: FileId?, p: Param, kind: Kind, spelled: MetaSpelled?) -> MetaField {
+    MetaField {
+        name: p.name.of,
+        ty: written_spelling(p.ty),
+        at: placed(v, origin, v.store.param_id_span(p.id)),
+        kind: kind,
+        marks: crossed_marks(v, origin, p.marks),
+        doc: null,
+        annotations: crossed_annotations(v, origin, p.marks),
+        defaulted: p.default != null,
+        says: crossed_says(v, origin, p, kind),
+        state: p.state,
+        default: crossed_default(v, p),
+        spelled: spelled,
+    }
+}
+
+/// A field's default as the code that writes it — the expression the
+/// declaration wrote, absent when it declares none. A rule that omits
+/// the field's label fills it with this, so the value is the source
+/// itself rather than a spelling of it. Absent for a default another
+/// template already names — a quote literal holds its offset — and for
+/// one the declaration did not write itself.
+fn crossed_default(v: FileView, p: Param) -> MetaCode? {
+    let e? = p.default else { return null }
+    let sp: Span? = if v.store.spanned_elsewhere(e) { null } else { v.store.expr_span(e) }
+    let at? = sp else { return null }
+    if v.store.quote_at(at.lo) != null { return null }
+    v.decls.note_default(v.file, e, at.lo)
+    MetaCode { node: Node.Template(v.template_home(), at.lo, [at.text(v.source.text)], []) }
+}
+
+/// A declared seat as a `Param`: its name, its type's spelling AND ITS
+/// SHAPE, its `mut` and `const` marks.
+fn crossed_param(v: FileView, origin: FileId?, p: Param, k: Kind) -> MetaParam {
+    MetaParam {
+        name: p.name.of,
+        ty: written_spelling(p.ty),
+        mutable: p.promises.mutable,
+        settled: p.promises.settled,
+        at: placed(v, origin, v.store.param_id_span(p.id)),
+        kind: k,
+    }
+}
+
+/// What an event says: the seats its handler is told, each shaped by
+/// the handler's own type. Absent for a member that is no event.
+fn crossed_says(v: FileView, origin: FileId?, p: Param, kind: Kind) -> List<MetaParam>? {
+    let says? = p.says else { return null }
+    let kinds = told_kinds(kind)
+    [crossed_param(v, origin, s, kind_at(kinds, j)) for j, s in says]
+}
+
+/// The seats a handler's type takes — an event's member holds a
+/// handler that may be absent.
+fn told_kinds(kind: Kind) -> List<Kind> {
+    match kind { .Opt(.Fn(seats, _)) -> [s.kind for s in seats], rest -> [] }
+}
+
+/// A mark's named arguments as the derive reads them.
+fn crossed_named(m: Mark) -> List<MetaMarkArg> {
+    [MetaMarkArg { label: a.label, value: a.value } for a in m.named]
+}
+
+/// A member's marks as the derive reads them — the word, its words,
+/// and where it stands.
+fn crossed_marks(v: FileView, origin: FileId?, ms: List<Mark>) -> List<MetaMark> {
+    [MetaMark { name: m.name, args: m.args, at: placed(v, origin, m.span), named: crossed_named(m) } for m in ms]
+}
+
+/// A member's marks again, as its OWN `annotations` — `crossed_marks`'s
+/// twin: the same `@word`s, read through the general door every
+/// member shares with a declaration rather than the claimed-by-a-derive
+/// one. A field or a variant has no `///` of its own yet — no grammar
+/// attaches one — so its `doc` reads null until one does.
+fn crossed_annotations(v: FileView, origin: FileId?, ms: List<Mark>) -> List<MetaAnnotation> {
+    [MetaAnnotation {
+        name: m.name,
+        args: m.args,
+        at: placed(v, origin, m.span),
+        call: call_at(v, m.name, m.span),
+        named: crossed_named(m),
+    } for m in ms]
+}
+
+/// The annotation written at `sp` as the template of its call — the
+/// quote its builder marked where the `@` stands.
+export fn call_at(v: FileView, name: string, sp: Span?) -> MetaCode? {
+    if sp == null { return null }
+    MetaCode { node: Node.Template(v.template_home(), sp!.lo, ["${name}(", ")"], []) }
+}
+
+/// A source span as the place a meta value names: in the file whose text the
+/// span indexes — a template's origin for generated code, this file otherwise.
+fn placed(v: FileView, origin: FileId?, sp: Span?) -> Loc? {
+    if sp == null { return null }
+    let file = if origin == null { v.source.file } else { v.decls.file(origin!).path }
+    Loc { file: file, lo: sp!.lo, hi: sp!.hi }
+}
+
+/// A type reference as the program WROTE it, "" for a written absence.
+fn written_spelling(t: TypeRef?) -> string {
+    if t == null { return "" }
+    spelled(t!)
+}
+
+/// A claim set that is KNOWN and EMPTY, which is not the same value
+/// as an unknown one — and the empty literal does not adopt a
+/// nullable aggregate's want, so it is bound at its own type here and
+/// the two answers read as the two facts they are.
+fn claims_nothing() -> List<string> {
+    let none: List<string> = []
+    none
+}
+
+/// The marks the compiler reads ITSELF, claimed on every declaration —
+/// one row per mark a feature owns, so a feature's mark is never a
+/// reader's to claim.
+fn own_marks() -> List<string> { [default_mark] }
+
+/// EVERY PART OR NONE — claim sets folded into one union, absent when
+/// any part is absent. An unanswerable claim set POISONS the union
+/// rather than shrinking it: shrinking would say "nothing reads this"
+/// where the truth is "we cannot say yet", and refuse a mark that is
+/// perfectly well claimed.
+fn all_claims(each: List<List<string>?>) -> List<string>? {
+    if each.any(it == null) { return null }
+    flatten([c! for c in each])
+}
+
+/// A list type's element, or null for any other shape.
+fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
+    match types.shape_of(ty) { .List(e) -> e, _ -> null }
+}
+
+/// The arenas' counts now.
+/// A named grammar statement readied for its block word, with the
+/// file whose fns its actions name; null for any other statement or a
+/// notation that does not parse.
+fn readied_grammar(p: Parsed, s: StmtId, path: string) -> BlockGrammar? {
+    let notation? = p.store.syntax_parts(s) else { return null }
+    let gp = parse_grammar(notation.text)
+    if gp.built == null { return null }
+    BlockGrammar {
+        word: notation.name,
+        ready: ready(gp.built!, avra_known_terminals()),
+        origin: path,
+    }
+}
+
+/// A template's body copied: its statements, or its arms.
+type Copied = { stmts: List<StmtId>, arms: List<Arm>, params: List<Param> = [], inits: Inits = no_inits() }
+
+impl Workspace {
+    /// A copied node whose source a sublanguage minted wears that
+    /// sublanguage's library.
+    fn note_foreign_origin(f: FileId, src: SyntaxArena, from: ExprId, id: ExprId) {
+        let range? = src.foreign_of(from) else { return }
+        let origin = self.file_id(range.path)
+        if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
+    }
+}
+
+impl Workspace {
+    /// A body of nothing but holes, in the seat it is put in.
+    fn holes_copied(f: FileId, fills: List<Node>, seat: HoleKind) -> Copied {
+        match seat {
+            .Arm -> Copied { stmts: [], arms: flatten([self.spliced_arms(f, x) for x in fills]) },
+            .Fields -> Copied {
+                stmts: [],
+                arms: [],
+                params: flatten([self.spliced_params(f, x) for x in fills]),
+            },
+            .Inits -> Copied {
+                stmts: [],
+                arms: [],
+                inits: joined_inits([self.spliced_inits(f, x) for x in fills]),
+            },
+            .Expression or .Statement or .Name or .Binder or .Type or .Run or .Tail -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
+        }
+    }
+}
+
+/// Where a directive's code was written: its first template's file
+/// and offset — the outer template when templates nest.
+fn template_site(node: Node) -> Loc? {
+    match node {
+        .Template(file, at, _, _) -> Loc { file: file, lo: at, hi: at },
+        .Many(items) -> {
+            let first: Node? = items.first()
+            if first == null { null } else { template_site(first!) }
+        },
+        .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> null,
+    }
+}
+
+fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
+
+/// What a field or record-field seat took from its template.
+type Lift = { lifts: bool, params: List<Param>, inits: Inits }
+
+/// A statement's fields when it declares some — a type's, or a fn's
+/// parameters.
+fn fields_of(s: Stmt) -> List<Param>? {
+    match s {
+        .StructDecl(_, _, fields, _) -> fields,
+        .FnDecl(_, _, params, _, _) -> params,
+        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+    }
+}
+
+/// A run whose template has nothing to lift, in the unplaceable
+/// channel's words.
+fn unliftable(template: string, at: int, why: string) -> Diag { said_as("annotation.unplaceable", at_template(template, at), fill_unplaced(why)) }
+
+/// A hole a generator filled with what no seat can hold, `why` saying what it was.
+export fn fill_unplaced(why: string) -> Voice {
+    Voice {
+        message: "a hole was filled with something no seat can hold",
+        label: why,
+        help: "a fill the compiler cannot place is spoken, never spliced",
+    }
+}
+
+fn no_inits() -> Inits { Inits { names: [], values: [] } }
+
+/// Several literals' fields as one run, in order.
+fn joined_inits(parts: List<Inits>) -> Inits {
+    Inits {
+        names: flatten([i.names for i in parts]),
+        values: flatten([i.values for i in parts]),
+        spoiled: parts.any(it.spoiled),
+    }
+}
+
+fn no_fields(template: string) -> string {
+    "a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from ${template} carries no fields"
+}
+
+fn no_literal(template: string) -> string {
+    "a record-field run takes `W { … }` templates, and the one from ${template} is not a record literal"
+}
+
+fn misfit_defect(template: string, at: int, k: int) -> Diag {
+    defect_at(
+        at_template(template, at),
+        "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take",
+    )
+}
+
+/// A template naming a file this program does not read: nothing can be copied, and the
+/// generated code would be silently empty.
+fn unresolved_template(named: string, at: int) -> Diag {
+    defect_at(
+        null,
+        "defect: the template at offset ${at} of `${named}` names a file this program does not read, so it copies nothing",
+    )
+}
+
+/// A template's own offset as a place — a template has no line.
+fn at_template(template: string, at: int) -> Loc {
+    Loc { file: template, lo: at, hi: at }
+}
+
+/// The words for a fill no seat can hold — the FILL's own, since the
+/// splice cannot re-derive why a shape had nowhere to go.
+fn unplaceable_fill(template: string, at: int, u: Unplaced) -> Diag { unliftable(template, at, u.why) }
+
+/// A `List<Code>` — a run of templates — in a seat that holds ONE
+/// value.
+fn many_in_expression() -> string {
+    "a list of templates has no expression position — splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole"
+}
+
+/// A generated declaration's name is already the file's — the
+/// annotation is asked to choose another.
+/// An annotation that could not run — the DECLARING path's voice,
+/// the validating path's words.
+/// A mark no reader on this declaration claims. THE LAW LINE
+/// OUTLIVES ITS MECHANISM: it says a mark is read by something that
+/// CLAIMS it, never "by a derive" — a derive is who claims today, and
+/// a law worded after its implementation goes stale the moment the
+/// implementation moves. The mechanism belongs in the HELP, beside
+/// the claims that ARE standing, so a typo reads as a typo.
+/// `gatherer` is the enum a gathered member's mark is held to — named,
+/// since another enum gathering the same member may read it.
+fn unclaimed_mark(m: Mark, claimed: List<string>, gatherer: string?, at: Loc?) -> Diag { said_as("annotation.unread_mark", at, unread_mark_said(m.name, claimed, gatherer)) }
+
+/// The mark `@${mark}` no reader claims, among the `claimed` that are read — on a member `gatherer`
+/// gathers, where one does.
+export fn unread_mark_said(mark: string, claimed: List<string>, gatherer: string?) -> Voice {
+    Voice {
+        message: "every mark is read by something that claims it",
+        label: unread_label(mark, gatherer),
+        help: claims_help(claimed),
+    }
+}
+
+fn unread_label(mark: string, gatherer: string?) -> string {
+    let g? = gatherer else { return "`@${mark}` — nothing on this declaration reads it" }
+    "`@${mark}` — nothing on `${g}`, which gathers this, reads it"
+}
+
+/// The marks the compiler reads itself, which every declaration claims.
+export fn compiler_marks() -> List<string> { own_marks() }
+
+fn claims_help(claimed: List<string>) -> string {
+    if claimed.is_empty() { return "a mark is read by a `@derive` whose trait declares `marks`" }
+    "the marks read here are ${joined(["`@${c}`" for c in sorted_texts(claimed)], ", ")}"
+}
+
+fn lift_failed(label: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.unsettled",
+        at,
+        "an annotation could not run",
+        label,
+        "an annotation runs at compile time from pure computation alone",
+    )
+}
+
+/// A DECLARING annotation's argument is a literal or a const naming
+/// one: its generated names are made before any value is computed.
+fn unspelled_const(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.seats",
+        at,
+        "`@${ann}` generates declarations, so `${name}` must name a literal",
+        "names a value the source does not spell",
+        "a declaring annotation's argument is a literal, or a const whose value is one",
+    )
+}
+
+/// THE PACKAGE'S OWN VOICE for a moved `@std/meta` — spoken whether
+/// or not any annotation was reached, because the cascade that
+/// follows a refused boundary can reach a file the crossing never
+/// touched. The words are the annotation door's, so a reader who has
+/// seen one has seen both.
+fn foreign_package(moved: string) -> Diag {
+    refusal(
+        "annotation.meta",
+        null,
+        "the compiler crosses `@std/meta`'s own shapes",
+        "the compiler was built against another `@std/meta` — ${moved}",
+        "build against the `@std/meta` this compiler ships",
+    )
+}
+
+fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.generated_taken",
+        at,
+        "`@${ann}` generates `${name}`, which this file already declares",
+        "asked here",
+        "rename the written declaration, or the generated one",
+    )
+}
+
+/// A WRAP directive whose `source` names no fn matching the
+/// annotated one — nothing to move the written body behind.
+fn wrap_missing(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_missing",
+        at,
+        "`@${ann}` asks to wrap `${name}`, and its `source` declares no fn of that name",
+        "asked here",
+        "a WRAP directive's `source` writes the wrapper under the annotated fn's own name",
+    )
+}
+
+/// A WRAP directive over a declaration with no body — an extern, a
+/// trait member — has no written code to move behind the wrapper.
+fn wrap_bodiless(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_bodiless",
+        at,
+        "`@${ann}` asks to wrap `${name}`, which has no body to move",
+        "asked here",
+        "WRAP moves a written body behind its wrapper — an extern or a trait member has none",
+    )
+}
+
+/// A WRAP directive over a declaration no call reaches by name.
+fn wrap_kind(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_kind",
+        at,
+        "`@${ann}` asks to wrap `${name}`, which is neither a fn nor a method",
+        "asked here",
+        "WRAP moves a fn's or a method's body behind its wrapper",
+    )
+}
+
+/// A WRAP directive's wrapper redeclares a DIFFERENT signature than
+/// the fn it wraps — params, marks, defaults and the answer type all
+/// carry the contract every caller already compiled against.
+fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_mismatch",
+        at,
+        "`@${ann}`'s wrapper for `${name}` does not redeclare its exact signature",
+        "asked here",
+        "match the `static`/`mut fn` word, the params (marks and defaults included) and the answer type, word for word",
+    )
+}
+
+/// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
+/// own table — a plain seat would copy the map, and a copy-on-write that runs once per
+/// minted unit turns the walk quadratic.
+/// WHETHER A MODULE'S RECORD NAMES A BLOCK WORD THE `use` LINE TAKES — read from the
+/// persisted interface alone, never a parse. The tree's own on-disk store answers this,
+/// not `ws.store` (armed only inside a build's hold): a query that only reads never
+/// waits for a write it may never see, and a cache built by an earlier `check` still
+/// answers a later `fmt`'s question. WITH NO RECORD YET (a tree no `check` has ever
+/// touched), or one a file of the module has moved past since — a component added there
+/// is no block word an older record could name — the caller does not fall back to
+/// reading the provider outright: `files` is lexed first (`maybe_declares_grammar`), so a
+/// module none of whose files ever spell the word cannot cost a parse it has no chance of
+/// needing.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_names_block_word(ws: Workspace, m: ModulePath, files: List<string>, items: List<string>) -> bool {
+    let named? = module_block_names(ws, m) else { return maybe_declares_block(ws, files) }
+    if !files.all((f) -> record_holds(ws, f)) { return maybe_declares_block(ws, files) }
+    items.any((k) -> named.contains(k))
+}
+
+/// Whether the record still holds the text `path` has: what it says of the file was said of these
+/// bytes. A record of a file since edited says nothing of it.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn record_holds(ws: Workspace, path: string) -> bool { ws.records.block_digests.get().get(path) == ws.text_digest(path) }
+
+/// The names `m`'s record marks as block words, read once per build — or
+/// null when there is no record to read them from.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_block_names(ws: Workspace, m: ModulePath) -> List<string>? {
+    let known = ws.records.block_named.get().get(m.text())
+    if known != null { return known! }
+    let rows? = module_block_rows(ws, m) else { return null }
+    let named = [r.name for r in rows if names_block_word(r)]
+    ws.records.block_named.put(m.text(), named)
+    named
+}
+
+/// A module's record lines, decoded once per build — or null when there is no record
+/// to read. Every reader of a record's block words shares this one decode.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_block_rows(ws: Workspace, m: ModulePath) -> List<Row>? {
+    let known = ws.records.block_rows.get().get(m.text())
+    if known != null { return known! }
+    let store = ws.opened_store()
+    let iface? = ws.db.sig(store, ws.record_key(m)) else { return null }
+    let rec? = ws.record_bodies().body(store, m.text(), iface) else { return null }
+    let lines = rec.split("\n")
+    let rows = [r! for line in lines for r in [read_row(read_fields(line))] if r != null]
+    for f in [l.split("\t") for l in lines if l.starts_with("file\t")] { ws.records.block_digests.put(f[1], f[2]) }
+    ws.records.block_rows.put(m.text(), rows)
+    rows
+}
+
+fn record_instance(r: Row) -> List<Instanced> {
+    if !r.exported { return [] }
+    let f? = facts_unblocked(r.facts) else { return [] }
+    if !f.instance { return [] }
+    let w? = f.word else { return [] }
+    [Instanced { name: r.name, declared: w }]
+}
+
+/// Every block word a file's record says — the record of the module that HOLDS it, which a
+/// `use` naming the file itself as a module does not spell: its exported
+/// instances, its components whose form is a record, and each whose form is nodes as
+/// its declaration re-read alone. None when there is no record, for a file it names no
+/// row of or read at another text than the file holds now, when the file declares a
+/// named grammar, or when a declaration re-read alone is not the one the record names
+/// — only the file's parse can say those.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn recorded_words(ws: Workspace, path: string) -> BlockWords? {
+    let known = ws.records.recorded.get().get(path) ?? Recorded.Unasked
+    match known {
+        .Said(words) -> words,
+        .Unsaid -> null,
+        .Unasked -> {
+            let made = recorded_now(ws, path)
+            ws
+                .records
+                .recorded
+                .put(path, if made == null { Recorded.Unsaid } else { Recorded.Said(made!) })
+            made
+        },
+    }
+}
+
+/// `recorded_words`, asked of the record and the file's text.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn recorded_now(ws: Workspace, path: string) -> BlockWords? {
+    let all? = module_block_rows(ws, ws.module_path_of(path)) else { return null }
+    if !record_holds(ws, path) { return null }
+    let rows = [r for r in all if r.path == path && r.exported]
+    if rows.is_empty() || rows.any(it.kind == "syntax") { return null }
+    let facts = flatten([some_list(facts_unblocked(r.facts)) for r in rows])
+    if facts.length != rows.length { return null }
+    let nodes = [f for f in facts if f.is_component && f.form == null]
+    if nodes.any(it.template == null || it.span == null) { return null }
+    let read? = ws.read_alone(path, [f.span! for f in nodes], [f.template! for f in nodes]) else { return null }
+    BlockWords {
+        components: flatten([record_word(r, facts[j]) for j, r in rows]).concat(read),
+        instances: flatten([record_instance(r) for r in rows]),
+    }
+}
+
+/// An exported component whose form is its record, as an importing file's block word.
+fn record_word(r: Row, f: DeclFacts) -> List<ComponentWord> {
+    let form? = f.form else { return [] }
+    [
+        ComponentWord {
+            word: r.name,
+            declared: r.name,
+            form: Instancing.Record(form),
+            origin: r.path,
+        },
+    ]
+}
+
+/// What a provider file's record says of its block words, once asked in a build.
+enum Recorded {
+    Unasked
+    Said(words: BlockWords)
+    Unsaid
+}
+
+/// A LEX-LEVEL PRE-FILTER, never a parse: the compiler's OWN source
+/// says `grammar` as an ordinary field, type and parameter name in
+/// hundreds of files that declare none, so a bare word match barely
+/// cuts anything here — the two forms either grammar-declaring rule
+/// spells (and a `component`, which opens its own word) are `grammar { …` (an expression) and `grammar NAME { …`
+/// (a statement), and nothing else opens either way. A file that
+/// does not OPEN one this way is never read past its own text.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
+    files.any(file_lexes_block(ws, it))
+}
+
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn file_lexes_block(ws: Workspace, path: string) -> bool { opens_block_in(ws.text_staged(path), path) }
+
+/// Whether a file declares a component — `component NAME`, then its
+/// block or its head — read off its tokens. A SCAN IS A QUERY OVER ITS
+/// TEXT: a reader depends on the answer, so an edit that leaves the
+/// answer standing leaves the reader standing.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn file_declares_component(ws: Workspace, path: string) -> bool { declares_component_in(ws.text_staged(path), path) }
+
+/// The names a file's `component NAME` declarations wear — read off its
+/// tokens.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn component_names(ws: Workspace, path: string) -> List<string> { components_in(ws.text_staged(path), path) }
+
+/// What one lex of a file's text answers about its block words — the scans' one query.
+@query
+fn text_scan_of(db: RelDb, path: string) -> TextScan { scan_text(file_text(db, path), language_words(db, "").split(" ")) }
+
+/// Whether a file may declare a block word.
+@query
+fn opens_block_in(db: RelDb, path: string) -> bool { text_scan_of(db, path).opens_block }
+
+/// What a file's block words are made of, as its tokens spell them: what a parse that takes
+/// them stands on, never the rest of its text.
+@query
+fn block_forms_in(db: RelDb, path: string) -> string { text_scan_of(db, path).forms }
+
+/// Whether a file declares a component.
+@query
+fn declares_component_in(db: RelDb, path: string) -> bool { text_scan_of(db, path).declares }
+
+/// The components a file declares.
+@query
+fn components_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, path).components }
+
+/// The components a file exports.
+@query
+fn exported_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, path).exported }
+
+/// A component word known by its name alone: its instance parses as
+/// one and stands as a hole.
+fn unread_word(name: string, origin: string) -> ComponentWord {
+    ComponentWord { word: name, declared: name, form: Instancing.Unread, origin: origin, own: true }
+}
+
+/// What a file exports as components: a held file's record says; a file this attempt reads,
+/// or one with no record, says it in its own tokens — never in the record its last read kept.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn exported_components(ws: Workspace, path: string) -> List<string> {
+    let rows? = (if ws.read_here(path) { null } else { module_block_rows(ws, ws.module_path_of(path)) }) else {
+        return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] }
+    }
+    [r.name for r in rows if r.path == path && r.exported && facts_unblocked(r.facts)?.is_component ?? false]
+}
+
+/// Every component the given files' modules export, by name: the modules that
+/// export it, each once, in file order.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn component_index_of(ws: Workspace, paths: List<string>) -> Map<string, List<string>> {
+    mut index: Map<string, List<string>> = {}
+    for path in paths {
+        let m = ws.module_of(path)
+        for name in exported_components(ws, path) {
+            let homes = index.get(name) ?? []
+            if !homes.contains(m) { index.set(name, homes.concat([m])) }
+        }
+    }
+    index
+}
+
+/// What one lex of a text answers: whether it may declare a block word, and the
+/// components it declares and the ones it exports — `component NAME` before its
+/// block or its head.
+type TextScan = { opens_block: bool, forms: string, declares: bool, components: List<string>, exported: List<string> }
+
+/// The tokens of every `component` and `grammar` declaration, and every exported name, joined.
+fn block_forms(tokens: List<Token>) -> string {
+    mut out: List<string> = []
+    mut depth = 0
+    mut inside = false
+    for j, t in tokens {
+        if !inside && (t.text == "component" || t.text == "grammar") { inside = true }
+        if inside {
+            out.push(t.text)
+            if t.text == "{" { depth = depth + 1 }
+            if t.text == "}" {
+                depth = depth - 1
+                if depth == 0 { inside = false }
+            }
+        }
+        if t.text == "export" && j + 2 < tokens.length { out.push(tokens[j + 2].text) }
+    }
+    joined(out, " ")
+}
+
+/// THE CHEAPEST GATE FIRST: no `grammar`/`component`/`export` substring anywhere, no
+/// token stream worth building.
+fn scan_text(text: string, keywords: List<string>) -> TextScan {
+    if !(text.contains("grammar") || text.contains("component") || text.contains("export")) {
+        return TextScan {
+            opens_block: false,
+            forms: "",
+            declares: false,
+            components: [],
+            exported: [],
+        }
+    }
+    let tokens = lex_source(text).tokens
+    let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if declares_component_at(tokens, j)]
+    TextScan {
+        opens_block: opens_block(tokens, keywords),
+        forms: block_forms(tokens),
+        declares: !named.is_empty(),
+        components: named,
+        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") && declares_component_at(tokens, j)],
+    }
+}
+
+/// Whether `component NAME` at `j` declares one — its block, its head,
+/// or its type parameters after the name.
+fn declares_component_at(tokens: List<Token>, j: int) -> bool {
+    tokens[j].lit_matches("component") &&
+        tokens[j + 1].kind == TokenKind.Name &&
+        (tokens[j + 2].lit_matches("{") ||
+            tokens[j + 2].lit_matches("(") ||
+            tokens[j + 2].lit_matches("<"))
+}
+
+/// Whether the stream may declare a block word: a `grammar` token
+/// followed by `{` or by a NAME then `{`, any `component` keyword (a
+/// component's word opens a block where it is imported), or an
+/// exported named instance (a body lists it by name). A `grammar`
+/// used as a plain identifier is followed by neither.
+fn opens_block(tokens: List<Token>, keywords: List<string>) -> bool {
+    [i for i in 0..tokens.length]
+        .any(
+            tokens[it].lit_matches("component") ||
+                tokens[it].lit_matches("grammar") && grammar_opens_at(tokens, it) ||
+                exports_instance_at(tokens, it, keywords),
+        )
+}
+
+/// `export word name` where `word` is no keyword — a component's.
+fn exports_instance_at(tokens: List<Token>, i: int, keywords: List<string>) -> bool {
+    if i + 2 >= tokens.length || !tokens[i].lit_matches("export") { return false }
+    tokens[i + 1].kind == TokenKind.Name &&
+        !keywords.contains(tokens[i + 1].text) &&
+        tokens[i + 2].kind == TokenKind.Name
+}
+
+fn grammar_opens_at(tokens: List<Token>, i: int) -> bool {
+    if i + 1 >= tokens.length { return false }
+    if tokens[i + 1].lit_matches("{") { return true }
+    tokens[i + 1].kind == TokenKind.Name && i + 2 < tokens.length && tokens[i + 2].lit_matches("{")
+}
+
+/// A row whose name opens a block where it is imported — a named
+/// grammar's, or a component's — or that a body lists by name: an
+/// exported named instance.
+fn names_block_word(row: Row) -> bool {
+    let facts = facts_unblocked(row.facts)
+    row.kind == "syntax" || facts?.is_component ?? false || facts?.instance ?? false
+}
+
+/// The name a parse failure stands on, and the one just before it.
+fn names_near(text: string, at: int) -> List<string> {
+    mut back = at
+    while back > 0 && text.char_code(back - 1) == 32 { back = back - 1 }
+    mut start = back
+    while start > 0 && is_name_cont(text.char_code(start - 1)) { start = start - 1 }
+    mut end = at
+    while end < text.length && is_name_cont(text.char_code(end)) { end = end + 1 }
+    [text.substring(at, end), text.substring(start, back)]
+}
+
+/// A component word nobody imported, and the `use` that brings it.
+fn import_it(spelled: string) -> string {
+    "a component's word opens its block only where it is imported — `use ${spelled}`"
+}
+
+// ── EARLY-CUTOFF CONTENT FINGERPRINTS (avra-8sb5.57.106) ──
+// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis` and `Lowered`
+// once settled on `self.db.revision()` — a build-wide counter — so
+// an edit anywhere read as "changed" through them and every
+// dependent recomputed. These fold the WHOLE value each family
+// actually produces, the law `sig_hash`/`parsed_fingerprint` already
+// keep. Every helper below has exactly one literal `fp(` site, so a
+// shape folded from more than one place (an absent/present pair, a
+// bound name entry) is named once and called, never re-spelled.
+
+fn bool_fp(b: bool) -> int {
+    if b { 1 } else { 0 }
+}
+
+fn opt_binding_fp(b: Binding?, ids: Ids) -> int {
+    if b == null { fp(140, []) } else { fp(141, [b!.fingerprint_in(ids)]) }
+}
+
+fn opt_cap_fp(c: Cap?, ids: Ids) -> int {
+    if c == null { fp(142, []) } else { fp(143, [c!.fingerprint_in(ids)]) }
+}
+
+/// One declaration's slice of a file's names: every expression in
+/// [lo, hi) over its five columns, ONE linear fold end to end (order
+/// alone tells two expressions' columns apart — the columns never
+/// repeat a value across expressions the way two SEQUENCES could),
+/// avalanched once. The cells alone: the namespace is the file's, and
+/// `Visible` fingerprints it once per file — never the file's voices,
+/// never a neighbour's cells.
+export fn name_slice_fp(n: NameFacts, lo: int, hi: int, ids: Ids) -> int {
+    fp(181, [mix_final(fp(182, [name_cell_col(n, lo, j, ids) for j in 0..(hi - lo) * 5]))])
+}
+
+/// The `j`th of a slice's `5 * (hi - lo)` raw columns, `j`'s own low
+/// bits naming which — ONE flat comprehension over every
+/// expression's five columns, never a list per expression concat'd
+/// into it: a sub-list per cell paid for a flatten pass that cost
+/// more than the finalizer calls it was buying back.
+fn name_cell_col(n: NameFacts, lo: int, j: int, ids: Ids) -> int {
+    let i = lo + j / 5
+    if j % 5 == 0 { return opt_binding_fp(n.bindings.get(i), ids) }
+    if j % 5 == 1 { return opt_cap_fp(n.captures.get(i), ids) }
+    if j % 5 == 2 { return bool_fp(n.mut_reads.get(i)) }
+    if j % 5 == 3 { return bool_fp(n.state_reads.get(i)) }
+    bool_fp(n.settled_reads.get(i))
+}
+
+/// A compile-time seat value's content: `fp` is already the seat's
+/// own canonical fingerprint string (`settle_symbol`'s currency), so
+/// this adds only what that string does not carry — the type it
+/// wears and the crossed value itself, walked through its heap.
+impl SeatValue {
+    fn fingerprint_in(ids: Ids) -> int {
+        fp(
+            170,
+            [
+                self.index,
+                fp_str(self.fp),
+                self.ty.fingerprint_in(ids),
+                meta_hash(self.heap, self.value),
+            ],
+        )
+    }
+
+    fn fingerprint() -> int { self.fingerprint_in(indexed_ids()) }
+}
+
+/// A dependency's own settled hash, read back for a DERIVED fold
+/// (Folded's over each body's Typed, Analysis's over Resolved and
+/// Folded) — arity-distinguished from absence, never coalesced into a
+/// plain int a real fold could also answer (CLAUDE.md, "an encoding
+/// spends the empty value"). Absence here means one of two things,
+/// neither worth telling apart at this reader: no cell yet, or a
+/// cell `settle_lazy` wrote whose OWN fold nothing has asked for
+/// before now — the DERIVED fold reads it anyway, since folding "a
+/// dependency changed and I do not yet know its shape" IS what
+/// asking the cutoff question means, and the query kernel's own
+/// discipline (ask before compute) guarantees the dependency was
+/// asked, hence settled, before this read runs.
+export fn dep_hash_fp(h: int?) -> int {
+    if h == null { fp(179, []) } else { fp(180, [h!]) }
+}

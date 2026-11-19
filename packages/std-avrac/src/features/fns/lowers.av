@@ -1,0 +1,288 @@
+//! The lowering rules of a call and `return`: a call of a declared fn hands it each argument, its
+//! answer minted last; `@std/meta`'s `guarded` is the runtime's guarded run; `return` leaves the fn
+//! with its value.
+use core.{
+    Declined,
+    SettleDecline,
+    BinOp,
+    EmbedBase,
+    template_file,
+    template_home,
+    BoxKind,
+    Bound,
+    CalledFn,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    META_MODULE,
+    Reg,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    rt_sig_of,
+    Literal,
+    SettledSeat,
+    literal_of,
+    settled_seat_key,
+    settled_symbol,
+}
+use core.expr.{Call}
+use core.stmt.{Return}
+use features.{embed_file}
+use features.nullable.{insisted}
+
+impl Lowers for Call {
+    /// A call of a fn value the body binds, by position into seats that promise nothing, or of a fn
+    /// the program declares (a generic one's unit under its arguments' layouts): its arguments in
+    /// order, each into the seat it fills, then the call. Any other call isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let value = cx.bound(self.callee.of)
+        if value != null { return called_value(cx, self, e, value!) }
+        let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.missed_as(uncalled(cx, self, e)) }
+        if self.args.length == 1 && metas(cx, named, GUARDED) { return guarded_run(cx, e, self.args[0]) }
+        if self.args.length == 1 && metas(cx, named, CODE_HASH) { return code_hash_read(cx, e, self.args[0]) }
+        if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
+        if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
+        let reached? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
+        let settled = settled_args(cx, reached, self.args, e)
+        let callee = if settled == null { reached } else { settled_unit(reached, settled!) }
+        let handed = if settled == null { self.args } else { [a for j, a in self.args if !settled!.any(it.at == j)] }
+        let mark = cx.handing_mark()
+        let args? = cx.call_args(callee, handed) else { return cx.missed_as(unseated(callee)) }
+        let answer = cx.layout_at(e)
+        if !callee.external {
+            let r = cx.call_fn(answer, callee, args)
+            cx.handed_back(mark)
+            return r
+        }
+        cx.reached(callee)
+        let r = cx.call_c(answer, callee.symbol, args)
+        cx.handed_back(mark)
+        r
+    }
+}
+
+/// The value each `const` seat of `callee` settles to under `args`, by position: a literal, or a const
+/// whose value is one — the program's, one the body declares that settled, or a seat its own unit
+/// settles. Absent for a fn C or the host defines, whose row takes every seat; where it has no such
+/// seat; where the arguments name or spread seats or leave one for its default; and where one settles
+/// to anything else, which the call hands as any value.
+fn settled_args(cx: Lowering, callee: CalledFn, args: List<ExprId>, e: ExprId) -> List<SettledSeat>? {
+    if callee.external || callee.hosted || !callee.params.any(it.settled) { return null }
+    let why = unsettled(cx, callee, args)
+    if why != null {
+        cx.declined(e, Declined.Settle(why!))
+        return null
+    }
+    [SettledSeat { at: j, value: settled_value(cx, args[j])! } for j, p in callee.params if p.settled]
+}
+
+/// Why a call of `callee`, a fn with `const` seats, handing it `args` reaches no unit of its own;
+/// absent where each `const` seat settles to a literal.
+fn unsettled(cx: Lowering, callee: CalledFn, args: List<ExprId>) -> SettleDecline? {
+    if callee.of != null { return SettleDecline.Method }
+    if args.any((a) -> cx.store.arg_label(a) != null || cx.store.spread_operand(a) != null) { return SettleDecline.NamedOrSpread }
+    if args.length != callee.params.length { return SettleDecline.Defaulted }
+    if (0..args.length).any((j) -> callee.params[j].settled && settled_value(cx, args[j]) == null) { return SettleDecline.NotLiteral }
+    null
+}
+
+/// The literal the argument `a` settles to, as `settled_args` reads one.
+fn settled_value(cx: Lowering, a: ExprId) -> Literal? {
+    let written = literal_of(cx.store.expr(a))
+    if written != null { return written }
+    let name? = cx.store.ident_name(a) else { return null }
+    if cx.bound(name) == null {
+        let named? = cx.named(a, name) else { return null }
+        return match named { .Literal(v) -> v, rest -> null }
+    }
+    let site? = cx.names.at(a)?.binder else { return null }
+    let key? = match site {
+        .Stmt(i) -> "${i}",
+        .Seat(j) -> if cx.settled_seats.contains(j) { settled_seat_key(j) } else { null },
+        rest -> null,
+    } else { return null }
+    let seed? = cx.settled_consts.get().get(key) else { return null }
+    match seed.value { .Literal(v) -> v, rest -> null }
+}
+
+/// The unit of `callee` whose `const` seats settle as `settled` says: its own symbol, those seats no
+/// longer among the ones a call fills.
+fn settled_unit(callee: CalledFn, settled: List<SettledSeat>) -> CalledFn {
+    let kept = (j: int) -> !settled.any(it.at == j)
+    callee with { symbol: settled_symbol(callee.symbol, settled), settled: settled, params: [p for j, p in callee.params if kept(j)], seats: [t for j, t in callee.seats if kept(j)] }
+}
+
+/// Whether `callee` is the fn `@std/meta` declares as `name`.
+fn metas(cx: Lowering, callee: CalledFn, name: string) -> bool {
+    let meta? = (cx.program.toolchain_fn)(META_MODULE, name) else { return false }
+    meta.symbol == callee.symbol
+}
+
+/// `@std/meta`'s fn whose body the runtime runs.
+const GUARDED: string = "guarded"
+
+/// `@std/meta`'s fn whose answer the program gives.
+const CODE_HASH: string = "code_hash"
+
+/// `@std/meta`'s fn whose file's text a const reads.
+const EMBED: string = "embed"
+
+/// `@std/meta`'s fn whose kind reads a file's octets.
+const PROVIDED: string = "provided"
+
+/// The file the literal `path` names, written in the body's file and read from `base`, as a run reads
+/// it: its place as the program layer names a file. Absent for a computed path, or one the embed law
+/// refuses.
+fn embedded_key(cx: Lowering, path: ExprId, base: EmbedBase) -> string? {
+    let rel? = cx.store.expr(path).text_of() else { return null }
+    let home? = template_file(cx.program.home) else { return null }
+    match embed_file(home, rel, base) { .Ok(at) -> template_home(at), .Err(_) -> null }
+}
+
+/// `embed("p")`: its body handed the place of the file the literal names beside this one.
+fn embed_read(mut cx: Lowering, e: ExprId, callee: CalledFn, path: ExprId) -> Reg {
+    let key? = embedded_key(cx, path, EmbedBase.Beside) else { return cx.missed_as(EMBED_UNPLACED) }
+    cx.call_fn(cx.layout_at(e), callee, [cx.const_str(key)])
+}
+
+/// `provided<T>("p")`: the octets of the file the literal names from the package's root and their
+/// content digest handed to `T.provide` with the literal's path; an answer of absence traps, refusing
+/// the file by name.
+fn provided_read(mut cx: Lowering, e: ExprId, path: ExprId) -> Reg {
+    let kind? = cx.type_at(e) else { return cx.unlowered(e) }
+    let key? = embedded_key(cx, path, EmbedBase.Root) else { return cx.missed_as(EMBED_UNPLACED) }
+    if cx.generic_declared(kind) { return cx.missed_as("a provided kind with type parameters") }
+    let provide? = cx.static_fn(kind, "provide") else { return cx.missed_as("a provided kind without a `provide`") }
+    let rel = cx.store.expr(path).text_of()!
+    let octets = cx
+        .call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_embed_octets")!, [cx.const_str(key)])
+    let digest = cx
+        .call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_embed_digest")!, [cx.const_str(key)])
+    let read = kind with { nulls: kind.nulls + 1 }
+    let answer = cx.call_fn(cx.laid_out(read), provide, [cx.const_str(rel), octets, digest])
+    cx
+        .region(cx.present(answer, read), cx.laid_out(kind)) { cx -> cx.carried(answer, read) } else { cx ->
+            let _ = cx
+                .call_row(
+                    Layout.Void,
+                    rt_sig_of("avra_trap")!,
+                    [cx.const_str(provided_unread(rel, kind_spelled(kind)))],
+                )
+            cx.hollow_of(kind)
+        }
+}
+
+/// A kind as a refusal names it: the name its declaration gives it.
+fn kind_spelled(kind: SignedType) -> string { match kind.head { .Declared(_, name) -> name, rest -> "kind" } }
+
+/// An embedded file's literal the embed law refuses, which a build never lowers.
+const EMBED_UNPLACED: string = "an embedded file's path the embed law refuses"
+
+/// `code_hash(f)` over a fn the program declares, named or called: the argument lowered as any
+/// value is, then a call of the body the program answers `f`'s code hash with. Any other argument
+/// isn't lowered yet.
+fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
+    let name? = cx.store.ident_name(target) ?? cx.store.call_parts(target)?.callee else { return cx.missed_as(unhashed()) }
+    let named? = cx.named(target, name) else { return cx.missed_as(unhashed()) }
+    let callee? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unhashed()) }
+    let _ = cx.lower(target)
+    cx.code_hash_called(cx.layout_at(e), callee)
+}
+
+/// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on
+/// this task ended it, then answering the trap's words, or the body ran to its end, answering none.
+fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let status = cx.call_row(Layout.Word, rt_sig_of("avra_guard_run")!, [cx.lower(body)])
+    cx
+        .region(cx.bin(Layout.Truth, BinOp.Ne, status, cx.const_int(0)), cx.laid_out(ty)) { cx ->
+            cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_guard_words")!, [])
+        } else { cx ->
+            cx.hollow_of(ty)
+        }
+}
+
+/// `Name(value)`: the value as it is, a named type being its shape to the machine. Absent for a call
+/// of any other name.
+fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
+    if call.args.length != 1 || cx.bound(call.callee.of) != null { return null }
+    let named? = (cx.program.checked.type_value)(call.callee.of, cx.store.home_of(e))?.described() else { return null }
+    if cx.program.checked.named_shape(named) == null { return null }
+    cx.lower(call.args[0])
+}
+
+/// The fn a call names, when the program declares it with seats a call fills, pinning each of its
+/// type parameters or none.
+fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
+    if cx.bound(call.callee.of) != null { return null }
+    let named? = cx.named(e, call.callee.of) else { return null }
+    let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
+    if !callee.plain && callee.params.is_empty() ||
+        !call.pins.is_empty() && call.pins.length != callee.type_params { null } else { callee }
+}
+
+/// A call of a fn value the body binds, by position into seats that promise nothing or are written
+/// through: its arguments in order, a `mut` seat's the place it writes through, then the code its box
+/// holds, handed the box first, then each place handed written back. A nullable binding's value is
+/// the fn it carries, the runtime refusing its absence.
+fn called_value(mut cx: Lowering, call: Call, e: ExprId, b: Bound) -> Reg {
+    let held = b.type()
+    let f? = cx.program.checked.called_as(held.unwrapped()) else { return cx.missed_as(unplain_value_call()) }
+    if !plain_value_call(cx, call, f) { return cx.missed_as(unplain_value_call()) }
+    let seats = f.seats
+    let mark = cx.handing_mark()
+    let args = [if seats[at].mutable { cx.written_arg(a) } else { cx.lower(a) } for at, a in call.args]
+    if args.any(it == null) { return cx.missed_as("a fn value's `mut` seat handed a place no write reaches back from") }
+    let box = if held.nullable() { insisted(cx, cx.held(b), held) } else { cx.held(b) }
+    let r = cx.called_code(cx.layout_at(e), cx.code_of(box), box, [a! for a in args], f)
+    cx.handed_back(mark)
+    r
+}
+
+/// Whether `call` hands the fn value of type `ty` its arguments by position into seats that promise
+/// nothing a run sees (a `const` seat's promise is the call's to keep) or are written through.
+fn plain_value_call(cx: Lowering, call: Call, ty: SignedType) -> bool {
+    ty.head is .Function &&
+        !ty.nullable() &&
+        ty.seats.length == call.args.length &&
+        call.pins.is_empty() &&
+        !call.args.any((a) -> cx.store.names_its_seat(a))
+}
+
+/// The unit a call of `callee` reaches: the fn itself, or a generic fn's unit under its arguments'
+/// layouts.
+fn reached_unit(cx: Lowering, callee: CalledFn, call: Call, e: ExprId) -> CalledFn? {
+    if callee.type_params == 0 { callee } else { cx.instantiated(callee, call.pins, call.args, e) }
+}
+
+impl StmtLowers for Return {
+    /// `return` leaves the fn with its value, or with nothing.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let value? = self.value else { return cx.answer_exit(null) }
+        cx.answer_exit(cx.lower(value))
+    }
+}
+
+/// A call of a name that is no fn a call here reaches, by what the name is.
+fn uncalled(cx: Lowering, call: Call, e: ExprId) -> string {
+    let name = call.callee.of
+    let named? = cx.named(e, name) else { return "a call of `${name}`, which names nothing this body reads" }
+    match named {
+        .Fn(_) -> "a call of `${name}` with type arguments it doesn't declare, or into seats a call doesn't fill",
+        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> "a call of `${name}`, which names a value",
+    }
+}
+
+/// A call of a fn value this layer doesn't seat yet.
+fn unplain_value_call() -> string { "a call of a fn value through a seat that promises or by name" }
+
+/// A call whose arguments this layer doesn't seat yet.
+fn unseated(callee: CalledFn) -> string { "a call of `${callee.name}` handing a generic unit a rest or a default its type parameters type, a `mut` seat a place no write reaches back from, an extern's `mut` seat a place rooted in no `mut` binding, or a spread record" }
+
+/// A call of a generic fn whose arguments don't lay out each of its type parameters.
+fn unlaid(callee: CalledFn) -> string { "a call of the generic `${callee.name}` whose arguments don't lay out its type parameters" }
+
+/// A code hash's argument naming no fn the program declares.
+fn unhashed() -> string { "a code hash of what names no declared fn" }

@@ -1,0 +1,125 @@
+//! Canonical DSL text from Grammar values — the projection that makes
+//! a grammar inspectable (P7) and comparable: two grammars are
+//! structurally equal exactly when their renders are equal. Renders
+//! the rules only; a grammar's name is packaging, not structure.
+
+use util.{quoted_text}
+use ast.{
+    Grammar,
+    Rule,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    Build,
+    Fixed,
+    Term,
+    Operators,
+    Tier,
+    Suffix,
+    Assoc,
+}
+/// The whole grammar, one rule per line, in rule order.
+export fn render_grammar(g: Grammar) -> string {
+    [render_rule(r) for r in g.rules].join("\n")
+}
+
+fn render_rule(r: Rule) -> string {
+    "${r.name} = ${render_alt(r.body)}"
+}
+
+fn render_alt(a: Alt) -> string {
+    [render_seq(s) for s in a.branches].join(" | ")
+}
+
+/// Items, then annotations (expects in item order, then recover), then
+/// the build — one of the orders the notation accepts.
+fn render_seq(s: Seq) -> string {
+    mut parts = [render_item(m) for m in s.items]
+    parts = parts.concat([render_expect(m) for m in s.items if m.expect != null])
+    parts = parts.concat(["@head(${m.label ?? "?"})" for m in s.items if m.head])
+    parts = parts.concat(["@trailer(${m.label ?? "?"})" for m in s.items if m.trailer])
+    if s.recover != null {
+        parts.push("@recover(sync_to: ${quoted_text(s.recover!.sync_to)})")
+    }
+    if s.fold != null { parts.push("@fold(${s.fold!})") }
+    if s.aliased { parts.push("@alias") }
+    if s.operators != null { parts.push(render_operators(s.operators!)) }
+    if s.build != null { parts.push("-> ${render_build(s.build!)}") }
+    parts.join(" ")
+}
+
+/// A build as the notation writes it.
+export fn render_build(b: Build) -> string {
+    match b {
+        .Var(name) -> name,
+        .Call(name, args) -> "${name}(${args.join(", ")})",
+        .Node(owner, variant, fixed, _) -> "${owner}.${variant}${stated_payloads(fixed)}",
+        .Computed(owner, variant, by, _) -> "${owner}.${variant} by ${by}",
+    }
+}
+
+fn render_operators(o: Operators) -> string {
+    "@operators { ${[render_tier(l) for l in o.tiers].join(" ")} }"
+}
+
+fn render_tier(l: Tier) -> string {
+    let words = [render_word(w) for w in l.words]
+    let suffixes = [render_suffix(x) for x in l.suffixes]
+    let build = if l.build == null { [] } else { ["-> ${render_build(l.build!)}"] }
+    [render_assoc(l.assoc)].concat(words).concat(build).concat(suffixes).join(" ")
+}
+
+fn render_suffix(x: Suffix) -> string {
+    let own = if x.build == null { "" } else { " -> ${render_build(x.build!)}" }
+    "suffix ${quoted_text(x.word)} ${x.rule}${own}"
+}
+
+fn render_assoc(a: Assoc) -> string {
+    match a { .Left -> "left", .Single -> "none" }
+}
+
+fn render_word(w: List<string>) -> string {
+    if w.length == 1 { quoted_text(w[0]) } else { "(${[quoted_text(t) for t in w].join(" ")})" }
+}
+
+impl Rep {
+    /// The notation's repetition suffix.
+    fn suffix() -> string {
+        match self { .One -> "", .Star -> "*", .Plus -> "+", .Opt -> "?" }
+    }
+}
+
+fn render_expect(m: Item) -> string {
+    "@expect(${quoted_text(m.prim.token_name() ?? "?")}, ${quoted_text(m.expect!.message)})"
+}
+
+fn render_item(m: Item) -> string {
+    let repped = "${render_prim(m.prim)}${m.rep.suffix()}"
+    if m.label == null { repped } else { "${m.label!}:${repped}" }
+}
+
+fn render_prim(p: Prim) -> string {
+    match p {
+        .Ref(target) -> target,
+        .Named(term) -> term,
+        .Lit(text) -> quoted_text(text),
+        .Group(inner) -> "( ${render_alt(inner)} )",
+        .NotChar(inner) -> "not(${render_prim(inner)})",
+    }
+}
+
+/// The payloads a node build STATES, as the notation writes them.
+fn stated_payloads(fixed: List<Fixed>) -> string {
+    if fixed.is_empty() { return "" }
+    "(${["${f.name} = ${render_term(f.stated())}" for f in fixed].join(", ")})"
+}
+
+fn render_term(t: Term) -> string {
+    match t {
+        .Text(text) -> text,
+        .Node(b) -> render_build(b),
+        .List(items) -> "[${[render_term(i) for i in items].join(", ")}]",
+    }
+}

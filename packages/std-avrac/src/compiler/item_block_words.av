@@ -1,0 +1,85 @@
+//! WHERE A NAME WEARS A BLOCK WORD: a declaration or a binder of a file — a fn's or a type's name, a
+//! seat, a binding, a loop's index, an arm's or a lambda's — named by a word that opens a block there,
+//! a sublanguage it imports or a component another module declares. `w {` reads as the block, so the
+//! word is the file's alone. A read is no binder; a template's binders are judged where it was written,
+//! and left out here.
+use core.{At, ExprId, NodeKind, Span, StmtId, SyntaxArena}
+use compiler.laws.{Found, law}
+use compiler.resolve.{block_word_worn}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Whether a word opens a block in the file of `view`'s item.
+fn words_open_blocks(view: ItemView) -> bool { !file_block_words(view.engine, view.file).is_empty() }
+
+/// Every name the node `at` of `view`'s item binds or declares that is a block word there.
+fn worn_block_words(view: ItemView, at: At) -> List<Found> {
+    let binders = binders_at(view.item.store, at)
+    if binders.is_empty() { return [] }
+    let words = file_block_words(view.engine, view.file)
+    [Found { at: b.at, args: [b.word] } for b in binders if words.contains(b.word)]
+}
+
+/// A name a node binds or declares, and where its refusal points.
+type Binder = { word: string, at: Span? }
+
+/// The names the node `at` binds or declares, none where a template wrote it.
+fn binders_at(store: SyntaxArena, at: At) -> List<Binder> {
+    match at {
+        .Stmt(s) -> if store.stmt_origins.at(s.index) != null { [] } else { stmt_binders(store, s) },
+        .Expr(e) -> if store.foreign_of(e) != null { [] } else { expr_binders(store, e) },
+        rest -> [],
+    }
+}
+
+/// A statement's declared name — a fn's, a type's — its fn's seats, its binding and its loop's index,
+/// each where it stands.
+fn stmt_binders(store: SyntaxArena, s: StmtId) -> List<Binder> {
+    let place = store.stmt_span(s)
+    let named = [
+        store.fn_parts(s)?.name,
+        store.type_decl_name(s),
+        store.let_name(s),
+        store.loop_index(s),
+    ]
+    [Binder { word: n!, at: place } for n in named if n != null]
+        .concat([Binder { word: p.name.of, at: place } for p in store.fn_parts(s)?.params ?? []])
+}
+
+/// A lambda's seats, where the lambda stands; each binder of a `match` arm's patterns, where the arm's
+/// value stands.
+fn expr_binders(store: SyntaxArena, e: ExprId) -> List<Binder> {
+    [Binder { word: p.name.of, at: store.expr_span(e) } for p in store.lambda_parts(e)?.params ?? []]
+        .concat(
+            [Binder { word: b.name, at: store.expr_span(a.value) } for a in store.match_arms(e) ?? [] for p in a.pats for b in store.pattern_binds(p)],
+        )
+}
+
+/// a block word is the file's alone — no declaration or binder wears it
+export law block_word_unworn {
+    kind: "resolve.block_word"
+    on: [
+        NodeKind.StmtFnDecl,
+        NodeKind.StmtStructDecl,
+        NodeKind.StmtNamedType,
+        NodeKind.StmtAlias,
+        NodeKind.StmtEnumDecl,
+        NodeKind.StmtComponentDecl,
+        NodeKind.StmtCollectEnum,
+        NodeKind.StmtLet,
+        NodeKind.StmtMutLet,
+        NodeKind.StmtConstDecl,
+        NodeKind.StmtForEach,
+        NodeKind.StmtLetElse,
+        NodeKind.StmtCollect,
+        NodeKind.ExprLambda,
+        NodeKind.ExprMatch,
+    ]
+    judge: worn_block_words
+    judged_if: words_open_blocks
+    voice: worn_words
+    witness: "use @x.c.{work}\nlet work = 1\n0\n"
+}
+
+fn worn_words(a: List<string>) -> Voice { block_word_worn(a[0]) }

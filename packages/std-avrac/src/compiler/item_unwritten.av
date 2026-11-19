@@ -1,0 +1,98 @@
+//! A `mut fn` THAT NEVER WRITES: a method of an inherent impl marked `mut` whose body neither writes
+//! through `self` nor reaches a method that does lies to every caller, who hands it a place it never
+//! needed. Read over a written item's impls as the program layer surveys them; a method whose writes
+//! can't be read to say is never warned of, and a generic method is the impl law's.
+use core.{StmtId, flatten}
+use compiler.laws.{Found, law}
+use compiler.typing.{self_unwritten}
+use diagnostics.{Voice}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A `mut fn` that never writes: where it's declared and its name.
+@derive(Saved)
+type Unwritten = { at: FindingAt?, name: string }
+
+/// Every `mut fn` one written item's inherent impls declare that never writes.
+@derive(Saved)
+type ItemUnwritten = { methods: List<Unwritten> }
+
+/// Every `mut fn` of the written item `at` of `file` that never writes, in the order it declares them.
+fn unwritten_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(m.at), args: [m.name] } for m in item_unwritten(engine, file, at).methods]
+}
+
+/// Every method an inherent impl of the written item `at` of `file` marks `mut` whose receiver its
+/// body, and every method it reaches through it, is read never to write.
+fn item_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnwritten {
+    if !item_held(engine, file, at) { return unwritten_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.unwritten.get() else {
+        let made = unwritten_made(engine, file, at)
+        view.unwritten.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_unwritten` answers, made.
+fn unwritten_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnwritten {
+    if !item_held(engine, file, at) { return ItemUnwritten { methods: [] } }
+    let impls = item_impls(engine, file, at)
+    if !impls.any(it.implements == null) { return ItemUnwritten { methods: [] } }
+    let item = read_item(engine, file, at)
+    ItemUnwritten {
+        methods: flatten(
+            [unwritten_in(
+                engine,
+                item,
+                ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth },
+                d!,
+            ) for nth, i in impls if i.implements == null for d in [impl_target(engine, file, i)] if d != null],
+        ),
+    }
+}
+
+/// Every method the inherent impl at `target` of `item`, for the type `owner` names, marks `mut`
+/// whose receiver is read never to be written.
+fn unwritten_in(engine: QueryEngine, item: ReadItem, target: ImplAt, owner: DeclaredAt) -> List<
+    Unwritten,
+> {
+    let marked = [s for s in impl_fns_at(item, target) if marked_method(item, s)]
+    [Unwritten { at: kept_at(item.store.stmt_span(s)), name: n } for s in marked for n in [method_name(item, s)] if reads_only(body_receiver_use(engine, target, owner.file, owner.name, n))]
+}
+
+/// The name the fn statement `s` of `item` declares.
+fn method_name(item: ReadItem, s: StmtId) -> string { item.store.fn_parts(s)?.name ?? "" }
+
+/// Whether the impl statement `s` of `item` is a method its impl marks `mut`, generic in nothing of
+/// its own.
+fn marked_method(item: ReadItem, s: StmtId) -> bool {
+    let parts? = item.store.fn_parts(s) else { return false }
+    !item.store.is_static(s) && item.store.is_mutating(s) && parts.tparams.is_empty()
+}
+
+/// Whether a receiver is read to be only read.
+fn reads_only(used: ReceiverUse?) -> bool {
+    let u? = used else { return false }
+    match u { .Read -> true, .Written or .Unproved(_) -> false }
+}
+
+/// a `mut fn` that never writes through `self`
+export law mut_fn_unwritten {
+    kind: "type.mut_fn_unused"
+    reads: unwritten_methods
+    voice: unwritten_words
+    warns: true
+    witness: "type Count = { n: int }\n\nimpl Count {\n    mut fn total() -> int { self.n }\n}\n"
+}
+
+fn unwritten_words(a: List<string>) -> Voice { self_unwritten(a[0]) }
+
+collect listed_unwritten_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unwritten-method law is read through, for a process to hand its engine.
+export fn unwritten_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unwritten_facts) }

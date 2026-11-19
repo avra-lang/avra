@@ -1,0 +1,81 @@
+//! `model_table<T>` by its law: a column per field `T` declares — never a
+//! secret's — a row per value, each cell the field's value, a press that
+//! asks to remove its row, and a form whose submit asks to create one.
+use @std.meta.{derive}
+use @std.validate.{Decode, range}
+use @std.ui.forms.{model_table}
+use @std.ui.headless.{Screen, headless}
+
+@derive(Decode)
+type Vault = { @secret pin: string }
+
+@derive(Decode)
+type Blank = {}
+
+@derive(Decode)
+type Member = {
+    name: string,
+    @range(0, 150) age: int,
+    @secret token: string = "",
+}
+
+fn members() -> List<Member> { [Member { name: "Ada", age: 36, token: "a1" }, Member { name: "Alan", age: 41, token: "b2" }] }
+
+fn page(gone: Cell<int>, made: Cell<string>) -> Screen {
+    let rows = members()
+    headless(
+        () -> model_table<Member> rows {
+            on remove { i -> gone.set(i) }
+            on create { m -> made.set(m.name) }
+        },
+    )
+}
+
+fn vaults() -> Screen {
+    let rows = [Vault { pin: "9876" }]
+    headless(() -> model_table<Vault> rows {})
+}
+
+fn blanks() -> Screen {
+    let rows = [Blank {}, Blank {}]
+    headless(() -> model_table<Blank> rows {})
+}
+
+spec "std/ui model_table" {
+    given "a record of secrets alone" {
+        then "draws no column and never the secret, its form's input masked" {
+            let page = vaults()
+            !page.text().contains("9876") &&
+                page.text() == "column\n  row\n  row\n    button \"Remove\"\n  form\n    list\n      column key=\"pin\"\n        field \"pin\" placeholder=\"\" masked\n    button \"Save\" submits"
+        }
+    }
+    given "a record with no fields" {
+        then "draws a row per value, each its remove alone" { blanks().text() == "column\n  row\n  row\n    button \"Remove\"\n  row\n    button \"Remove\"\n  form\n    list\n    button \"Save\" submits" }
+    }
+    given "no rows" {
+        then "draws its header and its form" {
+            let none: List<Member> = []
+            headless(() -> model_table<Member> none {}).text() == "column\n  row\n    text \"name\"\n    text \"age\"\n  form\n    list\n      column key=\"name\"\n        field \"name\" placeholder=\"\"\n      column key=\"age\"\n        field \"age\" placeholder=\"\"\n      column key=\"token\"\n        field \"token\" placeholder=\"\" masked\n    button \"Save\" submits"
+        }
+    }
+    given "a list of decoded records" {
+        then "draws a column per field and a row per value, never a secret field's column or value" {
+            let page = page(Cell.new(-1), Cell.new(""))
+            page.text() == "column\n  row\n    text \"name\"\n    text \"age\"\n  row\n    text \"Ada\"\n    text \"36\"\n    button \"Remove\"\n  row\n    text \"Alan\"\n    text \"41\"\n    button \"Remove\"\n  form\n    list\n      column key=\"name\"\n        field \"name\" placeholder=\"\"\n      column key=\"age\"\n        field \"age\" placeholder=\"\"\n      column key=\"token\"\n        field \"token\" placeholder=\"\" masked\n    button \"Save\" submits" &&
+                !page.text().contains("a1")
+        }
+        then "a press asks to remove its row" {
+            let gone = Cell.new(-1)
+            let page = page(gone, Cell.new(""))
+            page.press("Remove", 1) && gone.get() == 1
+        }
+        then "a submit of its form asks to create the value it decoded" {
+            let made = Cell.new("")
+            let page = page(Cell.new(-1), made)
+            page.fill("name", "Grace") &&
+                page.fill("age", "45") &&
+                page.submit("name") &&
+                made.get() == "Grace"
+        }
+    }
+}

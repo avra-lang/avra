@@ -1,0 +1,788 @@
+//! WORK AHEAD ACROSS CORES. When a store knows too little, forked processes answer shards of the
+//! work and publish packs, and the asking process then finds those answers like any others. The
+//! store already lets many processes publish at once, so nothing is shared but the directory, and
+//! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
+//! didn't work ahead reaches the same ones by itself.
+use layered_store.{LayeredStore, program_store_at}
+use disk_store.{
+    key_shares,
+    save_finished,
+    save_held,
+    save_left,
+    saving_apart,
+    wave_sharing_begun,
+    wave_sharing_ended,
+}
+use @std.io.{
+    AppendFile,
+    drafted,
+    drafts_leaving,
+    drafts_left,
+    env,
+    list_dir,
+    make_dirs,
+    read_bytes,
+    read_text,
+    remove,
+    this_process,
+    write_text,
+}
+use @std.meta.{derive}
+use @std.text.{parse_int}
+use answer_record.{ContentHash, sorted_by_hash}
+use frontier.{HeldEntry}
+use saved_derive.{Saved}
+use @std.time.{now_ms}
+use query_engine.{LentAnswers, QueryDefinition, QueryEngine, query_engine, waits_said}
+use saved_layout.{SavedList, SavedSlots, SavedSource, saved_bytes_in_memory}
+use query_times.{QueryTimes, TimedSide}
+
+extern fn avra_cores_online() -> int
+extern fn avra_cores_group(count: int) -> int
+extern fn avra_cores_fork(group: int, serving: int) -> int
+extern fn avra_cores_leave(group: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_end_fd(group: int, core: int) -> int
+extern fn avra_cores_heard(group: int, core: int) -> int
+extern fn avra_cores_killed(group: int, core: int) -> int
+extern fn avra_cores_finished(group: int) -> int
+extern fn avra_cores_stderr_to(path: string) -> int
+extern fn avra_cores_claimed(group: int) -> int
+extern fn avra_cores_heir(quiet: int) -> int
+extern fn avra_cores_heir_gone() -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// The phase in which the asking process takes what its cores learned.
+const ANSWERS_TAKEN: string = "the cores' answers taken"
+
+/// Below this many unanswered items a fork costs more than it saves.
+const WORTH_FORKING: int = 16
+
+/// How long a wait for a core lasts before it looks again.
+const WAIT_MS: int = 1000
+
+/// No descriptor for a core to keep open.
+const NO_DESCRIPTOR: int = -1
+
+/// How many processes this machine runs at once.
+// LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+export fn cores_online() -> int { avra_cores_online() }
+
+/// What to work out ahead: the items, asked of the engine that works them out, whether an item's
+/// answer is already kept, how to ask for it, and how many processes to use.
+export type WorkAhead<T, R> = {
+    items: fn(QueryEngine) -> List<T>,
+    is_known: fn(QueryEngine, T) -> bool,
+    ask: fn(QueryEngine, T) -> R,
+    process_count: int,
+    timed: bool = false,
+}
+
+/// A store and the engine over it.
+export type Worked = { store: LayeredStore, engine: QueryEngine }
+
+/// The store at `directory` and an engine over it, every unknown item answered across processes
+/// first when there are enough to be worth it. With nothing to fork, the engine is the one that
+/// asked what's known, so whatever it read stays read.
+export fn engine_worked_ahead<T, R>(
+    directory: string,
+    definitions: List<QueryDefinition>,
+    work: WorkAhead<T, R>,
+) -> Worked {
+    let before = program_store_at(directory)
+    let asking = query_engine(before, definitions)
+    if work.timed { asking.time_queries() }
+    asking.kept_times()?.opened("the frontier opened", TimedSide.Outside)
+    let _ = asking.inputs_moved()
+    asking.kept_times()?.closed()
+    let wave = waves_forked().get()
+    if wave == 0 {
+        cleared(learned_dir(directory))
+        cores_read().set([])
+    }
+    if !forked_for<T, R>(before, asking, definitions, work, "${learned_dir(directory)}/${wave}") { return Worked { store: before, engine: asking } }
+    waves_forked().set(wave + 1)
+    edited_mid_build(wave)
+    asking.kept_times()?.opened("the work merged", TimedSide.Outside)
+    let after = program_store_at(directory)
+    let engine = query_engine(after, definitions)
+    let merging = merge_begun(after, work.process_count)
+    asking.kept_times()?.closed()
+    asking.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside)
+    let taken = learned_taken(engine, learned_dir(directory))
+    asking.kept_times()?.closed()
+    asking.kept_times()?.opened("the work merged", TimedSide.Outside)
+    merge_ended(after, merging, work.process_count)
+    asking.kept_times()?.closed()
+    if work.timed { eprintln("ahead: ${taken}") }
+    let times = asking.kept_times()
+    if times != null { eprintln(ahead_times(times!)) }
+    Worked { store: after, engine: engine }
+}
+
+/// Below this many answers and questions, merging the packs here costs less than forking to.
+const WORTH_MERGING_APART: int = 50000
+
+/// No group of processes.
+const NO_GROUP: int = -1
+
+/// THE PACKS MANY PROCESSES PUBLISHED, MERGED BY AS MANY: each of `process_count` forked processes
+/// publishes one share of the keys of every pack `store` reads as a pack of its own, while the
+/// asking process goes on reading the packs where they lie. Answers the group merging, or
+/// `NO_GROUP` where the packs were merged here: too few to be worth a fork, or none forked.
+fn merge_begun(store: LayeredStore, process_count: int) -> int {
+    if process_count < 2 ||
+        store.own.packs.get().length < 2 ||
+        store.entries_published() < worth_merging_apart() ||
+        merged_here() != null {
+        let _ = store.merged()
+        return NO_GROUP
+    }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let group = avra_cores_group(process_count)
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let core = if group < 0 { -1 } else { avra_cores_fork(group, NO_DESCRIPTOR) }
+    if core < 0 {
+        let _ = store.merged()
+        return NO_GROUP
+    }
+    if core < process_count {
+        let merged = share_unmerged() != "${core}" &&
+            store.share_merged(key_shares(process_count)[core])
+        if merged && shares_said() != null { eprintln("store: share ${core} of ${process_count} published") }
+        let _ = avra_cores_leave(group, core, 1, if merged { 0 } else { 1 })
+    }
+    group
+}
+
+/// The merge `merge_begun` left to `group` ended: where every process published its share, the
+/// packs they merged go and `store` reads the shares; where one didn't, `store` reads whatever
+/// stands and merges it here, which costs time and no answer.
+fn merge_ended(store: LayeredStore, group: int, process_count: int) {
+    if group == NO_GROUP { return }
+    if waited_for(group, process_count) == process_count { return store.shares_taken() }
+    store.packs_read_again()
+    let _ = store.merged()
+}
+
+/// How many answers and questions are worth merging apart: `AVRA_MERGED_APART_FROM`, a witness's way
+/// to merge a small store apart, else `WORTH_MERGING_APART`.
+fn worth_merging_apart() -> int { parse_int(merged_apart_from() ?? "") ?? WORTH_MERGING_APART }
+
+/// `AVRA_MERGED_APART_FROM`: how many answers and questions a witness has merged apart.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn merged_apart_from() -> string? { env("AVRA_MERGED_APART_FROM") }
+
+/// `AVRA_SHARE_UNMERGED`: the share of that number is left unmerged by its process, for a witness
+/// that a share nobody published costs time and no answer.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn share_unmerged() -> string? { env("AVRA_SHARE_UNMERGED") }
+
+/// `AVRA_QTRACE`: each process that merged a share says it published it.
+// LICENSED input.debug_flag: a trace line is said, never read by an answer
+once fn shares_said() -> string? { env("AVRA_QTRACE") }
+
+/// `AVRA_MERGED_HERE`: the asking process merges its cores' packs itself.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn merged_here() -> string? { env("AVRA_MERGED_HERE") }
+
+/// Answers every unknown item across processes, each taking the next item no other has taken
+/// and asking it where it knows nothing of it, and says whether any process ran: none where fewer than
+/// `WORTH_FORKING` are unknown. A process that didn't finish costs only time: what it published
+/// stands, and the rest is answered here.
+fn forked_for<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    definitions: List<QueryDefinition>,
+    work: WorkAhead<T, R>,
+    learned_at: string,
+) -> bool {
+    let known_by = work.is_known
+    let items = (work.items)(engine)
+    if work.process_count < 2 || !at_least(items, WORTH_FORKING, (item) -> !known_by(engine, item)) { return false }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let _ = store.saved()
+    if store.has_news() {
+        eprintln(unpublished_before_fork())
+        return false
+    }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let group = avra_cores_group(work.process_count)
+    if group < 0 { return false }
+    let sharing = wave_sharing_begun()
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let core = avra_cores_fork(group, NO_DESCRIPTOR)
+    if core < 0 {
+        wave_sharing_ended(sharing)
+        return false
+    }
+    if core < work.process_count {
+        answered_and_gone<T, R>(
+            store,
+            definitions,
+            items,
+            work.is_known,
+            work.ask,
+            group,
+            core,
+            work.timed,
+            "${learned_at}-${core}",
+        )
+    }
+    let finished = waited_for(group, work.process_count)
+    wave_sharing_ended(sharing)
+    engine.kept_times()?.closed()
+    if finished < work.process_count { eprintln(cores_unfinished(work.process_count - finished, work.process_count)) }
+    true
+}
+
+/// A WAVE WITHIN A BUILD: every item of `work` that `engine` knows nothing of answered across
+/// forked processes, each of which goes on from everything `engine` has settled, and their answers
+/// taken by `engine` itself, which goes on from them; whether any process ran. `store` is the
+/// one `engine` answers from, kept at `directory`. What the asking process learned is published
+/// first, so every process reads it; the cores' packs are read where they lie, the next save's to
+/// absorb, and their answers taken where every input a core read since it forked is what `engine`
+/// reads.
+export fn asked_across<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    directory: string,
+    work: WorkAhead<T, R>,
+) -> bool {
+    asked_across_while<T, R>(store, engine, directory, work, () -> 0)
+}
+
+/// `asked_across`, the asking process doing `meanwhile` once its cores are forked and before it
+/// takes anything of theirs: what a witness edits an input in.
+export fn asked_across_while<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    directory: string,
+    work: WorkAhead<T, R>,
+    meanwhile: fn() -> int,
+) -> bool {
+    let known_by = work.is_known
+    let items = (work.items)(engine)
+    if work.process_count < 2 || !at_least(items, WORTH_FORKING, (item) -> !known_by(engine, item)) { return false }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let _ = store.saved()
+    let wave = waves_forked().get()
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let group = if store.has_news() { -1 } else { avra_cores_group(work.process_count) }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let core = if group < 0 { -1 } else { avra_cores_fork(group, NO_DESCRIPTOR) }
+    if core < 0 {
+        engine.kept_times()?.closed()
+        return false
+    }
+    let mark = engine.settled_count()
+    if core < work.process_count {
+        within_and_gone<T, R>(
+            store,
+            engine,
+            mark,
+            items,
+            work,
+            group,
+            core,
+            "${learned_dir(directory)}/${wave}-${core}",
+        )
+    }
+    let _ = meanwhile()
+    let finished = waited_for(group, work.process_count)
+    engine.kept_times()?.closed()
+    waves_forked().set(wave + 1)
+    if finished < work.process_count { eprintln(cores_unfinished(work.process_count - finished, work.process_count)) }
+    store.packs_read_again()
+    engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside)
+    let taken = wave_taken(engine, learned_dir(directory), "${wave}-")
+    engine.kept_times()?.closed()
+    if work.timed { eprintln("within: ${taken}") }
+    true
+}
+
+/// ONE PROCESS ANSWERING `work`'s ITEMS BESIDE THE ASKING PROCESS, which does `meanwhile` with
+/// the same engine and then takes what the process learned: two stretches of a build that read
+/// nothing of each other, done at once. `meanwhile` answers whether the items are still wanted;
+/// where they are not, the process is ended and nothing of it is taken. Whether a process was
+/// forked, and so `meanwhile` done: where every item is known, or nothing can be forked, neither.
+export fn asked_beside<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    directory: string,
+    work: WorkAhead<T, R>,
+    meanwhile: fn() -> bool,
+) -> bool {
+    let known_by = work.is_known
+    let items = (work.items)(engine)
+    if !items.any((item) -> !known_by(engine, item)) { return false }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let _ = store.saved()
+    let wave = waves_forked().get()
+    let group = if store.has_news() { -1 } else { avra_cores_group(1) }
+    let core = if group < 0 { -1 } else { avra_cores_fork(group, NO_DESCRIPTOR) }
+    engine.kept_times()?.closed()
+    if core < 0 { return false }
+    let learned_at = "${learned_dir(directory)}/${wave}-0"
+    if core < 1 {
+        within_and_gone<T, R>(
+            store,
+            engine,
+            engine.settled_count(),
+            items,
+            work with { process_count: 1 },
+            group,
+            core,
+            learned_at,
+        )
+    }
+    if beside_hook() == "killed" { let _ = avra_cores_killed(group, 0) }
+    let wanted = meanwhile() && beside_hook() != "unwanted"
+    if !wanted { let _ = avra_cores_killed(group, 0) }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let finished = waited_for(group, 1)
+    engine.kept_times()?.closed()
+    waves_forked().set(wave + 1)
+    if !wanted {
+        let _ = remove(learned_at)
+        if work.timed { eprintln("beside: the process ended, nothing of it taken") }
+        return true
+    }
+    if finished < 1 { eprintln(cores_unfinished(1, 1)) }
+    store.packs_read_again()
+    engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside)
+    let taken = wave_taken(engine, learned_dir(directory), "${wave}-")
+    engine.kept_times()?.closed()
+    if work.timed { eprintln("beside: ${taken}") }
+    true
+}
+
+/// `AVRA_BESIDE`: a witness's way into a process answering beside the asking one — `killed` ends
+/// it before it is waited for, `unwanted` has the asking process want nothing of it.
+once fn beside_hook() -> string {
+    // LICENSED input.debug_flag: a test hook that ends a process early, so what it owed is witnessed answered without it
+    env("AVRA_BESIDE") ?? ""
+}
+
+/// A process forked within a build: takes turns at `items` with the engine it was forked holding,
+/// publishes what it learned since, and leaves.
+fn within_and_gone<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    mark: int,
+    items: List<T>,
+    work: WorkAhead<T, R>,
+    group: int,
+    core: int,
+    learned_at: string,
+) {
+    let known_by = work.is_known
+    let ask = work.ask
+    mut answered = 0
+    mut turn = avra_cores_claimed(group)
+    while turn < items.length {
+        if !known_by(engine, items[turn]) {
+            let _ = ask(engine, items[turn])
+            answered = answered + 1
+        }
+        turn = avra_cores_claimed(group)
+    }
+    let _ = store.saved_alone()
+    written_whole(
+        learned_at,
+        core_learned(engine.learned_entries_since(mark), engine.stood_answers_since(mark))
+            .saved_bytes(),
+    )
+    if work.timed { eprintln("core ${core}: ${answered} answered within the build") }
+    let _ = avra_cores_leave(group, core, answered, 0)
+}
+
+/// What the cores of the wave whose files in `dir` begin `prefix` learned, taken by `engine`, each
+/// file read once and removed: how many cores were taken, and each refused with why.
+fn wave_taken(engine: QueryEngine, dir: string, prefix: string) -> string {
+    mut taken = 0
+    mut said: List<string> = []
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    for name in list_dir(dir) catch [] {
+        if name.contains(".") || !name.starts_with(prefix) { continue }
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
+        let bytes = match read_bytes("${dir}/${name}") {
+            .Ok(b) -> b,
+            .Err(_) -> {
+                said.push("core ${dir}/${name}: unread, worked out here")
+                continue
+            },
+        }
+        let _ = remove("${dir}/${name}")
+        let held? = core_held(bytes) else {
+            said.push("core ${dir}/${name}: unread, worked out here")
+            continue
+        }
+        let why = core_taken(engine, held)
+        if why == null { taken = taken + 1 } else { said.push("core ${dir}/${name} refused: ${why!}") }
+    }
+    "${taken} cores' answers taken${["; ${s}" for s in said].join("")}"
+}
+
+/// Whether this process has forked a wave.
+export fn has_worked_ahead() -> bool { waves_forked().get() > 0 }
+
+/// Whether `wanted` holds of at least `count` of `items`, asking no further than it must.
+fn at_least<T>(items: List<T>, count: int, wanted: fn(T) -> bool) -> bool {
+    mut found = 0
+    for item in items {
+        if !wanted(item) { continue }
+        found = found + 1
+        if found >= count { return true }
+    }
+    false
+}
+
+/// A forked process's whole life: takes turns with the group's other processes at `items`, each
+/// item one process's alone, answers each it takes that it knows nothing of, publishes, and
+/// leaves without tidying up.
+fn answered_and_gone<T, R>(
+    store: LayeredStore,
+    definitions: List<QueryDefinition>,
+    items: List<T>,
+    is_known: fn(QueryEngine, T) -> bool,
+    ask: fn(QueryEngine, T) -> R,
+    group: int,
+    core: int,
+    timed: bool,
+    learned_at: string,
+) {
+    let engine = query_engine(store, definitions)
+    if timed { engine.time_queries() }
+    mut answered = 0
+    mut turn = avra_cores_claimed(group)
+    while turn < items.length {
+        if !is_known(engine, items[turn]) {
+            let _ = ask(engine, items[turn])
+            answered = answered + 1
+        }
+        turn = avra_cores_claimed(group)
+    }
+    let _ = store.saved_alone()
+    written_whole(
+        learned_at,
+        core_learned(engine.learned_entries(), engine.stood_answers()).saved_bytes(),
+    )
+    let times = engine.kept_times()
+    if times != null { eprintln(core_times(core, answered, times!)) }
+    let _ = avra_cores_leave(group, core, answered, 0)
+}
+
+/// How a run in a process of its own came out: what it answered, that it ended before it
+/// answered, or that it ran past its bound and was ended.
+export enum Apart {
+    Answered(text: string)
+    Ended
+    Outlasted
+}
+
+/// What `run` answers, worked out in a forked process of its own and left at `kept`, so what ends it
+/// — a signal, a trap — ends only that process, and one still running after `within_ms` is killed.
+/// A process `run` forks in turn that returns out of it is never that one: it leaves at once,
+/// answering nothing and running nothing more of its caller's.
+export fn answered_apart(run: fn() -> string, kept: string, within_ms: int) -> Apart {
+    let _ = remove(kept)
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let group = avra_cores_group(1)
+    if group < 0 { return Apart.Ended }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let core = avra_cores_fork(group, NO_DESCRIPTOR)
+    if core < 0 { return Apart.Ended }
+    if core == 0 {
+        // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+        let mine = this_process()
+        let answer = run()
+        // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+        if this_process() == mine { let _ = write_text(kept, answer) }
+        let _ = avra_cores_leave(group, core, 0, 0)
+    }
+    // LICENSED input.clock: a timing reads the clock, never an input of what is built
+    let deadline = now_ms() + within_ms
+    while avra_cores_heard(group, 0) != 0 {
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
+        let left = deadline - now_ms()
+        if left <= 0 {
+            let _ = avra_cores_killed(group, 0)
+            let _ = avra_cores_finished(group)
+            return Apart.Outlasted
+        }
+        let _ = avra_fiber_park_fd(
+            avra_cores_end_fd(group, 0),
+            0,
+            if left < WAIT_MS { left } else { WAIT_MS },
+        )
+    }
+    if avra_cores_finished(group) != 1 { return Apart.Ended }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    match read_text(kept) { .Ok(t) -> Apart.Answered(t), .Err(_) -> Apart.Ended }
+}
+
+/// `save` RUN BY AN HEIR, a forked process that outlives this one, so this one answers without
+/// waiting for it: whether one took it; where none did, nothing has run. `save` answers why it
+/// kept nothing, absent where it kept all, which the next process to open the store says. The heir holds what this
+/// process learned and every draft it wrote, and is the one saver of each of `store`'s layers
+/// until it ends, so a process that opens the store after this one answers waits and reads the
+/// save whole. With `quiet` the heir says nothing. A layer another process is saving, or a fork
+/// refused, leaves the save to the caller.
+export fn saved_by_heir(store: LayeredStore, quiet: bool, save: fn() -> string?) -> bool {
+    let layers = store.directories()
+    let held = [l! for d in layers for l in [save_held(d)] if l != null]
+    if held.length != layers.length {
+        let_go(held)
+        return false
+    }
+    save_left(layers[0])
+    drafts_leaving()
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let forked = avra_cores_heir(if quiet { 1 } else { 0 })
+    if forked == 0 {
+        drafts_left(false)
+        saving_apart().set(true)
+        let failed = save()
+        save_finished(layers[0], failed)
+        let _ = avra_cores_heir_gone()
+    }
+    drafts_left(forked > 0)
+    let_go(held)
+    if forked < 0 { save_finished(layers[0], null) }
+    forked > 0
+}
+
+/// Each of `held` closed by this process.
+fn let_go(held: List<AppendFile>) {
+    for l in held { let _ = l.closed() catch 0 }
+}
+
+/// This process's own words written to `path` from here on, in place of the stderr it shares with the
+/// process that forked it — so what a process judging apart says is its own record, never the
+/// asker's: whether it now writes there.
+export fn words_to(path: string) -> bool { avra_cores_stderr_to(path) == 0 }
+
+/// Waits until every process has ended, hearing each that has ended whichever it is waiting on, so
+/// none that ended stands unreaped while another runs, and says how many finished their share.
+fn waited_for(group: int, process_count: int) -> int {
+    while true {
+        let running = [core for core in 0..process_count if avra_cores_heard(group, core) != 0]
+        let first? = running.first() else { return avra_cores_finished(group) }
+        let _ = avra_fiber_park_fd(avra_cores_end_fd(group, first), 0, WAIT_MS)
+    }
+    0
+}
+
+// ── The voices ──
+
+/// A fork with a draft standing would hand the draft to every core.
+fn unpublished_before_fork() -> string {
+    "avra: what this process learned could not be published before forking, so nothing was worked ahead"
+}
+
+/// Some processes ended before finishing their share.
+fn cores_unfinished(unfinished: int, of: int) -> string {
+    "avra: ${unfinished} of ${of} cores working ahead didn't finish; what they left is answered here"
+}
+
+/// Where the asking process's time went around its cores.
+fn ahead_times(times: QueryTimes) -> string { "ahead: time: ${times.spoken(15)}; split: ${times.split()}" }
+
+/// Where a core's asks spent their time.
+fn core_times(core: int, answered: int, times: QueryTimes) -> string {
+    "core ${core}: ${answered} answered; time: ${times.spoken(15)}; split: ${times.split()}; ${waits_said()}"
+}
+
+/// ONE ANSWER A CORE LEARNED, as the asking process takes it: the question, its answer, the
+/// questions it read, and whether it is an input, read afresh in every process.
+@derive(Saved)
+type LearnedRow = { question: ContentHash, answer: ContentHash, reads: List<int>, input: bool }
+
+/// AN ANSWER THAT STOOD IN A CORE as its frontier held it: what an answer it learned may have read
+/// beside its inputs.
+@derive(Saved)
+type StoodRow = { question: ContentHash, answer: ContentHash }
+
+/// WHAT ONE CORE LEARNED, laid out to be read where it lies: every answer it learned, sorted by
+/// question, beside those questions' high words, so one is found by halving and no other is
+/// read; the inputs among them again, which the asking process proves one by one; and every
+/// answer that stood in it.
+@derive(Saved)
+type CoreLearned = { high_words: List<int>, rows: List<LearnedRow>, inputs: List<LearnedRow>, stood: List<StoodRow> }
+
+/// What a core learned and what stood in it, as it publishes them.
+fn core_learned(learned: List<HeldEntry>, stood: List<HeldEntry>) -> CoreLearned {
+    let sorted = sorted_by_hash(learned, (e: HeldEntry) -> e.question)
+    CoreLearned {
+        high_words: [e.question.high_word for e in sorted],
+        rows: [row_of(e) for e in sorted],
+        inputs: [row_of(e) for e in sorted if e.input],
+        stood: [StoodRow { question: e.question, answer: e.answer } for e in stood],
+    }
+}
+
+fn row_of(e: HeldEntry) -> LearnedRow { LearnedRow { question: e.question, answer: e.answer, reads: e.reads, input: e.input } }
+
+fn entry_of(r: LearnedRow) -> HeldEntry {
+    HeldEntry {
+        question: r.question,
+        answer: r.answer,
+        reads: r.reads,
+        input: r.input,
+        root: false,
+    }
+}
+
+/// What a core published as `bytes`, as the asking process holds it: its inputs and what stood in
+/// it, read out, and every answer it learned, left where it lies.
+type CoreHeld = { inputs: List<HeldEntry>, stood: List<HeldEntry>, lent: LentAnswers }
+
+/// What the core that published `bytes` learned; absent where they don't hold it whole.
+fn core_held(bytes: Bytes) -> CoreHeld? {
+    let saved = saved_bytes_in_memory(bytes)
+    let source = saved.source
+    let root = saved.root()
+    let high_words? = CoreLearned.high_words_within(source, root, saved.to) else { return null }
+    let rows? = CoreLearned.rows_within(source, root, saved.to) else { return null }
+    let inputs? = CoreLearned.inputs_within(source, root, saved.to) else { return null }
+    let stood? = CoreLearned.stood_within(source, root, saved.to) else { return null }
+    if high_words.length != rows.length { return null }
+    CoreHeld {
+        inputs: [entry_of(LearnedRow.read_from(source, r!)) for at in 0..inputs.length for r in [inputs.record_within_at(source, at, saved.to)] if r != null],
+        stood: [HeldEntry {
+            question: row.question,
+            answer: row.answer,
+            reads: [],
+            input: false,
+            root: false,
+        } for at in 0..stood.length for r in [stood.record_within_at(source, at, saved.to)] if r != null for row in [StoodRow.read_from(source, r!)]],
+        lent: LentAnswers {
+            source: source,
+            high_words: high_words,
+            low_word_at: (at: int) -> row_low_word(source, rows, at, saved.to),
+            entry_at: (at: int) -> row_entry(source, rows, at, saved.to),
+        },
+    }
+}
+
+/// Below this many answers a core's are read out at once: lending them costs a merge of every
+/// lent key, which is worth it only where most would never be asked for.
+const WORTH_LENDING: int = 20000
+
+/// What a core learned taken by `engine`, lent where it learned enough; why not, absent where taken.
+fn core_taken(engine: QueryEngine, held: CoreHeld) -> string? {
+    if held.lent.high_words.length >= WORTH_LENDING { return engine.took_lent(held.inputs, held.stood, held.lent, unproven() == null) }
+    engine
+        .took_learned(
+            [e! for at in 0..held.lent.high_words.length for e in [(held.lent.entry_at)(at)] if e != null],
+            held.stood,
+            unproven() == null,
+        )
+}
+
+/// The low word of the question of the row at `at`, absent where the row doesn't lie whole.
+fn row_low_word(source: SavedSource, rows: SavedList, at: int, end: int) -> int? {
+    let row? = rows.record_within_at(source, at, end) else { return null }
+    let question? = LearnedRow.question_within(source, row, end) else { return null }
+    ContentHash.low_word_in(source, question)
+}
+
+/// The row at `at` as an entry, absent where it doesn't lie whole.
+fn row_entry(source: SavedSource, rows: SavedList, at: int, end: int) -> HeldEntry? {
+    let row? = rows.record_within_at(source, at, end) else { return null }
+    entry_of(LearnedRow.read_from(source, row))
+}
+
+/// `bytes` published at `path` whole, by one rename, or not at all: a core that ends mid-write
+/// leaves no file a merge would read.
+fn written_whole(path: string, bytes: Bytes) {
+    let draft? = match drafted(path) { .Ok(d) -> d, .Err(_) -> null } else { return }
+    let wrote = match draft.write(bytes) { .Ok(_) -> true, .Err(_) -> false }
+    if !wrote {
+        draft.dropped()
+        return
+    }
+    if (draft.published(path) catch "") == "" { draft.dropped() }
+}
+
+/// Where the cores of a build leave what they learned, beside the store.
+fn learned_dir(directory: string) -> string { "${directory}-ahead" }
+
+/// How many waves this process forked.
+once fn waves_forked() -> Cell<int> { Cell.new(0) }
+
+/// `dir` emptied, and there; what a build before left there names no core of this one.
+fn cleared(dir: string) {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+    let _ = make_dirs(dir)
+}
+
+/// What every core of this build learned so far, taken by `engine` core by core where everything
+/// the core read beside its own answers is what `engine` reads: how many cores were taken, and each
+/// refused with why. Each core's file is read once, by the first merge that finds it, and removed;
+/// a name with a dot is a draft no core published, and is never read.
+fn learned_taken(engine: QueryEngine, dir: string) -> string {
+    let read = cores_read()
+    if read.get().any(it.dir != dir) { read.set([]) }
+    mut unread: List<string> = []
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    for name in list_dir(dir) catch [] {
+        if name.contains(".") { continue }
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
+        let bytes = match read_bytes("${dir}/${name}") {
+            .Ok(b) -> b,
+            .Err(_) -> {
+                unread.push(name)
+                continue
+            },
+        }
+        let _ = remove("${dir}/${name}")
+        let held? = core_held(bytes) else {
+            unread.push(name)
+            continue
+        }
+        read.push(CoreRead { dir: dir, name: name, held: held })
+    }
+    let refused = [r! for core in read.get() for r in [core_refused(engine, core)] if r != null]
+    let said = ["core ${dir}/${name}: unread, worked out here" for name in unread].concat(refused)
+    "${read.get().length - refused.length} cores' answers taken${["; ${s}" for s in said].join("")}"
+}
+
+/// Why `engine` didn't take what `core` learned, absent where it did.
+fn core_refused(engine: QueryEngine, core: CoreRead) -> string? {
+    let why? = core_taken(engine, core.held) else { return null }
+    "core ${core.dir}/${core.name} refused: ${why}"
+}
+
+/// One core's answers, as its file in `dir` held them.
+type CoreRead = { dir: string, name: string, held: CoreHeld }
+
+/// The cores' files this process has read.
+once fn cores_read() -> Cell<List<CoreRead>> {
+    let read: Cell<List<CoreRead>> = Cell.new([])
+    read
+}
+
+/// THE WITNESS'S EDIT, made between a wave and its merge: `AVRA_AHEAD_EDIT` as
+/// `<wave>:<path>=<text>`, written after the wave of that number, counted from 0, forked.
+fn edited_mid_build(wave: int) {
+    let spelled? = ahead_edit() else { return }
+    let colon = spelled.index_of(":")
+    let equals = spelled.index_of("=")
+    if colon < 0 || equals < colon || spelled.substring(0, colon) != "${wave}" { return }
+    let _ = write_text(
+        spelled.substring(colon + 1, equals),
+        spelled.substring(equals + 1, spelled.length),
+    )
+}
+
+/// `AVRA_AHEAD_EDIT`: a witness's edit between a wave and its merge.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn ahead_edit() -> string? { env("AVRA_AHEAD_EDIT") }
+
+/// `AVRA_AHEAD_UNPROVEN`: the cores' answers taken with no input proved, for a witness that the
+/// proof is what catches an input that moved.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn unproven() -> string? { env("AVRA_AHEAD_UNPROVEN") }
+

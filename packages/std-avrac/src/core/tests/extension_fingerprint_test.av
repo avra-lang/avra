@@ -1,0 +1,40 @@
+// A node extended by minted nodes fingerprints with them: the same node
+// extended by different roots is a different node.
+use @std.avrac.core.{Expr, new_node_store}
+
+spec "core/store — an extension is part of its node" {
+    given "one literal extended by different roots" {
+        then "fingerprints apart" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let two = s.alloc_expr(Expr.IntLit(2))
+            let a = s.alloc_expr(Expr.IntLit(9))
+            let b = s.alloc_expr(Expr.IntLit(9))
+            s.extend(a, "says again", [one], [one])
+            s.extend(b, "says again", [two], [two])
+            s.expr_fingerprint(a) != s.expr_fingerprint(b)
+        }
+    }
+    given "one literal extended by equal roots" {
+        then "fingerprints alike" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let same = s.alloc_expr(Expr.IntLit(1))
+            let a = s.alloc_expr(Expr.IntLit(9))
+            let b = s.alloc_expr(Expr.IntLit(9))
+            s.extend(a, "says again", [one], [one])
+            s.extend(b, "says again", [same], [same])
+            s.expr_fingerprint(a) == s.expr_fingerprint(b)
+        }
+    }
+    given "an unextended literal" {
+        then "differs from an extended one" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let a = s.alloc_expr(Expr.IntLit(9))
+            let b = s.alloc_expr(Expr.IntLit(9))
+            s.extend(a, "says again", [one], [one])
+            s.expr_fingerprint(a) != s.expr_fingerprint(b)
+        }
+    }
+}

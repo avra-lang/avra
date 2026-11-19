@@ -1,0 +1,169 @@
+// EVERY POSITION, BOTH ENGINES. HPACK blocks and an HTTP/2 session cut
+// at every octet and mutated at every octet three ways, and a seeded
+// frame fuzz — each outcome spelled as a letter, so the digest printed
+// is exact: eval == native == expected over thousands of hostile inputs,
+// and a change in any verdict shows as a changed letter.
+use @std.http.hpack.{HeaderField, HpackRefusal, Unpacked, header_field, decoder, encoder}
+use @std.http.h2.{
+    H2Conn,
+    Frame,
+    h2_server,
+    frame_bytes,
+    frames_in,
+    preface,
+    u32_at,
+    end_headers,
+    end_stream,
+}
+use @std.http.frame.{limits, no_bytes}
+
+/// A decoded block's outcome as one letter: F for fields, L for too
+/// large, else the refusal's initial.
+fn block_letter(d: Unpacked) -> string {
+    match d { .Fields(_) -> "F", .TooLarge -> "L", .Refused(why) -> refusal_letter(why) }
+}
+
+fn refusal_letter(why: HpackRefusal) -> string {
+    match why {
+        .Index -> "i",
+        .Integer -> "n",
+        .Truncated -> "t",
+        .Eos -> "e",
+        .Padding -> "p",
+        .TableSize -> "s",
+        .Placement -> "o",
+        .Unresized -> "u",
+    }
+}
+
+/// `block` against a fresh decoder, as a letter.
+fn fresh_letter(block: Bytes) -> string {
+    mut d = decoder(4096, 65536)
+    block_letter(d.decoded(block))
+}
+
+/// The letters of every prefix of `b`, the empty one first.
+fn prefixes(b: Bytes) -> string { [fresh_letter(b.slice(0, n)) for n in 0..b.length + 1].join("") }
+
+/// `b` with the octet at `at` replaced by `v`.
+fn mutated(b: Bytes, at: int, v: int) -> Bytes { b.slice(0, at).concat([v].bytes()!).concat(b.slice(at + 1, b.length)) }
+
+/// How many of each letter a list of letters holds, in letter order.
+fn histogram(letters: List<string>) -> string {
+    let kinds = [
+        "F",
+        "L",
+        "i",
+        "n",
+        "t",
+        "e",
+        "p",
+        "s",
+        "o",
+        "u",
+        "A",
+        "G0",
+        "G1",
+        "G3",
+        "G5",
+        "G6",
+        "G9",
+        "G11",
+    ]
+    [k + "=" + "${letters.filter(it == k).length}" for k in kinds if letters.any(it == k)].join(" ")
+}
+
+/// Every octet of `b` replaced by 0x00, 0x80 and 0xff, each decoded.
+fn block_mutations(b: Bytes) -> string { histogram([fresh_letter(mutated(b, at, v)) for at in 0..b.length for v in [0, 128, 255]]) }
+
+// ── The session ─────────────────────────────────────────────────
+
+fn request_block(path: string, n: int) -> Bytes {
+    mut e = encoder(true)
+    let head = [
+        header_field(":method", if n > 0 { "POST" } else { "GET" }),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "a"),
+    ]
+    e.encoded(if n > 0 { head.concat([header_field("content-length", "${n}")]) } else { head })
+}
+
+/// A client's session: the preface, SETTINGS, two GETs, a POST with a
+/// body, a PING.
+fn session() -> Bytes {
+    preface
+        .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+        .concat(frame_bytes(.Headers, end_headers | end_stream, 1, request_block("/a", 0)))
+        .concat(frame_bytes(.Headers, end_headers | end_stream, 3, request_block("/b", 0)))
+        .concat(frame_bytes(.Headers, end_headers, 5, request_block("/p", 5)))
+        .concat(frame_bytes(.Data, end_stream, 5, "hello".bytes()))
+        .concat(frame_bytes(.Ping, 0, 0, no_bytes.concat([1, 2, 3, 4, 5, 6, 7, 8].bytes()!)))
+}
+
+/// A server fed `b` whole, as a letter: A and how many requests it
+/// completed while alive, or G and the GOAWAY code it owes.
+fn session_letter(b: Bytes) -> string {
+    mut c = h2_server(limits())
+    let _ = c.fed(b, 0)
+    let g? = frames_in(c.out).find(it.kind is .GoAway) else { return "A" }
+    "G${u32_at(g.payload, 4)}"
+}
+
+fn completed(b: Bytes) -> int {
+    mut c = h2_server(limits())
+    let _ = c.fed(b, 0)
+    c.ready.length
+}
+
+/// The next value of a linear congruential sequence.
+fn next_rand(x: int) -> int { (x * 1103515245 + 12345) % 2147483648 }
+
+/// Forty frames of random kind, flags, stream and payload after a valid
+/// opening, from `seed`.
+fn noise_session(seed: int) -> Bytes {
+    mut x = seed
+    mut out = preface.concat(frame_bytes(.Settings, 0, 0, no_bytes))
+    for i in 0..40 {
+        x = next_rand(x)
+        let kind = x % 11
+        x = next_rand(x)
+        let flags = x % 256
+        x = next_rand(x)
+        let stream = x % 8
+        x = next_rand(x)
+        let len = x % 24
+        mut p: List<int> = []
+        for j in 0..len {
+            x = next_rand(x)
+            p.push(x % 256)
+        }
+        out = out.concat([0, 0, len, kind, flags, 0, 0, 0, stream].bytes()!).concat(p.bytes()!)
+    }
+    out
+}
+
+let c41 = encoder_block()
+fn encoder_block() -> Bytes {
+    mut e = encoder(true)
+    e
+        .encoded(
+            [
+                header_field(":method", "GET"),
+                header_field(":scheme", "http"),
+                header_field(":path", "/"),
+                header_field(":authority", "www.example.com"),
+            ],
+        )
+}
+let big = session()
+let opening = preface.length + 9
+[
+    "hpack prefixes: ${prefixes(c41)}",
+    "hpack mutations: ${block_mutations(c41)}",
+    "session prefixes completing requests: ${[completed(big.slice(0, n)) for n in 0..big.length + 1].filter(it > 0).length} of ${big.length + 1}, all three at the end: ${completed(big) == 3}",
+    "session prefixes: ${histogram([session_letter(big.slice(0, n)) for n in 0..big.length + 1])}",
+    "session mutations: ${histogram([session_letter(mutated(big, at, v)) for at in opening..big.length for v in [0, 128, 255]])}",
+    "fuzz: ${histogram([session_letter(noise_session(seed)) for seed in 1..301])}",
+]
+    .join("\n")

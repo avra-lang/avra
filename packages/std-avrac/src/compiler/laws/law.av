@@ -1,0 +1,81 @@
+//! A LAW, declared once: the diagnostic kind it speaks as, what it finds in a file's item — read over
+//! the item whole, or judged node by node over the kinds of node it names — the voice that words each
+//! fact, and a witness program it finds. A kind may have many laws;
+//! the kind's facts are what every law of it finds, gathered per item by `law_findings`, whose answer
+//! is saved and cut off early, while the voices are applied as a finding is said.
+use core.{At, NodeKind, Span}
+use compiler.{ItemView}
+use diagnostics.{Voice}
+use @std.meta.{Diagnostic, refuse}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// One fact a law's query found: where it stands in its item, counted from the item's start, absent
+/// where it has no place there, the words its voice is handed, what the sugar it stands in means, said beside it, and the
+/// kind it speaks as where it is its own rather than its law's; where the name its voice's guess
+/// respells stands, and the edits it offers beside; and which of its words are paths relative to
+/// the file it stands in, which only the file's place on disk turns into the paths it says.
+///
+/// Its places are counted from its own item's start, or from the start of the item `item` of the same
+/// file where it stands in another.
+export type Found = { at: Span?, args: List<string>, aside: Aside? = null, kind: string? = null, named: Span? = null, fixes: List<FoundFix> = [], local: List<int> = [], item: int? = null, unread: Unread? = null }
+
+/// A parse refusal in a file the name a finding refuses may be declared in, said beside the finding
+/// in place of its remedy: what holds that file (`subject`), the name, the file as a path from the
+/// finding's, where the refusal stands counted from that file's start, and its words.
+export type Unread = { subject: string, name: string, path: string, at: Span?, message: string }
+
+/// An edit a finding offers: what it does, the text it writes where it stands, and whether it is
+/// sure, short of which it is offered as likely, or where it's a `guess` only as possible; where it
+/// writes in another item of the same file than the finding's, that item, its place counted from
+/// that item's start.
+export type FoundFix = { description: string, at: Span?, replacement: string, sure: bool = false, item: int? = null, guess: bool = false }
+
+/// A sentence said beside a finding, at the place it names: in the finding's own item, or in the
+/// item `item` of the same file, its place counted from that item's start.
+export type Aside = { label: string, at: Span?, item: int? = null }
+
+export component law {
+    kind: string
+    /// What it finds in an item read whole; a law that judges kinds of node reads nothing so.
+    reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found> = reads_no_item
+    /// The kinds of node it judges: where any is named, each node of them its item holds is handed to
+    /// `judge` alone, in the order a law walks them, and the law reads no item whole.
+    on: List<NodeKind> = []
+    /// What it finds at one node of a kind it judges, in the view of the node's item.
+    judge: fn(ItemView, At) -> List<Found> = judges_no_node
+    /// The nodes of its item it is handed.
+    reach: Reach = Reach.Walked
+    /// Whether it judges the nodes a quote writes, or only the code its item runs.
+    quotes: bool = true
+    /// Whether it judges any node of an item, asked once an item before its nodes are handed it.
+    judged_if: fn(ItemView) -> bool = always_judged
+    voice: fn(List<string>) -> Voice
+    warns: bool = false
+    witness: string
+    /// The witness's package's other files, by their path in it, where the law needs more than one.
+    witness_files: Map<string, string> = {}
+    doc: string = ""
+
+    fn check() -> List<Diagnostic> {
+        if self.witness.is_empty() { return [refuse("a law's witness is a program it finds — write one")] }
+        []
+    }
+}
+
+/// What a law that judges kinds of node finds in an item read whole: nothing.
+export fn reads_no_item(_engine: QueryEngine, _file: SourceFileAddress, _at: int) -> List<Found> { [] }
+
+/// The nodes of its item a judging law is handed: those a law walks — each statement's kids, and the
+/// body of each case of a spec — every node the item's store holds, or every node its typing reads.
+export enum Reach {
+    Walked
+    Stored
+    Typed
+}
+
+/// Whether a law judges the nodes of the item `view` shows: of every item.
+export fn always_judged(_view: ItemView) -> bool { true }
+
+/// What a law that reads its item whole finds at one node: nothing.
+export fn judges_no_node(_view: ItemView, _at: At) -> List<Found> { [] }

@@ -1,0 +1,189 @@
+// Decoding: a Value read into typed values, every issue kept, the
+// rules' verdicts placed, the coercion policy, the bounds, and paths
+// into anything.
+use @std.validate.{
+    range,
+    length,
+    Decoding,
+    Slot,
+    Coercion,
+    Limits,
+    decode,
+    ruled,
+    list,
+    Issue,
+    Issues,
+    root,
+    Value,
+    Entry,
+}
+
+type Pair = { a: int, b: string }
+
+fn pair(mut d: Decoding, s: Slot) -> Pair? {
+    let o? = d.object(s) else { return null }
+    let a = digit(d, o.field("a"))
+    let b = short(d, o.field("b").optional())
+    if !d.closed(o, ["a", "b"]) { return null }
+    Pair { a: a!, b: b ?? "none" }
+}
+
+fn digit(mut d: Decoding, s: Slot) -> int? {
+    let v? = d.int(s) else { return null }
+    ruled(d, s, "range", range(v, 0, 9))
+}
+
+fn short(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "length", length(v, max: 3))
+}
+
+/// A rule that normalises: the field receives what it answered.
+fn trimmed(v: string) -> Result<string, string> {
+    if v.trim().is_empty() { fail "must not be blank" }
+    v.trim()
+}
+
+fn tidy(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "trimmed", trimmed(v))
+}
+
+fn pairs(mut d: Decoding, s: Slot) -> List<Pair>? { list(d, s, pair) }
+fn ints(mut d: Decoding, s: Slot) -> List<int>? { list(d, s, one_int) }
+fn one_int(mut d: Decoding, s: Slot) -> int? { d.int(s) }
+fn flag(mut d: Decoding, s: Slot) -> bool? { d.bool(s) }
+
+fn nested(mut d: Decoding, s: Slot) -> int? {
+    let o? = d.object(s) else { return null }
+    let inner = nested(d, o.field("x").optional())
+    if !d.closed(o, ["x"]) { return null }
+    (inner ?? 0) + 1
+}
+
+fn obj(entries: List<Entry>) -> Value { Value.Map(entries) }
+fn kv(k: string, v: Value) -> Entry { Entry { key: k, value: v } }
+
+/// The answer shown, or every issue as `path rule`.
+fn read_pair(v: Value, c: Coercion) -> string {
+    match decode(v, pair, c) { .Ok(p) -> "ok ${p.a} ${p.b}", .Err(e) -> lines(e) }
+}
+
+fn lines(e: Issues) -> string {
+    [i.path.text() + " " + i.rule for i in e.all].join(", ")
+}
+
+fn deep(n: int) -> Value {
+    mut v = obj([])
+    for _i in 0..n { v = obj([kv("x", v)]) }
+    v
+}
+
+spec "std/validate decode" {
+    given "a record" {
+        then "every field read" { read_pair(obj([kv("a", Value.Int(3)), kv("b", Value.Text("xy"))]), Coercion.Strict) == "ok 3 xy" }
+        then "an optional field absent takes its default" { read_pair(obj([kv("a", Value.Int(3))]), Coercion.Strict) == "ok 3 none" }
+        then "an optional field null takes its default" {
+            read_pair(obj([kv("a", Value.Int(3)), kv("b", Value.Null)]), Coercion.Strict) == "ok 3 none"
+        }
+        then "the empty object: the required field is missing" { read_pair(obj([]), Coercion.Strict) == "a required" }
+        then "every issue, never the first" {
+            read_pair(
+                obj([kv("a", Value.Int(10)), kv("b", Value.Text("long")), kv("c", Value.Null)]),
+                Coercion.Strict,
+            ) == "a range, b length, c unknown"
+        }
+        then "not an object at all" { read_pair(Value.List([]), Coercion.Strict) == " type" }
+    }
+    given "a rule's verdict" {
+        then "carries the rule's name, the path and what was received" {
+            match decode(obj([kv("a", Value.Int(10))]), pair) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].rule == "range" &&
+                    e.all[0].path.text() == "a" &&
+                    e.all[0].received?.shown() == "10",
+            }
+        }
+        then "a normalising rule's answer is what the field receives" { (decode(Value.Text("  hi "), tidy) catch "") == "hi" }
+    }
+    given "coercion" {
+        then "strict takes a number only as a number" { read_pair(obj([kv("a", Value.Text("3"))]), Coercion.Strict) == "a type" }
+        then "lax reads the text a number spells" { read_pair(obj([kv("a", Value.Text(" 3 "))]), Coercion.Lax) == "ok 3 none" }
+        then "lax still refuses text that spells no number" {
+            read_pair(obj([kv("a", Value.Text("3x"))]), Coercion.Lax) == "a type" &&
+                read_pair(obj([kv("a", Value.Text(""))]), Coercion.Lax) == "a type" &&
+                read_pair(obj([kv("a", Value.Text("+3"))]), Coercion.Lax) == "a type"
+        }
+        then "lax keeps the rules: a coerced number is still checked" { read_pair(obj([kv("a", Value.Text("12"))]), Coercion.Lax) == "a range" }
+        then "lax lets an unknown field through" { read_pair(obj([kv("a", Value.Int(1)), kv("z", Value.Null)]), Coercion.Lax) == "ok 1 none" }
+        then "lax reads truth words and digits" {
+            (decode(Value.Text("yes"), flag, Coercion.Lax) catch false) &&
+                !(decode(Value.Int(0), flag, Coercion.Lax) catch true)
+        }
+        then "strict does not" { decode(Value.Text("true"), flag, Coercion.Strict) is .Err }
+        then "lax reads one value as a list of one" {
+            (decode(Value.Int(7), ints, Coercion.Lax) catch []).length == 1 &&
+                decode(Value.Int(7), ints, Coercion.Strict) is .Err
+        }
+    }
+    given "lists" {
+        then "each element at its index" {
+            match decode(
+                Value.List([obj([kv("a", Value.Int(1))]), obj([kv("a", Value.Int(99))])]),
+                pairs,
+            ) { .Ok(_) -> false, .Err(e) -> lines(e) == "[1].a range" }
+        }
+        then "every element's issue" {
+            match decode(Value.List([obj([]), obj([]), obj([])]), pairs) {
+                .Ok(_) -> false,
+                .Err(e) -> lines(e) == "[0].a required, [1].a required, [2].a required",
+            }
+        }
+        then "the empty list reads" { (decode(Value.List([]), pairs) catch [Pair { a: 0, b: "" }]).is_empty() }
+    }
+    given "the bounds" {
+        then "within the depth bound reads" { (decode(deep(10), nested) catch 0) == 11 }
+        then "past it is one issue, and nothing below is read" {
+            match decode(deep(200), nested) {
+                .Ok(_) -> false,
+                .Err(e) -> e.count() == 1 && e.all[0].rule == "depth" && e.all[0].path.depth() == 128,
+            }
+        }
+    }
+    given "what an issue shows" {
+        then "a secret slot never shows what it received" {
+            match decode(Value.Int(5), secret_text) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].rule == "type" && e.all[0].received == null,
+            }
+        }
+        then "paths into anything" {
+            root().field("items").index(3).field("qty").text() == "items[3].qty" &&
+                root().field("payment").variant("Card").field("exp").text() == "payment.Card.exp" &&
+                root().field("meta").key("x-y").text() == "meta[\"x-y\"]" &&
+                root().text() == ""
+        }
+        then "the report aligns its columns" {
+            let e = Issues {
+                all: [
+                    Issue {
+                        path: root().field("a"),
+                        rule: "range",
+                        message: "m1",
+                        received: Value.Int(1),
+                    },
+                    Issue { path: root().field("long"), rule: "x", message: "longer" },
+                ],
+            }
+            e.report() == "  a     m1      range  got 1\n  long  longer  x"
+        }
+        then "a refusal describes itself" {
+            match decode(obj([]), pair) {
+                .Ok(_) -> false,
+                .Err(e) -> e.describe().message == "a is required" && e.describe().kind == "validate.refused",
+            }
+        }
+    }
+}
+
+fn secret_text(mut d: Decoding, s: Slot) -> string? { d.text(s.secret()) }

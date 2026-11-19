@@ -1,0 +1,310 @@
+//! `tree/node.av` — the neutral vocabulary a component PROJECTS to and every
+//! target consumes. Closed and versioned: a primitive is a semantic
+//! interaction contract, an attribute is a component property, a Node is
+//! the eager tree. No user writes these; they are a component's machine
+//! projection, the component being the one source of truth.
+use tree.sites.{Reading}
+use style.box.{Box}
+use style.tokens.{Size}
+use style.layout.{Axis}
+use @std.meta.{derive}
+use style.words.{Words}
+use style.table.{Table}
+use tree.facets.{Facets, Facet}
+use tree.url.{Url}
+use tree.seats.{Seat}
+use @std.assets.{Picture}
+
+/// The interaction contract a component IS. Every target answers every
+/// one, or the build names the target.
+@derive(Words)
+@derive(Table)
+export enum Prim {
+    @word(text) Text
+    @word(heading) Heading
+    @word(button) Button
+    @word(link) Link
+    @word(image) Image
+    @word(field) Field
+    @word(checkbox) Checkbox
+    @word(row) Row
+    @word(column) Column
+    @word(dialog) Dialog
+    @word(divider) Divider
+    @word(icon) Icon
+    @word(surface) Surface
+    @word(list) List
+    @word(item) Item
+    @word(card) Card
+    @word(progress) Progress
+    @word(alert) Alert
+    @word(spinner) Spinner
+    @word(form) Form
+    @word(fieldset) Fieldset
+    @word(switch) Switch
+    @word(slider) Slider
+    @word(key) Key
+}
+
+/// A value for every `Prim`.
+export type Prims<V> = {
+    text: V,
+    heading: V,
+    button: V,
+    link: V,
+    image: V,
+    field: V,
+    checkbox: V,
+    row: V,
+    column: V,
+    dialog: V,
+    divider: V,
+    icon: V,
+    surface: V,
+    list: V,
+    item: V,
+    card: V,
+    progress: V,
+    alert: V,
+    spinner: V,
+    form: V,
+    fieldset: V,
+    switch: V,
+    slider: V,
+    key: V,
+}
+
+/// What a control SAYS when it speaks: the value the user gave it, as
+/// DATA a target hands back with the event. ABSENCE IS THE OPTION'S OWN
+/// NULL — a press says nothing — never a sentinel value.
+export enum Said {
+    Text(value: string)
+    Flag(value: bool)
+    Number(value: int)
+}
+
+/// What a control calls when it speaks, by what its event says. ONE
+/// VOCABULARY with `Said`: a new thing a control can say is an arm of
+/// both, and every target that fires events answers it.
+export enum Handler {
+    Nothing(f: fn() -> void)
+    Text(f: fn(string) -> void)
+    Flag(f: fn(bool) -> void)
+    Number(f: fn(int) -> void)
+}
+
+/// What a node does when it speaks: the KIND of event and the handler the
+/// component bound to it. The handler stays in the program — a target
+/// subscribes to the kind and echoes WHICH node spoke, never the code.
+export type Action = { seat: Seat, handler: Handler }
+
+impl Said {
+    /// The text said, when text is what was said.
+    fn text() -> string? {
+        match self { .Text(t) -> t, .Flag(_) or .Number(_) -> null }
+    }
+
+    fn flag() -> bool? {
+        match self { .Flag(on) -> on, .Text(_) or .Number(_) -> null }
+    }
+
+    fn number() -> int? {
+        match self { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
+    }
+}
+
+impl Handler {
+    /// Whether this handler hears what was said: a handler that wants a value
+    /// hears only a value of its shape, and one that wants none hears nothing
+    /// said. Every shape spelled.
+    fn hears(said: Said?) -> bool {
+        match self {
+            .Nothing(_) -> said == null,
+            .Text(_) -> said?.text() != null,
+            .Flag(_) -> said?.flag() != null,
+            .Number(_) -> said?.number() != null,
+        }
+    }
+}
+
+impl Action {
+    /// Run the handler with what the control `said`. A handler that wants
+    /// a value the control did not say does not run: false, never a
+    /// made-up value.
+    fn fire(said: Said?) -> bool {
+        match self.handler {
+            .Nothing(f) -> f(),
+            .Text(f) -> {
+                let text? = said?.text() else { return false }
+                f(text)
+            },
+            .Flag(f) -> {
+                let flag? = said?.flag() else { return false }
+                f(flag)
+            },
+            .Number(f) -> {
+                let number? = said?.number() else { return false }
+                f(number)
+            },
+        }
+        true
+    }
+}
+
+/// How urgently a live region speaks.
+@derive(Words)
+export enum Urgency {
+    @word(polite) Polite
+    @word(assertive) Assertive
+}
+
+/// A component property, projected from the component's own fields.
+/// Semantic STATE crosses as an attribute (`Disabled`, `Open`, `Invalid`);
+/// a visual variant resolves to `Style` at the component.
+@derive(Facets)
+export enum Attribute {
+    @facet(content) Text(content: string)
+    @facet(content) Label(text: string)
+    @facet(level) Level(rank: int)
+    Value(text: string)
+    Amount(n: int)
+    Placeholder(text: string)
+    Source(picture: Picture)
+    Alt(text: string)
+    /// The node draws nothing a reader needs: it carries no words.
+    Decorative(flag: bool)
+    Href(url: Url)
+    Min(n: int)
+    Max(n: int)
+    Disabled(flag: bool)
+    Checked(flag: bool)
+    Selected(flag: bool)
+    Open(flag: bool)
+    Invalid(flag: bool)
+    Loading(flag: bool)
+    @facet(urgency) Urgency(level: Urgency)
+    Title(text: string)
+    Name(text: string)
+    /// Pressing the control submits the form it stands in.
+    Submits(flag: bool)
+    /// The control holds a secret: what it holds is drawn masked and
+    /// never echoed.
+    Masked(flag: bool)
+    /// Rows a windowed list at `path` leaves unbuilt here, each `extent`
+    /// tall in the target's own measure: the room they would take.
+    Skipped(path: string, rows: int, extent: int)
+    /// Row `at` of `of` in a windowed list, whatever of it is built;
+    /// `reveal` asks the target to bring it into view once.
+    Placed(at: int, of: int, reveal: bool)
+}
+
+/// A drawn node: its primitive, its attributes, its shared Box and its
+/// children, eager — so the tree IS data a tool can read. `drawn_by_order`
+/// says a composition drew it that is told from its siblings by order
+/// alone: the node's own step wears that composition's, so its siblings
+/// cannot show it.
+export type Node = {
+    prim: Prim,
+    attrs: List<Attribute>,
+    box: Box,
+    children: List<Node>,
+    events: List<Action> = [],
+    sites: List<Reading> = [],
+    drawn_by_order: bool = false,
+}
+
+// ── neutral projections every target reads ──────────────────────
+
+impl Node {
+    /// This node's words: its `Text`, else its `Label`.
+    fn words() -> string { content_of(self.attrs) }
+
+    /// This node's heading level, defaulting to one.
+    fn level() -> int { level_of(self.attrs) }
+
+    /// The gap between this node's children.
+    fn gap() -> Size? { gap_between(self.prim, self.box) }
+
+    /// Whether the node is something a reader sees: a key is a shortcut and draws nothing.
+    fn drawn() -> bool {
+        match self.prim { .Key -> false, rest -> true }
+    }
+
+    /// Whether the node is open — a dialog showing what it holds.
+    fn open() -> bool { self.attrs.any(says_open) }
+
+    /// Whether the node cannot speak.
+    fn disabled() -> bool { self.attrs.any(says_disabled) }
+
+    /// Whether pressing the node sends the form it stands in.
+    fn submits() -> bool { submits_among(self.attrs) }
+}
+
+/// The axis a primitive lays its children along when its layout names
+/// none. Every primitive spelled: a row is its axis, and what stacks its
+/// children — a column, a surface, a form, a card, a dialog — is a
+/// column; the rest flow as their target draws them.
+export fn own_axis(p: Prim) -> Axis? {
+    match p {
+        .Row -> .Row,
+        .Column or .Surface or .Form or .Card or .Fieldset or .Dialog -> .Column,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Divider or .Icon or .List or .Item or .Progress or .Alert or .Spinner or .Switch or .Slider or .Key -> null,
+    }
+}
+
+/// The gap along an axis when a layout names none. Every axis spelled:
+/// what shares a line never touches its neighbour.
+fn axis_gap(a: Axis) -> Size? {
+    match a { .Row -> .S, .Column -> null }
+}
+
+/// The gap the axis a `prim` in `box` lays along keeps on its own.
+fn own_gap(prim: Prim, box: Box) -> Size? {
+    let along? = box.layout.direction ?? own_axis(prim) else { return null }
+    axis_gap(along)
+}
+
+/// The gap between the children of a `prim` in `box`: its layout's, else
+/// its axis's own.
+export fn gap_between(prim: Prim, box: Box) -> Size? { box.layout.gap ?? own_gap(prim, box) }
+
+fn says_open(a: Attribute) -> bool {
+    match a { .Open(on) -> on, _ -> false }
+}
+
+fn says_disabled(a: Attribute) -> bool {
+    match a { .Disabled(on) -> on, _ -> false }
+}
+
+fn says_submits(a: Attribute) -> bool {
+    match a { .Submits(on) -> on, _ -> false }
+}
+
+/// Whether these attributes say their control submits its form.
+export fn submits_among(attrs: List<Attribute>) -> bool { attrs.any(says_submits) }
+
+fn says_masked(a: Attribute) -> bool {
+    match a { .Masked(on) -> on, _ -> false }
+}
+
+/// Whether these attributes say their control holds a secret.
+export fn masked_among(attrs: List<Attribute>) -> bool { attrs.any(says_masked) }
+
+/// A node's words: its `Text`, else its `Label`.
+fn content_of(attrs: List<Attribute>) -> string {
+    let found? = attrs.find(is_words) else { return "" }
+    match found { .Text(t) or .Label(t) -> t, rest -> "" }
+}
+
+/// Whether an attribute carries a node's own words.
+fn is_words(a: Attribute) -> bool { a.facet() == Facet.Content }
+
+/// A heading's level, defaulting to one.
+fn level_of(attrs: List<Attribute>) -> int {
+    let found? = attrs.find(is_level) else { return 1 }
+    match found { .Level(r) -> r, rest -> 1 }
+}
+
+/// Whether an attribute is a heading's level.
+fn is_level(a: Attribute) -> bool { a.facet() == Facet.Level }
+

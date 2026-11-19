@@ -1,0 +1,33 @@
+//! `avra build` makes a dev binary unless `--release`; `AVRA_PROGRAM_MODE` overrides either, and
+//! another target keeps its own level.
+use commands.{BuildMode, build_mode}
+
+/// The mode `spelled` and `--release` (`release`) choose for the host.
+fn host(spelled: string, release: bool) -> BuildMode? {
+    match build_mode(spelled, "", release) { .Ok(m) -> m, .Err(_) -> null }
+}
+
+spec "commands/build — the dev build is the default, --release the optimised one" {
+    given "`avra build`" {
+        then "it builds at -O0" { host("", false)?.opt == "-O0" }
+        then "LLVM shared, linked in layers" { host("", false)?.shared == true && host("", false)?.layered == true }
+    }
+    given "`avra build --release`" {
+        then "it builds at -O1" { host("", true)?.opt == "-O1" }
+        then "one static binary" { host("", true)?.shared == false && host("", true)?.layered == false }
+    }
+    given "AVRA_PROGRAM_MODE" {
+        then "`release` spells the optimised build without the flag" { host("release", false)?.opt == "-O1" }
+        then "`dev` spells the dev build over the flag" { host("dev", true)?.opt == "-O0" }
+        then "a field overrides the default" { host("opt=-O2", false)?.opt == "-O2" }
+        then "a word it doesn't know is refused" { host("fast", false) == null }
+    }
+    given "another target" {
+        then "it keeps its own level, with or without --release" {
+            match build_mode("", "wasm32-wasip1", false) {
+                .Ok(m) -> m.opt == "-Oz" && !m.layered,
+                .Err(_) -> false,
+            }
+        }
+    }
+}

@@ -1,0 +1,23 @@
+// proves: a library-declared collect folds into a const at compile time — `const shapes` holds every @model's table and columns before the program runs
+use @std.db.{model, model_shape}
+use @std.db.models.{Found}
+use @std.db.shape.{Shape}
+
+@model
+type Board = {
+    id: int = 0,
+    title: string,
+}
+
+@model
+type Card = {
+    id: int = 0,
+    text: string,
+    note: string?,
+}
+
+collect models: List<Found> = @model in closure as Found { model: it, name: it.name } by it.name
+
+const shapes: List<Shape> = [model_shape(f.model) for f in models]
+
+["${s.name}: ${[c.name for c in s.columns].join(",")}" for s in shapes].join("\n")

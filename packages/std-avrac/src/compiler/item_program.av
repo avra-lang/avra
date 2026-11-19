@@ -1,0 +1,3118 @@
+//! A PROGRAM MADE ON THE PROGRAM LAYER, AS THE ENGINES RUN ONE: a program file's entry and every body
+//! it reaches, each lowered here, as the bodies the evaluator and the backend consume. Each body is
+//! read by its registers' layouts alone: it carries no registry type, and the program's registry is
+//! empty. A program not made yet says why, by the first thing it met.
+use core.{
+    SettledSeat,
+    SeatMark,
+    plain_mark,
+    BinOp,
+    reach_words,
+    row_has,
+    BoxKind,
+    CalledFn,
+    code_hash_symbol,
+    code_hash_target,
+    qtrace,
+    traced,
+    Level,
+    rt_sigs,
+    CheckedProgram,
+    FnWrapper,
+    Ins,
+    Layout,
+    Reg,
+    RtKind,
+    RtSig,
+    SignedType,
+    Span,
+    Static,
+    TaskChecks,
+    flatten,
+    inout_row,
+    grouped_by,
+    new_type_registry,
+    rt_sig_of,
+    some_list,
+    width_named,
+    digest_of,
+    fp_str,
+    ParameterLayout,
+    LiftedBody,
+    Noted,
+    TestSite,
+    notes_kept,
+    body_symbol,
+    hosted_symbol,
+    static_code_syms,
+    sorted_by,
+    distinct,
+    distinct_ints,
+}
+use compiler.lower.{Body, DeferredFn, Lowered}
+use compiler.lower.code_hash.{
+    CodeFacts,
+    CodeReading,
+    FactNode,
+    TargetHash,
+    any_value_node,
+    code_facts_from_wire,
+    code_facts_wire,
+    code_graph,
+    facts_rooted,
+    graph_refs,
+    guards_of,
+    hashes_read,
+    node_digest,
+    summed_hash,
+    with_digest,
+    read_code_facts,
+    rooted_name,
+    value_node_of,
+    values_node,
+}
+use compiler.memory.{memory, memory_late}
+use compiler.static_symbols.{module_spelled}
+use compiler.backend.{Owned, WasmCall, body_lines, in_symbol_order, program_closed, program_opens}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{MovedRead, QueryDefinition, QueryEngine}
+use @std.program.saved_query.{
+    cut_query,
+    definitions_of,
+    folded_query,
+    ListedQuery,
+    query,
+    query_definition,
+}
+use @std.program.saved_derive.{Saved}
+use @std.program.sorted.{first_not_before, order_by_words}
+use @std.meta.{derive}
+use @std.program.query_times.{TimedSide}
+use @std.program.answer_record.{ContentHash, Question, content_hash}
+use @std.program.saved_layout.{SavedBytes, SavedList, SavedRecord, SavedSlots, SavedSource}
+use @std.text.{text_before}
+use @std.io.{env}
+use @std.relation.engine.{list_cell, map_cell}
+
+/// A program made on the program layer, or why it isn't yet: the reason, and where it stood.
+export enum MadeProgram {
+    Made(lowered: Lowered)
+    Unmade(reason: string, at: string)
+    /// A body it reaches holds a node its seat refused, in each of these files.
+    Refused(files: List<SourceFileAddress>)
+}
+
+/// The program `file` runs: its entry and each body it reaches, lowered, the memory pass applied.
+/// Where the entry or a body it reaches links a scheduler, every `while` reads the tick. With
+/// `trapped`, a body it reaches that isn't lowered yet traps naming itself where it's reached, and
+/// each is filed in `stood` where it's given.
+export fn made_program(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    trapped: bool = false,
+    stood: Cell<List<Missed>>? = null,
+) -> MadeProgram {
+    let entry? = entry_lowered(engine, file) else { return MadeProgram.Unmade(runs_nothing(), spelled_file(file)) }
+    if !entry.whole() { return MadeProgram.Unmade(entry.missing[0], "the entry") }
+    let survey = task_survey(engine)
+    made_reaching(
+        survey,
+        entry,
+        ENTRY,
+        [],
+        scheduled_by(survey, entry),
+        stood,
+        if trapped { file } else { null },
+        if entry.refused > 0 { [file] } else { [] },
+        file.package_name,
+        home: file,
+    )
+}
+
+/// THE PROGRAM `file` RUNS, AS ITS BUILD IS KEYED BY: what its entry reaches, each body in name order
+/// with the tests it keeps, and the facts its bodies read of each other. A body's own code is its
+/// lowering query's answer (`BodyAsked`) and is never held here, so an edit that moves no fact a
+/// body reads of another leaves this answer where it stood; one that moves only a body's own tests
+/// or what it sees is folded forward (`program_reached_again`).
+@folded_query(program_reached_again)
+export fn program_reached(engine: QueryEngine, file: SourceFileAddress) -> ProgramReach {
+    let entry? = entry_lowered(engine, file) else { return ProgramReach.Unmade(runs_nothing(), spelled_file(file)) }
+    if !entry.whole() { return ProgramReach.Unmade(entry.missing[0], "the entry") }
+    let walked = match program_walked(engine, file) {
+        .Walked(w) -> w,
+        .Unmade(why, at) -> { return ProgramReach.Unmade(why, at) },
+    }
+    let checks = if walked.scheduled { TaskChecks.Scheduled } else { TaskChecks.Tested }
+    let kept = walked.entry_kept
+    let root = entry.placed_keeping(kept)
+    let walk = Walked {
+        met: [Met { called: u.called, facts: unit_facts_lying(engine, u.called)!, kept: u.kept } for u in walked.units],
+        externs: walked.externs,
+        unlowered: walked.unlowered,
+    }
+    let wrappers = distinct_wrappers(
+        root.wrappers.concat(flatten([m.facts.wrappers() for m in walk.met])),
+    )
+    let rows = flatten([some_list(declared_row(engine, c)) for c in walk.externs])
+    let named = [placed_names(engine, m.called, m.kept) for m in walk.met]
+    let root_named = lowered_names(root)
+    let wrapped = [wrapper_body(w) for w in wrappers]
+    let bodies = flatten([m.facts.declared() for m in walk.met])
+        .concat([lifted_seen(l) for l in root.lifts])
+        .concat(
+            [BodySeen { name: w.name, seats: w.seats, answer: w.answer ?? Layout.Void } for w in wrapped],
+        )
+    let opens = opens_of(
+        [root_named].concat(named).concat([sorted_names(names_of(wrapped, []).keys())]),
+        bodies,
+        rows,
+    )
+    let shapes = called_shapes(callers_of(engine, root, walk, named, wrapped, opens), opens)
+    let unlowered = walk.unlowered
+    let stand_ins = [stand_in_of(o, shapes.get(o) ?? no_call(), why_map(unlowered)) for o in opens if code_hash_target(o) == null]
+    let hashed = [HashCall { target: code_hash_target(o)!, answer: (shapes.get(o) ?? no_call()).answer } for o in opens if code_hash_target(o) != null]
+    let declared = bodies
+        .concat([BodySeen { name: s.symbol, seats: s.seats, answer: s.answer } for s in stand_ins])
+        .concat(
+            [BodySeen { name: code_hash_symbol(h.target), seats: [], answer: h.answer } for h in hashed],
+        )
+    let seen = program_seen(declared, rows)
+    let units = [ReachedUnit { called: m.called, kept: m.kept, sees: seen.sees(named[i]) } for i, m in walk.met]
+    ProgramReach
+        .Program(
+            ReachedProgram {
+                units: units,
+                homes: [unit_home(u) for u in units],
+                unit_keys: flatten([unit_key_words(engine, u) for u in units]),
+                entry_kept: kept,
+                entry_sees: seen.sees(root_named),
+                scheduled: checks.ticks(),
+                externs: walk.externs,
+                unlowered: unlowered,
+                wrappers: wrappers,
+                stand_ins: stand_ins,
+                hashed: hashed,
+                declared: declared,
+                declared_counts: [m.facts.declared().length for m in walk.met],
+            },
+        )
+}
+
+/// A BODY A PROGRAM'S WALK MET: the call it was met by, the tests it keeps, and what a fold of the
+/// walk reads without a survey: the question its facts answer, which names the body whatever calls
+/// it and wherever it stands among the others; the same of each met body it calls, two words
+/// each; and whether a call of it may reach a cancel point and links a scheduler.
+@derive(Saved)
+export type WalkedUnit = {
+    called: CalledFn,
+    kept: TestsKept,
+    facts_high: int,
+    facts_low: int,
+    callees: List<int>,
+    reaches: bool,
+    links: bool,
+}
+
+/// WHAT A PROGRAM'S ENTRY REACHES: each body met, in name order, and where each stands in the
+/// order of its facts' questions, so one is found by its question by halving; the externs met and
+/// the bodies gone past, each in name order; the tests the entry keeps; and whether the program
+/// links a scheduler.
+@derive(Saved)
+export type WalkedProgram = {
+    units: List<WalkedUnit>,
+    by_question: List<int>,
+    externs: List<CalledFn>,
+    unlowered: List<Missed>,
+    entry_kept: TestsKept,
+    scheduled: bool,
+}
+
+/// A program's walk, or why its entry is no program yet.
+@derive(Saved)
+export enum ProgramWalk {
+    Walked(walk: WalkedProgram)
+    Unmade(why: string, at: string)
+}
+
+/// THE WALK OF THE PROGRAM `file` RUNS, read from its bodies' facts alone: no body's code is read,
+/// so it stands wherever every met body's facts do, and a process that holds it knows each body's
+/// placement before any is placed. An edit that moves a body's facts is folded forward
+/// (`program_walked_again`).
+@folded_query(program_walked_again)
+export fn program_walked(engine: QueryEngine, file: SourceFileAddress) -> ProgramWalk {
+    let entry? = entry_lowered(engine, file) else { return ProgramWalk.Unmade(runs_nothing(), spelled_file(file)) }
+    if !entry.whole() { return ProgramWalk.Unmade(entry.missing[0], "the entry") }
+    let survey = task_survey(engine)
+    let checks = scheduled_by(survey, entry)
+    let kept = survey.kept(entry, checks)
+    let walk = match walked_from(
+        survey,
+        entry.placed_keeping(kept),
+        checks,
+        null,
+        true,
+        file.package_name,
+        false,
+        file,
+    ) { .Met(w) -> in_name_order(w), .Stopped(why, at) -> { return ProgramWalk.Unmade(why, at) } }
+    let questions = [facts_question(engine, m.called) for m in walk.met]
+    mut at_symbol: Map<string, int> = {}
+    for i, m in walk.met { at_symbol.set(m.called.symbol, i) }
+    ProgramWalk
+        .Walked(
+            WalkedProgram {
+                units: [WalkedUnit {
+                    called: m.called,
+                    kept: m.kept,
+                    facts_high: questions[i].high_word,
+                    facts_low: questions[i].low_word,
+                    callees: flatten(
+                        [[questions[at!].high_word, questions[at!].low_word] for symbol in m.facts.called_symbols() for at in [at_symbol.get(symbol)] if at != null],
+                    ),
+                    reaches: survey.reaches(m.called),
+                    links: survey.links(body_at(m.called)),
+                } for i, m in walk.met],
+                by_question: order_by_words([q.high_word for q in questions], [q.low_word for q in questions]),
+                externs: walk.externs,
+                unlowered: walk.unlowered,
+                entry_kept: kept,
+                scheduled: checks.ticks(),
+            },
+        )
+}
+
+/// THE WALK FOLDED FORWARD from `last`, where each read that moved is a met body's facts. What a walk
+/// holds is what it reaches (`CallsHeld`), so the fold takes the bodies the moved ones call anew,
+/// walked from those calls past every body already met, and lets go the bodies only the calls they
+/// no longer make reached: the bodies those calls reached and all they reach, walked again from
+/// every body outside them that calls one, so a cycle cut loose leaves with the rest. Every other
+/// body keeps its tests where each moved one keeps its own cancel evidence and reaches and links as
+/// it did. Absent where a read is anything else, a moved body stops lowering, a call meets an
+/// extern or a body gone past otherwise than the walk holds it or no longer meets one, the calls of
+/// a fn that isn't generic are made otherwise than each other, or a host fn a file gives is met or
+/// let go.
+fn program_walked_again(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    last: ProgramWalk,
+    moved: List<MovedRead>,
+) -> ProgramWalk? {
+    let walk = match last { .Walked(w) -> w, .Unmade(_why, _at) -> { return null } }
+    let entry? = entry_lowered(engine, file) else { return null }
+    let survey = task_survey(engine)
+    let checks = if walk.scheduled { TaskChecks.Scheduled } else { TaskChecks.Tested }
+    let fold = WalkFold {
+        engine: engine,
+        survey: survey,
+        checks: checks,
+        walk: walk,
+        program: file.package_name,
+        calls: map_cell(),
+        recheck: list_cell(),
+    }
+    mut bodies: List<BodyMoved> = []
+    for m in moved {
+        let places = fold.asking(m.question.known_as)
+        if places.is_empty() { return null }
+        let was? = body_facts_was(engine, m) else { return null }
+        for at in places {
+            let now? = facts_read(engine, walk.units[at].called) else { return null }
+            if !fold.cancels_kept(was, now) { return null }
+            let kept = survey.kept_in(now, checks)
+            if facts_unmade(now.missing, now.tests, kept) != null { return null }
+            bodies.push(BodyMoved { at: at, was: was, now: now, kept: kept })
+        }
+    }
+    mut seeds: List<CalledFn> = []
+    mut cut: List<int> = []
+    mut rechecked: List<int> = []
+    for b in bodies {
+        let made = names_wanted(
+            [call_made(met_for(fold.engine, c, fold.program)) for c in b.was.callees],
+        )
+        let made_now = names_wanted(
+            [call_made(met_for(fold.engine, c, fold.program)) for c in b.now.callees],
+        )
+        let calls_now = names_wanted([c.symbol for c in b.now.callees])
+        for raw in b.was.callees {
+            let c = met_for(fold.engine, raw, fold.program)
+            if made_now.has(call_made(c)) { continue }
+            let at? = fold.place_of(c.symbol) else { return null }
+            if !calls_now.has(c.symbol) { cut.push(at) }
+            if called_text(fold.held(at)) == called_text(c) { rechecked.push(at) }
+        }
+        for raw in b.now.callees {
+            let c = met_for(fold.engine, raw, fold.program)
+            if made.has(call_made(c)) { continue }
+            let held? = fold.meets(c) else { return null }
+            if !held { seeds.push(c) }
+        }
+    }
+    let grown = match walked(
+        survey,
+        seeds,
+        fold.held_names(),
+        {},
+        checks,
+        null,
+        true,
+        fold.program,
+        false,
+        null,
+    ) { .Met(w) -> in_name_order(w), .Stopped(_why, _at) -> { return null } }
+    if !grown.unlowered.is_empty() { return null }
+    for e in grown.externs {
+        let held? = fold.meets(e) else { return null }
+        if !held { return null }
+    }
+    let grown_names = names_wanted([m.called.symbol for m in grown.met])
+    for m in grown.met {
+        for raw in m.facts.callees() {
+            let c = met_for(fold.engine, raw, fold.program)
+            if grown_names.has(c.symbol) { continue }
+            let held? = fold.meets(c) else { return null }
+            if !held { return null }
+        }
+    }
+    let after = Moves {
+        bodies: bodies,
+        grown: grown,
+        moved: moved_places(bodies, walk.units.length),
+    }
+    let roots = names_wanted(
+        [c.symbol for c in every_callee_of(entry.placed_keeping(walk.entry_kept))
+            .concat(hosted_in(engine, file, fold.program))
+            .concat(package_hosted(engine, fold.program, file))],
+    )
+    let gone? = fold.let_go(cut, after, roots) else { return null }
+    for at in places_marked(gone) {
+        let facts? = fold.facts_at(at, after) else { return null }
+        for c in facts.callees {
+            let to? = fold.place_of(c.symbol) else { return null }
+            if !gone[to] &&
+                called_text(fold.held(to)) == called_text(met_for(fold.engine, c, fold.program)) { rechecked.push(to) }
+        }
+    }
+    if !fold.files_kept(gone) { return null }
+    if !fold
+        .rechecked(
+            distinct_ints(rechecked.concat(fold.recheck.get())).filter(!gone[it]),
+            gone,
+            after,
+            entry,
+            file,
+        ) { return null }
+    let questions = fold.grown_questions(grown)
+    mut units: List<WalkedUnit> = []
+    for at, u in walk.units {
+        if gone[at] { continue }
+        let held = fold.held(at)
+        let retexted = called_text(held) != called_text(u.called)
+        let b = after.moved[at]
+        let unit = if b < 0 { u } else { u with { kept: bodies[b].kept, callees: fold.words_of(bodies[b].now.callees, gone, questions) } }
+        if !retexted {
+            units.push(unit)
+            continue
+        }
+        let q = facts_question(engine, held)
+        if q.high_word != u.facts_high || q.low_word != u.facts_low { return null }
+        units
+            .push(
+                unit with { called: held, reaches: survey.reaches(held), links: survey.links(body_at(held)) },
+            )
+    }
+    let met = [WalkedUnit {
+        called: m.called,
+        kept: m.kept,
+        facts_high: questions.get(m.called.symbol)!.high_word,
+        facts_low: questions.get(m.called.symbol)!.low_word,
+        callees: fold.words_of(m.facts.callees(), gone, questions),
+        reaches: survey.reaches(m.called),
+        links: survey.links(body_at(m.called)),
+    } for m in grown.met]
+    let all = merged_by_symbol(units, met)
+    ProgramWalk
+        .Walked(
+            walk with { units: all, by_question: order_by_words([u.facts_high for u in all], [u.facts_low for u in all]) },
+        )
+}
+
+/// A moved body: its place in the walk, its facts as they were and as they are, and the tests it
+/// keeps now.
+type BodyMoved = { at: int, was: UnitFacts, now: UnitFacts, kept: TestsKept }
+
+/// What a fold of the walk moved: its moved bodies, what their calls met anew, and by each place
+/// the walk holds, which moved body stands there, or -1.
+type Moves = { bodies: List<BodyMoved>, grown: Walked, moved: List<int> }
+
+impl Moves {
+    /// The moved body at `at`, absent where none moved.
+    fn at(at: int) -> BodyMoved? { if self.moved[at] < 0 { null } else { self.bodies[self.moved[at]] } }
+}
+
+/// By each of `count` places, which of `bodies` stands there, or -1.
+fn moved_places(bodies: List<BodyMoved>, count: int) -> List<int> {
+    mut out = [-1 for _at in 0..count]
+    for i, b in bodies { out[b.at] = i }
+    out
+}
+
+/// The places `marks` marks.
+fn places_marked(marks: List<bool>) -> List<int> { [at for at, marked in marks if marked] }
+
+/// Whether `words`, ascending, holds `w`.
+fn holds_word(words: List<int>, w: int) -> bool {
+    let at = first_not_before(words, 0, (x: int) -> x < w)
+    at < words.length && words[at] == w
+}
+
+/// What folding a walk forward reads: the engine, the survey and the tests it places, the last walk,
+/// the program's package, and each held call a fold lessens, by its symbol.
+type WalkFold = {
+    engine: QueryEngine,
+    survey: TaskSurvey,
+    checks: TaskChecks,
+    walk: WalkedProgram,
+    program: string,
+    calls: Cell<Map<string, CalledFn>>,
+    /// The place of each body of a fn that isn't generic a call makes otherwise now.
+    recheck: Cell<List<int>>,
+}
+
+impl WalkFold {
+    /// The place of the met body `symbol` names, absent where none is.
+    fn place_of(symbol: string) -> int? {
+        let units = self.walk.units
+        let at = first_not_before(units, 0, (u: WalkedUnit) -> text_before(u.called.symbol, symbol))
+        if at < units.length && units[at].called.symbol == symbol { at } else { null }
+    }
+
+    /// The places of the met bodies whose facts the question `q` asks.
+    fn asking(q: ContentHash) -> List<int> {
+        let units = self.walk.units
+        let order = self.walk.by_question
+        mut at = first_not_before(
+            order,
+            0,
+            (p: int) -> units[p].facts_high < q.high_word ||
+                units[p].facts_high == q.high_word && units[p].facts_low < q.low_word,
+        )
+        mut out: List<int> = []
+        while at < order.length &&
+            units[order[at]].facts_high == q.high_word &&
+            units[order[at]].facts_low == q.low_word {
+            out.push(order[at])
+            at = at + 1
+        }
+        out
+    }
+
+    /// The call the body at `at` is held by now.
+    fn held(at: int) -> CalledFn {
+        let u = self.walk.units[at]
+        self.calls.get().get(u.called.symbol) ?? u.called
+    }
+
+    /// The names of every body the walk met or went past.
+    fn held_names() -> Map<string, bool> {
+        names_wanted(
+            [u.called.symbol for u in self.walk.units]
+                .concat([m.symbol for m in self.walk.unlowered]),
+        )
+    }
+
+    /// Whether the walk holds what `c` calls, as `c` calls it: a call of a generic fn's unit lessening
+    /// the call it's held by, and one of a fn that isn't generic made otherwise taken as its call where
+    /// every call made of it now is made so (`rechecked`); false where `c` meets a body anew, absent
+    /// where it calls an extern anew or otherwise than the walk holds it.
+    fn meets(c: CalledFn) -> bool? {
+        let text = called_text(c)
+        let at = self.place_of(c.symbol)
+        if at != null {
+            let held = called_text(self.held(at!))
+            if text == held { return true }
+            if !generic_call(c) {
+                self.calls.put(c.symbol, c)
+                self.recheck.push(at!)
+                return true
+            }
+            if text_before(text, held) { self.calls.put(c.symbol, c) }
+            return true
+        }
+        let out = self.walk.externs.find(it.symbol == c.symbol)
+        if out != null {
+            let held = called_text(out!)
+            if text == held || generic_call(c) && text_before(held, text) { return true }
+            return null
+        }
+        if c.external { return null }
+        if self.walk.unlowered.any(it.symbol == c.symbol) { return true }
+        false
+    }
+
+    /// Whether a body that reached cancel points and linked a scheduler as `was` says reaches and
+    /// links as `now` says alike: its own evidence alike, and the bodies it calls anew reaching and
+    /// linking just where the ones it no longer calls did, or one it calls still doing either way.
+    fn cancels_kept(was: UnitFacts, now: UnitFacts) -> bool {
+        if cancels_text(was) == cancels_text(now) { return true }
+        let own = now.cancels.own
+        if content_text(was.cancels.own.saved_bytes()) != content_text(own.saved_bytes()) { return false }
+        let before = names_wanted([b.key() for b in was.cancels.callees])
+        let after = names_wanted([b.key() for b in now.cancels.callees])
+        let added = now.cancels.callees.filter((b) -> !before.has(b.key()))
+        let dropped = was.cancels.callees.filter((b) -> !after.has(b.key()))
+        let kept = now.cancels.callees.filter((b) -> before.has(b.key()))
+        let survey = self.survey
+        reach_alike(own.may(), added, dropped, kept, (b: BodyAt) -> survey.reaches_at(b)) &&
+            reach_alike(own.linked(), added, dropped, kept, (b: BodyAt) -> survey.links(b))
+    }
+
+    /// The bodies the walk lets go once the calls of the bodies at `cut` are no longer made: of the
+    /// bodies they reached and all those reach, each no body outside them, a body met anew or the
+    /// entry reaches now. Absent where one of them is a host fn its file gives.
+    fn let_go(cut: List<int>, after: Moves, roots: Map<string, bool>) -> List<bool>? {
+        let count = self.walk.units.length
+        mut out = [false for _at in 0..count]
+        if cut.is_empty() { return out }
+        mut inside = [false for _at in 0..count]
+        mut queue: List<int> = []
+        for at in cut {
+            if inside[at] { continue }
+            inside[at] = true
+            queue.push(at)
+        }
+        mut i = 0
+        while i < queue.length {
+            for t in self.edges_was(queue[i]) {
+                if inside[t] { continue }
+                inside[t] = true
+                queue.push(t)
+            }
+            i = i + 1
+        }
+        let highs = self.highs_of(queue)
+        mut reached = [false for _at in 0..count]
+        mut from: List<int> = []
+        for at in queue {
+            let u = self.walk.units[at]
+            if self.hosts(u.called) { return null }
+            if roots.has(u.called.symbol) {
+                reached[at] = true
+                from.push(at)
+            }
+        }
+        for at, u in self.walk.units {
+            if inside[at] { continue }
+            let b = after.at(at)
+            let targets = when {
+                b != null -> self.places_called(b!.now.callees)
+                calls_into(u, highs) -> self.edges_was(at)
+                _ -> []
+            }
+            for t in targets {
+                if !inside[t] || reached[t] { continue }
+                reached[t] = true
+                from.push(t)
+            }
+        }
+        for m in after.grown.met {
+            for t in self.places_called(m.facts.callees()) {
+                if !inside[t] || reached[t] { continue }
+                reached[t] = true
+                from.push(t)
+            }
+        }
+        mut j = 0
+        while j < from.length {
+            let b = after.at(from[j])
+            let targets = if b != null { self.places_called(b!.now.callees) } else { self.edges_was(from[j]) }
+            for t in targets {
+                if !inside[t] || reached[t] { continue }
+                reached[t] = true
+                from.push(t)
+            }
+            j = j + 1
+        }
+        for at in queue { if !reached[at] { out[at] = true } }
+        out
+    }
+
+    /// The high words of the questions of the facts of the bodies at `places`, ascending, each once.
+    fn highs_of(places: List<int>) -> List<int> {
+        sorted_by(
+            distinct_ints([self.walk.units[at].facts_high for at in places]),
+            (a: int, b: int) -> a < b,
+        )
+    }
+
+    /// The places of the bodies the body at `at` called when the walk was last made.
+    fn edges_was(at: int) -> List<int> {
+        let words = self.walk.units[at].callees
+        flatten(
+            [self.asking(ContentHash { high_word: words[k], low_word: words[k + 1] }) for k in 0..words.length if k % 2 == 0],
+        )
+    }
+
+    /// The places of the met bodies `callees` call.
+    fn places_called(callees: List<CalledFn>) -> List<int> { [p! for c in callees for p in [self.place_of(c.symbol)] if p != null] }
+
+    /// Whether `c` is a host fn its file gives a program.
+    fn hosts(c: CalledFn) -> bool { hosted_in(self.engine, c.file, self.program).any(it.symbol == c.symbol) }
+
+    /// The facts of the body at `at`: as it is now where it moved, else as the walk read them.
+    fn facts_at(at: int, after: Moves) -> UnitFacts? {
+        let b = after.at(at)
+        if b != null { return b!.now }
+        facts_read(self.engine, self.walk.units[at].called)
+    }
+
+    /// Whether every file a body let go stands in still holds a met body, an extern or a body gone
+    /// past, or gives no host fn: a file the walk no longer reads would let its host fns go.
+    fn files_kept(gone: List<bool>) -> bool {
+        let let_go = places_marked(gone)
+        if let_go.is_empty() { return true }
+        mut read: Map<string, bool> = {}
+        for at, u in self.walk.units { if !gone[at] { read.set(spelled_file(u.called.file), true) } }
+        for e in self.walk.externs { read.set(spelled_file(e.file), true) }
+        for m in self.walk.unlowered { read.set(spelled_file(m.file), true) }
+        for at in let_go {
+            let f = self.walk.units[at].called.file
+            if !read.has(spelled_file(f)) && !hosted_in(self.engine, f, self.program).is_empty() { return false }
+        }
+        true
+    }
+
+    /// Whether each body at `places`, a call of which a moved or let-go body made as the walk held it,
+    /// is held by the least of the calls still made of it: by a body met, the entry or a host fn its
+    /// file gives. A fn that isn't generic must be called alike by each.
+    fn rechecked(
+        places: List<int>,
+        gone: List<bool>,
+        after: Moves,
+        entry: LoweredFn,
+        file: SourceFileAddress,
+    ) -> bool {
+        if places.is_empty() { return true }
+        let wanted = names_wanted([self.walk.units[at].called.symbol for at in places])
+        let highs = self.highs_of(places)
+        mut calls: List<CalledFn> = []
+        for at, u in self.walk.units {
+            if gone[at] { continue }
+            let b = after.at(at)
+            if b == null && !calls_into(u, highs) { continue }
+            let facts? = (if b != null { b!.now } else { facts_read(self.engine, u.called) }) else { return false }
+            for c in facts.callees { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } }
+        }
+        for m in after.grown.met { for c in m.facts.callees() { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } } }
+        let starts = every_callee_of(entry.placed_keeping(self.walk.entry_kept))
+            .concat(hosted_in(self.engine, file, self.program))
+            .concat(package_hosted(self.engine, self.program, file))
+        for c in starts { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } }
+        for at in places {
+            let u = self.walk.units[at]
+            for h in hosted_in(self.engine, u.called.file, self.program) { if h.symbol == u.called.symbol { calls.push(met_for(self.engine, h, self.program)) } }
+        }
+        for at in places {
+            let symbol = self.walk.units[at].called.symbol
+            let made = calls.filter(it.symbol == symbol)
+            if made.is_empty() { return false }
+            mut least = made[0]
+            for c in made {
+                if called_text(c) == called_text(least) { continue }
+                if !generic_call(c) { return false }
+                if text_before(called_text(c), called_text(least)) { least = c }
+            }
+            self.calls.put(symbol, least)
+        }
+        true
+    }
+
+    /// The question of the facts of each body `grown` met, by its symbol.
+    fn grown_questions(grown: Walked) -> Map<string, ContentHash> {
+        mut out: Map<string, ContentHash> = {}
+        for m in grown.met { out.set(m.called.symbol, facts_question(self.engine, m.called)) }
+        out
+    }
+
+    /// The words naming each met body `callees` call, as a walk keeps them: its facts' question's.
+    fn words_of(callees: List<CalledFn>, gone: List<bool>, grown: Map<string, ContentHash>) -> List<
+        int,
+    > {
+        mut out: List<int> = []
+        for c in callees {
+            let q = grown.get(c.symbol)
+            if q != null {
+                out.push(q!.high_word)
+                out.push(q!.low_word)
+                continue
+            }
+            let at? = self.place_of(c.symbol) else { continue }
+            if gone[at] { continue }
+            out.push(self.walk.units[at].facts_high)
+            out.push(self.walk.units[at].facts_low)
+        }
+        out
+    }
+}
+
+/// Whether the body `u` calls one whose facts' question's high word is among `highs`, ascending.
+fn calls_into(u: WalkedUnit, highs: List<int>) -> bool {
+    mut k = 0
+    while k < u.callees.length {
+        if holds_word(highs, u.callees[k]) { return true }
+        k = k + 2
+    }
+    false
+}
+
+/// Whether a body reaches alike before and after its calls moved, `own` its own evidence: the
+/// bodies it calls anew (`added`) reaching just where the ones it no longer calls (`dropped`) did,
+/// or one it calls still (`kept`) reaching either way.
+fn reach_alike(
+    own: bool,
+    added: List<BodyAt>,
+    dropped: List<BodyAt>,
+    kept: List<BodyAt>,
+    reaches: fn(BodyAt) -> bool,
+) -> bool {
+    if own { return true }
+    let anew = added.any((b) -> reaches(b))
+    if anew == dropped.any((b) -> reaches(b)) { return true }
+    kept.any((b) -> reaches(b))
+}
+
+/// `held` and `met`, each in name order, as one list in name order.
+fn merged_by_symbol(held: List<WalkedUnit>, met: List<WalkedUnit>) -> List<WalkedUnit> {
+    mut out: List<WalkedUnit> = []
+    mut i = 0
+    mut j = 0
+    while i < held.length || j < met.length {
+        let takes_held = j >= met.length ||
+            i < held.length && text_before(held[i].called.symbol, met[j].called.symbol)
+        out.push(if takes_held { held[i] } else { met[j] })
+        if takes_held { i = i + 1 } else { j = j + 1 }
+    }
+    out
+}
+
+/// A call as a body makes it: the body called and the call's text.
+fn call_made(c: CalledFn) -> string { "${c.symbol} ${called_text(c)}" }
+
+/// The question the facts of the body a call of `c` runs answer.
+fn facts_question(engine: QueryEngine, c: CalledFn) -> ContentHash { body_facts_question(engine, body_asked(engine, c)).known_as }
+
+/// The files a body reaches holds a node a seat refused in, `first` before them, each once.
+fn distinct_files(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
+    [f for i, f in all if !all.take(i).any((g) -> same_file(g, f))]
+}
+
+/// THE FILES A BUILD OF THE PROGRAM `file` RUNS FAILS ON, its package `package`, each once: those a
+/// law refuses anywhere it reads; its entry, where a body of it refuses; each file holding a body its
+/// shape reaches, lowered or not yet, that a seat refused a node of or that reads a name nothing
+/// declares, in the order the shape reaches each first such body; then each file it reaches that
+/// writes a word as a name it cannot be or declares a method whose name its type already took. Each
+/// file is answered on its own (`file_refused`) over the shape's bodies by file (`refusal_shape`), so
+/// an edit to one body re-asks its file alone, and this stands wherever every file's answer does.
+@query
+export fn program_refused(engine: QueryEngine, file: SourceFileAddress, package: string) -> List<
+    SourceFileAddress,
+> {
+    let erring = entry_erring(engine, file, package)
+    if erring.any(is_manifest) { return erring }
+    let shape? = refusal_shape(engine, file) else { return erring }
+    let entry? = entry_lowered(engine, file) else { return erring }
+    let own = if body_refuses(engine, file, entry.refused, entry.unread) ||
+        entry.unprojected != null { [file] } else { [] }
+    let answers = [file_refused(engine, f.file, f.entry, f.units, f.unlowered) for f in shape.files]
+    let bodies = sorted_by(
+        [FileAt { file: f.file, at: f.unit_at[answers[i].body] } for i, f in shape.files if answers[i].body >= 0],
+        (a: FileAt, b: FileAt) -> a.at < b.at,
+    )
+    let missed = sorted_by(
+        [FileAt { file: f.file, at: f.missed_at[answers[i].missed] } for i, f in shape.files if answers[i].missed >= 0],
+        (a: FileAt, b: FileAt) -> a.at < b.at,
+    )
+    let laws = sorted_by(
+        [FileAt { file: f.file, at: reached_at(f, answers[i]) } for i, f in shape.files if answers[i].law],
+        (a: FileAt, b: FileAt) -> a.at < b.at,
+    )
+    let strays = [f.file for f in shape.files if !f.entry && strays_in(engine, f.file)]
+    distinct_files(
+        erring
+            .concat(own)
+            .concat([b.file for b in bodies])
+            .concat([m.file for m in missed])
+            .concat([l.file for l in laws])
+            .concat(strays),
+    )
+}
+
+/// Whether `file` runs a statement at its top, which only a program's entry may: one answer a file,
+/// which an edit to another file leaves standing.
+@cut_query
+fn strays_in(engine: QueryEngine, file: SourceFileAddress) -> bool { !strays_of(engine, file).is_empty() }
+
+/// Where each statement `file` runs at its top stands in the file: what a file other than its
+/// program's entry may not hold, since only the entry runs statements. Only an item that runs one is
+/// read back.
+export fn strays_of(engine: QueryEngine, file: SourceFileAddress) -> List<FindingAt> {
+    flatten(
+        [[file_placed(engine, file, at, FindingAt { lo: sp!.lo, hi: sp!.hi }) for s in item.stmts if !item.store.is_declaration(s) for sp in [item.store.stmt_span(s)] if sp != null] for at in 0..item_count(engine, file) if runs_in(engine, file, at) for item in [read_item(engine, file, at)]],
+    )
+}
+
+/// A file and a place in the order the shape reaches it by.
+type FileAt = { file: SourceFileAddress, at: int }
+
+/// Where the shape first reaches `f`, as `answer` says: the entry first, then a body with facts by
+/// its place among the units, then a body not lowered after every unit.
+fn reached_at(f: FileUnits, answer: FileRefusal) -> int {
+    if f.entry { return -1 }
+    if answer.reached >= 0 { return f.unit_at[answer.reached] }
+    UNITS_PAST + f.missed_at[0]
+}
+
+/// A place past every unit a shape can hold.
+const UNITS_PAST: int = 1000000000
+
+/// A SHAPE'S BODIES BY FILE: each file it reaches — its entry's, then each holding a reached body or
+/// one not lowered yet, in the order it's first reached — with those bodies and their places among
+/// the shape's units and bodies not lowered. What reaches what, each body's tests and what it sees
+/// are left out, so an edit that moves only those leaves it standing.
+@derive(Saved)
+export type RefusalShape = { files: List<FileUnits> }
+
+/// One file of a `RefusalShape`.
+@derive(Saved)
+export type FileUnits = {
+    file: SourceFileAddress,
+    entry: bool,
+    units: List<CalledFn>,
+    unit_at: List<int>,
+    unlowered: List<Missed>,
+    missed_at: List<int>,
+}
+
+/// The bodies of the shape of the program `file` by file; absent where it isn't made.
+@query
+export fn refusal_shape(engine: QueryEngine, file: SourceFileAddress) -> RefusalShape? {
+    let shape = match program_reached(engine, file) {
+        .Program(s) -> s,
+        .Unmade(_why, _at) -> { return null },
+    }
+    let order = files_once(
+        [file]
+            .concat([u.called.file for u in shape.units])
+            .concat([m.file for m in shape.unlowered]),
+    )
+    let units = grouped_by(
+        [i for i in 0..shape.units.length],
+        (i: int) -> spelled_file(shape.units[i].called.file),
+    )
+    let missed = grouped_by(
+        [i for i in 0..shape.unlowered.length],
+        (i: int) -> spelled_file(shape.unlowered[i].file),
+    )
+    RefusalShape {
+        files: [file_units(
+            f,
+            same_file(f, file),
+            units.get(spelled_file(f)) ?? [],
+            missed.get(spelled_file(f)) ?? [],
+            shape,
+        ) for f in order],
+    }
+}
+
+/// `all` each once, in the order each first stands.
+fn files_once(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<SourceFileAddress> = []
+    for f in all {
+        if !seen.has(spelled_file(f)) {
+            seen.set(spelled_file(f), true)
+            out.push(f)
+        }
+    }
+    out
+}
+
+fn file_units(
+    f: SourceFileAddress,
+    entry: bool,
+    unit_at: List<int>,
+    missed_at: List<int>,
+    shape: ReachedProgram,
+) -> FileUnits {
+    FileUnits {
+        file: f,
+        entry: entry,
+        units: [shape.units[i].called for i in unit_at],
+        unit_at: unit_at,
+        unlowered: [shape.unlowered[i] for i in missed_at],
+        missed_at: missed_at,
+    }
+}
+
+/// How one file refuses a build: the place among `units` of the first body with facts that refuses,
+/// and of the first body not lowered that does, each -1 for none; the place of its first body with
+/// facts, -1 for none; and whether, being reached, a law over the whole file refuses it.
+@derive(Saved)
+export type FileRefusal = { body: int, missed: int, reached: int, law: bool }
+
+/// HOW THE FILE `file` REFUSES A BUILD, over the bodies of it a shape reaches, `units` lowered and
+/// `unlowered` not yet, and whether it is the entry's: a file is reached where it is the entry's, a
+/// body of it with facts is reached, or one is not lowered yet.
+@query
+export fn file_refused(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    entry: bool,
+    units: List<CalledFn>,
+    unlowered: List<Missed>,
+) -> FileRefusal {
+    let facts = [unit_facts_lying(engine, c) for c in units]
+    let faceted = [i for i, f in facts if f != null]
+    let reached = entry || !faceted.is_empty() || !unlowered.is_empty()
+    FileRefusal {
+        body: faceted.find((i: int) -> facts_refuse(engine, file, facts[i])) ?? -1,
+        missed: (0..unlowered.length)
+            .find(
+                (i: int) -> body_refuses(
+                    engine,
+                    unlowered[i].file,
+                    unlowered[i].refused,
+                    unlowered[i].unread,
+                ),
+            ) ?? -1,
+        reached: faceted.first() ?? -1,
+        law: reached &&
+            (misnames(engine, file) ||
+                takes_method_names(engine, file) ||
+                asks_ungiven(engine, file) ||
+                writes_generic_methods(engine, file)),
+    }
+}
+
+/// Whether a body of `file` with `facts` refuses a build; none for a body with none.
+fn facts_refuse(engine: QueryEngine, file: SourceFileAddress, facts: FactsAt?) -> bool {
+    let held? = facts else { return false }
+    body_refuses(engine, file, held.refused(), held.unread())
+}
+
+/// Whether a body of `file` is no program: a seat refused `refused` of its nodes, or a name among
+/// `unread` it reads is one nothing declares.
+fn body_refuses(engine: QueryEngine, file: SourceFileAddress, refused: int, unread: List<UnreadAt>) -> bool {
+    refused > 0 || unread.any(!answered(engine, file, it))
+}
+
+/// A walk's bodies, externs and bodies gone past, each in name order: what reaches what, whatever
+/// order it was met in.
+fn in_name_order(w: Walked) -> Walked {
+    Walked {
+        met: sorted_by(w.met, (a: Met, b: Met) -> text_before(a.called.symbol, b.called.symbol)),
+        externs: sorted_by(w.externs, (a: CalledFn, b: CalledFn) -> text_before(a.symbol, b.symbol)),
+        unlowered: sorted_by(w.unlowered, (a: Missed, b: Missed) -> text_before(a.symbol, b.symbol)),
+    }
+}
+
+/// The calls the program `file` runs makes: the entry's, then each reached body's in the order a walk
+/// from the entry reaches it, beside each name it was placed naming — what a target that may lack a
+/// body for one reads, its first answer the one the old path names. None for a program not made.
+@derive(Saved)
+export type ProgramCalls = { calls: List<WasmCall> }
+
+@query
+export fn program_calls(engine: QueryEngine, file: SourceFileAddress) -> ProgramCalls {
+    let none = ProgramCalls { calls: [] }
+    let reached = match program_reached(engine, file) {
+        .Program(p) -> p,
+        .Unmade(_why, _at) -> { return none },
+    }
+    let entry? = entry_lowered(engine, file) else { return none }
+    let survey = task_survey(engine)
+    let root = entry.placed_keeping(survey.kept(entry, scheduled_by(survey, entry)))
+    let named = [some_list(placed_body(engine, u.called, u.kept)).map(called_in_order).first() ?? [] for u in reached.units]
+    mut at_symbol: Map<string, int> = {}
+    for i, u in reached.units { at_symbol.set(u.called.symbol, i) }
+    mut calls = [WasmCall { caller: ENTRY, symbol: n } for n in called_in_order(root)]
+    mut queue = called_in_order(root)
+    mut met: Map<string, bool> = {}
+    mut at = 0
+    while at < queue.length {
+        let i = at_symbol.get(queue[at])
+        at = at + 1
+        if i == null || met.has(queue[at - 1]) { continue }
+        let unit = reached.units[i!].called
+        met.set(unit.symbol, true)
+        let caller = spoken_fn(unit)
+        // LICENSED loops.push_loop: the walk's own worklist grows while it is walked; a `concat` copies it per body
+        for n in named[i!] {
+            calls.push(WasmCall { caller: caller, symbol: n })
+            queue.push(n)
+        }
+    }
+    ProgramCalls {
+        calls: calls
+            .concat(
+                [WasmCall { caller: spoken_fn(u.called), symbol: n } for i, u in reached.units if !met.has(u.called.symbol) for n in named[i]],
+            ),
+    }
+}
+
+/// The symbols of the bodiless externs the program `file` runs reaches that the package `package`
+/// declares: what its own C defines for the program. None for a program not made.
+export fn externs_reached(engine: QueryEngine, file: SourceFileAddress, package: string) -> List<
+    string,
+> {
+    let reached = match program_reached(engine, file) {
+        .Program(p) -> p,
+        .Unmade(_why, _at) -> { return [] },
+    }
+    [c.symbol for c in reached.externs if c.external && c.file.package_name == package]
+}
+
+/// THE SHAPE FOLDED FORWARD from `last` over the walk as it stands (`program_walked`): each unit the
+/// walk meets anew, holds by another call or with other tests, or whose facts or names moved, worked
+/// out again; each unit it no longer meets let go with what it declares; everything else stands.
+/// Absent where the walk's externs, bodies gone past, entry tests or scheduler moved, a read of
+/// anything else moved, a unit met or let go holds fns, a unit names a name nothing answers or one
+/// the program stands a body in for, or one declared otherwise is called by a body that stands.
+fn program_reached_again(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    last: ProgramReach,
+    moved: List<MovedRead>,
+) -> ProgramReach? {
+    let shape = match last { .Program(s) -> s, .Unmade(_why, _at) -> { return null } }
+    if shape.declared_counts.length != shape.units.length { return null }
+    let walk = match program_walked(engine, file) {
+        .Walked(w) -> w,
+        .Unmade(_why, _at) -> { return null },
+    }
+    if walk.scheduled != shape.scheduled ||
+        kept_text(walk.entry_kept) != kept_text(shape.entry_kept) { return null }
+    if calls_text(walk.externs) != calls_text(shape.externs) ||
+        missed_text(walk.unlowered) != missed_text(shape.unlowered) { return null }
+    let fold = ShapeFold {
+        engine: engine,
+        shape: shape,
+        places: places_by_name([u.called.symbol for u in shape.units]),
+        moved: moved,
+        rows: rt_sigs().concat(extern_rows(engine, shape.externs)),
+    }
+    if !moved.all((m) -> fold.read_folds(m)) { return null }
+    let walked = names_wanted([u.called.symbol for u in walk.units])
+    let touched = names_wanted(
+        [c!.symbol for m in moved for c in [unit_facts_c_in(m.question) ?? placed_names_c_in(m.question)] if c != null],
+    )
+    mut again: List<WalkedUnit> = []
+    mut met: List<WalkedUnit> = []
+    for u in walk.units {
+        let at = fold.places.get(u.called.symbol)
+        if at == null {
+            met.push(u)
+            continue
+        }
+        let held = shape.units[at!]
+        if touched.has(u.called.symbol) ||
+            called_text(held.called) != called_text(u.called) ||
+            kept_text(held.kept) != kept_text(u.kept) { again.push(u) }
+    }
+    let gone = [at for at, u in shape.units if !walked.has(u.called.symbol)]
+    let opens = fold.open_names()
+    for at in gone {
+        let u = shape.units[at]
+        let facts? = unit_facts(engine, u.called) else { return null }
+        if !facts.wrappers.is_empty() { return null }
+        if placed_names(engine, u.called, u.kept).any((n) -> opens.has(n)) { return null }
+    }
+    mut facts_now: Map<string, UnitFacts> = {}
+    for u in again.concat(met) {
+        let facts? = unit_facts(engine, u.called) else { return null }
+        facts_now.set(u.called.symbol, facts)
+    }
+    if !met.all((u) -> facts_now.get(u.called.symbol)!.wrappers.is_empty()) { return null }
+    let slices = fold.declared_slices()
+    let declared_of = (s: string) -> facts_now.get(s)?.declared ?? slices.get(s) ?? []
+    let tail = shape
+        .declared
+        .slice(shape.declared_counts.fold(0, (sum, n) -> sum + n), shape.declared.length)
+    let declared = flatten([declared_of(u.called.symbol) for u in walk.units]).concat(tail)
+    let shaped = fold with { shape: shape with { declared: declared } }
+    mut by_symbol: Map<string, ReachedUnit> = {}
+    for u in again {
+        let unit? = shaped.unit_again(u, facts_now.get(u.called.symbol)!) else { return null }
+        by_symbol.set(u.called.symbol, unit)
+    }
+    for u in met {
+        let unit? = shaped.unit_met(u) else { return null }
+        by_symbol.set(u.called.symbol, unit)
+    }
+    let redeclared = again
+        .filter(
+            (u) -> seen_text(declared_of(u.called.symbol)) != seen_text(slices.get(u.called.symbol) ?? []),
+        )
+    if !redeclared.all((u) -> fold.declared_anew(u, walk, by_symbol)) { return null }
+    let units = [by_symbol.get(u.called.symbol) ?? shape.units[fold.places.get(u.called.symbol)!] for u in walk.units]
+    let keys = flatten(
+        [if by_symbol.get(u.called.symbol) == null {
+            let at = fold.places.get(u.called.symbol)!
+            shape.unit_keys.slice(KEY_WORDS * at, KEY_WORDS * at + KEY_WORDS)
+        } else {
+            unit_key_words(engine, u)
+        } for u in units],
+    )
+    let sees = if met.is_empty() && gone.is_empty() && redeclared.is_empty() { shape.entry_sees } else { shaped.entry_sees(file) ?? "" }
+    ProgramReach
+        .Program(
+            shape with { units: units, homes: [unit_home(u) for u in units], unit_keys: keys, entry_sees: sees, declared: declared, declared_counts: [declared_of(u.called.symbol).length for u in walk.units] },
+        )
+}
+
+/// What folding a program's shape forward reads: the engine, the last shape and each unit's place in
+/// it by its symbol, the reads that moved, and every row a body may name.
+type ShapeFold = {
+    engine: QueryEngine,
+    shape: ReachedProgram,
+    places: Map<string, int>,
+    moved: List<MovedRead>,
+    rows: List<RtSig>,
+}
+
+impl ShapeFold {
+    /// Whether the moved read `m` is one a fold works through: the walk, a body's facts or a body's
+    /// names.
+    fn read_folds(m: MovedRead) -> bool {
+        program_walked_file_in(m.question) != null ||
+            unit_facts_c_in(m.question) != null ||
+            placed_names_c_in(m.question) != null
+    }
+
+    /// The bodies each unit of the last shape declares, by its symbol.
+    fn declared_slices() -> Map<string, List<BodySeen>> {
+        mut slices: Map<string, List<BodySeen>> = {}
+        mut at = 0
+        for i, u in self.shape.units {
+            let n = self.shape.declared_counts[i]
+            slices.set(u.called.symbol, self.shape.declared.slice(at, at + n))
+            at = at + n
+        }
+        slices
+    }
+
+    /// The unit the walk holds as `u` worked out again from its `facts`: the tests the walk keeps for it
+    /// and what it sees; absent where it stops lowering, holds fns otherwise, or names a name nothing
+    /// answers or one the program stands a body in for.
+    fn unit_again(u: WalkedUnit, facts: UnitFacts) -> ReachedUnit? {
+        if facts_unmade(facts.missing, facts.tests, u.kept) != null { return null }
+        let at = self.places.get(u.called.symbol)!
+        let held = self.shape.units[at]
+        let facts_moved = self
+            .moved
+            .find((m) -> unit_facts_c_in(m.question)?.symbol == u.called.symbol)
+        let before? = (if facts_moved == null { unit_facts(self.engine, held.called) } else { unit_facts_was(self.engine, facts_moved!) }) else { return null }
+        if wrapped_text(before.wrappers) != wrapped_text(facts.wrappers) { return null }
+        let names_moved = self
+            .moved
+            .find((m) -> placed_names_c_in(m.question)?.symbol == u.called.symbol)
+        let named_before? = (if names_moved == null { placed_names(self.engine, held.called, held.kept) } else { placed_names_was(self.engine, names_moved!) }) else { return null }
+        let named = placed_names(self.engine, u.called, u.kept)
+        let opens = self.open_names()
+        if named_before.any((n) -> opens.has(n)) || named.any((n) -> opens.has(n)) { return null }
+        let added = named.filter((n) -> !named_before.contains(n))
+        if !added.all((n) -> self.answered(n)) { return null }
+        self.seeing(u, named)
+    }
+
+    /// The unit the walk met anew as `u`, as the shape holds it: absent where it names a name nothing
+    /// answers or one the program stands a body in for.
+    fn unit_met(u: WalkedUnit) -> ReachedUnit? {
+        let named = placed_names(self.engine, u.called, u.kept)
+        let opens = self.open_names()
+        if named.any((n) -> opens.has(n)) || !named.all((n) -> self.answered(n)) { return null }
+        self.seeing(u, named)
+    }
+
+    /// `u` as the shape holds it, seeing what `named` names of what the shape declares.
+    fn seeing(u: WalkedUnit, named: List<string>) -> ReachedUnit {
+        let wanted = names_wanted(named)
+        let seen = program_seen(
+            [b for b in self.shape.declared if wanted.has(b.name)],
+            [r for r in self.rows if wanted.has(r.name)],
+        )
+        ReachedUnit { called: u.called, kept: u.kept, sees: seen.sees(named) }
+    }
+
+    /// Whether the unit `u`, declared otherwise than it was, is one no fn holds and every body that
+    /// calls it was worked out again over what it declares now.
+    fn declared_anew(u: WalkedUnit, walk: WalkedProgram, again: Map<string, ReachedUnit>) -> bool {
+        if self.shape.wrappers.any(it.target == u.called.symbol) { return false }
+        walk
+            .units
+            .all(
+                (caller) -> !calls_words(caller, u.facts_high, u.facts_low) ||
+                    again.has(caller.called.symbol),
+            )
+    }
+
+    /// What the entry of `file` sees of the bodies the shape declares; absent where it isn't lowered.
+    fn entry_sees(file: SourceFileAddress) -> string? {
+        let entry? = entry_lowered(self.engine, file) else { return null }
+        let named = lowered_names(entry.placed_keeping(self.shape.entry_kept))
+        let wanted = names_wanted(named)
+        program_seen(
+            [b for b in self.shape.declared if wanted.has(b.name)],
+            [r for r in self.rows if wanted.has(r.name)],
+        )
+            .sees(named)
+    }
+
+    /// The names nothing answers that the program stands a body in for: its stand-ins and the code
+    /// hashes it calls.
+    fn open_names() -> Map<string, bool> {
+        names_wanted(
+            [s.symbol for s in self.shape.stand_ins]
+                .concat([code_hash_symbol(h.target) for h in self.shape.hashed]),
+        )
+    }
+
+    /// Whether a body or a row answers `n`.
+    fn answered(n: string) -> bool { self.shape.declared.any(it.name == n) || self.rows.any(it.name == n) }
+}
+
+/// Whether the walked body `u` calls the body whose facts' question is `high`, `low`.
+fn calls_words(u: WalkedUnit, high: int, low: int) -> bool {
+    mut k = 0
+    while k < u.callees.length {
+        if u.callees[k] == high && u.callees[k + 1] == low { return true }
+        k = k + 2
+    }
+    false
+}
+
+/// Each name's place among `names`.
+fn places_by_name(names: List<string>) -> Map<string, int> {
+    mut places: Map<string, int> = {}
+    for i, n in names { places.set(n, i) }
+    places
+}
+
+/// Calls, as one text.
+fn calls_text(calls: List<CalledFn>) -> string { [called_text(c) for c in calls].join(",") }
+
+/// Bodies gone past, as one text.
+fn missed_text(missed: List<Missed>) -> string { [content_text(m.saved_bytes()) for m in missed].join(",") }
+
+/// `names` as a set.
+fn names_wanted(names: List<string>) -> Map<string, bool> {
+    mut out: Map<string, bool> = {}
+    for n in names { out.set(n, true) }
+    out
+}
+
+/// How bodies are declared, as one text.
+fn seen_text(bodies: List<BodySeen>) -> string { [content_text(b.saved_bytes()) for b in bodies].join(",") }
+
+/// Wrappers, as one text.
+fn wrapped_text(wrappers: List<FnWrapper>) -> string { [content_text(w.saved_bytes()) for w in wrappers].join(",") }
+
+/// A body's cancel evidence, as one text; none for no body.
+fn cancels_text(facts: UnitFacts?) -> string {
+    let f? = facts else { return "-" }
+    content_text(f.cancels.saved_bytes())
+}
+
+/// A call, as one text.
+fn called_text(c: CalledFn) -> string { content_text(c.saved_bytes()) }
+
+/// WHAT A BODY IS TO THE BODIES AROUND IT, saved apart from its code so a walk, a survey and a
+/// program's shape read it without the body: its notes, its tests' sites and notes and its lambdas'
+/// sites, the bodies it and its lambdas call, its cancel evidence, how a module declares it and its
+/// lambdas, and the wrappers it names.
+@derive(Saved)
+export type UnitFacts = {
+    missing: List<string>,
+    tests: List<TestHeld>,
+    lift_sites: List<List<TestSite>>,
+    callees: List<CalledFn>,
+    cancels: BodyCancels,
+    declared: List<BodySeen>,
+    wrappers: List<FnWrapper>,
+    /// How many of its nodes a seat refused.
+    refused: int = 0,
+    /// Each name it reads that nothing binds and the program gives no type.
+    unread: List<UnreadAt> = [],
+}
+
+/// A test a body holds: where it is, and what it notes wasn't lowered where it's placed.
+@derive(Saved)
+export type TestHeld = { site: TestSite, noted: Noted }
+
+/// The facts of the body a call of `c` runs, lowered with its tests held; absent where its declaration
+/// gives none.
+@query
+export fn unit_facts(engine: QueryEngine, c: CalledFn) -> UnitFacts? { facts_read(engine, c) }
+
+/// The facts of the body a call of `c` runs, read where a walk or a survey reads them: the body's
+/// own (`body_facts`), its declaration named as `c` names it. No answer is kept of the read, so two
+/// calls of one body, however each spells it, read one answer.
+export fn facts_read(engine: QueryEngine, c: CalledFn) -> UnitFacts? {
+    let facts? = body_facts(engine, body_asked(engine, c)) else { return null }
+    facts with { declared: [facts.declared[0] with { name: c.symbol }].concat(facts.declared.drop(1)) }
+}
+
+/// THE FACTS OF A BODY, BY THE QUERY THAT LOWERS IT: what `unit_facts` answers of every call that
+/// runs the body, its own declaration unnamed, since a call names it. The process that lowers a
+/// body asks this of it while it holds the lowering, so a walk reads a body's facts and never its
+/// code; absent where the query gives no body.
+@query
+fn body_facts(engine: QueryEngine, asked: BodyAsked) -> UnitFacts? {
+    let f? = asked_body(engine, asked) else { return null }
+    UnitFacts {
+        missing: f.missing,
+        tests: [TestHeld { site: t.site, noted: Noted { at: t.missed_at, notes: t.missing } } for t in f.tests],
+        lift_sites: [[t.site for t in l.tests] for l in f.lifts],
+        callees: every_callee_of(f),
+        cancels: lowered_cancels(f),
+        declared: [BodySeen { name: "", seats: f.params, answer: f.answer, consumed: f.consumed }]
+            .concat([lifted_seen(l) for l in f.lifts]),
+        wrappers: f.wrappers,
+        refused: f.refused,
+        unread: f.unread,
+    }
+}
+
+/// The facts of the fn `file` declares as `name`, lowered with no layouts, asked as a walk asks
+/// them; absent where it gives no body.
+export fn fn_facts_asked(engine: QueryEngine, file: SourceFileAddress, name: string) -> UnitFacts? { body_facts(engine, BodyAsked.Under(file, name, null)) }
+
+/// The facts of the method or static `name` of the impl `at`, lowered with no layouts, asked as a
+/// walk asks them; absent where it gives no body.
+export fn method_facts_asked(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> UnitFacts? { body_facts(engine, BodyAsked.Method(at, name, statics, null)) }
+
+/// THE BODIES ONLY A CALL NAMES, WORKED BY THE PROCESS THAT LOWERED THE CALLER: each body the body
+/// with `facts` calls that no declaration lowers by itself — a generic unit under the layouts its
+/// caller fills it with, a default, a body a trait gives — its facts asked, which lowers it, and
+/// then those such a body calls in turn, each once a process. A walk then finds them answered,
+/// where it would lower each itself. Whether there were facts.
+export fn called_units_worked(engine: QueryEngine, facts: UnitFacts?) -> bool {
+    let held? = facts else { return false }
+    let worked = units_worked()
+    mut queue = held.callees
+    mut at = 0
+    while at < queue.length {
+        let c = queue[at]
+        at = at + 1
+        if !named_by_call_alone(c) || worked.get().has(c.symbol) { continue }
+        worked.put(c.symbol, true)
+        let called? = facts_read(engine, c) else { continue }
+        // LICENSED loops.push_loop: the worklist grows while it is walked
+        for x in called.callees { queue.push(x) }
+    }
+    true
+}
+
+/// Whether the body a call of `c` runs is one no declaration lowers by itself, and one any program
+/// reads alike: a generic unit, a default or a trait's body, never an extern or a collect gathering
+/// over a program's own closure.
+fn named_by_call_alone(c: CalledFn) -> bool {
+    if c.external || c.gathers_closure { return false }
+    !c.parameters.is_empty() || c.given_by != null || !(c.defaulted is .Not)
+}
+
+/// The bodies only a call names that this process has worked, by symbol.
+once fn units_worked() -> Cell<Map<string, bool>> {
+    let worked: Cell<Map<string, bool>> = Cell.new({})
+    worked
+}
+
+/// Every name the body a call of `c` runs names, its tests placed as `kept` says: what it, its
+/// lambdas and its data name, in name order.
+@query
+export fn placed_names(engine: QueryEngine, c: CalledFn, kept: TestsKept) -> List<string> {
+    let f? = placed_body(engine, c, kept) else { return [] }
+    lowered_names(f)
+}
+
+/// The body a call of `c` runs, its tests placed as `kept` says; absent where it runs none.
+fn placed_body(engine: QueryEngine, c: CalledFn, kept: TestsKept) -> LoweredFn? {
+    let f? = reached_body(engine, c) else { return null }
+    f.placed_keeping(kept)
+}
+
+/// What a lowered body and its lambdas call, each once, in the order their instructions call them.
+fn called_in_order(f: LoweredFn) -> List<string> {
+    distinct(
+        [n! for i in f.ins.concat(flatten([l.ins for l in f.lifts])) for n in [body_symbol(i), hosted_symbol(i)] if n != null],
+    )
+}
+
+/// A reached fn as a build's words name it: its module, its owner where it has one, and its name —
+/// `@std.sqlite.opened`.
+fn spoken_fn(c: CalledFn) -> string { [module_spelled(c.file)].concat(some_list(c.owner)).concat([c.name]).join(".") }
+
+/// What a lowered body, its lambdas and its data name, in name order.
+fn lowered_names(f: LoweredFn) -> List<string> {
+    let ins = f.ins.concat(flatten([l.ins for l in f.lifts]))
+    sorted_names(
+        distinct(
+            [n! for i in ins for n in [body_symbol(i), hosted_symbol(i)] if n != null]
+                .concat(flatten([static_code_syms(s.boxes) for s in f.statics])),
+        ),
+    )
+}
+
+/// `names` in name order.
+fn sorted_names(names: List<string>) -> List<string> { sorted_by(names, (a: string, b: string) -> text_before(a, b)) }
+
+/// A lambda as a module naming it declares it.
+fn lifted_seen(l: LiftedBody) -> BodySeen { BodySeen { name: l.symbol, seats: l.params, answer: l.answer } }
+
+/// Each name the program names that no body of `bodies` and no row of `rows` answers, in the order
+/// `named` first names it.
+fn opens_of(named: List<List<string>>, bodies: List<BodySeen>, rows: List<RtSig>) -> List<string> {
+    mut answered: Map<string, bool> = {}
+    for b in bodies { answered.set(b.name, true) }
+    for r in rt_sigs().concat(rows) { answered.set(r.name, true) }
+    mut opens: List<string> = []
+    for names in named {
+        for n in names {
+            if answered.has(n) { continue }
+            answered.set(n, true)
+            opens.push(n)
+        }
+    }
+    opens
+}
+
+/// The bodies that name one of `opens`, lowered and placed, as a program for `called_shapes`: the
+/// entry's lambdas, each such body in the walk's order, the wrappers, and the entry.
+fn callers_of(
+    engine: QueryEngine,
+    root: LoweredFn,
+    walk: Walked,
+    named: List<List<string>>,
+    wrapped: List<Body>,
+    opens: List<string>,
+) -> Lowered {
+    let calling = [m for i, m in walk.met if named[i].any((n) -> opens.contains(n))]
+    Lowered {
+        fns: lifted_bodies(root, ENTRY)
+            .concat(
+                flatten(
+                    [unit_bodies(m.called, reached_body(engine, m.called)!.placed_keeping(m.kept)) for m in calling],
+                ),
+            )
+            .concat(wrapped),
+        entry: entry_body(root),
+        types: new_type_registry(),
+        diagnostics: [],
+        externs: [],
+        statics: [],
+    }
+}
+
+/// Why each body a walk went past isn't lowered, by its symbol.
+fn why_map(unlowered: List<Missed>) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for x in unlowered { out.set(x.symbol, x.why) }
+    out
+}
+
+/// What a program's entry reaches, as `program_reached` answers it: the program's shape, or why
+/// it isn't made yet.
+@derive(Saved)
+export enum ProgramReach {
+    Program(shape: ReachedProgram)
+    Unmade(why: string, at: string)
+}
+
+/// A program's shape: each body its entry reaches in name order, the entry's tests and what it sees,
+/// whether it links a scheduler, the externs it calls, each body not lowered yet, each fn value's wrapper, whose body falls
+/// by its own name, each stand-in and each code hash it calls, and every body as a module naming it
+/// declares it.
+@derive(Saved)
+export type ReachedProgram = {
+    units: List<ReachedUnit>,
+    /// Each unit's home bucket, in the order of `units`.
+    homes: List<int>,
+    /// Each unit as its bucket's key reads it, `KEY_WORDS` words each in the order of `units`
+    /// (`unit_key_words`).
+    unit_keys: List<int>,
+    entry_kept: TestsKept,
+    entry_sees: string,
+    scheduled: bool,
+    externs: List<CalledFn>,
+    unlowered: List<Missed>,
+    wrappers: List<FnWrapper>,
+    stand_ins: List<StandIn>,
+    hashed: List<HashCall>,
+    declared: List<BodySeen>,
+    /// How many of `declared`, from its start, each unit declares, in the order of `units`.
+    declared_counts: List<int> = [],
+}
+
+/// A body standing for one nothing answers: its name, why it isn't lowered, and how it's called.
+@derive(Saved)
+export type StandIn = { symbol: string, why: string, seats: List<Layout>, answer: Layout }
+
+/// A code hash a program calls: its target, and the answer its first call reads.
+@derive(Saved)
+export type HashCall = { target: string, answer: Layout }
+
+/// A body a program reaches: the call it's met by, which of its tests it keeps, and the digest of
+/// what it sees of the bodies around it (`Seen`).
+@derive(Saved)
+export type ReachedUnit = { called: CalledFn, kept: TestsKept, sees: string }
+
+/// WHAT A BODY'S MODULE READS OF THE BODIES AROUND IT: each body it names, as a call of it is
+/// declared, and each row it names, in name order. A static it reads is its own answer's.
+@derive(Saved)
+type Seen = { bodies: List<BodySeen>, rows: List<string> }
+
+/// A body as another body's module declares it.
+@derive(Saved)
+export type BodySeen = { name: string, seats: List<Layout>, answer: Layout, consumed: List<bool> = [] }
+
+/// A program's bodies and rows by name, as the bodies naming them see them.
+type ProgramSeen = { bodies: Map<string, BodySeen>, rows: Map<string, string> }
+
+/// What each body `declared` names and each row looks like to a body naming it.
+fn program_seen(declared: List<BodySeen>, externs: List<RtSig>) -> ProgramSeen {
+    mut bodies: Map<string, BodySeen> = {}
+    for b in declared { bodies.set(b.name, b) }
+    mut rows: Map<string, string> = {}
+    for r in rt_sigs().concat(externs) { rows.set(r.name, row_seen(r)) }
+    ProgramSeen { bodies: bodies, rows: rows }
+}
+
+impl ProgramSeen {
+    /// The digest of what a module reads of the bodies and rows a body names: `named`, in name order.
+    fn sees(named: List<string>) -> string {
+        content_text(
+            Seen {
+                bodies: [self.bodies.get(n)! for n in named if self.bodies.has(n)],
+                rows: [self.rows.get(n)! for n in named if self.rows.has(n)],
+            }
+                .saved_bytes(),
+        )
+    }
+}
+
+/// An extern's row as a module declares it: its name, its seats' kinds and its answer's.
+fn row_seen(r: RtSig) -> string { "${r.name}(${[rt_kind_word(k) for k in r.params].join(",")})${rt_kind_word(r.ret)}" }
+
+fn rt_kind_word(k: RtKind) -> string {
+    match k {
+        .I64 -> "i64",
+        .Ptr -> "ptr",
+        .Void -> "void",
+        .I32 -> "i32",
+        .U32 -> "u32",
+        .F64 -> "f64",
+    }
+}
+
+/// A content hash as text.
+fn hash_text(h: ContentHash) -> string { "${h.high_word}_${h.low_word}" }
+
+/// The digest of `bytes`, as text.
+fn content_text(bytes: Bytes) -> string { hash_text(content_hash(bytes)) }
+
+/// The statements of `file` that run, lowered as its entry, its tests held; absent where it runs none.
+@query
+export fn entry_lowered(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? { lowered_entry(engine, file) }
+
+/// THE KEY OF EACH OF A PROGRAM'S BUCKETS, by the answers its bodies are made of: its index, `salt`
+/// (what makes the objects besides the program), and each body it holds by its lowering's answer
+/// hash, its symbol, the tests it keeps and what it sees, and each wrapper falling in it; the last bucket, which
+/// holds the program-wide bodies, by the code hashes `hashes`, how each is called, and the stand-ins.
+/// Nothing is read but answer hashes. A key stands for its module's bytes because a module is made from these alone, in
+/// symbol order, and a static it lays out is in the answer of a body reading it; the LLVM the
+/// compiler links is no part of a key.
+export fn keyed_objects(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    salt: List<string>,
+    dir: string,
+) -> List<Made> {
+    let entry = "${hash_text(engine.hash_of_answer_to(entry_lowered_question(engine, file)))} ${kept_text(shape.entry_kept())} ${shape.entry_sees()}"
+    let last = PROGRAM_BUCKETS - 1
+    let entry_home = home_bucket(ENTRY)
+    let by_home = shape.homes()
+    let keys = shape.unit_keys()
+    let held = [shape.unit_keyed(engine, keys, i) for i in 0..by_home.length]
+    let wrappers = shape.wrappers()
+    let wrapped = [content_text(w.saved_bytes()) for w in wrappers]
+    let wrapped_in = [home_bucket(w.symbol) for w in wrappers]
+    let program_wide = [content_text(h.saved_bytes()) for h in hashes]
+        .concat([content_text(h.saved_bytes()) for h in shape.hashed()])
+        .concat([content_text(s.saved_bytes()) for s in shape.stand_ins()])
+    [bucket_made(
+        b,
+        digest_of(
+            salt
+                .concat(["${b}"])
+                .concat(if b == 0 || b == entry_home { [entry] } else { [] })
+                .concat([h for i, h in held if by_home[i] == b])
+                .concat([w for i, w in wrapped if wrapped_in[i] == b])
+                .concat(if b == last { program_wide } else { [] })
+                .join("\n"),
+        ),
+        dir,
+    ) for b in 0..PROGRAM_BUCKETS]
+}
+
+/// How many words a unit's key takes in `ReachedProgram.unit_keys`.
+const KEY_WORDS: int = 5
+
+/// A BODY AS ITS BUCKET'S KEY READS IT, as words: 1 and the hash of the question whose answer lowers
+/// it, or three zeros where no query lowers it; then the hash of its symbol, the tests it keeps and
+/// what it sees. The symbol is its module's word for it, so a body renamed with its code unmoved is
+/// keyed anew.
+fn unit_key_words(engine: QueryEngine, u: ReachedUnit) -> List<int> {
+    let held = content_hash("${u.called.symbol} ${kept_text(u.kept)} ${u.sees}".bytes())
+    let lowering? = asked_question(engine, body_asked(engine, u.called)) else { return [0, 0, 0, held.high_word, held.low_word] }
+    [1, lowering.known_as.high_word, lowering.known_as.low_word, held.high_word, held.low_word]
+}
+
+/// The bucket a body falls in: its file's.
+fn unit_home(u: ReachedUnit) -> int { home_bucket(spelled_file(u.called.file)) }
+
+/// A PROGRAM'S SHAPE READ WHERE ITS ANSWER LIES: each part decoded when it's asked for, and a body
+/// only where one is wanted, so a build that remakes one bucket decodes that bucket's bodies alone.
+export type ShapeAt = { source: SavedSource, shape: SavedRecord }
+
+/// What a program reaches: its shape where it lies, or why it isn't made yet.
+export enum ShapeReached {
+    At(shape: ShapeAt)
+    Unmade(why: string, at: string)
+}
+
+/// `program_reached`'s answer for `file`, read where it lies.
+export fn shape_reached(engine: QueryEngine, file: SourceFileAddress) -> ShapeReached {
+    let reach = program_reached_saved(engine, file)
+    match reach.node.variant_within(2) {
+        0 -> ShapeReached
+            .At(ShapeAt { source: reach.source, shape: reach.node.record_in(reach.source, 0) }),
+        _ -> match ProgramReach.read_from(reach.source, reach.node) {
+            .Unmade(why, at) -> ShapeReached.Unmade(why, at),
+            .Program(_s) -> ShapeReached.Unmade(runs_nothing(), spelled_file(file)),
+        },
+    }
+}
+
+impl ShapeAt {
+    fn unit_count() -> int { ReachedProgram.units_in_place(self.source, self.shape).length }
+
+    /// The `at`th body it reaches.
+    fn unit(at: int) -> ReachedUnit {
+        ReachedUnit
+            .read_from(
+                self.source,
+                ReachedProgram.units_in_place(self.source, self.shape).record_in(self.source, at),
+            )
+    }
+
+    fn homes() -> List<int> { ReachedProgram.homes_in(self.source, self.shape) }
+
+    fn unit_keys() -> List<int> { ReachedProgram.unit_keys_in(self.source, self.shape) }
+
+    fn entry_kept() -> TestsKept { ReachedProgram.entry_kept_in(self.source, self.shape) }
+
+    fn entry_sees() -> string { ReachedProgram.entry_sees_in(self.source, self.shape) }
+
+    fn externs() -> List<CalledFn> { ReachedProgram.externs_in(self.source, self.shape) }
+
+    fn unlowered() -> List<Missed> { ReachedProgram.unlowered_in(self.source, self.shape) }
+
+    fn wrappers() -> List<FnWrapper> { ReachedProgram.wrappers_in(self.source, self.shape) }
+
+    fn stand_ins() -> List<StandIn> { ReachedProgram.stand_ins_in(self.source, self.shape) }
+
+    fn hashed() -> List<HashCall> { ReachedProgram.hashed_in(self.source, self.shape) }
+
+    fn declared() -> List<BodySeen> { ReachedProgram.declared_in(self.source, self.shape) }
+
+    /// The `at`th body as its bucket's key holds it, `keys` its words: its lowering's answer hash,
+    /// then the hash of its symbol, the tests it keeps and what it sees.
+    fn unit_keyed(engine: QueryEngine, keys: List<int>, at: int) -> string {
+        let w = keys.slice(KEY_WORDS * at, KEY_WORDS * at + KEY_WORDS)
+        let held = hash_text(ContentHash { high_word: w[3], low_word: w[4] })
+        if w[0] == 0 { return "none ${held}" }
+        let lowering = ContentHash { high_word: w[1], low_word: w[2] }
+        let answer = engine.hash_of_answer_known_as(lowering) ?? self.lowering_answer(engine, at)
+        "${hash_text(answer)} ${held}"
+    }
+
+    /// The answer hash of the query lowering the `at`th body, asked as its call asks it.
+    fn lowering_answer(engine: QueryEngine, at: int) -> ContentHash {
+        engine.hash_of_answer_to(asked_question(engine, body_asked(engine, self.unit(at).called))!)
+    }
+}
+
+/// Which tests are kept, as text.
+fn kept_text(k: TestsKept) -> string { content_text(k.saved_bytes()) }
+
+/// Bucket `b`'s object under `key`, kept in `dir`.
+fn bucket_made(b: int, key: string, dir: string) -> Made { Made { which: Owned.Bucket(b, PROGRAM_BUCKETS), key: key, obj: "${dir}/${key}.o", source: "" } }
+
+/// A body's code as the code graph reads it, its tests placed as `kept` says: its and its lambdas'
+/// nodes, its data's, and the fn addresses they take, as `code_facts_wire` writes them; empty where
+/// the call runs no body.
+@query
+export fn placed_code(engine: QueryEngine, c: CalledFn, kept: TestsKept) -> string {
+    let placed? = placed_body(engine, c, kept) else { return "" }
+    code_wire(unit_bodies(c, placed), placed.statics)
+}
+
+/// The code facts of `bodies` and `statics`, as `code_facts_wire` writes them.
+fn code_wire(bodies: List<Body>, statics: List<Static>) -> string {
+    code_facts_wire(
+        read_code_facts([b for b in bodies if !b.ins.is_empty()], statics, [], layout_reading()),
+    )
+}
+
+/// A code hash a program calls, answered: absent where its code reaches a name nothing answers.
+@derive(Saved)
+export type HashAnswer = { target: string, hash: string? }
+
+/// THE PROGRAM'S CODE HASHES, AND WHAT EACH IS SUMMED FROM: each code hash `file`'s program calls,
+/// in its targets' order, each one's own digest and the sum of the digests of the nodes it reaches
+/// (`summed_hash`), and each node of the code graph by its name's hash, in order, with which targets
+/// reach it.
+@derive(Saved)
+export type CodeHashes = { hashes: List<HashAnswer>, owns: List<int>, sums: List<int>, nodes: List<int>, reaching: List<int> }
+
+impl CodeHashes {
+    /// Where the node `name` sits among the nodes, absent where the graph holds none of it.
+    fn node_at(name: string) -> int? {
+        let h = content_hash(name.bytes())
+        mut lo = 0
+        mut hi = self.nodes.length / 2
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            let at = ContentHash {
+                high_word: self.nodes[2 * mid],
+                low_word: self.nodes[2 * mid + 1],
+            }
+            if at.same_as(h) { return mid }
+            if at.comes_before(h) { lo = mid + 1 } else { hi = mid }
+        }
+        null
+    }
+
+    /// The words saying which targets reach the node at `at`.
+    fn reaching_at(at: int) -> List<int> {
+        let w = reach_words(self.hashes.length)
+        self.reaching.slice(at * w, at * w + w)
+    }
+
+    /// Target `t`'s own digest.
+    fn own_at(t: int) -> List<int> { self.owns.slice(t * SUM_LANES, t * SUM_LANES + SUM_LANES) }
+
+    /// The sum target `t` is made of.
+    fn sum_at(t: int) -> List<int> { self.sums.slice(t * SUM_LANES, t * SUM_LANES + SUM_LANES) }
+}
+
+/// The words a sum runs over, as `node_digest` makes a digest.
+const SUM_LANES: int = 4
+
+/// Whether every target `inner` says reaches, `outer` says reaches too.
+fn reach_covers(outer: List<int>, inner: List<int>) -> bool { [w for k, w in inner if w & outer[k] != w].is_empty() }
+
+/// THE SHAPE AS THE CODE HASHES READ IT: `program_reached`'s, with what each body sees, the bodies'
+/// declarations and the bodies gone past left out, so a change to those alone leaves the hashes
+/// standing.
+@query
+export fn program_code_shape(engine: QueryEngine, file: SourceFileAddress) -> ProgramReach {
+    match program_reached(engine, file) {
+        .Program(s) -> ProgramReach
+            .Program(
+                s with { units: [u with { sees: "" } for u in s.units], entry_sees: "", declared: [], unlowered: [] },
+            ),
+        .Unmade(why, at) -> ProgramReach.Unmade(why, at),
+    }
+}
+
+/// The externs `file`'s program calls: each body-less fn it reaches whose symbol a library or the host
+/// answers; none where the program isn't made.
+export fn program_externs(engine: QueryEngine, file: SourceFileAddress) -> List<CalledFn> {
+    let reach = program_code_shape_saved(engine, file)
+    if reach.node.variant_within(2) != 0 { return [] }
+    ReachedProgram.externs_in(reach.source, reach.node.record_in(reach.source, 0))
+}
+
+/// The name of every row a body of `file`'s program may name: the runtime's, then each its externs
+/// answer by; absent where the program isn't made. Kept apart from the shape, so a fold that wants
+/// only these reads no body of it; the shape's externs are read where they lie.
+@query
+fn program_row_names(engine: QueryEngine, file: SourceFileAddress) -> List<string>? {
+    let reach = program_code_shape_saved(engine, file)
+    if reach.node.variant_within(2) != 0 { return null }
+    let externs = ReachedProgram.externs_in(reach.source, reach.node.record_in(reach.source, 0))
+    [row.name for row in rt_sigs().concat(extern_rows(engine, externs))]
+}
+
+/// THE PROGRAM'S CODE HASHES: each code hash `file`'s program calls, answered over the code graph its
+/// bodies' saved facts make with its entry's, wrappers' and stand-ins'. An edit that moves only bodies'
+/// code is folded forward (`program_code_hashes_again`).
+@folded_query(program_code_hashes_again)
+export fn program_code_hashes(engine: QueryEngine, file: SourceFileAddress) -> CodeHashes {
+    let none = CodeHashes { hashes: [], owns: [], sums: [], nodes: [], reaching: [] }
+    let shape = match program_code_shape(engine, file) {
+        .Program(s) -> s,
+        .Unmade(_why, _at) -> { return none },
+    }
+    let root? = shaped_root(engine, file, shape) else { return none }
+    let saved = [code_facts_from_wire(placed_code(engine, u.called, u.kept)) for u in shape.units]
+    let root_name = file.package_name
+    let own = read_code_facts(
+        [b for b in [entry_body(root)]
+            .concat(lifted_bodies(root, ENTRY))
+            .concat([wrapper_body(w) for w in shape.wrappers])
+            .concat([stand_in_body(engine, file, s) for s in shape.stand_ins]) if !b.ins.is_empty()],
+        root.statics,
+        [],
+        layout_reading(),
+    )
+    let targets = distinct([h.target for h in shape.hashed])
+    let g = code_graph(
+        [facts_rooted(root_name, f!) for f in saved if f != null]
+            .concat([facts_rooted(root_name, own)]),
+        [row.name for row in rt_sigs().concat(extern_rows(engine, shape.externs))],
+        [rooted_name(root_name, t) for t in targets],
+    )
+    let hashes = [HashAnswer { target: t, hash: g.hash(rooted_name(root_name, t)) } for t in targets]
+    let names = sorted_by(
+        [NamedNode { name: n, hash: content_hash(n.bytes()) } for n in g.node_names()],
+        (a: NamedNode, b: NamedNode) -> a.hash.comes_before(b.hash),
+    )
+    CodeHashes {
+        hashes: hashes,
+        owns: flatten(
+            [if h.hash == null { [0, 0, 0, 0] } else { g.digest_of(rooted_name(root_name, h.target)) } for h in hashes],
+        ),
+        sums: g.answered.sums,
+        nodes: flatten([[n.hash.high_word, n.hash.low_word] for n in names]),
+        reaching: flatten([g.reaching_of(n.name) for n in names]),
+    }
+}
+
+/// A node's name, and its hash.
+type NamedNode = { name: string, hash: ContentHash }
+
+/// THE CODE HASHES FOLDED FORWARD from `last`, where every read that moved is a body's code: each node
+/// of each such body moves the sum of each target reaching it by its new digest less its old, and
+/// each target so moved is hashed again. Absent for any other change: a read of anything else, a body
+/// whose nodes, taken addresses or asked hashes change, a node that drops a reference or refers to
+/// one outside what its targets reach, or a node the graph doesn't hold. A body's data is its own: a
+/// static is named by the body laying it out.
+fn program_code_hashes_again(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    last: CodeHashes,
+    moved: List<MovedRead>,
+) -> CodeHashes? {
+    if !moved.all(placed_code_c_in(it.question) != null) { return null }
+    let rows? = program_row_names(engine, file) else { return null }
+    let fold = HashFold {
+        engine: engine,
+        root: file.package_name,
+        last: last,
+        guarded: guards_of([rooted_name(file.package_name, h.target) for h in last.hashes]),
+        known: names_wanted(rows),
+    }
+    let moves = [fold.node_moves(m) for m in moved]
+    if moves.any(it == null) { return null }
+    let node_moves = flatten([ms! for ms in moves])
+    let sums = [moved_sum(last.sum_at(t), node_moves, t) for t in 0..last.hashes.length]
+    let named = [rooted_name(file.package_name, h.target) for h in last.hashes]
+    let owns = [node_moves.find(it.name == named[t])?.now ?? last.own_at(t) for t, _h in last.hashes]
+    last with { hashes: [if h.hash == null { h } else { h with { hash: summed_hash(named[t], owns[t], sums[t]) } } for t, h in last.hashes], owns: flatten(owns), sums: flatten(sums) }
+}
+
+/// The sum `sum` of target `t` with each of `moves` that `t` reaches made.
+fn moved_sum(sum: List<int>, moves: List<NodeMove>, t: int) -> List<int> {
+    moves.filter(row_has(it.reaching, t)).fold(sum, (s, m) -> with_digest(s, m.was, m.now))
+}
+
+/// One node's move under a fold: its name, which targets reach it, and its digest before and now.
+type NodeMove = { name: string, reaching: List<int>, was: List<int>, now: List<int> }
+
+/// What folding the code hashes forward reads: the engine, the root package the hashes leave unnamed,
+/// the last hashes, the targets a reference stops at, and every name a row answers.
+type HashFold = { engine: QueryEngine, root: string, last: CodeHashes, guarded: Map<string, bool>, known: Map<string, bool> }
+
+impl HashFold {
+    /// The moves of each node of the body whose code `m` read, absent where its change moves more
+    /// than its nodes' digests.
+    fn node_moves(m: MovedRead) -> List<NodeMove>? {
+        let c = placed_code_c_in(m.question)!
+        let kept? = placed_code_kept_in(m.question) else { return null }
+        let was_wire? = placed_code_was(self.engine, m) else { return null }
+        let before? = wire_facts(self.root, was_wire) else { return null }
+        let now? = wire_facts(self.root, placed_code(self.engine, c, kept)) else { return null }
+        if fact_names(before) != fact_names(now) ||
+            before.addressed.join("\n") != now.addressed.join("\n") ||
+            before.asked.join("\n") != now.asked.join("\n") { return null }
+        let moves = [self.node_move(before.nodes.find(it.name == n.name)!, n) for n in now.nodes]
+        if moves.any(it == null) { null } else { [x! for x in moves] }
+    }
+
+    /// The move of the node `was` became `now`, a node of the body a call of `c` runs.
+    fn node_move(was: FactNode, now: FactNode) -> NodeMove? {
+        let at? = self.last.node_at(now.name) else { return null }
+        let reaching = self.last.reaching_at(at)
+        let refs_was = graph_refs(self.guarded, was.refs)
+        let refs_now = graph_refs(self.guarded, now.refs)
+        if [r for r in refs_was if !refs_now.contains(r)].length > 0 { return null }
+        let added = [r for r in refs_now if !refs_was.contains(r)]
+        if [r for r in added if !self.inside(r, reaching)].length > 0 { return null }
+        NodeMove {
+            name: now.name,
+            reaching: reaching,
+            was: node_digest(was.name, was.own, refs_was, false),
+            now: node_digest(now.name, now.own, refs_now, false),
+        }
+    }
+
+    /// Whether a reference to `r` from a node `reaching` says is reached stays inside what those
+    /// targets reach: a node every one of them reaches, or a name a row answers.
+    fn inside(r: string, reaching: List<int>) -> bool {
+        let at = self.last.node_at(r)
+        if at != null { return reach_covers(self.last.reaching_at(at!), reaching) }
+        self.known.has(r)
+    }
+}
+
+/// A body's code facts as its wire spells them, each name as a hash binds it with `root` unnamed:
+/// none for no body.
+fn wire_facts(root: string, wire: string) -> CodeFacts? {
+    if wire.is_empty() { return CodeFacts { nodes: [], addressed: [], asked: [] } }
+    let facts? = code_facts_from_wire(wire) else { return null }
+    facts_rooted(root, facts)
+}
+
+/// The names of `facts`' nodes, in order, as one text.
+fn fact_names(facts: CodeFacts) -> string { [n.name for n in facts.nodes].join("\n") }
+
+/// The entry `shape` keeps, its tests placed; absent where `file` runs nothing.
+fn shaped_root(engine: QueryEngine, file: SourceFileAddress, shape: ReachedProgram) -> LoweredFn? { entry_lowered(engine, file)?.placed_keeping(shape.entry_kept) }
+
+/// The entry `root` as the program's body.
+fn entry_body(root: LoweredFn) -> Body { unit_body(ENTRY, [], root.answer, root.ins, root.layouts) with { boxed: root.boxed } }
+
+/// The rows `externs` answer by.
+fn extern_rows(engine: QueryEngine, externs: List<CalledFn>) -> List<RtSig> { flatten([some_list(declared_row(engine, c)) for c in externs]) }
+
+/// A reached body and its lambdas, each as a body of its file's.
+fn unit_bodies(c: CalledFn, placed: LoweredFn) -> List<Body> {
+    let home = spelled_file(c.file)
+    [
+        unit_body(c.symbol, placed.params, placed.answer, placed.ins, placed.layouts, home) with { boxed: placed.boxed, hosted: c.hosted, marks: consumed_marks(placed.consumed) },
+    ]
+        .concat(lifted_bodies(placed, home))
+}
+
+/// WHAT BUCKET `b` OF THE PROGRAM IS MADE FROM, every ask of the engine answered: its own bodies,
+/// the entry, the rows its externs answer by, its data, and the bodies the shape declares.
+export type BucketAsked = { b: int, own: List<Body>, entry: Body, externs: List<RtSig>, statics: List<Static>, declared: List<BodySeen> }
+
+/// BUCKET `b` OF THE PROGRAM `shape` NAMES, asked of `engine`: the last bucket from the code hashes
+/// `hashes` and the stand-ins, any other from its own bodies, wrappers and data and, for the entry's
+/// buckets, the entry. Absent where a body the shape holds no longer lowers.
+export fn bucket_asked(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    b: int,
+) -> BucketAsked? {
+    let root? = entry_lowered(engine, file)?.placed_keeping(shape.entry_kept()) else { return null }
+    let last = PROGRAM_BUCKETS - 1
+    let entry_home = home_bucket(ENTRY)
+    let taken = if b == last { [] } else { [shaped_taken(engine, shape.unit(i)) for i, home in shape.homes() if home == b] }
+    if taken.any(it == null) { return null }
+    let held = [t! for t in taken]
+    let own = if b == last {
+        [answered_hash(h, shape.hashed()) for h in hashes]
+            .concat([stand_in_body(engine, file, s) for s in shape.stand_ins()])
+    } else {
+        flatten([unit_bodies(t.called, t.body) for t in held])
+            .concat([wrapper_body(w) for w in shape.wrappers() if home_bucket(w.symbol) == b])
+            .concat(if b == entry_home { lifted_bodies(root, ENTRY) } else { [] })
+    }
+    let entry_data = if b == 0 || b == entry_home { root.statics } else { [] }
+    BucketAsked {
+        b: b,
+        own: own,
+        entry: entry_body(root),
+        externs: extern_rows(engine, shape.externs()),
+        statics: distinct_statics(flatten([t.body.statics for t in held]).concat(entry_data)),
+        declared: shape.declared(),
+    }
+}
+
+/// A bucket's size as its bodies' instructions.
+export fn asked_size(a: BucketAsked) -> int { [bd.ins.length for bd in a.own].sum() }
+
+/// THE BUCKET `a` ASKED FOR, MADE: the memory pass applied, then each body it names that another
+/// bucket defines declared as the shape says. Asks nothing of an engine.
+export fn bucket_lowered(a: BucketAsked) -> Lowered {
+    let made = memory(
+        Lowered {
+            fns: a.own.concat(marked_elsewhere(a)),
+            entry: a.entry,
+            types: new_type_registry(),
+            diagnostics: [],
+            externs: a.externs,
+            statics: a.statics,
+        },
+    )
+    shown_bodies(made.fns)
+    mut named = names_of(made.fns.concat(if a.b == 0 { [made.entry] } else { [] }), made.statics)
+    for x in made.fns { named.remove(x.name) }
+    in_symbol_order(
+        made with { fns: made.fns.concat([declared_stub(d, a.b) for d in a.declared if named.has(d.name)]) },
+    )
+}
+
+/// Under `AVRA_IR_OF=<text>`, each of `bodies` whose name holds that text, printed to stderr as the
+/// memory pass left it.
+fn shown_bodies(bodies: List<Body>) {
+    let wanted? = ir_of_flag() else { return }
+    for b in bodies {
+        if b.name.contains(wanted) { eprintln("fn ${b.name}\n${body_lines(b.ins).join("\n")}") }
+    }
+}
+
+/// The text `AVRA_IR_OF` names, absent when it's unset.
+once fn ir_of_flag() -> string? {
+    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+    env("AVRA_IR_OF")
+}
+
+/// The code hash `h` answered by a body holding it, read as `hashed` says its first call reads it.
+fn answered_hash(h: HashAnswer, hashed: List<HashCall>) -> Body {
+    let answer = hashed.find(it.target == h.target)?.answer ?? Layout.Void
+    hash_body(TargetHash { target: h.target, hash: h.hash }, answer)
+}
+
+/// Every body name `bodies` and `statics` name.
+fn names_of(bodies: List<Body>, statics: List<Static>) -> Map<string, bool> {
+    mut out: Map<string, bool> = {}
+    for bd in bodies {
+        for i in bd.ins {
+            let n = body_symbol(i)
+            if n != null { out.set(n!, true) }
+        }
+    }
+    for s in statics { for n in static_code_syms(s.boxes) { out.set(n, true) } }
+    out
+}
+
+/// A marks-only stand-in for each body that consumes a seat and that bucket `a` doesn't define, so
+/// the memory pass reads what each consumes; it answers no instructions and leaves with the pass.
+fn marked_elsewhere(a: BucketAsked) -> List<Body> {
+    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: consumed_marks(d.consumed) } for d in a.declared if !d.consumed.is_empty() && !a.own.any(it.name == d.name)]
+}
+
+/// The seat marks of a body consuming the seats `consumed` says, by place: none where it consumes none.
+fn consumed_marks(consumed: List<bool>) -> List<SeatMark> { [plain_mark with { consumed: c } for c in consumed] }
+
+/// A body bucket `b` names and another bucket defines, declared and never defined here: it falls in
+/// a bucket other than `b`.
+fn declared_stub(d: BodySeen, b: int) -> Body { unit_body(d.name, d.seats, d.answer, [], []) with { program_wide: b != PROGRAM_BUCKETS - 1 } }
+
+/// A body the shape holds, lowered and placed as the shape keeps it; absent where it isn't lowered.
+fn shaped_taken(engine: QueryEngine, u: ReachedUnit) -> Taken? {
+    let f? = reached_body(engine, u.called) else { return null }
+    Taken { called: u.called, body: f.placed_keeping(u.kept), kept: u.kept }
+}
+
+/// The bucket a body homed at `home` falls in.
+fn home_bucket(home: string) -> int { (fp_str(home) & 9223372036854775807) % (PROGRAM_BUCKETS - 1) }
+
+collect listed_program_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a program's shape reads through, for a process to hand its engine.
+export fn program_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_program_facts) }
+
+/// The tests a program whose entry is `entry` places: the tick too where it links a scheduler.
+export fn scheduled_by(survey: TaskSurvey, entry: LoweredFn) -> TaskChecks { if survey.links_from(entry) { TaskChecks.Scheduled } else { TaskChecks.Tested } }
+
+/// Whether what `root` reaches holds a collect gathering `in closure`: a value made of it is each
+/// program's own, read over that program's closure.
+export fn reaches_gathered(survey: TaskSurvey, root: LoweredFn) -> bool {
+    match walked_from(
+        survey,
+        survey.placed(root, TaskChecks.Surveyed),
+        TaskChecks.Surveyed,
+        null,
+        true,
+        null,
+        true,
+    ) { .Met(w) -> w.met.any(it.called.gathers_closure), .Stopped(_why, _at) -> false }
+}
+
+/// The program `root` and each body it reaches make, the memory pass applied: `root` the entry,
+/// known as `name` with `seats` its first registers, each body taken from `survey` with the task
+/// tests `checks` names placed. Each body not lowered yet is filed in `missed` where it's given, and
+/// the walk goes past it; with `trapped`, the program is made anyway, each such body, and each name
+/// nothing answers, one lowered in that file that traps naming itself. A collect gathering `in
+/// closure` gathers over the closure of the package `program`, where one is named, and each host fn
+/// of `program`'s own files the walk reads — `home` the first — is a body of it.
+export fn made_reaching(
+    survey: TaskSurvey,
+    unplaced: LoweredFn,
+    name: string,
+    seats: List<Layout>,
+    checks: TaskChecks,
+    missed: Cell<List<Missed>>? = null,
+    trapped: SourceFileAddress? = null,
+    refused_in: List<SourceFileAddress> = [],
+    program: string? = null,
+    lazy: bool = false,
+    home: SourceFileAddress? = null,
+    unhashed_absent: bool = false,
+) -> MadeProgram {
+    let root = survey.placed(unplaced, checks)
+    let walked = match walked_from(
+        survey,
+        root,
+        checks,
+        missed,
+        trapped != null,
+        program,
+        lazy,
+        home,
+    ) { .Met(w) -> w, .Stopped(why, at) -> { return MadeProgram.Unmade(why, at) } }
+    let refusing = distinct_files(
+        refused_in.concat([m.called.file for m in walked.met if m.facts.refused() > 0]),
+    )
+    if !refusing.is_empty() { return MadeProgram.Refused(refusing) }
+    made_walked(
+        survey.engine,
+        taken_walk(survey.engine, walked),
+        root,
+        name,
+        seats,
+        trapped,
+        unhashed_absent,
+    )
+}
+
+/// A body a walk took: the call it was met by, its facts where they lie, and which of its tests it
+/// keeps.
+type Met = { called: CalledFn, facts: FactsAt, kept: TestsKept }
+
+/// A BODY'S FACTS, READ WHERE THEY LIE: a walk reads of each body only what it asks, and of each
+/// body it calls only the symbol until it is one not met before. `named` is the symbol a call
+/// names its own declaration by, where the facts lie unnamed.
+export type FactsAt = { source: SavedSource, lies: SavedRecord, named: string? }
+
+impl FactsAt {
+    fn missing() -> List<string> { if self.whole() { [] } else { UnitFacts.missing_in(self.source, self.lies) } }
+
+    /// Whether it carries no note of what wasn't lowered.
+    fn whole() -> bool { UnitFacts.missing_in_place(self.source, self.lies).length == 0 }
+
+    fn tests() -> List<TestHeld> { if UnitFacts.tests_in_place(self.source, self.lies).length == 0 { [] } else { UnitFacts.tests_in(self.source, self.lies) } }
+
+    /// Every site a test of the body, `tests`, or of its lambdas stands at.
+    fn sites_with(tests: List<TestHeld>) -> List<TestSite> {
+        let own = [t.site for t in tests]
+        if UnitFacts.lift_sites_in_place(self.source, self.lies).length == 0 { return own }
+        own.concat(flatten(UnitFacts.lift_sites_in(self.source, self.lies)))
+    }
+
+    fn cancels() -> BodyCancels { UnitFacts.cancels_in(self.source, self.lies) }
+
+    fn wrappers() -> List<FnWrapper> { UnitFacts.wrappers_in(self.source, self.lies) }
+
+    fn refused() -> int { UnitFacts.refused_in(self.source, self.lies) }
+
+    fn unread() -> List<UnreadAt> { if UnitFacts.unread_in_place(self.source, self.lies).length == 0 { [] } else { UnitFacts.unread_in(self.source, self.lies) } }
+
+    /// The calls it and its lambdas make, each where it lies.
+    fn calls() -> SavedList { UnitFacts.callees_in_place(self.source, self.lies) }
+
+    /// The calls it and its lambdas make, each read whole.
+    fn callees() -> List<CalledFn> {
+        let calls = self.calls()
+        [CalledFn.read_from(self.source, calls.record_in(self.source, i)) for i in 0..calls.length]
+    }
+
+    /// The symbol of each call it and its lambdas make.
+    fn called_symbols() -> List<string> {
+        let calls = self.calls()
+        [CalledFn.symbol_in(self.source, calls.record_in(self.source, i)) for i in 0..calls.length]
+    }
+
+    /// How a module declares it and its lambdas, its own declaration by the name a call gives it.
+    fn declared() -> List<BodySeen> {
+        let seen = UnitFacts.declared_in(self.source, self.lies)
+        let named? = self.named else { return seen }
+        [seen[0] with { name: named }].concat(seen.drop(1))
+    }
+}
+
+/// The facts of the body a call of `c` runs, where `body_facts` keeps them; absent where its
+/// declaration gives none.
+export fn facts_lying(engine: QueryEngine, c: CalledFn) -> FactsAt? {
+    facts_in(engine.answer_to(body_facts_question(engine, body_asked(engine, c))), c.symbol)
+}
+
+/// The facts of the body a call of `c` runs, where `unit_facts` keeps them, named as `c` names it.
+fn unit_facts_lying(engine: QueryEngine, c: CalledFn) -> FactsAt? {
+    facts_in(engine.answer_to(unit_facts_question(engine, c)), null)
+}
+
+/// The facts the answer `saved` keeps, where they lie, named `named`; absent where it keeps none.
+fn facts_in(saved: SavedBytes, named: string?) -> FactsAt? {
+    let root = saved.root()
+    if !root.holds_child_at(saved.source, 0) { return null }
+    FactsAt { source: saved.source, lies: root.record_in(saved.source, 0), named: named }
+}
+
+/// A stretch of a walk's worklist: calls in hand, or the calls of a met body where its facts lie.
+enum Calls {
+    Held(calls: List<CalledFn>)
+    Lying(source: SavedSource, calls: SavedList)
+}
+
+/// One walk of what a program reaches, in the order it met each, read from the bodies' facts: the
+/// bodies it took, the externs it met, and each body it went past, why it isn't lowered yet.
+type Walked = { met: List<Met>, externs: List<CalledFn>, unlowered: List<Missed>, deferred: List<CalledFn> = [] }
+
+/// A body a program's made from: the call it was met by, lowered and placed, and which of its tests
+/// it keeps.
+type Taken = { called: CalledFn, body: LoweredFn, kept: TestsKept }
+
+/// What a program is made of: the bodies a walk took, lowered and placed, its externs, and each body
+/// it went past.
+type Walk = { taken: List<Taken>, externs: List<CalledFn>, unlowered: List<Missed>, deferred: List<CalledFn> = [] }
+
+/// A walk of a program, or the first body it met that isn't lowered yet, where it stops at one.
+enum Walking {
+    Met(walk: Walked)
+    Stopped(why: string, at: string)
+}
+
+/// Why a body whose saved facts are `facts`, with the tests `kept` placed, isn't lowered: no body
+/// here, or the first note it carries; absent where it is.
+/// The first note a body with the notes `missing` and the tests `tests` carries where `kept` are
+/// placed; absent where it is lowered.
+fn facts_unmade(missing: List<string>, tests: List<TestHeld>, kept: TestsKept) -> string? {
+    notes_kept(missing, [t.noted for t in tests], [kept.keeps(t.site) for t in tests]).first()
+}
+
+/// The bodies `root` reaches, read from their saved facts with the tests `checks` names kept, each
+/// once, in the order met. Each body not lowered yet is filed in `missed` where it's given; the walk
+/// goes past it where `going_past`, or where it files them, and stops at the first otherwise. A
+/// collect gathering `in closure` is met as the program of the package `program` reads it. A `lazy`
+/// walk takes no body a fn only holds as a value: each is deferred, made the first time a run calls
+/// it (`made_late`). A bodiless extern is answered by the host fn of its name the walk meets, met
+/// before it or after. Each file the walk reads — `home`, then each met body's — gives it that file's
+/// host fns its program holds (`hosted_in`), read from the file's own items, so an edit of a file no
+/// body stands in moves nothing. A generic fn's unit is held by the least of the calls that meet it
+/// (`CallsHeld`), so what the walk holds is what it reaches, whatever order it meets it in.
+fn walked_from(
+    survey: TaskSurvey,
+    root: LoweredFn,
+    checks: TaskChecks,
+    missed: Cell<List<Missed>>?,
+    going_past: bool,
+    program: string?,
+    lazy: bool = false,
+    home: SourceFileAddress? = null,
+) -> Walking {
+    walked(
+        survey,
+        every_callee_of(root)
+            .concat(hosted_in(survey.engine, home, program))
+            .concat(package_hosted(survey.engine, program, home)),
+        {},
+        held_of(root.wrappers),
+        checks,
+        missed,
+        going_past,
+        program,
+        lazy,
+        home,
+    )
+}
+
+/// The walk from `start`, past each body `seen` names, as `walked_from` says; `held` names each fn
+/// the bodies met so far hold as a value.
+fn walked(
+    survey: TaskSurvey,
+    start: List<CalledFn>,
+    seen_before: Map<string, bool>,
+    held_before: Map<string, bool>,
+    checks: TaskChecks,
+    missed: Cell<List<Missed>>?,
+    going_past: bool,
+    program: string?,
+    lazy: bool,
+    home: SourceFileAddress? = null,
+) -> Walking {
+    let engine = survey.engine
+    mut queue: List<Calls> = [Calls.Held(start)]
+    mut met: List<Met> = []
+    mut externs: List<CalledFn> = []
+    mut unlowered: List<Missed> = []
+    mut deferred: List<CalledFn> = []
+    mut seen = seen_before
+    mut held_as_value = held_before
+    mut read: Map<string, bool> = {}
+    if home != null { read.set(spelled_file(home!), true) }
+    mut bodiless: Map<string, bool> = {}
+    let least = CallsHeld { texts: map_cell(), calls: map_cell() }
+    mut stretch = 0
+    engine.kept_times()?.opened("the walk", TimedSide.Outside)
+    while stretch < queue.length {
+        let calls = queue[stretch]
+        stretch = stretch + 1
+        let count = match calls { .Held(held) -> held.length, .Lying(_, lying) -> lying.length }
+        for i in 0..count {
+            let c = match calls {
+                .Held(held) -> met_for(engine, held[i], program),
+                .Lying(source, lying) -> {
+                    let call = lying.record_in(source, i)
+                    let symbol = CalledFn.symbol_in(source, call)
+                    if seen.has(symbol) && !least.holds(symbol) { continue }
+                    met_for(engine, CalledFn.read_from(source, call), program)
+                },
+            }
+            if seen.has(c.symbol) {
+                least.met_again(c)
+                continue
+            }
+            if !read.has(spelled_file(c.file)) {
+                read.set(spelled_file(c.file), true)
+                let hosted = hosted_in(engine, c.file, program)
+                // LICENSED loops.push_loop: the walk's own worklist grows while it is walked
+                if !hosted.is_empty() { queue.push(Calls.Held(hosted)) }
+            }
+            if c.external {
+                if !bodiless.has(c.symbol) {
+                    bodiless.set(c.symbol, true)
+                    externs.push(c)
+                    least.met(c)
+                } else {
+                    least.met_again(c)
+                }
+                continue
+            }
+            seen.set(c.symbol, true)
+            least.met(c)
+            if c.hosted { externs.push(c) }
+            if lazy && held_as_value.has(c.symbol) {
+                deferred.push(c)
+                continue
+            }
+            let facts = facts_lying(engine, c)
+            let tests = facts?.tests() ?? []
+            let kept = survey.kept_at(facts?.sites_with(tests) ?? [], checks)
+            let why = if facts == null { no_body_here() } else { facts_unmade(facts!.missing(), tests, kept) }
+            if why != null {
+                let gone = Missed {
+                    symbol: c.symbol,
+                    why: why!,
+                    file: c.file,
+                    refused: facts?.refused() ?? 0,
+                    unread: facts?.unread() ?? [],
+                }
+                if missed != null { missed!.push(gone) }
+                if !going_past && missed == null { return Walking.Stopped(gone.why, c.symbol) }
+                unlowered.push(gone)
+                continue
+            }
+            let held = facts!
+            met.push(Met { called: c, facts: held, kept: kept })
+            // LICENSED loops.push_loop: the walk's lists grow in place, where a concat copies each whole every turn
+            for w in held.wrappers() { held_as_value.set(w.target, true) }
+            // LICENSED loops.push_loop: the walk's own worklist grows while it is walked
+            queue.push(Calls.Lying(held.source, held.calls()))
+        }
+    }
+    engine.kept_times()?.closed()
+    let filed = missed?.get() ?? []
+    if !going_past && !filed.is_empty() { return Walking.Stopped(filed[0].why, filed[0].symbol) }
+    Walking
+        .Met(
+            Walked {
+                met: [m with { called: least.call(m.called) } for m in met],
+                externs: [least.call(e) for e in externs if !(e.external && seen.has(e.symbol))],
+                unlowered: unlowered,
+                deferred: [least.call(d) for d in deferred],
+            },
+        )
+}
+
+/// THE CALL A WALK HOLDS EACH GENERIC FN'S UNIT BY: of every call that meets it, the one whose text
+/// is least. Calls of one unit differ only in the types filling its parameters, which share the
+/// layouts its symbol names and so the body it runs; holding the least makes what a walk holds
+/// stand however it meets the calls, so the walk's answer is the bodies it reaches alone.
+type CallsHeld = { texts: Cell<Map<string, string>>, calls: Cell<Map<string, CalledFn>> }
+
+impl CallsHeld {
+    /// `c`, meeting its unit first.
+    fn met(c: CalledFn) {
+        if !generic_call(c) { return }
+        self.texts.put(c.symbol, called_text(c))
+        self.calls.put(c.symbol, c)
+    }
+
+    /// `c`, meeting a unit met before: held where its text is the least yet.
+    fn met_again(c: CalledFn) {
+        if !generic_call(c) { return }
+        let held? = self.texts.get().get(c.symbol) else { return }
+        let text = called_text(c)
+        if !text_before(text, held) { return }
+        self.texts.put(c.symbol, text)
+        self.calls.put(c.symbol, c)
+    }
+
+    /// Whether `symbol` names a generic fn's unit met before, whose calls are each read.
+    fn holds(symbol: string) -> bool { self.texts.get().has(symbol) }
+
+    /// The call `c`'s unit is held by.
+    fn call(c: CalledFn) -> CalledFn { self.calls.get().get(c.symbol) ?? c }
+}
+
+/// Whether `c` calls a generic fn's unit, which calls fill otherwise.
+fn generic_call(c: CalledFn) -> bool { c.type_params > 0 || !c.fills.is_empty() }
+
+/// The fns `wrappers` hold as values, by symbol.
+fn held_of(wrappers: List<FnWrapper>) -> Map<string, bool> {
+    mut held: Map<string, bool> = {}
+    for w in wrappers { held.set(w.target, true) }
+    held
+}
+
+/// `c` as the program of the package `program` meets it: a collect's unit gathering `in closure`
+/// gathers over that program's closure; a body whose lambdas read a context frames them; any other
+/// as it stands.
+fn met_for(engine: QueryEngine, c: CalledFn, program: string?) -> CalledFn {
+    let p? = program else { return c }
+    if c.gathers_closure { return c with { gathered_for: p } }
+    let framed = framed_lambdas(engine, p, c.symbol)
+    if framed.is_empty() { c } else { c with { framed: framed } }
+}
+
+/// The bodies a walk met, lowered and placed as it kept their tests.
+fn taken_walk(engine: QueryEngine, walked: Walked) -> Walk {
+    Walk {
+        taken: [Taken {
+            called: m.called,
+            body: reached_body(engine, m.called)!.placed_keeping(m.kept),
+            kept: m.kept,
+        } for m in walked.met],
+        externs: walked.externs,
+        unlowered: walked.unlowered,
+        deferred: walked.deferred,
+    }
+}
+
+/// The program a walk from `root` met, made: its bodies, wrappers, data and externs, then with
+/// `trapped`, a trap standing for each name nothing answers; its code hashes answered and the memory
+/// pass applied.
+fn made_walked(
+    engine: QueryEngine,
+    walk: Walk,
+    root: LoweredFn,
+    name: string,
+    seats: List<Layout>,
+    trapped: SourceFileAddress?,
+    unhashed_absent: bool = false,
+) -> MadeProgram {
+    let closed = walk_closed(engine, walk, root, name, seats, trapped)
+    let hashed = match phased(
+        engine,
+        "the code hashes",
+        () -> hashes_answering(closed, unhashed_absent),
+    ) { .Ok(h) -> h, .Err(target) -> { return MadeProgram.Unmade(unhashed(), target) } }
+    unanswered(hashed) ?? MadeProgram.Made(phased(engine, "the memory pass", () -> memory(hashed)))
+}
+
+/// The bodies, wrappers, data and externs a walk from `root` met, as one program, `root` its entry
+/// known as `name`; with `trapped`, a trap standing for each name nothing answers.
+fn walk_closed(
+    engine: QueryEngine,
+    walk: Walk,
+    root: LoweredFn,
+    name: string,
+    seats: List<Layout>,
+    trapped: SourceFileAddress?,
+) -> Lowered {
+    let taken = taken_bodies(walk, lifted_bodies(root, name), root.statics, root.wrappers)
+    let fns = taken.fns
+    let statics = taken.statics
+    let wrappers = taken.wrappers
+    let waiting = deferred_of(walk.deferred, wrappers)
+    let lowered = Lowered {
+        fns: fns
+            .concat(
+                [wrapper_body(w) for w in distinct_wrappers(wrappers) if !waiting.any(it.callee.symbol == w.target)],
+            ),
+        entry: unit_body(name, seats, root.answer, root.ins, root.layouts) with { boxed: root.boxed },
+        types: new_type_registry(),
+        diagnostics: [],
+        externs: flatten([some_list(declared_row(engine, c)) for c in walk.externs]),
+        statics: distinct_statics(statics),
+        deferred: waiting,
+    }
+    if trapped == null { return lowered }
+    mut unlowered: Map<string, string> = {}
+    for x in walk.unlowered { unlowered.set(x.symbol, x.why) }
+    phased(engine, "the trap closing", () -> traps_answering(engine, trapped!, lowered, unlowered))
+}
+
+/// The bodies a walk took, each beside its lambdas, after `fns`; the data and the wrappers they hold,
+/// after `statics` and `wrappers`.
+type TakenBodies = { fns: List<Body>, statics: List<Static>, wrappers: List<FnWrapper> }
+
+fn taken_bodies(
+    walk: Walk,
+    fns_before: List<Body>,
+    statics_before: List<Static>,
+    wrappers_before: List<FnWrapper>,
+) -> TakenBodies {
+    mut fns = fns_before
+    mut statics = statics_before
+    mut wrappers = wrappers_before
+    for t in walk.taken {
+        let home = spelled_file(t.called.file)
+        fns
+            .push(
+                unit_body(
+                    t.called.symbol,
+                    t.body.params,
+                    t.body.answer,
+                    t.body.ins,
+                    t.body.layouts,
+                    home,
+                ) with { boxed: t.body.boxed, hosted: t.called.hosted, marks: consumed_marks(t.body.consumed) },
+            )
+        // LICENSED loops.push_loop: the program's lists grow in place, where a concat copies each whole every turn
+        for b in lifted_bodies(t.body, home) { fns.push(b) }
+        // LICENSED loops.push_loop: the program's lists grow in place, where a concat copies each whole every turn
+        for s in t.body.statics { statics.push(s) }
+        // LICENSED loops.push_loop: the program's lists grow in place, where a concat copies each whole every turn
+        for w in t.body.wrappers { wrappers.push(w) }
+    }
+    TakenBodies { fns: fns, statics: statics, wrappers: wrappers }
+}
+
+/// THE ONE DOOR EVERY COMPILE-TIME RUN OF A LAZILY MADE PROGRAM TAKES (a const's settling, a
+/// generator's run, an instance's check): the piece `made_late` makes for a fn the program defers,
+/// asked the first time the run calls it, its tests kept as `checks` names, as the program's were.
+export fn late_door(survey: TaskSurvey, checks: TaskChecks) -> fn(Lowered, string) -> Lowered? {
+    (have: Lowered, name: string) -> made_late(survey, have, name, checks)
+}
+
+/// THE DOOR A LAZILY MADE PROGRAM IS GROWN BY: the deferred fn `symbol` names (itself, or the wrapper
+/// a value of it is called through) made with everything it calls, each body it only holds as a value
+/// deferred in turn — the piece `have` lacks, past the memory pass read against `have`'s marks: its new
+/// bodies, data and rows, and the deferred fns the grown program holds. Each body is asked of the engine here, so a run that calls it
+/// reads it and one that never calls it doesn't. Absent for a name `have` doesn't defer, and where
+/// the piece isn't made: a body not lowered yet, a code hash. A place a value took before its body
+/// was made holds no instructions, and is no body here.
+export fn made_late(survey: TaskSurvey, have: Lowered, symbol: string, checks: TaskChecks) -> Lowered? {
+    let d? = have.deferred.find(it.callee.symbol == symbol || it.wrapper?.symbol == symbol) else { return null }
+    let made = [b for b in have.fns if !b.ins.is_empty()].concat([have.entry])
+    mut seen: Map<string, bool> = {}
+    for b in made { seen.set(b.name, true) }
+    let held = held_of(
+        [w! for x in have.deferred if x.callee.symbol != d.callee.symbol for w in [x.wrapper] if w != null],
+    )
+    let walk = match walked(survey, [d.callee], seen, held, checks, null, false, null, true) {
+        .Met(w) -> taken_walk(survey.engine, w),
+        .Stopped(_, _) -> { return null },
+    }
+    let taken = taken_bodies(walk, [], [], some_list(d.wrapper))
+    let waiting = deferred_of(walk.deferred, taken.wrappers)
+    let fresh = [if b.name == d.callee.symbol { b with { marks: [] } } else { b } for b in taken.fns]
+        .concat(
+            [wrapper_body(w) for w in distinct_wrappers(taken.wrappers) if !seen.has(w.symbol) && !waiting.any(it.callee.symbol == w.target)],
+        )
+    let rows = flatten([some_list(declared_row(survey.engine, c)) for c in walk.externs])
+    let grown = have with { fns: have.fns.concat(fresh), statics: distinct_statics(have.statics.concat(taken.statics)), externs: have.externs.concat([r for r in rows if !have.externs.any(it.name == r.name)]), deferred: [x for x in have.deferred if x.callee.symbol != d.callee.symbol].concat(waiting) }
+    if [o for o in program_opens(grown) if code_hash_target(o) != null].length > 0 ||
+        program_closed(grown) != null { return null }
+    grown with { fns: memory_late(made, fresh), statics: [s for s in grown.statics if !have.statics.any(it.name == s.name)], externs: [r for r in grown.externs if !have.externs.any(it.name == r.name)] }
+}
+
+/// `l` with a trap standing for each name it calls that no body answers, each laid out as its first
+/// call hands it its arguments and reads its answer, and saying why it isn't lowered where `unlowered`
+/// says.
+fn traps_answering(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    l: Lowered,
+    unlowered: Map<string, string>,
+) -> Lowered {
+    mut held = l
+    while true {
+        let opens = [o for o in program_opens(held) if code_hash_target(o) == null]
+        if opens.is_empty() { return held }
+        let shapes = called_shapes(held, opens)
+        held = held with { fns: held
+            .fns
+            .concat(
+                [stand_in_body(
+                    engine,
+                    file,
+                    stand_in_of(open, shapes.get(open) ?? no_call(), unlowered),
+                ) for open in opens],
+            ) }
+    }
+    held
+}
+
+/// The stand-in for the name `open` nothing answers, called as `shape`, saying why it isn't lowered
+/// where `unlowered` says.
+fn stand_in_of(open: string, shape: CalledShape, unlowered: Map<string, string>) -> StandIn {
+    StandIn {
+        symbol: open,
+        why: unlowered.get(open) ?? unanswered_name(),
+        seats: shape.seats,
+        answer: shape.answer,
+    }
+}
+
+/// The body standing for `s`: a trap saying why it isn't lowered.
+fn stand_in_body(engine: QueryEngine, file: SourceFileAddress, s: StandIn) -> Body {
+    let f = trapped_unit(engine, file, s.symbol, s.why, s.seats, s.answer)
+    unit_body(s.symbol, f.params, f.answer, f.ins, f.layouts) with { program_wide: true }
+}
+
+/// THE PROGRAM'S CODE HASHES: each code hash `l` calls answered by a body holding it, worked out over
+/// `l`'s own bodies and data, a body's types read by their layouts. A hash that reaches a name
+/// nothing answers refuses the program, naming the query's target: a hash it can't work out would key
+/// nothing, and every answer it keys would be worked out again on every run. Where `unhashed_absent`
+/// — a run at compile time, a generator's or a check's, which keeps no answer past itself — such a
+/// hash answers absent instead, so the query keyed by it keys nothing, as the old path's settled run
+/// does.
+fn hashes_answering(l: Lowered, unhashed_absent: bool = false) -> Result<Lowered, string> {
+    let opens = [o for o in program_opens(l) if code_hash_target(o) != null]
+    if opens.is_empty() { return .Ok(l) }
+    let shapes = called_shapes(l, opens)
+    let hashes = hashes_read(
+        l.fns.concat([l.entry]),
+        l.statics,
+        [code_hash_target(o)! for o in opens],
+        [row.name for row in rt_sigs().concat(l.externs)],
+        layout_reading(),
+    )
+    if traced() {
+        for h in hashes { qtrace("Q\thash\t${h.target}\t${h.hash ?? "-"}\n") }
+    }
+    let absent = hashes.find(it.hash == null)
+    if absent != null && !unhashed_absent { return .Err(absent!.target) }
+    .Ok(
+        l with { fns: l
+            .fns
+            .concat(
+                [hash_body(h, (shapes.get(code_hash_symbol(h.target)) ?? no_call()).answer) for h in hashes],
+            ) },
+    )
+}
+
+/// A program layer's reading of the types code is made of: a body's are its layouts, and a fn value's
+/// node is the type of the box it rides, where the lowering noted one. A call through a box of no
+/// noted type reaches every fn value; a fn taken into one joins every value node.
+fn layout_reading() -> CodeReading {
+    CodeReading {
+        typed: (b: Body) -> [x.spelled() for x in b.seats.concat(some_list(b.answer)).concat(b.layouts)],
+        dispatched: (b: Body, i: Ins) -> b.dispatched_node(i),
+        joined: (b: Body, at: Reg, _sym: string) -> b.box_node(at) ?? any_value_node,
+    }
+}
+
+impl Body {
+    /// The value node a call `i` through a fn value reaches: the type of the box it hands first.
+    fn dispatched_node(i: Ins) -> string {
+        match i {
+            .CallPtr(_dst, _f, args) -> {
+                let box? = args.first() else { return values_node }
+                self.box_node(box) ?? values_node
+            },
+            rest -> values_node,
+        }
+    }
+
+    /// The value node of the box in `at`, by the type the lowering noted it of; absent where it noted
+    /// none.
+    fn box_node(at: Reg) -> string? {
+        let noted? = self.boxed.find(it.reg == at.index) else { return null }
+        value_node_of(noted.of)
+    }
+
+    /// A call `i` makes: its callee and how it stands; absent for any other instruction.
+    fn called_at(i: Ins) -> CalledAt? {
+        match i {
+            .Call(dst, callee, args) -> CalledAt {
+                callee: callee,
+                shape: CalledShape {
+                    seats: [self.layouts[a.index] for a in args],
+                    answer: self.layouts[dst.index],
+                },
+            },
+            rest -> null,
+        }
+    }
+}
+
+/// The body answering `h`'s target with its hash, absent where it has none, called as `shapes` says.
+fn hash_body(h: TargetHash, answer: Layout) -> Body {
+    let name = code_hash_symbol(h.target)
+    let r0 = Reg { index: 0 }
+    unit_body(
+        name,
+        [],
+        answer,
+        [
+            Ins.ScopeEnter(Level.Application),
+            if h.hash == null { Ins.ConstInt(r0, 0) } else { Ins.ConstStr(r0, h.hash!) },
+            Ins.ScopeExit(r0),
+            Ins.RetVal(r0),
+        ],
+        [answer],
+    ) with { program_wide: true }
+}
+
+/// How a call stands: its arguments' layouts and its answer's.
+type CalledShape = { seats: List<Layout>, answer: Layout }
+
+/// How each of `symbols` is called in `l`, at its first call, in one walk; a name nothing calls has
+/// no entry.
+fn called_shapes(l: Lowered, symbols: List<string>) -> Map<string, CalledShape> {
+    mut wanted: Map<string, bool> = {}
+    for s in symbols { wanted.set(s, true) }
+    mut out: Map<string, CalledShape> = {}
+    for b in l.fns.concat([l.entry]) {
+        for i in b.ins {
+            let c? = b.called_at(i) else { continue }
+            if wanted.has(c.callee) && !out.has(c.callee) { out.set(c.callee, c.shape) }
+        }
+    }
+    out
+}
+
+/// A call's callee and how it stands.
+type CalledAt = { callee: string, shape: CalledShape }
+
+/// How a name nothing calls stands: no seats, answering nothing.
+fn no_body_here() -> string { "a call of a fn with no body here" }
+
+fn no_call() -> CalledShape { CalledShape { seats: [], answer: Layout.Void } }
+
+fn runs_nothing() -> string { "a file that runs no statement" }
+
+export fn lowering_moved() -> string { "a body the program's shape holds that no longer lowers" }
+
+fn unanswered_name() -> string { "a name no lowered body, row or extern answers" }
+
+export fn unhashed() -> string { "a query whose code hash reaches a name no lowered body, row or extern answers, so its answers would key nothing" }
+
+/// `run`'s answer, timed as the phase `name` outside every query where `engine` times its asks.
+export fn phased<T>(engine: QueryEngine, name: string, run: fn() -> T) -> T {
+    engine.kept_times()?.opened(name, TimedSide.Outside)
+    let answer = run()
+    engine.kept_times()?.closed()
+    answer
+}
+
+/// A body a program reaches that isn't lowered yet: its symbol, why, the file it's declared in, how
+/// many of its nodes a seat refused, and each name it reads that nothing binds and the program gives
+/// no type.
+@derive(Saved)
+export type Missed = {
+    symbol: string,
+    why: string,
+    file: SourceFileAddress,
+    refused: int = 0,
+    unread: List<UnreadAt> = [],
+}
+
+/// The body a call of `c` runs, lowered with its tests held; absent where its declaration gives none.
+export fn reached_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? { asked_body(engine, body_asked(engine, c)) }
+
+/// WHICH QUERY LOWERS THE BODY A CALL RUNS, and with what: a fn's or a generic one's unit, a field's
+/// or a seat's default, a method's seat default, the body a trait gives a type that never writes the
+/// method, a trait's own static, an impl's method, an enum's `all`, a collect gathering over a
+/// program's closure; or none. One dispatch, read two
+/// ways: the body (`asked_body`), and the question whose answer it is (`asked_question`), so a build
+/// keys a body by that answer's hash without reading the body.
+@derive(Saved)
+enum BodyAsked {
+    Under(file: SourceFileAddress, name: string, under: List<ParameterLayout>?)
+    Settled(
+        file: SourceFileAddress,
+        name: string,
+        under: List<ParameterLayout>?,
+        settled: List<SettledSeat>,
+    )
+    FieldDefault(
+        file: SourceFileAddress,
+        owner: string,
+        name: string,
+        under: List<ParameterLayout>?,
+    )
+    SeatDefault(file: SourceFileAddress, owner: string, name: string)
+    MethodSeatDefault(
+        of: SourceFileAddress,
+        owner: string,
+        method: string,
+        name: string,
+        statics: bool,
+    )
+    Default(of: SourceFileAddress, owner: string, name: string, written_as: string?)
+    TraitStatic(of: SourceFileAddress, owner: string, name: string)
+    Method(at: ImplAt, name: string, statics: bool, under: List<ParameterLayout>?)
+    EveryVariant(of: SourceFileAddress, owner: string, name: string)
+    /// A collect gathering `in closure`, as the program of the package `program` reads it.
+    Gathered(file: SourceFileAddress, name: string, program: string)
+    Case(file: SourceFileAddress, item: int, index: int, symbol: string)
+    /// A fn's or a method's body, its lambdas `framed` carrying their frame of contexts.
+    Framed(asked: BodyAsked, framed: List<string>)
+    Nothing
+}
+
+/// Which query lowers the body a call of `c` runs. A trait's own static is asked first where `c`
+/// names a static, and stands where it gives a body.
+fn body_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
+    if c.case_item != null { return BodyAsked.Case(c.file, c.case_item!, c.case_index, c.symbol) }
+    match c.defaulted {
+        .Field -> BodyAsked
+            .FieldDefault(c.file, c.owner!, c.name, if c.parameters.is_empty() { null } else { c.parameters }),
+        .Seat -> if c.seat_of == null {
+            BodyAsked.SeatDefault(c.file, c.owner!, c.name)
+        } else {
+            BodyAsked.MethodSeatDefault(c.of!, c.owner!, c.seat_of!, c.name, c.statics)
+        },
+        .Not -> when {
+            c.gathered_for != null -> BodyAsked.Gathered(c.file, c.name, c.gathered_for!)
+            c.framed.is_empty() -> declared_asked(engine, c)
+            _ -> BodyAsked.Framed(declared_asked(engine, c), c.framed)
+        },
+    }
+}
+
+/// Which query lowers the body a call of the declared `c` runs.
+fn declared_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
+    let under = if c.parameters.is_empty() { null } else { c.parameters }
+    let of? = c.of else { return if c.settled.is_empty() { BodyAsked.Under(c.file, c.name, under) } else { BodyAsked.Settled(c.file, c.name, under, c.settled) } }
+    if c.given_by != null { return BodyAsked.Default(of, c.owner!, c.name, c.given_in) }
+    if c.statics && lowered_trait_static(engine, of, c.owner!, c.name) != null { return BodyAsked.TraitStatic(of, c.owner!, c.name) }
+    let at? = impls_given(engine, of, c.owner!, c.name, c.statics, c.file.package_name)
+        .find((i) -> c.given_in == null || impl_given(engine, i) == c.given_in) else {
+        return if c.statics { BodyAsked.EveryVariant(of, c.owner!, c.name) } else { BodyAsked.Nothing }
+    }
+    BodyAsked.Method(at, c.name, c.statics, under)
+}
+
+/// The body `asked` names, lowered with its tests held.
+fn asked_body(engine: QueryEngine, asked: BodyAsked) -> LoweredFn? {
+    match asked {
+        .Under(file, name, under) -> lowered_under(engine, file, name, under, []),
+        .Settled(file, name, under, settled) -> lowered_settled(engine, file, name, under, settled),
+        .FieldDefault(file, owner, name, under) -> lowered_field_default(engine, file, owner, name, under),
+        .SeatDefault(file, owner, name) -> lowered_seat_default(engine, file, owner, name),
+        .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default(engine, of, owner, method, name, statics),
+        .Default(of, owner, name, written_as) -> lowered_default(engine, of, owner, name, written_as),
+        .TraitStatic(of, owner, name) -> lowered_trait_static(engine, of, owner, name),
+        .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, []),
+        .EveryVariant(of, owner, name) -> lowered_every_variant(engine, of, owner, name),
+        .Gathered(file, name, program) -> lowered_gathered(engine, file, name, program),
+        .Case(file, item, index, symbol) -> lowered_case(engine, file, item, index, symbol),
+        .Framed(inner, framed) -> framed_body(engine, inner, framed),
+        .Nothing -> null,
+    }
+}
+
+/// The question whose answer is the body `inner` names, its lambdas `framed` carrying their frame.
+fn framed_question(engine: QueryEngine, inner: BodyAsked, framed: List<string>) -> Question? {
+    match inner {
+        .Under(file, name, under) -> lowered_under_question(engine, file, name, under, framed),
+        .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, framed),
+        rest -> asked_question(engine, inner),
+    }
+}
+
+/// The body `inner` names, its lambdas `framed` carrying their frame of contexts: a fn's or a
+/// method's; any other as it is.
+fn framed_body(engine: QueryEngine, inner: BodyAsked, framed: List<string>) -> LoweredFn? {
+    match inner {
+        .Under(file, name, under) -> lowered_under(engine, file, name, under, framed),
+        .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, framed),
+        rest -> asked_body(engine, inner),
+    }
+}
+
+/// The question whose answer is the body `asked` names; absent where none is asked.
+fn asked_question(engine: QueryEngine, asked: BodyAsked) -> Question? {
+    match asked {
+        .Under(file, name, under) -> lowered_under_question(engine, file, name, under, []),
+        .Settled(file, name, under, settled) -> lowered_settled_question(engine, file, name, under, settled),
+        .FieldDefault(file, owner, name, under) -> lowered_field_default_question(engine, file, owner, name, under),
+        .SeatDefault(file, owner, name) -> lowered_seat_default_question(engine, file, owner, name),
+        .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default_question(engine, of, owner, method, name, statics),
+        .Default(of, owner, name, written_as) -> lowered_default_question(engine, of, owner, name, written_as),
+        .TraitStatic(of, owner, name) -> lowered_trait_static_question(engine, of, owner, name),
+        .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, []),
+        .EveryVariant(of, owner, name) -> lowered_every_variant_question(engine, of, owner, name),
+        .Gathered(file, name, program) -> lowered_gathered_question(engine, file, name, program),
+        .Case(file, item, index, symbol) -> lowered_case_question(engine, file, item, index, symbol),
+        .Framed(inner, framed) -> framed_question(engine, inner, framed),
+        .Nothing -> null,
+    }
+}
+
+/// The row C answers the extern `c` by: each seat and the answer at the width it writes, else as its
+/// type is to C. Absent for a runtime row's own name, which the row answers, and an extern with a
+/// seat or answer no one word carries.
+fn declared_row(engine: QueryEngine, c: CalledFn) -> RtSig? {
+    if rt_sig_of(c.symbol) != null { return null }
+    let sig? = fn_signature(engine, c.file, c.name) else { return null }
+    let program = program_of(
+        engine,
+        c.file,
+        Signing { engine: engine, file: c.file, type_params: [] },
+    )
+    let crossed = [crossing_kind(program, p.ty, p.width) for p in sig.params]
+    let answer? = crossing_kind(program, sig.answer, sig.answer_width) else { return null }
+    if crossed.any(it == null) { return null }
+    inout_row(
+        c.symbol,
+        answer,
+        [if p.mutable { RtKind.Ptr } else { crossed[j]! } for j, p in sig.params],
+        [if p.mutable { crossed[j]! } else { RtKind.Void } for j, p in sig.params],
+    )
+}
+
+/// The kind a value of `ty` crosses to C as: the width its seat writes, else what its layout is to C.
+/// Absent for a value no one word carries.
+fn crossing_kind(program: CheckedProgram, ty: SignedType?, width: string?) -> RtKind? {
+    if width != null { return width_named(width!) }
+    let t? = ty else { return null }
+    let l? = program.layout(t) else { return null }
+    match l {
+        .Void -> RtKind.Void,
+        .Real -> RtKind.F64,
+        .Word or .Truth -> RtKind.I64,
+        .Boxed(_) or .Bare -> RtKind.Ptr,
+        .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}
+
+/// The fns a lowered body and the lambdas it lifts call.
+fn every_callee_of(f: LoweredFn) -> List<CalledFn> { f.callees.concat(flatten([l.callees for l in f.lifts])) }
+
+/// The lambdas and shims a lowered body lifts, each a body of its own; a shared one weak.
+fn lifted_bodies(f: LoweredFn, home: string? = null) -> List<Body> {
+    [unit_body(l.symbol, l.params, l.answer, l.ins, l.layouts, home) with { boxed: l.boxed, weak: l.shared, site: l.site } for l in f.lifts]
+}
+
+/// A unit as a body: its seats the first registers, read by their layouts.
+fn unit_body(
+    name: string,
+    seats: List<Layout>,
+    answer: Layout,
+    ins: List<Ins>,
+    layouts: List<Layout>,
+    home: string? = null,
+) -> Body {
+    Body {
+        name: name,
+        params: [],
+        ret: new_type_registry().type(void),
+        gives: null,
+        ins: ins,
+        reg_types: [],
+        layouts: layouts,
+        seats: seats,
+        answer: answer,
+        home: home,
+    }
+}
+
+/// A fn value's wrapper as a body: the box and the fn's seats its first registers.
+fn wrapper_body(w: FnWrapper) -> Body { unit_body(w.symbol, [w.box].concat(w.seats), w.answer, w.ins(), w.layouts()) }
+
+/// Each fn a lazy walk deferred, beside the wrapper a value of it is called through.
+fn deferred_of(deferred: List<CalledFn>, wrappers: List<FnWrapper>) -> List<DeferredFn> {
+    [DeferredFn { callee: c, wrapper: wrappers.find(it.target == c.symbol) } for c in deferred]
+}
+
+/// Each wrapper once, by its symbol.
+fn distinct_wrappers(wrappers: List<FnWrapper>) -> List<FnWrapper> {
+    mut by: Map<string, FnWrapper> = {}
+    for w in wrappers { if !by.has(w.symbol) { by.set(w.symbol, w) } }
+    by.values()
+}
+
+/// Each static once, by its name.
+fn distinct_statics(statics: List<Static>) -> List<Static> {
+    mut by: Map<string, Static> = {}
+    for s in statics { if !by.has(s.name) { by.set(s.name, s) } }
+    by.values()
+}
+
+/// Why the program isn't run yet though every body lowered whole, absent when it is: a name no body,
+/// runtime row or extern answers.
+fn unanswered(l: Lowered) -> MadeProgram? {
+    let open? = program_closed(l) else { return null }
+    MadeProgram.Unmade(unanswered_name(), open)
+}
+
+/// A program test as the suite's case runner runs one: its top level the body `CASE_BODY`, run by an
+/// entry under a case's schedules and clock, what it prints held to `expected` under each, and the
+/// process leaving 0 when every schedule printed it, else 1, the runtime saying what printed otherwise.
+export fn heard_as_case(l: Lowered, label: string, expected: string) -> Lowered {
+    let rows = ["avra_program_verdict", "avra_process_exit"]
+    l with { fns: l.fns.concat([l.entry with { name: CASE_BODY }]), entry: unit_body(
+        ENTRY,
+        [],
+        Layout.Word,
+        case_entry(label, expected),
+        [
+            Layout.Word,
+            Layout.Boxed(BoxKind.Text),
+            Layout.Boxed(BoxKind.Text),
+            Layout.Word,
+            Layout.Word,
+            Layout.Word,
+        ],
+    ), externs: l
+        .externs
+        .filter((r) -> !rows.contains(r.name))
+        .concat(program_rows.filter((r) -> rows.contains(r.name))) }
+}
+
+/// The symbol a program test's top level is known by under the case runner.
+const CASE_BODY: string = "avra_case_program"
+
+/// The case runner's entry: the verdict on `CASE_BODY`, and the status `1 - held`.
+fn case_entry(label: string, expected: string) -> List<Ins> {
+    let r = [Reg { index: k } for k in 0..6]
+    [
+        Ins.FnAddr(r[0], CASE_BODY),
+        Ins.ConstStr(r[1], label),
+        Ins.ConstStr(r[2], expected),
+        // LICENSED compiler.raw_rt_call: the case runner's rows are extern rows, which no generated verb names
+        Ins.CallRt(r[3], "avra_program_verdict", [r[0], r[1], r[2]]),
+        Ins.ConstInt(r[4], 1),
+        Ins.Bin(r[5], BinOp.Sub, r[4], r[3]),
+        // LICENSED compiler.raw_rt_call_void: the case runner's rows are extern rows, which no generated verb names
+        Ins.CallRtVoid("avra_process_exit", [r[5]]),
+        Ins.Ret(0),
+    ]
+}

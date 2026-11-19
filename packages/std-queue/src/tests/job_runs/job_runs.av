@@ -1,0 +1,48 @@
+//! proves a job as a program writes it: one declaration of a queue and
+//! its worker, items sent to it by name of the job, a run that settles
+//! them under two handlers, and a failing item buried in the job's own
+//! letter with the path it took.
+use @std.queue.{Delivery, DrainError, Fate}
+use @std.queue.job.{job}
+use @std.time.{ms, sleep}
+
+type Upload = { name: string, bytes: int }
+
+fn thumbnail(d: Delivery<Upload>) -> Result<string, string> {
+    if d.item.bytes == 0 { fail "empty: ${d.item.name}" }
+    "${d.item.name}.thumb"
+}
+
+job resize {
+    name: "resize"
+    retries: 1
+    at_once: 2
+    each: thumbnail
+}
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+/// The oldest letter the job buried, as words.
+fn first_letter(j: job<Upload, string, string>) -> string {
+    let gone? = j.letters().home().take() catch null else { return "none" }
+    "${gone.item.item.name}: ${why(gone.item.fate)} via ${gone.item.path.join(" > ")}"
+}
+
+let serving = spawn resize.run()
+for u in [
+    Upload { name: "a.png", bytes: 10 },
+    Upload { name: "b.png", bytes: 0 },
+    Upload { name: "c.png", bytes: 30 },
+] {
+    let _ = resize.send(u)
+}
+while (resize.letters().home().depth() catch 0) < 1 { sleep(ms(5)) }
+sleep(ms(5))
+resize.stop()
+"${said(serving.await)} | left ${resize.depth() catch 0 - 1} | ${first_letter(resize)}"

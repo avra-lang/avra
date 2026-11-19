@@ -1,0 +1,48 @@
+# Spawn cost: create N tasks and join them. TWO ANALOGUES are measured,
+# because an OS thread and a user-space task are different categories:
+# `spawn_thread` is an OS thread (pthread / std::thread / threading.Thread)
+# and `spawn_fiber` is a user-space task (ucontext / goroutine / Avra task).
+# A language that has only one analogue fills only its rows.
+languages = ["c", "rust", "go", "python", "avra"]
+
+[benchmark]
+name = "spawn"
+family = "tasks"
+title = "Spawn cost"
+invariant = "every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0^2+1^2+...+(n-1)^2"
+row = "wall-clock nanoseconds per task to create and join, for the thread analogue and the fiber analogue, one at a time and all alive at once"
+
+[analogues]
+c = "both analogues: OS threads (pthread) and user-space fibers (ucontext/makecontext)"
+rust = "OS threads (std::thread) — Rust's std has no fiber runtime"
+go = "user-space fibers (goroutines)"
+python = "OS threads (threading.Thread) — GIL-bound"
+avra = "user-space tasks (the scheduler's `spawn`)"
+
+[workload]
+n = 10000
+rounds = 5
+
+[rows.spawn_thread]
+unit = "ns"
+about = "create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread)"
+
+[rows.spawn_thread_alive]
+unit = "ns"
+about = "create n OS threads alive at once, then join every one"
+
+[rows.spawn_fiber]
+unit = "ns"
+about = "create and join one user-space task at a time, n times (ucontext / goroutine / Avra task)"
+
+[rows.spawn_fiber_alive]
+unit = "ns"
+about = "create n user-space tasks alive at once, then join every one"
+
+[rows.spawn_sum]
+unit = "ops"
+check = "exact"
+about = "the sum of the joined answers — a witness every task ran and was joined once"
+
+[notes]
+text = "An OS thread and a user-space task are different categories, so they get different rows: a table that put pthread_create beside a goroutine would read as a speed difference and would be a category error."

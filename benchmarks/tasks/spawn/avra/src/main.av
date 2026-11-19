@@ -1,0 +1,72 @@
+//! SPAWN COST in Avra: a lightweight task per unit of work, joined with
+//! `.await`, once one at a time and once every task alive at once. Prints
+//! `spawn_fiber`/`spawn_fiber_alive` ns per task and `spawn_sum`.
+//! The analogue is a user-space task (`spawn`), the scheduler's unit —
+//! the same category a goroutine is, never an OS thread.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{now_ns}
+
+/// The benchmark's environment value, or its default.
+fn env_int(name: string, fallback: int) -> int {
+    parse_int(env_or(name, "${fallback}")) ?? fallback
+}
+
+/// The work every twin's task does.
+fn square(n: int) -> int { n * n }
+
+/// The best round's nanoseconds and the joined sum.
+type Spent = { best: int, sum: int }
+
+/// Create and join one task at a time, n times.
+fn one_at_a_time(n: int, rounds: int) -> Spent {
+    mut best = 0
+    mut total = 0
+    mut r = 0
+    while r < rounds {
+        let t0 = now_ns()
+        mut s = 0
+        mut i = 0
+        while i < n {
+            let t = spawn square(i)
+            s = s + t.await
+            i = i + 1
+        }
+        let spent = now_ns() - t0
+        if r == 0 || spent < best { best = spent }
+        total = s
+        r = r + 1
+    }
+    Spent { best: best, sum: total }
+}
+
+/// Create n tasks alive at once, then join every one.
+fn all_at_once(n: int, rounds: int) -> Spent {
+    mut best = 0
+    mut total = 0
+    mut r = 0
+    while r < rounds {
+        let t0 = now_ns()
+        mut handles: List<Task<int>> = []
+        mut i = 0
+        while i < n {
+            handles.push(spawn square(i))
+            i = i + 1
+        }
+        mut s = 0
+        for h in handles { s = s + h.await }
+        let spent = now_ns() - t0
+        if r == 0 || spent < best { best = spent }
+        total = s
+        r = r + 1
+    }
+    Spent { best: best, sum: total }
+}
+
+let n = env_int("BENCH_N", 10000)
+let rounds = env_int("BENCH_ROUNDS", 5)
+let one = one_at_a_time(n, rounds)
+let all = all_at_once(n, rounds)
+println("spawn_fiber\t${one.best / n}\tns\t${rounds}")
+println("spawn_fiber_alive\t${all.best / n}\tns\t${rounds}")
+println("spawn_sum\t${one.sum}\tops\t${rounds}")

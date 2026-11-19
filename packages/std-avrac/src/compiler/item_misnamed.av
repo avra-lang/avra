@@ -1,0 +1,271 @@
+//! WHERE A WORD STANDS AS A NAME THAT CANNOT BE ONE: a keyword, `Self`, or a word the language
+//! reserves, written where a declaration, a seat or a binding names something, or read as a name.
+//! Read off a written item's syntax alone, so a build asks it of every file it reaches for nothing
+//! more than the walk.
+use core.{At, CompClause, ExprId, Span, StmtId, SyntaxArena, TypeRef, flatten, some_list}
+use core.expr.{Comp}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use compiler.resolve.{implementor_named, keyword_named, reserved, reserved_named}
+use compiler.typing.{fresh_tparam}
+use features.{remedy_for, self_word}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// What a word written as a name is to the language.
+@derive(Saved)
+enum Misnaming {
+    /// A keyword, beside the remedy its word has where it names a seat.
+    Keyword(remedy: string?)
+    /// `Self`, a trait's name for its implementor.
+    Implementor
+    /// A word kept for a future feature.
+    Reserved
+}
+
+/// A word written as a name that cannot be one: where it stands, the word, and what it is.
+@derive(Saved)
+type MisnamedAt = { at: FindingAt?, word: string, naming: Misnaming }
+
+impl MisnamedAt {
+    /// The word as its law finds it, its voice handed the word and a keyword's remedy.
+    fn found() -> Found { Found { at: span_of(self.at), args: [self.word].concat(remedy_words(self.naming)) } }
+}
+
+/// Every word in one written item that cannot be the name it's written as.
+@derive(Saved)
+type ItemMisnamed = { rows: List<MisnamedAt> }
+
+/// A name as written: its word, where its refusal points, whether it names a seat, and the remedy a
+/// keyword written there has, where its place gives one.
+type WrittenName = { word: string, at: Span?, seat: bool = false, remedy: string? = null }
+
+/// The name `word` written where `at` points, naming a seat where `seat`.
+fn written_name(word: string, at: Span?, seat: bool = false) -> WrittenName { WrittenName { word: word, at: at, seat: seat } }
+
+/// Every word in the written item `at` of `file` that cannot be the name it's written as, node by
+/// node.
+fn item_misnamed(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisnamed {
+    if !item_held(engine, file, at) { return misnamed_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.misnamed.get() else {
+        let made = misnamed_made(engine, file, at)
+        view.misnamed.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_misnamed` answers, made.
+fn misnamed_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisnamed {
+    if !item_held(engine, file, at) { return ItemMisnamed { rows: [] } }
+    let item = read_item(engine, file, at)
+    let declared = flatten([declared_names(item.store, s) for s in item.stmts])
+    let written = flatten(
+        [names_at(item.store, k) for s in item.stmts for k in under(item.store, At.Stmt(s)).concat(defaults_under(item.store, s))],
+    )
+    ItemMisnamed {
+        rows: [r! for n in declared.concat(written) for r in [misnamed(n)] if r != null],
+    }
+}
+
+/// Each node of the defaults the fields of the statement `s` write, a record's or a component's,
+/// which no statement holds as its kids.
+fn defaults_under(store: SyntaxArena, s: StmtId) -> List<At> {
+    let parts = store.component_parts(s)
+    let fields = store.declared_fields(s).concat(parts?.head ?? []).concat(parts?.holders ?? [])
+    flatten([under(store, At.Expr(d!)) for p in fields for d in [p.default] if d != null])
+}
+
+/// Whether a written item of `file` holds a word that cannot be the name it's written as: a build
+/// that reaches the file fails on it.
+export fn misnames(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    file_found_by(engine, file, ["keyword_as_name", "implementor_as_name", "reserved_as_name"])
+}
+
+/// The names the top-level statement `s` declares — a fn's, a type's — where it stands.
+fn declared_names(store: SyntaxArena, s: StmtId) -> List<WrittenName> {
+    [written_name(n!, store.stmt_span(s)) for n in [store.fn_parts(s)?.name, store.type_decl_name(s)] if n != null]
+}
+
+/// The names the node `at` writes.
+fn names_at(store: SyntaxArena, at: At) -> List<WrittenName> {
+    match at {
+        .Stmt(s) -> stmt_names(store, s),
+        .Expr(e) -> expr_names(store, e),
+        .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+    }
+}
+
+/// What a statement binds — its binding and its loop's index — and its seats — a fn's, a record's
+/// fields, a component's — and its type parameters, each where the statement stands.
+fn stmt_names(store: SyntaxArena, s: StmtId) -> List<WrittenName> {
+    let place = store.stmt_span(s)
+    let parts = store.component_parts(s)
+    let seats = (store.fn_parts(s)?.params ?? [])
+        .concat(store.declared_fields(s))
+        .concat(parts?.head ?? [])
+        .concat(parts?.holders ?? [])
+    [written_name(n!, place) for n in [store.let_name(s), store.loop_index(s)] if n != null]
+        .concat([written_name(p.name.of, place, true) for p in seats])
+        .concat(
+            [WrittenName { word: t, at: place, remedy: fresh_tparam() } for t in store.decl_tparams(s)],
+        )
+}
+
+/// A name read, and a call's callee, where it's read; a lambda's seats and a trailing block's, where
+/// it stands; a type literal's type, where it's written; each
+/// binder of a `match` arm's patterns, where the arm's value stands.
+fn expr_names(store: SyntaxArena, e: ExprId) -> List<WrittenName> {
+    let place = store.expr_span(e)
+    let arms = store.match_arms(e) ?? []
+    [written_name(n!, place) for n in [store.ident_name(e), store.callee_name(e)] if n != null]
+        .concat([written_name(n, place) for n in seat_words(store, e)])
+        .concat([written_name(t.name, t.span ?? place) for t in literal_type(store, e)])
+        .concat(present_names(store, e))
+        .concat(
+            [written_name(n, store.expr_span(c.elem)) for c in some_list(comp_of(store, e)) for n in comp_binders(c)],
+        )
+        .concat(
+            [written_name(b.name, store.expr_span(a.value)) for a in arms for p in a.pats for b in store.pattern_binds(p)],
+        )
+}
+
+/// The name the node `e` binds a present value under, where its present side stands; none for any
+/// node but a match over what may be absent.
+fn present_names(store: SyntaxArena, e: ExprId) -> List<WrittenName> {
+    match store.expr(e) {
+        .MatchOpt(_, bind, present, _) -> [written_name(bind.of, value_span(store, present))],
+        rest -> [],
+    }
+}
+
+/// Where the value of `e` stands: a block's last statement, else `e` itself.
+fn value_span(store: SyntaxArena, e: ExprId) -> Span? {
+    let last? = match store.expr(e) { .Block(stmts) -> stmts.last(), rest -> null } else { return store.expr_span(e) }
+    store.stmt_span(last)
+}
+
+/// The type the node `e` writes as a type literal, whose word is a name — a fn type's `fn` is no
+/// name; none for any other.
+fn literal_type(store: SyntaxArena, e: ExprId) -> List<TypeRef> {
+    match store.expr(e) {
+        .TypeLiteral(_, ty) or .ChainType(_, ty) -> if ty.arrow { [] } else { [ty] },
+        rest -> [],
+    }
+}
+
+/// The names of the seats the node `e` writes as a lambda or a trailing block; none for any other.
+fn seat_words(store: SyntaxArena, e: ExprId) -> List<string> {
+    match store.expr(e) {
+        .Lambda(params, _) or .BlockLambda(params, _) -> [p.name.of for p in params],
+        rest -> [],
+    }
+}
+
+/// The comprehension `e` is; absent for any other node.
+fn comp_of(store: SyntaxArena, e: ExprId) -> Comp? {
+    match store.expr(e) {
+        .Comp(elem, clauses) -> Comp { elem: elem, clauses: clauses },
+        rest -> null,
+    }
+}
+
+/// The names a comprehension's heads bind, each element's and its index's.
+fn comp_binders(c: Comp) -> List<string> { flatten([head_binders(k) for k in c.clauses]) }
+
+/// The names one comprehension clause binds: a head's element and its index; none for a filter.
+fn head_binders(c: CompClause) -> List<string> {
+    match c {
+        .Head(index, name, _, _) -> [name.of].concat([i!.of for i in [index] if i != null]),
+        .Filter(_) -> [],
+    }
+}
+
+/// The name `n` refused, as a row keeps it; absent where its word can be a name.
+fn misnamed(n: WrittenName) -> MisnamedAt? {
+    let naming? = naming_of(n) else { return null }
+    MisnamedAt { at: kept_at(n.at), word: n.word, naming: naming }
+}
+
+/// Whether `word` can be no name at all: a keyword, `Self`, or a reserved word, which its own law
+/// refuses wherever it's written as one.
+fn cannot_name(word: string) -> bool { naming_of(written_name(word, null)) != null }
+
+/// The language's keywords, as a set, made once a process.
+once fn keyword_set() -> Map<string, bool> {
+    mut words: Map<string, bool> = {}
+    for k in avra().keywords { words.set(k, true) }
+    words
+}
+
+/// What the word of `n` is that makes it no name; absent for a word that can be one.
+fn naming_of(n: WrittenName) -> Misnaming? {
+    if keyword_set().has(n.word) {
+        return Misnaming
+            .Keyword(n.remedy ?? if n.seat { remedy_for(avra().rows, n.word) } else { null })
+    }
+    if n.word == self_word { return Misnaming.Implementor }
+    if reserved.contains(n.word) { Misnaming.Reserved } else { null }
+}
+
+/// Every keyword the written item `at` of `file` writes as a name.
+fn keywords_named(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [r.found() for r in item_misnamed(engine, file, at).rows if r.naming is .Keyword]
+}
+
+/// The remedy a keyword's row keeps, as its voice is handed it.
+fn remedy_words(n: Misnaming) -> List<string> {
+    match n {
+        .Keyword(remedy) -> [r! for r in [remedy] if r != null],
+        .Implementor or .Reserved -> [],
+    }
+}
+
+/// Every `Self` the written item `at` of `file` writes as a name.
+fn implementors_named(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [r.found() for r in item_misnamed(engine, file, at).rows if r.naming is .Implementor]
+}
+
+/// Every reserved word the written item `at` of `file` writes as a name.
+fn reserved_named_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [r.found() for r in item_misnamed(engine, file, at).rows if r.naming is .Reserved]
+}
+
+/// a keyword cannot be a name
+export law keyword_as_name {
+    kind: "resolve.reserved"
+    reads: keywords_named
+    voice: keyword_words
+    witness: "fn inferred_args(component: int) -> int { 1 }\n"
+}
+
+/// `Self` is a trait's name for its implementor, never a name of your own
+export law implementor_as_name {
+    kind: "resolve.reserved"
+    reads: implementors_named
+    voice: implementor_words
+    witness: "fn f(Self: int) -> int { 1 }\n"
+}
+
+/// a word reserved for a future feature cannot be a name
+export law reserved_as_name {
+    kind: "resolve.reserved"
+    reads: reserved_named_in
+    voice: reserved_words_said
+    witness: "fn f(borrow: int) -> int { 1 }\n"
+}
+
+fn keyword_words(a: List<string>) -> Voice { keyword_named(a[0], a.drop(1).first()) }
+
+fn implementor_words(_a: List<string>) -> Voice { implementor_named() }
+
+fn reserved_words_said(a: List<string>) -> Voice { reserved_named(a[0]) }
+
+collect listed_misnamed_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the naming laws are read through, for a process to hand its engine.
+export fn misnamed_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_misnamed_facts) }

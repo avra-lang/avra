@@ -1,0 +1,198 @@
+//! WHAT `avra fix` ASKS OF THE PROGRAM LAYER: which of a file's suggestions it may consider at all
+//! (`fixable`: no remark inside an edit, no `LICENSED` note just above), which it may repair unasked
+//! (`repairable`), the law a rule declares for its rewrite, and the program's code read whole, so an
+//! edit is PROVED where the code is the same before and after it. The command splices and writes;
+//! nothing here touches a filesystem.
+use core.{Ins, SyntaxArena, alpha_renamed, flatten, same_ins_list}
+use diagnostics.{Diag, is_error, spliced}
+use @std.errors.{Edit, Suggestion}
+use compiler.backend.{trimmed}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The file `file` parsed whole, its remarks among what it holds: what `avra fix` asks whether an
+/// edit would eat a comment.
+fn fix_store(engine: QueryEngine, file: SourceFileAddress) -> SyntaxArena {
+    parse_program(avra(), whole_source(engine, file), whole_words(engine, file)).store
+}
+
+/// Whether every one of `edits` stands where a proof can speak for it: in an item that holds no `use`
+/// line, which changes what a program reads and never its code.
+export fn edits_provable(engine: QueryEngine, file: SourceFileAddress, edits: List<Edit>) -> bool {
+    let count = item_count(engine, file)
+    let starts = [item_start(engine, file, at) for at in 0..count]
+    edits
+        .all(
+            (e) -> {
+                let at = [i for i in 0..count if starts[i] <= e.loc.lo].last() ?? -1
+                if at < 0 { return false }
+                let item = read_item(engine, file, at)
+                !item.stmts.any((s) -> item.store.use_parts(s) != null)
+            },
+        )
+}
+
+/// Whether `kind` is a rule's: its suggestions are rewrites `avra fix` splices as a rule's.
+export fn rule_kind(kind: string) -> bool { rule_entries().any(rule_id(it) == kind) }
+
+/// The law the rule of kind `kind` declares its rewrite keeps; absent for any other kind.
+export fn rule_law(kind: string) -> string? {
+    let r? = rule_entries().find(rule_id(it) == kind) else { return null }
+    declared_law(r)
+}
+
+/// The code a file lowers to: the names it declares, in the order written, and each body's
+/// instructions, its registers renamed in the order met, so two lowerings of one code are the same
+/// list wherever they number differently.
+export type FileCode = { names: List<string>, bodies: List<List<Ins>> }
+
+/// The code the file `file` lowers to, read whole: each fn's, each method's and static's an impl
+/// writes, and the statements it runs, each with the lambdas it lifts, in the order written; absent
+/// where a body doesn't lower whole, which proves nothing.
+export fn file_code(engine: QueryEngine, file: SourceFileAddress) -> FileCode? {
+    let declared = file_declares(engine, file).names
+    mut out: List<List<Ins>> = []
+    for d in declared {
+        if d.kind is .Fn {
+            let l? = lowered_fn(engine, file, d.name) else { return null }
+            if !l.missing.is_empty() { return null }
+            out = out.concat(renamed_bodies(l))
+        }
+    }
+    for at in 0..item_count(engine, file) {
+        let item = read_item(engine, file, at)
+        for a in impls_at(engine, file, at) {
+            for s in impl_fns(item, a) {
+                let p? = item.store.fn_parts(s) else { continue }
+                let l? = lowered_method(engine, a, p.name, item.store.is_static(s)) else { return null }
+                if !l.missing.is_empty() { return null }
+                out = out.concat(renamed_bodies(l))
+            }
+        }
+    }
+    let entry = lowered_entry(engine, file)
+    if entry != null { out = out.concat(renamed_bodies(entry!)) }
+    FileCode { names: [d.name for d in declared], bodies: out }
+}
+
+/// A lowered body and each lambda it lifts, its registers renamed.
+fn renamed_bodies(l: LoweredFn) -> List<List<Ins>> {
+    [alpha_renamed(l.ins, l.params.length)]
+        .concat([alpha_renamed(f.ins, f.params.length) for f in l.lifts])
+}
+
+/// Whether two files' code is the same: the same names declared, and body for body; a file that
+/// doesn't lower whole is no code.
+export fn same_code(a: FileCode?, b: FileCode?) -> bool {
+    let x? = a else { return false }
+    let y? = b else { return false }
+    x.names.join("\n") == y.names.join("\n") &&
+        x.bodies.length == y.bodies.length &&
+        [i for i in 0..x.bodies.length if !same_ins_list(x.bodies[i], y.bodies[i])].is_empty()
+}
+
+/// A rule's rewrite `e` as `avra fix` splices it into `text`: its text trimmed, then the break the
+/// statement it replaces swallowed, so the next line stays its own.
+export fn rule_rewrite(text: string, e: Edit) -> Edit {
+    e with { replacement: trimmed(e.replacement) + swallowed_break(text, e.loc) }
+}
+
+/// The file a fix stands over: the engine that read it, the file, the program it is read in, its
+/// text and that text parsed whole, and the world a fix asks again in — `edited` enters the program
+/// with a text laid over the file and answers an engine over it, `restored` enters it as it stands.
+export type Fixing = {
+    engine: QueryEngine,
+    h: ProgramFile,
+    program: string,
+    text: string,
+    store: SyntaxArena,
+    edited: fn(string) -> QueryEngine,
+    restored: fn(),
+}
+
+/// A fix over the file `h` of the program `program`, as `engine` reads its text `text`.
+export fn fixing(
+    engine: QueryEngine,
+    h: ProgramFile,
+    program: string,
+    text: string,
+    edited: fn(string) -> QueryEngine,
+    restored: fn(),
+) -> Fixing {
+    Fixing {
+        engine: engine,
+        h: h,
+        program: program,
+        text: text,
+        store: fix_store(engine, h.file),
+        edited: edited,
+        restored: restored,
+    }
+}
+
+impl Fixing {
+    /// What the file says: its laws' diagnostics, then its rules', a rule's suggestions as its rewrites.
+    fn diags() -> List<Diag> {
+        file_law_diags(self.engine, self.h)
+            .concat(
+                [said_diag(k, self.h.full) for k in file_rule_rows(self.engine, self.program, self.h.file).said],
+            )
+            .map((d) -> if rule_kind(d.kind) { self.rewritten(d) } else { d })
+    }
+
+    /// A rule's diagnostic, each edit of its suggestions as `avra fix` splices a rule's rewrite.
+    fn rewritten(d: Diag) -> Diag {
+        d with { suggestions: [sg with { edits: [rule_rewrite(self.text, e) for e in sg.edits] } for sg in d.suggestions] }
+    }
+
+    /// Each suggestion of `diags` fix considers, proved or accepted by its rule's law, or only shown.
+    fn proved(diags: List<Diag>) -> List<Application> {
+        let before = file_code(self.engine, self.h.file)
+        flatten(
+            [[self.proved_one(before, d.kind, sg) for sg in d.suggestions if fixable(self.store, sg)] for d in diags],
+        )
+    }
+
+    fn proved_one(before: FileCode?, kind: string, sg: Suggestion) -> Application {
+        let provable = edits_provable(self.engine, self.h.file, sg.edits)
+        let after = self.after(sg.edits)
+        let proved = provable && after != null && same_code(before, file_code(after!, self.h.file))
+        let law = rule_law(kind)
+        let by_law = if proved || law == null || after == null { null } else { if program_erring(after!, self.program).is_empty() { law } else { null } }
+        (self.restored)()
+        Application { kind: kind, edits: sg.edits, proved: proved, by_law: by_law }
+    }
+
+    /// Each certain suggestion of an error among `diags`, accepted where it clears the error.
+    fn repairs(diags: List<Diag>) -> List<Application> {
+        let was = errors_spoken(diags)
+        flatten(
+            [[Application {
+                kind: d.kind,
+                edits: sg.edits,
+                proved: false,
+                by_law: null,
+                repaired: self.clears(was, sg.edits),
+            } for sg in d.suggestions if repairable(self.store, sg)] for d in diags if is_error(d)],
+        )
+    }
+
+    /// Whether `edits` leave the program erring nowhere, or its file with fewer of the errors `was`
+    /// lists and none it didn't.
+    fn clears(was: List<string>, edits: List<Edit>) -> bool {
+        let after? = self.after(edits) else { return false }
+        let now = errors_spoken(file_law_diags(after, self.h))
+        let clear = program_erring(after, self.program).is_empty()
+        (self.restored)()
+        if clear { return true }
+        now.length < was.length && now.all((e) -> was.contains(e))
+    }
+
+    /// An engine over the program with `edits` spliced into the file, its world entered; absent where
+    /// one reaches outside the file or two overlap.
+    fn after(edits: List<Edit>) -> QueryEngine? {
+        if edits.is_empty() || edits.any(it.loc.file != null && it.loc.file! != self.h.full) { return null }
+        let text? = spliced(self.text, edits) else { return null }
+        (self.edited)(text)
+    }
+}

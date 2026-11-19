@@ -1,0 +1,51 @@
+// THE MACHINE'S CEILING: the compiler prints, the content store and a tree's kept binaries
+// answer to one cap, and a print is let go whole, least recently used first.
+
+use @std.io.{make_dirs, write_text, exists}
+use @std.time.{stamp}
+use compiler.store.{trimmed_prints}
+
+once fn cap_base() -> string { "/tmp/avra-cap-test/${stamp()}" }
+
+/// A quarter of a megabyte of text.
+fn quarter_mb() -> string {
+    mut s = "0123456789abcdef"
+    for _i in 0..14 { s = s + s }
+    s
+}
+
+/// A compiler's print under a machine store: its rows and its mark of use.
+fn print_under(shared: string, name: string) {
+    let root = "${shared}/prints/${name}"
+    let _ = make_dirs("${root}/store")
+    let _ = write_text("${root}/store/body-1.val", quarter_mb())
+    let _ = write_text("${root}/used", "")
+}
+
+fn standing(shared: string) -> List<string> {
+    [n for n in ["a", "b", "c", "d"] if exists("${shared}/prints/${n}/store/body-1.val")]
+}
+
+spec "compiler/the machine's ceiling" {
+    given "four prints of a quarter megabyte each and a budget of 600 000 bytes" {
+        then "prints go until the rest fit, and the print in use stands" {
+            let shared = "${cap_base()}/over"
+            for n in ["a", "b", "c", "d"] { print_under(shared, n) }
+            let gone = trimmed_prints(shared, "${shared}/prints/c", 600000)
+            gone == 2 && standing(shared).length == 2 && standing(shared).contains("c")
+        }
+        then "a budget they fit lets none go" {
+            let shared = "${cap_base()}/fits"
+            for n in ["a", "b", "c", "d"] { print_under(shared, n) }
+            trimmed_prints(shared, "${shared}/prints/a", 2000000) == 0 &&
+                standing(shared).length == 4
+        }
+        then "a budget nothing fits in still spares the print in use" {
+            let shared = "${cap_base()}/tight"
+            for n in ["a", "b", "c", "d"] { print_under(shared, n) }
+            trimmed_prints(shared, "${shared}/prints/d", 1) == 3 &&
+                standing(shared).length == 1 &&
+                standing(shared).contains("d")
+        }
+    }
+}

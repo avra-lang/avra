@@ -1,0 +1,133 @@
+//! The hosts a build can stand beside. A host fn names the host that
+//! calls it (`@host(Host.Page)`, `@std/meta`); a build exports a
+//! dependency's host fn only when its own hosts include that one.
+use diagnostics.{Diag, Voice, said_as}
+use @std.errors.{Frame, Loc}
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+
+/// Every host a build can have. Each arm is spelled wherever a host is
+/// matched, so a new one breaks every reader.
+export enum BuildHost {
+    Page
+}
+
+/// The hosts, in the order a listing names them.
+export fn every_host() -> List<BuildHost> { [BuildHost.Page] }
+
+/// The word `@std/meta`'s `Host` spells the host with.
+export fn host_word(h: BuildHost) -> string {
+    match h { .Page -> "Page" }
+}
+
+/// The hosts a build for `target` stands beside: a wasm module is a page's.
+export fn hosts_of(target: string) -> List<BuildHost> {
+    if target == "" { [] } else { [BuildHost.Page] }
+}
+
+/// The host an `@host(…)` argument names, as `Host.Page` is written.
+export fn host_named(written: string) -> BuildHost? {
+    let word = written.split(".").last() ?? ""
+    every_host().find(host_word(it) == word)
+}
+
+/// The line a build says for the host fn `name` of `package` it exports: `package name`, and
+/// `(Host)` after it when the fn names its host.
+export fn host_fn_line(package: string, name: string, host: BuildHost?) -> string {
+    let at = "${package} ${name}"
+    let named? = host else { return at }
+    "${at} (${host_word(named)})"
+}
+
+/// WHAT A HOST FN OWES THE PROGRAM IT STANDS IN, where it doesn't pay it. A host fn defines a symbol
+/// for the whole link: its name is no symbol the platform or a program's own start defines; a
+/// dependency's names the host that calls it; it answers a bodiless `extern fn` of another package
+/// only from the program's own package; and a dependency's is the program's export only when the
+/// program's own sources import that dependency.
+@derive(Saved)
+export enum HostFnOwed {
+    /// Its name is the platform's, or a program's own start's.
+    Shadows
+    /// A dependency's, naming no host.
+    Unhosted
+    /// A dependency's, answering a bodiless extern the package `theirs` names.
+    Answers(theirs: string)
+    /// A dependency's the program's own sources never import.
+    Unasked
+    /// One of two host fns of one name, the one after the first.
+    Twice
+}
+
+/// What the host fn `name` owes and doesn't pay: `shadows` where its name is one the link already
+/// defines, `own` where the program's own package declares it, `named` where it names its host,
+/// `answers` the other package whose bodiless extern of the name it answers, and `asked` where the
+/// program's own sources import its package. Absent where it owes nothing.
+export fn host_fn_owed(shadows: bool, own: bool, named: bool, answers: string?, asked: bool) -> HostFnOwed? {
+    if shadows { return HostFnOwed.Shadows }
+    if own { return null }
+    if !named { return HostFnOwed.Unhosted }
+    let theirs? = answers else { return if asked { null } else { HostFnOwed.Unasked } }
+    HostFnOwed.Answers(theirs)
+}
+
+/// The refusal `owed` speaks at `at`, for the host fn `name` of the package `from`.
+export fn host_fn_owed_diag(
+    at: Loc?,
+    name: string,
+    from: string,
+    owed: HostFnOwed,
+    first: Loc? = null,
+) -> Diag {
+    match owed {
+        .Twice -> said_as("lower.host_fn_twice", at, host_fn_twice_voice(name)) with { secondary: [Frame { label: "first defined here", loc: first }] },
+        .Shadows -> said_as("lower.host_fn_shadows", at, host_fn_shadows_voice(name)),
+        .Unhosted -> said_as("lower.host_fn_unhosted", at, host_fn_unhosted_voice(name, from)),
+        .Answers(theirs) -> said_as("lower.host_fn_answers", at, host_fn_answers_voice(name, theirs, from)),
+        .Unasked -> said_as("lower.host_fn_unasked", at, host_fn_unasked_voice(name, from)),
+    }
+}
+
+/// A host fn of the name `name` another host fn defines too.
+export fn host_fn_twice_voice(name: string) -> Voice {
+    Voice {
+        message: "two host fns define `${name}` — a symbol has one body",
+        label: "defined again here",
+        help: "rename one: a host fn's name is the symbol a host calls it by",
+    }
+}
+
+/// A host fn named as a platform symbol.
+fn host_fn_shadows_voice(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a platform symbol — a host fn of that name would answer every caller of it",
+        label: "defined here",
+        help: "name the host fn for what its host asks of this program, as `avra_ui_event` is",
+    }
+}
+
+/// A dependency's host fn answering the bodiless extern another package names.
+fn host_fn_answers_voice(name: string, theirs: string, from: string) -> Voice {
+    Voice {
+        message: "`${name}` is `${theirs}`'s to name, and `${from}` answers it — only the package that names an extern, or the program's own, answers it",
+        label: "answered here",
+        help: "answer it in the program's own package: a test stands there, and so does a host's stand-in",
+    }
+}
+
+/// A dependency's host fn naming no host.
+fn host_fn_unhosted_voice(name: string, from: string) -> Voice {
+    Voice {
+        message: "the host fn `${name}` of `${from}` names no host, so no build can say whose it is",
+        label: "declared here",
+        help: "mark it with `@host(Host.Page)` (`@std/meta`) — the host that calls it by name",
+    }
+}
+
+/// A dependency's host fn whose package the program's own sources never import.
+fn host_fn_unasked_voice(name: string, from: string) -> Voice {
+    Voice {
+        message: "the host fn `${name}` of `${from}` would be this program's export, and the program's own sources never import `${from}`",
+        label: "declared here",
+        help: "import from `${from}` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it",
+    }
+}
