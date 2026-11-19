@@ -60,12 +60,12 @@ fn fact_placed(file: RuleFile, syntax: SyntaxFile, c: Candidate) -> List<PlacedD
     [p with { diag: p.diag with { suggestions: [deleting(edits)] } } for p in placed]
 }
 
-/// The edits a delete at `at` states where the facts name what it deletes: the names a `use` line
-/// imports that nothing reads, taken off it — the line itself where none stays.
+/// The edits a delete at `at` states: the names a `use` line imports that nothing reads, taken off
+/// it — the line itself where none stays — and any other statement gone whole, its doc with it.
 fn held_delete_edits(file: RuleFile, at: At) -> List<Edit> {
     let s? = stmt_of(at) else { return [] }
     let store = file.view.store
-    let u? = store.use_parts(s) else { return [] }
+    let u? = store.use_parts(s) else { return statement_deleted(file, s) }
     let unused = held_code(file, at).unused_imports()
     if unused.is_empty() { return [] }
     let loc? = loc_at(file.view.source.file, store.stmt_span(s)) else { return [] }
@@ -79,6 +79,13 @@ fn held_delete_edits(file: RuleFile, at: At) -> List<Edit> {
                 swallowed_break(text, loc),
         },
     ]
+}
+
+/// The statement `s` of `file` erased whole, its leading doc included.
+fn statement_deleted(file: RuleFile, s: StmtId) -> List<Edit> {
+    let sp? = decl_span(file.view.store, s) else { return [] }
+    let loc? = loc_at(file.view.source.file, sp) else { return [] }
+    [deletion_edit(loc, file.view.source.text)]
 }
 
 /// The node at `at` of `file`, as a fact rule reads it.

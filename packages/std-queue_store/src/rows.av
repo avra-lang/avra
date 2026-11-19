@@ -6,6 +6,7 @@ use @std.db.{model}
 use @std.sqlite.{Db, sql}
 use @std.sqlite.error.{SqlError}
 use @std.time.{Time}
+use @std.queue.{Order, Overflow}
 
 /// One item owed a fate. `id` is the order items were sent in and the
 /// handle a delivery names it by. `body` is the item's octets.
@@ -60,6 +61,56 @@ export type FlowShape = {
     @unique hash: int,
     descriptor: string,
 }
+
+/// The terms a queue's home was last opened under, so the database
+/// says what each of its queues promises without the program that
+/// declared it: spans in milliseconds, `overflow` and `order` as
+/// numbered below, and `shape` the hash its items are written under.
+@model
+export type FlowTerms = {
+    id: int = 0,
+    @unique queue: string,
+    capacity: int,
+    lease: int,
+    retries: int,
+    overflow: int,
+    order: int,
+    dedupe: int,
+    opened_at: Time,
+    shape: int,
+}
+
+/// An overflow term as its row holds it.
+export fn overflow_code(o: Overflow) -> int {
+    match o { .park -> 1, .latest -> 2, .drop_oldest -> 3, .drop_newest -> 4, .fail -> 5 }
+}
+
+/// The overflow term a row's number names; absent for a number another
+/// build gave.
+export fn overflow_coded(code: int) -> Overflow? {
+    match code {
+        1 -> Overflow.park,
+        2 -> Overflow.latest,
+        3 -> Overflow.drop_oldest,
+        4 -> Overflow.drop_newest,
+        5 -> Overflow.fail,
+        _ -> null,
+    }
+}
+
+/// An order term as its row holds it.
+export fn order_code(o: Order) -> int {
+    match o { .fifo -> 1, .by_key -> 2 }
+}
+
+/// The order term a row's number names; absent for a number another
+/// build gave.
+export fn order_coded(code: int) -> Order? {
+    match code { 1 -> Order.fifo, 2 -> Order.by_key, _ -> null }
+}
+
+/// The terms of the queue `?1`, written each time a home opens on it.
+export const terms_kept: string = "INSERT INTO \"FlowTerms\" (\"queue\", \"capacity\", \"lease\", \"retries\", \"overflow\", \"order\", \"dedupe\", \"opened_at\", \"shape\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (\"queue\") DO UPDATE SET \"capacity\" = ?2, \"lease\" = ?3, \"retries\" = ?4, \"overflow\" = ?5, \"order\" = ?6, \"dedupe\" = ?7, \"opened_at\" = ?8, \"shape\" = ?9"
 
 /// One queue's counts, kept by the triggers below in the transaction
 /// of the write they count: `waiting` the items no take has reached,
@@ -137,6 +188,7 @@ export fn tables_made(db: Db) -> Result<int, SqlError> {
     let _ = FlowSeen.create_table(db)?
     let _ = FlowShape.create_table(db)?
     let _ = FlowUnread.create_table(db)?
+    let _ = FlowTerms.create_table(db)?
     for made in [
         room_table,
         mark_table,
@@ -150,5 +202,5 @@ export fn tables_made(db: Db) -> Result<int, SqlError> {
     ] {
         let _ = db.run(sql(made))?
     }
-    6
+    7
 }

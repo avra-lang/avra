@@ -13,7 +13,8 @@ use @std.program.query_engine.{QueryEngine}
 use @std.program.sorted.{sorted_by}
 
 /// What the laws read of the item `at` of `file`: for the engine and the reader its reads reached,
-/// the item read back, and its impls, typed nodes and nodes by kind once a law asked for them.
+/// the item read back, and its impls, typed nodes and nodes by kind once a law asked for them; and
+/// each family of facts its laws share, made the first time one of them asks.
 export type ItemView = {
     engine: QueryEngine,
     reader: int,
@@ -26,6 +27,23 @@ export type ItemView = {
     walk: Cell<ItemWalk?>,
     stored: Cell<List<KindNodes>?>,
     typed_kinds: Cell<List<KindNodes>?>,
+    misses: Cell<ItemMisses?>,
+    breaches: Cell<ItemBreaches?>,
+    coalesces: Cell<ItemCoalesces?>,
+    copies: Cell<ItemCopies?>,
+    externs: Cell<ItemExterns?>,
+    generic_methods: Cell<ItemGenericMethods?>,
+    instances_checked: Cell<ItemChecked?>,
+    methods_taken: Cell<ItemTaken?>,
+    misnamed: Cell<ItemMisnamed?>,
+    receivers: Cell<ItemReceivers?>,
+    seats: Cell<ItemSeats?>,
+    ungiven: Cell<ItemUngiven?>,
+    unknown_types: Cell<ItemUnnamed?>,
+    unmet: Cell<ItemUnmet?>,
+    unreached: Cell<ItemUnreached?>,
+    unwritten: Cell<ItemUnwritten?>,
+    holes: Cell<ItemHoles?>,
 }
 
 /// An item's nodes as a law walks them: by kind, and the node each stands under.
@@ -184,6 +202,23 @@ fn typed_of(view: ItemView) -> TypedNodes? { view.typed_run().first() }
 /// How many views are held: a law's own, and those of the queries it asks about the same item.
 const VIEWS_HELD: int = 4
 
+/// The views of the items whose laws are being judged now, the innermost first: each stands while its
+/// item's laws run, whatever other items their judging reads.
+once fn views_pinned() -> Cell<List<ItemView>> {
+    let pinned: Cell<List<ItemView>> = Cell.new([])
+    pinned
+}
+
+/// What `judged` answers, `view` standing while it runs.
+fn pinned_while<T>(view: ItemView?, judged: fn() -> T) -> T {
+    let before = views_pinned().get()
+    let v? = view else { return judged() }
+    views_pinned().set([v].concat(before))
+    let answer = judged()
+    views_pinned().set(before)
+    answer
+}
+
 /// The views made last, the newest first.
 once fn views_held() -> Cell<List<ItemView>> {
     let held: Cell<List<ItemView>> = Cell.new([])
@@ -194,6 +229,7 @@ once fn views_held() -> Cell<List<ItemView>> {
 /// reader, else made, its item read back with each query it stands on asked.
 fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView {
     let reader = engine.reader()
+    for v in views_pinned().get() { if v.shows(engine, reader, file, at) { return v } }
     let held = views_held().get()
     for v in held { if v.shows(engine, reader, file, at) { return v } }
     let read = held.find(it.holds(engine, file, at))?.item
@@ -203,6 +239,23 @@ fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView 
     let walk: Cell<ItemWalk?> = Cell.new(null)
     let stored: Cell<List<KindNodes>?> = Cell.new(null)
     let typed_kinds: Cell<List<KindNodes>?> = Cell.new(null)
+    let misses: Cell<ItemMisses?> = Cell.new(null)
+    let breaches: Cell<ItemBreaches?> = Cell.new(null)
+    let coalesces: Cell<ItemCoalesces?> = Cell.new(null)
+    let copies: Cell<ItemCopies?> = Cell.new(null)
+    let externs: Cell<ItemExterns?> = Cell.new(null)
+    let generic_methods: Cell<ItemGenericMethods?> = Cell.new(null)
+    let instances_checked: Cell<ItemChecked?> = Cell.new(null)
+    let methods_taken: Cell<ItemTaken?> = Cell.new(null)
+    let misnamed: Cell<ItemMisnamed?> = Cell.new(null)
+    let receivers: Cell<ItemReceivers?> = Cell.new(null)
+    let seats: Cell<ItemSeats?> = Cell.new(null)
+    let ungiven: Cell<ItemUngiven?> = Cell.new(null)
+    let unknown_types: Cell<ItemUnnamed?> = Cell.new(null)
+    let unmet: Cell<ItemUnmet?> = Cell.new(null)
+    let unreached: Cell<ItemUnreached?> = Cell.new(null)
+    let unwritten: Cell<ItemUnwritten?> = Cell.new(null)
+    let holes: Cell<ItemHoles?> = Cell.new(null)
     let view = ItemView {
         engine: engine,
         reader: reader,
@@ -215,6 +268,23 @@ fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView 
         walk: walk,
         stored: stored,
         typed_kinds: typed_kinds,
+        misses: misses,
+        breaches: breaches,
+        coalesces: coalesces,
+        copies: copies,
+        externs: externs,
+        generic_methods: generic_methods,
+        instances_checked: instances_checked,
+        methods_taken: methods_taken,
+        misnamed: misnamed,
+        receivers: receivers,
+        seats: seats,
+        ungiven: ungiven,
+        unknown_types: unknown_types,
+        unmet: unmet,
+        unreached: unreached,
+        unwritten: unwritten,
+        holes: holes,
     }
     views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
     view

@@ -39,8 +39,19 @@ fn coalesces_unfired(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
 
 /// Every `??` in the written item `at` of `file` whose left side is never absent, in node order, in
 /// its fns' bodies and in the statements the file runs: a read a test proved present aside.
-@query
 fn item_coalesces(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCoalesces {
+    if !item_held(engine, file, at) { return coalesces_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.coalesces.get() else {
+        let made = coalesces_made(engine, file, at)
+        view.coalesces.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_coalesces` answers, made.
+fn coalesces_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCoalesces {
     if !item_held(engine, file, at) { return ItemCoalesces { never: [] } }
     let item = read_item(engine, file, at)
     let asks = [e for i in 0..item.store.expr_count() for e in [ExprId { index: i }] if item.store.coalesced(e).length == 2]

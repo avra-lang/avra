@@ -150,6 +150,22 @@ impl Lowering {
         }
     }
 
+    /// Why the list of type `ty` made at `e` is a box a slot where its element is a candidate for a
+    /// representation of words, noted as declined: a nullable scalar, a flat record, an enum whose
+    /// variants carry. Nothing for an element that rides a box of its own, or a list made packed.
+    fn pack_declined(e: ExprId, ty: SignedType) {
+        if self.program.notes == null || self.packs(ty) { return }
+        let elem? = (self.named_over(ty) ?? ty).listed() else { return }
+        let laid? = self.program.checked.layout(elem) else { return }
+        let why = match laid {
+            .Maybe(value) -> if value.one_word() && !value.counted() { PackDecline.NullableScalar } else { null },
+            .Fields(fields) -> if fields.any(it.counted()) { null } else { PackDecline.FlatRecord },
+            .Tagged(_) -> PackDecline.CarryingEnum,
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> null,
+        }
+        if why != null { self.declined(e, Declined.Pack(why!)) }
+    }
+
     /// `regs` as one list of type `ty`, sized for each plain one and each spread one's length, then
     /// each plain one pushed and each spread one's slots appended, in order.
     mut fn listed(ty: SignedType, regs: List<Reg>, spreads: List<bool>) -> Reg {

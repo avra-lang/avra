@@ -3,13 +3,15 @@
 //! target names answers — a file's, a declaration's, or one by its question
 //! `query(subject)` — and each says what it read; one answer named exactly
 //! says who reads it too. `--stats` counts the answers per query, `--why`
-//! says why the last build was worked out again, and `--sites @name` says
-//! what each call of a fn's body was resolved to. Every form but `--sites`
+//! says why the last build was worked out again, `--sites @name` says
+//! what each call of a fn's body was resolved to, and `--cost @name` where
+//! a representation technique declined in it, and why. Every form but `--sites`
 //! reads the store and keeps nothing, so a second asking answers what the
 //! first did. This file is wiring and text alone.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{ItemKind, avra_fact_definitions, file_declares, lowered_fn}
-use @std.avrac.core.{CalledFn, distinct, hex_word}
+use @std.avrac.compiler.{ItemKind, avra_fact_definitions, cost_remarks, file_declares, lowered_fn}
+use @std.avrac.core.{CalledFn, CostRemark, distinct, flatten, hex_word}
+use @std.io.{read_text}
 use @std.path.{is_absolute, joined_path, normalized, relative_path}
 use @std.program.answer_record.{ContentHash, KeptRecord, Question, content_hash}
 use @std.program.disk_store.{DiskStore, disk_store_at, pack_questions, packs_listed}
@@ -22,7 +24,7 @@ type ExplainCmd = {}
 
 /// What `avra explain` was asked: about what, in which form, and the
 /// directory a relative target is read from.
-type Asked = { target: string, from: string, stats: bool = false, why: bool = false, sites: bool = false }
+type Asked = { target: string, from: string, stats: bool = false, why: bool = false, sites: bool = false, cost: bool = false }
 
 /// What an answer or a refusal prints, line by line.
 alias Lines = Result<List<string>, List<string>>
@@ -49,6 +51,7 @@ impl Runnable for ExplainCmd {
                     stats: args.has_flag("stats"),
                     why: args.has_flag("why"),
                     sites: args.has_flag("sites"),
+                    cost: args.has_flag("cost"),
                 },
             ),
         )
@@ -75,12 +78,14 @@ fn explain_answer(a: Asked) -> Lines {
     let aim = match aimed(a.target, a.from) { .Ok(aim) -> aim, .Err(why) -> { return .Err([why]) } }
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.sites && (a.stats || a.why) { return .Err([sites_alone()]) }
+    if a.cost && (a.stats || a.why || a.sites) { return .Err([cost_alone()]) }
     let subject = match placed(a.target, aim.subject) {
         .Ok(subject) -> subject,
         .Err(why) -> { return .Err([why]) },
     }
     if a.why { return why_answer(aim.root) }
     if a.sites { return sites_answer(a, aim.root, subject) }
+    if a.cost { return cost_answer(a, aim.root, subject) }
     match subject {
         .Package -> if a.stats { stats_answer(kept_at(aim.root)) } else { .Err([needs_target()]) },
         .File(at) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { file_answer(kept_at(aim.root), aim.root, at) },
@@ -351,7 +356,7 @@ fn sites_answer(a: Asked, root: string, subject: Subject) -> Lines {
         .Decl(name) -> name,
         .Package or .File(_) or .Query(_) -> { return .Err([sites_wants_decl(a.target)]) },
     }
-    let disk? = disk_at(root, "") else { return .Err(["avra: no std stands beside this compiler"]) }
+    let disk? = disk_at(root, "") else { return .Err([no_std()]) }
     let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
     let engine = query_engine(store, avra_fact_definitions())
     let file? = [disk.file_at(p) for p in disk.held(engine)]
@@ -363,6 +368,52 @@ fn sites_answer(a: Asked, root: string, subject: Subject) -> Lines {
         ["${name} calls ${lowered.callees.length}"]
             .concat(["  ${c.symbol} — ${resolved_as(c)}" for c in lowered.callees]),
     )
+}
+
+// ── `--cost`: where a representation technique declined, and why ──
+
+/// Each site of a declaration's body, and its lambdas', where a technique it is a candidate for
+/// declined (`cost_remarks`): grouped by technique and reason, counted, each site by its place. The
+/// fn is looked up as `--sites` looks it up.
+fn cost_answer(a: Asked, root: string, subject: Subject) -> Lines {
+    let name = match subject {
+        .Decl(name) -> name,
+        .Package or .File(_) or .Query(_) -> { return .Err([cost_wants_decl(a.target)]) },
+    }
+    let disk? = disk_at(root, "") else { return .Err([no_std()]) }
+    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions())
+    let file? = [disk.file_at(p) for p in disk.held(engine)]
+        .find((f) -> file_declares(engine, f).names.any(it.kind is .Fn && it.name == name)) else { return .Err([no_such_fn_cost(name)]) }
+    let remarks = cost_remarks(engine, file, name).remarks
+    store_kept(engine, store)
+    if remarks.is_empty() { return .Ok(["${name}: no technique declined in its body"]) }
+    let text = match read_text(disk.on_disk(file.package_name, file.path_in_package)) {
+        .Ok(t) -> t,
+        .Err(_) -> "",
+    }
+    let reasons = distinct([reason_line(r) for r in remarks])
+    .Ok(
+        ["${name}: ${remarks.length} declined"]
+            .concat(
+                flatten(
+                    [["  ${why} (${[r for r in remarks if reason_line(r) == why].length})"]
+                        .concat(
+                            ["    ${file.path_in_package}:${line_col(text, r.lo)}" for r in remarks if reason_line(r) == why],
+                        ) for why in reasons],
+                ),
+            ),
+    )
+}
+
+/// A remark's technique and reason, as one line.
+fn reason_line(r: CostRemark) -> string { "${r.declined.technique()} — ${r.declined.words()}" }
+
+/// The line and the column the offset `at` of `text` stands at, from one each.
+fn line_col(text: string, at: int) -> string {
+    let before = text.substring(0, if at < text.length { at } else { text.length })
+    let lines = before.split("\n")
+    "${lines.length}:${(lines.last() ?? "").length + 1}"
 }
 
 /// What a call was resolved to, in a line.
@@ -385,6 +436,7 @@ export command explain {
     flag stats { description: "count the package's kept answers and their reads, a row a query" }
     flag why { description: "why the last build of the package was worked out again: the way from the input that moved to the build" }
     flag sites { description: "for a fn `@name`, what each call of its body was resolved to: a declared fn, a method, a generic instance, an extern row; hosted, gathering" }
+    flag cost { description: "for a fn `@name`, each site of its body where a representation technique declined, and why, grouped by reason and counted" }
     run: ExplainCmd {}
 }
 
@@ -393,6 +445,14 @@ export command explain {
 fn needs_target() -> string { "avra: `explain` needs a file, `@name` or `query(subject)` — or `--stats` or `--why` for the whole package" }
 
 fn stats_or_why() -> string { "avra: `explain` takes `--stats` or `--why`, never both — one counts answers, the other says what moved" }
+
+fn no_std() -> string { "avra: no std stands beside this compiler" }
+
+fn cost_alone() -> string { "avra: `explain --cost` is a form of its own — it goes with none of `--stats`, `--why` or `--sites`" }
+
+fn cost_wants_decl(target: string) -> string { "avra: `explain --cost` reads one fn's body — `${target}` is not a `@name`" }
+
+fn no_such_fn_cost(name: string) -> string { "avra: `explain --cost`: no source of this package declares a fn `${name}`" }
 
 fn sites_alone() -> string { "avra: `explain --sites` is a form of its own — it goes with neither `--stats` nor `--why`" }
 

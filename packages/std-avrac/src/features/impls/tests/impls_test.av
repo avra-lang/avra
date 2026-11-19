@@ -3,7 +3,7 @@
 // TYPE receiver constructs its variant. NameFacts is provable at
 // typing (spec 4.5); rt19 is the adversarial record.
 use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{refusals, refused_with, shown}
 
 /// The standard contract and its signatory-to-be.
 fn showp() -> string {
@@ -534,9 +534,8 @@ spec "features/impls" {
             shown("${showed()}let d: dyn Show = P { x: 42 }\nd.show()") == "42"
         }
         then "two instances of one generic type are told apart by `is` — the tag is the type, arguments included" {
-            shown(
-                "trait Named {\n    fn name() -> int\n}\ntype A = { a: int }\ntype B = { b: int }\ntype Model<T> = { v: T }\nimpl Named for Model<T> {\n    fn name() -> int {\n        1\n    }\n}\nfn which(d: dyn Named) -> int {\n    if d is m: Model<A> {\n        return m.v.a\n    }\n    if d is n: Model<B> {\n        return n.v.b * 10\n    }\n    0\n}\nwhich(Model { v: A { a: 3 } }) + which(Model { v: B { b: 4 } })",
-            ) == "43"
+            let src = "trait Named {\n    fn name() -> int\n}\ntype A = { a: int }\ntype B = { b: int }\ntype Model<T> = { v: T }\nimpl Named for Model<T> {\n    fn name() -> int {\n        1\n    }\n}\nfn which(d: dyn Named) -> int {\n    if d is m: Model<A> {\n        return m.v.a\n    }\n    if d is n: Model<B> {\n        return n.v.b * 10\n    }\n    0\n}\nwhich(Model { v: A { a: 3 } }) + which(Model { v: B { b: 4 } })"
+            refusals(src) == 0 && shown(src) == "43"
         }
         then "two signatories ride one dyn slot" {
             shown(

@@ -1,65 +1,41 @@
-// `avra fix`'s own machinery: a rewrite the IR proof confirms is
-// PROVED and gets an edit; one it cannot confirm is SHOWN and gets
-// no write; a `Fix.Say` (no rewrite at all) never produces an
-// Application; a span holding a comment is refused outright.
+// `avra fix`'s own machinery on the program layer: a rewrite the proof confirms is PROVED and gets an
+// edit; one it cannot confirm is SHOWN and gets no write; a `Fix.Say` (no rewrite at all) never
+// produces an Application; a span holding a comment is refused outright.
 //
-// Several fixtures below WRITE the idioms `avra fix` exists to
-// rewrite, as program TEXT handed to the compiler under test — that
-// text is the thing being checked, not this file's own code, the
+// Several fixtures below WRITE the idioms `avra fix` exists to rewrite, as program TEXT handed to
+// the compiler under test — that text is the thing being checked, not this file's own code, the
 // same shape as features/lists/idioms.av's own lists.last_index license.
-use @std.avrac.testing.old_path.{test_workspace}
-use @std.avrac.compiler.{fix_applied, fighting_pair, analysed, Application, Program, Workspace}
-use @std.avrac.compiler.host.{memory_host}
+use compiler.{fix_applied, fighting_pair, Application}
 use @std.avrac.diagnostics.{Diag, error_at}
 use @std.errors.{Edit, Loc, Suggestion, Confidence}
 
-fn fix_ws_of(main: string) -> Workspace {
-    test_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w")
-}
-
-/// A multi-file package's own `avra fix` applications over its entry
-/// file — `unused_import`'s own fixtures need a SECOND file to import
-/// from, since a memory-hosted workspace carries no `@std` root of
-/// its own.
-fn fix_apps_of_files(files: Map<string, string>, names: List<string>) -> List<Application> {
-    let ws = test_workspace(memory_host(files, names), "/w")
-    let p: Program = ws.program("/w/src/main.av")
-    let a = p.entry_file()!
-    p.fix_applications("/w/src/main.av", analysed(a), null)
-}
-
-// `edit_over` is rule_proof_test.av's own — the tests module is one
-// namespace, so it is not redefined here.
-
-fn suggestion_diag(kind: string, confidence: Confidence, edits: List<Edit>) -> Diag {
-    error_at(kind, null, "test finding") with { suggestions: [Suggestion { confidence: confidence, description: "test", edits: edits }] }
-}
-
-/// `suggestion_applications` over one Diag's own suggestion — the
-/// SECOND source `avra fix` reads, never through a rule's Candidate.
-fn suggestion_apps_of(main: string, d: Diag, only: string? = null) -> List<Application> {
-    let ws = fix_ws_of(main)
-    let p: Program = ws.program("/w/src/main.av")
-    let a = p.entry_file()!
-    p.suggestion_applications("/w/src/main.av", analysed(a), [d], only)
-}
+// `fix_over`, `fix_beside`, `clean`, `suggestion_diag` and `edit_over` are rule_proof_test.av's own —
+// the tests module is one namespace, so they are not redefined here.
 
 // LICENSED nullable.repeated_unwrap: `x!` inside these fixture strings is idiom text under
 // test, not a forced-open local of this file's own
+/// `avra fix`'s applications over the program `main`, its findings of kind `only` alone where named.
 fn fix_apps_of(main: string, only: string? = null) -> List<Application> {
-    let ws = fix_ws_of(main)
-    let p: Program = ws.program("/w/src/main.av")
-    let a = p.entry_file()!
-    p.fix_applications("/w/src/main.av", analysed(a), only)
+    let f = fix_over(main)
+    f.proved([d for d in f.diags() if only == null || d.kind == only!])
 }
 
-/// `repair_applications` over a program that has errors — the REPAIR
-/// door `avra fix --repair` reads, never the proved tier.
-fn repair_apps_of(main: string, only: string? = null) -> List<Application> {
-    let ws = fix_ws_of(main)
-    let p: Program = ws.program("/w/src/main.av")
-    let a = p.entry_file()!
-    p.repair_applications("/w/src/main.av", analysed(a), a.diagnostics, only)
+/// `avra fix`'s applications over `src/main.av` holding `main`, the files `beside` held with it.
+fn fix_apps_beside(main: string, beside: Map<string, string>) -> List<Application> {
+    let f = fix_beside(main, beside)
+    f.proved(f.diags())
+}
+
+/// `avra fix`'s applications of the one finding `d` over the program `main` — the SECOND source
+/// `avra fix` reads, never through a rule's Candidate — of kind `only` alone where named.
+fn suggestion_apps_of(main: string, d: Diag, only: string? = null) -> List<Application> {
+    fix_over(main).proved([x for x in [d] if only == null || x.kind == only!])
+}
+
+/// `avra fix --repair`'s applications over a program that has errors.
+fn repair_apps_of(main: string) -> List<Application> {
+    let f = fix_over(main)
+    f.repairs(f.diags())
 }
 
 spec "avra fix" {
@@ -117,9 +93,7 @@ spec "avra fix" {
             let text = "fn doubled(xs: List<int>) {\n    mut out: List<int> = []\n    for x in xs {\n        out.push(x * 2)\n    }\n}\n0\n"
             let apps = fix_apps_of(text)
             let after? = fix_applied(text, apps) else { return false }
-            mut ws2 = fix_ws_of(after)
-            mut p2: Program = ws2.program("/w/src/main.av")
-            match p2.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
+            clean(after)
         }
     }
     given "the same push-loop rewrite, NOT the block's last statement — another statement follows it on the next line" {
@@ -130,9 +104,7 @@ spec "avra fix" {
             if apps.length != 1 || apps[0].by_law == null { return false }
             let after? = fix_applied(text, apps) else { return false }
             if after == text { return false }
-            mut ws2 = fix_ws_of(after)
-            mut p2: Program = ws2.program("/w/src/main.av")
-            match p2.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
+            clean(after)
         }
     }
     given "an index-walk idiom the IR proof cannot confirm — a different runtime protocol by construction — but its own `@law` accepts" {
@@ -155,9 +127,7 @@ spec "avra fix" {
             if apps.length != 1 || apps[0].by_law == null { return false }
             let after? = fix_applied(text, apps) else { return false }
             if after == text { return false }
-            mut ws2 = fix_ws_of(after)
-            mut p2: Program = ws2.program("/w/src/main.av")
-            match p2.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
+            clean(after)
         }
     }
     given "a one-body-arms idiom the IR proof cannot confirm — fewer instructions after every honest merge — but its own `@law` accepts" {
@@ -225,12 +195,9 @@ spec "avra fix" {
     given "a `use` line naming two items, one of them read nowhere" {
         then "one Application, ACCEPTED by law — the line rewritten around the one item still read" {
             let text = "use lib.{Thing, Other}\nfn f() -> Thing {\n    Thing { x: 0 }\n}\n0\n"
-            let apps = fix_apps_of_files(
-                {
-                    "/w/src/main.av": text,
-                    "/w/src/lib.av": "export type Thing = { x: int }\nexport type Other = { y: int }\n",
-                },
-                ["/w/src/main.av", "/w/src/lib.av"],
+            let apps = fix_apps_beside(
+                text,
+                {"lib.av": "export type Thing = { x: int }\nexport type Other = { y: int }\n"},
             )
             apps.length == 1 &&
                 apps[0].by_law != null &&
@@ -241,10 +208,7 @@ spec "avra fix" {
     given "a `use` line whose only item is read nowhere" {
         then "the whole line is gone — its own trailing break kept, same as any statement's deletion" {
             let text = "use lib.{Other}\n0\n"
-            let apps = fix_apps_of_files(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export type Other = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
+            let apps = fix_apps_beside(text, {"lib.av": "export type Other = { y: int }\n"})
             apps.length == 1 && fix_applied(text, apps) == "\n0\n"
         }
     }
@@ -338,10 +302,7 @@ spec "avra fix — the general Diag.suggestion channel" {
                 Suggestion { confidence: Confidence.High, description: "a", edits: [edit] },
                 Suggestion { confidence: Confidence.Medium, description: "b", edits: [edit] },
             ] }
-            mut ws = fix_ws_of(text)
-            mut p: Program = ws.program("/w/src/main.av")
-            let a = p.entry_file()!
-            p.suggestion_applications("/w/src/main.av", analysed(a), [d], null).length == 2
+            fix_over(text).proved([d]).length == 2
         }
     }
     given "--only naming a DIFFERENT kind" {
@@ -376,10 +337,7 @@ spec "avra fix — the general Diag.suggestion channel" {
                     edits: [clean_edit],
                 },
             ] }
-            mut ws = fix_ws_of(text)
-            mut p: Program = ws.program("/w/src/main.av")
-            let a = p.entry_file()!
-            let apps = p.suggestion_applications("/w/src/main.av", analysed(a), [d], null)
+            let apps = fix_over(text).proved([d])
             apps.length == 1 && apps[0].edits[0].replacement == "y ?? 0"
         }
     }
@@ -388,13 +346,10 @@ spec "avra fix — the general Diag.suggestion channel" {
             let text = "fn pick(x: int?) -> int {\n    // LICENSED style.accumulator_declaration: kept as a ternary on purpose\n    if x == null { 0 } else { x! }\n}\nfn pick2(y: int?) -> int {\n    if y == null { 0 } else { y! }\n}\npick(null) + pick2(null)\n"
             let clean_edit = edit_over(text, "if y == null { 0 } else { y! }", "y ?? 0")
             let d = suggestion_diag("test.bleed", Confidence.High, [clean_edit])
-            mut ws = fix_ws_of(text)
-            mut p: Program = ws.program("/w/src/main.av")
-            let a = p.entry_file()!
             // an edit over pick2 ALONE, nowhere near pick's own body,
             // is still dropped — the OTHER function's license comment
             // reaches it purely by byte distance
-            p.suggestion_applications("/w/src/main.av", analysed(a), [d], null).is_empty()
+            fix_over(text).proved([d]).is_empty()
         }
     }
 }
@@ -433,52 +388,31 @@ spec "avra fix — a rule and a suggestion fighting over the same code" {
     }
 }
 
-// DESIGN GAP, NOT A SOUNDNESS BUG: this ticket's OWN doc comments
-// name three motivating uses for the general Suggestion channel — a
-// spell-check, a dependency line, a named type's wrap. All three of
-// the compiler's REAL diagnostics of those shapes
-// (`resolve.unresolved`'s "did you mean", `resolve.not_a_dependency`,
-// `type.mismatch`'s named-type wrap) are built on `refusal`, which is
-// Severity.Error by construction (diagnostics/mod.av's `error_at`).
-// `packages/cli/src/commands/fix.av`'s `fixed` bails at its very
-// first line, `if !p.clean() { fail p.report() }`, before it ever
-// calls `suggestion_applications` — and `p.clean()` is false
-// whenever ANY file in the program carries an error, which the
-// diagnostic CARRYING the suggestion always does, by definition. So
-// none of the three motivating examples can ever reach `avra fix`'s
-// real CLI command; only a WARNING-severity source (a rule's own
-// finding, or some future non-error diagnostic) can. Confirmed
-// end-to-end against the real CLI binary, not just here: `avra fix`
-// on a file with an unresolved-name typo prints the bare error
-// report and exits 1, the same as `avra check` would — it never
-// reaches the `[]`-or-populated JSON array `--json` prints once
-// `suggestion_applications` runs.
+// THE GENERAL CHANNEL'S MOTIVATING DIAGNOSTICS ARE ERRORS: a spell-check's "did you mean", a
+// dependency line, a named type's wrap are each refusals, and `avra fix` says a refused program and
+// leaves it as it stands — only `--repair` reaches them; a WARNING-severity source reaches the
+// proved tier.
 spec "the general Suggestion channel's own motivating diagnostics are unreachable" {
     given "a real unresolved-name diagnostic, complete with its own \"did you mean\" Suggestion" {
         then "the program carrying it is NOT clean — avra fix's own gate bails before suggestion_applications ever runs" {
-            mut ws = fix_ws_of("let value = 1\nvaleu\n")
-            mut p: Program = ws.program("/w/src/main.av")
-            let a = p.entry_file()!
-            let sg_count = a.diagnostics.find(it.kind == "resolve.unresolved")?.suggestions?.length ?? 0
-            !p.clean() && sg_count > 0
+            let text = "let value = 1\nvaleu\n"
+            let sg_count = fix_over(text).diags().find(it.kind == "resolve.unresolved")?.suggestions?.length ?? 0
+            !clean(text) && sg_count > 0
         }
     }
 }
 
-// THE COUNTEREXAMPLE: `type.coalesce_never` is a real WARNING (never
-// blocks `p.clean()`) built far from any rule's Candidate, carrying a
-// real Suggestion over `a.diagnostics` — the first non-rule diagnostic
-// to actually reach `avra fix`'s apply path end to end, not merely a
-// forward-looking one.
+// THE COUNTEREXAMPLE: `type.coalesce_never` is a real WARNING, refusing
+// nothing, built far from any rule's Candidate, carrying a real
+// Suggestion — a non-rule diagnostic reaching `avra fix`'s apply path
+// end to end.
 spec "a real WARNING-severity Suggestion reaching avra fix's own apply path" {
     given "`n ?? 4` where `n`'s type says it is never absent" {
         then "the program stays clean, and its own Suggestion PROVES and applies through the general channel" {
             let text = "fn f() -> int {\n    let n = 3\n    n ?? 4\n}\n0\n"
-            mut ws = fix_ws_of(text)
-            mut p: Program = ws.program("/w/src/main.av")
-            let a = p.entry_file()!
-            let apps = p.suggestion_applications("/w/src/main.av", analysed(a), a.diagnostics, null)
-            p.clean() &&
+            let f = fix_over(text)
+            let apps = f.proved(f.diags())
+            clean(text) &&
                 apps.length == 1 &&
                 apps[0].kind == "type.coalesce_never" &&
                 apps[0].proved &&
@@ -537,11 +471,22 @@ spec "avra fix --repair" {
         }
         then "a suggestion whose splice leaves its error standing is not repaired" {
             let src = "fn alpha() -> int { 1 }\nalph()\n"
-            let ws = fix_ws_of(src)
-            let p: Program = ws.program("/w/src/main.av")
-            let a = p.entry_file()!
+            let f = fix_over(src)
             let blank = [Edit { loc: Loc { file: null, lo: 0, hi: 0 }, replacement: " " }]
-            !p.repair_clears("/w/src/main.av", analysed(a), a.diagnostics, blank)
+            let typo = f.diags().find(it.kind == "resolve.unresolved")!
+            !f
+                .repairs(
+                    [
+                        typo with { suggestions: [
+                            Suggestion {
+                                confidence: Confidence.High,
+                                description: "blank",
+                                edits: blank,
+                            },
+                        ] },
+                    ],
+                )[0]
+                .repaired
         }
     }
 }

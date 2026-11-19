@@ -1,6 +1,8 @@
 //! A PROGRAM HELD IN MEMORY, asked of the program layer: its files, where each package it names
 //! stands, and what a build of it says, runs and lowers to.
 use compiler.{
+    item_count,
+    item_rule_file,
     file_law_diags,
     program_erring,
     LinkRead,
@@ -10,6 +12,11 @@ use compiler.{
     file_formatted,
     file_write_checked,
     file_expanded,
+    file_compiled_items,
+    program_hosts_owed,
+    made_suite,
+    MadeSuite,
+    CompiledItem,
     Finding,
     file_rule_rows,
     program_files,
@@ -33,13 +40,20 @@ use compiler.{
     made_program,
     program_refused,
     program_warned,
+    body_at,
+    task_survey,
+    CancelFact,
+    declared_symbol,
 }
 use compiler.backend.{Kept, render_ir, run_kept, run_program}
 use compiler.lower.{Lowered}
 use compiler.host.{Manifest, memory_host, read_manifest}
-use core.{distinct, flatten, sorted_texts}
+use core.{CalledFn, distinct, flatten, sorted_texts, Span}
+use features.{RuleFile}
 use @std.io.{env, is_dir, list_dir, make_dirs, read_text, write_text}
-use diagnostics.{Diag, has_errors, new_source_file, rendered_among}
+use compiler.hosts.{host_fn_owed_diag}
+use @std.relation.engine.{map_cell}
+use diagnostics.{Diag, has_errors, loc_at, new_source_file, rendered_among}
 use @std.meta.{embed}
 use @std.path.{dir_of, file_name, normalized}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
@@ -97,6 +111,9 @@ impl Held {
 
     /// How many times the text of the file standing at `path` was asked for.
     fn reads_of(path: string) -> int { self.asked.get().get(path) ?? 0 }
+
+    /// Every file the layer asked for the text of.
+    fn files_read() -> List<string> { self.asked.get().keys() }
 
     /// The most any one file under the directory `dir` was asked for.
     fn most_reads_under(dir: string) -> int {
@@ -425,8 +442,32 @@ impl Held {
             [file_refusals(engine, self.named(f), home) for f in program_refused(engine, entry, entry.package_name)],
         )
         let warned = [d! for w in program_warned(engine, entry.package_name) for f in w.findings for d in [finding_diag(f, self.named(w.file).full)] if d != null]
-        refused.concat(warned)
+        let owed = if refused.is_empty() { self.hosts_said(engine, entry.package_name) } else { [] }
+        refused.concat(owed).concat(warned)
     }
+
+    /// Each host fn of the package `package`'s program that owes it what it doesn't pay, refused in
+    /// its decision's words, as a build asks once nothing else refuses.
+    fn hosts_said(engine: QueryEngine, package: string) -> List<Diag> {
+        [host_fn_owed_diag(
+            loc_at(
+                self.named(r.file).full,
+                if r.at == null { null } else { Span { lo: r.at!.lo, hi: r.at!.hi } },
+            ),
+            r.name,
+            r.from,
+            r.owed,
+            if r.first_file == null {
+                null
+            } else {
+                loc_at(
+                    self.named(r.first_file!).full,
+                    if r.first_at == null { null } else { Span { lo: r.first_at!.lo, hi: r.first_at!.hi } },
+                )
+            },
+        ) for r in program_hosts_owed(engine, package).rows]
+    }
+
 }
 
 /// The toolchain's prelude, every file of it, where a toolchain's std root holds it.
@@ -647,6 +688,47 @@ impl Judged {
         file_expanded(self.engine, self.held.file_at(path))
     }
 
+    /// Each written item of the file at `path` as compiled: its statements, and the store they stand
+    /// in, each instance's expansion and each sugar's meaning in it.
+    fn items_at(path: string) -> List<CompiledItem> {
+        self.held.entered()
+        file_compiled_items(self.engine, self.held.file_at(path))
+    }
+
+    /// The suite of every case the files at `paths` write, made as `avra test` makes it: where a
+    /// law refuses one of them, what the laws say of those files, rendered, in place of a suite.
+    fn suite(paths: List<string>) -> Result<MadeSuite, string> {
+        self.held.entered()
+        let files = [self.held.file_at(p) for p in paths]
+        let refused = [d for f in files for d in file_law_diags(self.engine, self.held.named(f)) if !(d.severity is .Warning)]
+        if !refused.is_empty() { return .Err(self.rendered(refused)) }
+        made_suite(self.engine, files, (f: SourceFileAddress) -> self.held.named(f).full)
+    }
+
+    /// What a call of the fn `name` the entry declares — a method as `Owner.method` — may do, as
+    /// the layer's task survey reads it:
+    /// `p` where it may park, `s` where it may spin, `L` where it links a scheduler, `-` in each place
+    /// it doesn't.
+    fn cancel_bits(name: string) -> string {
+        self.held.entered()
+        let dot = name.index_of(".")
+        let at = body_at(
+            CalledFn {
+                file: self.entry,
+                name: if dot < 0 { name } else { name.substring(dot + 1, name.length) },
+                symbol: declared_symbol(self.entry, name),
+                external: false,
+                plain: true,
+                owner: if dot < 0 { null } else { name.substring(0, dot) },
+                of: if dot < 0 { null } else { self.entry },
+            },
+        )
+        let survey = task_survey(self.engine)
+        let parks = survey.finds(at, map_cell(), (f: CancelFact) -> f.parks)
+        let spins = survey.finds(at, map_cell(), (f: CancelFact) -> f.spins)
+        "${if parks { "p" } else { "-" }}${if spins { "s" } else { "-" }}${if survey.links(at) { "L" } else { "-" }}"
+    }
+
     /// Every file the program reads, each as a diagnostic names it.
     fn source_paths() -> List<string> {
         self.held.entered()
@@ -676,6 +758,14 @@ impl Judged {
                 },
             },
         )
+    }
+
+    /// What a fact rule reads of each item of the file at `path` whose parse stands, in the order
+    /// written.
+    fn rule_files(path: string) -> List<RuleFile> {
+        self.held.entered()
+        let file = self.held.file_at(path)
+        [r! for at in 0..item_count(self.engine, file) for r in [item_rule_file(self.engine, self.entry.package_name, file, at)] if r != null]
     }
 
     /// Every rule finding across the files the program reads, each on the line it stands on.

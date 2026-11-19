@@ -62,8 +62,19 @@ fn binding_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 /// Every hole the written item `at` of `file`'s `match`es leave in a registry, in node order, both its
 /// laws reading the one answer: each `match`'s subject typed as the body that holds it types it, and
 /// an item with no `match` typing nothing.
-@query
 fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemHoles {
+    if !item_held(engine, file, at) { return holes_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.holes.get() else {
+        let made = holes_made(engine, file, at)
+        view.holes.set(made)
+        return made
+    }
+    held
+}
+
+/// What `registry_holes` answers, made.
+fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemHoles {
     if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
     let item = read_item(engine, file, at)
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]

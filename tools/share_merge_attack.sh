@@ -5,7 +5,8 @@
 # (`AVRA_MERGED_HERE`), merged by shares however small the store (`AVRA_MERGED_APART_FROM`), and by
 # shares with one share left unpublished (`AVRA_SHARE_UNMERGED`), which the asking process must
 # then merge itself. Each binary must be the first one's, and a build after each must stand on
-# the store it left, working out nothing.
+# the store it left, working out nothing. Merged by shares, a process said it published a share and
+# another read an answer from one (`AVRA_QTRACE`'s store lines); merged here, none did.
 #
 #   sh tools/share_merge_attack.sh
 set -u
@@ -30,24 +31,28 @@ package() {
 }
 
 # The package built cold, in one place whatever the settings `$@`, then built again: its binary's
-# digest, how many packs the first build left, and whether the second stood.
+# digest, how many shares the first build said were published and how many answers read from one,
+# and whether the second stood.
 built() {
     package pkg
-    env "$@" "$A" build "$R/pkg" > "$R/pkg.build" 2>&1 || { echo "BUILD FAILED"; return; }
-    packs=$(ls "$R/pkg/.avra-cache/tapes" | grep -c '\.pack$')
+    env AVRA_QTRACE=1 "$@" "$A" build "$R/pkg" > "$R/pkg.build" 2>&1 || { echo "BUILD FAILED"; return; }
+    published=$(grep -c '^store: share [0-9]* of [0-9]* published$' "$R/pkg.build")
+    read=$(grep -c '^store: an answer read from a share another process published: ' "$R/pkg.build")
     stood=$(env "$@" "$A" build "$R/pkg" --time 2>&1 >/dev/null | grep -c 'cache hit')
-    echo "$(cksum < "$R/pkg/src/main") packs=$packs stood=$stood said=$("$R/pkg/src/main")"
+    echo "$(cksum < "$R/pkg/src/main") published=$published read=$read stood=$stood said=$("$R/pkg/src/main")"
 }
-binary() { echo "$1" | sed 's/ packs=.*//'; }
+binary() { echo "$1" | sed 's/ published=.*//'; }
 field() { echo "$1" | tr ' ' '\n' | grep "^$2=" | cut -d= -f2; }
 
 steps=$((steps + 1)); here=$(built AVRA_MERGED_HERE=1)
 [ "$(field "$here" said)" = 780 ] || fail "merged here, the build says: $here"
 [ "$(field "$here" stood)" = 1 ] || fail "merged here, the build after did not stand"
+[ "$(field "$here" published)" = 0 ] || fail "merged here, a process said it published a share: $here"
 steps=$((steps + 1)); shares=$(built AVRA_MERGED_APART_FROM=10)
 [ "$(binary "$shares")" = "$(binary "$here")" ] || fail "merged by shares, the binary is not the one merged here: $shares"
 [ "$(field "$shares" stood)" = 1 ] || fail "merged by shares, the build after did not stand"
-[ "$(field "$shares" packs)" -gt "$(field "$here" packs)" ] || fail "merged by shares, the store holds $(field "$shares" packs) pack(s), no more than merged here: no share was published"
+[ "$(field "$shares" published)" -gt 0 ] || fail "merged by shares, no process said it published a share: $shares"
+[ "$(field "$shares" read)" -gt 0 ] || fail "merged by shares, no process read an answer from a share: $shares"
 steps=$((steps + 1)); short=$(built AVRA_MERGED_APART_FROM=10 AVRA_SHARE_UNMERGED=2)
 [ "$(binary "$short")" = "$(binary "$here")" ] || fail "with a share unpublished, the binary is not the one merged here: $short"
 [ "$(field "$short" stood)" = 1 ] || fail "with a share unpublished, the build after did not stand"

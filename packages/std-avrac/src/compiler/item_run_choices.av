@@ -22,8 +22,19 @@ type UnmetAt = { at: FindingAt?, target: string, method: string, unmet: List<str
 type ItemUnmet = { rows: List<UnmetAt> }
 
 /// Every such call in the bodies the written item `at` of `file` declares.
-@query
 fn item_unmet(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnmet {
+    if !item_held(engine, file, at) { return unmet_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.unmet.get() else {
+        let made = unmet_made(engine, file, at)
+        view.unmet.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_unmet` answers, made.
+fn unmet_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnmet {
     if !item_held(engine, file, at) { return ItemUnmet { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUnmet { rows: [] } }
@@ -62,7 +73,7 @@ fn unmet_in(
     store: SyntaxArena,
     types: List<SignedType?>,
 ) -> List<UnmetAt> {
-    [r! for k in 0..types.length for r in [unmet_at(engine, file, store, types, ExprId { index: k })] if r != null]
+    [r! for k in 0..types.length if store.method_parts(ExprId { index: k }) != null for r in [unmet_at(engine, file, store, types, ExprId { index: k })] if r != null]
 }
 
 /// The node `e` as a call a `dyn` argument chooses a member of, where types implementing its trait

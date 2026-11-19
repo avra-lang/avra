@@ -11,6 +11,7 @@ use @std.avrac.compiler.{
     default_opt,
     unset_link_holes_of,
     FileWarned,
+    ChildEnd,
     RefusesCall,
     AdmittedSaid,
     GraphHeld,
@@ -137,6 +138,7 @@ use @std.avrac.compiler.{
     program_worked,
     share_replayed,
     package_sources,
+    root_sources,
     LinkRead,
     program_link_words,
     program_packages,
@@ -382,7 +384,7 @@ export fn program_built(
     release: bool = false,
 ) -> Result<string, int> {
     let bin? = entry_written(root) else {
-        eprintln("avra: ${root_workspace(root).root} declares no entry point")
+        eprintln("avra: ${root} declares no entry point")
         return .Err(1)
     }
     program_built_at(root, bin, timed, tools, net, release)
@@ -2877,18 +2879,59 @@ type ProgramTest = { root: string, path: string, expected: string?, evaluated: b
 /// Every program test the package at `root`'s suites run, as `avra test` finds them, that stands
 /// at or under `dir` and whose path under `root` starts with `only`.
 fn program_tests(root: string, dir: string, only: string) -> List<ProgramTest> {
-    let ws = root_workspace(root)
-    let found = ws.suite_programs()
-    ws.discarded()
-    [ProgramTest {
-        root: s.root,
-        path: s.path,
-        expected: if s.printing == null { null } else { unended(s.printing!) },
-        evaluated: s.evaluated,
-        child: s.child,
-    } for s in found if (s.path == dir || s.path.starts_with("${dir}/")) &&
-        s.path.substring(root.length + 1, s.path.length).starts_with(only)]
+    [t for r in suite_roots(root) for t in programs_in(r) if (t.path == dir || t.path.starts_with("${dir}/")) &&
+        t.path.substring(root.length + 1, t.path.length).starts_with(only)]
 }
+
+/// The packages a test of the package at `root` proves: itself, then each package nested under its
+/// sources, in the order the directories list them.
+fn suite_roots(root: string) -> List<string> { [root].concat(nested_roots(joined_path(root, "src"))) }
+
+/// The packages nested under the directory `dir`: each directory holding a manifest, never one
+/// inside it.
+fn nested_roots(dir: string) -> List<string> {
+    flatten(
+        [nested_under(joined_path(dir, n)) for n in sorted_texts(names_at(dir) ?? []) if is_a_dir(joined_path(dir, n))],
+    )
+}
+
+fn nested_under(dir: string) -> List<string> { if exists_at(joined_path(dir, "avra.toml")) { [dir] } else { nested_roots(dir) } }
+
+/// The program tests the package at `root` holds as its own, read off its sources and the markers
+/// beside them: each that prints the text beside it (`.expected`, and `.native-only` where it runs
+/// natively alone), then each run as a child that must end as a marker says (`.refuses`, a trap;
+/// `.verdict`, a failed verdict), its voice the marker's text.
+fn programs_in(root: string) -> List<ProgramTest> {
+    let disk? = disk_at(root, "") else { return [] }
+    let engine = query_engine(
+        program_store_at(joined_path(root, ".avra-cache/tapes")),
+        avra_fact_definitions(),
+    )
+    let files = sorted_texts([joined_path(root, f) for f in root_sources(engine, disk.name)])
+    let printing = [ProgramTest {
+        root: root,
+        path: p,
+        expected: unended(text_at(marked_beside(p, "expected")) ?? ""),
+        evaluated: !exists_at(marked_beside(p, "native-only")),
+        child: null,
+    } for p in files if exists_at(marked_beside(p, "expected"))]
+    printing
+        .concat(
+            [ProgramTest { root: root, path: p, expected: null, evaluated: false, child: c } for p in files for c in child_calls(p)],
+        )
+}
+
+/// One call per marker beside `path` that says how its child must end.
+fn child_calls(path: string) -> List<RefusesCall> {
+    [RefusesCall {
+        path: path,
+        voice: unended(text_at(marked_beside(path, e.marker())) ?? ""),
+        end: e,
+    } for e in [ChildEnd.Trap, ChildEnd.Verdict] if exists_at(marked_beside(path, e.marker()))]
+}
+
+/// The marker `extension` beside the source `path`.
+fn marked_beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
 
 /// `text` without the one line end that closes it.
 fn unended(text: string) -> string { if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text } }
@@ -3132,12 +3175,7 @@ export fn program_tested(paths: List<string>, timed: bool = false, net: NetSaid 
     let root = if is_a_dir(first) { package_root(first) ?? first } else { file_home(first) ?? dir_of(first) }
     let scope = if paths.length == 1 && rooted(paths[0]) == root { [] } else { [p for p in paths] }
     let tests = [t for t in program_tests(root, root, "") if in_scope(scope, t.path)]
-    let ws = root_workspace(root)
-    let roots = [root]
-        .concat(
-            [r for r in ws.nested_roots(joined_path(root, "src")) if in_scope(scope, r) || scope.any(under_dir(it, r))],
-        )
-    ws.discarded()
+    let roots = [r for r in suite_roots(root) if r == root || in_scope(scope, r) || scope.any(under_dir(it, r))]
     mut suites: List<SuiteRead> = []
     for r in roots {
         let disk? = disk_at(r, "") else { return std_unfound() }

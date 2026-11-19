@@ -30,8 +30,19 @@ fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 
 /// Every `mut` seat a free fn or an inherent method of the written item `at` of `file` declares
 /// that its body never writes through, in the order they're declared.
-@query
 fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
+    if !item_held(engine, file, at) { return seats_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.seats.get() else {
+        let made = seats_made(engine, file, at)
+        view.seats.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_seats` answers, made.
+fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
     if !item_held(engine, file, at) { return ItemSeats { seats: [] } }
     let item = read_item(engine, file, at)
     let judged = [s for s in item.stmts if judged_fn(item, s)]

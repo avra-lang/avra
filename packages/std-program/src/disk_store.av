@@ -567,6 +567,9 @@ export type DiskStore = {
     /// What this process learned for its binary's frontier, written once the pack holding its
     /// answers is.
     pending_frontier: Cell<PendingFrontier?>,
+    /// The packs other processes published as shares of the packs this store read, once it took
+    /// them in their place.
+    taken_shares: Cell<List<string>>,
 }
 
 /// What a process learned for its binary's frontier, waiting for its answers to be published:
@@ -601,6 +604,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
     let held_questions: HashKeyedTable<Bytes> = hash_keyed_table()
     let segment: Cell<List<Segment>> = Cell.new([])
     let pending: Cell<PendingFrontier?> = Cell.new(null)
+    let taken_shares: Cell<List<string>> = Cell.new([])
     DiskStore {
         directory: directory,
         print: print,
@@ -610,6 +614,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
         held_questions: held_questions,
         foreign: foreign,
         pending_frontier: pending,
+        taken_shares: taken_shares,
         generation: Cell.new(1 + pack_names_in(directory).fold(0, (newest, p) -> max_of(newest, p.generation))),
     }
 }
@@ -624,6 +629,13 @@ const UNFINISHED_FILE: string = "saving.unfinished"
 
 /// Whether this process is one left to save a store: it waits for no save, its own least of all.
 export once fn saving_apart() -> Cell<bool> { Cell.new(false) }
+
+/// `AVRA_QTRACE`: the store says when it reads an answer from a share.
+// LICENSED input.debug_flag: a trace line is said, never read by an answer
+once fn shares_traced() -> string? { env("AVRA_QTRACE") }
+
+/// Whether this process has said it read an answer from a share.
+once fn share_read() -> Cell<bool> { Cell.new(false) }
 
 /// Whether this process has said it waits for a save.
 once fn wait_said() -> Cell<bool> { Cell.new(false) }
@@ -870,10 +882,12 @@ impl AnswerStore for DiskStore {
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
-        self.unpublished_answer(answer) ?? first_answering(
-            self.packs.get(),
-            (pack) -> pack.answer_bytes(answer),
-        )
+        let unpublished? = self.unpublished_answer(answer) else {
+            let read = first_answering(self.packs.get(), (pack) -> pack.answer_bytes(answer))
+            if read != null && shares_traced() != null { self.share_read_said(answer) }
+            return read
+        }
+        unpublished
     }
 
     /// An answer kept in the draft. A store that can't write keeps it for this process alone, so a
@@ -1156,6 +1170,20 @@ impl DiskStore {
     fn shares_taken() {
         for pack in self.packs.get() { let _ = remove(pack.path) }
         self.packs_read_again()
+        self.taken_shares.set([pack.path for pack in self.packs.get()])
+    }
+
+    /// Under `AVRA_QTRACE`, the first answer this process reads from a share another process
+    /// published, said once.
+    fn share_read_said(answer: ContentHash) {
+        if share_read().get() { return }
+        let shares = self.taken_shares.get()
+        let from? = self
+            .packs
+            .get()
+            .find((pack) -> shares.contains(pack.path) && pack.answer_bytes(answer) != null) else { return }
+        share_read().set(true)
+        eprintln("store: an answer read from a share another process published: ${from.path}")
     }
 
     /// The store reads the packs its directory holds now.

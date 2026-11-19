@@ -56,7 +56,16 @@ use @std.sqlite.{Db, Durability, Journal, OpenConfig, Sql, SqlValue, prepared, s
 use @std.text.{parse_int}
 use @std.time.{Duration, Time, mins, now}
 use fault.{ask_again, homed}
-use rows.{count_standing, read_mark, tables_made, take_next, waiting_index}
+use rows.{
+    count_standing,
+    order_code,
+    overflow_code,
+    read_mark,
+    tables_made,
+    take_next,
+    terms_kept,
+    waiting_index,
+}
 use tx.{begun, freed}
 use unread.{Unread, Unreadable, aside, aside_count, forget_aside, set_aside}
 
@@ -181,6 +190,7 @@ export fn store_home_with<T>(
     terms: Terms,
     wire: Wire<T>,
     sync: Sync = Sync.every_send,
+    dedupe: Duration = mins(1440),
 ) -> Result<Store<T>, HomeError> {
     let _ = home_terms(terms)?
     let inside = db.in_transaction()
@@ -193,6 +203,7 @@ export fn store_home_with<T>(
         let _ = homed(db.run(sql(count_standing, [.Text(queue)])))?
     }
     let _ = homed(db.run(sql(know_shape, [.Int(wire.shape), .Text(wire.descriptor)])))?
+    let _ = homed(db.run(sql(terms_kept, kept_terms(queue, terms, dedupe, wire.shape))))?
     let judged: Cell<Map<string, Judged>> = Cell.new({})
     Store {
         db: db,
@@ -202,9 +213,26 @@ export fn store_home_with<T>(
         mark: "${homed((homed(db.scalar(sql(read_mark)))?).text())?}-",
         shape: descriptor_unspelled(wire.descriptor),
         judged: judged,
+        dedupe: dedupe,
         eases: sync == Sync.every_send && homed(db.journal())? == "wal",
         shaped: Cell.new(!inside),
     }
+}
+
+/// A queue's terms, and the shape of the items it holds, as its terms
+/// row binds them.
+fn kept_terms(queue: string, terms: Terms, dedupe: Duration, shape: int) -> List<SqlValue> {
+    [
+        .Text(queue),
+        .Int(terms.capacity),
+        .Int(terms.lease.ms()),
+        .Int(terms.retries),
+        .Int(overflow_code(terms.overflow)),
+        .Int(order_code(terms.order)),
+        .Int(dedupe.ms()),
+        at(now()),
+        .Int(shape),
+    ]
 }
 
 /// The tables, indexes and triggers a home reads, made where missing.
@@ -783,11 +811,17 @@ impl Store<T> {
     /// another database's, or a row's number spelled any way but its
     /// own.
     fn row_of(id: string) -> int? {
-        if !id.starts_with(self.mark) { return null }
-        let digits = id.substring(self.mark.length, id.length)
-        if digits.starts_with("0") { return null }
-        parse_int(digits)
+        row_named(self.mark, id)
     }
+}
+
+/// The row an id names behind the database mark `mark`, or absent for
+/// one no home of that database minted.
+fn row_named(mark: string, id: string) -> int? {
+    if !id.starts_with(mark) { return null }
+    let digits = id.substring(mark.length, id.length)
+    if digits.starts_with("0") { return null }
+    parse_int(digits)
 }
 
 /// What a take makes of octets a verdict let through and the reader

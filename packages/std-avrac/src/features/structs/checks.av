@@ -50,7 +50,10 @@ impl Checks for StructLit {
         if seats.any(it == null) {
             let fields = [f.name for f in record.fields]
             for at, f in self.fields {
-                if seats[at] == null && at < self.values.length {
+                // a handler its instance cannot hear is refused by the event's law, not as a field
+                if seats[at] == null &&
+                    at < self.values.length &&
+                    !cx.store.refused_elsewhere(self.values[at]) {
                     cx
                         .literal_refused(self.values[at], LiteralFault.Unknown(self.name.of, f.of, fields))
                 }
@@ -58,19 +61,22 @@ impl Checks for StructLit {
             cx.checked_free(self.values)
             return null
         }
+        // a handler its instance cannot hear is refused by the event's law, and fills no seat
+        let seatable = [at for at, v in self.values if !cx.store.refused_elsewhere(v)]
+        cx.checked_free([v for v in self.values if cx.store.refused_elsewhere(v)])
         let applied = pinned_by(cx, e, named, record.params) ?? applied_by(
             expected,
             named,
             record.params,
         )
         if applied != null {
-            for at, v in self.values { seated(cx, v, seats[at]!.bound(applied!.args), self.fields[at].of) }
+            for at in seatable { seated(cx, self.values[at], seats[at]!.bound(applied!.args), self.fields[at].of) }
             places_handed(cx, e, self, record.fields, seats)
             return applied
         }
-        let keyed = [at for at, s in seats if meta_key(s!.unwrapped())]
+        let keyed = [at for at in seatable if meta_key(seats[at]!.unwrapped())]
         for at in keyed { seated(cx, self.values[at], seats[at]!, self.fields[at].of) }
-        let rest = [at for at in 0..seats.length if !keyed.contains(at)]
+        let rest = [at for at in seatable if !keyed.contains(at)]
         let found? = cx
             .fills(
                 [seats[at]! for at in rest],
@@ -78,7 +84,7 @@ impl Checks for StructLit {
                 {},
                 null,
                 Expected.Free,
-                (j: int) -> Seating.Field(self.fields[rest[j]].of),
+                (j: int) -> field_seating(cx, self.values[rest[j]], self.fields[rest[j]].of),
             ) else { return null }
         places_handed(cx, e, self, record.fields, seats)
         let args = [found.get("${at}") for at in 0..record.params]
@@ -91,14 +97,21 @@ impl Checks for StructLit {
 /// it makes none.
 fn seated(mut cx: Checking, v: ExprId, seat: SignedType, name: string) {
     if !meta_key(seat.unwrapped()) || cx.store.null_literal(v) {
-        let _ = cx.check_seated(v, seat, Seating.Field(name))
+        let _ = cx.check_seated(v, seat, field_seating(cx, v, name))
         return
     }
     let made? = cx.check(v, Expected.Free) else { return }
     if meta_key(made.unwrapped()) ||
         makes_key(cx, made) ||
         seat.nullable() && made.nullable() && makes_key(cx, made.unwrapped()) { return }
-    cx.refused.push(Refused { at: v, want: seat, found: made, seat: Seating.Field(name) })
+    cx.refused.push(Refused { at: v, want: seat, found: made, seat: field_seating(cx, v, name) })
+}
+
+/// The seat the value `v` of the field `name` fills: the handler of the event a setting names, else
+/// the field.
+fn field_seating(cx: Checking, v: ExprId, name: string) -> Seating {
+    let heard? = cx.store.on_handler(v) else { return Seating.Field(name) }
+    Seating.Heard(heard.event)
 }
 
 /// Each entry of the literal `e`, what an instance means, writing a field that takes its writer's

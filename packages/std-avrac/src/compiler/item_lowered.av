@@ -5,6 +5,12 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
     NodeNotes,
+    node_notes,
+    CostRemark,
+    CostRemarks,
+    ConsumeDecline,
+    Declined,
+    remark_of,
     SettledSeat,
     settled_seat_key,
     settled_symbol,
@@ -323,6 +329,17 @@ fn signed_lowered(
     let names = cx.names
     let places = seat_places(signature.params.length, settled)
     let consumed = if eligible.any(it) { kept_seats(body.store, body.body, eligible, (e: ExprId) -> seat_read(names, places, e)) } else { [] }
+    if cx.program.notes != null {
+        unconsumed_noted(
+            cx,
+            signed,
+            name,
+            seated,
+            (e: ExprId) -> seat_read(names, places, e),
+            body.store,
+            body.body,
+        )
+    }
     unit_lowered(cx, seated.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread, consumed: if consumed.any(it) { consumed } else { [] } }
 }
 
@@ -356,20 +373,65 @@ fn seat_places(n: int, settled: List<SettledSeat>) -> List<int?> {
 /// free fn a call reaches by its symbol alone — no method, whose receiver or impl a dispatch may
 /// stand between, no host fn, which the host calls, no `once` fn and no case — taking a value by
 /// itself, no `mut`, `const`, `state`, isolated, spread or rest seat.
-fn consumable(signed: SignedBody, name: string, p: SignedParam) -> bool {
+fn consumable(signed: SignedBody, name: string, p: SignedParam) -> bool { unconsumable(signed, name, p) == null }
+
+/// Why the seat `p` of the body `signed` declares as `name` may not be one it consumes, as
+/// `consumable` says; absent where it may.
+fn unconsumable(signed: SignedBody, name: string, p: SignedParam) -> ConsumeDecline? {
     let store = signed.item.store
-    signed.receiver == null &&
-        !name.contains(".") &&
-        !signed.case &&
-        !store.is_host_fn(signed.stmt) &&
-        !store.is_once(signed.stmt) &&
-        p.ty != null &&
-        !p.mutable &&
-        !p.settled &&
-        !p.state &&
-        !p.unshared &&
-        !p.spread &&
-        !p.rest
+    when {
+        signed.receiver != null || name.contains(".") -> ConsumeDecline.Method
+        store.is_host_fn(signed.stmt) -> ConsumeDecline.Hosted
+        signed.case || store.is_once(signed.stmt) -> ConsumeDecline.OnceOrCase
+        p.ty == null || p.mutable || p.settled || p.state || p.unshared || p.spread || p.rest -> ConsumeDecline
+            .SeatPromises
+        _ -> null
+    }
+}
+
+/// Each counted seat of `seated` the body `root` of `store` keeps whole on every path, which it would
+/// consume but for what `unconsumable` says, noted as declined at the body.
+fn unconsumed_noted(
+    mut cx: Lowering,
+    signed: SignedBody,
+    name: string,
+    seated: List<SignedParam>,
+    seat_of: fn(ExprId) -> int?,
+    store: SyntaxArena,
+    root: ExprId,
+) {
+    let counted = [p.ty != null && cx.laid_out(p.ty!).counted() for p in seated]
+    if !counted.any(it) { return }
+    let kept = kept_seats(store, root, counted, seat_of)
+    for j, p in seated {
+        if j >= kept.length || !kept[j] { continue }
+        let why? = unconsumable(signed, name, p) else { continue }
+        cx.declined(signed.body, Declined.Consume(why))
+    }
+}
+
+/// THE COST REMARKS of the fn `file` declares as `name`: each site of its body, and its lambdas',
+/// where a representation technique it is a candidate for declined, and why — the body lowered again
+/// with notes, as a law asks, which a build never does.
+@query
+export fn cost_remarks(engine: QueryEngine, file: SourceFileAddress, name: string) -> CostRemarks {
+    let signed? = signed_body(engine, file, name) else { return CostRemarks { remarks: [] } }
+    if !signed.signature.type_params.is_empty() { return CostRemarks { remarks: [] } }
+    let notes = node_notes(signed.item.written)
+    let _ = signed_lowered(
+        engine,
+        file,
+        answered_fn(engine, file, name, signed),
+        name,
+        null,
+        [],
+        [],
+        notes,
+    )
+    let store = signed.item.store
+    CostRemarks {
+        remarks: [CostRemark { declined: r!.declined, lo: placed.lo, hi: placed.hi } for m in notes.met.get() for r in [remark_of(store, m)] if r != null for placed in [span_in_file(engine, file, signed.item, Span { lo: r!.lo, hi: r!.hi })]],
+    }
 }
 
 /// The register of the seat a bare name read at `e` reads, by `places`; absent for a capture and a

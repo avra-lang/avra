@@ -1,7 +1,8 @@
 //! The laws a type test keeps: its subject is a `dyn` (read through a
 //! name, as any read is), the type it names is ONE concrete type — a
-//! box's tag names a declaration, so it tells no `dyn`, absence, type
-//! parameter or generic instance apart — and that type implements the
+//! box's tag names a type with its arguments, so it tells no `dyn`,
+//! absence, type parameter or built-in generic apart, but it does tell one
+//! instance of a declared generic from another — and that type implements the
 //! `dyn`'s trait. The binder answers the named type, recorded on the
 //! pattern's read for lowering to test against.
 use core.{PatId, Type, TypeId, TypeRef, DeclId}
@@ -29,7 +30,7 @@ enum Untaggable {
     Dyn
     Absent(inner: TypeId)
     Param
-    Shared
+    BuiltIn
 }
 
 fn untaggable(sh: Type) -> Untaggable? {
@@ -37,8 +38,8 @@ fn untaggable(sh: Type) -> Untaggable? {
         .Dyn(_, _) -> .Dyn,
         .Opt(inner) -> .Absent(inner),
         .Var(_, _, _) -> .Param,
-        .App(_, _, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) -> .Shared,
-        .Int or .Float or .Bool or .Str or .Bytes or .Ptr or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Fn(_, _, _) or .Tasks or .Void or .Null or .EmptyList or .EmptyMap or .Union(_) or .Range or .Error -> null,
+        .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) -> .BuiltIn,
+        .App(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Ptr or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Fn(_, _, _) or .Tasks or .Void or .Null or .EmptyList or .EmptyMap or .Union(_) or .Range or .Error -> null,
     }
 }
 
@@ -49,7 +50,7 @@ fn refused_target(mut cx: TypeCx, p: PatId, fault: Untaggable, to: TypeId, tr: D
         .Dyn -> dyn_target(cx, p, to, tr),
         .Absent(inner) -> absent_target(cx, p, to, inner),
         .Param -> param_target(cx, p, to),
-        .Shared -> shared_target(cx, p, to),
+        .BuiltIn -> built_in_target(cx, p, to),
     }
 }
 
@@ -156,13 +157,13 @@ fn param_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
     []
 }
 
-fn shared_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+fn built_in_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
     cx
         .emit(
             refusal(
                 "type.narrow",
                 cx.pat_loc(p),
-                "a type pattern names one concrete type, and `${cx.view.types.name_of(to)}` is one instance of a generic — every instance shares one tag",
+                "a type pattern names one concrete type, and `${cx.view.types.name_of(to)}` is an instance of a built-in generic, which no declaration of the program names — a box's tag tells no instance of it",
                 "narrowed here",
                 "narrow to a type of your own that holds it — `type Ints = { held: List<int> }`",
             ),

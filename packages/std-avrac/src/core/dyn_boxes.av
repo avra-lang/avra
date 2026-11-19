@@ -63,10 +63,10 @@ impl Lowering {
     }
 
     /// The table the `dyn` box `v` holds: its type's code for each method of the trait, then its tag.
-    mut fn dyn_table(v: Reg) -> Reg { self.slot_read(Layout.Boxed(BoxKind.List), v, 1) }
+    mut fn dyn_table(v: Reg) -> Reg { self.proven_read(Layout.Boxed(BoxKind.List), v, 1) }
 
     /// The code the `dyn` box `v` holds for the method at `at` among its trait's.
-    mut fn dyn_code(v: Reg, at: int) -> Reg { self.slot_read(Layout.Word, self.dyn_table(v), at) }
+    mut fn dyn_code(v: Reg, at: int) -> Reg { self.proven_read(Layout.Word, self.dyn_table(v), at) }
 
     /// The code a `dyn` box over an inline value of `from` holds for its method `name`, `callee`: a
     /// unit taking the box the value crossed in, then the method's seats, that reads the value back
@@ -110,8 +110,8 @@ impl Lowering {
         let opened = !shim.place_handed(from)
         let held = when {
             opened -> shim.call_row(l, rt_sig_of("avra_slot_unique")!, [box, shim.const_int(0)])
-            l.one_word() -> shim.slot_read(l, box, 0)
-            _ -> shim.uncrossed(shim.slot_read(Layout.Boxed(BoxKind.List), box, 0), l)
+            l.one_word() -> shim.proven_read(l, box, 0)
+            _ -> shim.uncrossed(shim.proven_read(Layout.Boxed(BoxKind.List), box, 0), l)
         }
         let handed = if opened { held } else { shim.celled(held, from, shim.laid_out(cell_of(from))) }
         let r = shim.call_fn(shim.laid_out(answer), callee, [handed].concat(seats))
@@ -157,14 +157,14 @@ impl Lowering {
 
     /// The type tag the `dyn` box `v`, of the trait type `ty`, holds: its table's, past the code of each
     /// method its trait declares.
-    mut fn dyn_tag(v: Reg, ty: SignedType) -> Reg { self.slot_read(Layout.Word, self.dyn_table(v), (self.program.traits)(ty)?.length ?? 0) }
+    mut fn dyn_tag(v: Reg, ty: SignedType) -> Reg { self.proven_read(Layout.Word, self.dyn_table(v), (self.program.traits)(ty)?.length ?? 0) }
 
     /// The value the `dyn` box `v` holds, read as the `of` its tag says it is: a value laid inline out
     /// of the box it crossed in.
     mut fn dyn_held(v: Reg, of: SignedType) -> Reg {
         let l = self.laid_out(of)
-        if l.one_word() { return self.slot_read(l, v, 0) }
-        self.uncrossed(self.slot_read(Layout.Boxed(BoxKind.List), v, 0), l)
+        if l.one_word() { return self.proven_read(l, v, 0) }
+        self.uncrossed(self.proven_read(Layout.Boxed(BoxKind.List), v, 0), l)
     }
 
     /// The tag a `dyn` box holds for a value of `ty`: its identity's fingerprint, the same in every

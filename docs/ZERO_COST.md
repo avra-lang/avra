@@ -13,7 +13,7 @@ human reading code.
 | detector | reads | finds | where |
 |---|---|---|---|
 | **census sites** | the runtime's exact per-site counters (boxes, retains, releases, clones, string compares, list writes) over the fixed workloads | the hottest sites, each CLASSIFIED to the technique that would remove its cost (below) | `avra census --candidates` |
-| **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid: "record escapes through a field write at X, so it is boxed" | `avra explain cost <fn>`; the remarks are facts in the DB |
+| **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid, as a TYPED reason per technique (`Declined`: `DeferDecline`, `ProbeDecline`, `SettleDecline`, `ConsumeDecline`, `DynDecline`, `PackDecline`), its words rendered by one voice fn | `avra explain --cost @fn`, grouped by reason and counted; `cost_remarks` is a query, so the remarks are facts in the DB. A build never notes them: zero cost unless asked |
 | **shape rules** | the source, as `rule` declarations `avra check` finds | the patterns that cost by construction | `avra check`, ratcheted like idioms |
 | **exact-count gate** | the census totals per cold workload, and the answers a warm run works out again after each fixed edit, over one pinned snapshot, against `tools/cost.baseline` | regressions: any counter that rose past tolerance, cold or warm | a gate slice (`make cost`); lowering a counter needs `make cost-accept` |
 

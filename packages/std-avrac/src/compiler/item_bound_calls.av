@@ -52,8 +52,19 @@ type ItemUngiven = { rows: List<UngivenAt> }
 /// value of a type parameter that the parameter's bound doesn't give; a generic method is no
 /// method an impl lands, and asks nothing. A body that didn't parse asks
 /// nothing.
-@query
 fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
+    if !item_held(engine, file, at) { return ungiven_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.ungiven.get() else {
+        let made = ungiven_made(engine, file, at)
+        view.ungiven.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_ungiven` answers, made.
+fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
     if !item_held(engine, file, at) { return ItemUngiven { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
@@ -85,7 +96,7 @@ fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<Ungiv
     let typed = b.typed
     let store = signed.item.store
     let own = [p.name.of for p in store.fn_parts(signed.stmt)?.tparams ?? []]
-    [r! for k in 0..typed.types.length for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
+    [r! for k in 0..typed.types.length if called_on(store, ExprId { index: k }) != null for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
 }
 
 /// The type parameter of `sig` the node `e` names, where it is written as a bare name: a static
@@ -212,7 +223,7 @@ const TYPEWIDE: string = "typewide"
 /// Whether a written item of `file` calls a method on a type parameter's value that its bound
 /// doesn't give: a build that reaches the file fails on it.
 export fn asks_ungiven(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    (0..item_count(engine, file)).any(!item_ungiven(engine, file, it).rows.is_empty())
+    file_found_by(engine, file, ["bound_lacks", "unbounded_called"])
 }
 
 collect listed_bound_call_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

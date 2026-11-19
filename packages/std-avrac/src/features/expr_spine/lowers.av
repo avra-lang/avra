@@ -154,14 +154,14 @@ enum Operand {
 /// The operands' kind, absent for a layout no operator here reads.
 fn operand_of(l: Layout) -> Operand? {
     match l {
-        .Word or .Real -> Operand.Number,
+        .Word or .Real or .Bare -> Operand.Number,
         .Truth -> Operand.Truth,
         .Boxed(box) -> match box {
             .Text -> Operand.Text,
             .Bytes -> Operand.Octets,
             .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
         },
-        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+        .Void or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
     }
 }
 
@@ -184,8 +184,8 @@ fn seen_type(cx: Lowering, e: ExprId) -> SignedType? {
 /// `t` when the language owns it.
 fn owned_only(t: SignedType) -> SignedType? { match t.head { .Owned(_) -> t, rest -> null } }
 
-/// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number or a
-/// truth by one instruction.
+/// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number, a
+/// truth or an address by one instruction.
 fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) -> Reg {
     let kind? = operands(cx, l, r) else {
         return compared_beyond(cx, negated, l, r) ?? compared_held(cx, negated, l, r) ?? uncompared(

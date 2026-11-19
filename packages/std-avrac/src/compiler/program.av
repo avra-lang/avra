@@ -18,11 +18,8 @@ use core.{
     TypeId,
     flatten,
     ParseRefusal,
-    DeclId,
     FileId,
     joined,
-    is_user_kind,
-    user_kind,
     touch,
     qtrace,
     traced,
@@ -31,8 +28,8 @@ use core.{
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use compiler.lower.{Unit}
-use diagnostics.{no_voices, Diag, DiagCode, has_errors, is_note, rendered_among, user_code}
-use features.{Decl, NameFacts, Wanted}
+use diagnostics.{no_voices, Diag, has_errors, is_note, rendered_among}
+use features.{Wanted}
 use @std.grammar.{
     Captured,
     RunOutcome,
@@ -298,23 +295,6 @@ impl Program {
         self.files[self.entry!.at]
     }
 
-    /// An annotation fn's signature, which IS its effect — `avra
-    /// explain @name`. Null when no declared fn wears the name. Asks
-    /// `file_doc_of` explicitly for an undocumented fn: this names ONE
-    /// declaration, the `avra docs <name>` shape `doc_of`'s fallback
-    /// once carried — `explain_doc` shares the same door.
-    fn explain_annotation(name: string) -> string? {
-        let decls = self.ws.decls
-        let decl? = decls.named_rows(name).find((d: Decl) -> decls.fn_name(d.id) != null) else {
-            return null
-        }
-        let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
-        let holes = [decls.types.name_of(pt) for pt in sig.params]
-        let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
-        let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file)
-        if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
-    }
-
     /// Every source file of the program, by path.
     fn source_paths() -> List<string> { [a.view.source.file for a in self.files] }
 
@@ -351,57 +331,6 @@ impl Program {
             .manifests
             .concat([self.ws.source(f.id) for f in self.ws.decls.all_files()])
         rendered_among(ds, sources)
-    }
-
-    /// The rows the PACKAGE kinds among `ds` render under — one per
-    /// diagnostic that wears one, its message the summary. A kind
-    /// spoken is registered by being spoken; `kind_rows` is the
-    /// registry `avra docs` walks without a diagnostic in hand.
-    fn spoken_codes(ds: List<Diag>) -> List<DiagCode> {
-        [user_code(d.kind, d.message) for d in ds if is_user_kind(d.kind)]
-    }
-
-    /// THE PACKAGE KINDS `avra docs @scope/name:E1` answers from:
-    /// every `refuse_as("E1", "…")` with a literal kind in the
-    /// annotation fns the workspace holds (the complete walk — a
-    /// dependency's fns are where a package's kinds are spelled, and
-    /// `files` is the root's alone), and every kind an annotation in
-    /// this program SPOKE, which is how a kind computed at run time
-    /// registers.
-    fn kind_rows() -> List<DiagCode> {
-        let spoken = self
-            .spoken_codes(flatten([a.diagnostics for a in self.files]).concat(self.voices))
-        distinct_codes(
-            spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.all_files()])),
-        )
-    }
-
-    fn kind_rows_of(f: FileId) -> List<DiagCode> {
-        let decls = self.ws.decls
-        let names = self.ws.resolved(f)
-        flatten(
-            [self.kind_rows_in(names, d) for d in decls.decls_of_file(f) if decls.decl(d).root != null],
-        )
-    }
-
-    /// The kinds one declaration's body spells, hidden branches
-    /// included: every call bound to `@std/meta`'s kinded constructors
-    /// with a literal kind.
-    fn kind_rows_in(names: NameFacts, d: DeclId) -> List<DiagCode> {
-        let decls = self.ws.decls
-        let x = decls.decl(d)
-        let package = decls.package_of(d)
-        let store = decls.store(d)
-        mut rows: List<DiagCode> = []
-        for e in store.every_expr(x.root!) {
-            let spoken: Kinded? = decls.kinded_call(names, store, e)
-            if spoken != null {
-                let k = spoken!
-                let kind: string? = user_kind(package, k.kind)
-                if kind != null { rows.push(user_code(kind!, k.message ?? "spoken by `@${x.name}`")) }
-            }
-        }
-        rows
     }
 
     /// The program as IR, memory strategy applied — every unit

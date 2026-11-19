@@ -530,6 +530,8 @@ export enum Seating {
     Method(owner: string, name: string, at: int)
     /// The field `name` of a record literal.
     Field(name: string)
+    /// A setting's value that names the event `event`, which holds the event's handler.
+    Heard(event: string)
     /// A payload of the variant `variant` of the enum `owner`.
     Payload(owner: string, variant: string)
     /// The value a `let` or a `const` named `name` declares a type for.
@@ -4246,15 +4248,18 @@ export fn compares_by_value(cx: Checking, t: SignedType) -> bool {
 }
 
 /// Whether a value of `ty` makes a key (`@std/meta`'s `Key`): it compares by value, is never absent,
-/// and holds no fraction and no bytes.
+/// and holds no fraction, no bytes and no address — a key outlives the run, and an address doesn't.
 export fn makes_key(cx: Checking, ty: SignedType) -> bool {
     let shape = unnamed_shape(cx, ty)
-    if ty.nullable() || shape.owns(OwnType.Float) || shape.owns(OwnType.Bytes) { return false }
+    if ty.nullable() ||
+        shape.owns(OwnType.Float) ||
+        shape.owns(OwnType.Bytes) ||
+        shape.owns(OwnType.Ptr) { return false }
     compares_by_value(cx, ty)
 }
 
-/// The types of the language's own that compare by value.
-const COMPARED: List<string> = ["int", "float", "bool", "string", "Bytes"]
+/// The types of the language's own that compare by value: a `ptr` by its address, which is its value.
+const COMPARED: List<string> = ["int", "float", "bool", "string", "Bytes", "ptr"]
 
 /// Whether `ty` names an enum whose variants carry nothing.
 fn unit_enum(cx: Checking, ty: SignedType) -> bool {

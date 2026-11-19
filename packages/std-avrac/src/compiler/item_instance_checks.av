@@ -7,7 +7,7 @@ use core.{ExprId, Seating, StmtId, SyntaxArena, TaskChecks, flatten, name_read, 
 use compiler.backend.{run_lifted}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.{Unsettled, budgets_of, new_meta_heap}
+use features.{Unsettled, new_meta_heap}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -28,8 +28,19 @@ type ItemChecked = { rows: List<InstanceSaid> }
 /// every body the item holds — its fns', its defaults' and consts', a declared instance's own, and the statements it runs where
 /// it runs where its file is an entry (the entry read only by an item that runs one). An instance is judged only where it settles alone (`settles_alone`); an item
 /// that writes no instance reads nothing more.
-@query
 fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
+    if !item_held(engine, file, at) { return instances_checked_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.instances_checked.get() else {
+        let made = instances_checked_made(engine, file, at)
+        view.instances_checked.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_instances_checked` answers, made.
+fn instances_checked_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
     if !item_held(engine, file, at) { return ItemChecked { rows: [] } }
     let item = read_item(engine, file, at)
     if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
@@ -104,7 +115,7 @@ fn instance_checked(engine: QueryEngine, file: SourceFileAddress, j: Judged, e: 
         symbol,
         [],
         new_meta_heap(),
-        budgets_of(),
+        lifted_budgets(engine, file.package_name),
         (n: string) -> named_lifted(engine, file, n),
         late: late_door(survey, TaskChecks.Surveyed),
     ) {

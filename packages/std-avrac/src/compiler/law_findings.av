@@ -83,30 +83,33 @@ export type ItemFindings = { findings: List<LawFinding> }
 @query
 export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFindings {
     let view = if item_held(engine, file, at) { item_view(engine, file, at) } else { null }
-    ItemFindings {
-        findings: sorted_by(
-            [LawFinding {
-                by: l.name,
-                at: kept_at(s.at),
-                args: s.args,
-                aside: kept_aside(s.aside),
-                kind: s.kind,
-                named: kept_at(s.named),
-                fixes: [FixAt {
-                    description: x.description,
-                    at: kept_at(x.at),
-                    replacement: x.replacement,
-                    sure: x.sure,
-                    item: x.item,
-                    guess: x.guess,
-                } for x in s.fixes],
-                local: s.local,
-                item: s.item,
-                unread: kept_unread(s.unread),
-            } for l in held_laws() for s in law_found(engine, file, at, view, l)],
-            stands_before,
-        ),
-    }
+    pinned_while(
+        view,
+        () -> ItemFindings {
+            findings: sorted_by(
+                [LawFinding {
+                    by: l.name,
+                    at: kept_at(s.at),
+                    args: s.args,
+                    aside: kept_aside(s.aside),
+                    kind: s.kind,
+                    named: kept_at(s.named),
+                    fixes: [FixAt {
+                        description: x.description,
+                        at: kept_at(x.at),
+                        replacement: x.replacement,
+                        sure: x.sure,
+                        item: x.item,
+                        guess: x.guess,
+                    } for x in s.fixes],
+                    local: s.local,
+                    item: s.item,
+                    unread: kept_unread(s.unread),
+                } for l in held_laws() for s in law_found(engine, file, at, view, l)],
+                stands_before,
+            ),
+        },
+    )
 }
 
 /// What the law `l` finds in the item `at` of `file`: where it judges kinds of node, at each node of
@@ -306,3 +309,10 @@ collect listed_law_facts: List<ListedQuery> = @query_definition in self as Liste
 
 /// The queries the laws are read through, for a process to hand its engine.
 export fn law_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_law_facts) }
+
+/// Whether a law among `laws`, by name, finds anything in a written item of `file`: what its items'
+/// findings say, read once an item.
+export fn file_found_by(engine: QueryEngine, file: SourceFileAddress, laws: List<string>) -> bool {
+    (0..item_count(engine, file))
+        .any((at: int) -> law_findings(engine, file, at).findings.any((f) -> laws.contains(f.by)))
+}

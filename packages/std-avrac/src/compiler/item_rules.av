@@ -357,13 +357,26 @@ fn kept_loc(p: KeptPlace, path: string) -> Loc { Loc { file: path, lo: p.lo, hi:
 /// typing found them; an item whose parse refused holds no finding.
 @query
 export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFileAddress, at: int) -> ItemFound {
+    let facts? = item_rule_file(engine, program, file, at) else { return ItemFound { found: [] } }
+    let store = facts.view.store
+    found_kept(
+        placed_fact_findings(
+            facts,
+            [s for s in read_item(engine, file, at).stmts if store.is_declaration(s)],
+        ),
+    )
+}
+
+/// What a fact rule reads of the item `at` of `file`: its tree, and its bodies as typing found them;
+/// absent for an item whose parse refused.
+export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileAddress, at: int) -> RuleFile? {
     let item = read_item(engine, file, at)
-    if !item.store.refusals().is_empty() { return ItemFound { found: [] } }
+    if !item.store.refusals().is_empty() { return null }
     let stated = item_stated_bodies(engine, file, at, item)
     let bodies = [b.typed.types for b in stated]
     let reach = bodies.map(it.length).fold(0, (a, b) -> if a > b { a } else { b })
     let src = new_source_file(rule_named(file), item_under(engine, file, at).text)
-    let facts = RuleFile {
+    RuleFile {
         view: SyntaxView { store: item.store, source: src },
         facts: RuleFacts
             .Typed(
@@ -382,7 +395,6 @@ export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFile
                 },
             ),
     }
-    found_kept(placed_fact_findings(facts, [s for s in item.stmts if item.store.is_declaration(s)]))
 }
 
 /// Each fn a declaration of a file names in `@cycled_by` or `@scoped_by`.
@@ -500,20 +512,25 @@ export fn program_reads(engine: QueryEngine, package: string) -> DeclKeys {
     }
 }
 
-/// What the program `package` reads, as a set, made once a process for each program.
+/// What the program `package` reads, as a set, made once a process for each program its reads say.
 fn read_set(engine: QueryEngine, package: string) -> Map<string, bool> {
     let keys = program_reads(engine, package).keys
+    let said = keys.join("\n")
     let held = read_sets().get().get(package)
-    if held != null { return held! }
+    if held?.said == said { return held!.set }
     mut set: Map<string, bool> = {}
     for k in keys { set.set(k, true) }
-    read_sets().put(package, set)
+    read_sets().put(package, KeptReads { said: said, set: set })
     set
 }
 
-/// Each program's reads as a set, by its package, once a process: one check reads one program.
-once fn read_sets() -> Cell<Map<string, Map<string, bool>>> {
-    let none: Map<string, Map<string, bool>> = {}
+/// A program's reads, spelled one a line, and the same as a set.
+type KeptReads = { said: string, set: Map<string, bool> }
+
+/// Each program's reads as a set, by its package, once a process: a package another program of
+/// that name reads otherwise is made again.
+once fn read_sets() -> Cell<Map<string, KeptReads>> {
+    let none: Map<string, KeptReads> = {}
     Cell.new(none)
 }
 

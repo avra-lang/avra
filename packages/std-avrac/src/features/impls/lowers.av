@@ -4,6 +4,8 @@
 //! first seat; one on a named type is its shape's. A call through a type builds the variant it names, or calls the type's static fn. Any
 //! other method call isn't lowered yet, and says what it is.
 use core.{
+    Declined,
+    DynDecline,
     CalledFn,
     ExprId,
     Layout,
@@ -275,6 +277,7 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
     let seats? = (if member.plain { read_seats(cx, m, null) } else { member_seated(cx, m, member) }) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
     let code = cx.dyn_code(seats[0], at)
+    cx.declined(e, Declined.Dyn(DynDecline.TargetsUnknown))
     let answered = cx.called_code(cx.layout_at(e), code, value, seats.drop(1), subject)
     cx.dyn_marked(answered, subject, at)
     answered
@@ -300,6 +303,7 @@ fn dyn_written(
         how != null -> cx.opened_written(m.subject, how!)
         _ -> cx.call_row(cx.laid_out(subject), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
     }
+    cx.declined(e, Declined.Dyn(DynDecline.TargetsUnknown))
     let answered = cx.called_code(cx.layout_at(e), cx.dyn_code(box, at), box, args, subject)
     cx.dyn_marked(answered, subject, at)
     answered

@@ -186,6 +186,50 @@ let ticking = spawn nightly.run()
 - Owed: `take`'s walk of the free index steps over delayed rows not yet due (one per take,
   each), a cost to row in ZERO_COST before a queue holds many long delays.
 
+Jobs and operating a queue (Q6):
+
+```avra
+use @std.queue.job.{job}
+
+job resize {
+    name: "resize"
+    durable: stored<Upload>()
+    letter: stored_dead<Upload>()     // its own letter, `resize/dead`
+    retries: 3
+    in_tx: true
+    each: thumbnails
+}
+let _ = resize.send(upload, id: "resize-${upload.id}")?
+let serving = spawn resize.run()
+
+server app { group "/admin/queues" { queue_admin(ctx.db, operator) } }
+```
+
+- `job<T, R, E>` (`packages/std-queue/src/job.av`) declares one `queue` and one `worker` from its own
+  settings, made at first use and shared by every copy; it holds none of their logic. Every queue and
+  worker term and event passes through; `send`, `run`, `drain`, `stop`, `depth`, `inbox()`, `crew()`
+  and `letters()` are theirs. Its `check` runs the law fns the queue's and the worker's run
+  (`queue_laws`, `worker_laws`), and its own: a durable job's letter is durable (`letter:` or
+  `buries_in:`), one of them, not both. The program's letter is `buries_in:`, not `dead:`: a job always
+  has a fate (its own letter by default), and `flow.no_fate` reads a field named `dead`.
+- `run(resize)` is `resize.run()`, as a schedule's is: there is no overloading.
+- Every home records its terms and item shape when it opens (`FlowTerms`), and a letter's descriptor
+  holds its item's and its error's. A database describes its own queues with no program.
+- `@std.queue_store.operate`: `queues`, `queue_named`, `letters`, `peek` (items as JSON records, each
+  read through the descriptor of the shape its row was written under, so another build's rows read
+  too; a nested type is not followed and reads as none), `retry` (a live item due now; a letter's item
+  back to the queue it was buried out of, as a fresh item) and `discard` (the item and its name). A
+  live lease wins over both. Reads write nothing.
+- `@std.queue_store.admin.queue_admin(db, allowed, clock)`: those verbs as routes, JSON out, each a 403
+  to a request `allowed` refuses; nothing serves until a program mounts it. `@std/crud` does not fit:
+  its doors are row edits, and these are laws (a lease check, a move across queues, a name freed).
+- The two-process witness is `tools/queue-witness` (`avra run tools/queue-witness`, about a
+  second): a sender and two `in_tx` workers over one file handle 40 items once each, and a worker
+  stopped after its take, inside its handler and after its ack leaves the item to its lease, its
+  handler's write undone, or nothing. It runs as its own binary, so it is no suite program.
+- Owed: `avra explain flow` and `avra queue peek` (the CLI; the std API they read is `queues` and
+  `peek`), and a CI target that runs the witness.
+
 ## 2. What it promises
 
 | Promise | How it is kept |
@@ -213,7 +257,7 @@ on redelivery unless the provider dedupes by key (CHANNELS §7.2, a language ask
 | Waking | `@std/task`: a send in this process rings the queue's gate; another process polls every `min(patience, 250 ms)` |
 | Time | `@std/time`: `Duration`, `now()`, `every`; `cron` is new there |
 | Workers | `@std/task` tasks, `at_once` of them, cancelled as a scope |
-| Operating it | `@std/crud` over `FlowItem` gives the admin router: list, peek, retry, discard |
+| Operating it | `@std.queue_store.operate` and its routes (`admin`): list, peek, retry, discard |
 | Reading it | `avra explain flow` prints each queue's home, terms, depth and who reads it |
 
 Packages:
@@ -322,7 +366,7 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 | Q3 | BUILT: `run` (`at_once`, a lease deadline per handler, backoff ×2 to a cap, `stop()`), a home that waits (a bell in this process, a bounded poll across processes), `durable:` over `ctx db`, a coded item's wire derived (`@codec` writes `impl Storable`), a newer writer's item let go for a newer reader | a long-lived worker; the showcase program. Owed: the two-process witness |
 | Q4 | BUILT and red-teamed: a send that joins the caller's transaction (`tx:`), a worker's `in_tx:`, a dead letter that is a queue and outlives the process | exactly once for store writes; 19 new store cases, 2 programs |
 | Q5 | BUILT and red-teamed (fuzzed cron text found one trap, fixed): `after:` on both homes, `cron`/`hours` in `@std/time`, `schedule` with `at:`/`every:` | delayed and recurring work; 14 shared delay laws over both homes, 5 store delay cases, 35 cron cases with a minute-walk oracle and 400 fuzzed lines, 20 schedule cases |
-| Q6 | `job`, the admin router, `explain flow` | the one-declaration job; operating it |
+| Q6 | BUILT and red-teamed: `job` over `queue` and `worker`; terms and shapes kept per queue; `operate` (list, peek as records by each row's own shape, retry, discard) and the admin routes; the two-process witness. `explain flow` waits on the CLI | the one-declaration job; operating a queue with no program; 16 job cases, 4 durable job cases, 14 operating cases, 12 route cases, 1 program, the witness |
 
 ### 8a. What the probes found (batch-51 compiler, 2026-11-18)
 

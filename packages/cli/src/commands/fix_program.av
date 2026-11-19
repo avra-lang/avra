@@ -6,29 +6,7 @@
 //! edited program is refused nothing. Under `--repair`, each error's certain suggestion is tried
 //! instead, accepted where it leaves fewer errors and none new.
 use @std.cli.{CliResult}
-use @std.avrac.compiler.{
-    Application,
-    FileCode,
-    ProgramFile,
-    avra_fact_definitions,
-    edits_provable,
-    file_code,
-    file_law_diags,
-    file_rule_rows,
-    fix_considers,
-    fix_errors,
-    fix_repairs,
-    fix_store,
-    program_erring,
-    rule_kind,
-    rule_law,
-    rule_rewrite,
-    same_code,
-    said_diag,
-}
-use @std.avrac.core.{SyntaxArena, flatten}
-use @std.avrac.diagnostics.{Diag, is_error, spliced}
-use @std.errors.{Edit, Suggestion}
+use @std.avrac.compiler.{avra_fact_definitions, fixing, program_erring}
 use @std.path.{joined_path}
 use @std.program.layered_store.{program_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
@@ -55,13 +33,14 @@ fn program_fixed(args: CliResult) -> int {
     let text = text_at(h.full) ?? ""
     let named = args.option("only")
     let only = if named == "" { null } else { named }
-    let at = Fixing {
-        disk: disk,
-        engine: engine,
-        h: h,
-        text: text,
-        store: fix_store(engine, h.file),
-    }
+    let at = fixing(
+        engine,
+        h,
+        disk.name,
+        text,
+        (edited) -> disk.laid_over(h.full, edited),
+        () -> disk.entered(),
+    )
     let diags = [d for d in at.diags() if only == null || d.kind == only!]
     let apps = if repair { at.repairs(diags) } else { at.proved(diags) }
     disk.entered()
@@ -74,79 +53,13 @@ fn program_fixed(args: CliResult) -> int {
     }
 }
 
-/// The file a fix stands over: its program's disk and engine, the file, its text, and its text
-/// parsed whole.
-type Fixing = { disk: Disk, engine: QueryEngine, h: ProgramFile, text: string, store: SyntaxArena }
-
-impl Fixing {
-    /// What the file says: its laws' diagnostics, then its rules', a rule's suggestions as its rewrites.
-    fn diags() -> List<Diag> {
-        file_law_diags(self.engine, self.h)
-            .concat(
-                [said_diag(k, self.h.full) for k in file_rule_rows(self.engine, self.disk.name, self.h.file).said],
-            )
-            .map((d) -> if rule_kind(d.kind) { self.rewritten(d) } else { d })
-    }
-
-    /// A rule's diagnostic, each edit of its suggestions as `avra fix` splices a rule's rewrite.
-    fn rewritten(d: Diag) -> Diag {
-        d with { suggestions: [sg with { edits: [rule_rewrite(self.text, e) for e in sg.edits] } for sg in d.suggestions] }
-    }
-
-    /// Each suggestion of `diags` fix considers, proved or accepted by its rule's law, or only shown.
-    fn proved(diags: List<Diag>) -> List<Application> {
-        let before = self.code(self.engine)
-        flatten(
-            [[self.proved_one(before, d.kind, sg) for sg in d.suggestions if fix_considers(self.store, sg)] for d in diags],
-        )
-    }
-
-    fn proved_one(before: FileCode?, kind: string, sg: Suggestion) -> Application {
-        let provable = edits_provable(self.engine, self.h.file, sg.edits)
-        let after = self.after(sg.edits)
-        let proved = provable && after != null && same_code(before, self.code(after!))
-        let law = rule_law(kind)
-        let by_law = if proved || law == null || after == null { null } else { if program_erring(after!, self.disk.name).is_empty() { law } else { null } }
-        self.disk.entered()
-        Application { kind: kind, edits: sg.edits, proved: proved, by_law: by_law }
-    }
-
-    /// Each certain suggestion of an error among `diags`, accepted where it clears the error.
-    fn repairs(diags: List<Diag>) -> List<Application> {
-        let was = fix_errors(diags)
-        flatten(
-            [[Application {
-                kind: d.kind,
-                edits: sg.edits,
-                proved: false,
-                by_law: null,
-                repaired: self.clears(was, sg.edits),
-            } for sg in d.suggestions if fix_repairs(self.store, sg)] for d in diags if is_error(d)],
-        )
-    }
-
-    /// Whether `edits` leave the program erring nowhere, or its file with fewer of the errors `was`
-    /// lists and none it didn't.
-    fn clears(was: List<string>, edits: List<Edit>) -> bool {
-        let after? = self.after(edits) else { return false }
-        let now = fix_errors(file_law_diags(after, self.h))
-        let clear = program_erring(after, self.disk.name).is_empty()
-        self.disk.entered()
-        if clear { return true }
-        now.length < was.length && now.all((e) -> was.contains(e))
-    }
-
-    /// The code the file lowers to under `engine`.
-    fn code(engine: QueryEngine) -> FileCode? { file_code(engine, self.h.file) }
-
-    /// An engine over the program with `edits` spliced into the file, its world entered; absent where
-    /// one reaches outside the file or two overlap. It keeps nothing: the store is read, never saved.
-    fn after(edits: List<Edit>) -> QueryEngine? {
-        if edits.is_empty() || edits.any(it.loc.file != null && it.loc.file! != self.h.full) { return null }
-        let text? = spliced(self.text, edits) else { return null }
+impl Disk {
+    /// An engine over the program with `text` laid over the file at `full`, its world entered. It
+    /// keeps nothing: the store is read, never saved.
+    fn laid_over(full: string, text: string) -> QueryEngine {
         mut over: Map<string, string> = {}
-        over.set(self.h.full, text)
-        let disk = self.disk with { over: over }
+        over.set(full, text)
+        let disk = self with { over: over }
         disk.entered()
         query_engine(
             program_store_at(joined_path(disk.root, ".avra-cache/tapes")),

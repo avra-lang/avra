@@ -56,8 +56,19 @@ type TypeScope = {
 
 /// Every type name a statement of the written item `at` of `file` writes in its signature that names
 /// no type, statement by statement.
-@query
 fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
+    if !item_held(engine, file, at) { return unknown_types_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.unknown_types.get() else {
+        let made = unknown_types_made(engine, file, at)
+        view.unknown_types.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_unknown_types` answers, made.
+fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
     if !item_held(engine, file, at) { return ItemUnnamed { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUnnamed { rows: [] } }

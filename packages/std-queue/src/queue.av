@@ -90,7 +90,7 @@ fn drops(o: Overflow) -> bool {
 }
 
 /// An overflow policy as the word a refusal names it by.
-fn overflow_word(o: Overflow) -> string {
+export fn overflow_word(o: Overflow) -> string {
     match o {
         .park -> "park",
         .latest -> "latest",
@@ -98,6 +98,11 @@ fn overflow_word(o: Overflow) -> string {
         .drop_newest -> "drop_newest",
         .fail -> "fail",
     }
+}
+
+/// An order as the word its declaration spells it by.
+export fn order_word(o: Order) -> string {
+    match o { .fifo -> "fifo", .by_key -> "by_key" }
 }
 
 /// The terms a home is opened under, or the refusal of ones that hold
@@ -1082,6 +1087,30 @@ impl Memory<T> {
 /// keeps: an item is acked, buried, or held, never dropped.
 export enum Guarantee { at_most_once, at_least_once, exactly_once }
 
+/// The terms a queue's declaration, and a job's, take when it names
+/// none.
+const default_capacity: int = 1000
+
+const default_lease: Duration = secs(30)
+
+const default_delivery: Guarantee = Guarantee.at_least_once
+
+const default_retries: int = 3
+
+const default_backoff: Duration = secs(5)
+
+const default_backoff_cap: Duration = mins(5)
+
+const default_overflow: Overflow = Overflow.park
+
+const default_order: Order = Order.fifo
+
+const default_dedupe: Duration = mins(1440)
+
+/// How many handlers a worker's declaration, and a job's, runs at once
+/// when it names no number.
+const default_at_once: int = 1
+
 /// A queue's declaration: the terms an instance states and the events
 /// its loop emits. `homed:` is the home it stands on, memory when none
 /// is named. `durable:` stands it on a home that outlives the process,
@@ -1094,17 +1123,17 @@ export enum Guarantee { at_most_once, at_least_once, exactly_once }
 /// its own.
 export component queue<T> {
     name: string = ""
-    capacity: int = 1000
-    lease: Duration = secs(30)
-    delivery: Guarantee = Guarantee.at_least_once
-    retries: int = 3
-    backoff: Duration = secs(5)
-    backoff_cap: Duration = mins(5)
-    overflow: Overflow = Overflow.park
-    order: Order = Order.fifo
+    capacity: int = default_capacity
+    lease: Duration = default_lease
+    delivery: Guarantee = default_delivery
+    retries: int = default_retries
+    backoff: Duration = default_backoff
+    backoff_cap: Duration = default_backoff_cap
+    overflow: Overflow = default_overflow
+    order: Order = default_order
     homed: Home<T>? = null
     durable: Durable<T>? = null
-    dedupe: Duration = mins(1440)
+    dedupe: Duration = default_dedupe
     state opened: Cell<Queue<T>?> = Cell.new(null)
     state lasting: Cell<Lasting<T>?> = Cell.new(null)
     on took(d: Delivery<T>)
@@ -1118,26 +1147,15 @@ export component queue<T> {
     /// wire is refused by the typer, the instance by this `check`, and
     /// the cross-cutting shape by a `rule`.
     fn check() -> List<Diagnostic> {
-        mut said: List<Diagnostic> = []
-        if self.capacity < 1 { said.push(refuse(holds_none(self.capacity))) }
-        if self.retries < 0 {
-            said
-                .push(
-                    refuse(
-                        "a queue attempts an item at least never, and this attempts ${self.retries}",
-                    ),
-                )
-        }
-        if self.durable != null && self.name == "" { said.push(refuse(unnamed())) }
-        if drops(self.overflow) && self.delivery == Guarantee.exactly_once {
-            said
-                .push(
-                    refuse(
-                        "a queue that drops on overflow cannot promise exactly once, and this drops with `overflow: ${overflow_word(self.overflow)}`",
-                    ),
-                )
-        }
-        said
+        queue_laws(
+            QueueLaws {
+                capacity: self.capacity,
+                retries: self.retries,
+                unnamed_durable: self.durable != null && self.name == "",
+                overflow: self.overflow,
+                delivery: self.delivery,
+            },
+        )
     }
     /// The queue as its home answers it, opened at the first use. A
     /// durable home that could not be opened is asked again at the next.
@@ -1228,32 +1246,22 @@ export component worker<T, R, E> {
     reads: queue<T>?
     each: fn(Delivery<T>) -> Result<R, E>
     dead: queue<Dead<T, E>>? = null
-    at_once: int = 1
+    at_once: int = default_at_once
     in_tx: bool = false
     state halt: Channel<bool> = open_channel<bool>(1)
     on failed(d: Delivery<T>, e: E)
     on buried(dead: Dead<T, E>)
     /// The value laws of a worker, over the settings one instance states.
     fn check() -> List<Diagnostic> {
-        mut said: List<Diagnostic> = []
-        if self.reads?.delivery == Guarantee.exactly_once && self.dead == null {
-            said
-                .push(
-                    refuse(
-                        "a worker whose queue delivers exactly once names a `dead:` letter, and this names none",
-                    ),
-                )
-        }
-        if self.at_once < 1 { said.push(refuse(runs_none(self.at_once))) }
-        if drops(self.dead?.overflow ?? Overflow.park) {
-            said
-                .push(
-                    refuse(
-                        letter_dropping(self.dead?.name ?? "", self.dead?.overflow ?? Overflow.park),
-                    ),
-                )
-        }
-        said
+        worker_laws(
+            WorkerLaws {
+                exactly_once: self.reads?.delivery == Guarantee.exactly_once,
+                lettered: self.dead != null,
+                at_once: self.at_once,
+                letter: self.dead?.name ?? "",
+                letter_overflow: self.dead?.overflow ?? Overflow.park,
+            },
+        )
     }
     /// Ask the worker's `run` to end: the one standing, or the next to
     /// start. It takes nothing more, lets its handlers finish inside
@@ -1261,6 +1269,45 @@ export component worker<T, R, E> {
     fn stop() {
         let _ = self.halt.sink.post(true)
     }
+}
+
+/// The settings a queue's value laws read.
+type QueueLaws = {
+    capacity: int,
+    retries: int,
+    unnamed_durable: bool,
+    overflow: Overflow,
+    delivery: Guarantee,
+}
+
+/// The value laws of a queue's settings, as every declaration of one
+/// states them.
+fn queue_laws(q: QueueLaws) -> List<Diagnostic> {
+    mut said: List<Diagnostic> = []
+    if q.capacity < 1 { said.push(refuse(holds_none(q.capacity))) }
+    if q.retries < 0 { said.push(refuse(attempts_none(q.retries))) }
+    if q.unnamed_durable { said.push(refuse(unnamed())) }
+    if drops(q.overflow) && q.delivery == Guarantee.exactly_once { said.push(refuse(promise_dropped(q.overflow))) }
+    said
+}
+
+/// The settings a worker's value laws read.
+type WorkerLaws = {
+    exactly_once: bool,
+    lettered: bool,
+    at_once: int,
+    letter: string,
+    letter_overflow: Overflow,
+}
+
+/// The value laws of a worker's settings, as every declaration of one
+/// states them.
+fn worker_laws(w: WorkerLaws) -> List<Diagnostic> {
+    mut said: List<Diagnostic> = []
+    if w.exactly_once && !w.lettered { said.push(refuse(exactly_once_unlettered())) }
+    if w.at_once < 1 { said.push(refuse(runs_none(w.at_once))) }
+    if drops(w.letter_overflow) { said.push(refuse(letter_dropping(w.letter, w.letter_overflow))) }
+    said
 }
 
 /// Why a drain stopped short: its worker reads no queue, names no dead
@@ -1700,6 +1747,18 @@ fn no_transaction() -> string {
 
 fn letter_dropping(name: string, o: Overflow) -> string {
     "a letter never drops an item, and `${name}` overflows with `${overflow_word(o)}`"
+}
+
+fn attempts_none(retries: int) -> string {
+    "a queue attempts an item at least never, and this attempts ${retries}"
+}
+
+fn promise_dropped(o: Overflow) -> string {
+    "a queue that drops on overflow cannot promise exactly once, and this drops with `overflow: ${overflow_word(o)}`"
+}
+
+fn exactly_once_unlettered() -> string {
+    "a worker whose queue delivers exactly once names a `dead:` letter, and this names none"
 }
 
 fn unnamed() -> string {

@@ -72,8 +72,19 @@ fn same_kind(a: CopyKind, b: CopyKind) -> bool {
 /// first through each local, in node order; an item that declares no `mut` local typing nothing. An
 /// item among the statements its file runs adds what they make read as one body (`entry_copies`): a
 /// local one statement binds is written through by another.
-@query
 fn item_copies(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCopies {
+    if !item_held(engine, file, at) { return copies_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.copies.get() else {
+        let made = copies_made(engine, file, at)
+        view.copies.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_copies` answers, made.
+fn copies_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCopies {
     if !item_held(engine, file, at) { return ItemCopies { writes: [] } }
     let own = own_copies(engine, file, at)
     let across = [c.write for c in entry_copies(engine, file).found if c.item == at && !own.any(it.local == c.write.local && it.place == c.write.place)]

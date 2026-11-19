@@ -251,12 +251,21 @@ type ItemMisses = { rows: List<MissAt> }
 /// index.
 type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int, hi: int, file: SourceFileAddress, reader: string, entry: bool = false, text: string }
 
-/// Every miss in the written item `at` of `file`, in node order. An item that didn't parse misses
-/// nothing.
-@query
+/// Every miss in the written item `at` of `file`, in node order: the asker's view of them, made once.
+/// An item that didn't parse misses nothing.
 fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisses {
     if !item_held(engine, file, at) { return ItemMisses { rows: [] } }
-    let item = read_item(engine, file, at)
+    let view = item_view(engine, file, at)
+    let held? = view.misses.get() else {
+        let made = misses_made(engine, file, at, view.item)
+        view.misses.set(made)
+        return made
+    }
+    held
+}
+
+/// Every miss in the written item `at` of `file`, read back as `item`.
+fn misses_made(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> ItemMisses {
     if !item.store.refusals().is_empty() { return ItemMisses { rows: [] } }
     ItemMisses {
         rows: flatten([misses_in(engine, t) for t in item_typed_nodes(engine, file, at, item)]),

@@ -331,6 +331,7 @@ impl Lowering {
         self.lent = lent
         let x = self.stored_value(OwnVerb.Put, subject, value)
         self.lent = outer
+        if !lent.taken.get() { self.declined(read!, Declined.Probe(ProbeDecline.ReadRebound)) }
         if lent.taken.get() { self.map_written_at(map, k, probe, x) } else { self.map_written(map, k, x) }
         self.nothing()
     }
@@ -358,14 +359,22 @@ impl Lowering {
     /// a path of fields from a name the body binds, none a `state` field, and that name and a key
     /// that is a name are each named once under the value, by the read. Absent for any other value.
     fn own_read(subject: ExprId, key: ExprId, value: ExprId) -> ExprId? {
-        if self.place_root_reg(subject) == null { return null }
-        let root = rooted_name(self.store, subject)!
         let under = self.store.every_expr(value)
         let read? = under.find((e) -> self.reads_place_at(e, subject, key)) else { return null }
-        if named_under(self.store, under, root) != 1 { return null }
-        let k = self.store.ident_name(key)
-        if k != null && (self.key_reg(key) == null || named_under(self.store, under, k!) != 1) { return null }
-        read
+        let why = self.unlent(subject, key, under)
+        if why == null { return read }
+        self.declined(read, Declined.Probe(why!))
+        null
+    }
+
+    /// Why the read of the place `subject` under `key` the expressions `under` hold can't take the
+    /// write's probe; absent where nothing under the value can move either before the write.
+    fn unlent(subject: ExprId, key: ExprId, under: List<ExprId>) -> ProbeDecline? {
+        if self.place_root_reg(subject) == null { return ProbeDecline.PlaceShared }
+        if named_under(self.store, under, rooted_name(self.store, subject)!) != 1 { return ProbeDecline.RootNamedAgain }
+        let k? = self.store.ident_name(key) else { return null }
+        if self.key_reg(key) == null { return ProbeDecline.PlaceShared }
+        if named_under(self.store, under, k) != 1 { ProbeDecline.KeyNamedAgain } else { null }
     }
 
     /// Whether `e` is `get` of the place `subject` under `key`, spelled alike.

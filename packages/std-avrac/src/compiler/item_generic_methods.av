@@ -19,8 +19,19 @@ type GenericMethodAt = { at: FindingAt?, name: string }
 type ItemGenericMethods = { rows: List<GenericMethodAt> }
 
 /// Every method the impls of the written item `at` of `file` write with type parameters of its own.
-@query
 fn item_generic_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemGenericMethods {
+    if !item_held(engine, file, at) { return generic_methods_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.generic_methods.get() else {
+        let made = generic_methods_made(engine, file, at)
+        view.generic_methods.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_generic_methods` answers, made.
+fn generic_methods_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemGenericMethods {
     if !item_held(engine, file, at) { return ItemGenericMethods { rows: [] } }
     let item = read_item(engine, file, at)
     ItemGenericMethods { rows: flatten([generic_methods(item.store, s) for s in item.stmts]) }
@@ -35,7 +46,7 @@ fn generic_methods(store: SyntaxArena, s: StmtId) -> List<GenericMethodAt> {
 
 /// Whether a written item of `file` holds a generic method: a build that reaches the file fails on it.
 export fn writes_generic_methods(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    (0..item_count(engine, file)).any(!item_generic_methods(engine, file, it).rows.is_empty())
+    file_found_by(engine, file, ["generic_method"])
 }
 
 /// Each generic method the written item `at` of `file` writes: its name.

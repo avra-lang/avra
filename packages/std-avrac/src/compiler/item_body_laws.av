@@ -213,8 +213,19 @@ type Deferral = { stmt: StmtId, body: ExprId, errs: bool }
 
 /// Every breach in the written item `at` of `file`, in node order. An item that didn't parse breaks
 /// nothing.
-@query
 fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBreaches {
+    if !item_held(engine, file, at) { return breaches_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.breaches.get() else {
+        let made = breaches_made(engine, file, at)
+        view.breaches.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_breaches` answers, made.
+fn breaches_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBreaches {
     if !item_held(engine, file, at) { return ItemBreaches { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemBreaches { rows: [] } }

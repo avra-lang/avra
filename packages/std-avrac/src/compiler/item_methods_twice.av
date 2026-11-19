@@ -35,8 +35,19 @@ type Owned = { key: string, name: string, generic: bool, stmt: StmtId }
 
 /// Every method the written item `at` of `file` declares whose name an earlier one of its type
 /// already took.
-@query
 fn item_methods_taken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
+    if !item_held(engine, file, at) { return methods_taken_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.methods_taken.get() else {
+        let made = methods_taken_made(engine, file, at)
+        view.methods_taken.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_methods_taken` answers, made.
+fn methods_taken_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
     if !item_held(engine, file, at) { return ItemTaken { rows: [] } }
     let item = read_item(engine, file, at)
     let blocks = [s for s in item.stmts if item.store.impl_parts(s) != null]
@@ -99,7 +110,7 @@ fn declared_before(a: ImplAt, file: SourceFileAddress, at: int) -> bool {
 /// Whether a written item of `file` declares a method whose name its type already took: a build that
 /// reaches the file fails on it.
 export fn takes_method_names(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    (0..item_count(engine, file)).any(!item_methods_taken(engine, file, it).rows.is_empty())
+    file_found_by(engine, file, ["method_declared_twice", "member_named_as_method"])
 }
 
 /// Every method of the written item `at` of `file` declared where its name is already taken.

@@ -1,11 +1,17 @@
 // The annotation boundary: its callee, receiver, remaining seats,
 // answer effect, execution, and one-message discipline.
-use @std.avrac.testing.old_path.{refused_in, refused_n, said, test_workspace}
-use @std.avrac.compiler.{parse_source, analyze_source, Program, Workspace}
-use @std.avrac.testing.{refused_with, refusals, vendored_meta, vendored_meta_paths}
-use compiler.host.{memory_host}
-use compiler.format.{render_source}
-use compiler.{rule_findings, analysed}
+use @std.avrac.testing.{
+    refused_in,
+    refused_n,
+    said,
+    refused_with,
+    refusals,
+    vendored_meta,
+    held_at,
+    held_alone,
+    Held,
+    Judged,
+}
 
 fn meta_use() -> string {
     "use @std.meta.{Fn, Type, Diagnostic}\n"
@@ -55,27 +61,21 @@ fn spanned_consumer() -> string {
 /// A source through the printer — the parse read back, so a mark's
 /// ALIGNMENT is visible as the member it came out attached to.
 fn formatted(source: string) -> string {
-    let a = analyze_source(source)
-    render_source(a.view.store, a.view.stmts)
+    match held_alone(source).formatted_at("/alone/src/main.av") { .Ok(t) -> t, .Err(why) -> why }
 }
 
-fn packaged(source: string) -> Program {
-    let files = vendored_meta(
-        {
-            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
-            "/w/src/main.av": source,
-            "/w/vendor/meta/src/probes.av": meta_probes(),
-        },
-    )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/src/probes.av"]
-                .concat(vendored_meta_paths()),
+fn packaged(source: string) -> Judged {
+    held_at(
+        vendored_meta(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+                "/w/src/main.av": source,
+                "/w/vendor/meta/src/probes.av": meta_probes(),
+            },
         ),
         "/w",
     )
-    ws.program("/w/src/main.av")
+        .judged_at("/w/src/main.av")
 }
 
 /// An annotation package of its own, refusing under its OWN kind.
@@ -83,35 +83,22 @@ fn audit_source() -> string {
     "use @std.meta.{Fn, Diagnostic, refuse_as, refuse}\nexport fn audited(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"E1\", \"`\${f.name}` is audited\")]\n}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn quiet(f: Fn) -> List<Diagnostic> {\n    if f.name == \"never\" { [refuse_as(\"E2\", \"a quiet fn\")] } else { [] }\n}\nexport fn blank(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"\", \"`\${f.name}` is blank\")]\n}\nexport fn old(f: Fn) -> List<Diagnostic> {\n    [Diagnostic { message: \"`\${f.name}` is old\", help: null, at: null, warning: true, kind: \"W1\" }]\n}\n"
 }
 
-/// The workspace with a second dependency, `@acme/audit`.
-fn audit_workspace(source: string) -> Workspace {
-    let files = vendored_meta(
-        {
-            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/audit\" = { path = \"vendor/audit\" }\n",
-            "/w/src/main.av": source,
-            "/w/vendor/audit/avra.toml": "[package]\nname = \"@acme/audit\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-            "/w/vendor/audit/src/audit.av": audit_source(),
-        },
-    )
-    test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/audit/avra.toml",
-                "/w/vendor/audit/src/audit.av",
-            ]
-                .concat(vendored_meta_paths()),
+/// The package with a second dependency, `@acme/audit`.
+fn audit_held(source: string) -> Held {
+    held_at(
+        vendored_meta(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/audit\" = { path = \"vendor/audit\" }\n",
+                "/w/src/main.av": source,
+                "/w/vendor/audit/avra.toml": "[package]\nname = \"@acme/audit\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+                "/w/vendor/audit/src/audit.av": audit_source(),
+            },
         ),
         "/w",
     )
 }
 
-fn audited(source: string) -> Program {
-    let ws = audit_workspace(source)
-    ws.program("/w/src/main.av")
-}
+fn audited(source: string) -> Judged { audit_held(source).judged_at("/w/src/main.av") }
 
 fn audit_use() -> string {
     "use @acme.audit.{audited, plain, quiet, blank, old}\n"
@@ -128,8 +115,8 @@ fn refused_at(source: string, phrase: string, line: int) -> bool {
 
 /// A clean program's warnings, rendered; a refusal's report when it
 /// refused — the whole check, whichever side.
-fn checked(p: Program) -> string {
-    match p.check() { .Ok(warned) -> warned, .Err(report) -> report }
+fn checked(p: Judged) -> string {
+    match p.checked() { .Ok(warned) -> warned, .Err(report) -> report }
 }
 
 /// `refused`, with a pinned COUNT — a refusal test proves both the
@@ -217,13 +204,6 @@ spec "features/annotations — the compile-time call's laws" {
         }
     }
     given "declaration generation" {
-        then "an annotation fn's signature IS its effect — `explain @name`" {
-            let p = packaged(
-                directive_use() +
-                    "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
-            )
-            p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>\n\nThe trace directive's decoder: `@traced(\"label\")` on `fn sum`\nasks for a sibling named `sum_traced`."
-        }
         then "a declaration-making annotation fn in the same file is refused, not ignored" {
             refused_n(
                 packaged(
@@ -234,10 +214,6 @@ spec "features/annotations — the compile-time call's laws" {
                 "generates declarations and stands in this file",
                 1,
             )
-        }
-        then "an undeclared annotation name explains to nothing" {
-            let p = packaged(directive_use() + "1")
-            p.explain_annotation("ghost") == null
         }
         then "a declaration-making annotation reaches only literals" {
             refused_n(
@@ -352,15 +328,8 @@ spec "features/annotations — the compile-time call's laws" {
         }
         then "a generated declaration spanned in its template never owns this file's code" {
             let p = packaged(spanned_consumer())
-            let main = p.files.find(it.view.source.file == "/w/src/main.av")
-            match main {
-                a? -> {
-                    let findings = rule_findings(analysed(a), a.view.stmts)
-                    findings.all(it.kind != "fns.dead_parameter") &&
-                        match p.run() { .Ok(out) -> out == "17", .Err(_) -> false }
-                }
-                null -> false
-            }
+            p.findings().all(it.file != "/w/src/main.av" || it.rule != "fns.dead_parameter") &&
+                match p.run() { .Ok(out) -> out == "17", .Err(_) -> false }
         }
         then "a derive's generated TYPE resolves from a struct literal, not just a generated fn from a call" {
             let p = packaged(
@@ -659,18 +628,6 @@ spec "features/annotations — the compile-time call's laws" {
             )
             p.report().starts_with("error[app:E7]: `f` is bare\n")
         }
-        then "`explain` finds every kind the package's source spells, in a branch too, spoken or not — and misses one it does not" {
-            let p = audited(audit_use() + "fn f() -> int {\n    1\n}\nf()\n")
-            let rows = p.kind_rows()
-            let e1 = rows.find(it.kind == "@acme/audit:E1")
-            let e2 = rows.find(it.kind == "@acme/audit:E2")
-            p.clean() &&
-                e1 != null &&
-                e1!.summary == "spoken by `@audited`" &&
-                e2 != null &&
-                e2!.summary == "a quiet fn" &&
-                rows.find(it.kind == "@acme/audit:E9") == null
-        }
         then "a kind that is not a word is the annotation's mistake, spoken in place of its verdict" {
             let p = audited(audit_use() + "@blank\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
@@ -685,20 +642,6 @@ spec "features/annotations — the compile-time call's laws" {
                 diagnostics.length == 1 &&
                 diagnostics[0].kind == "@acme/audit:W1" &&
                 p.warnings().starts_with("warning[@acme/audit:W1]: `f` is old\n")
-        }
-        then "the registry reaches a dependency through the package's own entry, as `avra docs` does" {
-            mut ws = audit_workspace(audit_use() + "fn f() -> int {\n    1\n}\nf()\n")
-            let p = ws.program(ws.entry_of())
-            p.clean() && p.kind_rows().find(it.kind == "@acme/audit:E1") != null
-        }
-        then "a kind an annotation SPOKE is registered under its message" {
-            let p = audited(audit_use() + "@quiet\nfn never() -> int {\n    1\n}\nnever()\n")
-            let rows = p.kind_rows()
-            let e2 = rows.find(it.kind == "@acme/audit:E2")
-            !p.clean() &&
-                e2 != null &&
-                e2!.summary == "a quiet fn" &&
-                p.report().starts_with("error[@acme/audit:E2]: a quiet fn\n")
         }
     }
     given "a method's parameters" {

@@ -93,8 +93,19 @@ type ItemExterns = { rows: List<ExternFinding> }
 
 /// Every finding the extern laws make in the written item `at` of `file`: each `extern fn` it
 /// declares, and each host fn.
-@query
 fn item_externs(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemExterns {
+    if !item_held(engine, file, at) { return externs_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.externs.get() else {
+        let made = externs_made(engine, file, at)
+        view.externs.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_externs` answers, made.
+fn externs_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemExterns {
     if !item_held(engine, file, at) { return ItemExterns { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemExterns { rows: [] } }

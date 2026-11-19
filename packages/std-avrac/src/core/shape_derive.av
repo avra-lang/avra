@@ -230,7 +230,21 @@ fn tag_case(t: MetaType, v: MetaVariant) -> Arms {
 /// One variant's kids arm.
 fn kids_case(t: MetaType, v: MetaVariant) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> [] } }
+    let singles = [single_at(f) for f in v.fields if reached(f) && reach_shape(t, v, f) != null]
+    let ats = [c! for c in singles if c != null]
+    if !singles.is_empty() && ats.length == singles.length { return quote { .${v}(${binders(v)}) -> [${..ats}] } }
     quote { .${v}(${binders(v)}) -> ${concatenated(reach_parts(t, v))} }
+}
+
+/// The one `At` a payload holding a single id reaches; absent for any other payload. A node whose
+/// every walked payload is one names its kids in one list, never a list per payload joined.
+fn single_at(f: Field) -> Code? {
+    match f.kind.spelled() {
+        "ExprId" -> quote { At.Expr(${name(f.name)}) },
+        "StmtId" -> quote { At.Stmt(${name(f.name)}) },
+        "PatId" -> quote { At.Pat(${name(f.name)}) },
+        _ -> null,
+    }
 }
 
 /// The id-bearing payloads' reach, in declaration order — an ATOM

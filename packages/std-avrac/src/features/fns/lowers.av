@@ -2,6 +2,8 @@
 //! answer minted last; `@std/meta`'s `guarded` is the runtime's guarded run; `return` leaves the fn
 //! with its value.
 use core.{
+    Declined,
+    SettleDecline,
     BinOp,
     EmbedBase,
     template_file,
@@ -43,7 +45,7 @@ impl Lowers for Call {
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         let reached? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
-        let settled = settled_args(cx, reached, self.args)
+        let settled = settled_args(cx, reached, self.args, e)
         let callee = if settled == null { reached } else { settled_unit(reached, settled!) }
         let handed = if settled == null { self.args } else { [a for j, a in self.args if !settled!.any(it.at == j)] }
         let mark = cx.handing_mark()
@@ -66,20 +68,24 @@ impl Lowers for Call {
 /// settles. Absent for a fn C or the host defines, whose row takes every seat; where it has no such
 /// seat; where the arguments name or spread seats or leave one for its default; and where one settles
 /// to anything else, which the call hands as any value.
-fn settled_args(cx: Lowering, callee: CalledFn, args: List<ExprId>) -> List<SettledSeat>? {
-    if callee.external ||
-        callee.hosted ||
-        callee.of != null ||
-        !callee.params.any(it.settled) ||
-        args.length != callee.params.length { return null }
-    if args.any((a) -> cx.store.arg_label(a) != null || cx.store.spread_operand(a) != null) { return null }
-    mut out: List<SettledSeat> = []
-    for j, p in callee.params {
-        if !p.settled { continue }
-        let v? = settled_value(cx, args[j]) else { return null }
-        out.push(SettledSeat { at: j, value: v })
+fn settled_args(cx: Lowering, callee: CalledFn, args: List<ExprId>, e: ExprId) -> List<SettledSeat>? {
+    if callee.external || callee.hosted || !callee.params.any(it.settled) { return null }
+    let why = unsettled(cx, callee, args)
+    if why != null {
+        cx.declined(e, Declined.Settle(why!))
+        return null
     }
-    out
+    [SettledSeat { at: j, value: settled_value(cx, args[j])! } for j, p in callee.params if p.settled]
+}
+
+/// Why a call of `callee`, a fn with `const` seats, handing it `args` reaches no unit of its own;
+/// absent where each `const` seat settles to a literal.
+fn unsettled(cx: Lowering, callee: CalledFn, args: List<ExprId>) -> SettleDecline? {
+    if callee.of != null { return SettleDecline.Method }
+    if args.any((a) -> cx.store.arg_label(a) != null || cx.store.spread_operand(a) != null) { return SettleDecline.NamedOrSpread }
+    if args.length != callee.params.length { return SettleDecline.Defaulted }
+    if (0..args.length).any((j) -> callee.params[j].settled && settled_value(cx, args[j]) == null) { return SettleDecline.NotLiteral }
+    null
 }
 
 /// The literal the argument `a` settles to, as `settled_args` reads one.

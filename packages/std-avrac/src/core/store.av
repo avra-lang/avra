@@ -345,7 +345,7 @@ export type SyntaxArena = {
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
     // setting and closure it lowers to
-    @copied(expr, wear_handler) on_handlers: SideColumn<OnHandler?>,
+    @copied(expr, wear_handler) @taped(expr, handler_read) on_handlers: SideColumn<OnHandler?>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -919,7 +919,7 @@ impl SyntaxArena {
     /// hears an EVENT, where a closure written under the same name fills
     /// a field.
     fn mark_on_handler(e: ExprId, event: string) {
-        self.on_handlers.set_at(e.index, OnHandler { event: event })
+        self.on_handlers.set_at(e.index, OnHandler { event: event, unheard: self.held_unheard(e) })
         self.expr_prints.stamp(e.index, 189, fp_str(event))
     }
 
@@ -941,8 +941,14 @@ impl SyntaxArena {
     /// A plain setting that names an event: it hears it as the sugar
     /// would, and stays written as it was.
     fn mark_heard(e: ExprId, event: string) {
-        self.on_handlers.set_at(e.index, OnHandler { event: event, sugar: false })
+        self
+            .on_handlers
+            .set_at(e.index, OnHandler { event: event, sugar: false, unheard: self.held_unheard(e) })
     }
+
+    /// Why the handler at `e` is already known unheard: a read-back marks a handler again from its
+    /// setting after its table gave the reason, and the reason stands.
+    fn held_unheard(e: ExprId) -> Unheard? { self.on_handlers.at(e.index)?.unheard }
 
     /// Why the instance's component cannot hear the handler at `e` —
     /// what the instance's refusal says. Part of its identity.

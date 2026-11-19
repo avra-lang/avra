@@ -69,7 +69,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; tools/queue-witness run native
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -404,6 +404,8 @@ slice_witness_b() {
     old_row fixes-witness sh tools/witness_program_fixes.sh build/avra
     row root-listing-attack sh tools/root_listing_attack.sh
     row two-compilers-attack sh tools/two_compilers_attack.sh
+    row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
+    row queue-witness build/avra run tools/queue-witness
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

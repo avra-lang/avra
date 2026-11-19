@@ -64,8 +64,19 @@ fn same_unplaced(a: Unplaced, b: Unplaced) -> bool {
 
 /// Every receiver a declared method writes in the written item `at` of `file` that isn't a place it
 /// may write, in node order.
-@query
 fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemReceivers {
+    if !item_held(engine, file, at) { return receivers_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.receivers.get() else {
+        let made = receivers_made(engine, file, at)
+        view.receivers.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_receivers` answers, made.
+fn receivers_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemReceivers {
     if !item_held(engine, file, at) { return ItemReceivers { writes: [] } }
     let item = read_item(engine, file, at)
     let cx = copies_in(engine, file, at, item)

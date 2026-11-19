@@ -31,8 +31,19 @@ fn after_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fo
 
 /// Every arm of the written item `at` of `file`'s `match`es that comes right after an unguarded
 /// arm taking every value, in node order; a `match` over a name nothing answers judged no further.
-@query
 fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnreached {
+    if !item_held(engine, file, at) { return unreached_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.unreached.get() else {
+        let made = unreached_made(engine, file, at)
+        view.unreached.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_unreached` answers, made.
+fn unreached_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnreached {
     if !item_held(engine, file, at) { return ItemUnreached { arms: [] } }
     let item = read_item(engine, file, at)
     let unread = [u.at for u in item_refusals(engine, file, at).unread]

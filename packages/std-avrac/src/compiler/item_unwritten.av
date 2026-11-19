@@ -27,8 +27,19 @@ fn unwritten_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
 
 /// Every method an inherent impl of the written item `at` of `file` marks `mut` whose receiver its
 /// body, and every method it reaches through it, is read never to write.
-@query
 fn item_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnwritten {
+    if !item_held(engine, file, at) { return unwritten_made(engine, file, at) }
+    let view = item_view(engine, file, at)
+    let held? = view.unwritten.get() else {
+        let made = unwritten_made(engine, file, at)
+        view.unwritten.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_unwritten` answers, made.
+fn unwritten_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnwritten {
     if !item_held(engine, file, at) { return ItemUnwritten { methods: [] } }
     let impls = item_impls(engine, file, at)
     if !impls.any(it.implements == null) { return ItemUnwritten { methods: [] } }
