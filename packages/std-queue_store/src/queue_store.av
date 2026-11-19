@@ -66,6 +66,7 @@ use rows.{
     tables_made,
     take_next,
     terms_kept,
+    untaken_index,
     waiting_index,
 }
 use tx.{begun, freed}
@@ -243,6 +244,9 @@ fn kept_terms(queue: string, terms: Terms, dedupe: Duration, shape: int) -> List
 fn made(db: Db, terms: Terms) -> Result<bool, HomeError> {
     let _ = tables_made(db)?
     if terms.overflow == Overflow.latest { let _ = homed(db.run(sql(waiting_index)))? }
+    if terms.overflow == Overflow.latest || terms.overflow == Overflow.drop_oldest {
+        let _ = homed(db.run(sql(untaken_index)))?
+    }
     true
 }
 
