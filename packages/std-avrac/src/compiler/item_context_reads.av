@@ -52,6 +52,7 @@ type ReadSurvey = {
     memo: Cell<Map<string, List<CtxRead>>>,
     before: Cell<Map<string, List<CtxRead>>>,
     open: Cell<List<string>>,
+    met_calls: Cell<List<CalledFn>>,
     boxes: Cell<List<BoxMark>>,
     unsettled: Cell<bool>,
 }
@@ -60,12 +61,14 @@ fn read_survey(engine: QueryEngine, package: string) -> ReadSurvey {
     let none: Map<string, List<CtxRead>> = {}
     let names: List<string> = []
     let made: List<BoxMark> = []
+    let called: List<CalledFn> = []
     ReadSurvey {
         engine: engine,
         package: package,
         memo: Cell.new(none),
         before: Cell.new(none),
         open: Cell.new(names),
+        met_calls: Cell.new(called),
         boxes: Cell.new(made),
         unsettled: Cell.new(false),
     }
@@ -97,6 +100,7 @@ impl ReadSurvey {
             return self.before.get().get(c.symbol) ?? []
         }
         let body? = reached_body(self.engine, c) else { return [] }
+        if !self.met_calls.get().any(it.symbol == c.symbol) { self.met_calls.push(c) }
         self.open.set(self.open.get().concat([c.symbol]))
         self.met(made_in(body))
         let reads = self.walk(body.ins, body, body.marks).reads

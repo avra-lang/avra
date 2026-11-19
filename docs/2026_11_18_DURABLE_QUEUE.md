@@ -1,6 +1,6 @@
 # The durable queue — design
 
-Status: PROPOSED 2026-11-18. Nothing here is probed yet; §8 lists the probes owed first.
+Status: DECIDED WITH OWNER 2026-11-18 (§10). Nothing here is probed yet; §8 lists the probes owed first.
 Ticket `avra-8sb5.98.8`. Epic for jobs: `avra-8sb5.64.1`.
 
 This is the build design for one home of `2026_10_05_CHANNELS.md` (FLOW, decided v4):
@@ -10,34 +10,41 @@ surface, the packages and the slices. Where they differ, §9 says so.
 
 ## 1. What an author writes
 
-One declaration. `store:` is the only line that makes it durable.
+One declaration. `durable: true` is the only line that makes it durable; the database is a context.
 
 ```avra
 use @std.queue.{queue, worker, schedule, Delivery, Dead}
-use @std.db.{store}
+use @std.queue_store.{db}
 use @std.time.{secs, hours, cron}
-
-@store type App = { path: string = "app.db" }
 
 type Email = { to: string, subject: string, body: string }
 
 queue<Email> emails {
-    store: App
+    durable: true
     retries: 5
     backoff: secs(5)
     dedupe: hours(24)
-    dead: undeliverable
 }
 
-queue<Dead<Email, SmtpError>> undeliverable { store: App }
+queue<Dead<Email, SmtpError>> undeliverable { durable: true }
 
 worker sender {
     reads: emails
     at_once: 10
     each: deliver
+    dead: undeliverable
 }
 
 fn deliver(d: Delivery<Email>) -> Result<string, SmtpError> { smtp_send(d.item) }
+```
+
+The database is `ctx db: Db`, declared by `@std/queue_store` with no default, so it is
+required: a program that sends to or runs a durable queue on a path that never set it does
+not compile. `main` sets it once; a test sets `Db.memory()`.
+
+```avra
+ctx db = Db.open("app.db")?
+run(sender)
 ```
 
 Sending, alone and inside the caller's transaction:
@@ -45,7 +52,7 @@ Sending, alone and inside the caller's transaction:
 ```avra
 emails.send(welcome(u), id: "welcome-${u.id}")?
 
-let tx = App.begin()?
+let tx = ctx.db.begin()?
 errdefer tx.rollback()
 let saved = tx.insert(u)?
 tx.send(emails, welcome(saved), id: "welcome-${saved.id}")?   // one commit with the user row
@@ -68,7 +75,7 @@ A job is a queue and its worker in one declaration, for the common case:
 
 ```avra
 job resize {
-    store: App
+    durable: true
     retries: 3
     each: (d: Delivery<Upload>) -> thumbnails(d.item)
 }
@@ -84,7 +91,7 @@ resize.later(upload)?
 | At least once | a lease on the row; a crashed worker's lease runs out and the item is taken again |
 | A stale worker cannot ack | every take raises the row's `epoch`; an ack with an old epoch answers `false` |
 | One send per id within `dedupe` | `flow_seen` remembers the id and its answer |
-| Exactly once for store writes | the handler's writes and the ack are one commit (`worker { store: App }` hands it the `Tx<App>`) |
+| Exactly once for store writes | the handler's writes and the ack are one commit (`worker { in_tx: true }` hands the handler the transaction) |
 | A poison item ends | an attempt is counted when the handler STARTS; past `retries` it is buried, never dropped |
 | Order | `fifo`, or `by_key`: keys run apart, each key in send order |
 
@@ -99,7 +106,7 @@ on redelivery unless the provider dedupes by key (CHANNELS §7.2, a language ask
 | The seam | a `Home` record of fns under `Queue<T>` (CHANNELS §6.2). Memory is one home, the store another |
 | The rows | `@model` types in `@std/db`: `FlowItem`, `FlowSeen`, `FlowShape`. Migrations and table claims are std-db's |
 | Take and ack | `@std/sqlite` statements in one `begin immediate` transaction |
-| The body | T's stable byte codec from `@std/relation` (CHANNELS §6.3); a record may grow at its end |
+| The body | T's stable byte codec from `@std/relation` (CHANNELS §6.3); a record may grow at its end. Read by people through a projection (§4) |
 | Waking | `@std/task`: a send in this process rings the queue's gate; another process polls every `min(patience, 250 ms)` |
 | Time | `@std/time`: `Duration`, `now()`, `every`; `cron` is new there |
 | Workers | `@std/task` tasks, `at_once` of them, cancelled as a scope |
@@ -109,7 +116,7 @@ on redelivery unless the provider dedupes by key (CHANNELS §7.2, a language ask
 Packages:
 - `@std/queue` keeps the declaration, `Home`, and the memory home. It gains no dependency.
 - `@std/queue_store` holds the store home and depends on `@std/db` and `@std/sqlite`.
-  A program that never names `store:` links no SQLite.
+  A program with no durable queue links no SQLite.
 
 ## 4. The tables
 
@@ -146,6 +153,14 @@ type FlowItem = {
 | `release` | clear the lease, set `ready_at = now + backoff` |
 | `bury` | delete and insert under the letter, one transaction |
 
+THE BODY IS BYTES AND ITS READING IS A PROJECTION (P11, P12). The row holds the compact
+codec, so a send and a take cost no text; `FlowShape` holds each shape's descriptor, so a
+row describes itself without the program's source. People read it three ways, all decoding
+through that descriptor: `avra queue peek <name>` prints items as records; the admin router
+answers them as JSON; and the store registers a SQL function, so
+`select flow_json(shape, body) from flow_item` works in any session the program or the CLI
+opens. Owed: the encode and decode cost per item, measured beside JSON's, before Q2 closes.
+
 `take` is the wanting site for typed `sql{}` (44.6): it is the one statement the model
 queries cannot say. Until that lands it is a prepared `@std/sqlite` statement.
 
@@ -159,6 +174,8 @@ queries cannot say. Until that lands it is a prepared `@std/sqlite` statement.
 4. A handler that outlives its lease is cancelled; the item is taken again elsewhere.
 5. On cancel: stop taking, let running handlers finish inside their leases, release the rest.
 
+- A backing-off item keeps its place: under `fifo` nothing behind it is handed out while it waits; under `by_key` only its key waits.
+
 - The handler's error type is its own: `each: fn(Delivery<T>) -> Result<R, E>`, and the letter is `Dead<T, E>`.
   Today both are `string`.
 - A schedule needs no leader. Every process computes the same tick and sends with
@@ -168,12 +185,12 @@ queries cannot say. Until that lands it is a prepared `@std/sqlite` statement.
 
 ## 6. Testing
 
-- The same declaration with no `store:` is the memory home: unit tests need no file.
-- `Db.memory()` as the store runs every store statement with no disk.
+- The same declaration without `durable:` is the memory home: unit tests need no file.
+- `ctx db = Db.memory()` runs every store statement with no disk.
 - The crash witness: a program test whose child takes an item and exits without acking;
   the parent reopens the file and takes it again with `epoch + 1`.
 - The two-process witness: two children share one file, send and take concurrently;
-  every id is handled, none twice under `store:` handlers.
+  every id is handled, none twice under `in_tx:` handlers.
 - Each verb above has its attack in CHANNELS §3. Those move from the memory home's tests to a shared set both homes run.
 
 ## 7. What it asks of the language
@@ -182,11 +199,10 @@ To the lead as a list, one sample each, before the slice that needs it. None blo
 
 | Ask | Needed by | Without it |
 |---|---|---|
-| `@store` on a type, and `Tx<S>` | Q4 | a library derive may do; probe first |
+| `ctx` in std library code | Q2 | allowed once batch 50 lands (lead, 2026-11-18); a program importing it is new-only |
 | A named argument on a component method call (`send(v, id:, after:)`) | Q2 | probe; may work today |
 | `effect`, `reading` marks and the `keyed` seat | exactly once for outside effects | at least once, printed with a warning |
 | Typed `sql{}` | `take` | a prepared statement |
-| `job` as a `fn` mark (`job fn resize(u: Upload)`) | nicer than the component | the `job` component |
 
 ## 8. Slices
 
@@ -194,11 +210,11 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 
 | Slice | What lands | Works after it |
 |---|---|---|
-| Q0 | the probes: a type as a component setting, named args on `send`, `@model` with `Bytes`, `UPDATE … RETURNING` through std-sqlite | the surface in §1 is confirmed or corrected |
-| Q1 | `Home` under `Queue<T>`; memory home behind it; handler error generic | today's 11 tests, unchanged |
+| Q0 | the probes: a required `ctx db` read from a component's methods and from a spawned worker, named args on `send`, `@model` with `Bytes`, `UPDATE … RETURNING` and a registered SQL function through std-sqlite | the surface in §1 is confirmed or corrected |
+| Q1 | BUILT: `Home<T>` under `Queue<T>`; memory home behind it; handler error generic; release with a backoff | 17 tests, 14 programs |
 | Q2 | `@std/queue_store`: rows, send, take, ack, release, bury, dedupe | a queue survives a restart; the crash witness |
 | Q3 | `run`: `at_once`, backoff, lease deadline, shutdown, gate and poll | a long-lived worker; the two-process witness |
-| Q4 | `@store`, `tx.send`, a worker's `store:` | exactly once for store writes |
+| Q4 | `tx.send`, a worker's `in_tx:` | exactly once for store writes |
 | Q5 | `after:`, `cron`, `schedule` | delayed and recurring work |
 | Q6 | `job`, the admin router, `explain flow` | the one-declaration job; operating it |
 
@@ -210,9 +226,14 @@ Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect cont
 - The tables are `@model` types, so std-db owns their migrations, where CHANNELS wrote SQL.
 - `ready_at` is new: one column serves `after:`, backoff and schedules.
 - `job` and `schedule` are new surface; the laws they keep are CHANNELS'.
+- `dead:` is the worker's, where CHANNELS put it on the queue. The worker's handler decides the error type, so the worker owns everything typed in it: the letter and the `failed` and `buried` events. A queue names no letter. (A component cannot infer one type parameter from a field while another is written; if it learns to, `dead:` may return.)
+- The store is `ctx db`, where CHANNELS wrote `@store type Main` and `Tx<Main>`. One database needs no type to tell it apart; the dual-write check (`flow.dual_write`) reads the transaction value.
 
-## 10. Open decisions
+## 10. Decisions (owner, 2026-11-18)
 
-1. Store handle: `@store type App` (as decided in CHANNELS) or a plain `Db` value passed to `send` and `run`.
-2. Job surface now: the `job` component, with `job fn` recorded as a language ask; or wait for the mark.
-3. Body encoding: the stable byte codec (decided; compact, grows at the end) or JSON text (readable with any SQLite tool, slower).
+1. The database is a context, `ctx db: Db`, not a `@store` type. A second database is a
+   second named context; how a queue names it is a Q0 probe.
+2. No `job fn` language mark. `job` is a component.
+3. The body at rest is the stable byte codec, read by people through projections (§4).
+   Fast is the substrate; readable is a projection of it.
+4. Models stay `@model` types, not components (S6, 2026-09-24).

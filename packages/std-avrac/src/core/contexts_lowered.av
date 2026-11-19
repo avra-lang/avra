@@ -77,6 +77,25 @@ impl Lowering {
         self.ends_with(Ending.Restored)
     }
 
+    /// A framed lambda's body entered, at its start: where the frame its box carries is the one in
+    /// force — one load of each, compared — nothing is called; else it is entered, and the body's
+    /// scope takes it back as it ends, by every way out.
+    mut fn frame_entered() {
+        let carried = self.slot_read(Layout.Word, Reg { index: 0 }, 1)
+        let now = self.flag_read(RtFlag.Frame)
+        let same = self.bin(Layout.Truth, BinOp.Eq, carried, now)
+        let entered = self
+            .region(same, Layout.Word) { cx -> cx.const_int(0) } else { cx ->
+                cx
+                    .call_row(
+                        Layout.Word,
+                        rt_sig_of("avra_ctx_enter")!,
+                        [cx.slot_read(Layout.Boxed(BoxKind.List), Reg { index: 0 }, 1)],
+                    )
+            }
+        self.ends_with(Ending.Entered(entered))
+    }
+
     /// The register `code` a `dyn` box's method is taken into, marked.
     fn entry_marked(code: Reg) {
         let m = self.marks.get()

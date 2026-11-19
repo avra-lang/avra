@@ -162,7 +162,7 @@ impl LoweredFn {
 /// The body of the fn `file` declares as `name`, lowered with its task tests held: its seats the
 /// first registers, the body inside their scope, then its answer. Absent when it declares none with a
 /// body.
-export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? { lowered_under(engine, file, name, null) }
+export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? { lowered_under(engine, file, name, null, []) }
 
 /// The body of the generic fn `file` declares as `name`, lowered under `parameters`, one per type
 /// parameter it declares. Absent when it declares none with a body.
@@ -171,7 +171,7 @@ export fn lowered_generic(
     file: SourceFileAddress,
     name: string,
     parameters: List<ParameterLayout>,
-) -> LoweredFn? { lowered_under(engine, file, name, parameters) }
+) -> LoweredFn? { lowered_under(engine, file, name, parameters, []) }
 
 /// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic, each
 /// `const` seat `settled` names settled to its value: the unit every call settling them alike runs.
@@ -201,6 +201,7 @@ fn lowered_under(
     file: SourceFileAddress,
     name: string,
     parameters: List<ParameterLayout>?,
+    framed: List<string>,
 ) -> LoweredFn? {
     let signed? = signed_body(engine, file, name) else {
         return if parameters == null {
@@ -213,7 +214,15 @@ fn lowered_under(
             null
         }
     }
-    lowered_signed(engine, file, answered_fn(engine, file, name, signed), name, parameters)
+    lowered_signed(
+        engine,
+        file,
+        answered_fn(engine, file, name, signed),
+        name,
+        parameters,
+        [],
+        framed,
+    )
 }
 
 /// A signed body `file` writes, lowered as the unit `name` under `parameters` where it's generic: a
@@ -225,6 +234,8 @@ fn lowered_signed(
     name: string,
     parameters: List<ParameterLayout>?,
     settled: List<SettledSeat> = [],
+    framed: List<string> = [],
+    notes: NodeNotes? = null,
 ) -> LoweredFn {
     let refused = lowering_refused(signed, parameters)
     if refused != null {
@@ -239,7 +250,7 @@ fn lowered_signed(
             statics: [],
         }
     }
-    signed_lowered(engine, file, signed, name, parameters, settled)
+    signed_lowered(engine, file, signed, name, parameters, settled, framed, notes)
 }
 
 /// A signed body `file` writes, lowered as `lowered_signed` says, past its refusals; under bounded
@@ -252,6 +263,7 @@ fn signed_lowered(
     name: string,
     parameters: List<ParameterLayout>?,
     settled: List<SettledSeat> = [],
+    framed: List<string> = [],
     notes: NodeNotes? = null,
 ) -> LoweredFn {
     let body = elaborated(engine, file, signed)
@@ -271,6 +283,7 @@ fn signed_lowered(
             written_by(signed.item.store, signed.stmt),
             signed.item.store.expr_span(signed.body)?.lo ?? 0,
             signed.item.at,
+            framed,
             notes,
         ),
         [t?.filled(fills) for t in body.core],
@@ -423,6 +436,7 @@ fn lowered_program(
     writer: SourceFileAddress? = null,
     from: int = 0,
     frame: int? = null,
+    framed: List<string> = [],
     notes: NodeNotes? = null,
 ) -> LoweredProgram {
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
@@ -431,6 +445,7 @@ fn lowered_program(
     let wrappers: Cell<List<FnWrapper>> = Cell.new([])
     let memos = type_memos(engine)
     LoweredProgram {
+        framed: framed,
         checked: program_of(
             engine,
             file,

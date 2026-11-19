@@ -1,16 +1,20 @@
-//! @std.queue — the in-memory home of a declared queue. The items wait
-//! in the carrier's ring; an id set remembers each live item and a
-//! lease table remembers who holds it and under which epoch. Delivery
+//! @std.queue — a declared queue, the home it stands on, and the home
+//! that is memory. A `Queue<T>` is a name, its terms and a `Home<T>`:
+//! the verbs every home answers, typed in the item, each able to fail
+//! as a `HomeError`. The memory home never fails and holds items as
+//! values. Its items wait in the carrier's ring; an id set remembers
+//! each live item and a lease table remembers who holds it and under
+//! which epoch. Delivery
 //! is at-least-once: an item is acked, buried, or still held. The two
 //! terms a full queue and a busy one argue about are here too and read
 //! on the send and take paths: `overflow` says what a full ring does
 //! (`park`, `fail`, or one of the drops), and `order` says how many
 //! deliveries may stand at once (`fifo` one, `by_key` one per key). A
 //! hold past its lease is redelivered with `epoch + 1`, and the old ack
-//! answers `false`. Leases are timestamps compared here, so expiry is
-//! found by the next `take`; no timer row is needed.
+//! answers `false`. Leases and backoffs are timestamps compared here,
+//! so expiry is found by the next `take`; no timer row is needed.
 use @std.task.{Channel, Ring, Sink, open_channel, ring}
-use @std.time.{Duration, now_ms, secs}
+use @std.time.{Duration, ms, now_ms, secs}
 use @std.meta.{Diagnostic, refuse}
 
 /// An effect identity. In this home it is data: nothing dedupes.
@@ -73,6 +77,93 @@ fn overflow_word(o: Overflow) -> string {
     }
 }
 
+/// Why a home could not answer: it cannot be reached and may be asked
+/// again `after`, it refused and says `why`, the item is past the size
+/// it keeps, the item's shape is one it does not know, or the caller
+/// may not ask.
+export enum HomeError {
+    Unreachable(after: Duration)
+    Refused(why: string)
+    TooBig(size: int, max: int)
+    Shape(hash: int)
+    Denied
+}
+
+/// Where a queue's items live: the verbs a queue goes through, typed
+/// in the item. `send` answers the item's id, or `null` when the terms
+/// turned it away. `take` leases up to that many due items. `began`,
+/// `ack`, `release` and `bury` answer `false` once the delivery's hold
+/// was lost, a stale epoch among the ways. `release` hands the item
+/// out again no sooner than the duration from now. `bury` settles the
+/// item only when the fn it is handed took it, as one step. `depth`
+/// counts the items still owed a fate.
+export type Home<T> = {
+    send: fn(T, Key) -> Result<string?, HomeError>,
+    take: fn(int) -> Result<List<Delivery<T>>, HomeError>,
+    began: fn(Delivery<T>) -> Result<bool, HomeError>,
+    ack: fn(Delivery<T>) -> Result<bool, HomeError>,
+    release: fn(Delivery<T>, Duration) -> Result<bool, HomeError>,
+    bury: fn(Delivery<T>, fn(T) -> bool) -> Result<bool, HomeError>,
+    depth: fn() -> Result<int, HomeError>,
+}
+
+/// A queue: its name, its terms, and the home its verbs go through.
+export type Queue<T> = { name: string, terms: Terms, home: Home<T> }
+
+/// A queue that holds nothing but memory.
+export fn open_queue<T>(name: string, terms: Terms) -> Queue<T> {
+    Queue { name: name, terms: terms, home: open_memory<T>(terms).home() }
+}
+
+impl Queue<T> {
+    /// Send one item under `key`, answering its id, or `null` when the
+    /// terms turned it away.
+    fn send(item: T, key: Key) -> Result<string?, HomeError> {
+        (self.home.send)(item, key)
+    }
+
+    /// Lease the item due next, or `null` when none may be handed out.
+    fn take() -> Result<Delivery<T>?, HomeError> {
+        ((self.home.take)(1)?).first()
+    }
+
+    /// Count a handler's start against the delivery's attempt. `false`
+    /// once the hold was lost.
+    fn began(d: Delivery<T>) -> Result<bool, HomeError> {
+        (self.home.began)(d)
+    }
+
+    /// Settle a delivery; its item is done. `false` once the hold was
+    /// lost.
+    fn ack(d: Delivery<T>) -> Result<bool, HomeError> {
+        (self.home.ack)(d)
+    }
+
+    /// Put a delivery back for another attempt, handed out no sooner
+    /// than `after` from now. `false` once the hold was lost.
+    fn release(d: Delivery<T>, after: Duration) -> Result<bool, HomeError> {
+        (self.home.release)(d, after)
+    }
+
+    /// How many items the queue still owes a fate.
+    fn depth() -> Result<int, HomeError> {
+        (self.home.depth)()
+    }
+}
+
+/// Move a delivery to its dead letter in one step, so it is never in
+/// both or neither — and never dropped when the letter refuses it.
+/// `false` once the hold was lost, or when the letter refused.
+export fn bury<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>) -> Result<
+    bool,
+    HomeError,
+> {
+    (q.home.bury)(
+        d,
+        (item: T) -> dead.send(Dead { item: item, error: err, path: [q.name, q.terms.dead] }),
+    )
+}
+
 /// Where a live item stands: waiting in the ring, held by a worker,
 /// on its way to the dead letter, awaiting redelivery, or settled and
 /// its id free to reuse.
@@ -84,13 +175,25 @@ fn stands(s: Stage) -> bool {
     match s { .Held or .Burying -> true, .Pending or .Retry or .Settled -> false }
 }
 
-/// A live item's bookkeeping.
-type Live<T> = { item: T, key: Key, attempt: int, stage: Stage }
+/// Whether an item keeps its place in the order at `now`: a delivery
+/// of it stands, or it was released and is still backing off.
+fn holds(s: Stage, ready: int, now: int) -> bool {
+    stands(s) || s == Stage.Retry && ready > now
+}
+
+/// A live item's bookkeeping. `ready` is the instant a released item
+/// may be handed out again.
+type Live<T> = { item: T, key: Key, attempt: int, stage: Stage, ready: int }
+
+/// A memory home's answer as any home gives it.
+fn kept<V>(v: V) -> Result<V, HomeError> {
+    v
+}
 
 /// The in-memory home. Held by copy: every table sits behind a `Cell`,
-/// so two copies are one queue.
-export type Queue<T> = {
-    name: string,
+/// so two copies are one home. Its verbs cannot fail and answer plainly;
+/// `home` is the same verbs as any home's.
+export type Memory<T> = {
     terms: Terms,
     ring: Channel<string>,
     live: Cell<Map<string, Live<T>>>,
@@ -100,12 +203,11 @@ export type Queue<T> = {
     count: Cell<int>,
 }
 
-/// A queue that holds nothing but memory.
-export fn open_queue<T>(name: string, terms: Terms) -> Queue<T> {
+/// A home that holds nothing but memory.
+export fn open_memory<T>(terms: Terms) -> Memory<T> {
     let live: Cell<Map<string, Live<T>>> = Cell.new({})
     let leases: Cell<Map<string, Lease>> = Cell.new({})
-    Queue {
-        name: name,
+    Memory {
         terms: terms,
         ring: open_channel<string>(terms.capacity),
         live: live,
@@ -128,33 +230,20 @@ impl Key {
     }
 }
 
-/// Put a failed delivery back for another attempt — or, once its
-/// attempts reach the terms, bury it. `false` once the hold was lost.
-export fn release<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>) -> bool {
-    let h? = q.held(d) else { return false }
-    if h.attempt >= q.terms.retries { return bury(q, d, err, dead) }
-    q.live.put(d.id, h with { stage: Stage.Retry })
-    true
-}
-
-/// Move a delivery to its dead letter in one step, so it is never in
-/// both or neither — and never dropped when the letter refuses it.
-/// The item is reserved while a full letter parks the send: no lease
-/// expires it and no take is handed it until the letter answers. A
-/// letter that refuses gives the hold back. `false` once the hold was
-/// lost.
-export fn bury<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>) -> bool {
-    let h? = q.held(d) else { return false }
-    q.live.put(d.id, h with { stage: Stage.Burying })
-    if !dead.send(Dead { item: h.item, error: err, path: [q.name, q.terms.dead] }) {
-        q.live.put(d.id, h)
-        return false
+impl Memory<T> {
+    /// These verbs as any home's.
+    fn home() -> Home<T> {
+        Home {
+            send: (item: T, key: Key) -> kept(self.send(item, key)),
+            take: (max: int) -> kept(self.taken(max)),
+            began: (d: Delivery<T>) -> kept(self.began(d)),
+            ack: (d: Delivery<T>) -> kept(self.ack(d)),
+            release: (d: Delivery<T>, after: Duration) -> kept(self.release(d, after)),
+            bury: (d: Delivery<T>, inter: fn(T) -> bool) -> kept(self.bury(d, inter)),
+            depth: () -> kept(self.depth()),
+        }
     }
-    q.settled(d.id, h)
-    true
-}
 
-impl Queue<T> {
     /// Send one item under `key`, answering its id once the ring holds
     /// it. A full ring is the `overflow` term's to decide: `park` waits
     /// for room, `fail` answers `null`, `drop_newest` answers the id of
@@ -183,10 +272,20 @@ impl Queue<T> {
         }
     }
 
+    /// Lease up to `max` due items, oldest first.
+    fn taken(max: int) -> List<Delivery<T>> {
+        mut out: List<Delivery<T>> = []
+        while out.length < max {
+            let d? = self.take() else { return out }
+            out.push(d)
+        }
+        out
+    }
+
     /// Lease the item due next — one awaiting redelivery first, else the
     /// ring's head — as far as the `order` term allows. `null` when none
     /// is due, or when the one due is held back by a delivery already
-    /// standing.
+    /// standing or an item still backing off.
     fn take() -> Delivery<T>? {
         self.expire()
         self.drain()
@@ -217,7 +316,31 @@ impl Queue<T> {
         true
     }
 
-    /// How many items the queue still owes a fate.
+    /// Put a delivery back for another attempt, handed out no sooner
+    /// than `after` from now. `false` once the hold was lost.
+    fn release(d: Delivery<T>, after: Duration) -> bool {
+        let h? = self.held(d) else { return false }
+        self.live.put(d.id, h with { stage: Stage.Retry, ready: now_ms() + after.ms() })
+        true
+    }
+
+    /// Move a delivery out through `inter`, which hands its item to the
+    /// dead letter. The item is reserved while a full letter parks the
+    /// send: no lease expires it and no take is handed it until the
+    /// letter answers. A letter that refuses gives the hold back.
+    /// `false` once the hold was lost.
+    fn bury(d: Delivery<T>, inter: fn(T) -> bool) -> bool {
+        let h? = self.held(d) else { return false }
+        self.live.put(d.id, h with { stage: Stage.Burying })
+        if !inter(h.item) {
+            self.live.put(d.id, h)
+            return false
+        }
+        self.settled(d.id, h)
+        true
+    }
+
+    /// How many items the home still owes a fate.
     fn depth() -> int {
         self.count.get()
     }
@@ -255,7 +378,7 @@ impl Queue<T> {
 
     /// Record a waiting item and count it.
     fn enqueue(id: string, item: T, key: Key) {
-        self.live.put(id, Live { item: item, key: key, attempt: 0, stage: Stage.Pending })
+        self.live.put(id, Live { item: item, key: key, attempt: 0, stage: Stage.Pending, ready: 0 })
         self.count.set(self.count.get() + 1)
     }
 
@@ -301,18 +424,20 @@ impl Queue<T> {
         }
     }
 
-    /// Whether any delivery stands this moment.
+    /// Whether any item keeps its place in the order this moment.
     fn any_held() -> bool {
+        let now = now_ms()
         for id, h in self.live.get() {
-            if stands(h.stage) { return true }
+            if holds(h.stage, h.ready, now) { return true }
         }
         false
     }
 
-    /// Whether a delivery of `k` stands this moment.
+    /// Whether an item of `k` keeps its place in the order this moment.
     fn key_held(k: string) -> bool {
+        let now = now_ms()
         for id, h in self.live.get() {
-            if stands(h.stage) && h.key.text == k { return true }
+            if holds(h.stage, h.ready, now) && h.key.text == k { return true }
         }
         false
     }
@@ -374,10 +499,11 @@ impl Queue<T> {
         Delivery { id: id, item: h.item, key: h.key, attempt: h.attempt, epoch: epoch }
     }
 
-    /// The oldest item awaiting redelivery, or absent.
+    /// The oldest item due for redelivery, or absent.
     fn waiting() -> string? {
+        let now = now_ms()
         for id, h in self.live.get() {
-            if h.stage == Stage.Retry { return id }
+            if h.stage == Stage.Retry && h.ready <= now { return id }
         }
         null
     }
@@ -406,8 +532,8 @@ impl Queue<T> {
 export enum Guarantee { at_most_once, at_least_once, exactly_once }
 
 /// A queue's declaration: the terms an instance states and the events
-/// its loop emits. `dead:` is the letter a failed item is buried in —
-/// typed, so the loop buries without a name to look up. The events
+/// its loop emits. `homed:` is the home it stands on, memory when none
+/// is named. The events
 /// fire SYNCHRONOUSLY: the loop calls the field where it stands, once,
 /// with the value it is handling, and installs no delivery contract of
 /// its own.
@@ -419,12 +545,10 @@ export component queue<T> {
     retries: int = 3
     overflow: Overflow = Overflow.park
     order: Order = Order.fifo
-    dead: Sink<Dead<T, string>>? = null
+    homed: Home<T>? = null
     state opened: Cell<Queue<T>?> = Cell.new(null)
     on took(d: Delivery<T>)
     on acked(d: Delivery<T>)
-    on failed(d: Delivery<T>, e: string)
-    on buried(dead: Dead<T, string>)
     /// The value laws of a queue, over the settings one instance states.
     /// A `check` is the SECOND of three tiers: it reads the field values
     /// of this declaration, and nothing else. It cannot see a TYPE or a
@@ -441,14 +565,6 @@ export component queue<T> {
                 .push(
                     refuse(
                         "a queue attempts an item at least never, and this attempts ${self.retries}",
-                    ),
-                )
-        }
-        if self.delivery == Guarantee.exactly_once && self.dead == null {
-            said
-                .push(
-                    refuse(
-                        "a queue that delivers exactly once names a `dead:` letter, and this names none",
                     ),
                 )
         }
@@ -470,64 +586,88 @@ export component queue<T> {
         fresh
     }
     fn opening() -> Queue<T> {
-        open_queue(
-            self.name,
-            Terms {
-                capacity: self.capacity,
-                lease: self.lease,
-                retries: self.retries,
-                dead: "${self.name}/dead",
-                overflow: self.overflow,
-                order: self.order,
-            },
-        )
+        let terms = Terms {
+            capacity: self.capacity,
+            lease: self.lease,
+            retries: self.retries,
+            dead: "${self.name}/dead",
+            overflow: self.overflow,
+            order: self.order,
+        }
+        Queue { name: self.name, terms: terms, home: self.homed ?? open_memory<T>(terms).home() }
     }
 }
 
 /// A worker's declaration: the queue it drains and the handler it runs
-/// for each delivery. `dead:` is the letter a failed item is buried
-/// in; `flow.no_fate` refuses a worker whose handler can fail and names
-/// none.
-export component worker<T, R> {
+/// for each delivery, failing in a type of its own. `dead:` is the
+/// letter a failed item is buried in; `flow.no_fate` refuses a worker
+/// whose handler can fail and names none. `failed` and `buried` fire
+/// synchronously, where the loop stands.
+export component worker<T, R, E> {
     reads: queue<T>?
-    each: fn(Delivery<T>) -> Result<R, string>
-    dead: Sink<Dead<T, string>>? = null
+    each: fn(Delivery<T>) -> Result<R, E>
+    dead: Sink<Dead<T, E>>? = null
+    on failed(d: Delivery<T>, e: E)
+    on buried(dead: Dead<T, E>)
+    /// The value laws of a worker, over the settings one instance states.
+    fn check() -> List<Diagnostic> {
+        if self.reads?.delivery == Guarantee.exactly_once && self.dead == null {
+            return [
+                refuse(
+                    "a worker whose queue delivers exactly once names a `dead:` letter, and this names none",
+                ),
+            ]
+        }
+        []
+    }
 }
+
+/// Why a drain stopped short: its worker reads no queue, names no dead
+/// letter, or the queue's home could not answer.
+export enum DrainError { NoQueue, NoLetter, Home(why: HomeError) }
 
 /// Drain a worker's queue: take the oldest item, count the handler's
 /// start, run it, and settle the hold — `Ok` acks, `Err` releases for
 /// another attempt and buries once the attempts reach the terms. The
 /// declared events fire where the loop stands, synchronously. Answers
 /// how many items the handler settled.
-export fn drain<T, R>(w: worker<T, R>) -> Result<int, string> {
-    let qspec? = w.reads else { return .Err("a worker reads no queue") }
-    let each = w.each
-    let dead? = w.dead else { return .Err("a worker names no `dead:` letter") }
+export fn drain<T, R, E>(w: worker<T, R, E>) -> Result<int, DrainError> {
+    let qspec? = w.reads else { return .Err(DrainError.NoQueue) }
+    let dead? = w.dead else { return .Err(DrainError.NoLetter) }
+    match emptied(w, qspec, dead) { .Ok(n) -> .Ok(n), .Err(e) -> .Err(DrainError.Home(e)) }
+}
+
+/// Run `w`'s handler over `qspec` until no item is due.
+fn emptied<T, R, E>(w: worker<T, R, E>, qspec: queue<T>, dead: Sink<Dead<T, E>>) -> Result<
+    int,
+    HomeError,
+> {
     let q = qspec.home()
+    let each = w.each
     mut settled = 0
-    mut d = q.take()
+    mut d = q.take()?
     while d != null {
         let held = d!
         if qspec.took != null { (qspec.took!)(held) }
-        let _ = q.began(held)
+        let _ = q.began(held)?
         match each(held) {
             .Ok(_) -> {
-                if q.ack(held) {
+                if q.ack(held)? {
                     settled = settled + 1
                     if qspec.acked != null { (qspec.acked!)(held) }
                 }
             },
             .Err(e) -> {
-                if qspec.failed != null { (qspec.failed!)(held, e) }
+                if w.failed != null { (w.failed!)(held, e) }
                 if held.attempt + 1 >= qspec.retries {
                     let letter = Dead { item: held.item, error: e, path: [q.name, q.terms.dead] }
-                    if bury(q, held, e, dead) && qspec.buried != null { (qspec.buried!)(letter) }
+                    if bury(q, held, e, dead)? && w.buried != null { (w.buried!)(letter) }
                 } else {
-                    let _ = release(q, held, e, dead)
+                    let _ = q.release(held, ms(0))?
                 }
             },
         }
-        d = q.take()
+        d = q.take()?
     }
-    .Ok(settled)
+    settled
 }

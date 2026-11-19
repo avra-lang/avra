@@ -6,6 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
+use @std.io.{env}
 use core.{
     some_list,
     cleanups_open,
@@ -442,6 +443,9 @@ export fn not_closed(missing: string) -> string {
 
 fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Written, target: string) -> string? {
     let lc = avra_llvm_context_create()
+    let dev = form is .Object && match form { .Object(opt, _) -> opt == 0, rest -> false }
+    if dev { avra_llvm_context_unnamed(lc) }
+    let verified = !dev || llvm_verified()
     let m = avra_llvm_module_create("avra", lc)
     // the target IS part of the module, not of the code generator that runs
     // later: it decides pointer width, the data layout and, for wasm, the
@@ -467,7 +471,18 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
         let bd = l.fns[p]
         if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
-            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f, !wasm)
+            let failure: string? = emit_body(
+                lc,
+                m,
+                b,
+                l.types,
+                l.externs,
+                rt,
+                bd,
+                f,
+                !wasm,
+                verified,
+            )
             if failure != null { return wreck(m, path, failure!) }
             if bd.weak { avra_llvm_set_weak_odr(f) }
             // a wasm module runs no task, so it files no site
@@ -476,7 +491,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
         }
     }
     if which.carries_entry() {
-        let failure: string? = emit_entry(lc, m, b, l, rt, target)
+        let failure: string? = emit_entry(lc, m, b, l, rt, target, verified)
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
@@ -665,7 +680,15 @@ export fn program_opens(l: Lowered) -> List<string> {
 /// host from then on. A reactor links
 /// no `main`, so its link exports the entry and its host runs the
 /// program's statements by that name (`reactor_entry_words`).
-fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: string) -> string? {
+fn emit_entry(
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    l: Lowered,
+    rt: Map<string, RtSig>,
+    target: string,
+    verified: bool,
+) -> string? {
     declare(
         m,
         "avra_args_init",
@@ -686,6 +709,7 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, targe
         l.entry,
         entry,
         !is_wasm(target),
+        verified,
     )
     if failure != null { return failure }
     open_main(lc, m, b, entry, target)
@@ -757,7 +781,8 @@ fn run_ended(m: ptr, b: ptr, code: ptr) -> ptr {
 }
 
 /// One body into one function: params seed the value table, every
-/// instruction emits, the verifier gates.
+/// instruction emits, the verifier gates where `verified` — every build
+/// but a level-0 object, and that one too under `AVRA_VERIFY_LLVM`.
 fn emit_body(
     lc: ptr,
     m: ptr,
@@ -768,6 +793,7 @@ fn emit_body(
     bd: Body,
     f: ptr,
     unwinds: bool,
+    verified: bool,
 ) -> string? {
     mut vals: List<ptr> = []
     // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
@@ -801,7 +827,7 @@ fn emit_body(
         em.emit_ins(i)
     }
     em.finished()
-    if avra_llvm_verify_function(f) != 0 {
+    if verified && avra_llvm_verify_function(f) != 0 {
         return "internal compiler error: LLVM verification failed for ${bd.name}"
     }
     null
@@ -1009,3 +1035,11 @@ const lazy_in_eager: string = "a lazy op reached the eager path"
 /// The integer-only operations, met by a double.
 const int_only_on_floats: string = "an integer-only op reached float operands"
 
+/// `AVRA_VERIFY_LLVM`: every function of a level-0 object held to LLVM's verifier too, as every
+/// other build's is — what the gate's soundness slice sets, so a malformed function is caught.
+fn llvm_verified() -> bool { llvm_verify_asked() == "1" }
+
+once fn llvm_verify_asked() -> string {
+    // LICENSED input.debug_flag: a check of the compiler's own output, which no answer reads
+    env("AVRA_VERIFY_LLVM") ?? ""
+}

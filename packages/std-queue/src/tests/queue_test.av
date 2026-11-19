@@ -1,5 +1,5 @@
 // The in-memory home's laws, one given at a time.
-use @std.queue.{open_queue, key, Terms, Dead, release, bury, Overflow, Order}
+use @std.queue.{open_memory, open_queue, key, Terms, Dead, bury, Overflow, Order}
 use @std.task.{open_channel, unbounded_channel}
 use @std.time.{ms}
 
@@ -17,78 +17,123 @@ fn terms(lease: int) -> Terms {
 spec "std/queue" {
     given "a queue" {
         then "is empty until something is sent" {
-            let q = open_queue<int>("jobs", terms(60000))
+            let q = open_memory<int>(terms(60000))
             q.take() == null && q.depth() == 0
         }
         then "sends in order and counts what it holds" {
-            let q = open_queue<int>("jobs", terms(60000))
+            let q = open_memory<int>(terms(60000))
             let _ = q.send(1, key("a"))
             let _ = q.send(2, key("b"))
             let d = q.take()
             d!.item == 1 && q.depth() == 2
         }
         then "acks what a handler settled" {
-            let q = open_queue<int>("jobs", terms(60000))
+            let q = open_memory<int>(terms(60000))
             let _ = q.send(1, key("a"))
             let d = q.take()
             let _ = q.began(d!)
             q.ack(d!) && q.depth() == 0
         }
         then "counts handler starts across attempts" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let dead = unbounded_channel<Dead<int, int>>()
+            let q = open_memory<int>(terms(60000))
             let _ = q.send(1, key("a"))
             let first = q.take()
             let _ = q.began(first!)
-            let _ = release(q, first!, 9, dead.sink)
+            let _ = q.release(first!, ms(0))
             q.take()!.attempt == 1
         }
         then "refuses a begun from before a redelivery" {
-            let q = open_queue<int>("jobs", terms(0))
+            let q = open_memory<int>(terms(0))
             let _ = q.send(1, key("a"))
             let first = q.take()
             let _ = q.take()
             !q.began(first!)
         }
         then "refuses an ack for a settled delivery" {
-            let q = open_queue<int>("jobs", terms(60000))
+            let q = open_memory<int>(terms(60000))
             let _ = q.send(1, key("a"))
             let d = q.take()
             let _ = q.ack(d!)
             !q.ack(d!)
         }
         then "refuses an ack from before a redelivery" {
-            let q = open_queue<int>("jobs", terms(0))
+            let q = open_memory<int>(terms(0))
             let _ = q.send(1, key("a"))
             let first = q.take()
             let second = q.take()
             !q.ack(first!) && q.ack(second!)
         }
         then "redelivers a released item with a new epoch" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let dead = unbounded_channel<Dead<int, int>>()
+            let q = open_memory<int>(terms(60000))
             let _ = q.send(1, key("a"))
             let first = q.take()
             let _ = q.began(first!)
-            let _ = release(q, first!, 9, dead.sink)
+            let _ = q.release(first!, ms(0))
             let second = q.take()
             second!.epoch == first!.epoch + 1 && q.depth() == 1
+        }
+        then "holds a released item back until its backoff ends" {
+            let q = open_memory<int>(terms(60000))
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let _ = q.release(first!, ms(60000))
+            q.take() == null && q.depth() == 1
+        }
+        then "hands a released item out once its backoff is spent" {
+            let q = open_memory<int>(terms(60000))
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let _ = q.release(first!, ms(0 - 1))
+            q.take()!.epoch == first!.epoch + 1
+        }
+        then "keeps a backing-off item's place ahead of a later send" {
+            let q = open_memory<int>(terms(60000))
+            let _ = q.send(1, key("a"))
+            let _ = q.send(2, key("b"))
+            let first = q.take()
+            let _ = q.release(first!, ms(60000))
+            q.take() == null && q.depth() == 2
+        }
+        then "lets another key pass a backing-off item under by_key" {
+            let q = open_memory<int>(terms(60000) with { order: Order.by_key })
+            let _ = q.send(1, key("a"))
+            let _ = q.send(2, key("b"))
+            let _ = q.send(3, key("a"))
+            let first = q.take()
+            let _ = q.release(first!, ms(60000))
+            q.take()!.item == 2 && q.take() == null
+        }
+        then "refuses a release from before a redelivery" {
+            let q = open_memory<int>(terms(0))
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let second = q.take()
+            !q.release(first!, ms(0)) && q.release(second!, ms(0))
+        }
+        then "takes as many due items as it is asked for" {
+            let q = open_memory<int>(terms(60000) with { order: Order.by_key })
+            let _ = q.send(1, key("a"))
+            let _ = q.send(2, key("b"))
+            let _ = q.send(3, key("c"))
+            q.taken(2).length == 2 && q.taken(2).length == 1 && q.taken(2).length == 0
         }
         then "a bury leaves the queue and reaches the letter" {
             let q = open_queue<int>("jobs", terms(60000))
             let dead = unbounded_channel<Dead<int, int>>()
             let _ = q.send(1, key("a"))
-            let d = q.take()
+            let d = q.take() catch null
             let _ = bury(q, d!, 9, dead.sink)
-            q.depth() == 0 && dead.source.taken()!.error == 9
+            (q.depth() catch 1) == 0 && dead.source.taken()!.error == 9
         }
         then "a bury a closed letter refuses gives the hold back" {
             let q = open_queue<int>("jobs", terms(60000))
             let dead = open_channel<Dead<int, int>>(1)
             dead.sink.close()
             let _ = q.send(1, key("a"))
-            let d = q.take()
-            !bury(q, d!, 9, dead.sink) && q.depth() == 1 && q.ack(d!)
+            let d = q.take() catch null
+            !(bury(q, d!, 9, dead.sink) catch true) &&
+                (q.depth() catch 0) == 1 &&
+                (q.ack(d!) catch false)
         }
     }
     given "a key" {

@@ -37,6 +37,19 @@ Design sources of truth (in `../forge-crafting-intepreters`):
 
 Follow the old tree's *documented designs*, never its code habits.
 
+## PERFORMANT BY DEFAULT
+
+P4 applied: idiomatic code IS the fast code. Representation is the
+compiler's job, never the writer's, and the cost of what was written is
+VISIBLE and GATED. docs/ZERO_COST.md is the registry this is held to:
+every technique a row, every row with the DETECTOR that finds its
+candidates (census sites, missed-optimization remarks, shape rules, the
+exact-count gate). Every feature's design names its cost and the rows it
+relies on or adds; every PR passes the exact-count gate; a candidate any
+detector finds is a row or a ticket at discovery, as an idiom is. A
+feature that makes idiomatic code slower is not ready until a row removes
+the cost.
+
 ## Comments
 
 Never write comments about specific situations, tickets, approaches, or

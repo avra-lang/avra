@@ -12,6 +12,10 @@ use @std.program.address.{SourceFileAddress}
 /// fn a type has by a name.
 export type LoweredProgram = {
     checked: CheckedProgram,
+    /// The lambdas, by the symbol each lifts under, whose box carries the frame of contexts it is made
+    /// under and whose body enters it: those that read a context, as the program they are lowered for
+    /// finds (compiler/item_context_framing.av). None for a program that declares no context.
+    framed: List<string>,
     /// The context a name names, as a read or a set reaches it, read where the template that wrote it
     /// stands (its home) before where the body stands.
     contexts: fn(string, string?) -> HeldContext?,
@@ -240,6 +244,9 @@ export type CalledFn = {
     gathers_closure: bool = false,
     /// For such a unit, the package of the program a walk met it in.
     gathered_for: string? = null,
+    /// The lambdas of its body, by their symbols, whose boxes carry their frame of contexts in the
+    /// program a walk met it in: none in a program that declares no context.
+    framed: List<string> = [],
     /// For one of several impls of a type giving a method of one name, the trait it implements, as
     /// it writes it.
     given_in: string? = null,
@@ -919,6 +926,13 @@ impl Lowering {
     /// binding's value.
     mut fn lane_value(b: Bound) -> Reg { self.shared_cell(b) ?? self.held(b) }
 
+    /// What a box carries in the lane `name`: the frame in force for a framed lambda's frame lane, else
+    /// what the binding `name` holds.
+    mut fn lane_of(name: string) -> Reg {
+        if name == FRAME_LANE { return self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_ctx_frame")!, []) }
+        self.lane_value(self.bound(name)!)
+    }
+
     // ── Registers ───────────────────────────────────────────────────
     // A register is minted with the instruction that defines it, after every register that
     // instruction reads: operands first, the answer last.
@@ -1140,9 +1154,9 @@ impl Lowering {
         self.hollow_of(self.answer)
     }
 
-    /// The flag `flag` read in place: one load, no call.
+    /// The flag `flag` read in place: one load, no call, answering as its layout says.
     mut fn flag_read(flag: RtFlag) -> Reg {
-        let r = self.mint(Layout.Truth)
+        let r = self.mint(flag_layout(flag))
         self.emit(Ins.FlagRead(r, flag))
         r
     }

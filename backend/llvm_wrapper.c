@@ -62,6 +62,13 @@ LLVMContextRef avra_llvm_context_create(void) {
     return LLVMContextCreate();
 }
 
+// The values of a module no one reads as text keep no names: an object never
+// carries them, and naming every value costs the building and the code
+// generator alike.
+void avra_llvm_context_unnamed(LLVMContextRef ctx) {
+    LLVMContextSetDiscardValueNames(ctx, 1);
+}
+
 void avra_llvm_context_dispose(LLVMContextRef ctx) {
     LLVMContextDispose(ctx);
 }
@@ -319,6 +326,15 @@ LLVMValueRef avra_llvm_add_function(LLVMModuleRef m, const char* name, LLVMTypeR
     if (frame_pointers_wanted()) {
         LLVMAttributeRef fp = LLVMCreateStringAttribute(LLVMGetModuleContext(m), "frame-pointer", 13, "all", 3);
         LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, fp);
+    }
+    // A TRUTH IS ANSWERED ZERO-EXTENDED, as C answers a `bool`: the x86 fast
+    // instruction selector returns an `i1` only so, and otherwise hands the
+    // whole return to the slow one. No runtime row answers a truth, so no C
+    // signature moves.
+    if (LLVMGetReturnType(fn_type) == LLVMInt1TypeInContext(LLVMGetModuleContext(m))) {
+        LLVMContextRef ctx = LLVMGetModuleContext(m);
+        unsigned kind = LLVMGetEnumAttributeKindForName("zeroext", 7);
+        LLVMAddAttributeAtIndex(fn, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(ctx, kind, 0));
     }
     return fn;
 }
@@ -1604,6 +1620,20 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
     }
     // wasm-ld garbage-collects functions itself; the ELF section discipline
     // is the host linker's and names sections wasm has no use for.
+    // AT LEVEL 0 A SWITCH IS A TREE OF COMPARES: the fast instruction selector
+    // selects no `switch`, and handing each one to the slow selector costs more
+    // than the compares do.
+    if (level == 0) {
+        LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+        LLVMErrorRef ran = LLVMRunPasses(m, "lower-switch", tm, opts);
+        LLVMDisposePassBuilderOptions(opts);
+        if (ran) {
+            char* why = LLVMGetErrorMessage(ran);
+            fprintf(stderr, "avra: the switches could not be lowered — %s\n", why);
+            LLVMDisposeErrorMessage(why);
+            failed = 1;
+        }
+    }
     if (!failed && !off_host) sectioned_by_definition(m);
     double g0 = emit_timed() ? clock_seconds(CLOCK_THREAD_CPUTIME_ID) : 0;
     LLVMMemoryBufferRef object = NULL;

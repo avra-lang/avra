@@ -59,16 +59,22 @@ export enum UnOp { Not, ToInt(Rounding), ToFloat }
 @derive(Fingerprint)
 @codec
 @derive(Saved)
-export enum RtFlag { Unwinding, Tick }
+export enum RtFlag { Unwinding, Tick, Frame }
 
-/// The runtime's own name for the byte.
+/// The runtime's own name for the flag's cell.
 export fn flag_symbol(f: RtFlag) -> string {
-    match f { .Unwinding -> "avra_unwinding", .Tick -> "avra_tick" }
+    match f { .Unwinding -> "avra_unwinding", .Tick -> "avra_tick", .Frame -> "avra_ctx_now" }
 }
 
 /// The flag's word in the IR's text.
 export fn flag_word(f: RtFlag) -> string {
-    match f { .Unwinding -> "unwinding", .Tick -> "tick" }
+    match f { .Unwinding -> "unwinding", .Tick -> "tick", .Frame -> "frame" }
+}
+
+/// What a read of the flag answers: a byte's bit as a truth, or the running task's frame as the word
+/// it is.
+export fn flag_layout(f: RtFlag) -> Layout {
+    match f { .Unwinding or .Tick -> Layout.Truth, .Frame -> Layout.Word }
 }
 
 /// The operator's surface symbol — the projection beside its enum.
@@ -171,10 +177,12 @@ export enum Ins {
     /// value won. `value` is BORROWED, as a runtime row's seats are:
     /// the commit takes its own reference.
     OnceCommit(sym: string, value: Reg)
-    /// A runtime FLAG, READ as a bool: one load of a byte the runtime
-    /// writes, with no call. The runtime keeps it for the running task
-    /// and a switch swaps it, so a read always answers for the task
-    /// that reads. Nothing is owed for it: the answer is a scalar.
+    /// A runtime FLAG, READ in place: one load of a cell the runtime
+    /// writes, with no call, answering as the flag's own layout says
+    /// (`flag_layout`): a byte's bit as a truth, a word as a word. The
+    /// runtime keeps it for the running task and a switch swaps it, so a
+    /// read always answers for the task that reads. Nothing is owed for
+    /// it: the answer is a scalar.
     FlagRead(@dst dst: Reg, flag: RtFlag)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
@@ -1019,6 +1027,10 @@ export enum RtHost {
     CtxRead
     CtxSet
     CtxBack
+    /// The frame a body is made under: the one in force, one entered, and a fn box under another.
+    CtxFrame
+    CtxEnter
+    CtxReframed
     TaskId
     /// Who asked the cancel that ended a task, or its own id for an
     /// answer: the record `avra_task_ended_by` reads.

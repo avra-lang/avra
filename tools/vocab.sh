@@ -78,6 +78,11 @@ SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	answer_form	spelle
 Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	spelled	how it crosses into the evaluator
 Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with
 RtHost	packages/std-avrac/src/compiler/backend/interp.av	hosted	spelled	the arm that evaluates a row
+RtFlag	packages/std-avrac/src/core/ir.av	flag_symbol	spelled	the runtime's name for a flag's cell
+RtFlag	packages/std-avrac/src/core/ir.av	flag_word	spelled	the word a flag is written with in the IR's text
+RtFlag	packages/std-avrac/src/core/ir.av	flag_layout	spelled	what a read of a flag answers
+RtFlag	packages/std-avrac/src/compiler/backend/llvm_emit.av	flag_value	spelled	the load a read of a flag emits
+RtFlag	packages/std-avrac/src/compiler/backend/interp.av	flag_now	spelled	a read of a flag, evaluated
 Lack	packages/std-avrac/src/compiler/dev/coverage.av	word	spelled	the baseline word a gap is written with
 Remedy	packages/std-avrac/src/compiler/dev/coverage.av	witnessed_lacks	spelled	whether a kind's witness owes a fix line
 Remedy	packages/std-avrac/src/compiler/rule_fix.av	repairable	spelled	which suggestions the repair door may apply unasked

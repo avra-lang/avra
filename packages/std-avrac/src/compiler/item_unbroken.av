@@ -6,9 +6,20 @@
 //! prelude's own verbs, or to another `@unbroken`
 //! fn is allowed; a default left out is refused where any node of its own may wait, or where it's
 //! written in another file; any other fn, a value, a spawn and a waiting row are refused. Only a node
-//! that may wait at all is judged, so what lowering adds at another node is not. A generic fn is
-//! judged where it's lowered for its fills, never here.
-use core.{CalledFn, ExprId, Expr, NodeMet, SyntaxArena, StmtId, WaitProbe, flatten, node_notes}
+//! that may wait at all is judged, so what lowering adds at another node is not. A fn, a method and
+//! a static are judged alike; a generic one is judged where it's lowered for its fills, never here.
+use core.{
+    CalledFn,
+    ExprId,
+    Expr,
+    NodeMet,
+    NodeNotes,
+    SyntaxArena,
+    StmtId,
+    WaitProbe,
+    flatten,
+    node_notes,
+}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.tasks.{
@@ -39,11 +50,13 @@ fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBro
     if at >= item_count(engine, file) { return ItemBroken { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemBroken { rows: [] } }
-    ItemBroken {
-        rows: flatten(
-            [fn_broken(engine, file, p!.name) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && marks_unbroken(engine, file, item.store, s)],
-        ),
-    }
+    let fns = flatten(
+        [fn_broken(engine, file, p!.name) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && marks_unbroken(engine, file, item.store, s)],
+    )
+    let methods = flatten(
+        [method_broken(engine, file, a, item.store, s) for a in impls_at(engine, file, at) if a.params.is_empty() for s in impl_fns(item, a) if marks_unbroken(engine, file, item.store, s)],
+    )
+    ItemBroken { rows: fns.concat(methods) }
 }
 
 /// Whether the statement `s` of `store`, written in `file`, wears `@std/meta`'s `@unbroken`.
@@ -73,13 +86,42 @@ fn fn_broken(engine: QueryEngine, file: SourceFileAddress, name: string) -> List
         name,
         null,
         [],
+        [],
         notes,
     )
-    let store = signed.item.store
-    let nodes = store.every_expr(signed.body)
-    let own = flatten([node_broken(store, name, e) for e in nodes])
-    let met = [b! for m in notes.met.get() for b in [met_broken(engine, file, store, name, m)] if b != null]
+    noted_broken(engine, file, signed.item.store, signed.body, name, notes)
+}
+
+/// Every way the body `body` of `store`, the `@unbroken` `owner`'s, lets another task run: by its
+/// nodes, and what lowering met at each, as `notes` holds it.
+fn noted_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    body: ExprId,
+    owner: string,
+    notes: NodeNotes,
+) -> List<BrokenAt> {
+    let own = flatten([node_broken(store, owner, e) for e in store.every_expr(body)])
+    let met = [b! for m in notes.met.get() for b in [met_broken(engine, file, store, owner, m)] if b != null]
     distinct_broken(own.concat(met))
+}
+
+/// Every way the method or static the impl at `a` writes at `s` of `store` lets another task run.
+fn method_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    a: ImplAt,
+    store: SyntaxArena,
+    s: StmtId,
+) -> List<BrokenAt> {
+    let parts? = store.fn_parts(s) else { return [] }
+    if !parts.tparams.is_empty() { return [] }
+    let statics = store.is_static(s)
+    let method? = signed_method(engine, a, parts.name, statics) else { return [] }
+    let notes = node_notes(method.signed.item.written)
+    let _ = method_lowered(engine, a, parts.name, statics, null, [], notes)
+    noted_broken(engine, file, method.signed.item.store, method.signed.body, parts.name, notes)
 }
 
 /// What the node `e` breaks by its own kind: a spawn, or a `select`, which waits.
@@ -133,19 +175,44 @@ fn call_broken(
     if !(c.defaulted is .Not) {
         return if default_may_wait(engine, file, c) { BrokenAt { at: at, words: [DEFAULT, owner, c.name] } } else { null }
     }
-    if c.owner == null && callee_unbroken(engine, c) { return null }
+    if callee_unbroken(engine, c) { return null }
     BrokenAt { at: at, words: [CALL, owner, c.name] }
 }
 
-/// Whether the fn `c` calls wears `@unbroken`.
+/// Whether the fn, method or static `c` calls wears `@unbroken`: a method by the impls of its file
+/// that write one of its name for its type.
 fn callee_unbroken(engine: QueryEngine, c: CalledFn) -> bool {
-    let item? = declaring_item(engine, c.file, c.name, ItemKind.Fn) else { return false }
-    item
-        .stmts
+    let owner? = c.owner else {
+        let item? = declaring_item(engine, c.file, c.name, ItemKind.Fn) else { return false }
+        return item
+            .stmts
+            .any(
+                (s) -> item.store.fn_parts(s)?.name == c.name &&
+                    marks_unbroken(engine, c.file, item.store, s),
+            )
+    }
+    [at for at in 0..item_count(engine, c.file)]
+        .any((at) -> impl_marks(engine, c.file, at, owner, c.name))
+}
+
+/// Whether an impl of `owner` the written item `at` of `file` writes marks its fn `name` `@unbroken`.
+fn impl_marks(engine: QueryEngine, file: SourceFileAddress, at: int, owner: string, name: string) -> bool {
+    let item = read_item(engine, file, at)
+    impls_at(engine, file, at)
         .any(
-            (s) -> item.store.fn_parts(s)?.name == c.name &&
-                marks_unbroken(engine, c.file, item.store, s),
+            (a) -> impl_of(item, a) == owner &&
+                impl_fns(item, a)
+                    .any(
+                        (s) -> item.store.fn_parts(s)?.name == name &&
+                            marks_unbroken(engine, file, item.store, s),
+                    ),
         )
+}
+
+/// The type the impl at `a` of `item` is written for.
+fn impl_of(item: ReadItem, a: ImplAt) -> string? {
+    let s? = impl_stmt_at(item, a) else { return null }
+    item.store.impl_parts(s)?.target
 }
 
 /// Whether the default `c` runs may wait: one written in another file than `file` may; one here may

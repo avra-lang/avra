@@ -43,12 +43,21 @@ fn entry_signed(read: EntryRead) -> SignedBody? {
 /// exit, which answers the process's status. The names they bind stand in a scope of their own inside
 /// the entry's seats, of which it has none. A file that runs none has an entry that only exits.
 export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
+    lowered_entry_under(engine, file, framed_lambdas(engine, file.package_name, entry_unit(file)))
+}
+
+/// The entry of `file` lowered with none of its lambdas framed: what the survey of what a program
+/// reads reads, before it knows which lambdas a program frames.
+export fn entry_plain(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? { lowered_entry_under(engine, file, []) }
+
+/// The entry of `file`, its lambdas `framed` carrying their frame of contexts.
+fn lowered_entry_under(engine: QueryEngine, file: SourceFileAddress, framed: List<string>) -> LoweredFn? {
     let read = entry_read(engine, file, true)
     let signed? = entry_signed(read) else { return idle_entry(engine, file, read) }
     let body = elaborated(engine, file, signed)
     mut cx = lowering(
         body.store,
-        lowered_program(engine, file, body.store, ENTRY, [], null) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, body.store, e, ty) },
+        lowered_program(engine, file, body.store, ENTRY, [], null, framed: framed) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, body.store, e, ty) },
         body.core,
         body.seats,
         owned_type("int"),

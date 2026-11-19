@@ -899,6 +899,51 @@ impl Machine {
         Val.I(0)
     }
 
+    /// `avra_ctx_frame`: the frame in force, the caller's reference to it its own.
+    fn ctx_frame_val() -> Val {
+        let now = self.ctx_frame()
+        self.retains(now)
+        now
+    }
+
+    /// `avra_ctx_enter`: a body made under the frame `vals[0]` entered. Where it is the one in force
+    /// nothing changes and the answer is 0; else the frame made current holds its contexts alone, the
+    /// one in force under it for the body's end to put back, and the answer is 1.
+    fn ctx_enter_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let now = self.ctx_frame()
+        if array_id(vals[0]) == array_id(now) { return Val.I(0) }
+        mut kept: List<Val> = []
+        let id = array_id(vals[0])
+        if id != null {
+            let held = self.arrays[id!]
+            mut at = 1
+            while at + 1 < held.length {
+                self.retains(held[at + 1])
+                kept = kept.concat([held[at], held[at + 1]])
+                at = at + 2
+            }
+        }
+        let next = self.fresh_array([now].concat(kept))
+        self.tasks[self.running].slots.set(ctx_slot, next)
+        Val.I(1)
+    }
+
+    /// `avra_ctx_reframed`: the fn box `vals[0]` made under the frame `vals[1]` instead — the same box
+    /// where that is its frame or it holds none, else a copy holding it in its frame's slot.
+    fn ctx_reframed_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("a box to reframe that is no box") }
+        let held = self.arrays[id]
+        if held.length < 2 || array_id(held[1]) == array_id(vals[1]) {
+            self.retains(vals[0])
+            return vals[0]
+        }
+        let rest = held.drop(2)
+        for v in rest { self.retains(v) }
+        self.retains(vals[1])
+        self.fresh_array([held[0], vals[1]].concat(rest))
+    }
+
     /// `frame` the running task's frame, the one it replaces released: what a guard was entered
     /// under, put back where it catches.
     fn ctx_restored(frame: Val) {

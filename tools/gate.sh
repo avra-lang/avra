@@ -57,7 +57,7 @@ program    test packages/std-program and std-relation; make runtime-tests
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
-sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects
+sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
@@ -331,6 +331,8 @@ idioms_on() {
 
 slice_sound() {
     row sound-check-run env AVRA_SOUND_CHECK=1 build/avra check packages/cli
+    cold cli
+    row llvm-verified-build env AVRA_VERIFY_LLVM=1 build/avra build packages/cli
     judged sound-check-defects "$(grep -c 'language.defect' "$out/sound-check-run.log")"
 }
 

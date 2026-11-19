@@ -1,13 +1,13 @@
 //! WHAT A METHOD DOES, AS IR: the body an impl gives a type, lowered as a fn's is, its receiver the
 //! first seat; a static fn's has no receiver. Its unit is named for the type, then the method.
-use core.{LandedSeat, ParameterLayout, Seating, SignedType, TypeHead, headed_type}
+use core.{LandedSeat, NodeNotes, ParameterLayout, Seating, SignedType, TypeHead, headed_type}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 
 /// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered.
 /// Absent when it gives none with a body.
-export fn lowered_method(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> LoweredFn? { lowered_method_under(engine, at, name, statics, null) }
+export fn lowered_method(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> LoweredFn? { lowered_method_under(engine, at, name, statics, null, []) }
 
 /// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered
 /// under `parameters`, one per type parameter its type declares then one per its own. Absent when it
@@ -19,6 +19,20 @@ export fn lowered_method_under(
     name: string,
     statics: bool,
     parameters: List<ParameterLayout>?,
+    framed: List<string>,
+) -> LoweredFn? { method_lowered(engine, at, name, statics, parameters, framed) }
+
+/// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered as
+/// `lowered_method_under` says, its lambdas `framed` carrying their frame of contexts, what it meets at
+/// each written node noted in `notes` where a law asks.
+fn method_lowered(
+    engine: QueryEngine,
+    at: ImplAt,
+    name: string,
+    statics: bool,
+    parameters: List<ParameterLayout>?,
+    framed: List<string> = [],
+    notes: NodeNotes? = null,
 ) -> LoweredFn? {
     let method? = signed_method(engine, at, name, statics) else { return null }
     let receiver = method.signed.receiver ?? headed_type(TypeHead.Never)
@@ -38,6 +52,9 @@ export fn lowered_method_under(
         answered with { receiver_written: written, typed: typed, seats: seats_taken(at.file, answered) },
         "${method.owner}.${name}",
         parameters,
+        [],
+        framed,
+        notes,
     )
 }
 

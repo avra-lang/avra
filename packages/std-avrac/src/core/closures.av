@@ -39,6 +39,10 @@ export type Lift = { body: LiftedBody, lanes: List<string>, missing: List<string
 /// A name a lambda's body reads from further out, and the slots its value takes in the box.
 export type Lane = { name: string, slots: int }
 
+/// The lane a framed lambda's box carries its frame of contexts in, first of its lanes: a name no
+/// binding is written with.
+export const FRAME_LANE: string = "\$frame"
+
 impl Lowering {
     /// The lambda `lam` at the node `site`, of the fn type `ty` that `lift_refusal` passes, its body
     /// lowered as its own unit against `program`; a task's, when `tasked`, answers its value in a
@@ -62,7 +66,11 @@ impl Lowering {
         ended: fn(mut Lowering) -> void,
     ) -> Lift {
         let span = self.store.expr_span(site) ?? Span { lo: 0, hi: 0 }
-        let lanes: Cell<List<Lane>> = Cell.new([])
+        let named = lift_named(self.store, program, site, span)
+        let symbol = if tasked { "${named}\$task" } else { named }
+        let framed = program.framed.contains(symbol)
+        let lanes: Cell<List<Lane>> = Cell
+            .new(if framed { [Lane { name: FRAME_LANE, slots: 1 }] } else { [] })
         let record = self.offered_record(lam, ty)
         let written = if record != null { [] } else { [p.name.of for at, p in lam.params if ty.seats[at].mutable] }
         mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked, written_seats: written, names: self.names, roots: [lam.body] }
@@ -72,17 +80,21 @@ impl Lowering {
         let _ = body.mint(body.laid_out(ty))
         if record != null { body.offer_seated(lam, record!) } else { for at, p in lam.params { body.seated_written(p.name.of, ty.seats[at].ty, ty.seats[at].mutable) } }
         body.scope_enter()
+        if framed {
+            body.opened()
+            body.frame_entered()
+        }
         let value = body.lower(lam.body)
         ended(body)
+        if framed { body.closed() }
         let r = if tasked { body.answer_cell(value) } else { value }
         body.scope_exit(r)
         body.emit(Ins.RetVal(r))
-        let symbol = lift_named(self.store, program, site, span)
         Lift {
             body: LiftedBody {
                 lo: span.lo,
                 hi: span.hi,
-                symbol: if tasked { "${symbol}\$task" } else { symbol },
+                symbol: symbol,
                 params: body.layouts.get().take(1 + ty.seats.length),
                 answer: if tasked { Layout.Boxed(BoxKind.List) } else { body.laid_out(ty.answer!) },
                 ins: body.ins.get(),

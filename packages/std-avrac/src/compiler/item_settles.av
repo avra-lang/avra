@@ -3,7 +3,7 @@
 //! (`const_settlement`), and said in the voice the settling pass speaks (`unsettled_voice`).
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.{unsettled_of, unsettled_voice}
+use features.{owner_budget_spent, unsettled_of, unsettled_voice}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -24,11 +24,17 @@ fn settles_broken(kind: string, engine: QueryEngine, file: SourceFileAddress, at
         let d? = resolved(engine, file, Space.Value, name).named() else { continue }
         if d.kind != ItemKind.Const || d.item != at || !same_file(d.file, file) { continue }
         let broken? = settled_in(engine, d)?.broken else { continue }
-        if broken.kind == kind { found.push(Found { at: store.expr_span(value), args: [name, broken.words] }) }
+        if broken.kind == kind { found
+                .push(
+                    Found {
+                        at: store.expr_span(value),
+                        args: [name, broken.words, file.package_name],
+                    },
+                ) }
     }
     found
         .concat(
-            [Found { at: span_of(c.at), args: [c.name, c.words] } for c in item_refusals(engine, file, at).broken if c.kind == kind],
+            [Found { at: span_of(c.at), args: [c.name, c.words, file.package_name] } for c in item_refusals(engine, file, at).broken if c.kind == kind],
         )
 }
 
@@ -42,7 +48,7 @@ fn reach_said(a: List<string>) -> Voice { unsettled_voice(a[0], unsettled_of("co
 
 fn trap_said(a: List<string>) -> Voice { unsettled_voice(a[0], unsettled_of("const.trap", a[1]))! }
 
-fn budget_said(a: List<string>) -> Voice { unsettled_voice(a[0], unsettled_of("const.budget", a[1]))! }
+fn budget_said(a: List<string>) -> Voice { owner_budget_spent(a[0], a[1], a[2]) }
 
 /// a const whose value traps while it settles at compile time
 export law const_trapped {

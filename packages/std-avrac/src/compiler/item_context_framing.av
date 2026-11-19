@@ -1,0 +1,55 @@
+//! WHICH LAMBDAS CARRY THEIR FRAME OF CONTEXTS, in a program: those whose body reads a context, as
+//! the program's survey of what it reads finds it (compiler/item_context_reads.av), each with the
+//! frame current where it is made, entered where it runs. The survey reads every body as it is
+//! lowered with nothing framed — framing a lambda changes nothing of what it reads — and a body the
+//! program frames a lambda of is asked again with those lambdas framed, its own answer apart from the
+//! one every other program shares. A program that declares no context frames nothing, and reads
+//! nothing here but that.
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use core.{CalledFn, flatten, some_list}
+
+/// The lambdas of one body a program frames: the body's unit, and the symbol each lambda lifts under.
+@derive(Saved)
+type UnitFraming = { unit: string, lambdas: List<string> }
+
+/// The lambdas a program frames, by the unit of each body that makes some.
+@derive(Saved)
+type ProgramFraming = { units: List<UnitFraming> }
+
+/// The lambdas of the body known by `unit` the program of the package `package` frames; none where
+/// the program declares no context, or the body makes none that reads one.
+export fn framed_lambdas(engine: QueryEngine, package: string, unit: string) -> List<string> {
+    program_framing(engine, package).units.find(it.unit == unit)?.lambdas ?? []
+}
+
+/// The unit a file's entry is framed by.
+export fn entry_unit(file: SourceFileAddress) -> string { "entry:${file.package_name}:${file.path_in_package}" }
+
+@query
+fn program_framing(engine: QueryEngine, package: string) -> ProgramFraming {
+    if program_contexts(engine, package).is_empty() { return ProgramFraming { units: [] } }
+    let survey = read_survey(engine, package)
+    let entries = [EntryAt { file: f, body: e } for f in program_files(engine, package) if f.package_name == package for e in some_list(entry_plain(engine, f))]
+    for e in entries { let _ = survey.settled(e.body) }
+    let own = [UnitFraming { unit: entry_unit(e.file), lambdas: reading_lifts(survey, e.body) } for e in entries]
+    let called = [UnitFraming { unit: c.symbol, lambdas: reading_lifts(survey, b) } for c in survey.met_calls.get() for b in some_list(reached_body(engine, c))]
+    ProgramFraming { units: [u for u in own.concat(called) if !u.lambdas.is_empty()] }
+}
+
+/// An entry the survey starts at: its file, and its body lowered with nothing framed.
+type EntryAt = { file: SourceFileAddress, body: LoweredFn }
+
+/// The lambdas `f` lifts whose body reads a context, walked from no frame with every box the survey
+/// met known.
+fn reading_lifts(survey: ReadSurvey, f: LoweredFn) -> List<string> {
+    [l.symbol for l in f.lifts if !survey.walk(l.ins, f, l.marks).reads.is_empty()]
+}
+
+collect listed_framing_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries which lambdas a program frames is read through, for a process to hand its engine.
+export fn framing_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_framing_facts) }

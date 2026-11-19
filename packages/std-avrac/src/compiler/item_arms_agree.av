@@ -1,8 +1,8 @@
 //! WHERE A `match`'S ARMS MEET AT NO TYPE: an arm answering what the others' answer can't join,
 //! judged as the old path's arms law judges them — against the seat where one plants its want on
 //! the arms, else against the first arm joined with each arm in turn, as the body's typing refused
-//! it; one a `void` fn ends on against the seat, read off the item's typed nodes. A build that let
-//! them through would join values of two types, or a value with nothing.
+//! it; one a `void` fn, method or static ends on against the seat, read off the item's typed
+//! nodes. A build that let them through would join values of two types, or a value with nothing.
 use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten, owned_type}
 use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
@@ -21,6 +21,7 @@ fn arms_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let void_tails = [b! for s in item.stmts for b in void_fn_bodies(engine, file, item, s) if b != null]
+        .concat(void_method_bodies(engine, file, at, item))
     let text = item_under(engine, file, at).text
     flatten([arm_refused(r, text) for r in refused_in(engine, file, at)])
         .concat(
@@ -71,6 +72,20 @@ fn void_fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
     let parts? = item.store.fn_parts(s) else { return [] }
     let sig? = fn_signature(engine, file, parts.name) else { return [] }
     if sig.answer.spelled() == "void" { [parts.body] } else { [] }
+}
+
+/// The bodies of the methods and statics each impl the written item `at` of `file` writes answers
+/// `void` from.
+fn void_method_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    ExprId,
+> {
+    [p!.body for a in impls_at(engine, file, at) for s in impl_fns(item, a) for p in [item.store.fn_parts(s)] if p != null && answers_void(method_signature(engine, a, p!.name))]
+}
+
+/// Whether `sig` answers `void`; absent, it answers nothing known.
+fn answers_void(sig: FnSignature?) -> bool {
+    let known? = sig else { return false }
+    known.answer.spelled() == "void"
 }
 
 /// Every disagreeing arm of each `match` a `void` fn's body, among `void_tails`, ends on, among the

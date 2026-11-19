@@ -327,18 +327,22 @@ fn program_walked_again(
     mut cut: List<int> = []
     mut rechecked: List<int> = []
     for b in bodies {
-        let made = names_wanted([call_made(met_for(c, fold.program)) for c in b.was.callees])
-        let made_now = names_wanted([call_made(met_for(c, fold.program)) for c in b.now.callees])
+        let made = names_wanted(
+            [call_made(met_for(fold.engine, c, fold.program)) for c in b.was.callees],
+        )
+        let made_now = names_wanted(
+            [call_made(met_for(fold.engine, c, fold.program)) for c in b.now.callees],
+        )
         let calls_now = names_wanted([c.symbol for c in b.now.callees])
         for raw in b.was.callees {
-            let c = met_for(raw, fold.program)
+            let c = met_for(fold.engine, raw, fold.program)
             if made_now.has(call_made(c)) { continue }
             let at? = fold.place_of(c.symbol) else { return null }
             if !calls_now.has(c.symbol) { cut.push(at) }
             if called_text(fold.held(at)) == called_text(c) { rechecked.push(at) }
         }
         for raw in b.now.callees {
-            let c = met_for(raw, fold.program)
+            let c = met_for(fold.engine, raw, fold.program)
             if made.has(call_made(c)) { continue }
             let held? = fold.meets(c) else { return null }
             if !held { seeds.push(c) }
@@ -364,7 +368,7 @@ fn program_walked_again(
     let grown_names = names_wanted([m.called.symbol for m in grown.met])
     for m in grown.met {
         for raw in m.facts.callees() {
-            let c = met_for(raw, fold.program)
+            let c = met_for(fold.engine, raw, fold.program)
             if grown_names.has(c.symbol) { continue }
             let held? = fold.meets(c) else { return null }
             if !held { return null }
@@ -385,7 +389,8 @@ fn program_walked_again(
         let facts? = fold.facts_at(at, after) else { return null }
         for c in facts.callees {
             let to? = fold.place_of(c.symbol) else { return null }
-            if !gone[to] && called_text(fold.held(to)) == called_text(met_for(c, fold.program)) { rechecked.push(to) }
+            if !gone[to] &&
+                called_text(fold.held(to)) == called_text(met_for(fold.engine, c, fold.program)) { rechecked.push(to) }
         }
     }
     if !fold.files_kept(gone) { return null }
@@ -696,16 +701,16 @@ impl WalkFold {
             let b = after.at(at)
             if b == null && !calls_into(u, highs) { continue }
             let facts? = (if b != null { b!.now } else { facts_read(self.engine, u.called) }) else { return false }
-            for c in facts.callees { if wanted.has(c.symbol) { calls.push(met_for(c, self.program)) } }
+            for c in facts.callees { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } }
         }
-        for m in after.grown.met { for c in m.facts.callees() { if wanted.has(c.symbol) { calls.push(met_for(c, self.program)) } } }
+        for m in after.grown.met { for c in m.facts.callees() { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } } }
         let starts = every_callee_of(entry.placed_keeping(self.walk.entry_kept))
             .concat(hosted_in(self.engine, file, self.program))
             .concat(package_hosted(self.engine, self.program, file))
-        for c in starts { if wanted.has(c.symbol) { calls.push(met_for(c, self.program)) } }
+        for c in starts { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } }
         for at in places {
             let u = self.walk.units[at]
-            for h in hosted_in(self.engine, u.called.file, self.program) { if h.symbol == u.called.symbol { calls.push(met_for(h, self.program)) } }
+            for h in hosted_in(self.engine, u.called.file, self.program) { if h.symbol == u.called.symbol { calls.push(met_for(self.engine, h, self.program)) } }
         }
         for at in places {
             let symbol = self.walk.units[at].called.symbol
@@ -2376,12 +2381,12 @@ fn walked(
         let count = match calls { .Held(held) -> held.length, .Lying(_, lying) -> lying.length }
         for i in 0..count {
             let c = match calls {
-                .Held(held) -> met_for(held[i], program),
+                .Held(held) -> met_for(engine, held[i], program),
                 .Lying(source, lying) -> {
                     let call = lying.record_in(source, i)
                     let symbol = CalledFn.symbol_in(source, call)
                     if seen.has(symbol) && !least.holds(symbol) { continue }
-                    met_for(CalledFn.read_from(source, call), program)
+                    met_for(engine, CalledFn.read_from(source, call), program)
                 },
             }
             if seen.has(c.symbol) {
@@ -2492,10 +2497,13 @@ fn held_of(wrappers: List<FnWrapper>) -> Map<string, bool> {
 }
 
 /// `c` as the program of the package `program` meets it: a collect's unit gathering `in closure`
-/// gathers over that program's closure; any other as it stands.
-fn met_for(c: CalledFn, program: string?) -> CalledFn {
-    if !c.gathers_closure || program == null { return c }
-    c with { gathered_for: program }
+/// gathers over that program's closure; a body whose lambdas read a context frames them; any other
+/// as it stands.
+fn met_for(engine: QueryEngine, c: CalledFn, program: string?) -> CalledFn {
+    let p? = program else { return c }
+    if c.gathers_closure { return c with { gathered_for: p } }
+    let framed = framed_lambdas(engine, p, c.symbol)
+    if framed.is_empty() { c } else { c with { framed: framed } }
 }
 
 /// The bodies a walk met, lowered and placed as it kept their tests.
@@ -2873,6 +2881,8 @@ enum BodyAsked {
     /// A collect gathering `in closure`, as the program of the package `program` reads it.
     Gathered(file: SourceFileAddress, name: string, program: string)
     Case(file: SourceFileAddress, item: int, index: int, symbol: string)
+    /// A fn's or a method's body, its lambdas `framed` carrying their frame of contexts.
+    Framed(asked: BodyAsked, framed: List<string>)
     Nothing
 }
 
@@ -2888,7 +2898,11 @@ fn body_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
         } else {
             BodyAsked.MethodSeatDefault(c.of!, c.owner!, c.seat_of!, c.name, c.statics)
         },
-        .Not -> if c.gathered_for == null { declared_asked(engine, c) } else { BodyAsked.Gathered(c.file, c.name, c.gathered_for!) },
+        .Not -> when {
+            c.gathered_for != null -> BodyAsked.Gathered(c.file, c.name, c.gathered_for!)
+            c.framed.is_empty() -> declared_asked(engine, c)
+            _ -> BodyAsked.Framed(declared_asked(engine, c), c.framed)
+        },
     }
 }
 
@@ -2908,35 +2922,56 @@ fn declared_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
 /// The body `asked` names, lowered with its tests held.
 fn asked_body(engine: QueryEngine, asked: BodyAsked) -> LoweredFn? {
     match asked {
-        .Under(file, name, under) -> lowered_under(engine, file, name, under),
+        .Under(file, name, under) -> lowered_under(engine, file, name, under, []),
         .Settled(file, name, under, settled) -> lowered_settled(engine, file, name, under, settled),
         .FieldDefault(file, owner, name, under) -> lowered_field_default(engine, file, owner, name, under),
         .SeatDefault(file, owner, name) -> lowered_seat_default(engine, file, owner, name),
         .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default(engine, of, owner, method, name, statics),
         .Default(of, owner, name, written_as) -> lowered_default(engine, of, owner, name, written_as),
         .TraitStatic(of, owner, name) -> lowered_trait_static(engine, of, owner, name),
-        .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under),
+        .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, []),
         .EveryVariant(of, owner, name) -> lowered_every_variant(engine, of, owner, name),
         .Gathered(file, name, program) -> lowered_gathered(engine, file, name, program),
         .Case(file, item, index, symbol) -> lowered_case(engine, file, item, index, symbol),
+        .Framed(inner, framed) -> framed_body(engine, inner, framed),
         .Nothing -> null,
+    }
+}
+
+/// The question whose answer is the body `inner` names, its lambdas `framed` carrying their frame.
+fn framed_question(engine: QueryEngine, inner: BodyAsked, framed: List<string>) -> Question? {
+    match inner {
+        .Under(file, name, under) -> lowered_under_question(engine, file, name, under, framed),
+        .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, framed),
+        rest -> asked_question(engine, inner),
+    }
+}
+
+/// The body `inner` names, its lambdas `framed` carrying their frame of contexts: a fn's or a
+/// method's; any other as it is.
+fn framed_body(engine: QueryEngine, inner: BodyAsked, framed: List<string>) -> LoweredFn? {
+    match inner {
+        .Under(file, name, under) -> lowered_under(engine, file, name, under, framed),
+        .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, framed),
+        rest -> asked_body(engine, inner),
     }
 }
 
 /// The question whose answer is the body `asked` names; absent where none is asked.
 fn asked_question(engine: QueryEngine, asked: BodyAsked) -> Question? {
     match asked {
-        .Under(file, name, under) -> lowered_under_question(engine, file, name, under),
+        .Under(file, name, under) -> lowered_under_question(engine, file, name, under, []),
         .Settled(file, name, under, settled) -> lowered_settled_question(engine, file, name, under, settled),
         .FieldDefault(file, owner, name, under) -> lowered_field_default_question(engine, file, owner, name, under),
         .SeatDefault(file, owner, name) -> lowered_seat_default_question(engine, file, owner, name),
         .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default_question(engine, of, owner, method, name, statics),
         .Default(of, owner, name, written_as) -> lowered_default_question(engine, of, owner, name, written_as),
         .TraitStatic(of, owner, name) -> lowered_trait_static_question(engine, of, owner, name),
-        .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under),
+        .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, []),
         .EveryVariant(of, owner, name) -> lowered_every_variant_question(engine, of, owner, name),
         .Gathered(file, name, program) -> lowered_gathered_question(engine, file, name, program),
         .Case(file, item, index, symbol) -> lowered_case_question(engine, file, item, index, symbol),
+        .Framed(inner, framed) -> framed_question(engine, inner, framed),
         .Nothing -> null,
     }
 }

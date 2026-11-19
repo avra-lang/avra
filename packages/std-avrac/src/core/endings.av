@@ -21,6 +21,8 @@ export enum Ending {
     Owned(owner: Reg, ty: SignedType)
     /// A `ctx` set's frame taken back to the one it replaced.
     Restored
+    /// A framed lambda's body's frame taken back where `entered` says it entered one.
+    Entered(entered: Reg)
 }
 
 /// How a deferred body runs: its box's code called through, handed the box; or the body, one call,
@@ -41,7 +43,7 @@ impl Ending {
     /// Whether ending it calls a deferred body.
     fn calls() -> bool {
         match self {
-            .Joined(_) or .Landed(_, _) or .Owned(_, _) or .Restored -> false,
+            .Joined(_) or .Landed(_, _) or .Owned(_, _) or .Restored or .Entered(_) -> false,
             .Deferred(_, _, _, _) -> true,
         }
     }
@@ -182,6 +184,10 @@ impl Lowering {
                 .stored(cell, self.call_row(Layout.Word, rt_sig_of("avra_fiber_within_end")!, [scope])),
             .Owned(owner, ty) -> self.owner_settled(owner, ty),
             .Restored -> self.run_row(rt_sig_of("avra_ctx_back")!, []),
+            .Entered(entered) -> self
+                .void_region(self.bin(Layout.Truth, BinOp.Ne, entered, self.const_int(0))) { cx ->
+                    cx.run_row(rt_sig_of("avra_ctx_back")!, [])
+                },
         }
     }
 

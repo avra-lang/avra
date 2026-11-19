@@ -45,7 +45,7 @@ use @std.path.{dir_of, file_name, normalized}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.layered_store.{use_machine_store, use_package_places}
-use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.query_engine.{QueryDefinition, QueryEngine, query_engine}
 use @std.program.source_facts.{FileOctets, WorldPlaces, use_source_world}
 use @std.program.tests.support.store_in_memory.{StoreInMemory, store_in_memory}
 
@@ -71,7 +71,12 @@ export type Held = {
     /// Whether its files stand on the machine's disk, each read through its stamp as a build reads
     /// it; else they are held in memory and every read is hashed.
     on_disk: bool = false,
+    /// The print of the reader its files are read under: one language's.
+    language: string = HELD_LANGUAGE,
 }
+
+/// The print of the reader a held program is read under.
+const HELD_LANGUAGE: string = "avra-held"
 
 /// Where a held toolchain's std packages lie.
 const STD_ROOT: string = "/std"
@@ -141,7 +146,7 @@ impl Held {
                 avra_source_world(
                     (f) -> disk_text(self.standing(f.package_name, f.path_in_package)),
                     (d) -> disk_names(self.standing(d.package_name, d.path_in_package)),
-                    "avra-held",
+                    self.language,
                     (f) -> self.octets(f),
                     WorldPlaces {
                         file: (f) -> self.standing(f.package_name, f.path_in_package),
@@ -156,7 +161,7 @@ impl Held {
             avra_source_world(
                 (f) -> self.read(f),
                 (d) -> self.listed(d),
-                "avra-held",
+                self.language,
                 (f) -> self.octets(f),
             ),
         )
@@ -183,9 +188,14 @@ impl Held {
 
     /// What one process over `store` makes of the program the file at `path` runs, read out
     /// before it ends as a process ends: what its build says, what it runs to, its IR, and the
-    /// queries it worked out, inputs aside.
-    fn passed_over(path: string, store: StoreInMemory) -> Pass {
-        self.passed_with(path, query_engine(store, avra_fact_definitions()))
+    /// queries it worked out, inputs aside. The process's compiler is the one whose queries are
+    /// `definitions`.
+    fn passed_over(
+        path: string,
+        store: StoreInMemory,
+        definitions: List<QueryDefinition> = avra_fact_definitions(),
+    ) -> Pass {
+        self.passed_with(path, query_engine(store, definitions))
     }
 
     /// What a build of the program `entry` runs says, asked through `engine`: what its manifests
@@ -230,9 +240,13 @@ impl Held {
 
     /// `passed_over` a store on disk under `directory`, opened afresh and saved as a process that
     /// ended saves it.
-    fn passed_on_disk(path: string, directory: string) -> Pass {
+    fn passed_on_disk(
+        path: string,
+        directory: string,
+        definitions: List<QueryDefinition> = avra_fact_definitions(),
+    ) -> Pass {
         let store = disk_store_at(directory)
-        let pass = self.passed_with(path, query_engine(store, avra_fact_definitions()))
+        let pass = self.passed_with(path, query_engine(store, definitions))
         match store.saved_alone() {
             .Ok(_) -> pass,
             .Err(_) -> pass with { report: "<the store did not save>" },
@@ -504,6 +518,11 @@ fn graphed(files: Map<string, string>, root: string, std: string) -> Held {
     }
 }
 
+/// The queries of a compiler whose one query `named` was built from other code: another binary's.
+export fn another_compiler(named: string) -> List<QueryDefinition> {
+    [if d.query_name == named { d with { code_hash: "${d.code_hash}+another" } } else { d } for d in avra_fact_definitions()]
+}
+
 /// A store with nothing saved, for the processes of one case to share.
 export fn empty_store() -> StoreInMemory { store_in_memory() }
 
@@ -640,9 +659,9 @@ impl Judged {
         program_packages(self.engine, self.entry.package_name)
     }
 
-    /// The objects and flags the program links with, read off its packages' manifests: no
-    /// variable set, and a file there where the held files hold one.
-    fn link_words() -> List<string> {
+    /// The objects and flags the program links with, read off its packages' manifests: each
+    /// variable as `env` sets it, and a file there where the held files hold one.
+    fn link_words(env: Map<string, string> = {}) -> List<string> {
         self.held.entered()
         let held = self.held
         program_link_words(
@@ -652,7 +671,7 @@ impl Judged {
                 root_of: (p: string) -> held.standing(p, ""),
                 manifest_of: (p: string) -> held.manifest_of(p),
                 world: LinkWorld {
-                    env: (_n: string) -> null,
+                    env: (n: string) -> env.get(n),
                     there: (path: string) -> held.files.has(path),
                 },
             },

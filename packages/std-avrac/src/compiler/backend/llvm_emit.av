@@ -114,13 +114,17 @@ impl Emit {
     /// plain load could be hoisted out of the loop whose back-edge reads
     /// it and the write would then never be seen.
     fn flag_value(flag: RtFlag) -> ptr {
+        let cell = avra_llvm_runtime_byte(self.m, flag_symbol(flag))
+        match flag {
+            .Unwinding or .Tick -> self.bit_set(cell),
+            .Frame -> avra_llvm_build_load(self.b, avra_llvm_int64_type(self.lc), cell, "frame"),
+        }
+    }
+
+    /// Whether the byte at `cell` is set: one load, compared with 0.
+    fn bit_set(cell: ptr) -> ptr {
         let i8 = avra_llvm_int8_type(self.lc)
-        let byte = avra_llvm_build_load_atomic(
-            self.b,
-            i8,
-            avra_llvm_runtime_byte(self.m, flag_symbol(flag)),
-            "flag",
-        )
+        let byte = avra_llvm_build_load_atomic(self.b, i8, cell, "flag")
         avra_llvm_build_icmp(self.b, 33, byte, avra_llvm_const_int(i8, 0, 0), "set")
     }
 
