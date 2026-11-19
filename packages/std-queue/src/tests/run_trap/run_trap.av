@@ -2,7 +2,6 @@
 //! loop goes on, the other items are settled, and the trapping item is
 //! started as often as the terms allow and then buried unanswered.
 use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError, Fate, Order}
-use @std.task.{unbounded_channel}
 use @std.time.{ms, secs, sleep}
 
 extern fn avra_clock_virtual(on: int)
@@ -24,7 +23,7 @@ fn said(r: Result<int, DrainError>) -> string {
 
 avra_clock_virtual(1)
 let starts: Cell<int> = Cell.new(0)
-let letters = unbounded_channel<Dead<int, string>>()
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     retries: 2
     backoff: ms(10)
@@ -34,11 +33,12 @@ worker settle {
     reads: jobs
     at_once: 2
     each: (d: Delivery<int>) -> trapping(starts, d)
-    dead: letters.sink
+    dead: letters
 }
+use tests.support.letters.{first_letter}
 for i in [1, 7, 2, 3] { let _ = jobs.home().send(i, key("k${i}")) }
 let r = spawn run(settle)
 sleep(secs(1))
 settle.stop()
-let gone = letters.source.taken()
+let gone = first_letter(letters)
 "${said(r.await)} | starts ${starts.get()} | ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

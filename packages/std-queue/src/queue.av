@@ -28,16 +28,29 @@ export type Key = { text: string }
 /// is refused by. An item no take has reached is at epoch zero.
 export type Lease = { at: int, epoch: int }
 
+/// A transaction a send may join: whether it still stands — open, and
+/// neither committed nor rolled back — the mark of the database it is
+/// open on, and `after`, which runs `then_do` once it commits and never
+/// if it rolls back. A home that outlives the process answers one.
+export trait Transaction {
+    fn stands() -> bool
+    fn database() -> string
+    fn after(then_do: fn() -> void)
+}
+
 /// One delivery's handle. `id` is its item's alone in the home that
 /// handed it out, and no other home answers it. `epoch` fences an ack
 /// from a hold that has since been redelivered, and is one at an item's
-/// first delivery; `attempt` counts handler starts.
+/// first delivery; `attempt` counts handler starts. `tx` is the
+/// transaction a handler run `in_tx` stands in: its writes and the ack
+/// are one commit.
 export type Delivery<T> = {
     id: string,
     item: T,
     key: Key,
     attempt: int,
     epoch: int,
+    tx: dyn Transaction? = null,
 }
 
 /// Why an item was buried: its handler failed with an error of its
@@ -144,7 +157,14 @@ export type Parcel<T> = { item: T, key: Key }
 /// whether one may be: a home that hears its own sends wakes at once,
 /// and one that cannot waits no longer than it says it polls. `delay`
 /// sends an item that is due no sooner than the duration from now; a
-/// home that keeps no instant refuses it.
+/// home that keeps no instant refuses it. `idle`
+/// says whether a worker's loop may ask the home now: one whose
+/// connection holds a transaction the loop does not own answers
+/// `false`, and the loop waits rather than joining that work. `settles`
+/// runs a handler's work and the delivery's ack as one commit — the
+/// start counted first, the work's writes kept only when the item
+/// settles — and answers whether it did; a home with no transaction
+/// has none.
 export type Home<T> = {
     send: fn(T, Key) -> Result<string?, HomeError>,
     delay: fn(T, Key, Duration) -> Result<string?, HomeError> = (_item: T, _k: Key, _after: Duration) -> refused<string?>(HomeError.Refused(undelayed())),
@@ -157,7 +177,13 @@ export type Home<T> = {
     bury: fn(Delivery<T>, fn(T) -> bool) -> Result<bool, HomeError>,
     depth: fn() -> Result<int, HomeError>,
     waits: fn(Duration) -> Result<bool, HomeError> = asked_again,
+    idle: fn() -> bool = unheld,
+    settles: Settles<T>? = null,
 }
+
+/// A home's way to settle a delivery in the transaction its handler's
+/// writes stand in, as `Home.settles` says.
+export type Settles<T> = { run: fn(Delivery<T>, fn(Delivery<T>) -> bool) -> Result<bool, HomeError> }
 
 /// The wait of a home that hears nothing: the patience is waited out,
 /// and the caller asks again.
@@ -166,17 +192,29 @@ export fn asked_again(patience: Duration) -> Result<bool, HomeError> {
     true
 }
 
-/// A home that outlives the process, and its send by name: within the
-/// span the home remembers, a name is one item, and every send of it
-/// answers the id the first was answered.
-/// `delay_as` is the named send of an item due no sooner than the
-/// duration from now.
+/// A home no transaction holds: a loop may always ask it.
+fn unheld() -> bool {
+    true
+}
+
+/// A home that outlives the process, its send by name, and whether it
+/// joins a transaction: within the span the home remembers, a name is
+/// one item, and every send of it answers the id the first was
+/// answered. `delay_as` is the named send of an item due no sooner than
+/// the duration from now. `joins` answers `true` for a transaction open
+/// on the home's own connection, and refuses any other.
 export type Lasting<T> = {
     home: Home<T>,
     send_as: fn(T, Key, string) -> Result<string?, HomeError>,
     delay_as: fn(T, Key, string, Duration) -> Result<string?, HomeError> = (_item: T, _k: Key, _name: string, _after: Duration) -> refused<string?>(
         HomeError.Refused(undelayed()),
     ),
+    joins: fn(dyn Transaction) -> Result<bool, HomeError> = joins_none,
+}
+
+/// The join of a home that keeps no transaction.
+fn joins_none(_tx: dyn Transaction) -> Result<bool, HomeError> {
+    .Err(HomeError.Refused(no_transaction()))
 }
 
 /// How a queue comes to stand on a home that outlives the process:
@@ -1101,11 +1139,13 @@ export component queue<T> {
         }
         said
     }
+    /// The queue as its home answers it, opened at the first use. A
+    /// durable home that could not be opened is asked again at the next.
     fn home() -> Queue<T> {
         let already = self.opened.get()
         if already != null { return already! }
         let fresh = self.opening()
-        self.opened.set(fresh)
+        if self.durable == null || self.lasting.get() != null { self.opened.set(fresh) }
         fresh
     }
     fn opening() -> Queue<T> {
@@ -1137,16 +1177,27 @@ export component queue<T> {
     /// item within `dedupe`, and every send of it answers the id the
     /// first was answered. In memory nothing dedupes. `after:` holds the
     /// item back until that span from now is over; once due it takes its
-    /// place by its send. A delay of nothing or less is none.
-    fn send(item: T, id: string = "", under: Key = key(""), after: Duration = ms(0)) -> Result<
-        string?,
-        HomeError,
-    > {
+    /// place by its send. A delay of nothing or less is none. `tx:` sends
+    /// as part of that transaction: its commit delivers the item — after
+    /// its delay, when it has one — and its rollback leaves none. A
+    /// transaction that no longer stands, or stands on another
+    /// connection, is refused, and so is any on a queue that stands on
+    /// no durable home.
+    fn send(
+        item: T,
+        id: string = "",
+        under: Key = key(""),
+        after: Duration = ms(0),
+        tx: dyn Transaction? = null,
+    ) -> Result<string?, HomeError> {
         let q = self.home()
-        let lasts? = self.lasting.get() else { return q.send_after(item, under, after) }
+        let lasts = self.lasting.get()
+        if tx != null && lasts == null && self.durable == null { return .Err(HomeError.Refused(unjoined(self.name))) }
+        if tx != null && lasts != null { let _ = (lasts!.joins)(tx!)? }
+        let named? = lasts else { return q.send_after(item, under, after) }
         if id == "" { return q.send_after(item, under, after) }
-        if after.ns <= 0 { return (lasts.send_as)(item, under, id) }
-        (lasts.delay_as)(item, under, id, after)
+        if after.ns <= 0 { return (named.send_as)(item, under, id) }
+        (named.delay_as)(item, under, id, after)
     }
     /// A sink that sends into this queue: what a worker's `dead:` takes.
     /// It parks no sender; a send the queue refused answers `false`.
@@ -1165,15 +1216,20 @@ export component queue<T> {
 
 /// A worker's declaration: the queue it drains and the handler it runs
 /// for each delivery, failing in a type of its own. `dead:` is the
-/// letter a failed item is buried in; `flow.no_fate` refuses a worker
-/// whose handler can fail and names none. `at_once` is how many
-/// handlers `run` keeps busy; the queue's order term may allow fewer.
-/// `failed` and `buried` fire synchronously, where the loop stands.
+/// queue a failed item is buried in, a letter that never drops one;
+/// `flow.no_fate` refuses a worker whose handler can fail and names
+/// none. `at_once` is how many handlers `run` keeps busy; the queue's
+/// order term may allow fewer. `in_tx` runs each handler inside the
+/// transaction that acks its item, where the queue's home keeps one: the
+/// delivery's `tx` is that transaction, and the handler's writes stand
+/// only if the item settles. `failed` and `buried` fire synchronously,
+/// where the loop stands.
 export component worker<T, R, E> {
     reads: queue<T>?
     each: fn(Delivery<T>) -> Result<R, E>
-    dead: Sink<Dead<T, E>>? = null
+    dead: queue<Dead<T, E>>? = null
     at_once: int = 1
+    in_tx: bool = false
     state halt: Channel<bool> = open_channel<bool>(1)
     on failed(d: Delivery<T>, e: E)
     on buried(dead: Dead<T, E>)
@@ -1189,6 +1245,14 @@ export component worker<T, R, E> {
                 )
         }
         if self.at_once < 1 { said.push(refuse(runs_none(self.at_once))) }
+        if drops(self.dead?.overflow ?? Overflow.park) {
+            said
+                .push(
+                    refuse(
+                        letter_dropping(self.dead?.name ?? "", self.dead?.overflow ?? Overflow.park),
+                    ),
+                )
+        }
         said
     }
     /// Ask the worker's `run` to end: the one standing, or the next to
@@ -1213,7 +1277,7 @@ export enum DrainError { NoQueue, NoLetter, Home(why: HomeError) }
 export fn drain<T, R, E>(w: worker<T, R, E>) -> Result<int, DrainError> {
     let qspec? = w.reads else { return .Err(DrainError.NoQueue) }
     let dead? = w.dead else { return .Err(DrainError.NoLetter) }
-    match emptied(w, qspec, dead) { .Ok(n) -> .Ok(n), .Err(e) -> .Err(DrainError.Home(e)) }
+    match emptied(w, qspec, dead.sink()) { .Ok(n) -> .Ok(n), .Err(e) -> .Err(DrainError.Home(e)) }
 }
 
 /// Run `w`'s handler over `qspec` until no item is due.
@@ -1246,24 +1310,62 @@ fn handled<T, R, E>(
     held: Delivery<T>,
     dead: Sink<Dead<T, E>>,
 ) -> Result<bool, HomeError> {
-    let each = w.each
-    let _ = q.began(held)?
-    match each(held) {
-        .Ok(_) -> {
-            if !q.ack(held)? { return false }
-            if qspec.acked != null { (qspec.acked!)(held) }
-            true
+    let settles = settling(w, q)
+    if settles == null { let _ = q.began(held)? }
+    match started(settles, w.each, held) {
+        .Answered(r) -> match r {
+            .Ok(_) -> {
+                if !q.ack(held)? { return false }
+                announced(qspec, held)
+            },
+            .Err(e) -> {
+                if w.failed != null { (w.failed!)(held, e) }
+                if held.attempt + 1 >= qspec.retries {
+                    let _ = interred(w, q, held, Fate.Failed(e), dead)?
+                } else {
+                    let _ = q.release(held, ms(0))?
+                }
+                false
+            },
         },
-        .Err(e) -> {
-            if w.failed != null { (w.failed!)(held, e) }
-            if held.attempt + 1 >= qspec.retries {
-                let _ = interred(w, q, held, Fate.Failed(e), dead)?
-            } else {
-                let _ = q.release(held, ms(0))?
-            }
-            false
-        },
+        .Settled -> announced(qspec, held),
+        .Trapped or .Late or .Lost or .Spent -> false,
     }
+}
+
+/// The settling of `q`'s home where `w` runs its handlers in one
+/// transaction with their acks, and the home keeps one.
+fn settling<T, R, E>(w: worker<T, R, E>, q: Queue<T>) -> Settles<T>? {
+    if w.in_tx { q.home.settles } else { null }
+}
+
+/// One start of `each` over `d`: plainly, its start already counted,
+/// or through `settles`, which counts the start and keeps the handler's
+/// writes in the commit that acks the item.
+fn started<T, R, E>(settles: Settles<T>?, each: fn(Delivery<T>) -> Result<R, E>, d: Delivery<T>) -> Start<
+    R,
+    E,
+> {
+    let s? = settles else { return Start.Answered(each(d)) }
+    let answer: Cell<List<Result<R, E>>> = Cell.new([])
+    let kept = (s.run)(d, (held: Delivery<T>) -> told(answer, each(held))) catch false
+    let r? = answer.get().first() else { return Start.Lost }
+    match r {
+        .Ok(_) -> if kept { Start.Settled } else { Start.Lost },
+        .Err(_) -> Start.Answered(r),
+    }
+}
+
+/// Keep a handler's answer in `answer`; whether it answered `Ok`.
+fn told<R, E>(answer: Cell<List<Result<R, E>>>, r: Result<R, E>) -> bool {
+    answer.set([r])
+    r is .Ok
+}
+
+/// Fire `acked` for a settled delivery; it settled.
+fn announced<T>(qspec: queue<T>, d: Delivery<T>) -> bool {
+    if qspec.acked != null { (qspec.acked!)(d) }
+    true
 }
 
 /// Bury `held` under `fate`, and fire `buried` once the letter took
@@ -1302,9 +1404,10 @@ fn caught<V>(body: fn() -> V) -> Ran<V> {
 }
 
 /// What became of a delivery handed to a handler: the handler answered,
-/// it trapped, its lease ended first, the hold was lost before it ran,
-/// or the item's starts were already spent and it never ran.
-enum Start<R, E> { Answered(Result<R, E>), Trapped, Late, Lost, Spent }
+/// it answered `Ok` in the transaction that acked the item, it trapped,
+/// its lease ended first, the hold was lost before it ran or at its
+/// ack, or the item's starts were already spent and it never ran.
+enum Start<R, E> { Answered(Result<R, E>), Settled, Trapped, Late, Lost, Spent }
 
 /// One delivery a handler is done with, and what became of it.
 type Ended<T, R, E> = { d: Delivery<T>, out: Start<R, E> }
@@ -1352,7 +1455,7 @@ export fn run<T, R, E>(w: worker<T, R, E>) -> Result<int, DrainError> {
         w: w,
         qspec: qspec,
         q: qspec.home(),
-        dead: dead,
+        dead: dead.sink(),
         jobs: open_channel<Delivery<T>>(w.at_once),
         done: unbounded_channel<Ended<T, R, E>>(),
         heard: ring<Ended<T, R, E>>(0 - 1),
@@ -1387,8 +1490,10 @@ impl Shift<T, R, E> {
 
     /// One turn: settle what the handlers are done with, hand the free
     /// handlers what the home has due, and wait when neither moved
-    /// anything.
+    /// anything. A home held by a transaction the loop does not own is
+    /// waited on and left alone.
     fn turn() -> Result<bool, HomeError> {
+        if !(self.q.home.idle)() { return self.waited(true) }
         let closed = self.reaped()?
         let free = self.w.at_once - self.busy.get()
         let held = if free > 0 { self.q.take_many(free)? } else { [] }
@@ -1423,16 +1528,13 @@ impl Shift<T, R, E> {
         let late: Start<R, E> = Start.Late
         let trapped: Start<R, E> = Start.Trapped
         if d.attempt >= self.qspec.retries { return spent }
-        if !(self.q.began(d) catch false) { return lost }
+        let settles = settling(self.w, self.q)
+        if settles == null && !(self.q.began(d) catch false) { return lost }
         let each = self.w.each
         let limit = due_in(self.q.terms.lease)
-        let start = spawn caught(() -> each(d))
+        let start = spawn caught(() -> started(settles, each, d))
         select {
-            r in start -> match r {
-                .Answered(a) -> Start.Answered(a),
-                .Trapped(_) -> trapped,
-                .Cut -> late,
-            }
+            r in start -> match r { .Answered(a) -> a, .Trapped(_) -> trapped, .Cut -> late }
             limit -> {
                 start.cancel()
                 late
@@ -1465,6 +1567,7 @@ impl Shift<T, R, E> {
         self.busy.set(self.busy.get() - 1)
         match e.out {
             .Answered(r) -> match r { .Ok(_) -> self.acked(e.d), .Err(why) -> self.failed(e.d, why) },
+            .Settled -> self.counted(e.d),
             .Trapped -> self.q.release(e.d, self.backoff(e.d)),
             .Spent -> interred(self.w, self.q, e.d, Fate.Unanswered, self.dead),
             .Late or .Lost -> false,
@@ -1473,9 +1576,13 @@ impl Shift<T, R, E> {
 
     fn acked(d: Delivery<T>) -> Result<bool, HomeError> {
         if !self.q.ack(d)? { return false }
+        self.counted(d)
+    }
+
+    /// Count a delivery that settled, and say so.
+    fn counted(d: Delivery<T>) -> Result<bool, HomeError> {
         self.settled.set(self.settled.get() + 1)
-        if self.qspec.acked != null { (self.qspec.acked!)(d) }
-        true
+        announced(self.qspec, d)
     }
 
     fn failed(d: Delivery<T>, why: E) -> Result<bool, HomeError> {
@@ -1583,6 +1690,18 @@ fn delay_drops(o: Overflow) -> HomeError {
         )
 }
 
+fn unjoined(name: string) -> string {
+    "a send joins a transaction only on a durable queue, and `${name}` stands on none"
+}
+
+fn no_transaction() -> string {
+    "this home keeps no transaction, so a send cannot join one"
+}
+
+fn letter_dropping(name: string, o: Overflow) -> string {
+    "a letter never drops an item, and `${name}` overflows with `${overflow_word(o)}`"
+}
+
 fn unnamed() -> string {
     "a durable queue is named, and this has no `name:`"
 }
@@ -1596,6 +1715,5 @@ fn holds_none(capacity: int) -> string {
 }
 
 fn letter_drops(name: string, o: Overflow) -> HomeError {
-    HomeError
-        .Refused("a letter never drops an item, and `${name}` overflows with `${overflow_word(o)}`")
+    HomeError.Refused(letter_dropping(name, o))
 }

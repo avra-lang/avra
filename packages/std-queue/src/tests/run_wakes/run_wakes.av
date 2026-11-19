@@ -15,7 +15,6 @@ use @std.queue.{
     Overflow,
     Terms,
 }
-use @std.task.{unbounded_channel}
 use @std.time.{ms, now_ms, secs, sleep}
 
 extern fn avra_clock_virtual(on: int)
@@ -50,7 +49,7 @@ let terms = Terms {
     order: Order.fifo,
 }
 let memory = open_memory<int>(terms)
-let letters = unbounded_channel<Dead<int, string>>()
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     homed: match memory { .Ok(m) -> counting(m.home(), takes), .Err(_) -> null }
     acked: (d: Delivery<int>) -> acks.set(acks.get() + 1)
@@ -58,7 +57,7 @@ queue<int> jobs {
 worker idle {
     reads: jobs
     each: fine
-    dead: letters.sink
+    dead: letters
 }
 let r = spawn run(idle)
 sleep(secs(20))

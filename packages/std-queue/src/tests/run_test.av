@@ -2,7 +2,6 @@
 // suite's virtual clock. Compiled only: the cases park several handlers
 // at a time.
 use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError, Order}
-use @std.task.{unbounded_channel}
 use @std.time.{ms, now_ms, secs, sleep}
 
 /// How many handlers stand at once, and the most that ever did.
@@ -25,26 +24,27 @@ fn said(r: Result<int, DrainError>) -> string {
 fn settled(r: Result<int, DrainError>) -> int {
     match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
 }
+use tests.support.letters.{holds_letter}
 
 /// Nine items of nine keys under three handlers, then nine under a
 /// `fifo` queue and the same three.
 fn at_once() -> string {
     let apart = stood()
     let line = stood()
-    let letters = unbounded_channel<Dead<int, string>>()
+    queue<Dead<int, string>> letters {}
     queue<int> keyed { order: Order.by_key }
     queue<int> filed {}
     worker three {
         reads: keyed
         at_once: 3
         each: (d: Delivery<int>) -> slow(apart, d)
-        dead: letters.sink
+        dead: letters
     }
     worker one {
         reads: filed
         at_once: 3
         each: (d: Delivery<int>) -> slow(line, d)
-        dead: letters.sink
+        dead: letters
     }
     for i in 0..9 {
         let _ = keyed.home().send(i, key("k${i}"))
@@ -87,7 +87,7 @@ fn stopped_anywhere() -> string {
     let acks: Cell<Map<string, int>> = Cell.new({})
     let acked = Cell.new(0)
     let wrong: Cell<List<string>> = Cell.new([])
-    let letters = unbounded_channel<Dead<int, string>>()
+    queue<Dead<int, string>> letters {}
     queue<int> jobs {
         lease: ms(50)
         retries: 1000
@@ -101,7 +101,7 @@ fn stopped_anywhere() -> string {
         reads: jobs
         at_once: 3
         each: (d: Delivery<int>) -> work(ran, d)
-        dead: letters.sink
+        dead: letters
     }
     mut sent = 0
     for round in 0..60 {
@@ -132,7 +132,7 @@ fn stopped_anywhere() -> string {
     sleep(secs(1))
     crew.stop()
     let _ = last.await
-    "sent ${sent} | ran ${ran.get().length} | acked once ${exactly(acks, 1)} | buried ${if letters.source.ready() { 1 } else { 0 }} | depth ${jobs.home().depth() catch 0 - 1} | ${wrong.get().join("; ")}"
+    "sent ${sent} | ran ${ran.get().length} | acked once ${exactly(acks, 1)} | buried ${if holds_letter(letters) { 1 } else { 0 }} | depth ${jobs.home().depth() catch 0 - 1} | ${wrong.get().join("; ")}"
 }
 
 spec "std/queue run" {

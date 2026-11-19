@@ -1,7 +1,6 @@
 //! proves a drain whose letter refuses ends: the failed item keeps its
 //! hold, nothing is buried, and the drain answers.
-use @std.queue.{queue, worker, drain, key, Dead, Delivery}
-use @std.task.{open_channel}
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate, Overflow}
 use @std.time.{ms}
 
 type Job = { n: int }
@@ -9,8 +8,11 @@ type Job = { n: int }
 fn pay(d: Delivery<Job>) -> Result<int, string> { .Err("no ${d.item.n}") }
 
 let seen: Cell<List<string>> = Cell.new([])
-let letters = open_channel<Dead<Job, string>>(1)
-letters.sink.close()
+queue<Dead<Job, string>> letters {
+    capacity: 1
+    overflow: Overflow.fail
+}
+let _ = letters.send(Dead { item: Job { n: 0 }, fate: Fate.Failed("filler"), path: [] })
 queue<Job> jobs {
     capacity: 8
     lease: ms(60000)
@@ -19,7 +21,7 @@ queue<Job> jobs {
 worker settle {
     reads: jobs
     each: pay
-    dead: letters.sink
+    dead: letters
     failed: (d: Delivery<Job>, e: string) -> seen.push("failed ${e}")
     buried: (gone: Dead<Job, string>) -> seen.push("buried ${gone.item.n}")
 }

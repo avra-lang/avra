@@ -41,7 +41,9 @@ use @std.queue.{
     Order,
     Overflow,
     Parcel,
+    Settles,
     Terms,
+    Transaction,
     delay_terms,
     home_terms,
     key,
@@ -55,6 +57,7 @@ use @std.text.{parse_int}
 use @std.time.{Duration, Time, mins, now}
 use fault.{ask_again, homed}
 use rows.{count_standing, read_mark, tables_made, take_next, waiting_index}
+use tx.{begun, freed}
 use unread.{Unread, Unreadable, aside, aside_count, forget_aside, set_aside}
 
 /// How an item crosses to its row and back: the hash of its shape, that
@@ -108,7 +111,10 @@ export fn wire_of<T>(
 /// `clock` is the instant every lease and backoff is measured against,
 /// the wall's unless another is given; `eases` says the verbs that file
 /// no item commit without a sync of their own (`Sync.every_send` over a
-/// write-ahead log). Held by copy: every copy is the same queue.
+/// write-ahead log); `shaped` holds once the item shape's row is kept,
+/// and a home opened inside a transaction writes it again with each send
+/// until a commit of its own keeps it. Held by copy: every copy is the
+/// same queue.
 export type Store<T> = {
     db: Db,
     queue: string,
@@ -122,6 +128,7 @@ export type Store<T> = {
     reader: string = "",
     clock: fn() -> Time = now,
     eases: bool = false,
+    shaped: Cell<bool>,
 }
 
 /// How hard a commit is pressed to the disk before a verb answers.
@@ -164,9 +171,10 @@ export fn store_home<T: Storable>(db: Db, queue: string, terms: Terms, sync: Syn
 
 /// The queue named `queue` in `db`, its tables made where they are
 /// missing, its item shape recorded, and the connection set to commit
-/// as `sync` asks. Terms that hold no item are refused. A home is
-/// opened outside a transaction: what makes
-/// it is never undone with a caller's work.
+/// as `sync` asks. Terms that hold no item are refused. What makes a
+/// home is never undone with a caller's work: inside a transaction a
+/// home opens only where nothing is left to make, and the connection
+/// already commits as `sync` asks.
 export fn store_home_with<T>(
     db: Db,
     queue: string,
@@ -174,12 +182,16 @@ export fn store_home_with<T>(
     wire: Wire<T>,
     sync: Sync = Sync.every_send,
 ) -> Result<Store<T>, HomeError> {
-    if db.in_transaction() { return .Err(opened_inside()) }
     let _ = home_terms(terms)?
-    let _ = homed(db.commit_as(resting(db, sync)))?
-    let _ = homed(tables_made(db))?
-    let _ = homed(db.run(sql(count_standing, [.Text(queue)])))?
-    if terms.overflow == Overflow.latest { let _ = homed(db.run(sql(waiting_index)))? }
+    let inside = db.in_transaction()
+    if inside {
+        if db.durability() != resting(db, sync) { return .Err(opened_inside()) }
+        let _ = transacted(db, () -> unmade(db, terms))?
+    } else {
+        let _ = homed(db.commit_as(resting(db, sync)))?
+        let _ = made(db, terms)?
+        let _ = homed(db.run(sql(count_standing, [.Text(queue)])))?
+    }
     let _ = homed(db.run(sql(know_shape, [.Int(wire.shape), .Text(wire.descriptor)])))?
     let judged: Cell<Map<string, Judged>> = Cell.new({})
     Store {
@@ -191,7 +203,32 @@ export fn store_home_with<T>(
         shape: descriptor_unspelled(wire.descriptor),
         judged: judged,
         eases: sync == Sync.every_send && homed(db.journal())? == "wal",
+        shaped: Cell.new(!inside),
     }
+}
+
+/// The tables, indexes and triggers a home reads, made where missing.
+/// A queue's count is not among them: one that is missing is counted
+/// from the rows at its first send.
+fn made(db: Db, terms: Terms) -> Result<bool, HomeError> {
+    let _ = homed(tables_made(db))?
+    if terms.overflow == Overflow.latest { let _ = homed(db.run(sql(waiting_index)))? }
+    true
+}
+
+/// The tables a home reads where they all stand; refused, and undone,
+/// where one would be made.
+fn unmade(db: Db, terms: Terms) -> Result<bool, HomeError> {
+    let before = changes(db)?
+    let _ = made(db, terms)?
+    if changes(db)? != before { return .Err(opened_inside()) }
+    true
+}
+
+/// The schema's version and the rows written on the connection, as one
+/// text that any write moves.
+fn changes(db: Db) -> Result<string, HomeError> {
+    homed((homed(db.scalar(sql(schema_and_rows)))?).text())
 }
 
 /// A database file kept in a write-ahead log, where a commit is one
@@ -290,7 +327,39 @@ impl Store<T> {
             release: (d: Delivery<T>, after: Duration) -> self.release(d, after),
             bury: (d: Delivery<T>, inter: fn(T) -> bool) -> self.bury(d, inter),
             depth: () -> self.depth(),
+            idle: () -> !self.db.in_transaction(),
+            settles: Settles {
+                run: (d: Delivery<T>, work: fn(Delivery<T>) -> bool) -> self.settled_in(d, work),
+            },
         }
+    }
+
+    /// Whether a send joins `tx`: it stands, on this home's database,
+    /// and this home's connection holds it. A connection holds one write
+    /// transaction on a file at a time, so a transaction of the same
+    /// database that this connection holds is this one.
+    fn joins(tx: dyn Transaction) -> Result<bool, HomeError> {
+        if !tx.stands() { return .Err(unstanding()) }
+        if "${tx.database()}-" != self.mark || !self.db.in_transaction() { return .Err(elsewhere(self.queue)) }
+        true
+    }
+
+    /// Run `work` over a delivery and settle it, as one commit: the start
+    /// is counted first and on its own, then the work runs inside the
+    /// transaction the ack ends, handed it as the delivery's `tx`. Work
+    /// that answers `false`, traps or is cut, and a hold lost by the ack,
+    /// roll the work back. The transaction is begun once the connection
+    /// holds no other, waited for no longer than a lease. Answers whether
+    /// the item settled.
+    fn settled_in(d: Delivery<T>, work: fn(Delivery<T>) -> bool) -> Result<bool, HomeError> {
+        let _ = freed(self.db, self.terms.lease)?
+        if !self.began(d)? { return false }
+        let _ = homed(self.db.run(sql(begin)))?
+        let tx = begun(self.db)
+        defer { let _ = tx.rollback() }
+        if !work(d with { tx: tx }) || !self.over_held(settle, d, [])? { return false }
+        let _ = tx.commit()?
+        true
     }
 
     /// Send one item under `k`, answering its id, or `null` when the
@@ -338,6 +407,7 @@ impl Store<T> {
     /// turn, and a failure keeps none.
     fn send_all(batch: List<Parcel<T>>) -> Result<List<string?>, HomeError> {
         let bodies = [(self.wire.encode)(p.item) for p in batch]
+        let _ = self.kept_shape()?
         transacted(self.db, () -> self.filed_all(batch, bodies))
     }
 
@@ -380,14 +450,16 @@ impl Store<T> {
     }
 
     /// Move a delivery out through `inter`, which hands its item to the
-    /// dead letter. `inter` runs outside any transaction of this home's:
-    /// the hold is renewed for one lease, the letter is asked, and the
-    /// row goes only once the letter took the item. A process that dies
-    /// between the two leaves the item here, to be delivered again.
+    /// dead letter, as one transaction: the hold is renewed for one
+    /// lease, the letter is asked, and the row goes only once the letter
+    /// took the item. A letter on this connection files the item in that
+    /// same transaction, so the item is in one queue or the other. Any
+    /// other letter keeps what it took, and a process that dies before
+    /// the commit leaves the item here too, to be delivered again.
+    /// `inter` must not park: it runs while the transaction stands.
     /// `false` once the hold was lost, or when the letter refused.
     fn bury(d: Delivery<T>, inter: fn(T) -> bool) -> Result<bool, HomeError> {
-        if !self.reserved(d)? || !inter(d.item) { return false }
-        self.ack(d)
+        transacted(self.db, () -> self.moved_out(d, inter))
     }
 
     /// How many items the queue still owes a fate. A queue with no
@@ -418,11 +490,28 @@ impl Store<T> {
 
     fn sent(item: T, k: Key, name: string?, ready: Time?) -> Result<string?, HomeError> {
         let body = (self.wire.encode)(item)
+        let _ = self.kept_shape()?
         transacted(self.db, () -> self.filed(body, k, name, ready))
+    }
+
+    /// The item shape's row written again where a home opened inside a
+    /// transaction may have lost it, until it is written outside one.
+    fn kept_shape() -> Result<bool, HomeError> {
+        if self.shaped.get() { return true }
+        let _ = homed(
+            self.db.run(sql(know_shape, [.Int(self.wire.shape), .Text(self.wire.descriptor)])),
+        )?
+        if !self.db.in_transaction() { self.shaped.set(true) }
+        true
     }
 
     fn filed_all(batch: List<Parcel<T>>, bodies: List<Bytes>) -> Result<List<string?>, HomeError> {
         [self.filed(bodies[i], p.key, null, null)? for i, p in batch]
+    }
+
+    fn moved_out(d: Delivery<T>, inter: fn(T) -> bool) -> Result<bool, HomeError> {
+        if !self.reserved(d)? || !inter(d.item) { return false }
+        self.ack(d)
     }
 
     fn settled_all(held: List<Delivery<T>>) -> Result<List<bool>, HomeError> {
@@ -718,6 +807,8 @@ fn whole_queue(o: Order) -> int {
 
 const begin: string = "BEGIN IMMEDIATE"
 
+const schema_and_rows: string = "SELECT (SELECT \"schema_version\" FROM pragma_schema_version()) || ':' || total_changes()"
+
 const commit: string = "COMMIT"
 
 const mark: string = "SAVEPOINT \"flow_step\""
@@ -777,7 +868,22 @@ const hold_on: string = "UPDATE \"FlowItem\" SET \"leased_until\" = ?4" + held
 // ── The voices ──
 
 fn opened_inside() -> HomeError {
-    HomeError.Refused("a home is opened outside a transaction, and this connection holds one")
+    HomeError
+        .Refused(
+            "a home's tables are made outside a transaction, and this connection holds one — open the queue before the transaction begins",
+        )
+}
+
+fn unstanding() -> HomeError {
+    HomeError
+        .Refused("a send joins a transaction that stands, and this one was committed or rolled back")
+}
+
+fn elsewhere(queue: string) -> HomeError {
+    HomeError
+        .Refused(
+            "a send joins a transaction on its queue's own connection, and `${queue}` stands on another",
+        )
 }
 
 fn uncounted(queue: string) -> HomeError {

@@ -2,9 +2,9 @@
 // schedule over one database each send the same tick, and the queue's
 // dedupe makes one item of it. The runs wait on the suite's virtual
 // clock, and every clock is set to it.
-use @std.queue.{HomeError, queue}
+use @std.queue.{Dead, Delivery, HomeError, queue, run, worker}
 use @std.queue.schedule.{schedule, ScheduleError}
-use @std.sqlite.{Db}
+use @std.sqlite.{Db, sql}
 use @std.time.{Time, cron, mins, now_ns, parse_iso, sleep}
 use durable.{db, stored_with}
 use fault.{homed}
@@ -96,6 +96,47 @@ fn restarted() -> Result<string, HomeError> {
     "first ${one} | second ${two} | items ${first.home().depth()?}"
 }
 
+/// A nightly schedule over a queue whose worker runs in_tx, each report
+/// written as a row in the commit that acks it.
+fn worked_in_tx() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"reported\" (\"n\" INTEGER)")))?
+    let store_clock = () -> Time { ns: now_ns() }
+    queue<int> reports {
+        name: "reports"
+        durable: stored_with(int_wire(), clock: store_clock)
+    }
+    queue<Dead<int, string>> letters {}
+    worker writer {
+        reads: reports
+        in_tx: true
+        each: (d: Delivery<int>) -> reported(ctx.db, d)
+        dead: letters
+    }
+    schedule nightly {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: reports
+        item: 7
+        clock: ten_to_three()
+    }
+    let _ = reports.home().depth()?
+    let serving = spawn run(writer)
+    let ticking = spawn nightly.run()
+    sleep(mins(20))
+    nightly.stop()
+    writer.stop()
+    let sent = counted(ticking.await)
+    let settled = match serving.await { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+    let rows = homed((homed(ctx.db.scalar(sql("SELECT count(*) FROM \"reported\"")))?).int())?
+    "ticks ${sent} | settled ${settled} | rows ${rows} | depth ${reports.home().depth()?} | open ${ctx.db.in_transaction()}"
+}
+
+fn reported(db: Db, d: Delivery<int>) -> Result<int, string> {
+    let _ = db.run(sql("INSERT INTO \"reported\" (\"n\") VALUES (?1)", [.Int(d.item)])) catch 0
+    d.item
+}
+
 /// A schedule's check over a durable queue that remembers a name for
 /// `dedupe` minutes, the schedule catching up `catch_up` minutes.
 fn within_dedupe(dedupe: int, catch_up: int) -> string {
@@ -127,6 +168,9 @@ spec "std/queue_store — a schedule with no leader" {
         }
         then "a run started after another sent the tick sends it again by name, and the queue holds one" {
             (restarted() catch "failed") == "first 1 | second 1 | items 1"
+        }
+        then "a tick read by a worker in_tx is one row written in the commit that acks it" {
+            (worked_in_tx() catch "failed") == "ticks 1 | settled 1 | rows 1 | depth 0 | open false"
         }
     }
 }

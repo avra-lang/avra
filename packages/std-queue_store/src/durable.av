@@ -10,8 +10,10 @@
 //! The database is the context `db`. It has no default, so a program
 //! that reaches a durable queue on a path that never set it does not
 //! build. The home is opened at the queue's first use, where the
-//! context stands.
-use @std.queue.{Durable, HomeError, Key, Lasting, Terms}
+//! context stands. A worker run `in_tx` over it hands each handler the
+//! context set to that same connection, so a handler that writes
+//! through `ctx.db` writes inside the transaction its ack ends.
+use @std.queue.{Delivery, Durable, HomeError, Key, Lasting, Settles, Terms, Transaction}
 use @std.sqlite.{Db}
 use @std.time.{Duration, Time, ms, now}
 use @std.relation.{Storable}
@@ -67,8 +69,21 @@ fn opened<T>(
     let store = store_home_with<T>(ctx.db, name, terms, wire, sync)? with { dedupe: dedupe, clock: clock }
     let heard = listening(store, poll)
     Lasting {
-        home: heard.home(),
+        home: heard.home() with { settles: Settles {
+            run: (d: Delivery<T>, work: fn(Delivery<T>) -> bool) -> settled_on(store, d, work),
+        } },
         send_as: (item: T, k: Key, id: string) -> heard.send_as(item, k, id),
         delay_as: (item: T, k: Key, id: string, after: Duration) -> heard.send_as_after(item, k, id, after),
+        joins: (tx: dyn Transaction) -> heard.joins(tx),
     }
+}
+
+/// `store`'s settle with `ctx.db` set to its connection, so a handler
+/// that reads the context writes inside the transaction it stands in.
+fn settled_on<T>(store: Store<T>, d: Delivery<T>, work: fn(Delivery<T>) -> bool) -> Result<
+    bool,
+    HomeError,
+> {
+    ctx db = store.db
+    store.settled_in(d, work)
 }

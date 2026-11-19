@@ -57,7 +57,9 @@ program    test packages/std-program and std-relation; make runtime-tests, rt-he
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
+fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
+cost       make cost: the census compiler, cold, over tools/cost.baseline's snapshot; every count within 0.05% of its row
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
@@ -67,7 +69,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, root_listing_attack
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -333,12 +335,23 @@ idioms_on() {
     done
 }
 
+# every `.av` the diff from the base sha `$1` changes, canonical as the tree's own compiler prints it.
+# The base is the program landed last: a batch gated against its own base would hold none of what
+# its lanes wrote to the printer's word
+fmt_on() {
+    [ -n "${1:-}" ] || { echo "gate: $slice needs the base sha its diff starts at — the program landed last" >&2; exit 2; }
+    row fmt-changed env AVRA=build/avra sh tools/fmt_changed.sh "$1" HEAD
+}
+
 slice_sound() {
     row sound-check-run env AVRA_SOUND_CHECK=1 build/avra check packages/cli
     cold cli
     row llvm-verified-build env AVRA_VERIFY_LLVM=1 build/avra build packages/cli
     judged sound-check-defects "$(grep -c 'language.defect' "$out/sound-check-run.log")"
 }
+
+# the census compiler builds from build/avra, the compiler this slice stands on
+slice_cost() { row cost env CENSUS_BUILDER=build/avra make -s -o avra cost; }
 
 doors() { for p in "$@"; do cold "$p"; tested "test-$p" "packages/$p"; done; }
 slice_doors_a() { doors $DOORS_A; }
@@ -388,7 +401,9 @@ slice_witness_b() {
     row store-bound-attack sh tools/store_bound_attack.sh
     row path-leak-attack sh tools/path_leak_attack.sh
     row case-leftover-attack sh tools/case_leftover_attack.sh
+    old_row fixes-witness sh tools/witness_program_fixes.sh build/avra
     row root-listing-attack sh tools/root_listing_attack.sh
+    row two-compilers-attack sh tools/two_compilers_attack.sh
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra
@@ -421,7 +436,9 @@ if compiler; then
         idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
         idioms-cli) idioms_on "${1:-}" keep cli ;;
         idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
+        fmt) fmt_on "${1:-}" ;;
         sound) slice_sound ;;
+        cost) slice_cost ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
         findings-a) slice_findings_a ;;

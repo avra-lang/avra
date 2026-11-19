@@ -2,7 +2,7 @@
 //! nothing here, so the wait is a poll the home bounds: no longer than
 //! `poll`, however patient the taker. A send made through the same home
 //! in this process ends the wait at once.
-use @std.queue.{Home, HomeError, Key, Parcel}
+use @std.queue.{Home, HomeError, Key, Parcel, Transaction}
 use @std.task.{Channel, open_channel}
 use @std.time.{Duration, after, ms}
 use queue_store.{Store}
@@ -39,6 +39,19 @@ impl Heard<T> {
     /// `send_as_after` does.
     fn send_as_after(item: T, k: Key, name: string, after: Duration) -> Result<string?, HomeError> {
         rung(self.bell, self.store.send_as_after(item, k, name, after))
+    }
+
+    /// Whether a send joins `tx`, as the store answers it; a send that
+    /// does rings the bell again once `tx` commits, so a taker that saw
+    /// nothing while it stood is woken by the commit.
+    fn joins(tx: dyn Transaction) -> Result<bool, HomeError> {
+        let _ = self.store.joins(tx)?
+        tx.after(() -> self.rang())
+        true
+    }
+
+    fn rang() {
+        let _ = self.bell.sink.post(true)
     }
 
     /// Park until a send was made here, or the shorter of `patience`

@@ -384,6 +384,11 @@ fn trailed(lines: List<string>, trail: string) -> List<string> {
 
 /// A line already carrying `depth` levels of indent, without them — what
 /// a body's one-line form puts between its braces.
+/// Whether `lines` is one line a written one-line form holds: a single line that did not itself
+/// break. A line that broke takes the block form, as a second reading of what it printed would, so
+/// a print is its own print.
+fn lone_line(lines: List<string>) -> bool { lines.length == 1 && !lines[0].contains("\n") }
+
 fn unpadded(line: string, depth: int) -> string {
     let pad = depth * 4
     if line.length <= pad { return line }
@@ -925,7 +930,7 @@ impl SourceText {
         }
         let all = lines.concat(self.trivia_before(end, depth + 1))
         if all.is_empty() { return if head.is_empty() { "{}" } else { "{ ${head} }" } }
-        if one_line && all.length == 1 {
+        if one_line && lone_line(all) {
             let first = unpadded(all[0], depth + 1)
             return if head.is_empty() { "{ ${first} }" } else { "{ ${head} ${first} }" }
         }
@@ -937,7 +942,7 @@ impl SourceText {
         let body = flatten([self.statement(s, depth + 1) for s in stmts])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${head} {}") }
-        if one_line && body.length == 1 { return source_line(depth, "${head} { ${unpadded(body[0], depth + 1)} }") }
+        if one_line && lone_line(body) { return source_line(depth, "${head} { ${unpadded(body[0], depth + 1)} }") }
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -984,7 +989,7 @@ impl SourceText {
                 "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} {}",
             )
         }
-        if one_line && body.length == 1 {
+        if one_line && lone_line(body) {
             return source_line(
                 depth,
                 "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} { ${unpadded(body[0], depth + 1)} }",
@@ -1179,7 +1184,7 @@ impl SourceText {
         let body = flatten([self.given_lines(g, one_line, depth + 1) for g in groups])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
-        if one_line && body.length == 1 {
+        if one_line && lone_line(body) {
             return source_line(
                 depth,
                 "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }",
@@ -1271,7 +1276,7 @@ impl SourceText {
         let lead = self.trivia_before(self.given_split(target), depth)
         let at = depth + 1
         let thens = flatten([self.then_line(c, at) for c in g.cases])
-        if one_line && thens.length == 1 {
+        if one_line && lone_line(thens) {
             return lead
                 .concat(
                     [

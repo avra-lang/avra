@@ -1446,13 +1446,7 @@ impl TypeCx {
         let inner? = self.view.types.carried(got) else { return null }
         // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
         if inner.index != want.index { return null }
-        let held = self.held_text(shown, at)
-        Conversion {
-            help: "`${shown}` may be null — `${shown} ?? <default>` supplies a value, `if let n? = ${shown} { … } else { … }` branches, and `!` asserts presence",
-            how: "assert it is present — `${held}!` (traps when it is null)",
-            text: "${held}!",
-            confidence: Confidence.Low,
-        }
+        presence_asserted(shown, self.held_text(shown, at))
     }
 
     /// "Did you mean": the name this receiver answers to nearest the
@@ -2372,6 +2366,17 @@ fn interpolated(g: Type, w: Type, shown: string) -> Conversion? {
 }
 
 /// `"${x}"` as a conversion: a scalar written `shown` into text.
+/// `x!` — a nullable written `shown`, held as `held` where a postfix binds, handed to the seat that
+/// wants what it carries.
+export fn presence_asserted(shown: string, held: string) -> Conversion {
+    Conversion {
+        help: "`${shown}` may be null — `${shown} ?? <default>` supplies a value, `if let n? = ${shown} { … } else { … }` branches, and `!` asserts presence",
+        how: "assert it is present — `${held}!` (traps when it is null)",
+        text: "${held}!",
+        confidence: Confidence.Low,
+    }
+}
+
 export fn interpolation(shown: string) -> Conversion {
     Conversion {
         help: "text is made by interpolation, never by conversion",

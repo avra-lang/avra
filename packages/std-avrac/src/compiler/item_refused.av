@@ -40,6 +40,7 @@ use core.{
 use compiler.laws.{Aside, Found, FoundFix, law}
 use diagnostics.{Voice}
 use features.{
+    Conversion,
     hole_holds,
     bound_unimplemented,
     comp_bound,
@@ -654,12 +655,13 @@ fn span_of(at: FindingAt?) -> Span? {
 
 /// An argument of a fn a seat refused: the fn, its place.
 fn arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    flatten([argument_words(r) for r in refused_in(engine, file, at)])
+    let text = item_text(engine, file, at)
+    flatten([argument_words(r, text) for r in refused_in(engine, file, at)])
 }
 
-fn argument_words(r: RefusedSeat) -> List<Found> {
+fn argument_words(r: RefusedSeat, text: string) -> List<Found> {
     match r.seat {
-        .Argument(callee, place) -> [found_in(r, [callee, "${place + 1}"])],
+        .Argument(callee, place) -> [seat_converted(found_in(r, [callee, "${place + 1}"]), r, text)],
         .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .AnnotationSeat(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .SelectFault(_) or .HoleFault(_) or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) or .Unpinned(_, _) or .CompBound(_) or .NullPin(_, _) or .TypeHole(_) or .Unprojected(_) or .Unknowable(_) or .CellHolds or .DefaultUnimplemented(_) or .StaticUnpinned(_, _) -> [],
     }
 }
@@ -670,24 +672,26 @@ const EMPTY_LIST: string = "[]"
 
 /// An argument of a method a seat refused: the method's owner and name, the argument's place.
 fn method_arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    flatten([method_words(r) for r in refused_in(engine, file, at)])
+    let text = item_text(engine, file, at)
+    flatten([method_words(r, text) for r in refused_in(engine, file, at)])
 }
 
-fn method_words(r: RefusedSeat) -> List<Found> {
+fn method_words(r: RefusedSeat, text: string) -> List<Found> {
     match r.seat {
-        .Method(owner, name, place) -> if owner == EMPTY_LIST { [] } else { [found_in(r, [owner, name, "${place + 1}"])] },
+        .Method(owner, name, place) -> if owner == EMPTY_LIST { [] } else { [seat_converted(found_in(r, [owner, name, "${place + 1}"]), r, text)] },
         .Argument(_, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .AnnotationSeat(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .SelectFault(_) or .HoleFault(_) or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) or .Unpinned(_, _) or .CompBound(_) or .NullPin(_, _) or .TypeHole(_) or .Unprojected(_) or .Unknowable(_) or .CellHolds or .DefaultUnimplemented(_) or .StaticUnpinned(_, _) -> [],
     }
 }
 
 /// A record literal's field a seat refused.
 fn fields_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    flatten([field_words(r) for r in refused_in(engine, file, at)])
+    let text = item_text(engine, file, at)
+    flatten([field_words(r, text) for r in refused_in(engine, file, at)])
 }
 
-fn field_words(r: RefusedSeat) -> List<Found> {
+fn field_words(r: RefusedSeat, text: string) -> List<Found> {
     match r.seat {
-        .Field(name) -> [found_in(r, [name])],
+        .Field(name) -> [seat_converted(found_in(r, [name]), r, text)],
         .Argument(_, _) or .Method(_, _, _) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .AnnotationSeat(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .SelectFault(_) or .HoleFault(_) or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) or .Unpinned(_, _) or .CompBound(_) or .NullPin(_, _) or .TypeHole(_) or .Unprojected(_) or .Unknowable(_) or .CellHolds or .DefaultUnimplemented(_) or .StaticUnpinned(_, _) -> [],
     }
 }
@@ -706,12 +710,15 @@ fn payload_words(r: RefusedSeat) -> List<Found> {
 
 /// A `let`'s or a `const`'s value a seat refused.
 fn bindings_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    flatten([binding_words(r) for r in refused_in(engine, file, at)])
+    let text = item_text(engine, file, at)
+    flatten([binding_words(r, text) for r in refused_in(engine, file, at)])
 }
 
-fn binding_words(r: RefusedSeat) -> List<Found> {
+/// A binding's value refused where it stands, with the conversion the old path offers of it, its
+/// help said and its text the fix.
+fn binding_words(r: RefusedSeat, text: string) -> List<Found> {
     match r.seat {
-        .Binding(name) -> [found_in(r, [name])],
+        .Binding(name) -> [seat_converted(found_in(r, [name]), r, text)],
         .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .AnnotationSeat(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .SelectFault(_) or .HoleFault(_) or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) or .Unpinned(_, _) or .CompBound(_) or .NullPin(_, _) or .TypeHole(_) or .Unprojected(_) or .Unknowable(_) or .CellHolds or .DefaultUnimplemented(_) or .StaticUnpinned(_, _) -> [],
     }
 }
@@ -856,21 +863,56 @@ export law body_mismatch {
     witness: "fn g() -> int { \"x\" }\n"
 }
 
-fn argument_refused(a: List<string>) -> Voice { refused_voice("argument ${a[1]} of `${a[0]}` wants `${a[2]}`, found `${a[3]}`", a[2], a[3]) }
-
-fn method_argument_refused(a: List<string>) -> Voice {
-    refused_voice(
-        "argument ${a[2]} of `${a[0]}.${a[1]}` wants `${a[3]}`, found `${a[4]}`",
-        a[3],
-        a[4],
+fn argument_refused(a: List<string>) -> Voice {
+    helped(
+        refused_voice("argument ${a[1]} of `${a[0]}` wants `${a[2]}`, found `${a[3]}`", a[2], a[3]),
+        a,
+        4,
     )
 }
 
-fn field_refused(a: List<string>) -> Voice { refused_voice("field `${a[0]}` is `${a[1]}`, this is `${a[2]}`", a[1], a[2]) }
+fn method_argument_refused(a: List<string>) -> Voice {
+    helped(
+        refused_voice(
+            "argument ${a[2]} of `${a[0]}.${a[1]}` wants `${a[3]}`, found `${a[4]}`",
+            a[3],
+            a[4],
+        ),
+        a,
+        5,
+    )
+}
+
+fn field_refused(a: List<string>) -> Voice { helped(refused_voice("field `${a[0]}` is `${a[1]}`, this is `${a[2]}`", a[1], a[2]), a, 3) }
 
 fn payload_refused(a: List<string>) -> Voice { refused_voice("`${a[0]}.${a[1]}` carries `${a[2]}`, found `${a[3]}`", a[2], a[3]) }
 
-fn binding_refused(a: List<string>) -> Voice { refused_voice("`${a[0]}` declares `${a[1]}`, this is `${a[2]}`", a[1], a[2]) }
+fn binding_refused(a: List<string>) -> Voice { helped(refused_voice("`${a[0]}` declares `${a[1]}`, this is `${a[2]}`", a[1], a[2]), a, 3) }
+
+/// `v` with the help a conversion handed its words at `at`, where one did.
+fn helped(v: Voice, a: List<string>, at: int) -> Voice { if a.length > at { v with { help: a[at] } } else { v } }
+
+/// A seat's value refused as `f`, with the one honest conversion the old path offers of it where
+/// there is one: its help said, its text the fix.
+fn seat_converted(f: Found, r: RefusedSeat, text: string) -> Found { converted(f, seat_conversion(r.found, r.want, text_at(r.at, text))) }
+
+/// The text of the written item `at` of `file`; none past its items.
+fn item_text(engine: QueryEngine, file: SourceFileAddress, at: int) -> string { if at < item_count(engine, file) { item_under(engine, file, at).text } else { "" } }
+
+/// `f` offering the conversion `c` where there is one: its help handed the voice last, its text the
+/// fix where `f` stands.
+fn converted(f: Found, c: Conversion?) -> Found {
+    let offered? = c else { return f }
+    f with { args: f.args.concat([offered.help]), fixes: [
+        FoundFix {
+            description: offered.how,
+            at: f.at,
+            replacement: offered.text,
+            sure: offered.confidence is .High,
+            guess: offered.confidence is .Low,
+        },
+    ] }
+}
 
 fn return_refused(a: List<string>) -> Voice { refused_voice("`return` answers `${a[0]}`, this is `${a[1]}`", a[0], a[1]) }
 

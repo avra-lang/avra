@@ -2,7 +2,6 @@
 //! the queue's backoff doubled for every attempt already made, never
 //! past the cap, and buried once the attempts reach the terms.
 use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError, Fate}
-use @std.task.{unbounded_channel}
 use @std.time.{mins, now_ms, secs, sleep}
 
 extern fn avra_clock_virtual(on: int)
@@ -23,7 +22,7 @@ fn said(r: Result<int, DrainError>) -> string {
 avra_clock_virtual(1)
 let began = now_ms()
 let starts: Cell<List<int>> = Cell.new([])
-let letters = unbounded_channel<Dead<int, string>>()
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     retries: 6
     backoff: secs(5)
@@ -32,11 +31,12 @@ queue<int> jobs {
 worker never {
     reads: jobs
     each: (d: Delivery<int>) -> refused(starts, began, d)
-    dead: letters.sink
+    dead: letters
 }
+use tests.support.letters.{first_letter}
 let _ = jobs.home().send(7, key("k"))
 let r = spawn run(never)
 sleep(mins(5))
 never.stop()
-let gone = letters.source.taken()
+let gone = first_letter(letters)
 "starts at ${["${s}s" for s in starts.get()].join(" ")} | ${said(r.await)} | buried ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

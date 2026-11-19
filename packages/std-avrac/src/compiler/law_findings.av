@@ -59,9 +59,10 @@ export type LawFinding = {
     unread: UnreadKept? = null,
 }
 
-/// An edit a finding offers, where it writes.
+/// An edit a finding offers, where it writes: in the finding's item, or the item `item`; sure, likely,
+/// or a `guess`.
 @derive(Saved)
-export type FixAt = { description: string, at: FindingAt?, replacement: string, sure: bool = false }
+export type FixAt = { description: string, at: FindingAt?, replacement: string, sure: bool = false, item: int? = null, guess: bool = false }
 
 /// A sentence said beside a finding, where it names: in the finding's item, or the item `item`.
 @derive(Saved)
@@ -96,6 +97,8 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) ->
                     at: kept_at(x.at),
                     replacement: x.replacement,
                     sure: x.sure,
+                    item: x.item,
+                    guess: x.guess,
                 } for x in s.fixes],
                 local: s.local,
                 item: s.item,
@@ -213,7 +216,14 @@ export fn findings_in_file(engine: QueryEngine, file: SourceFileAddress, at: int
 fn finding_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: LawFinding) -> LawFinding {
     let home = f.item ?? at
     let placed = (p: FindingAt?) -> if p == null { null } else { file_placed(engine, file, home, p!) }
-    f with { at: placed(f.at), named: placed(f.named), fixes: [x with { at: placed(x.at) } for x in f.fixes], aside: aside_in_file(engine, file, at, f.aside), item: null }
+    f with { at: placed(f.at), named: placed(f.named), fixes: [fix_in_file(engine, file, home, x) for x in f.fixes], aside: aside_in_file(engine, file, at, f.aside), item: null }
+}
+
+/// An edit a finding the item `home` of `file` offers, counted from the file's start: one in another
+/// item from that item's.
+fn fix_in_file(engine: QueryEngine, file: SourceFileAddress, home: int, x: FixAt) -> FixAt {
+    let place? = x.at else { return x }
+    x with { at: file_placed(engine, file, x.item ?? home, place), item: null }
 }
 
 /// An aside of a finding the item `at` of `file` holds, counted from the file's start: one in another
@@ -274,7 +284,11 @@ fn behind(d: Diag, unread: UnreadKept?, path: string) -> Diag {
 /// isn't in the file.
 fn offered(fixes: List<FixAt>, path: string) -> List<Suggestion> {
     [Suggestion {
-        confidence: if x.sure { Confidence.High } else { Confidence.Medium },
+        confidence: when {
+            x.sure -> Confidence.High
+            x.guess -> Confidence.Low
+            _ -> Confidence.Medium
+        },
         description: x.description,
         edits: [Edit { loc: l!, replacement: x.replacement }],
     } for x in fixes for l in [loc_at(path, span_of(x.at))] if l != null]

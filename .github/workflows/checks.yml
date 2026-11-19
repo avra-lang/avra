@@ -482,18 +482,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/handed-down
-      # MAIN'S LAST COLD-COMPILE COUNTS, restored for the census gate (tools/census_ratchet.py):
-      # a PR is held to the less of the committed ceiling and main's last run, so the ceiling
-      # tightens by itself. Only group 1 runs the gate.
-      - if: matrix.group == '1'
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: |
-            census-main.txt
-            census-sites-main.txt
-          key: census-main-${{ github.sha }}
-          restore-keys: census-main-
       # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
       # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
       # this half was killed mid-mutation. They have their own job
@@ -525,27 +513,6 @@ jobs:
           [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
           exit "$a"
 
-      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
-        name: census counts kept for main
-        run: cp build/census-now.txt census-main.txt
-      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-gate.out') != ''
-        name: per-caller tables kept for main
-        run: "grep -E '^(copy|push|retain): ' build/census-gate.out > census-sites-main.txt || :"
-      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-main.txt') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: |
-            census-main.txt
-            census-sites-main.txt
-          key: census-main-${{ github.sha }}
-      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-sites-main.txt') != ''
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: census-sites-main
-          path: census-sites-main.txt
-          retention-days: 30
       - if: always()
         uses: ./.github/actions/speed-note
         with:

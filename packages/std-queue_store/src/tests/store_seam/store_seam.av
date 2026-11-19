@@ -6,7 +6,6 @@ use @std.queue_store.{Store, store_home}
 use @std.queue_store.fault.{homed}
 use @std.relation.{codec}
 use @std.sqlite.{Db}
-use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
 @codec
@@ -30,7 +29,7 @@ let terms = Terms {
 }
 let store = made(terms)
 let stood = match store { .Ok(_) -> "store", .Err(_) -> "memory" }
-let letters = unbounded_channel<Dead<Job, string>>()
+queue<Dead<Job, string>> letters {}
 queue<Job> jobs {
     name: "jobs"
     retries: 2
@@ -39,11 +38,12 @@ queue<Job> jobs {
 worker settle {
     reads: jobs
     each: pay
-    dead: letters.sink
+    dead: letters
 }
+use @std.queue.tests.support.letters.{first_letter}
 for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
 let sent = jobs.home().depth() catch 0 - 1
 let settled = drain(settle) catch 0 - 1
 let left = jobs.home().depth() catch 0 - 1
 let rows = match store { .Ok(s) -> s.depth() catch 0 - 1, .Err(_) -> 0 - 1 }
-"${stood} sent ${sent} settled ${settled} left ${left} rows ${rows} buried ${letters.source.taken()!.item.n}"
+"${stood} sent ${sent} settled ${settled} left ${left} rows ${rows} buried ${first_letter(letters)!.item.n}"

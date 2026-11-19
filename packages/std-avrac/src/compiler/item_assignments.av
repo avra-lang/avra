@@ -7,6 +7,7 @@
 //! unless a step of the path is a `state` field, whose cell takes the write and asks nothing of the
 //! root — a path under the receiver or a `mut` seat is a place.
 use core.{
+    same_stmt,
     At,
     BindSite,
     same_expr,
@@ -56,7 +57,18 @@ enum Unplaced {
 
 /// A body whose assignments are judged: the store it was read into, its root, the names its typing
 /// read, and its seats' marks by their index; the node range of it the item writes.
-type AssignedBody = { store: SyntaxArena, root: ExprId, reads: List<NameRead>, types: List<SignedType?>, signed: SignedBody, lo: int, hi: int }
+type AssignedBody = {
+    store: SyntaxArena,
+    root: ExprId,
+    reads: List<NameRead>,
+    types: List<SignedType?>,
+    signed: SignedBody,
+    lo: int,
+    hi: int,
+    /// The items whose statements the entry runs, where the body is the entry's: a statement's place
+    /// counts from the start of the item holding it.
+    items: List<ItemBase> = [],
+}
 
 /// Every assignment of the written item `at` of `file` that lands on no place.
 fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
@@ -109,6 +121,7 @@ fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<As
             signed: signed,
             lo: mine.base,
             hi: hi,
+            items: read.items,
         },
     ]
 }
@@ -138,7 +151,7 @@ fn judged(
     let n = read.name
     let why? = (if same_expr(r, t) { unplaced_root(engine, file, b, read) } else { unplaced_under(engine, file, b, read, t) }) else { return null }
     let found = said(at, why, n)
-    if why is .NotMut { found with { fixes: mut_fix(store, read, n) } } else { found }
+    if why is .NotMut { found with { fixes: mut_fix(b, read, n) } } else { found }
 }
 
 /// Why the whole root `read` reads is no place; absent where it is one.
@@ -254,17 +267,19 @@ fn program_place(engine: QueryEngine, file: SourceFileAddress, read: NameRead) -
     }
 }
 
-/// The `let` → `mut` edit, where the `let` the read binds stands in this body's source.
-fn mut_fix(store: SyntaxArena, read: NameRead, n: string) -> List<FoundFix> {
+/// The `let` → `mut` edit, where the `let` the read binds stands in this body's source: in the entry,
+/// in the item whose statements hold it.
+fn mut_fix(b: AssignedBody, read: NameRead, n: string) -> List<FoundFix> {
     let site? = read.binder else { return [] }
     let s = match site { .Stmt(i) -> StmtId { index: i }, rest -> { return [] } }
-    let span? = store.stmt_span(s) else { return [] }
+    let span? = b.store.stmt_span(s) else { return [] }
     [
         FoundFix {
             description: mut_keyword_said(n),
             at: Span { lo: span.lo, hi: span.lo + 3 },
             replacement: "mut",
             sure: true,
+            item: b.items.find(it.stmts.any((x) -> same_stmt(x, s)))?.at,
         },
     ]
 }

@@ -18,7 +18,6 @@ use @std.queue.{
     Terms,
 }
 use @std.sqlite.{Db}
-use @std.task.{unbounded_channel}
 use @std.time.{Time, mins, ms, now_ns, secs, sleep, stamp}
 use durable.{db, stored_with}
 use fault.{homed}
@@ -52,7 +51,7 @@ fn worked(w: worker<int, int, string>, span: int) -> int {
 fn declared() -> Result<string, HomeError> {
     ctx db = homed(Db.memory())?
     let seen: Cell<List<int>> = Cell.new([])
-    let letters = unbounded_channel<Dead<int, string>>()
+    queue<Dead<int, string>> letters {}
     queue<int> jobs {
         name: "jobs"
         durable: stored_with(int_wire(), clock: ticking)
@@ -62,7 +61,7 @@ fn declared() -> Result<string, HomeError> {
     worker crew {
         reads: jobs
         each: fine
-        dead: letters.sink
+        dead: letters
     }
     let first = jobs.send(1, id: "one")?
     let again = jobs.send(9, id: "one")?
@@ -90,7 +89,7 @@ fn sent_and_closed(path: string) -> Result<int, HomeError> {
 fn reopened_and_run(path: string) -> Result<string, HomeError> {
     ctx db = homed(Db.open(path))?
     let seen: Cell<List<int>> = Cell.new([])
-    let letters = unbounded_channel<Dead<int, string>>()
+    queue<Dead<int, string>> letters {}
     queue<int> jobs {
         name: "jobs"
         durable: stored_with(int_wire(), clock: ticking)
@@ -99,7 +98,7 @@ fn reopened_and_run(path: string) -> Result<string, HomeError> {
     worker crew {
         reads: jobs
         each: fine
-        dead: letters.sink
+        dead: letters
     }
     let kept = jobs.home().depth()?
     let known = jobs.send(7, id: "job-2")?
@@ -147,7 +146,7 @@ fn idled() -> Result<string, HomeError> {
     let store = store_home_with<int>(homed(Db.memory())?, "jobs", terms, int_wire())? with { clock: ticking }
     let takes = Cell.new(0)
     let acks = Cell.new(0)
-    let letters = unbounded_channel<Dead<int, string>>()
+    queue<Dead<int, string>> letters {}
     queue<int> jobs {
         name: "jobs"
         homed: counting(listening(store).home(), takes)
@@ -156,7 +155,7 @@ fn idled() -> Result<string, HomeError> {
     worker crew {
         reads: jobs
         each: fine
-        dead: letters.sink
+        dead: letters
     }
     let r = spawn run(crew)
     sleep(ms(10100))

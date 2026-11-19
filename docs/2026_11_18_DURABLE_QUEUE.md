@@ -85,13 +85,18 @@ job resize {
 resize.later(upload)?
 ```
 
-### 1a. As built (2026-11-18)
+### 1a. As built (2026-11-18, after Q5 and Q4)
 
 What compiles today, from `packages/std-queue_store/src/tests/durable_emails`:
 
 ```avra
 @codec
 type Email = { to: string, subject: string }
+
+fn deliver(d: Delivery<Email>) -> Result<string, string> {
+    let _ = ctx.db.run(sql("INSERT INTO sent (to) VALUES (?1)", [.Text(d.item.to)])) catch 0   // one commit with the ack
+    smtp_send(d.item)
+}
 
 fn main() -> Result<string, HomeError> {
     ctx db = homed(Db.open("app.db"))?
@@ -101,15 +106,37 @@ fn main() -> Result<string, HomeError> {
         durable: stored<Email>()
         retries: 5
     }
-    queue<Dead<Email, string>> undeliverable {}
-    worker sender { reads: emails  at_once: 10  each: deliver  dead: undeliverable.sink() }
+    queue<Dead<Email, string>> undeliverable {
+        name: "undeliverable"
+        durable: stored_dead<Email>()
+    }
+    worker sender {
+        reads: emails
+        at_once: 10
+        in_tx: true
+        each: deliver
+        dead: undeliverable
+    }
 
-    emails.send(welcome(u), id: "welcome-${u.id}")?
+    let tx = transaction(ctx.db)?
+    errdefer tx.rollback()
+    let _ = homed(tx.db.run(sql("INSERT INTO users (name) VALUES ('grace')")))?
+    let _ = emails.send(receipt(u), id: "receipt-${u.id}", tx: tx)?   // one commit with the user row
+    let _ = tx.commit()?
+
     let serving = spawn run(sender)
     …
     sender.stop()
 }
 ```
+
+What Q4 holds, each a case in `tx_test`, `in_tx_test`, `letters_test` or a program:
+
+- `send(…, tx:)` joins the transaction: its commit delivers the item, its rollback leaves none and frees the name. With `after:` too, the delayed row is written in the transaction: it exists only once that commits, and is due at its instant then. A transaction that ended, one on another connection, and any on a queue with no durable home are refused.
+- A worker of this process takes nothing a transaction has not committed: the loop waits while the connection holds one it does not own (`Home.idle`), and a commit rings the queue's bell.
+- `in_tx: true`: the start is counted on its own, then the handler runs inside the transaction its ack ends (`Home.settles`); a failure, a trap, a lease run out or a hold lost by the ack rolls the handler's writes back. One handler transaction stands per connection at a time; the delivery's `tx` is it, and `ctx.db` inside the handler is its connection.
+- `dead:` is a queue. Burying is one transaction, so a letter on the same database holds the item or the queue does. `stored_dead<T>()` makes the letter durable; a worker's `check` refuses a letter that drops.
+- A durable queue first used inside a transaction opens there when its tables stand; on a fresh database it is refused and asked again at its next use.
 
 Where it still differs from §1, and what closes each gap:
 
@@ -118,8 +145,8 @@ Where it still differs from §1, and what closes each gap:
 | `durable: true` | `durable: stored<Email>()` | a type argument inferred from the seat that wants it; `@std/queue` cannot name the store, so the setting stays a value the store hands over |
 | no `name:` | `name: "emails"` | a component reading its own instance name |
 | declared at a file's top level | declared inside the fn that sets `ctx db` | a `ctx` read charged where a fn value is called, and top-level instances as declarations (ruled, being built) |
-| `tx.send(emails, …)` | `db.begin()`, `emails.send(…)`, `db.commit()`: a send joins the open transaction | Q4 |
-| `dead: undeliverable` | `dead: undeliverable.sink()` | Q4 |
+| `tx.send(emails, …)` | `emails.send(…, tx: tx)` | a generic method (`impl Tx { fn send<T>(q: queue<T>, …) }` is refused today) |
+| `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email, string>>()` serves |
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
 | `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
@@ -293,7 +320,7 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 | Q1 | BUILT: `Home<T>` under `Queue<T>`; memory home behind it; handler error generic; release with a backoff | 17 tests, 14 programs |
 | Q2 | BUILT and red-teamed (79 attacks; 13 findings, all fixed): `@std/queue_store` — rows, send, take, ack, release, bury, dedupe, batches, named sync, unreadable rows set aside | a queue survives a restart; 105 store tests, 25 shared laws and 33 attacks over both homes |
 | Q3 | BUILT: `run` (`at_once`, a lease deadline per handler, backoff ×2 to a cap, `stop()`), a home that waits (a bell in this process, a bounded poll across processes), `durable:` over `ctx db`, a coded item's wire derived (`@codec` writes `impl Storable`), a newer writer's item let go for a newer reader | a long-lived worker; the showcase program. Owed: the two-process witness |
-| Q4 | `tx.send`, a worker's `in_tx:` | exactly once for store writes |
+| Q4 | BUILT and red-teamed: a send that joins the caller's transaction (`tx:`), a worker's `in_tx:`, a dead letter that is a queue and outlives the process | exactly once for store writes; 19 new store cases, 2 programs |
 | Q5 | BUILT and red-teamed (fuzzed cron text found one trap, fixed): `after:` on both homes, `cron`/`hours` in `@std/time`, `schedule` with `at:`/`every:` | delayed and recurring work; 14 shared delay laws over both homes, 5 store delay cases, 35 cron cases with a minute-walk oracle and 400 fuzzed lines, 20 schedule cases |
 | Q6 | `job`, the admin router, `explain flow` | the one-declaration job; operating it |
 

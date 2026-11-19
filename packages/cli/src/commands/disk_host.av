@@ -140,9 +140,11 @@ fn light_or_leave(files: int) {
     if files > LIGHT_READS && env("AVRA_LIGHT") != null { exit(Exit.Code(TOO_HEAVY)) }
 }
 
-/// This binary's own path — the compiler a store's rows are the work of.
+/// This binary's own path — the compiler a store's rows are the work of: the file the running image
+/// was started from, its links resolved, never another file named as it was invoked.
 fn own_binary() -> string? {
-    toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
+    let at = avra_self_path()
+    if at.is_empty() { null } else { at }
 }
 
 /// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, settled
@@ -156,7 +158,11 @@ fn own_binary() -> string? {
 /// too recently to trust). The value is the bytes' digest either way.
 once fn own_print() -> string? {
     let at? = own_binary() else { return null }
-    let mark? = stamp(at) else { return digest_of_binary(at) }
+    let mark? = stamp(at) else {
+        let read? = digest_of_binary(at) else { return null }
+        printed_by("bytes", read)
+        return read
+    }
     let head = "${mark}\t${at}\t"
     let kept = read_text(print_record(at)) catch ""
     if kept.starts_with(head) {

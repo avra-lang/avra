@@ -14,7 +14,6 @@ use @std.queue.{
     Overflow,
     Terms,
 }
-use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
 fn denied() -> Result<List<Delivery<int>>, HomeError> { .Err(HomeError.Denied) }
@@ -39,12 +38,12 @@ fn counted(ran: Cell<int>, d: Delivery<int>) -> Result<int, string> {
 }
 
 let ran: Cell<int> = Cell.new(0)
-let letters = unbounded_channel<Dead<int, string>>()
+queue<Dead<int, string>> letters {}
 queue<int> jobs { homed: shut() }
 worker settle {
     reads: jobs
     each: (d: Delivery<int>) -> counted(ran, d)
-    dead: letters.sink
+    dead: letters
 }
 let sent = jobs.home().send(7, key("k")) catch null
 let why = match drain(settle) {

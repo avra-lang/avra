@@ -15,7 +15,7 @@ human reading code.
 | **census sites** | the runtime's exact per-site counters (boxes, retains, releases, clones, string compares, list writes) over the fixed workloads | the hottest sites, each CLASSIFIED to the technique that would remove its cost (below) | `avra census --candidates` |
 | **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid: "record escapes through a field write at X, so it is boxed" | `avra explain cost <fn>`; the remarks are facts in the DB |
 | **shape rules** | the source, as `rule` declarations `avra check` finds | the patterns that cost by construction | `avra check`, ratcheted like idioms |
-| **exact-count gate** | the census totals per workload, against `tools/cost.baseline` | regressions: any counter that rose past tolerance | a gate slice; lowering a counter needs `make cost-accept` |
+| **exact-count gate** | the census totals per cold workload, and the answers a warm run works out again after each fixed edit, over one pinned snapshot, against `tools/cost.baseline` | regressions: any counter that rose past tolerance, cold or warm | a gate slice (`make cost`); lowering a counter needs `make cost-accept` |
 
 **The classifier** is what makes candidates automatic. A census site's SHAPE names its technique:
 

@@ -3,7 +3,6 @@
 //! the item unanswered and starts no handler.
 use @std.meta.{contained}
 use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
-use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
 fn trapping(starts: Cell<int>, d: Delivery<int>) -> Result<int, string> {
@@ -21,7 +20,7 @@ fn said(r: Result<int, string>) -> string {
 }
 
 let starts: Cell<int> = Cell.new(0)
-let letters = unbounded_channel<Dead<int, string>>()
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     lease: ms(0)
     retries: 2
@@ -29,9 +28,10 @@ queue<int> jobs {
 worker settle {
     reads: jobs
     each: (d: Delivery<int>) -> trapping(starts, d)
-    dead: letters.sink
+    dead: letters
 }
+use tests.support.letters.{first_letter}
 let _ = jobs.home().send(7, key("k"))
 let runs = [said(contained(() -> drain(settle) catch 0 - 1)) for _i in 0..3]
-let gone = letters.source.taken()
+let gone = first_letter(letters)
 "${runs.join(", ")} | starts ${starts.get()} | ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

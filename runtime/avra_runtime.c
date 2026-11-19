@@ -42,6 +42,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
@@ -336,6 +337,7 @@ int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
 int64_t g_list_pushes;
 static int64_t g_empty_made, g_empty_grown;
 static int64_t g_once_reads, g_once_steps;
+static int64_t g_copies, g_streqs;
 static int64_t g_boxes_made, g_bufs_made;
 static int64_t g_made_by_kind[8];
 
@@ -443,6 +445,7 @@ static void note_insist(void* site) {
 }
 
 static void note_copy(void* site) {
+    g_copies++;
     if (!g_sites_census) return;
     Site* s = site_in(g_copy_sites, &g_copy_slots, site);
     if (s) s->made++;
@@ -633,6 +636,7 @@ static void acc_report(void) {
             (long long)g_once_reads, (long long)g_once_steps);
     avra_say("alloc: %lld boxes, %lld list buffers\n",
             (long long)g_boxes_made, (long long)g_bufs_made);
+    avra_say("rc: %lld copies, %lld string compares\n", (long long)g_copies, (long long)g_streqs);
     for (int k = 0; k < ACC_KINDS; k++) {
         if (g_made_by_kind[k]) avra_say("alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
     }
@@ -1889,6 +1893,7 @@ void avra_puts(const char* s) {
 // first: unequal lengths are unequal text in O(1), where `strcmp`
 // scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
+    CENSUS(g_streqs++);
     // one box is one text: a literal compared at its own call site is
     // the same static box every time
     if (a == b) return 1;
@@ -6062,6 +6067,7 @@ const char* avra_errno_text(int64_t err) {
 int64_t avra_spawn_status(const char* prog, void* args) { return 127; }
 int64_t avra_spawn_in(const char* dir, const char* prog, void* args) { return 127; }
 const char* avra_self_dir(void) { return str_static(""); }
+const char* avra_self_path(void) { return str_static(""); }
 int64_t avra_exec_self(void* args) { return 127; }
 
 #else
@@ -6135,14 +6141,32 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
 // light one a fresh process. Answers only when it cannot: 127.
 static int self_path(char* buf, size_t cap) {
 #ifdef __APPLE__
-    uint32_t n = (uint32_t)cap;
-    return _NSGetExecutablePath(buf, &n) == 0;
+    // the path the image was started by, which may be a link: resolved, as /proc/self/exe is, so
+    // the file named is the image's own whatever led to it
+    char started[4096];
+    uint32_t n = (uint32_t)sizeof started;
+    if (_NSGetExecutablePath(started, &n) != 0) return 0;
+    char resolved[PATH_MAX];
+    if (!realpath(started, resolved) || strlen(resolved) >= cap) return 0;
+    strcpy(buf, resolved);
+    return 1;
 #else
     ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
     if (n < 0) return 0;
     buf[n] = 0;
     return 1;
 #endif
+}
+
+// The file this image was started from, its links resolved — immortal, minted once; "" where the
+// host can't say.
+const char* avra_self_path(void) {
+    static const char* path = NULL;
+    if (path) return path;
+    char self[4096];
+    if (!self_path(self, sizeof self)) return str_static("");
+    path = str_static(self);
+    return path;
 }
 
 // The directory this image stands in — immortal, minted once.

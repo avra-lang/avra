@@ -6,7 +6,15 @@
 use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten, owned_type}
 use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
-use features.{Conversion, arms_disagreement, interpolation, this_is, value_wanted, wrapped}
+use features.{
+    Conversion,
+    arms_disagreement,
+    interpolation,
+    presence_asserted,
+    this_is,
+    value_wanted,
+    wrapped,
+}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.program.source_facts.{source_text}
@@ -63,6 +71,21 @@ fn conversion_spelled(found: string, want: string, shown: string?) -> Conversion
     let s? = shown else { return null }
     if want == "List<${found}>" { return wrapped(s) }
     if want == "string" && ["int", "float", "bool"].contains(found) { interpolation(s) } else { null }
+}
+
+/// The one conversion a seat's value of type `found`, written `shown`, offers into a seat spelled
+/// `want`: the arms' own, or a nullable handed to the seat that wants what it carries, asserted
+/// present.
+fn seat_conversion(found: string, want: string, shown: string?) -> Conversion? {
+    let s? = shown else { return null }
+    let arms = conversion_spelled(found, want, s)
+    if arms != null || found != "${want}?" { return arms }
+    presence_asserted(s, if postfix_written(s) { s } else { "(${s})" })
+}
+
+/// Whether `s` reads as one operand a postfix binds to: a name, a path of names, or a call.
+fn postfix_written(s: string) -> bool {
+    !s.contains(" ") && !s.starts_with("(") && !s.contains("?") && !s.contains("!")
 }
 
 /// The body of the fn `s` declares where it answers `void`; none for any other statement.

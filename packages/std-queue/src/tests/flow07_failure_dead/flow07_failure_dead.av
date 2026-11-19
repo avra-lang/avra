@@ -1,7 +1,6 @@
 //! proves a handler that keeps failing is buried once its attempts
 //! reach the terms, and the letter carries the error and the path.
 use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
-use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
 type Job = { n: int }
@@ -13,7 +12,7 @@ fn why(f: Fate<string>) -> string {
     match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
 }
 
-let letters = unbounded_channel<Dead<Job, string>>()
+queue<Dead<Job, string>> letters {}
 queue<Job> jobs {
     capacity: 8
     lease: ms(60000)
@@ -22,14 +21,15 @@ queue<Job> jobs {
 worker settle {
     reads: jobs
     each: pay
-    dead: letters.sink
+    dead: letters
 }
 let _ = jobs.home().send(Job { n: 7 }, key("k"))
 match drain(settle) {
     .Ok(n) -> {
-        let gone = letters.source.taken()
+        let gone = first_letter(letters)
         let g = gone!
         "${n} ${g.item.n} ${why(g.fate)} ${g.path[0]} ${g.path[1]} ${jobs.home().depth() catch 0 - 1}"
     },
     .Err(_) -> "stopped",
 }
+use tests.support.letters.{first_letter}

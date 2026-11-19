@@ -2,7 +2,6 @@
 //! item is not acked: the handler's `defer` runs at the lease, the item
 //! is handed out again one epoch on, and only that delivery is acked.
 use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError}
-use @std.task.{unbounded_channel}
 use @std.time.{ms, now_ms, secs, sleep}
 
 extern fn avra_clock_virtual(on: int)
@@ -21,7 +20,7 @@ fn said(r: Result<int, DrainError>) -> string {
 avra_clock_virtual(1)
 let began = now_ms()
 let seen: Cell<List<string>> = Cell.new([])
-let letters = unbounded_channel<Dead<int, string>>()
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     lease: ms(50)
     acked: (d: Delivery<int>) -> seen.push("acked epoch ${d.epoch}")
@@ -29,7 +28,7 @@ queue<int> jobs {
 worker slow {
     reads: jobs
     each: (d: Delivery<int>) -> stuck_once(seen, began, d)
-    dead: letters.sink
+    dead: letters
 }
 let _ = jobs.home().send(7, key("k"))
 let r = spawn run(slow)

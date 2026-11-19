@@ -17,7 +17,6 @@ use @std.queue.{
     Parcel,
     Terms,
 }
-use @std.task.{unbounded_channel}
 use @std.time.{Duration, ms}
 
 type Job = { n: int }
@@ -48,6 +47,7 @@ fn pay(d: Delivery<Job>) -> Result<int, string> {
 fn times(asked: Cell<List<string>>, verb: string) -> int {
     asked.get().filter(it == verb).length
 }
+use tests.support.letters.{first_letter}
 
 let asked: Cell<List<string>> = Cell.new([])
 fn opened() -> Memory<Job>? {
@@ -65,7 +65,7 @@ fn opened() -> Memory<Job>? {
 }
 
 let memory = opened()!
-let letters = unbounded_channel<Dead<Job, string>>()
+queue<Dead<Job, string>> letters {}
 queue<Job> jobs {
     name: "jobs"
     retries: 2
@@ -74,9 +74,9 @@ queue<Job> jobs {
 worker settle {
     reads: jobs
     each: pay
-    dead: letters.sink
+    dead: letters
 }
 for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
 let settled = drain(settle) catch 0 - 1
 let left = jobs.home().depth() catch 0 - 1
-"${settled} ${left} ${memory.depth()} ${letters.source.taken()!.item.n} send ${times(asked, "send")} take ${times(asked, "take")} began ${times(asked, "began")} ack ${times(asked, "ack")} release ${times(asked, "release")} bury ${times(asked, "bury")} depth ${times(asked, "depth")}"
+"${settled} ${left} ${memory.depth()} ${first_letter(letters)!.item.n} send ${times(asked, "send")} take ${times(asked, "take")} began ${times(asked, "began")} ack ${times(asked, "ack")} release ${times(asked, "release")} bury ${times(asked, "bury")} depth ${times(asked, "depth")}"

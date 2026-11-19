@@ -19,6 +19,7 @@ use queue.{
     queue,
     worker,
 }
+use tests.support.letters.{first_letter}
 
 /// One attack: the terms it runs under and whether a fresh queue
 /// withstood it.
@@ -648,7 +649,7 @@ fn unanswered(f: Fate<string>) -> bool {
 
 fn spent_is_buried(q: Queue<int>) -> bool {
     let starts: Cell<int> = Cell.new(0)
-    let letters = unbounded_channel<Dead<int, string>>()
+    queue<Dead<int, string>> letters {}
     queue<int> jobs {
         name: q.name
         retries: q.terms.retries
@@ -657,7 +658,7 @@ fn spent_is_buried(q: Queue<int>) -> bool {
     worker spent {
         reads: jobs
         each: (d: Delivery<int>) -> started(starts, d)
-        dead: letters.sink
+        dead: letters
     }
     let _ = send(q, 7, "k")
     for _i in 0..q.terms.retries {
@@ -665,7 +666,7 @@ fn spent_is_buried(q: Queue<int>) -> bool {
         let _ = q.began(lost)
     }
     if (drain(spent) catch 0 - 1) != 0 || starts.get() != 0 || depth(q) != 0 { return false }
-    let gone? = letters.source.taken() else { return false }
+    let gone? = first_letter(letters) else { return false }
     gone.item == 7 && unanswered(gone.fate)
 }
 

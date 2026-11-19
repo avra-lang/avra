@@ -2,7 +2,6 @@
 //! times as the terms allow, each start lost with its worker, is buried
 //! by the next drain and its handler is not started again.
 use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
-use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
 type Job = { n: int }
@@ -19,7 +18,7 @@ fn pay(starts: Cell<int>, d: Delivery<Job>) -> Result<int, string> {
     .Ok(d.item.n)
 }
 
-let letters = unbounded_channel<Dead<Job, string>>()
+queue<Dead<Job, string>> letters {}
 queue<Job> jobs {
     capacity: 8
     lease: ms(0)
@@ -28,7 +27,7 @@ queue<Job> jobs {
 worker settle {
     reads: jobs
     each: (d: Delivery<Job>) -> pay(starts, d)
-    dead: letters.sink
+    dead: letters
     buried: (gone: Dead<Job, string>) -> buried.push(why(gone.fate))
 }
 let q = jobs.home()
@@ -37,6 +36,7 @@ for _i in 0..3 {
     let lost = q.take() catch null
     let _ = q.began(lost!)
 }
+use tests.support.letters.{first_letter}
 let settled = drain(settle) catch 0 - 1
-let gone = letters.source.taken()
+let gone = first_letter(letters)
 "${settled} starts ${starts.get()} buried ${buried.get().join(",")} letter ${gone!.item.n} ${why(gone!.fate)} depth ${q.depth() catch 0 - 1}"
