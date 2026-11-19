@@ -1806,22 +1806,24 @@ const stored_format: int = 3
 /// reached one moves too.
 fn stored_shape(s: Stored) -> int { shape_under(s, [s.t.name]) }
 
-/// `stored_shape` with `seen` the coded types whose fold is under way: one reached again is
-/// folded by its name alone.
+/// `stored_shape` with `seen` the coded types whose fold is under way.
 fn shape_under(s: Stored, seen: List<string>) -> int {
-    mut h = stable_hasher(text_hash(stable_name(s.t))).int(stored_format).count(s.reached.length)
-    for k in s.reached { h = h.int(reach_print(s.t, k, seen)) }
+    mut h = stable_hasher(text_hash(stable_name(s.t))).int(stored_format)
+    for k in s.reached {
+        h = h.text(k.spelled())
+        let ty? = stored_type_of(s.t, k) else { continue }
+        h = reach_folded(h, s.t, ty, seen)
+    }
     h.finish()
 }
 
-/// One reached kind as one value: its spelling, then its declaration's spelling, or for a
-/// type that wears its own codec, that codec's fold — or its name alone when `seen` holds it.
-fn reach_print(t: Type, k: Kind, seen: List<string>) -> int {
-    let named = stable_hasher(text_hash(k.spelled()))
-    let ty? = stored_type_of(t, k) else { return named.int(0).finish() }
-    if ty.name == t.name || !wears_codec(ty.name) { return named.int(1).text(described(ty)).finish() }
-    if seen.contains(ty.name) { return named.int(2).finish() }
-    named.int(3).int(shape_under(stored(ty), seen.concat([ty.name]))).finish()
+/// A reached declaration folded in: its spelling, or for another type that wears its own
+/// codec, that codec's fold — its name alone when `seen` holds it. A spelling always holds a
+/// brace and a name never does, so no name folds as a spelling.
+fn reach_folded(h: StableHasher, t: Type, ty: Type, seen: List<string>) -> StableHasher {
+    if ty.name == t.name || !wears_codec(ty.name) { return h.text(described(ty)) }
+    if seen.contains(ty.name) { return h.text(ty.name) }
+    h.int(shape_under(stored(ty), seen.concat([ty.name])))
 }
 
 /// The declaration a kind names, when it names one.
