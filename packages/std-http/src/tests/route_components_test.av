@@ -3,7 +3,7 @@
 // same router, spelled as the route reads. A handler answers what
 // `Respond` turns into a reply: text, a status, or a `Response`.
 use @std.http.http.{Response, text}
-use @std.http.route.{Route, get, post, put, patch, delete, faults}
+use @std.http.route.{Route, get, post, put, patch, delete, group, router, gathered, faults}
 
 fn rc_routes() -> List<Route> {
     [
@@ -16,6 +16,17 @@ fn rc_routes() -> List<Route> {
         get "/health" { _req -> "ok" },
         get "/static/{path...}" { req -> text(200, "static " + req.params.path) },
     ]
+}
+
+export router rc_tasks {
+    get "/" { _req -> "list" }
+    post "/" { _req -> text(201, "made") }
+    get "/{id}" { req -> "task " + req.params.id }
+}
+
+/// A router listed bare and again under a group's prefix.
+fn rc_grouped() -> List<Route> {
+    gathered([rc_tasks, group "/api/tasks" { rc_tasks }])
 }
 
 /// A typed route before an untyped one over the same segments.
@@ -74,8 +85,14 @@ spec "@std.http.route — routes as declarations" {
         then "a pattern whose last hole says `...` takes the rest of the path" {
             answer_of(rc_routes(), "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
         }
-        then "a method the pattern was not declared for is a 404" {
-            answer_of(rc_routes(), "POST /ideas/7 HTTP/1.1") == "404 "
+        then "a method the pattern was not declared for is a 405 naming the ones it was" {
+            refused_as(rc_routes(), "POST /ideas/7 HTTP/1.1") == "405 GET, HEAD, PUT, DELETE, PATCH"
+        }
+        then "a group and a router refuse by the same law, under their prefix" {
+            refused_as(rc_grouped(), "DELETE /api/tasks HTTP/1.1") == "405 GET, HEAD, POST" &&
+                refused_as(rc_grouped(), "POST /api/tasks/7 HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as(rc_grouped(), "POST /7 HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as(rc_grouped(), "POST /api/tasks/7/x HTTP/1.1") == "404 "
         }
         then "the table is lawful" {
             faults(rc_routes()).is_empty()

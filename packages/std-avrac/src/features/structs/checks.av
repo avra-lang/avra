@@ -22,19 +22,18 @@ use core.expr.{StructLit, With}
 use features.expr_spine.{makes_key}
 use core.pat.{Fields}
 
-/// Whether a literal's name `named` reads as names nothing a program declares: no name at all, a
-/// type the language owns, or the hole a type is left to.
+/// Whether a literal's name `named` reads as names nothing at all: no name, or the hole a type is
+/// left to. A type the language owns is a name, whose literal its own law refuses.
 fn undeclared(named: SignedType) -> bool {
     match named.head {
-        .Unnamed(_) or .Owned(_) or .Inferred -> true,
-        .Declared(_, _) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> false,
+        .Unnamed(_) or .Inferred -> true,
+        .Owned(_) or .Declared(_, _) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> false,
     }
 }
 
 impl Checks for StructLit {
     /// The record the literal names, its values seated in its fields, and each node it is extended by
-    /// checked on its own. A name nothing declares, a type the language owns among them, is read as
-    /// no record.
+    /// checked on its own. A name nothing declares is read as no record.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         for v in cx.store.extended_by(e) { let _ = cx.check(v, Expected.Free) }
         let named = cx.type_named(self.name.of, cx.home_of(e))

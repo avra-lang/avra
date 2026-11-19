@@ -111,6 +111,21 @@ int64_t avra_array_len(void* arr) {
     return ((AvraArray*)arr)->len;
 }
 
+// A STRIDED LIST: each element its `k` words laid in place, so the list's length counts words and
+// its element count is that over `k`. The stride is the element type's, handed in by every site
+// that reads one; the rows that only move words never need it.
+int64_t avra_stride_len(void* arr, int64_t k) {
+    return ((AvraArray*)arr)->len / k;
+}
+
+// Element `i`'s first word, bounds-checked in ELEMENTS, so a trap says what the program wrote.
+int64_t avra_stride_at(void* arr, int64_t i, int64_t k) {
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    int64_t n = ((AvraArray*)arr)->len / k;
+    if (__builtin_expect((uint64_t)i >= (uint64_t)n, 0)) avra_trap_bounds(i, n);
+    return i * k;
+}
+
 // The no-cell law with no cell to hold the answer — a method's
 // receiver, a borrowed parameter. Overwhelmingly not the binary's own
 // data, so the fast path is a retain; the rare clone is a tail call,

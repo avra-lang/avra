@@ -377,9 +377,7 @@ export fn file_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<
 
 /// The impls the written item `at` of `file` holds, read off its own header alone.
 fn item_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
-    about_of(
-        tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
-    )
+    about_of(tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())))
         .impls
 }
 
@@ -390,9 +388,7 @@ fn written_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<Item
 /// file's items, which a question kept from an older state of the file may name.
 fn item_written_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
     if at < 0 || at >= item_count(engine, file) { return [] }
-    about_of(
-        tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
-    )
+    about_of(tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())))
         .impls
 }
 
@@ -580,23 +576,19 @@ fn module_dir(local: List<string>) -> string { if local.is_empty() { SOURCE_ROOT
 
 /// Whether any directory along a module's path is a package of its own.
 fn crosses_package(engine: QueryEngine, package: string, local: List<string>) -> bool {
-    (1..local.length + 1)
-        .any(
-            (j) -> (listed(
-                engine,
-                DirectoryAddress {
-                    package_name: package,
-                    path_in_package: module_dir(local.take(j)),
-                },
-            ) ?? [])
-                .contains(MANIFEST),
-        )
+    (1..local.length + 1).any((j) -> holds_manifest(engine, package, module_dir(local.take(j))))
 }
 
 /// Whether a manifest roots `package`: a lone source's package of one holds none.
-fn rooted(engine: QueryEngine, package: string) -> bool {
-    (listed(engine, DirectoryAddress { package_name: package, path_in_package: "" }) ?? [])
-        .contains(MANIFEST)
+fn rooted(engine: QueryEngine, package: string) -> bool { holds_manifest(engine, package, "") }
+
+/// Whether the directory `dir` of `package` holds a manifest. A cut: a directory's listing moves
+/// whenever a build writes beside its sources — `build/` and `.avra-cache` at a package's root, a
+/// program test's binary beside its source — and what reads this asks only whether the manifest
+/// stands there.
+@cut_query
+fn holds_manifest(engine: QueryEngine, package: string, dir: string) -> bool {
+    (dir_listed(engine, package, dir) ?? []).contains(MANIFEST)
 }
 
 const MANIFEST: string = "avra.toml"

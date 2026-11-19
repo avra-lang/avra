@@ -97,7 +97,7 @@ fn shape_problems(t: Type) -> List<Diagnostic> {
     if !has_id_field(t) { return [no_id_field(t)] }
     [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
         .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
-        .concat([record_not_stored(f) for f in t.fields if unstored_record(f.kind)])
+        .concat([not_stored(f) for f in t.fields if unheld(f)])
         .concat([p for f in t.fields for p in key_problems(t, f)])
 }
 
@@ -111,8 +111,16 @@ fn key_problems(t: Type, f: Field) -> List<Diagnostic> {
         .concat([unique_twice(f, k) for j, k in keys if keys.slice(0, j).any(it.join(",") == k.join(","))])
 }
 
+/// A field no column holds: neither a `Many`, nor a link, nor a kind a column
+/// holds.
+fn unheld(f: Field) -> bool { !is_many(f) && link_target(f) == null && held(f.kind) == null }
+
+fn not_stored(f: Field) -> Diagnostic {
+    if unstored_record(f.kind) { record_not_stored(f) } else { kind_not_stored(f) }
+}
+
 /// A record-typed field is a `@model` link, or a flat record that stores as its one
-/// scalar. Any other record has no column to store it in, so it is refused here.
+/// scalar. Any other record has no column to store it in.
 fn unstored_record(k: Kind) -> bool {
     match k {
         .Named(n, args) -> args.is_empty() && n != "Many" && link_target_name(n) == null && stored_scalar(n) == null,
@@ -134,6 +142,15 @@ fn record_not_stored(f: Field) -> Diagnostic {
         f.at,
         "a record field is stored only as a `@model` link or as one scalar: `${f.name}` is a record with neither",
         "make `${f.name}` a `@model` record, or a record of one scalar field, or store its fields",
+    )
+}
+
+fn kind_not_stored(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "kind_not_stored",
+        f.at,
+        "a `@model` field is a column — an int, a float, a bool, a string or `Bytes`, or a record of one int, float, bool or string — or a link to another `@model`: `${f.name}` is `${f.ty}`, which no column holds",
+        "hold `${f.name}` as one of those, or as the rows of a `@model` of its own that links here",
     )
 }
 
@@ -851,14 +868,10 @@ fn loc_file_code(file: string?) -> Code {
     }
 }
 
+/// The type word a kind's column is declared under.
 fn sql_type_of(k: Kind) -> string {
-    match k {
-        .Int or .Bool -> "INTEGER",
-        .Float -> "REAL",
-        .Str -> "TEXT",
-        .Opt(inner) -> sql_type_of(inner),
-        rest -> "a_model_field_kind_this_derive_has_no_sql_type_for",
-    }
+    let h? = held(k) else { return "a_model_field_kind_this_derive_has_no_sql_type_for" }
+    match h { .Int or .Flag -> "INTEGER", .Real -> "REAL", .Text -> "TEXT", .Octets -> "BLOB" }
 }
 
 /// A model with no field besides `id` has nothing to name in a column
@@ -949,7 +962,27 @@ fn owner_of(t: Type) -> string { t.module }
 fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
 
 // ── Binding a field OUT (a value crossing to SQLite) and reading one
-// IN (a column crossing back) — one exhaustive dispatch each way. ──
+// IN (a column crossing back) — one exhaustive dispatch each way, over
+// what the column holds. ──
+
+/// What one column holds, as the driver binds and reads it.
+enum Held { Int, Flag, Real, Text, Octets }
+
+/// What a kind's column holds: a nullable's is what it holds when present,
+/// a flat record's is its one field's. Absent for a kind no column holds,
+/// which the model's contract refuses where the field is declared.
+fn held(k: Kind) -> Held? {
+    match k {
+        .Int -> Held.Int,
+        .Bool -> Held.Flag,
+        .Float -> Held.Real,
+        .Str -> Held.Text,
+        .Bytes -> Held.Octets,
+        .Opt(inner) -> held(inner),
+        .Named(n, args) -> if args.is_empty() && flat(n) { held(stored_scalar(n)!) } else { null },
+        .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
 
 fn bound(f: Field) -> Code { bound_value(f.kind, quote { self.${f.name} }) }
 
@@ -957,13 +990,22 @@ fn bound(f: Field) -> Code { bound_value(f.kind, quote { self.${f.name} }) }
 /// when absent.
 fn bound_value(k: Kind, v: Code) -> Code {
     match k {
-        .Int -> quote { .Int(${v}) },
-        .Bool -> quote { .Int(if ${v} { 1 } else { 0 }) },
-        .Float -> quote { .Real(${v}) },
-        .Str -> quote { .Text(${v}) },
         .Opt(inner) -> quote { if ${v} == null { .Null } else { ${bound_value(inner, quote { ${v}! })} } },
         .Named(n, _) -> if flat(n) { bound_value(stored_scalar(n)!, quote { ${v}.${flat_field(n)} }) } else { quote { .Int(${v}.id) } },
-        rest -> quote { a_model_field_kind_this_derive_does_not_bind_yet() },
+        rest -> bound_scalar(k, v),
+    }
+}
+
+/// A present scalar as the column holds it. Octets bind as a blob of their
+/// own length, so a run of none is an empty blob and never NULL.
+fn bound_scalar(k: Kind, v: Code) -> Code {
+    let h? = held(k) else { return quote { a_model_field_kind_this_derive_does_not_bind_yet() } }
+    match h {
+        .Int -> quote { .Int(${v}) },
+        .Flag -> quote { .Int(if ${v} { 1 } else { 0 }) },
+        .Real -> quote { .Real(${v}) },
+        .Text -> quote { .Text(${v}) },
+        .Octets -> quote { .Blob(${v}) },
     }
 }
 
@@ -999,13 +1041,22 @@ fn field_value(t: Type, j: int) -> Code {
 
 fn read_kind(k: Kind, i: int) -> Code {
     match k {
-        .Int -> quote { s.int_at(${i})? },
-        .Bool -> quote { s.int_at(${i})? != 0 },
-        .Float -> quote { s.real_at(${i})? },
-        .Str -> quote { s.text_at(${i})? },
         .Opt(inner) -> quote { if s.class_at(${i})? is .Null { null } else { ${read_kind(inner, i)} } },
         .Named(n, _) -> quote { ${n} { ${flat_field(n)}: ${read_kind(stored_scalar(n)!, i)} } },
-        rest -> quote { a_model_field_kind_this_derive_does_not_read_yet() },
+        rest -> read_scalar(k, i),
+    }
+}
+
+/// A present scalar read off column `i`. The class said the cell is not
+/// NULL, so a blob of no octets reads as an empty run.
+fn read_scalar(k: Kind, i: int) -> Code {
+    let h? = held(k) else { return quote { a_model_field_kind_this_derive_does_not_read_yet() } }
+    match h {
+        .Int -> quote { s.int_at(${i})? },
+        .Flag -> quote { s.int_at(${i})? != 0 },
+        .Real -> quote { s.real_at(${i})? },
+        .Text -> quote { s.text_at(${i})? },
+        .Octets -> quote { s.blob_at(${i})? },
     }
 }
 

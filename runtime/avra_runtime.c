@@ -3900,7 +3900,7 @@ static int words_of(const AvraArray* a, const AvraArray* b) {
 
 // `a`'s slots, then `b`'s: a fresh list, or the empty list when both are empty. Owned.
 void* avra_array_concat(void* a, void* b) {
-    if (((AvraArray*)a)->len + ((AvraArray*)b)->len == 0) return empty_list();
+    if (((AvraArray*)a)->len + ((AvraArray*)b)->len == 0) return words_of((AvraArray*)a, (AvraArray*)b) ? avra_array_empty_words() : empty_list();
     CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     CENSUS(note_copy(AVRA_CALLER()));
     void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
@@ -3919,7 +3919,7 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
-    if (lo >= hi) return empty_list();
+    if (lo >= hi) return avra_packed(a) ? avra_array_empty_words() : empty_list();
     void* out = array_made(hi - lo, g_clone_site ? g_clone_site : AVRA_CALLER(), avra_packed(a));
     array_append(out, a, lo, hi);
     return out;
@@ -3958,6 +3958,69 @@ void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
     if (a->marks) memset(a->marks + n, 0, (size_t)(a->len - n));
     a->len = n;
     return arr;
+}
+
+// ── Strided lists ───────────────────────────────────────────────
+// A list whose element is several words laid in place, `k` a cell: the rows that answer in
+// ELEMENTS take `k` from the site, which knows its element type; every other row moves words.
+
+// THE GUARD'S STRIDE CHECK: a box read at two strides is a defect — the site and the box disagree
+// on what an element is. The guard keeps every freed box, so no address is reused while it runs and
+// the first stride a box is read at is its own for the whole run.
+#define STRIDE_SEEN (1 << 16)
+static struct { const void* box; int64_t k; } g_stride_seen[STRIDE_SEEN];
+
+__attribute__((noinline, cold))
+void avra_stride_checked(void* arr, int64_t k) {
+    AvraArray* a = (AvraArray*)arr;
+    if (k < 1 || a->len % k != 0) avra_trap("defect: a strided list holds a part of an element"); // LICENSED traps.defect: every write of a strided list writes whole elements
+    uint64_t h = ((uint64_t)(uintptr_t)arr >> 4) * 0x9E3779B97F4A7C15ull;
+    for (int64_t n = 0; n < STRIDE_SEEN; n++) {
+        int64_t at = (int64_t)((h + (uint64_t)n) & (STRIDE_SEEN - 1));
+        if (g_stride_seen[at].box == arr) {
+            if (g_stride_seen[at].k != k) avra_trap("defect: a strided list read at two strides"); // LICENSED traps.defect: a site's stride is its element type's
+            return;
+        }
+        if (g_stride_seen[at].box == NULL) {
+            g_stride_seen[at].box = arr;
+            g_stride_seen[at].k = k;
+            return;
+        }
+    }
+}
+
+// Where the last element's words begin, the list as it was: a pop reads them, then takes the words
+// off. An empty list traps as a pop of it would.
+int64_t avra_stride_last(void* arr, int64_t k) {
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    if (a->len < k) avra_trap("pop on an empty list");
+    return a->len - k;
+}
+
+// The elements from lo up to hi, clamped in ELEMENTS before they are words, so no bound a program
+// writes overflows the multiply.
+static void stride_clamped(void* arr, int64_t* lo, int64_t* hi, int64_t k) {
+    int64_t n = ((AvraArray*)arr)->len / k;
+    if (*lo < 0) *lo = 0;
+    if (*lo > n) *lo = n;
+    if (*hi > n) *hi = n;
+    if (*hi < *lo) *hi = *lo;
+}
+
+void* avra_stride_slice(void* arr, int64_t lo, int64_t hi, int64_t k) {
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    stride_clamped(arr, &lo, &hi, k);
+    g_clone_site = g_clone_site ? g_clone_site : AVRA_CALLER();
+    void* out = avra_array_slice(arr, lo * k, hi * k);
+    g_clone_site = NULL;
+    return out;
+}
+
+void* avra_stride_slice_reusing(void* arr, int64_t lo, int64_t hi, int64_t k) {
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    stride_clamped(arr, &lo, &hi, k);
+    return avra_array_slice_reusing(arr, lo * k, hi * k);
 }
 
 // `a`'s slots then `b`'s, onto `a` when it is held alone.

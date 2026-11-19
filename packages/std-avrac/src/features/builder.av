@@ -41,7 +41,7 @@ use grammar.{Token}
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: SyntaxArena, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: Payloads = Payloads {}, anchor: string? = null }
+export type Builder = { store: SyntaxArena, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: Payloads = Payloads {}, anchor: int? = null }
 
 /// What a build reads its arguments by, prepared once per builder: the payloads the model
 /// declares in argument order, their names, and the ones a facet marks.
@@ -468,10 +468,10 @@ impl Builder {
 
     /// The span a node this rule builds wears: its ANCHOR payload's
     /// written span, or the branch's when nothing anchors it. Read once
-    /// per build, from the label the declaration marked.
+    /// per build, from the slot the declaration's marked label stands at.
     fn node_span() -> Span? {
-        let label? = self.anchor else { return self.span }
-        match self.at_of(label) { .Ok(span) -> span, .Err(_) -> null } ?? self.span
+        let at? = self.anchor else { return self.span }
+        extent_of_run(list_at(self.args, at), self.store) ?? self.span
     }
 
     /// A written type as this build's result — no arena, no id.

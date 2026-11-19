@@ -684,7 +684,18 @@ impl TypeCx {
         let tname: string? = match sh { .TypeName(_, n) -> n, _ -> null }
         if tname == null { return false }
         let n = tname!
-        self.emit(said_as("type.type_value", self.loc_of(e), type_as_value(n)))
+        let language_owns = match sh {
+            .TypeName(d, _) -> self.view.decls.is_builtin(d),
+            _ -> false,
+        }
+        self
+            .emit(
+                said_as(
+                    "type.type_value",
+                    self.loc_of(e),
+                    if language_owns { owned_as_value(n) } else { type_as_value(n) },
+                ),
+            )
         true
     }
 
@@ -1390,9 +1401,17 @@ impl TypeCx {
     /// crosses by construction (`named_fix`); a shape with ONE honest
     /// conversion offers it as help and as the edit; any other mismatch
     /// says what the seat needs.
-    fn seat_mismatch(kind: string, at: Loc?, found: ExprId, message: string, want: TypeId) -> Diag {
+    fn seat_mismatch(
+        kind: string,
+        at: Loc?,
+        found: ExprId,
+        message: string,
+        want: TypeId,
+        shown: string? = null,
+    ) -> Diag {
         let help = self.seat_help(found, want)
-        self.converted(refusal(kind, at, message, this_is(self.name_at(found)), help), want, found)
+        self
+            .converted(refusal(kind, at, message, this_is(shown ?? self.name_at(found)), help), want, found)
     }
 
     fn converted(d: Diag, want: TypeId, at: ExprId) -> Diag {
@@ -2058,18 +2077,7 @@ impl TypeCx {
         entry
     }
 
-    mut fn no_entry(e: ExprId) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.map_entry",
-                    self.loc_of(e),
-                    "a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
-                    "asked here",
-                    "a file in a package sees the prelude — or walk the pairs, `for k, v in m`",
-                ),
-            )
-    }
+    mut fn no_entry(e: ExprId) -> TypeId { self.spoken(said_as("type.map_entry", self.loc_of(e), entry_unseen())) }
 
     /// Every bounded type parameter's binding IMPLEMENTS its trait — the
     /// instantiation law that makes a body's calls on the bound sound.
@@ -2615,12 +2623,24 @@ export fn chain_receiver_copied(name: string) -> Voice {
 }
 
 /// The type `name` read where a value stands.
+/// A type the language owns, `name`, read where a value stands.
+export fn owned_as_value(name: string) -> Voice {
+    as_value_said(
+        name,
+        "write a value of `${name}` as its own literal, or take the one a verb answers",
+    )
+}
+
 export fn type_as_value(name: string) -> Voice {
-    Voice {
-        message: "`${name}` is a type, not a value",
-        label: "used as a value here",
-        help: "name a variant (`${name}.<variant>`) or build a record (`${name} { ... }`)",
-    }
+    as_value_said(
+        name,
+        "name a variant (`${name}.<variant>`) or build a record (`${name} { ... }`)",
+    )
+}
+
+/// The type `name` read where a value stands, beside the way `help` names to make a value of it.
+fn as_value_said(name: string, help: string) -> Voice {
+    Voice { message: "`${name}` is a type, not a value", label: "used as a value here", help: help }
 }
 
 /// A property `name` read on a value of `shown`, which has none of that name, guessing among
@@ -2787,3 +2807,11 @@ export fn seat_named_unwritten(callee: string, name: string) -> Voice {
     }
 }
 
+/// A map's entries asked for in a program that sees no prelude, whose `Entry` they are.
+export fn entry_unseen() -> Voice {
+    Voice {
+        message: "a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
+        label: "asked here",
+        help: "a file in a package sees the prelude — or walk the pairs, `for k, v in m`",
+    }
+}

@@ -274,7 +274,7 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
     if m.args.any((a) -> cx.store.arg_label(a) != null) || !member.plain && !positional(member, m) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let seats? = (if member.plain { read_seats(cx, m, null) } else { member_seated(cx, m, member) }) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
-    let code = cx.slot_read(Layout.Word, seats[0], 1 + at)
+    let code = cx.dyn_code(seats[0], at)
     let answered = cx.called_code(cx.layout_at(e), code, value, seats.drop(1), subject)
     cx.dyn_marked(answered, subject, at)
     answered
@@ -300,8 +300,7 @@ fn dyn_written(
         how != null -> cx.opened_written(m.subject, how!)
         _ -> cx.call_row(cx.laid_out(subject), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
     }
-    let answered = cx
-        .called_code(cx.layout_at(e), cx.slot_read(Layout.Word, box, 1 + at), box, args, subject)
+    let answered = cx.called_code(cx.layout_at(e), cx.dyn_code(box, at), box, args, subject)
     cx.dyn_marked(answered, subject, at)
     answered
 }

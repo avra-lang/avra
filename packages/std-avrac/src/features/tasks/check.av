@@ -1,8 +1,9 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
 //! `.await` answers it back; `.done` is a `bool`.
-use core.{ExprId, TypeId, Type, ResSides, TypeRef}
+use core.{CatchFault, ExprId, TypeId, Type, ResSides, TypeRef}
 use features.{TypeCx, FileView, FailureView, Refusal, MethodCall, this_is}
 use diagnostics.{Voice, refusal, said_as}
+use features.results.{catch_fault}
 
 fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
@@ -253,10 +254,8 @@ fn no_time(mut cx: TypeCx, e: ExprId) -> TypeId {
 }
 
 fn cancelled_unloaded() -> Refusal {
-    Refusal {
-        message: "a caught `await` recovers the prelude's `Cancelled`, and this program sees no `@std/prelude`",
-        help: "a file in a package sees the prelude",
-    }
+    let said = catch_fault(CatchFault.CancelledUnseen)
+    Refusal { message: said.message, help: said.help ?? "" }
 }
 
 fn not_a_task(mut cx: TypeCx, t: ExprId) -> TypeId {

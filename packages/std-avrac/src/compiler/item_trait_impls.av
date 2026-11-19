@@ -7,6 +7,7 @@ use core.{StmtId, SyntaxArena, TypeRef, flatten, some_list, spelled}
 use compiler.laws.{Found, law}
 use compiler.typing.{
     bound_miscounts_trait,
+    builtin_type_name,
     default_is_the_traits,
     impl_miscounts_trait,
     impl_no_trait,
@@ -164,12 +165,30 @@ fn alias_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> st
         .first()
 }
 
-/// Every impl-for written for one instantiation of a generic type the program declares: its target's
-/// arguments aren't the type's own parameters, by name.
+/// Every impl-for written for one instantiation of a generic type: of one the program declares, its
+/// target's arguments aren't the type's own parameters, by name; of one the language owns, whose
+/// parameters are ordinal, an argument names a type.
 fn impls_of_instantiations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     let item? = parsed_item(engine, file, at) else { return [] }
-    [Found { at: item.store.stmt_span(s), args: [p!.of!, p!.target, declared.join(", ")] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null for written in [[w.of for w in item.store.impl_tparams_of(s)?.target ?? []]] if !written.is_empty() for declared in some_list(declared_tparams(engine, file, p!.target)) if written.join(",") != declared.join(",")]
+    let declared_ones = [Found { at: item.store.stmt_span(s), args: [p!.of!, p!.target, declared.join(", ")] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null for written in [[w.of for w in item.store.impl_tparams_of(s)?.target ?? []]] if !written.is_empty() for declared in some_list(declared_tparams(engine, file, p!.target)) if written.join(",") != declared.join(",")]
+    let owned_ones = [Found {
+        at: item.store.stmt_span(s),
+        args: [p!.of!, p!.target, ordinal_tparams(written.length)],
+    } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null &&
+        p!.of != null &&
+        builtin_type_name(avra().rows.types, p!.target) &&
+        resolved(engine, file, Space.Type, p!.target).named() == null for written in [[w.of for w in item.store.impl_tparams_of(s)?.target ?? []]] if written.any(names_a_type(engine, file, it))]
+    declared_ones.concat(owned_ones)
 }
+
+/// Whether `name`, read from `file`, names a type: one the program declares, or one the language owns.
+fn names_a_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    resolved(engine, file, Space.Type, name).named() != null ||
+        builtin_type_name(avra().rows.types, name)
+}
+
+/// The ordinal names of `count` parameters of a generic type the language owns: `T1, T2`.
+fn ordinal_tparams(count: int) -> string { ["T${j + 1}" for j in 0..count].join(", ") }
 
 /// The type parameters the record or enum `name` names from `file` declares; absent for any other
 /// name.

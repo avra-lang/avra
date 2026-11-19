@@ -87,8 +87,10 @@ export const any_root: int = -1
 /// compiler/rule_examples.av), and its `@law` — `component rule`'s
 /// own raw `List<string>` (`check` refuses more than one), zero or
 /// one long; `declared_law` is the read that turns it into the
-/// `string?` a rule either carries or does not.
-export type RuleEntry = { name: string, module: string, run: RuleRun, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> = [] }
+/// `string?` a rule either carries or does not; and whether it reads
+/// past the item its node stands in (`RULES_READING_THE_FILE`), decided
+/// once a rule.
+export type RuleEntry = { name: string, module: string, run: RuleRun, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> = [], reads_file: bool = false }
 
 /// THE RULES THAT READ PAST THEIR ITEM — other items of the node's file — by name. Every other rule
 /// reads the item its node stands in alone, and what it finds is kept per item, so an edit walks only
@@ -102,7 +104,7 @@ const RULES_READING_THE_FILE: List<string> = [
 ]
 
 /// Whether the rule `r` reads past the item its node stands in.
-export fn reads_the_file(r: RuleEntry) -> bool { RULES_READING_THE_FILE.contains(r.name) }
+export fn reads_the_file(r: RuleEntry) -> bool { r.reads_file }
 
 /// What a rule's fn reads: a node's syntax alone, or the code with what the compiler knows of it.
 export enum RuleRun {
@@ -168,6 +170,7 @@ impl SyntaxRuleEntry {
             keeps: self.keeps,
             law: self.law,
             says: self.says,
+            reads_file: RULES_READING_THE_FILE.contains(self.name),
         }
     }
 }
@@ -185,6 +188,7 @@ impl FactRuleEntry {
             keeps: self.keeps,
             law: self.law,
             says: self.says,
+            reads_file: RULES_READING_THE_FILE.contains(self.name),
         }
     }
 }

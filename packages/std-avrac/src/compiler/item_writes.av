@@ -55,12 +55,10 @@ impl ReceiverUse {
 @derive(Saved)
 type MethodAt = { file: SourceFileAddress, owner: string, name: string, reader: string }
 
-fn same_method(a: MethodAt, b: MethodAt) -> bool {
-    a.name == b.name &&
-        a.owner == b.owner &&
-        a.reader == b.reader &&
-        a.file.package_name == b.file.package_name &&
-        a.file.path_in_package == b.file.path_in_package
+/// A method as one key: its file, its owner, its name and who reads it, each apart — two methods are
+/// one where their keys are.
+fn method_key(m: MethodAt) -> string {
+    "${m.file.package_name}\n${m.file.path_in_package}\n${m.owner}\n${m.name}\n${m.reader}"
 }
 
 /// What the method `method` of the type `file` declares as `owner` does to its receiver: each method
@@ -73,12 +71,19 @@ export fn receiver_use(
     method: string,
     reader: string,
 ) -> ReceiverUse {
-    mut reached = [MethodAt { file: file, owner: owner, name: method, reader: reader }]
+    let start = MethodAt { file: file, owner: owner, name: method, reader: reader }
+    mut reached = [start]
+    mut seen: Map<string, bool> = {}
+    seen.set(method_key(start), true)
     mut at = 0
     while at < reached.length {
         let found = surveyed(engine, reached[at])
         if found.writes() { return ReceiverUse.Written }
-        for m in found.reached { if !reached.any((r) -> same_method(r, m)) { reached.push(m) } }
+        for m in found.reached {
+            if seen.has(method_key(m)) { continue }
+            seen.set(method_key(m), true)
+            reached.push(m)
+        }
         at = at + 1
     }
     let unproved? = reached.find_map((m) -> surveyed(engine, m).unproved) else { return ReceiverUse.Read }
@@ -92,12 +97,15 @@ export fn receiver_use(
 fn chain_from(engine: QueryEngine, start: MethodAt) -> List<string>? {
     mut reached = [start]
     mut came_by: List<int> = [-1]
+    mut seen: Map<string, bool> = {}
+    seen.set(method_key(start), true)
     mut at = 0
     while at < reached.length {
         let found = surveyed(engine, reached[at])
         if found.writes() { return hops_to(reached, came_by, at) }
         for m in found.reached {
-            if reached.any((r) -> same_method(r, m)) { continue }
+            if seen.has(method_key(m)) { continue }
+            seen.set(method_key(m), true)
             reached.push(m)
             came_by.push(at)
         }

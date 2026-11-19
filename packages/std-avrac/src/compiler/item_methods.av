@@ -539,11 +539,13 @@ fn enum_static(
 ) -> SignedType? {
     if name != ENUM_ALL { return null }
     let shape? = enum_signature(engine, file, declared) else { return null }
-    if !shape.type_params.is_empty() || shape.variants.any(!it.payloads.is_empty()) { return null }
+    if !shape.type_params.is_empty() ||
+        shape.variants.any(!it.payloads.is_empty() || it.name == ENUM_ALL) { return null }
     headed_type(TypeHead.Function) with { answer: owned_type("List") with { args: [described] } }
 }
 
-/// The static that answers every variant of an enum whose variants carry nothing.
+/// The static that answers every variant of an enum whose variants carry nothing, where no variant
+/// is named so.
 const ENUM_ALL: string = "all"
 
 /// The static fn `name` the trait `file` declares as `declared` writes in its own body, as a fn of what
@@ -822,6 +824,7 @@ export fn language_gives(engine: QueryEngine, owner: SignedType, name: string, s
 export fn implements(engine: QueryEngine, reader: string, ty: SignedType, bound: SignedType) -> bool? {
     if ty.nullable() || ty.dynamic || ty.generic() || ty.inferred() { return null }
     let held? = declared_at(bound) else { return null }
+    if declaring_item(engine, held.file, held.name, ItemKind.Trait) == null { return null }
     let d? = declared_at(ty) ?? own_declared(ty.owned() ?? "") else { return null }
     let packages = distinct(
         [d.file.package_name, reader].concat(package_reach(engine, reader).packages),
@@ -865,6 +868,12 @@ export fn method_fact_definitions() -> List<QueryDefinition> { definitions_of(li
 
 /// The trait declared at `at`.
 fn trait_at(at: DeclaredAt) -> TraitAt { TraitAt { file: at.file, name: at.name } }
+
+/// Whether the trait `at` writes a fn `name`, a static where `statics`, else a method.
+fn trait_writes(engine: QueryEngine, at: TraitAt, name: string, statics: bool) -> bool {
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return false }
+    written_fn(item.store, [f for f in trait_fns(item) if item.store.is_static(f) == statics], name) != null
+}
 
 /// The method `s` as a value of `receiver` reaches it: the receiver read, then its own seats.
 fn receiver_typed(receiver: SignedType, s: FnSignature) -> SignedType? { fn_typed([read_seat(receiver)], s) }

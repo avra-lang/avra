@@ -1,10 +1,33 @@
 //! The resolver's walk: the statement/expression arms of `impl
 //! ResolveCx`. The entry and the frame helpers live in resolve.av.
-use core.{StmtId, ExprId, FileId, Param, some_list, DeclId, Binding, found_at, same_file}
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    LiteralFault,
+    Param,
+    some_list,
+    DeclId,
+    Binding,
+    found_at,
+    same_file,
+}
 use core.{binds_type, binds_name}
 use core.{SeatMark}
 use diagnostics.{Diag, Voice, guess_fix, guessed, refusal, said_as, unread_behind}
-use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, NameKind, remedy_for, nothing, Bound}
+use features.{
+    ResolveCx,
+    SelfSeat,
+    self_word,
+    Cap,
+    Namespace,
+    NameKind,
+    remedy_for,
+    nothing,
+    Bound,
+    owned_as_value,
+}
+use features.structs.{literal_fault}
 use @std.errors.{Loc, Frame}
 use compiler.typing.{builtin_type_name}
 
@@ -127,6 +150,7 @@ impl ResolveCx {
         }
         if self.refused_read(self.names_in(origin), [NameKind.Type, NameKind.Fn], name, at) { return }
         if self.names_a_member(name) { return self.emit(bare_member(at, name)) }
+        if builtin_type_name(self.view.lang.types, name) { return self.emit(said_as("type.type_value", at, owned_as_value(name))) }
         self.emit(self.suggested(value_unbound(name), e, name, self.def_names))
     }
 
@@ -267,6 +291,16 @@ impl ResolveCx {
             return
         }
         if self.refused_read(names, [NameKind.Type], name, self.loc_of(e)) { return }
+        if builtin_type_name(self.view.lang.types, name) {
+            return self
+                .emit(
+                    said_as(
+                        "type.struct_fields",
+                        self.loc_of(e),
+                        literal_fault(LiteralFault.Owned(name)),
+                    ),
+                )
+        }
         if names.fn_decl(name) != null { return self.emit(unresolved_at(self.loc_of(e), record_names_fn(name))) }
         self.emit(self.suggested(record_unbound(name), e, name, names.type_suggestions()))
     }

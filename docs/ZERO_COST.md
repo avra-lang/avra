@@ -51,7 +51,7 @@ diffed against the last run is how a NEW candidate appears without anyone lookin
 | packed lists of scalars | landed (batch 48) | a mark byte a cell, boxes per element |
 | strided lists of flat records | in progress (alloc) | a box per element |
 | nullable flat record as presence + words | designed (alloc (2), after the aggregate rewrite) | 2 boxes per `F?` |
-| static method tables | in progress (lowering-quality) | N code-pointer pushes per `dyn` box |
+| static method tables | done (lowering-quality, to land) | N code-pointer pushes per `dyn` box: one table per type and trait, laid once as data; a box is its value and its table |
 | aggregates as leaf scalars, unfilled parts zeroed | in progress (parallel-main) | SelectionDAG fallbacks, undef words |
 | release rows | landed (batch 48) | release call sites |
 | interned names | proposed | string compares in lookups |

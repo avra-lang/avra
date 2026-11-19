@@ -3,7 +3,7 @@
 //! every expression passes through, the dyn lift, the statement
 //! loop, a block's scope with its `defer` frame, and the entry's
 //! printed answer.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed, same_type}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, OnceSlot}
@@ -192,13 +192,31 @@ impl LowerCx {
         self.push_slot(into, self.reg_of(v))
     }
 
-    /// A kept list's elements, each joining the `collect`'s list — the
-    /// comprehension's own walk. An empty list's joins nothing.
+    /// A spread list's elements, each joining the list `into` — the
+    /// comprehension's own walk, each adopted where `into` holds a
+    /// nullable of it. An empty list's joins nothing.
     mut fn spread(into: Reg, v: ExprId) {
         let elem? = self.view.types.element(self.type_at(v)) else { return }
         let w = self.opened(v, elem)
-        self.push_slot(into, self.turn_elem(w, self.turn_open(w)))
+        self.push_slot(into, self.joined_as(into, elem, self.turn_elem(w, self.turn_open(w))))
         self.loop_end()
+    }
+
+    /// `r`, an element of `from`, as the list `into` holds it: adopted
+    /// where its element is a nullable of `from`, else itself.
+    mut fn joined_as(into: Reg, from: TypeId, r: Reg) -> Reg {
+        let held? = self.view.types.element(self.out.type_of_reg(into)) else { return r }
+        let inner? = self.view.types.carried(held) else { return r }
+        if !same_type(inner, from) { return r }
+        self.adopted(held, false, r)
+    }
+
+    /// Whether a spread of `v` joins a list of `elem` one element at a
+    /// time: the list holds a nullable of what `v` holds.
+    fn spread_adopts(v: ExprId, elem: TypeId) -> bool {
+        let from? = self.view.types.element(self.type_at(v)) else { return false }
+        let inner? = self.view.types.carried(elem) else { return false }
+        same_type(inner, from)
     }
 
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a

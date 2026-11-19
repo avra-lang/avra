@@ -54,11 +54,19 @@ fn item_misnamed(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemM
     let item = read_item(engine, file, at)
     let declared = flatten([declared_names(item.store, s) for s in item.stmts])
     let written = flatten(
-        [names_at(item.store, k) for s in item.stmts for k in under(item.store, At.Stmt(s))],
+        [names_at(item.store, k) for s in item.stmts for k in under(item.store, At.Stmt(s)).concat(defaults_under(item.store, s))],
     )
     ItemMisnamed {
         rows: [r! for n in declared.concat(written) for r in [misnamed(n)] if r != null],
     }
+}
+
+/// Each node of the defaults the fields of the statement `s` write, a record's or a component's,
+/// which no statement holds as its kids.
+fn defaults_under(store: SyntaxArena, s: StmtId) -> List<At> {
+    let parts = store.component_parts(s)
+    let fields = store.declared_fields(s).concat(parts?.head ?? []).concat(parts?.holders ?? [])
+    flatten([under(store, At.Expr(d!)) for p in fields for d in [p.default] if d != null])
 }
 
 /// Whether a written item of `file` holds a word that cannot be the name it's written as: a build
@@ -176,9 +184,16 @@ fn misnamed(n: WrittenName) -> MisnamedAt? {
 /// refuses wherever it's written as one.
 fn cannot_name(word: string) -> bool { naming_of(written_name(word, null)) != null }
 
+/// The language's keywords, as a set, made once a process.
+once fn keyword_set() -> Map<string, bool> {
+    mut words: Map<string, bool> = {}
+    for k in avra().keywords { words.set(k, true) }
+    words
+}
+
 /// What the word of `n` is that makes it no name; absent for a word that can be one.
 fn naming_of(n: WrittenName) -> Misnaming? {
-    if avra().keywords.contains(n.word) {
+    if keyword_set().has(n.word) {
         return Misnaming
             .Keyword(n.remedy ?? if n.seat { remedy_for(avra().rows, n.word) } else { null })
     }

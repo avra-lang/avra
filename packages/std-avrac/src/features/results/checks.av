@@ -35,6 +35,10 @@ impl Checks for Catch {
         }
         let subject = cx.check(self.subject, Expected.Free)
         let awaits = cx.store.awaited_task(self.subject) != null
+        if awaits && !cx.program.prelude_seen {
+            cx.caught(e, CatchFault.CancelledUnseen)
+            return null
+        }
         let answer = if awaits { subject } else { cx.payload_of(subject, "Ok") }
         let err = if awaits { cx.toolchain_type("@std.prelude", "Cancelled") } else { cx.payload_of(subject, "Err") }
         let total = awaits || err == null || arms_recover(cx, e, err!, self.arms)

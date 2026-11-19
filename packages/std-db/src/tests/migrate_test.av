@@ -14,6 +14,7 @@ use @std.db.migrate.{
     statements,
     refusals,
     report,
+    notes,
 }
 
 @model
@@ -60,6 +61,17 @@ fn moves(p: Plan) -> string { [kind(m) for m in p.moving].join(",") }
 fn sql(p: Plan) -> string { statements(p).join(";") }
 
 fn without_title() -> List<string> { [KEY, VERSION] }
+
+/// The plan taking a column `n` recorded under the word `was` to one declared `now`.
+fn worded(was: string, now: string) -> Plan {
+    plan_from(
+        base().concat(["n|${was}|null|-|-|-|-|-"]),
+        base().concat(["n|${now}|null|-|-|-|-|-"]),
+    )
+}
+
+/// A plan in brief: how many steps, what moves, what is run.
+fn brief(p: Plan) -> string { "${p.steps.length}|${moves(p)}|${sql(p)}" }
 
 spec "std/db migrate" {
     given "a model with no table" {
@@ -142,6 +154,44 @@ spec "std/db migrate" {
         }
         then "a unique one is refused" { moves(plan(base().concat(["u|TEXT|null|-|unique|-|-|-"]))) == "uniqued:u" }
         then "a second key is refused" { moves(plan(base().concat(["k|INTEGER|null|key|-|-|-|-"]))) == "rekeyed:k" }
+    }
+    given "a type word changed for one that holds every value alike" {
+        then "a word that spells no affinity is numeric, and INTEGER holds what it held: a step, nothing run, nothing moved" {
+            brief(worded("no_type_this_names", "INTEGER")) == "1||"
+        }
+        then "and the other way round" { brief(worded("INTEGER", "DECIMAL")) == "1||" }
+        then "two words of one affinity are one column" {
+            brief(worded("INT", "INTEGER")) == "1||" && brief(worded("VARCHAR", "TEXT")) == "1||"
+        }
+        then "the letters decide in SQLite's order, not the word's sense" {
+            brief(worded("FLOATING POINT", "INTEGER")) == "1||" &&
+                brief(worded("CHARINT", "TEXT")) == "0|retyped:n|"
+        }
+        then "the plan is not current, and says what it changes" {
+            !is_current(worded("NUMERIC", "INTEGER")) &&
+                notes(worded("NUMERIC", "INTEGER")).join("") == "`t.n` is recorded as NUMERIC and declared INTEGER — both hold every value alike, so the table stays as it is and its record takes the new word"
+        }
+        then "a report shows it under the table" {
+            report([worded("NUMERIC", "INTEGER")])
+                .join("\n")
+                .starts_with("t:\n  ~ `t.n` is recorded as NUMERIC")
+        }
+        then "a numeric word for REAL, TEXT or BLOB still moves: those change what a value is held as" {
+            brief(worded("NUMERIC", "REAL")) == "0|retyped:n|" &&
+                brief(worded("NUMERIC", "TEXT")) == "0|retyped:n|" &&
+                brief(worded("NUMERIC", "BLOB")) == "0|retyped:n|"
+        }
+        then "a key's word is never reworded: only INTEGER to the letter makes a key the row's number" {
+            moves(plan(["id|INT|null|key|-|-|-|-", VERSION, TITLE])) == "retyped:id"
+        }
+        then "a reworded column that also changes a fact still moves for the fact" {
+            brief(
+                plan_from(
+                    base().concat(["n|NUMERIC|null|-|-|-|-|-"]),
+                    base().concat(["n|INTEGER|notnull|-|-|-|-|-"]),
+                ),
+            ) == "1|tightened:n|"
+        }
     }
     given "a column that changes" {
         then "its type moves" { moves(plan([KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-"])) == "retyped:title" }

@@ -53,7 +53,7 @@ avrac-d    test packages/std-avrac — src/features/[n-r]*
 avrac-e    test packages/std-avrac — src/features/[s-z]*
 avrac-f    test packages/std-avrac — src/features' own files, and every dir of src/ but compiler and features
 cli        test packages/cli, its failing names held to tools/gate/cli.names
-program    test packages/std-program and std-relation; make runtime-tests
+program    test packages/std-program and std-relation; make runtime-tests, rt-header and rt-ns: every runtime row's C body and typed method
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
@@ -67,7 +67,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, root_listing_attack
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -315,6 +315,10 @@ slice_program() {
     tested std-program packages/std-program
     tested std-relation packages/std-relation
     row runtime-tests make runtime-tests
+    # THE ROWS' CLAIMS, generated from rt_sigs(): the C header and the typed methods. A row added without
+    # its regeneration is refused here, never left for the next lane to find.
+    row rt-header make rt-header
+    row rt-ns make rt-ns
 }
 
 # each package the diff from the base sha `$1` touches, whose name the pattern `$3` matches (`$2` keep)
@@ -384,6 +388,7 @@ slice_witness_b() {
     row store-bound-attack sh tools/store_bound_attack.sh
     row path-leak-attack sh tools/path_leak_attack.sh
     row case-leftover-attack sh tools/case_leftover_attack.sh
+    row root-listing-attack sh tools/root_listing_attack.sh
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

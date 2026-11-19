@@ -1,5 +1,6 @@
 //! The typing laws. The body is a lambda, typed as any. A body that
-//! only NAMES a value is refused — deferring it does nothing. The
+//! only NAMES a value is refused — deferring it does nothing; one
+//! whose name was refused already says nothing more. The
 //! answer is DROPPED, so a `Result` there is refused — a failure
 //! nobody would hear. An `errdefer` waits on a failure channel: an
 //! enclosing fn that answers a `Result`.
@@ -10,9 +11,9 @@ use diagnostics.{Voice, said_as}
 fn check_defer(mut cx: TypeCx, s: StmtId) {
     cx.walk_value(s)
     let body? = cx.view.store.stmt_value(s) else { return }
-    let inner: ExprId? = cx.view.store.lambda_parts(body)?.body
-    if inner != null && cx.view.store.inert(inner!) {
-        cx.emit(said_as("type.defer_inert", cx.stmt_loc(s), deferred_inert(cx.name_at(inner!))))
+    let inert = inert_body(cx, body)
+    if inert != null {
+        cx.emit(said_as("type.defer_inert", cx.stmt_loc(s), deferred_inert(cx.name_at(inert!))))
         return
     }
     let answer: TypeId? = cx.view.types.arrow_parts(cx.type_at(body))?.answer
@@ -27,6 +28,13 @@ fn check_defer(mut cx: TypeCx, s: StmtId) {
             )
     }
     if runs_on_error(cx.view.store, s) { check_channel(cx, s) }
+}
+
+/// The body of the deferred lambda `body` where it only names a value, and that value's name was
+/// not refused already; absent for any other body.
+fn inert_body(cx: TypeCx, body: ExprId) -> ExprId? {
+    let inner? = cx.view.store.lambda_parts(body)?.body else { return null }
+    if cx.view.store.inert(inner) && !cx.errored(inner) { inner } else { null }
 }
 
 /// The channel an `errdefer` waits on: the enclosing fn's, and it

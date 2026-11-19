@@ -6,6 +6,7 @@
 use core.{ModulePath, Span, distinct, flatten, module_path}
 use compiler.laws.{Found, Unread, law}
 use diagnostics.{Voice}
+use features.{import_clashed}
 use compiler.{
     undeclared_dependency,
     apart_to_test,
@@ -38,19 +39,37 @@ enum UseFault {
     Unexported(item: string, exports: List<string>, own_test: bool)
     /// An item the module's own test reads that each of `files` declares privately.
     Apart(item: string, files: List<string>)
+    /// An item a `use` line before it already binds the name of to another declaration, from the
+    /// module `holder` names.
+    Clash(item: string, holder: string)
 }
+
+/// One `use` line: where it stands, the path it names, the items it lists.
+type UseWritten = { at: Span?, path: List<string>, items: List<string>, bound: List<string>, exported: bool }
 
 /// A fault of a `use` line, where the line stands and the path it names.
 type UseFaultAt = { at: Span?, path: List<string>, fault: UseFault, unread: Unread? = null }
 
-/// Every fault of the `use` lines the written item `at` of `file` writes, line by line.
+/// Every fault of the `use` lines the written item `at` of `file` writes, line by line, each read
+/// after every `use` line the file writes before it.
 fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<UseFaultAt> {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
-    flatten(
-        [line_faults(engine, file, item.store.stmt_span(s), u!.path, u!.items) for s in item.stmts for u in [item.store.use_parts(s)] if u != null],
-    )
+    let lines = uses_written(item)
+    let before = flatten([uses_written(read_item(engine, file, k)) for k in 0..at])
+    flatten([line_faults(engine, file, l, before.concat(lines.take(j))) for j, l in lines])
+}
+
+/// The `use` lines the written item `item` writes, in order.
+fn uses_written(item: ReadItem) -> List<UseWritten> {
+    [UseWritten {
+        at: item.store.stmt_span(s),
+        path: u!.path,
+        items: u!.items,
+        bound: [u!.bound_as(j) for j in 0..u!.items.length],
+        exported: item.store.is_exported(s),
+    } for s in item.stmts for u in [item.store.use_parts(s)] if u != null]
 }
 
 /// The package's manifest, as a path from the directory `file` stands in.
@@ -58,15 +77,17 @@ fn manifest_from(file: SourceFileAddress) -> string {
     "${["../" for part in file.path_in_package.split("/").drop(1)].join("")}avra.toml"
 }
 
-/// The faults of one `use` line of `file` naming `path` and listing `items`: its path's first, and
+/// The faults of the `use` line `line` of `file`, after the lines `earlier`: its path's first, and
 /// only where the path holds, each item's.
 fn line_faults(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: Span?,
-    path: List<string>,
-    items: List<string>,
+    line: UseWritten,
+    earlier: List<UseWritten>,
 ) -> List<UseFaultAt> {
+    let at = line.at
+    let path = line.path
+    let items = line.items
     let m = module_path(path)
     let fault = (f: UseFault) -> UseFaultAt { at: at, path: path, fault: f }
     if !rooted(engine, file.package_name) { return [fault(UseFault.Unpackaged)] }
@@ -75,14 +96,75 @@ fn line_faults(
     if provider == file.package_name && m.local().join(".") == module_segments(file).join(".") { return [] }
     if !reaches(engine, file.package_name, provider) { return [fault(UseFault.Undeclared(provider, manifest_from(file)))] }
     if two_modules(engine, provider, m.local()) { return [fault(UseFault.Twofold)] }
-    let module = ModuleAt {
-        package: provider,
-        local: m.local(),
-        as_root: provider == file.package_name,
-    }
+    let module = module_at(file, m)
     if module_files(engine, provider, module.local, module.as_root).is_empty() { return [fault(UseFault.Moduleless)] }
     let behind = (f: UseFault, item: string) -> if f is .Unexported { unread_in_module(engine, file, module, "`${path.join(".")}`", item) } else { null }
-    [fault(f!) with { unread: behind(f!, item) } for j, item in items for f in [item_fault(engine, file, module, items.take(j), item)] if f != null]
+    [fault(f!) with { unread: behind(f!, item) } for j, item in items for f in [
+        item_fault(engine, file, module, items.take(j), item, line.exported) ?? clash(
+            engine,
+            file,
+            module,
+            item,
+            line.bound[j],
+            if line.exported { [l for l in earlier if !l.exported] } else { earlier },
+        ),
+    ] if f != null]
+}
+
+/// The module `path` names from `file`, where a `use` line's path names one; absent otherwise.
+fn module_named(file: SourceFileAddress, path: List<string>) -> ModuleAt? {
+    let m = module_path(path)
+    if m.malformed() { return null }
+    module_at(file, m)
+}
+
+/// The module the well-formed path `m` names from `file`: its package's, or `file`'s own.
+fn module_at(file: SourceFileAddress, m: ModulePath) -> ModuleAt {
+    let provider = m.package() ?? file.package_name
+    ModuleAt { package: provider, local: m.local(), as_root: provider == file.package_name }
+}
+
+/// The clash of the item `item` of `module`, bound as `bound`, with a line of `earlier` that binds
+/// that name from another module whose declaration is another; absent where none does. An item's
+/// alias is the name it binds. Two `export use` lines of one name are a re-export twice, that law's.
+fn clash(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    module: ModuleAt,
+    item: string,
+    bound: string,
+    earlier: List<UseWritten>,
+) -> UseFault? {
+    let here = module_declarations_of(engine, module, item)
+    let prior? = earlier
+        .find(
+            (l) -> (0..l.items.length)
+                .any((k) -> l.bound[k] == bound && apart_from(engine, file, l.path, l.items[k], here)),
+        ) else { return null }
+    UseFault.Clash(bound, prior.path.join("."))
+}
+
+/// Whether the module `path` names from `file` declares `item` and none of its declarations of it is
+/// one of `here`.
+fn apart_from(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    path: List<string>,
+    item: string,
+    here: List<DeclaredName>,
+) -> bool {
+    let m? = module_named(file, path) else { return false }
+    let there = module_declarations_of(engine, m, item)
+    !there.is_empty() &&
+        !there
+            .any(
+                (d) -> here
+                    .any(
+                        it.name == d.name &&
+                            it.file.package_name == d.file.package_name &&
+                            it.file.path_in_package == d.file.path_in_package,
+                    ),
+            )
 }
 
 /// The names the `use` lines of `file` bind that nothing answers: every name of a line its path
@@ -94,7 +176,14 @@ export fn refused_imports(engine: QueryEngine, file: SourceFileAddress) -> List<
 
 /// The names the `use` line `u` of `file` binds that nothing answers.
 fn line_refused(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> List<string> {
-    let faults = line_faults(engine, file, null, u.path, u.items)
+    let line = UseWritten {
+        at: null,
+        path: u.path,
+        items: u.items,
+        bound: [u.bound_as(j) for j in 0..u.items.length],
+        exported: u.exported,
+    }
+    let faults = line_faults(engine, file, line, [])
     if faults.is_empty() { return [] }
     [u.bound_as(j) for j, item in u.items if faults.any((f) -> refuses_item(f.fault, item))]
 }
@@ -155,18 +244,20 @@ fn path_from(from: SourceFileAddress, to: SourceFileAddress) -> string {
 }
 
 /// What the `use` line's item `item`, listed after `before`, names that isn't there in `module`;
-/// absent where its surface holds it.
+/// absent where its surface holds it. A module's own test reads its private names, but never
+/// re-exports one (`reexported`).
 fn item_fault(
     engine: QueryEngine,
     file: SourceFileAddress,
     module: ModuleAt,
     before: List<string>,
     item: string,
+    reexported: bool,
 ) -> UseFault? {
     if before.contains(item) { return UseFault.Listed(item) }
     let held = module_declarations_of(engine, module, item)
     if held.any(it.exported) || reexports_name(engine, module, item) { return null }
-    let own_test = tests_of(file, module)
+    let own_test = tests_of(file, module) && !reexported
     if own_test && held.length == 1 { return null }
     if own_test && held.length > 1 { return UseFault.Apart(item, [d.file.path_in_package.split("/").last() ?? "" for d in held]) }
     UseFault.Unexported(item, exported_names(engine, module), own_test)
@@ -227,6 +318,15 @@ fn unexported_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
             .Unexported(item, exports, own_test) -> [item, if own_test { "test" } else { "" }].concat(exports),
             rest -> [],
         },
+    )
+}
+
+fn clashing_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(
+        engine,
+        file,
+        at,
+        (f: UseFault) -> match f { .Clash(item, holder) -> [item, holder], rest -> [] },
     )
 }
 
@@ -293,6 +393,17 @@ export law use_lists_once {
     witness: "use util.{f, f}\nf()\n"
     witness_files: {"src/util.av": EXPORTS_F}
 }
+
+/// a `use` binds a name no `use` before it bound to another declaration
+export law use_binds_a_name_once {
+    kind: "resolve.import_clash"
+    reads: clashing_uses
+    voice: clashing_words
+    witness: "use util.{f}\nuse other.{f}\nf()\n"
+    witness_files: {"src/util.av": EXPORTS_F, "src/other.av": EXPORTS_F}
+}
+
+fn clashing_words(a: List<string>) -> Voice { import_clashed(a[1], "`${a[2]}`") }
 
 /// a `use` names what its module exports
 export law use_names_an_export {

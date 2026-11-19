@@ -32,9 +32,12 @@ fn reexports_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<R
 
 /// Every item a `use` of the written item `at` of `file` reads through a re-export that no
 /// declaration stands behind — its own `export use`, or a module's that re-exports it — beside the
-/// module it names.
+/// module it names; an `export use` of a name its module declares privately is the export law's.
 fn unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [Found { at: r.at, args: [r.line.path.join("."), item] } for r in uses_in(engine, file, at) for m in some_list(imported_module(engine, file, r.line)) for item in r.line.items if (r.line.exported || reexports_name(engine, m, item)) && surfaced(engine, m, item, []).is_empty()]
+    [Found { at: r.at, args: [r.line.path.join("."), item] } for r in uses_in(engine, file, at) for m in some_list(imported_module(engine, file, r.line)) for item in r.line.items if (r.line.exported || reexports_name(engine, m, item)) &&
+        surfaced(engine, m, item, []).is_empty() &&
+        !(r.line.exported &&
+            declarations_of(engine, m.package, m.local, m.as_root, item).any(!it.exported))]
 }
 
 /// Whether `name`, read in `file`, is bound by a `use` line through a re-export no declaration

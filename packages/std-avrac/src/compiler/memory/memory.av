@@ -218,6 +218,7 @@ fn memory_ins(
     let defs = def_sites(layouts.length, ins)
     let next_barrier = barrier_positions(ins)
     let twins = twin_table(defs, next_barrier, layouts, ins)
+    let immortal = immortal_regs(layouts.length, ins)
     let life = Lives {
         layouts: layouts,
         ins: ins,
@@ -229,7 +230,7 @@ fn memory_ins(
         death: death_points(twins, ins, last),
     }
     for at, raw in ins {
-        let i = owned_form(twins, layouts, at, raw)
+        let i = owned_form(twins, layouts, immortal, at, raw)
         match i {
             .ScopeEnter(tier) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
@@ -1067,13 +1068,15 @@ fn managed_dst(layouts: List<Layout>, i: Ins) -> Reg? {
 /// managed becomes an owned +1 read — each by the registry's OWNED
 /// TWIN column. Lowering never chooses; ownership stays this
 /// pass's one concern, and no runtime name is spelled here.
-fn owned_form(twins: List<bool>, layouts: List<Layout>, at: int, i: Ins) -> Ins {
+/// A store whose value is IMMORTAL — the binary's own data, a literal's text — takes no reference:
+/// nothing ever frees it, so the slot it lands in owes it nothing.
+fn owned_form(twins: List<bool>, layouts: List<Layout>, immortal: List<bool>, at: int, i: Ins) -> Ins {
     // a pre-filter — the caller's dispatch is exhaustive
     // over Ins; this rewrite touches only the runtime call shapes
     match i {
         .CallRtVoid(callee, args) -> {
             let twin: string? = rt_owned_twin(callee)
-            if twin != null && pushes_managed(layouts, args) { Ins.CallRtVoid(twin!, args) } else { i }
+            if twin != null && pushes_managed(layouts, args) && !stores_immortal(immortal, args) { Ins.CallRtVoid(twin!, args) } else { i }
         },
         .CallRt(dst, callee, args) if twins[at] -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
         rest -> i,
@@ -1164,6 +1167,12 @@ fn crosses_cell(defs: List<int>, ins: List<Ins>, layouts: List<Layout>, r: Reg) 
     if d < 0 { return false }
     let src? = view_source(ins[d]) else { return false }
     crosses_cell(defs, ins, layouts, src)
+}
+
+/// Whether a store's VALUE seat (its last) is an immortal register.
+fn stores_immortal(immortal: List<bool>, args: List<Reg>) -> bool {
+    let v? = args.last() else { return false }
+    v.index >= 0 && v.index < immortal.length && immortal[v.index]
 }
 
 /// A push's VALUE seat (arg 1) holds a managed type.

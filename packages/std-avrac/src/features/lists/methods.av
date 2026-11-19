@@ -546,16 +546,16 @@ export fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
 // ── The voices ──
 
 fn unpaired_enumerate(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.list_element",
-                cx.loc_of(e),
-                "`enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples",
-                "enumerated here",
-                "pair at the head — `for i, x in xs { … }`, or `[… for i, x in xs]`",
-            ),
-        )
+    cx.spoken(said_as("type.list_element", cx.loc_of(e), enumerate_unpaired()))
+}
+
+/// `enumerate` called where no paired `for` head walks it.
+export fn enumerate_unpaired() -> Voice {
+    Voice {
+        message: "`enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples",
+        label: "enumerated here",
+        help: "pair at the head — `for i, x in xs { … }`, or `[… for i, x in xs]`",
+    }
 }
 
 /// What a walk's receiver is, for a voice: a map, or a list.
@@ -566,14 +566,21 @@ fn walked_word(cx: TypeCx, mc: MethodCall) -> string {
 fn scans_by_value(mut cx: TypeCx, mc: MethodCall, name: string, elem: TypeId) -> TypeId {
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.list_element",
                 cx.loc_of(mc.e),
-                "`${name}` scans by value — a scalar, text, a tagged enum, or a record of one such field — and this ${walked_word(cx, mc)} holds `${cx.view.types.name_of(elem)}`",
-                "scanned here",
-                "spell the scan — `xs.any(same(it))` with the fields you mean",
+                scan_unvalued(name, walked_word(cx, mc), cx.view.types.name_of(elem)),
             ),
         )
+}
+
+/// The scan `name` over a `walked` (a list or a map) that holds `held`, which compares by no value.
+export fn scan_unvalued(name: string, walked: string, held: string) -> Voice {
+    Voice {
+        message: "`${name}` scans by value — a scalar, text, a tagged enum, or a record of one such field — and this ${walked} holds `${held}`",
+        label: "scanned here",
+        help: "spell the scan — `xs.any(same(it))` with the fields you mean",
+    }
 }
 
 fn fold_seats(mut cx: TypeCx, e: ExprId, found: int) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(e), fold_fault(FoldFault.Count(found)))) }

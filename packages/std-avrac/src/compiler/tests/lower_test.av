@@ -17,6 +17,7 @@ use @std.avrac.core.{
     some_list,
     new_type_registry,
     static_code_syms,
+    vtable_named,
     consumed_mark,
 }
 
@@ -78,6 +79,11 @@ fn addr_syms(l: Lowered) -> List<string> {
 /// minted by `Ins.FnAddr` — `addr_syms`'s twin.
 fn static_addr_syms(l: Lowered) -> List<string> {
     flatten([static_code_syms(st.boxes) for st in l.statics])
+}
+
+/// The code addresses each type's table for a trait holds, laid out once as the binary's data.
+fn table_syms(l: Lowered) -> List<string> {
+    flatten([static_code_syms(st.boxes) for st in l.statics if vtable_named(st.name)])
 }
 
 fn call_ptrs(l: Lowered) -> int {
@@ -311,20 +317,19 @@ spec "compiler/lower" {
         }
     }
     given "the dyn box and its indirect call (T3)" {
-        then "boxing writes one address per trait method, qualified" {
-            let syms = addr_syms(ir_of(dyn_read()))
-            syms.length == 1 && syms[0] == "alone/src/main.av.P.show"
+        then "the type's table holds one address per trait method, qualified, and boxing writes none" {
+            let l = ir_of(dyn_read())
+            let syms = table_syms(l)
+            syms.length == 1 && syms[0] == "alone/src/main.av.P.show" && addr_syms(l).is_empty()
         }
         then "the call goes through the pointer, not a name" {
             call_ptrs(ir_of(dyn_read())) == 1
         }
-        then "a boxed empty contract carries the value alone" {
-            addr_syms(
-                ir_of(
-                    "trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2",
-                ),
+        then "a boxed empty contract's table holds no code" {
+            let l = ir_of(
+                "trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2",
             )
-                .length == 0
+            table_syms(l).is_empty() && addr_syms(l).is_empty()
         }
     }
     given "the mut-cell protocol (ownership 11.5)" {
@@ -339,7 +344,7 @@ spec "compiler/lower" {
   r2 = int 2
   r3 = call avra_array_sized(r2)
   call avra_array_push(r3, r0)
-  call avra_array_push_owned(r3, r1)
+  call avra_array_push(r3, r1)
   r4 = slot
   call avra_cell_release(r4)
   store r4 <- r3
@@ -349,7 +354,7 @@ spec "compiler/lower" {
   r8 = int 2
   r9 = call avra_array_sized(r8)
   call avra_array_push(r9, r6)
-  call avra_array_push_owned(r9, r7)
+  call avra_array_push(r9, r7)
   call avra_cell_release(r4)
   store r4 <- r9
   r10 = load r4

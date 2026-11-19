@@ -29,12 +29,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <sched.h>
 #include <time.h>
 #include <unistd.h>
-
-#if defined(__linux__)
-#include <sched.h>
-#endif
 #if defined(__APPLE__)
 #include <libproc.h>
 #include <sys/proc.h>

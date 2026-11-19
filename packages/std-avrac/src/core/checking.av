@@ -79,6 +79,9 @@ export type CheckedProgram = {
     /// Whether a value of a type implements the trait a bound names, as the whole program's impls
     /// say; absent where nothing says.
     implements: fn(SignedType, SignedType) -> bool?,
+    /// Whether the body's file sees the prelude: a file of a package does, a file standing in none
+    /// doesn't.
+    prelude_seen: bool = true,
     /// What the one generic trait whose own body gives a value of a type the method of a name says
     /// of its seats; absent where no one such trait gives it.
     default_seats: fn(SignedType, string) -> DefaultSeats? = no_default_seats,
@@ -737,6 +740,9 @@ export enum Seating {
     Literal(fault: LiteralFault)
     /// A call filling a type parameter with a type that doesn't implement the trait it's bound by.
     Unimplemented
+    /// A call of the static `callee` whose answer names its type parameter `parameter`, which
+    /// neither its arguments nor a wanted answer fill.
+    StaticUnpinned(callee: string, parameter: string)
     /// A `fold` refused as `fault` says.
     Folded(fault: FoldFault)
     /// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
@@ -778,6 +784,8 @@ export enum LiteralFault {
     Enum(name: string)
     /// It names `name`, an alias of `of`, which has no fields.
     Fieldless(name: string, of: string)
+    /// It names `name`, a type the language owns, which no record literal makes.
+    Owned(name: string)
 }
 
 /// Why a `for` walks nothing of its subject.
@@ -813,6 +821,9 @@ export enum CatchFault {
     NoFailure(err: string, vn: string, variants: List<string>)
     /// An arm binds `bind` to what the variant `vn` carries, which is nothing.
     NothingHeld(vn: string, bind: string)
+    /// It recovers an `await`, whose failure is the prelude's `Cancelled`, in a program that sees no
+    /// prelude.
+    CancelledUnseen
 }
 
 /// A construct whose arms meet in one answer.
@@ -1127,12 +1138,42 @@ impl Checking {
         let held? = found.listed() else { return read }
         if wanted.listed() != null { return read }
         self.seats.put("${v.index}", found)
+        self.unrefused(v, before)
+        self.elements_judged(v, held, wanted, self.store.list_lit_values(v) ?? [])
+        read
+    }
+
+    /// The spread `v` of a list literal whose seat wants elements of `elem`: the list it spreads is
+    /// checked as the list of them, and each of its elements stands as one.
+    mut fn spread_checked(v: ExprId, elem: SignedType) -> SignedType? {
+        let before = self.refused.get().length
+        let read = self.check(v, Expected.Exactly(owned_type("List") with { args: [elem] }))
+        let found? = read else { return read }
+        let held? = found.listed() else { return read }
+        self.unrefused(v, before)
+        let operand = self.store.spread_operand(v)
+        if operand != null { self.unrefused(operand!, before) }
+        if self.refused.get().length > before { return read }
+        self.seats.put("${v.index}", found)
+        self.elements_judged(v, held, elem, [])
+        read
+    }
+
+    /// The refusals said at `v` since the first `before`, dropped: a list kept as elements is judged
+    /// by its elements.
+    mut fn unrefused(v: ExprId, before: int) {
         let all = self.refused.get()
         self.refused.set(all.take(before).concat([r for r in all.drop(before) if r.at != v]))
-        if !self.stands_in(v, held, wanted) {
-            self.refused.push(Refused { at: v, want: wanted, found: held, seat: Seating.Element })
-        }
-        read
+    }
+
+    /// The elements of `held` a list `v` brings where a list's elements are `elem`, refused where
+    /// they don't stand as one: at the first of its `written` elements that doesn't, else at `v`.
+    mut fn elements_judged(v: ExprId, held: SignedType, elem: SignedType, written: List<ExprId>) {
+        if self.stands_in(v, held, elem) { return }
+        let at = written
+            .find((k) -> self.type_of(k) != null && !self.stands_in(k, self.type_of(k)!, elem)) ?? v
+        let found = if same_expr(at, v) { held } else { self.type_of(at)! }
+        self.refused.push(Refused { at: at, want: elem, found: found, seat: Seating.Element })
     }
 
     /// The refusal since `before` of `v`, the element of the comprehension `e` a seat wants a list of
@@ -1271,6 +1312,7 @@ impl Checking {
     /// writing seats it never writes through, or a literal fills a named seat, or a nullable of one,
     /// over its own shape.
     fn stands_in(e: ExprId, found: SignedType, want: SignedType) -> bool {
+        if self.unboxable(found, want) { return false }
         if found.reaches(want) ||
             covered(found, want) ||
             found.fits_written(want) ||
@@ -1278,6 +1320,15 @@ impl Checking {
         if !self.store.expr(e).literal_form() { return false }
         let shape? = self.named_over(want with { nulls: 0 }) else { return false }
         found.reaches(shape with { nulls: want.nulls })
+    }
+
+    /// Whether a value of `found` would be boxed into the `dyn` seat `want`, or a nullable of one,
+    /// though the program's impls say its type doesn't implement the seat's trait.
+    fn unboxable(found: SignedType, want: SignedType) -> bool {
+        let seat = want.unwrapped()
+        if !seat.dynamic || seat.nullable() || found.dynamic || found.head is .Never { return false }
+        let met = (self.program.implements)(found.unwrapped(), seat with { dynamic: false })
+        met != null && !met!
     }
 
     /// The type a node's seat wants, kept by the node: what the core may answer in its place.
@@ -2341,16 +2392,28 @@ impl Checking {
                 .refused
                 .push(Refused { at: v, want: t, found: t, seat: Seating.SpreadUnlike(of) })
         }
-        let singles = [v for at, v in values if !spreads[at] && self.type_of(v) != null]
-        let first? = singles.first() else { return }
-        let f = self.type_of(first)!
-        for k in singles.drop(1) {
-            let t = self.type_of(k)!
+        let typed = [at for at, v in values if self.entry_brings(v, spreads[at], of) != null]
+        let first? = typed.first() else { return }
+        let f = self.entry_brings(values[first], spreads[first], of)!
+        for at in typed.drop(1) {
+            let k = values[at]
+            let t = self.entry_brings(k, spreads[at], of)!
             if t.generic() || t.inferred() || t.unknown() || f.unknown() { continue }
             if self.stands_in(k, t, f) { continue }
             let seat = if of == "list" { Seating.ElementsApart(self.boxable(f) && self.boxable(t)) } else { Seating.MapValue }
             return self.refused.push(Refused { at: k, want: f, found: t, seat: seat })
         }
+    }
+
+    /// What the entry `v` of a literal of `of` (a list or a map) brings to its elements, a spread
+    /// entry `spread`: a single its own type, a spread the elements of the list or the values of the
+    /// map it spreads; absent where untyped, or a spread of an empty one.
+    fn entry_brings(v: ExprId, spread: bool, of: string) -> SignedType? {
+        let t? = self.type_of(v) else { return null }
+        if !spread { return t }
+        let seen = self.seen(t) ?? t
+        let held? = (if of == "list" { seen.listed() } else { seen.mapped() }) else { return null }
+        if held.bottom() { null } else { held }
     }
 
     /// The pattern `p` of the node `e` and each it holds, over a value of `subject`, refused where it
@@ -3876,6 +3939,7 @@ impl Checking {
         pinned: Map<string, SignedType> = {},
         bounds: List<SignedType?> = [],
         declared: CalleeNamed? = null,
+        static_callee: string? = null,
     ) -> SignedType? {
         if declared != null { self.unpinned_withdrawn() }
         let before = self.refused.get().length
@@ -3915,7 +3979,35 @@ impl Checking {
                         .concat(if expected is .Exactly && f.answer != null { [f.answer!] } else { [] }),
                 ) { return null }
         let answer? = f.answer else { return null }
-        if answer.fills_all(found) { answer.filled(found) } else { null }
+        if answer.fills_all(found) { return answer.filled(found) }
+        if static_callee != null && (expected is .Free || expected is .Dropped) { self.static_unpinned(static_callee!, f, found) }
+        null
+    }
+
+    /// Whether `e` is the whole value a statement binds or hands on: nothing around it can say more of
+    /// its type.
+    fn stands_alone(e: ExprId) -> bool { self.store.stmt_ids().any((s) -> self.store.stmt_value(s)?.index == e.index) }
+
+    /// A call of the static `callee`, of type `f`, that `found` fills, the whole value of a
+    /// statement nothing wants a type of, refused at its first type parameter the answer names and
+    /// no seat does: nothing it's handed can fill that parameter.
+    mut fn static_unpinned(callee: string, f: SignedType, found: Map<string, SignedType>) {
+        if self.meanings { return }
+        let at? = self.site_node() else { return }
+        if !self.stands_alone(at) { return }
+        let seated = flatten([s.ty.parameters() for s in f.seats])
+        let open? = (f.answer?.parameter_types() ?? []).find(left_open(it, found, seated)) else { return }
+        let name = match open.head { .Parameter(_, n) -> n, rest -> "" }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: at,
+                    want: open,
+                    found: open,
+                    seat: Seating.StaticUnpinned(callee, name),
+                },
+            )
     }
 
     /// What a call of `f` answers when its type parameters are the body's own, which nothing here
@@ -4326,4 +4418,9 @@ fn declared_word(t: SignedType) -> string {
 export fn written_before(labels: List<string>, seats: List<string>, name: string, j: int) -> bool {
     let at = seats.index_of(name)
     labels.slice(0, j).contains(name) || at < labels.length && labels[at] == ""
+}
+
+/// Whether `p` is a type parameter neither `found` fills nor a seat, by its places `seated`, names.
+fn left_open(p: SignedType, found: Map<string, SignedType>, seated: List<int>) -> bool {
+    match p.head { .Parameter(k, _) -> !found.has("${k}") && !seated.contains(k), rest -> false }
 }

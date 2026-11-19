@@ -350,6 +350,11 @@ export fn literal_fault(fault: LiteralFault) -> Voice {
             label: "built here",
             help: "a literal `${name} { … }` builds the record an alias names",
         },
+        .Owned(name) -> Voice {
+            message: "`${name}` is a type the language owns; a record literal can't make one",
+            label: "built here",
+            help: "write a value of `${name}` as its own literal, or take the one a verb answers",
+        },
     }
 }
 
@@ -578,7 +583,8 @@ fn counted(n: int) -> string {
 
 /// A literal under a name that declares no fields — an enum's.
 fn not_a_record(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx.spoken(said_as("type.struct_fields", cx.loc_of(e), literal_fault(LiteralFault.Enum(name))))
+    let fault = if cx.view.decls.is_builtin(cx.bound_decl(e)!) { LiteralFault.Owned(name) } else { LiteralFault.Enum(name) }
+    cx.spoken(said_as("type.struct_fields", cx.loc_of(e), literal_fault(fault)))
 }
 
 /// A literal under an alias of a shape that declares no fields.

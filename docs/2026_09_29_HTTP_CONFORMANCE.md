@@ -172,7 +172,9 @@ The rest, by role (9110 extraction numbers):
   184 (redirects: H5, `avra-8sb5.1.28`).
 - **Handler** — 3, 5–6, 27, 32–33, 36, 44–45, 52, 71–72 (encodings and
   multipart: H6, `avra-8sb5.1.29`), 80–85, 87, 90–93, 115 and 186 (a 405
-  writes Allow — the router answers 404, never 405), 118–120, 124–125,
+  writes Allow — the router's own does: `route_test.av` › "it is a 405 whose
+  Allow names that method, HEAD beside GET"; a handler's 405 is the handler's),
+  118–120, 124–125,
   129–144, 150–152, 154, 156–157, 161, 163, 171–177, 183, 185.
 - **Proxy, intermediary, cache, gateway** — 20–21, 50–51, 53, 55–63, 78–79,
   88, 96, 99, 116, 121–123, 127–128, 167, 187–188.
