@@ -1,0 +1,397 @@
+//! WHERE AN ANNOTATION NAMES NO FN OVER A DECLARATION: an annotation a declaration wears names a fn,
+//! and that fn takes the declaration as its first seat. Read off the item's annotations and what
+//! their names resolve to where they're written.
+use core.{
+    Annotation,
+    example_marks,
+    ExprId,
+    SignedType,
+    Span,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    some_list,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.annotations.{
+    derives_no_trait,
+    derives_nothing,
+    answers_no_effect,
+    foreign_diagnostics,
+    miscounted,
+    names_no_fn,
+    takes_another_kind,
+    takes_nothing,
+    field_not_bare,
+    fields_without_type,
+    no_such_field,
+    takes_fields,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// An annotation a statement of the written item `at` of `file` wears: its name, where it stands,
+/// and the fn its name names, absent where it names none.
+type Worn = { name: string, at: Span?, named: DeclaredName? }
+
+/// Every annotation the written item `at` of `file` wears, its name resolved where it's written: a
+/// rule's example marks aside, which name no fn, and a template's statements', judged where they
+/// land.
+fn worn_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Worn> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [Worn { name: a.name, at: a.span, named: resolved(engine, file, Space.Value, a.name).named() } for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
+}
+
+/// Whether the annotation `a` is its source's own and names a fn: a rule's example marks aside, which
+/// name none, and one a builder writes in a library's words — an `asset`'s `@bundled` — whose name
+/// that library reads.
+fn source_wrote_annotation(store: SyntaxArena, a: Annotation) -> bool { !example_marks(a.name) && store.foreign_of(a.callee) == null }
+
+/// Whether the statement `s` of `store` is its source's own, not a template's.
+fn source_wrote_stmt(store: SyntaxArena, s: StmtId) -> bool { store.stmt_origins.at(s.index) == null }
+
+/// Every annotation of the written item `at` of `file` that `breaks`, as its law finds it.
+fn worn_where(engine: QueryEngine, file: SourceFileAddress, at: int, breaks: fn(Worn) -> bool) -> List<
+    Found,
+> {
+    [Found { at: w.at, args: [w.name] } for w in worn_in(engine, file, at) if breaks(w)]
+}
+
+/// Every annotation whose name names a declaration that is no fn; a name nothing declares is the
+/// naming law's.
+fn fnless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    worn_where(engine, file, at, (w: Worn) -> w.named != null && w.named?.kind != ItemKind.Fn)
+}
+
+/// Every annotation naming a fn that takes no seat for the declaration.
+fn seatless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    worn_where(engine, file, at, (w: Worn) -> takes_no_seat(engine, w.named))
+}
+
+/// Whether `d` names a fn that takes no seat.
+fn takes_no_seat(engine: QueryEngine, d: DeclaredName?) -> bool {
+    let named? = d else { return false }
+    if named.kind != ItemKind.Fn { return false }
+    let s? = fn_signature(engine, named.file, named.name) else { return false }
+    s.params.is_empty()
+}
+
+/// an annotation names a fn over a declaration
+export law annotation_names_a_fn {
+    kind: "annotation.callee"
+    reads: fnless_annotations
+    voice: fnless_words
+    witness: "const tag: int = 1\n\n@tag\nfn g() -> int { 1 }\n"
+}
+
+/// an annotation's fn takes the declaration as its first seat
+export law annotation_takes_the_declaration {
+    kind: "annotation.receiver"
+    reads: seatless_annotations
+    voice: seatless_words
+    witness: "fn tag() { }\n\n@tag\ntype P = { x: int }\n"
+}
+
+/// an annotation's fn takes a declaration of the kind it stands on
+export law annotation_takes_this_kind {
+    kind: "annotation.receiver"
+    reads: misplaced_annotations
+    voice: misplaced_words
+    witness: "use @std.meta.{Fn, Diagnostic}\nfn vet(f: Fn) -> List<Diagnostic> { [] }\n\n@vet\ntype P = { x: int }\n"
+}
+
+/// Every annotation the written item `at` of `file` wears whose fn's first seat takes a declaration
+/// of `@std/meta`'s, and not one of the kind it stands on: a `Fn` seat on a type, a `Type` seat on a
+/// fn or a const.
+fn misplaced_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let kinds = [d.kind for d in file_declares(engine, file).names if d.item == at]
+    if kinds.length != 1 { return [] }
+    [Found { at: w.at, args: [w.name, seat.spelled(), stood_on(kinds[0])] } for w in worn_in(engine, file, at) for seat in first_seat_of(engine, w.named) if !seat.takes(kinds[0])]
+}
+
+/// The declaration the first seat of the fn `d` names takes, as a list: none for a name that names
+/// no fn, or a fn whose first seat takes no declaration.
+fn first_seat_of(engine: QueryEngine, d: DeclaredName?) -> List<DeclSeat> {
+    let named? = d else { return [] }
+    if named.kind != ItemKind.Fn { return [] }
+    let seat? = meta_seat_of(fn_signature(engine, named.file, named.name)?.params?.first()?.ty) else { return [] }
+    [seat]
+}
+
+/// A declaration's kind as a misplaced annotation says it.
+fn stood_on(kind: ItemKind) -> string {
+    match kind {
+        .Component -> "a type",
+        .Ctx -> "a context",
+        .Enum -> "an enum",
+        .Fn or .Record or .Named or .Alias or .Trait or .Syntax or .Collect or .CollectEnum or .Const or .State -> "a ${kind_said(kind)}",
+    }
+}
+
+fn misplaced_words(a: List<string>) -> Voice { takes_another_kind(a[0], a[1], a[2]) }
+
+fn fnless_words(a: List<string>) -> Voice { names_no_fn(a[0]) }
+
+fn seatless_words(a: List<string>) -> Voice { takes_nothing(a[0]) }
+
+/// An annotation whose fn takes the declaration it stands on, read as far as the old path's ladder
+/// reads it before running it: how many arguments it writes, what its fn takes and answers.
+type SeatedAnnotation = { name: string, at: Span?, written: int, least: int, most: int, answer: SignedType }
+
+/// Every annotation the written item `at` of `file` wears whose fn takes the declaration as its first
+/// seat, `@std/meta`'s, and fits it: a rule's, which takes a value, and a template's left out.
+fn annotations_seated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
+    SeatedAnnotation,
+> {
+    if at >= item_count(engine, file) { return [] }
+    let kinds = [d.kind for d in file_declares(engine, file).names if d.item == at]
+    if kinds.length != 1 { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [r! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) for r in [seated_annotation(engine, file, kinds[0], a)] if r != null]
+}
+
+/// The annotation `a`, on a declaration of `kind`, as its ladder reads it; absent where its fn takes
+/// no declaration of the kind.
+fn seated_annotation(engine: QueryEngine, file: SourceFileAddress, kind: ItemKind, a: Annotation) -> SeatedAnnotation? {
+    let named? = resolved(engine, file, Space.Value, a.name).named() else { return null }
+    if named.kind != ItemKind.Fn { return null }
+    let sig? = fn_signature(engine, named.file, named.name) else { return null }
+    let first? = sig.params.first()?.ty else { return null }
+    if !takes_a_declaration(first) { return null }
+    let seat = meta_seat_of(first)
+    if seat != null && !seat!.takes(kind) { return null }
+    let most = if sig.params.last()?.rest ?? false { UNCOUNTED } else { sig.params.length - 1 }
+    let least = [j for j, p in sig.params if j > 0 && !p.defaulted && !p.rest].last() ?? 0
+    SeatedAnnotation {
+        name: a.name,
+        at: a.span,
+        written: a.args.length,
+        least: least,
+        most: most,
+        answer: sig.answer,
+    }
+}
+
+/// Whether `ty` answers an effect: nothing, a list of `@std/meta`'s diagnostics or directives, or its
+/// `Derived`, `Declared` or `Marker`.
+fn answers_an_effect(ty: SignedType) -> bool {
+    if ty.spelled() == "void" { return true }
+    let element = ty.listed()
+    if element != null { return meta_named(element!, "Diagnostic") || meta_named(element!, DIRECTIVE) }
+    meta_named(ty, "Derived") || meta_named(ty, DECLARED) || meta_named(ty, MARKER)
+}
+
+/// An answer that is no effect, shown as the refusal shows it.
+fn answer_shown(ty: SignedType) -> string {
+    let element = ty.listed()
+    if element != null && element!.spelled() == "Diagnostic" { foreign_diagnostics } else { "`${ty.spelled()}`" }
+}
+
+/// Every annotation writing more or fewer arguments than its fn takes after the declaration.
+fn miscounted_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: r.at, args: [r.name, "${r.least}", "${r.most}", "${r.written}"] } for r in annotations_seated(engine, file, at) if r.written < r.least || r.written > r.most]
+}
+
+/// Every annotation, its arguments counted right, whose fn answers no effect.
+fn effectless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: r.at, args: [r.name, answer_shown(r.answer)] } for r in annotations_seated(engine, file, at) if r.written >= r.least && r.written <= r.most && !answers_an_effect(r.answer)]
+}
+
+/// an annotation's arguments fill the seats its fn takes after the declaration
+export law annotation_fills_its_seats {
+    kind: "annotation.seats"
+    reads: miscounted_annotations
+    voice: miscounted_words
+    witness: "use @std.meta.{Fn}\nfn tag(f: Fn, n: int) { }\n@tag\nfn g() -> int { 1 }\ng()\n"
+}
+
+/// an annotation's fn answers an effect
+export law annotation_answers_an_effect {
+    kind: "annotation.answer"
+    reads: effectless_annotations
+    voice: effectless_words
+    witness: "use @std.meta.{Fn}\nfn tag(f: Fn) -> int { 1 }\n@tag\nfn g() -> int { 1 }\ng()\n"
+}
+
+fn miscounted_words(a: List<string>) -> Voice { miscounted(a[0], a[1], a[2], a[3]) }
+
+fn effectless_words(a: List<string>) -> Voice { answers_no_effect(a[0], a[1]) }
+
+/// The fn `@std/meta` runs a trait's own `derive` through.
+const DERIVING: string = "derive"
+
+/// Every argument of a `@derive` the written item `at` of `file` wears that names a declaration no
+/// trait is, or a trait that writes no `derive`: the annotation's name, what it names, and whether
+/// it's a trait.
+fn derives_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [f! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) && derives_by_meta(engine, file, a.name) for e in a.args for f in [derive_arg(engine, file, item.store, a, e)] if f != null]
+}
+
+/// Whether the annotation `name` names `@std/meta`'s `derive`.
+/// Whether the statement `s` of `store`, written in `file`, wears `@std/meta`'s annotation `meta`.
+export fn wears_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    meta: string,
+) -> bool {
+    store.annotations_of(s).any((a) -> meta_fn(engine, file, a.name, meta))
+}
+
+/// Whether the name `name`, read in `file`, is `@std/meta`'s fn `meta`.
+fn meta_fn(engine: QueryEngine, file: SourceFileAddress, name: string, meta: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    d.file.package_name == META && d.name == meta && d.kind == ItemKind.Fn
+}
+
+fn derives_by_meta(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    d.file.package_name == META && d.name == DERIVING && d.kind == ItemKind.Fn
+}
+
+/// The argument `e` of the `@derive` `a`, refused where it names no trait or a trait with no
+/// `derive`; absent where it names one that has one, or names nothing — another law's.
+fn derive_arg(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    a: Annotation,
+    e: ExprId,
+) -> Found? {
+    let n? = store.ident_name(e) else { return null }
+    let d? = resolved(engine, file, Space.Type, n).named() else { return null }
+    if d.kind != ItemKind.Trait { return Found { at: store.expr_span(e), args: [a.name, d.name, "decl"] } }
+    let held? = declaring_item(engine, d.file, d.name, ItemKind.Trait) else { return null }
+    if trait_fns(held)
+        .any((f: StmtId) -> held.store.fn_parts(f)?.name == DERIVING && held.store.is_static(f)) { return null }
+    Found { at: store.expr_span(e), args: [a.name, d.name, "trait"] }
+}
+
+/// a `@derive` names traits that declare `derive`
+export law derive_names_a_deriving_trait {
+    kind: "annotation.derive"
+    reads: derives_refused
+    voice: derive_words
+    witness: "use @std.meta.{derive}\ntype X = { a: int }\n@derive(X)\ntype T = { x: int }\n0\n"
+}
+
+fn derive_words(a: List<string>) -> Voice { if a[2] == "decl" { derives_no_trait(a[0], a[1]) } else { derives_nothing(a[1]) } }
+
+/// As many arguments as a rest seat takes: no count past which it refuses.
+const UNCOUNTED: int = 1000000
+
+/// An annotation a declaration of the written item `at` of `file` wears: the declaration's name and
+/// kind, the store it's written in, and the annotation.
+type WornOn = { decl: string, kind: ItemKind, store: SyntaxArena, a: Annotation }
+
+/// Every annotation a declaration of the written item `at` of `file` wears, written by its source.
+fn worn_on(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<WornOn> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [WornOn { decl: d.name, kind: d.kind, store: item.store, a: a } for d in file_declares(engine, file).names if d.item == at for s in item.stmts if source_wrote_stmt(item.store, s) && item.store.declared_name(s) == d.name for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
+}
+
+/// The words `w` writes into seats of its fn taking fields; none where it writes none.
+fn words_of(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<ExprId> {
+    seat_field_words(
+        annotation_seats(engine, file, w.a.name),
+        [e for e in w.a.args if w.store.arg_label(e) == null],
+    )
+}
+
+/// Whether a declaration of `kind` has fields an annotation may name: a record's, a component's.
+fn fielded(kind: ItemKind) -> bool { kind == ItemKind.Record || kind == ItemKind.Component }
+
+/// Every word an annotation on a record of the item `at` of `file` writes into a seat taking fields
+/// that names no field of the record: at the word, its voice handed the word, the record and its
+/// fields, the word respelled as the field it's nearest.
+fn fields_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten([unknown_words(engine, file, w) for w in worn_on(engine, file, at) if fielded(w.kind)])
+}
+
+fn unknown_words(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<Found> {
+    let words = words_of(engine, file, w)
+    if words.is_empty() { return [] }
+    let fields = decl_fields(engine, file, w.decl)
+    [Found {
+        at: w.store.expr_span(e),
+        args: [n!, w.decl].concat(fields),
+        named: w.store.expr_span(e),
+    } for e in words for n in [w.store.ident_name(e)] if n != null && !fields.contains(n!)]
+}
+
+/// Every argument written into a seat taking fields that is no bare word.
+fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: w.store.expr_span(e), args: [w.a.name] } for w in worn_on(engine, file, at) for e in words_of(engine, file, w) if w.store.ident_name(e) == null]
+}
+
+/// Every annotation whose fn names fields on a declaration with none to name: an enum, a type over
+/// another, a `collect enum` — what its `Type` seat takes and has no fields.
+fn fieldless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: w.a.span, args: [w.a.name, stood_on(w.kind)] } for w in worn_on(engine, file, at) if !fielded(w.kind) && seats_take_fields(annotation_seats(engine, file, w.a.name))]
+}
+
+/// Every annotation's fn the written item `at` of `file` declares with a seat taking fields past a
+/// first seat taking a declaration other than its `Type`: at its declaration.
+fn fields_unanchored(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(s), args: [d.name] } for d in file_declares(engine, file).names if d.item == at && d.kind == ItemKind.Fn for sig in some_list(fn_signature(engine, file, d.name)) if seats_take_fields(sig.params.drop(1)) && untyped_annotation(sig) for s in item.stmts if item.store.declared_name(s) == d.name]
+}
+
+/// Whether the fn signed `sig` is an annotation's whose first seat takes a declaration other than
+/// its `Type`: one with no fields to name.
+fn untyped_annotation(sig: FnSignature) -> bool {
+    let first = sig.params.first()?.ty
+    takes_a_declaration(first) && meta_seat_of(first) != DeclSeat.Type
+}
+
+/// an annotation's word names a field of the record it stands on
+export law annotation_field_named {
+    kind: "annotation.seats"
+    reads: fields_unknown
+    voice: unknown_field_words
+    witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(entitty)\ntype F = { entity: string }\n"
+}
+
+/// an annotation's seat taking fields is written a bare field's name
+export law annotation_field_bare {
+    kind: "annotation.seats"
+    reads: fields_unwritten
+    voice: unwritten_field_words
+    witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(\"entity\")\ntype F = { entity: string }\n"
+}
+
+/// an annotation naming fields stands on a declaration with fields
+export law annotation_fields_on_fields {
+    kind: "annotation.receiver"
+    reads: fieldless_annotations
+    voice: fieldless_words
+    witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(a)\nenum E { A }\n"
+}
+
+/// a fn whose seat names fields takes the declaration's `Type` first
+export law field_seat_after_a_type {
+    kind: "annotation.seats"
+    reads: fields_unanchored
+    voice: unanchored_words
+    witness: "use @std.meta.{Named, Field, Diagnostic}\nfn keyed(n: Named, ..fields: List<Field>) -> List<Diagnostic> { [] }\n"
+}
+
+fn unknown_field_words(a: List<string>) -> Voice { no_such_field(a[0], a[1], a.drop(2)) }
+
+fn unwritten_field_words(a: List<string>) -> Voice { field_not_bare(a[0]) }
+
+fn fieldless_words(a: List<string>) -> Voice { takes_fields(a[0], a[1]) }
+
+fn unanchored_words(a: List<string>) -> Voice { fields_without_type(a[0]) }

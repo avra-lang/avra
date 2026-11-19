@@ -1,0 +1,254 @@
+//! A VALUE IN ITS BOX: how a record that isn't flat and an enum that isn't a value hold what they
+//! carry. A box is one row of slots; a value record lays its fields across slots of their own and a
+//! value enum its tag and word, every other value takes one slot, and an enum's tag stands first.
+
+impl Lowering {
+    // ── Reads ───────────────────────────────────────────────────────
+
+    /// Slot `at` of the box `v`, past the runtime's bounds test, as a value of layout `l`: a nullable
+    /// scalar as its pair, its presence the slot's mark; a value wider than a word out of its own box.
+    mut fn slot_read(l: Layout, v: Reg, at: int) -> Reg {
+        let index = self.const_int(at)
+        match l {
+            .Maybe(value) -> {
+                let present = self
+                    .call_row(Layout.Truth, rt_sig_of("avra_slot_present")!, [v, index])
+                self
+                    .pack(l, [present, self.call_row(value, rt_sig_of("avra_array_get")!, [v, index])])
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_array_get")!, [v, index]),
+        }
+    }
+
+    /// Slot `at` of the box `v`, which the box's type proves is there, as a value of layout `l`: read
+    /// with no bounds test, but for a nullable scalar's pair; a value wider than a word out of its own box.
+    mut fn proven_read(l: Layout, v: Reg, at: int) -> Reg {
+        match l {
+            .Maybe(_) -> self.slot_read(l, v, at),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_slot_get")!, [v, self.const_int(at)]),
+        }
+    }
+
+    /// The element at the place `at` holds in the list `v`, as a value of layout `l`: a nullable
+    /// scalar as its pair, its presence the slot's mark; a value wider than a word out of its own box.
+    mut fn element_at(l: Layout, v: Reg, at: Reg) -> Reg {
+        match l {
+            .Maybe(value) -> {
+                let present = self.call_row(Layout.Truth, rt_sig_of("avra_slot_present")!, [v, at])
+                self.pack(l, [present, self.call_row(value, rt_sig_of("avra_array_get")!, [v, at])])
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_array_get")!, [v, at]),
+        }
+    }
+
+    /// A value of layout `l` laid inline in the box `v` from slot `at`: a value enum's tag and word,
+    /// a value record's fields.
+    mut fn unboxed_at(l: Layout, v: Reg, at: int) -> Reg {
+        match l {
+            .Tagged(_) -> self
+                .pack(l, [self.slot_read(Layout.Word, v, at), self.slot_read(Layout.Word, v, at + 1)]),
+            .Fields(fields) -> self.pack(l, [self.slot_read(f, v, at + j) for j, f in fields]),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> self.slot_read(l, v, at),
+        }
+    }
+
+    /// Field `n` of the boxed record `v` whose fields lay out as `fields`, a value of layout `l`.
+    mut fn boxed_field(v: Reg, fields: List<Layout>, n: int, l: Layout) -> Reg {
+        let at = slots_before(fields, n)
+        if l.inline() { self.unboxed_at(l, v, at) } else { self.proven_read(l, v, at) }
+    }
+
+    /// Field `n` of the record `v` of `ty`, whose fields lay out as `laid`: a flat record's register at
+    /// its place, a boxed one's slots past the fields before it.
+    mut fn field_read(v: Reg, ty: SignedType, laid: List<Layout>, n: int) -> Reg {
+        match self.laid_out(ty) {
+            .Boxed(_) -> self.boxed_field(v, laid, n, laid[n]),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.extracted(laid[n], v, n),
+        }
+    }
+
+    /// The tag of the enum `v`: a word enum's own word, a value enum's first, a box's first slot.
+    mut fn tag_of(v: Reg) -> Reg {
+        match self.layout_of(v) {
+            .Word or .Tagged(_) -> self.extracted(Layout.Word, v, 0),
+            .Boxed(_) -> self.slot_read(Layout.Word, v, 0),
+            .Void or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> self.missed_as("the tag of a value that isn't an enum"),
+        }
+    }
+
+    /// Payload `k` of the variant the enum `v` holds, its payloads laying out as `carried`: a value
+    /// enum's word, else read from its box past the tag.
+    mut fn payload_at(v: Reg, k: int, carried: List<Layout>) -> Reg {
+        let l = carried[k]
+        match self.layout_of(v) {
+            .Tagged(_) -> self.extracted(l, v, 1),
+            .Boxed(_) -> if l.inline() { self.unboxed_at(l, v, 1 + slots_before(carried, k)) } else { self.slot_read(l, v, 1 + slots_before(carried, k)) },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> self.missed_as("a payload of a value that carries none"),
+        }
+    }
+
+    // ── Builds ──────────────────────────────────────────────────────
+
+    /// Whether `e`'s value is the binary's own data rather than built: a box other than a map, written
+    /// as a record, variant or list whose every part the source alone spells.
+    fn held_as_data(e: ExprId) -> bool {
+        let ty? = self.type_at(e) else { return false }
+        let l? = self.program.checked.layout(ty) else { return false }
+        match l {
+            .Boxed(box) -> match box {
+                .Map -> false,
+                .Text or .Bytes or .List or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> self.store.spells_alone(e),
+            },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+    }
+
+    /// The words `r` takes in a box: a value record's fields, each its own; else itself.
+    mut fn leaves(r: Reg) -> List<Reg> {
+        match self.layout_of(r) {
+            .Fields(fields) -> [self.extracted(f, r, j) for j, f in fields],
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Tagged(_) or .Maybe(_) -> [r],
+        }
+    }
+
+    /// The word `w` laid into the box `box`: a value enum's tag then its word, counted where its
+    /// variant carries a pointer; a nullable scalar's value beside its presence; else one slot.
+    mut fn push_leaf(box: Reg, w: Reg) {
+        match self.layout_of(w) {
+            .Tagged(counted) -> {
+                let tag = self.extracted(Layout.Word, w, 0)
+                self.run_row(rt_sig_of("avra_array_push")!, [box, tag])
+                self
+                    .run_row(
+                        rt_sig_of("avra_array_push_tagged")!,
+                        [box, self.extracted(Layout.Word, w, 1), tag, self.const_int(counted)],
+                    )
+            },
+            .Maybe(value) -> self
+                .run_row(
+                    rt_sig_of("avra_array_push_maybe")!,
+                    [box, self.extracted(Layout.Truth, w, 0), self.extracted(value, w, 1)],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) -> self.run_row(rt_sig_of("avra_array_push")!, [box, w]),
+        }
+    }
+
+    /// The word `w` written over slot `at` of the box `box`, which its type proves is there: a value
+    /// enum's tag then its word, counted where its variant carries a pointer; a nullable scalar's value
+    /// beside its presence; else one slot.
+    mut fn leaf_written(box: Reg, at: int, w: Reg) {
+        match self.layout_of(w) {
+            .Tagged(counted) -> {
+                let tag = self.extracted(Layout.Word, w, 0)
+                self.run_row(rt_sig_of("avra_slot_set")!, [box, self.const_int(at), tag])
+                self
+                    .run_row(
+                        rt_sig_of("avra_slot_set_tagged")!,
+                        [
+                            box,
+                            self.const_int(at + 1),
+                            self.extracted(Layout.Word, w, 1),
+                            tag,
+                            self.const_int(counted),
+                        ],
+                    )
+            },
+            .Maybe(value) -> self
+                .run_row(
+                    rt_sig_of("avra_slot_set_maybe")!,
+                    [
+                        box,
+                        self.const_int(at),
+                        self.extracted(Layout.Truth, w, 0),
+                        self.extracted(value, w, 1),
+                    ],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) -> self.run_row(rt_sig_of("avra_slot_put")!, [box, self.const_int(at), w]),
+        }
+    }
+
+    /// The boxed record `v` of layout `l`, whose fields lay out as `fields`, copied whole.
+    mut fn record_copied(l: Layout, v: Reg, fields: List<Layout>) -> Reg {
+        self
+            .call_row(
+                l,
+                rt_sig_of("avra_array_slice")!,
+                [v, self.const_int(0), self.const_int(slots_before(fields, fields.length))],
+            )
+    }
+
+    /// Field `n` of the boxed record `box`, whose fields lay out as `fields`, written over with `v`: each
+    /// of its words over the slots from where the field starts.
+    mut fn field_rewritten(box: Reg, fields: List<Layout>, n: int, v: Reg) { self.rewritten_from(box, slots_before(fields, n), v) }
+
+    /// The words of `v` written over the box `box`'s slots from `at` on.
+    mut fn rewritten_from(box: Reg, at: int, v: Reg) {
+        mut slot = at
+        for w in self.leaves(v) {
+            self.leaf_written(box, slot, w)
+            slot = slot + self.layout_of(w).slots()
+        }
+    }
+
+    /// A box of layout `l` holding the words `lead` then `words`, sized for them.
+    mut fn boxed_words(l: Layout, lead: List<int>, words: List<Reg>) -> Reg {
+        let dst = self
+            .call_row(
+                l,
+                rt_sig_of("avra_array_sized")!,
+                [self.const_int(lead.length + [self.layout_of(w).slots() for w in words].sum())],
+            )
+        for n in lead { self.run_row(rt_sig_of("avra_array_push")!, [dst, self.const_int(n)]) }
+        for w in words { self.push_leaf(dst, w) }
+        dst
+    }
+
+    /// The flat record `r` in a one-slot box of layout `l`: what its nullable is when present. The slot
+    /// holds the record as a row's seat takes it, a record of several fields in a box of its own.
+    mut fn slot_boxed(l: Layout, r: Reg) -> Reg { self.boxed_words(l, [], [self.crossed(r)]) }
+
+    /// The record of layout `l` holding `parts`, its fields in order: a flat one packed, else a box of
+    /// their words.
+    mut fn record_packed(l: Layout, parts: List<Reg>) -> Reg {
+        match l {
+            .Boxed(_) -> self.boxed_words(l, [], flatten([self.leaves(p) for p in parts])),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.pack(l, parts),
+        }
+    }
+
+    /// The variant `tag` of an enum of layout `l`, carrying `payloads`: a word enum's tag, a value
+    /// enum's tag beside its one word, else a box holding the tag then the payloads' words.
+    mut fn tagged_value(l: Layout, tag: int, payloads: List<Reg>) -> Reg {
+        match l {
+            .Word -> self.pack(l, [self.const_int(tag)]),
+            .Tagged(_) -> self.pack(l, [self.const_int(tag), payloads.first() ?? self.const_int(0)]),
+            .Boxed(_) -> self.boxed_words(l, [tag], flatten([self.leaves(p) for p in payloads])),
+            .Void or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> self.missed_as("a variant of a value that isn't an enum"),
+        }
+    }
+}
+
+/// The slots the first `n` of `fields` take in a box.
+fn slots_before(fields: List<Layout>, n: int) -> int { [f.slots() for f in fields.take(n)].sum() }
+
+impl SyntaxArena {
+    /// Whether the source alone spells `e`'s value: a literal, or a list, map, record or variant of
+    /// them.
+    fn spells_alone(e: ExprId) -> bool {
+        let raw = self.valued(e)
+        if raw.int_of() != null ||
+            raw.bits_of() != null ||
+            raw.text_of() != null ||
+            raw.bool_of() != null { return true }
+        match raw {
+            .NullLit or .MapLit(_) or .BytesLit(_) -> true,
+            .ListLit(elems) -> elems.all((x) -> self.spells_alone(x)),
+            .StructLit(_, _, values) -> values.all((x) -> self.spells_alone(x)),
+            .VariantLit(_, args) -> args.all((x) -> self.spells_alone(x)),
+            rest -> false,
+        }
+    }
+}
+
+/// Why a read of a variant's payload whose type typing didn't record isn't lowered yet.
+export fn payload_unknown() -> string { "a payload whose type isn't known" }

@@ -1,0 +1,34 @@
+use @std.avrac.core.{SignedType, SignedSeat, TypeHead, headed_type, list_of, owned_type}
+use @std.program.address.{SourceFileAddress}
+
+fn declared(name: string) -> SignedType {
+    headed_type(
+        TypeHead
+            .Declared(
+                SourceFileAddress { package_name: "@std/demo", path_in_package: "src/shapes.av" },
+                name,
+            ),
+    )
+}
+
+fn key_said(t: SignedType) -> string {
+    let k = t.content_key()
+    "${k.high_word} ${k.low_word}"
+}
+
+let shape = declared("Shape")
+let types = [
+    owned_type("int"),
+    owned_type("int") with { nulls: 1 },
+    list_of(shape),
+    list_of(shape) with { dynamic: true },
+    headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: shape, mutable: true, settled: false }], answer: owned_type("bool") },
+    headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: shape, mutable: false, settled: false }], answer: owned_type("bool") },
+    headed_type(TypeHead.Parameter(0, "T")),
+]
+let rebuilt = list_of(declared("Shape"))
+let distinct = types.all((a) -> types.filter((b) -> key_said(a) == key_said(b)).length == 1)
+let alike = key_said(rebuilt) == key_said(types[2]) &&
+    rebuilt.quick_hash() == types[2].quick_hash() &&
+    rebuilt.same_type(types[2])
+"${[key_said(t) for t in types].join(" | ")} ; distinct ${distinct} ; rebuilt alike ${alike} ; marks apart ${!types[4].same_type(types[5])}"

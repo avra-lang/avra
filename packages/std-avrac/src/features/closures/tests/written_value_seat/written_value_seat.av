@@ -1,0 +1,43 @@
+// proves: a `mut` seat of a type that rides no pointer is written through a fn VALUE: the write
+// reaches the caller's place whether the value is a lambda, a declared fn, or read out of a list,
+// and a fn that never writes fills a seat that permits it, reading what the place holds.
+type C = { n: int }
+
+type Held = { c: C, fs: List<fn(mut C) -> int> }
+
+fn bump(mut c: C) -> int {
+    c.n = c.n + 5
+    c.n
+}
+
+fn peek(c: C) -> int { c.n }
+
+fn through(set: fn(mut C) -> int) -> string {
+    mut c = C { n: 1 }
+    "${set(c)}/${c.n}"
+}
+
+fn each(mut h: Held) -> int { (h.fs[0])(h.c) + (h.fs[1])(h.c) + (h.fs[2])(h.c) }
+
+let set: fn(mut C) -> int = (mut c: C) -> {
+    c.n = 5
+    c.n
+}
+let named: fn(mut C) -> int = bump
+let reads: fn(mut C) -> int = peek
+mut c = C { n: 1 }
+let a = set(c)
+let b = named(c)
+let r = reads(c)
+mut h = Held {
+    c: C { n: 1 },
+    fs: [
+        bump,
+        peek,
+        (mut c: C) -> {
+            c.n = c.n * 2
+            c.n
+        },
+    ],
+}
+"${a} ${b} ${r} ${c.n} ${through(set)} ${through(bump)} ${through(peek)} ${each(h)} ${h.c.n}"

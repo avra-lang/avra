@@ -1,0 +1,1509 @@
+//! WHAT A BODY BREAKS THAT TYPING ALONE LETS STAND: a run of bitwise operators that mixes two, a
+//! literal shift count past an `int`'s width, a null check of a value never absent, a `fail` or an
+//! `errdefer` with no failure channel, a `yield` no producer encloses, a `defer` that does nothing or
+//! drops a failure, a list literal whose elements give it no type, a slot that holds nothing, and a
+//! task a signature lets outlive the block that spawned it. Read over a written item's own store — its
+//! fns' and methods' bodies, its declarations' signatures, and the statements it runs where its file
+//! is an entry — and said in the voices the old path speaks.
+use core.{
+    MapEntry,
+    BinOp,
+    BindSite,
+    LandedSeat,
+    ExprId,
+    NameBound,
+    NameRead,
+    OwnType,
+    SignedType,
+    Span,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    jump_word,
+    op_symbol,
+    rt_waits,
+    same_binder,
+    some_list,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use compiler.typing.{answer_label, carried_label, field_label, field_unslotted, payload_unslotted}
+use features.{task_outlives, task_overwritten, task_unheld}
+use features.closures.{capture_named, captured_label, lambda_answer_label}
+use features.lists.{list_element_untyped, list_element_void}
+use features.maps.{map_value_untyped}
+use features.select_expr.{guard_reads_binder}
+use compiler.{cleanup_unbounded, row_wait_said, spawn_wait_said}
+use features.loops.{jump_behind_lambda, jump_in_comprehension, jump_unaimed, jump_unlooped}
+use features.nullable.{
+    coalesce_answers,
+    forced_absent,
+    forced_present,
+    presence_arms_apart,
+    propagated_absent,
+    propagated_present,
+}
+use features.results.{fail_unenclosed, fail_unfallible}
+use features.tasks.{yield_unenclosed}
+use features.defers.{
+    deferred_inert,
+    deferred_unheard,
+    errdefer_in_lambda,
+    errdefer_unenclosed,
+    errdefer_unfailing,
+}
+use features.expr_spine.{bitwise_mixed, in_band, shift_out_of_range}
+use @std.meta.{derive}
+use @std.program.sorted.{sorted_by}
+use @std.text.{parse_int}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// What a body or a signature breaks.
+@derive(Saved)
+enum Breach {
+    /// A run of the bitwise band mixing `first` with `second`.
+    Bitwise(first: string, second: string)
+    /// A `defer` whose body only names a value of `named`.
+    Inert(named: string)
+    /// A `defer` whose body answers `answer`, a failure it drops.
+    Unheard(answer: string)
+    /// An `errdefer` no fn encloses.
+    Unenclosed
+    /// An `errdefer` a lambda encloses.
+    InLambda
+    /// An `errdefer` in a fn promising `promise`, which never fails.
+    Unfailing(promise: string)
+    /// A task a signature lets reach past its block, as `label` says where.
+    Escaping(label: string)
+    /// A write over a place holding a task, which it leaves unjoined.
+    Overwritten
+    /// A value of `spelled` holding a task, which nothing joins.
+    Unheld(spelled: string)
+    /// A select arm's guard reading a name its own arm binds.
+    GuardReadsBinder
+    /// A `word` — `defer` or `errdefer` — whose body waits as `wait` says, unbounded.
+    CleanupUnbounded(word: string, wait: string)
+    /// A jump `word` — `break` or `continue` — no loop encloses.
+    Unlooped(word: string)
+    /// A jump `word` a lambda's body holds apart from its loop.
+    JumpInLambda(word: string)
+    /// A jump `word` a comprehension holds.
+    JumpInComprehension(word: string)
+    /// A jump `word` whose label `name` names no enclosing `for`.
+    Unaimed(word: string, name: string)
+    /// A shift by the literal `count`, past an `int`'s width.
+    Shifted(count: int)
+    /// `!` on a value of `named`, never absent.
+    Forced(named: string)
+    /// `!` on a value always absent.
+    ForcedAbsent
+    /// `?` on a value of `named`, never absent and no `Result`.
+    Propagated(named: string)
+    /// `?` on a value always absent.
+    PropagatedAbsent
+    /// A `fail` no fn encloses.
+    FailUnenclosed
+    /// A `fail` in a fn promising `promise`, which is no `Result`.
+    FailUnfallible(promise: string)
+    /// A `yield` no producer encloses.
+    YieldUnenclosed
+    /// A list literal whose first element, of `named`, gives it no type.
+    ElementUntyped(named: string)
+    /// A map literal whose values give it no type, its first value's type named.
+    MapValueUntyped(named: string)
+    /// A `??` whose right side is `found`, no type its left side's `carried` joins.
+    CoalesceApart(carried: string, found: string)
+    /// A presence match whose absent arm answers `absent`, no type its present arm's `present` joins.
+    PresenceApart(present: string, absent: string)
+    /// A list literal whose first element answers no value.
+    ElementVoid
+    /// The record field `field` of `spelled`, which holds no value.
+    FieldVoid(field: string, spelled: string)
+    /// A payload of the variant `variant`, named `payload` where it is, of `spelled`, which holds no
+    /// value.
+    PayloadVoid(variant: string, payload: string, spelled: string)
+}
+
+/// A breach, where it stands.
+@derive(Saved)
+type BreachAt = { at: FindingAt?, breach: Breach }
+
+/// Every breach in one written item.
+@derive(Saved)
+type ItemBreaches = { rows: List<BreachAt> }
+
+/// A body in its item's store: its root, the answer it promises where it is a fn's — a default's or
+/// a const's promises none — and what typing found of it.
+type FnBody = { root: ExprId, promise: SignedType?, typed: TypedBody }
+
+/// What typing found of a written item's nodes: its fns' and methods' bodies, and the statements it
+/// runs where its file is an entry, from `base` among the entry's nodes.
+type ItemTyping = { bodies: List<FnBody>, entry: EntryTypes, base: int? }
+
+impl ItemTyping {
+    /// The fn body that typed the node `e`; absent where none did.
+    fn holding(e: ExprId) -> FnBody? { self.bodies.find(node_type(it.typed.types, e.index) != null) }
+
+    /// The type the node `e` has, as the body that holds it typed it.
+    fn type_at(e: ExprId) -> SignedType? {
+        let body? = self.holding(e) else { return self.entry_type(e) }
+        node_type(body.typed.types, e.index)
+    }
+
+    /// The type the statements the entry runs give the node `e`; absent where they don't hold it.
+    fn entry_type(e: ExprId) -> SignedType? {
+        let base? = self.base else { return null }
+        node_type(self.entry.types, e.index + base)
+    }
+
+    /// The type the binding the name read at `e` reads was bound to, before a test narrowed it; absent
+    /// for a name no binding answers or one bound to no known type.
+    fn bound_type(e: ExprId) -> SignedType? {
+        let body = self.holding(e)
+        let binds = if body != null { body!.typed.binds } else { self.entry.binds }
+        let read? = self.read_at(e) else { return null }
+        let site? = read.binder else { return null }
+        binds.find((b: NameBound) -> same_binder(b.site, site))?.ty
+    }
+
+    /// The type the statement `s`, holding the value `value`, binds it to in a fn's body, as its
+    /// binding declares it; absent for a statement that binds nothing, or one no fn's body holds.
+    fn declared_at(s: StmtId, value: ExprId) -> SignedType? {
+        let body? = self.holding(value) else { return null }
+        body.typed.binds.find((b: NameBound) -> same_binder(b.site, BindSite.Stmt(s.index)))?.ty
+    }
+
+    /// The name read at the node `e`, as the body that holds it read it; absent where none is.
+    fn read_at(e: ExprId) -> NameRead? {
+        let body = self.holding(e)
+        let reads = if body != null { body!.typed.reads } else { self.entry_reads() }
+        reads.find(it.at == e.index)
+    }
+
+    /// The names the entry reads, each by its node in the item's own store.
+    fn entry_reads() -> List<NameRead> {
+        let base? = self.base else { return [] }
+        [r with { at: r.at - base, crossed: [c - base for c in r.crossed] } for r in self.entry.reads if r.at >= base]
+    }
+}
+
+/// What typing found of the written item `at` of `file`'s nodes.
+fn item_typing(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    item: ReadItem,
+    defaults: bool,
+) -> ItemTyping {
+    let entry = entry_types(engine, file)
+    let held = if defaults { defaults_typed(engine, file, at, item) } else { [] }
+    ItemTyping {
+        bodies: fn_bodies(engine, file, at, item).concat(held),
+        entry: entry,
+        base: entry.bases.find(it.at == at)?.base,
+    }
+}
+
+/// A `defer` or an `errdefer`: its statement, the lambda its body is, and whether it waits on a
+/// failure.
+type Deferral = { stmt: StmtId, body: ExprId, errs: bool }
+
+/// Every breach in the written item `at` of `file`, in node order. An item that didn't parse breaks
+/// nothing.
+@query
+fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBreaches {
+    if at >= item_count(engine, file) { return ItemBreaches { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return ItemBreaches { rows: [] } }
+    let store = item.store
+    let deferrals = [d! for s in store.stmt_ids() for d in [deferral(store, s)] if d != null]
+    let fails = [s for s in store.stmt_ids() if fails_here(store, s)]
+    let typed = [ExprId { index: i } for i in 0..store.expr_count() if typed_law_reads(store, ExprId { index: i })]
+    let writes = [s for s in store.stmt_ids() if store.assign_target(s) != null]
+    let owners = [s for s in store.stmt_ids() if store.owned_value(s) != null]
+    let lambdas = [ExprId { index: i } for i in 0..store.expr_count() if store.lambda_parts(ExprId { index: i }) != null && store.home_of(ExprId { index: i }) == null]
+    let untyped = ItemTyping { bodies: [], entry: no_entry(), base: null }
+    let typing = if deferrals.is_empty() &&
+        fails.is_empty() &&
+        typed.is_empty() &&
+        writes.is_empty() &&
+        owners.is_empty() &&
+        lambdas.is_empty() { untyped } else { item_typing(engine, file, at, item, !deferrals.is_empty() || !fails.is_empty()) }
+    ItemBreaches {
+        rows: written_breaches(store)
+            .concat([b for e in typed for b in some_list(typed_breach(engine, store, typing, e))])
+            .concat([b for d in deferrals for b in defer_breaches(store, typing, deferrals, d)])
+            .concat([b for d in deferrals for b in some_list(cleanup_breach(store, typing, d))])
+            .concat([b for s in fails for b in some_list(fail_breach(store, typing, s))])
+            .concat([b for s in writes for b in some_list(write_breach(store, typing, s))])
+            .concat([b for s in owners for b in some_list(unowned_breach(engine, store, typing, s))])
+            .concat([b for l in lambdas for b in lambda_breaches(engine, store, typing, l)])
+            .concat(escape_breaches(engine, file, at, item))
+            .concat(slot_breaches(engine, file, at, item)),
+    }
+}
+
+/// Whether the statement `s` is a `fail`.
+fn fails_here(store: SyntaxArena, s: StmtId) -> bool {
+    match store.stmt(s) { .Fail(_) -> true, rest -> false }
+}
+
+/// What `store`'s written nodes break as they are written: each run of the bitwise band they mix, said
+/// where the run stands; each literal shift count past an `int`'s width, said at the count; each
+/// `yield` no producer encloses.
+fn written_breaches(store: SyntaxArena) -> List<BreachAt> {
+    let written = [ExprId { index: i } for i in 0..store.expr_count() if store.home_of(ExprId { index: i }) == null]
+    let runs = [BreachAt { at: kept_at(store.expr_span(e)), breach: b! } for e in written for b in [mixed_run(store, e)] if b != null]
+    let shifts = [BreachAt { at: kept_at(store.expr_span(c.at)), breach: Breach.Shifted(c.count) } for e in written for c in some_list(wide_shift(store, e))]
+    let producers = [b for i in 0..store.expr_count() for b in some_list(produced_body(store, ExprId { index: i }))]
+    let yields = [BreachAt { at: kept_at(store.expr_span(e)), breach: Breach.YieldUnenclosed } for e in written if emits(store, e) && !producers.any((b) -> store.every_expr(b).contains(e))]
+    let jumps = [b for st in store.stmt_ids() for b in some_list(jump_breach(store, st))]
+    let guards = [BreachAt { at: kept_at(store.expr_span(r)), breach: Breach.GuardReadsBinder } for e in written for r in some_list(guard_binder_read(store, e))]
+    runs.concat(shifts).concat(yields).concat(jumps).concat(guards)
+}
+
+/// The first name the guard of the select arm `e` reads that the arm itself binds, its children
+/// before their owners; absent for an arm whose guard reads none, and for any other node.
+fn guard_binder_read(store: SyntaxArena, e: ExprId) -> ExprId? {
+    let arm? = wait_arm(store, e) else { return null }
+    let guard? = arm.guard else { return null }
+    let bound = [arm.bind, arm.index].filter(!it.is_empty())
+    store.every_expr(guard).find((k) -> bound.contains(store.ident_name(k) ?? ""))
+}
+
+/// A select arm's parts a guard law reads: the names it binds and its guard.
+type ArmGuard = { bind: string, index: string, guard: ExprId? }
+
+/// The node `e` as a select arm; absent for any other node.
+fn wait_arm(store: SyntaxArena, e: ExprId) -> ArmGuard? {
+    match store.expr(e) {
+        .WaitArm(index, bind, _, guard, _) -> ArmGuard { bind: bind.of, index: index.of, guard: guard },
+        rest -> null,
+    }
+}
+
+/// A turn a jump may end: where it stands, the names a `for` binds there, and whether it is a
+/// comprehension's walk, which builds its whole list.
+type Turn = { at: Span, names: List<string>, walks: bool }
+
+/// What the jump `s` breaks: no turn of a loop around it, a lambda between it and the turn it ends,
+/// a label naming no `for` around it — a `for` outside a lambda that holds the jump is a capture
+/// there, no loop's name — or a comprehension's walk between; absent for any other statement.
+fn jump_breach(store: SyntaxArena, s: StmtId) -> BreachAt? {
+    if !written_here(store, s) { return null }
+    let jump? = jump_of(store, s) else { return null }
+    let at? = store.stmt_span(s) else { return null }
+    let word = jump_word(jump.again)
+    let place = kept_at(at)
+    let turns = sorted_by(
+        turns_around(store, at),
+        (a: Turn, b: Turn) -> a.at.hi - a.at.lo < b.at.hi - b.at.lo,
+    )
+    let lambdas = [l for l in spans_of(store, (e) -> lambda_of(store, e) != null) if l.lo <= at.lo && at.hi <= l.hi]
+    let in_lambda = BreachAt { at: place, breach: Breach.JumpInLambda(word) }
+    let innermost? = turns.first() else { return BreachAt { at: place, breach: Breach.Unlooped(word) } }
+    if lambdas.any((l) -> spanned_in(l, innermost.at)) { return in_lambda }
+    let aimed = aimed_turn(
+        store,
+        turns.filter((t) -> !lambdas.any((l) -> spanned_in(l, t.at))),
+        jump.label,
+    )
+    let target? = aimed.turn else {
+        return BreachAt { at: aimed.at, breach: Breach.Unaimed(word, aimed.name) }
+    }
+    if turns.take(target + 1).any(it.walks) { return BreachAt { at: place, breach: Breach.JumpInComprehension(word) } }
+    if lambdas.any((l) -> spanned_in(l, turns[target].at)) { return in_lambda }
+    null
+}
+
+/// The turn a jump ends, by its place among `turns`: the innermost for a jump with no label, else the
+/// innermost `for` binding the name its label reads; absent where none does, said at the label.
+type Aimed = { turn: int?, name: string, at: FindingAt? }
+
+/// The turn among `turns`, innermost first, a jump labelled `label` ends.
+fn aimed_turn(store: SyntaxArena, turns: List<Turn>, label: ExprId?) -> Aimed {
+    let named? = label else { return Aimed { turn: 0, name: "", at: null } }
+    let name = store.ident_name(named) ?? ""
+    Aimed {
+        turn: turns.find_index(!it.walks && it.names.contains(name)),
+        name: name,
+        at: kept_at(store.expr_span(named)),
+    }
+}
+
+/// A jump's parts: the label it names, if any, and whether it is a `continue`.
+type Jumped = { label: ExprId?, again: bool }
+
+/// The statement `s` as a jump; absent for any other statement.
+fn jump_of(store: SyntaxArena, s: StmtId) -> Jumped? {
+    match store.stmt(s) {
+        .Jump(label, again) -> Jumped { label: label, again: again },
+        rest -> null,
+    }
+}
+
+/// Whether the statement `s` is its file's own, spanned where it stands: no template wrote it, nor
+/// copied it with its own offsets.
+fn written_here(store: SyntaxArena, s: StmtId) -> bool { store.spanned_here(s) && store.seat_home(s, LandedSeat.Names) == null }
+
+/// Every turn of a loop spanned in its own file whose span holds `at`: each `while`, each `for` with
+/// the names it binds, and each comprehension's walk. A loop's head — a `while`'s condition, a
+/// `for`'s subject — runs outside its turns.
+fn turns_around(store: SyntaxArena, at: Span) -> List<Turn> {
+    let loops = [Turn { at: span!, names: loop_names(store, st), walks: false } for st in store.stmt_ids() if written_here(store, st) && is_loop(store, st) for span in [store.stmt_span(st)] if span != null && holds(span!, at) && !in_head(store, st, at)]
+    let walks = [Turn { at: span, names: [], walks: true } for span in spans_of(store, (e) -> walks_whole(store, e)) if holds(span, at)]
+    loops.concat(walks)
+}
+
+/// Whether `at` stands in the head of the loop `s`: its condition, or the subject it walks.
+fn in_head(store: SyntaxArena, s: StmtId, at: Span) -> bool {
+    let head? = match store.stmt(s) {
+        .While(cond, _) -> store.expr_span(cond),
+        .ForEach(_, _, subject, _) -> store.expr_span(subject),
+        rest -> null,
+    } else { return false }
+    spanned_in(at, head)
+}
+
+/// Whether the statement `s` is a loop.
+fn is_loop(store: SyntaxArena, s: StmtId) -> bool {
+    match store.stmt(s) { .While(_, _) or .ForEach(_, _, _, _) -> true, rest -> false }
+}
+
+/// The names the loop `s` binds that a label may read: a `for`'s element and index.
+fn loop_names(store: SyntaxArena, s: StmtId) -> List<string> {
+    match store.stmt(s) {
+        .ForEach(index, name, _, _) -> [name.of].concat([i.of for i in some_list(index)]),
+        rest -> [],
+    }
+}
+
+/// Whether the node `e` is a comprehension, whose walk builds its whole list.
+fn walks_whole(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) { .Comp(_, _) -> true, rest -> false }
+}
+
+/// Where each node of `store` its own file wrote that `kept` keeps stands: a node a template wrote or
+/// copied keeps the template's offsets, which say nothing of where it stands here.
+fn spans_of(store: SyntaxArena, kept: fn(ExprId) -> bool) -> List<Span> {
+    [span! for i in 0..store.expr_count() for e in [ExprId { index: i }] if store.home_of(e) == null && !store.spanned_elsewhere(e) && kept(e) for span in [store.expr_span(e)] if span != null]
+}
+
+/// Whether the span `outer` holds `inner`, and is no other place.
+fn holds(outer: Span, inner: Span) -> bool { outer.lo <= inner.lo && inner.hi <= outer.hi && (outer.lo != inner.lo || outer.hi != inner.hi) }
+
+/// Whether the span `inner` stands within `outer`.
+fn spanned_in(inner: Span, outer: Span) -> bool { outer.lo <= inner.lo && inner.hi <= outer.hi }
+
+/// A shift's count, the literal `count` written at `at`.
+type ShiftCount = { at: ExprId, count: int }
+
+/// The literal count the shift `e` is written with, where it is past an `int`'s 64 bits; absent for any
+/// other node.
+fn wide_shift(store: SyntaxArena, e: ExprId) -> ShiftCount? {
+    let op? = binary_op(store, e) else { return null }
+    if !(op is .Shl || op is .Shr) { return null }
+    let count_at? = right_operand(store, e) else { return null }
+    let count? = store.valued(count_at).int_of() else { return null }
+    if count >= 0 && count <= 63 { return null }
+    ShiftCount { at: count_at, count: count }
+}
+
+/// The right operand of a binary node; absent for any other node.
+fn right_operand(store: SyntaxArena, e: ExprId) -> ExprId? {
+    match store.expr(e) { .Binary(_, _, r) -> r, rest -> null }
+}
+
+/// Whether the node `e` is a `yield`.
+fn emits(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) { .Emit(_) -> true, rest -> false }
+}
+
+/// The block the producer `e` runs; absent for any other node.
+fn produced_body(store: SyntaxArena, e: ExprId) -> ExprId? {
+    match store.expr(e) { .Produce(_, _, body) -> body, rest -> null }
+}
+
+/// Whether a law reads the written node `e` as typing typed it: a `!`, a `?`, a list literal or a
+/// comprehension, a `set`.
+fn typed_law_reads(store: SyntaxArena, e: ExprId) -> bool {
+    if store.home_of(e) != null { return false }
+    match store.expr(e) {
+        .Force(_) or .Propagate(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) -> true,
+        .MethodCall(_, name, _) -> name.of == SET_VERB,
+        rest -> false,
+    }
+}
+
+/// What the written node `e` breaks as typing typed it: a null check of a value never absent, a list
+/// literal or a comprehension whose elements give it no type, a `set` over a task.
+fn typed_breach(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, e: ExprId) -> BreachAt? {
+    match store.expr(e) {
+        .Force(subject) -> checked_absence(store, typing, subject, false),
+        .Propagate(subject) -> checked_absence(store, typing, subject, true),
+        .ListLit(elems) -> untyped_list(store, typing, e, elems),
+        .Comp(elem, _) -> untyped_element(store, typing, e, elem),
+        .MapLit(entries) -> untyped_map(store, typing, e, entries),
+        .Coalesce(left, right) -> coalesce_apart(engine, store, typing, left, right),
+        .MatchOpt(_, _, present, absent) -> presence_apart(engine, store, typing, present, absent),
+        .MethodCall(subject, _, _) -> overwritten_element(store, typing, e, subject),
+        rest -> null,
+    }
+}
+
+/// What a null check of `subject` breaks — `?` where `propagates`, else `!`: a subject always absent,
+/// or one of a type never absent, neither a `Result` for `?` nor a task's awaited answer, a name a
+/// test narrowed aside, and a null check already refused, which is said once.
+fn checked_absence(store: SyntaxArena, typing: ItemTyping, subject: ExprId, propagates: bool) -> BreachAt? {
+    if refused_check(store, typing, subject) { return null }
+    let ty? = typing.type_at(subject) else { return null }
+    let place = kept_at(store.expr_span(subject))
+    if ty.absence() {
+        return BreachAt {
+            at: place,
+            breach: if propagates { Breach.PropagatedAbsent } else { Breach.ForcedAbsent },
+        }
+    }
+    if ty.nullable() || ty.bottom() { return null }
+    if propagates && (ty.owns(OwnType.Result) || store.awaited_task(subject) != null) { return null }
+    if store.ident_name(subject) != null && narrowed(typing, subject) { return null }
+    let named = ty.spelled()
+    BreachAt {
+        at: place,
+        breach: if propagates { Breach.Propagated(named) } else { Breach.Forced(named) },
+    }
+}
+
+/// Whether `e` is a null check refused itself, or over one refused.
+fn refused_check(store: SyntaxArena, typing: ItemTyping, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Force(subject) -> refused_check(store, typing, subject) ||
+            checked_absence(store, typing, subject, false) != null,
+        .Propagate(subject) -> refused_check(store, typing, subject) ||
+            checked_absence(store, typing, subject, true) != null,
+        rest -> false,
+    }
+}
+
+/// Whether the name read at `e` may read a binding a test narrowed: one bound to a nullable, or to a
+/// type typing doesn't know, or a read typing doesn't know. A declaration's name is never narrowed.
+fn narrowed(typing: ItemTyping, e: ExprId) -> bool {
+    let read? = typing.read_at(e) else { return true }
+    if read.binder == null { return false }
+    typing.bound_type(e)?.nullable() ?? true
+}
+
+/// What the list literal `e` of `elems` breaks: elements that leave it holding nothing a slot holds —
+/// only absence, or no value — said at its first.
+fn untyped_list(store: SyntaxArena, typing: ItemTyping, e: ExprId, elems: List<ExprId>) -> BreachAt? {
+    let elem? = typing.type_at(e)?.listed() else { return null }
+    let first? = elems.first() else { return null }
+    let place = kept_at(store.expr_span(first))
+    if elem.absence() {
+        return BreachAt {
+            at: place,
+            breach: Breach.ElementUntyped(typing.type_at(first)?.spelled() ?? elem.spelled()),
+        }
+    }
+    if elem.owns(OwnType.Void) { return BreachAt { at: place, breach: Breach.ElementVoid } }
+    null
+}
+
+/// What the comprehension `e`'s element `elem` breaks where it gives its list no type, no seat
+/// giving one: only absence.
+fn untyped_element(store: SyntaxArena, typing: ItemTyping, e: ExprId, elem: ExprId) -> BreachAt? {
+    if typing.type_at(e)?.listed() != null { return null }
+    let ty? = typing.type_at(elem) else { return null }
+    if !ty.absence() { return null }
+    BreachAt { at: kept_at(store.expr_span(elem)), breach: Breach.ElementUntyped(ty.spelled()) }
+}
+
+/// What `left ?? right` breaks: a right side of a type known whole that what the left side carries
+/// neither joins nor takes; nothing where either isn't typed, or the left side is a named type,
+/// which a literal fills.
+fn coalesce_apart(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    typing: ItemTyping,
+    left: ExprId,
+    right: ExprId,
+) -> BreachAt? {
+    let held? = typing.type_at(left) else { return null }
+    let found? = typing.type_at(right) else { return null }
+    if !held.nullable() || held.absence() { return null }
+    let carried = held.unwrapped()
+    if meets(engine, carried, found) { return null }
+    BreachAt {
+        at: kept_at(store.expr_span(answering_node(store, right))),
+        breach: Breach.CoalesceApart(carried.spelled(), found.spelled()),
+    }
+}
+
+/// What a presence match's arms `present` and `absent` break: two types known whole that neither
+/// join nor take one another.
+fn presence_apart(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    typing: ItemTyping,
+    present: ExprId,
+    absent: ExprId,
+) -> BreachAt? {
+    let first? = typing.type_at(present) else { return null }
+    let second? = typing.type_at(absent) else { return null }
+    if meets(engine, first, second) || meets(engine, second, first) { return null }
+    BreachAt {
+        at: kept_at(store.expr_span(answering_node(store, absent))),
+        breach: Breach.PresenceApart(first.spelled(), second.spelled()),
+    }
+}
+
+/// Whether a value of `found` meets one of `want` where two arms join: they join, `found` reaches
+/// `want`, either answers nothing a value is, or either isn't known whole or wears a name another
+/// law reads.
+fn meets(engine: QueryEngine, want: SignedType, found: SignedType) -> bool {
+    want.joined_with(found) != null ||
+        found.reaches(want) ||
+        want.generic() ||
+        found.generic() ||
+        want.inferred() ||
+        found.inferred() ||
+        want.dynamic ||
+        found.dynamic ||
+        read_elsewhere(engine, want, found) ||
+        read_elsewhere(engine, found, want) ||
+        want.owns(OwnType.Void) ||
+        found.owns(OwnType.Void)
+}
+
+/// The node that answers for `e`: the value a block of that alone answers, else `e`.
+fn answering_node(store: SyntaxArena, e: ExprId) -> ExprId {
+    if store.lead_of(e).is_empty() { store.tail_of(e) ?? e } else { e }
+}
+
+/// Whether `named` wears a name whose meeting with `other` another law reads: a name over another
+/// shape, or one beside anything but a scalar the language owns.
+fn read_elsewhere(engine: QueryEngine, named: SignedType, other: SignedType) -> bool {
+    named.head is .Declared &&
+        (named_over(engine, named) != null || other.owned() == null || !other.args.is_empty())
+}
+
+/// What the map literal `e` of `entries` breaks: values that leave it holding only absence, said at
+/// the first value it writes.
+fn untyped_map(store: SyntaxArena, typing: ItemTyping, e: ExprId, entries: List<MapEntry>) -> BreachAt? {
+    let held? = typing.type_at(e)?.mapped() else { return null }
+    if !held.absence() { return null }
+    let first? = [v! for entry in entries for v in [pair_value(entry)] if v != null].first() else { return null }
+    BreachAt {
+        at: kept_at(store.expr_span(first)),
+        breach: Breach.MapValueUntyped(typing.type_at(first)?.spelled() ?? held.spelled()),
+    }
+}
+
+/// The value a map entry writes, absent for a spread.
+fn pair_value(entry: MapEntry) -> ExprId? {
+    match entry { .Pair(_, value) -> value, .Spread(_) -> null }
+}
+
+/// What the `fail` `s` lacks of a failure channel: a fn around it, which a lambda between hides and
+/// the statements an entry runs don't have, or a fn promising a `Result`.
+fn fail_breach(store: SyntaxArena, typing: ItemTyping, s: StmtId) -> BreachAt? {
+    let value? = store.stmt_value(s) else { return null }
+    let breach? = fail_channel(store, typing, value) else { return null }
+    BreachAt { at: kept_at(store.stmt_span(s)), breach: breach }
+}
+
+/// What a `fail` raising `value` lacks of a failure channel; absent where it has one, or stands in
+/// a fn no typing reached. One among the statements an entry runs has none, whatever it raises.
+fn fail_channel(store: SyntaxArena, typing: ItemTyping, value: ExprId) -> Breach? {
+    let lambda = enclosing_lambda(store, [], value)
+    if lambda != null { return lambda_channel(store, typing, lambda!) }
+    let held = typing.holding(value)
+    if held == null && typing.base != null && !fn_encloses(store, value) { return Breach.FailUnenclosed }
+    let body? = held else { return null }
+    let promise? = body.promise else { return Breach.FailUnenclosed }
+    if promise.owns(OwnType.Result) { null } else { Breach.FailUnfallible(promise.spelled()) }
+}
+
+/// Whether a fn the store declares holds the node `e` in its body.
+fn fn_encloses(store: SyntaxArena, e: ExprId) -> bool {
+    store
+        .stmt_ids()
+        .any(
+            (s) -> store.every_expr(store.fn_parts(s)?.body ?? e).contains(e) &&
+                store.fn_parts(s) != null,
+        )
+}
+
+/// The two operators the binary node `e` mixes in one run of the bitwise band: its left operand's,
+/// written in the same run where it begins where `e` does, then its own. A left operand that mixes
+/// already broke the run, which is said once.
+fn mixed_run(store: SyntaxArena, e: ExprId) -> Breach? {
+    let op? = binary_op(store, e) else { return null }
+    let left? = left_operand(store, e) else { return null }
+    if !in_band(op) || mixed_run(store, left) != null { return null }
+    let held? = binary_op(store, left) else { return null }
+    let at? = store.expr_span(e) else { return null }
+    let left_at? = store.expr_span(left) else { return null }
+    if !in_band(held) || op_symbol(held) == op_symbol(op) || left_at.lo != at.lo { return null }
+    Breach.Bitwise(op_symbol(held), op_symbol(op))
+}
+
+/// The operator of a binary node; absent for any other node.
+fn binary_op(store: SyntaxArena, e: ExprId) -> BinOp? {
+    match store.expr(e) { .Binary(op, _, _) -> op, rest -> null }
+}
+
+/// The left operand of a binary node; absent for any other node.
+fn left_operand(store: SyntaxArena, e: ExprId) -> ExprId? {
+    match store.expr(e) { .Binary(_, l, _) -> l, rest -> null }
+}
+
+/// The statement `s` as a `defer`; absent for any other statement.
+fn deferral(store: SyntaxArena, s: StmtId) -> Deferral? {
+    match store.stmt(s) {
+        .Defer(body, errs) -> Deferral { stmt: s, body: body, errs: errs },
+        rest -> null,
+    }
+}
+
+/// Each fn's and method's body the written item `at` of `file` holds in its own store, typed.
+fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<FnBody> {
+    let fns = [FnBody { root: p!.body, promise: sig!.answer, typed: typed! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sig in [fn_signature(engine, file, p!.name)] if sig != null for typed in [written_typed(engine, file, p!.name)] if typed != null]
+    let methods = [FnBody {
+        root: m!.signed.body,
+        promise: m!.signed.signature.answer,
+        typed: method_body_typed(engine, a, name, statics),
+    } for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
+    fns.concat(methods)
+}
+
+/// Each body the written item `at` of `file` holds beside its fns' and methods', typed: a seat's or a
+/// field's default, a const's value, a state's start — none of which a fn encloses — and a body a
+/// trait's member writes, which its member's promise holds.
+fn defaults_typed(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    FnBody,
+> {
+    [FnBody {
+        root: b.body,
+        promise: if b.seat == null { b.signature.answer } else { null },
+        typed: kept_body(body_checked(engine, file, b, false)),
+    } for b in default_bodies(engine, file, at, item)]
+}
+
+/// The verb that writes over one element of a list.
+const SET_VERB: string = "set"
+
+/// What the `set` `e` over the list `subject` breaks: an element holding a task, which it leaves
+/// unjoined.
+fn overwritten_element(store: SyntaxArena, typing: ItemTyping, e: ExprId, subject: ExprId) -> BreachAt? {
+    let elem? = typing.type_at(subject)?.listed() else { return null }
+    if !holds_tasks(elem) { return null }
+    BreachAt { at: kept_at(store.expr_span(e)), breach: Breach.Overwritten }
+}
+
+/// What the statement `s` breaks where the value it holds for the rest of its scope holds a task: a
+/// value of a type that can't own one — only a task, a nullable task, a list of tasks or a marked
+/// owner can, which the block joins where it ends.
+fn unowned_breach(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, s: StmtId) -> BreachAt? {
+    let value? = store.owned_value(s) else { return null }
+    let ty? = typing.declared_at(s, value) ?? typing.type_at(value) else { return null }
+    if !holds_tasks(ty) || owns_tasks(ty) || marked_owner(engine, ty) { return null }
+    BreachAt { at: kept_at(store.expr_span(value)), breach: Breach.Unheld(ty.spelled()) }
+}
+
+/// Whether a value of `ty` owns the tasks it holds: a task, a nullable task, or a list of tasks.
+fn owns_tasks(ty: SignedType) -> bool {
+    if ty.unwrapped().owns(OwnType.Task) || ty.owns(OwnType.Tasks) { return true }
+    let elem? = ty.listed() else { return false }
+    elem.owns(OwnType.Task) && !elem.nullable()
+}
+
+/// What the write `s` breaks: a place holding a task, which the write leaves unjoined.
+fn write_breach(store: SyntaxArena, typing: ItemTyping, s: StmtId) -> BreachAt? {
+    let target? = store.assign_target(s) else { return null }
+    let ty? = typing.type_at(target) else { return null }
+    if !holds_tasks(ty) { return null }
+    BreachAt { at: kept_at(store.stmt_span(s)), breach: Breach.Overwritten }
+}
+
+/// What the lambda `l` breaks where it isn't a task's own body, which is joined where its task is: a
+/// task it captures, the first its body reads, then one its body answers.
+fn lambda_breaches(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, l: ExprId) -> List<
+    BreachAt,
+> {
+    if spawned_body(store, l) { return [] }
+    let body? = store.lambda_parts(l)?.body else { return [] }
+    let captured = [BreachAt {
+        at: kept_at(store.expr_span(l)),
+        breach: Breach.Escaping(captured_label(capture_named(r.name))),
+    } for r in some_list(task_capture(engine, typing, l))]
+    let answer = typing.type_at(l)?.answer
+    let answered = [BreachAt {
+        at: kept_at(store.expr_span(body)),
+        breach: Breach.Escaping(lambda_answer_label(a.spelled())),
+    } for a in some_list(answer) if holds_tasks(a) && !marked_owner(engine, a)]
+    captured.concat(answered)
+}
+
+/// The first read the lambda `l` captures of a binding that holds a task no marked owner settles.
+fn task_capture(engine: QueryEngine, typing: ItemTyping, l: ExprId) -> NameRead? {
+    let body = typing.holding(l)
+    let reads = if body != null { body!.typed.reads } else { typing.entry_reads() }
+    reads.find((r) -> r.crossed.contains(l.index) && captured_task(engine, typing, r))
+}
+
+/// Whether the read `r` reads a binding that holds a task no marked owner settles.
+fn captured_task(engine: QueryEngine, typing: ItemTyping, r: NameRead) -> bool {
+    let ty? = typing.bound_type(ExprId { index: r.at }) else { return false }
+    holds_tasks(ty) && !marked_owner(engine, ty)
+}
+
+/// Whether the lambda `l` is the body a `spawn` runs.
+fn spawned_body(store: SyntaxArena, l: ExprId) -> bool {
+    [ExprId { index: i } for i in 0..store.expr_count()].any((e) -> spawn_body(store, e) == l)
+}
+
+/// The body the `spawn` `e` runs; absent for any other node.
+fn spawn_body(store: SyntaxArena, e: ExprId) -> ExprId? {
+    match store.expr(e) { .Spawn(body) -> body, rest -> null }
+}
+
+/// What the `defer` `d` breaks: a body that only names a value, else one answering a `Result`; then,
+/// for an `errdefer`, the failure it waits on, which a lambda between it and its fn hides, and the
+/// top level and a fn that can't fail don't have.
+fn defer_breaches(store: SyntaxArena, typing: ItemTyping, deferrals: List<Deferral>, d: Deferral) -> List<
+    BreachAt,
+> {
+    let place = kept_at(store.stmt_span(d.stmt))
+    let inner? = store.lambda_parts(d.body)?.body else { return [] }
+    let enclosing = typing.holding(d.body)
+    let answered = typing.type_at(inner)
+    if store.inert(inner) { return [BreachAt { at: place, breach: Breach.Inert(a.spelled()) } for a in some_list(answered)] }
+    let unheard = [BreachAt { at: place, breach: Breach.Unheard(a.spelled()) } for a in some_list(answered) if a.owns(OwnType.Result)]
+    if !d.errs { return unheard }
+    unheard
+        .concat(
+            [BreachAt { at: place, breach: b } for b in some_list(channel_breach(store, typing, deferrals, enclosing, d))],
+        )
+}
+
+/// What the deferred body of `d` breaks where it waits outside every `within` it writes: a call of a
+/// runtime row that may switch the task out, or a `spawn`, the first it writes, said where it
+/// stands. Judged in the bodies a fn, a method or a trait's member writes, whatever reaches them —
+/// never in the statements an entry runs, nor a default's or a const's value.
+fn cleanup_breach(store: SyntaxArena, typing: ItemTyping, d: Deferral) -> BreachAt? {
+    if typing.holding(d.body)?.promise == null { return null }
+    let body? = store.lambda_parts(d.body)?.body else { return null }
+    let at? = store.expr_span(body) else { return null }
+    let nodes = [e for i in 0..store.expr_count() for e in [ExprId { index: i }] if store.home_of(e) == null && !store.spanned_elsewhere(e) && in_span(store.expr_span(e), at)]
+    let bounds = [b! for e in nodes for b in [within_body(store, e)] if b != null]
+    let word = if d.errs { "errdefer" } else { "defer" }
+    let found? = nodes
+        .find_map(
+            (e) -> if bounds.any((b) -> in_span(store.expr_span(e), b)) { null } else { node_wait(store, e) },
+        ) else {
+        return null
+    }
+    BreachAt {
+        at: kept_at(store.expr_span(found.at)),
+        breach: Breach.CleanupUnbounded(word, found.wait),
+    }
+}
+
+/// A node that waits, and how its wait is said.
+type NodeWaits = { at: ExprId, wait: string }
+
+/// How the node `e` waits, where it calls a runtime row that may switch the task out or spawns a
+/// task; absent for any other node.
+fn node_wait(store: SyntaxArena, e: ExprId) -> NodeWaits? {
+    match store.expr(e) {
+        .Call(callee, _, _) -> if rt_waits(callee.of) { NodeWaits { at: e, wait: row_wait_said(callee.of) } } else { null },
+        .Spawn(_) -> NodeWaits { at: e, wait: spawn_wait_said() },
+        rest -> null,
+    }
+}
+
+/// Where the body of the `within` `e` stands; absent for any other node.
+fn within_body(store: SyntaxArena, e: ExprId) -> Span? {
+    match store.expr(e) { .Within(_, body) -> store.expr_span(body), rest -> null }
+}
+
+/// Whether the place `inner`, where it is known, stands in `outer`.
+fn in_span(inner: Span?, outer: Span) -> bool {
+    let held? = inner else { return false }
+    spanned_in(held, outer)
+}
+
+/// What the `errdefer` `d` lacks of a failure to wait on: a lambda encloses it, no fn does, or its
+/// fn promises no `Result`.
+fn channel_breach(
+    store: SyntaxArena,
+    typing: ItemTyping,
+    deferrals: List<Deferral>,
+    enclosing: FnBody?,
+    d: Deferral,
+) -> Breach? {
+    if wrapped_by_lambda(store, [d.body].concat([o.body for o in deferrals]), d.body) { return Breach.InLambda }
+    let held? = enclosing else { return if typing.entry_type(d.body) != null { Breach.Unenclosed } else { null } }
+    let promise? = held.promise else { return Breach.Unenclosed }
+    if promise.owns(OwnType.Result) { null } else { Breach.Unfailing(promise.spelled()) }
+}
+
+/// Whether a lambda stands around the node `e`, beside those of `aside`: a `defer`'s own body runs
+/// in its fn.
+fn wrapped_by_lambda(store: SyntaxArena, aside: List<ExprId>, e: ExprId) -> bool { enclosing_lambda(store, aside, e) != null }
+
+/// The innermost lambda around the node `e`, beside those of `aside`; absent where none stands.
+fn enclosing_lambda(store: SyntaxArena, aside: List<ExprId>, e: ExprId) -> ExprId? {
+    let around = [l for i in 0..store.expr_count() for l in [ExprId { index: i }] if l != e && !aside.contains(l) && lambda_of(store, l) != null && store.every_expr(l).contains(e)]
+    around.find((l) -> !around.any((o) -> o != l && store.every_expr(l).contains(o)))
+}
+
+/// What a `fail` the lambda `l` encloses lacks of a failure channel: the lambda answers itself, so
+/// one whose answer is only inferred — answering nothing, taking no seat, which hears none, or bound
+/// by a `let` that writes no type — promises none; one a seat gives an answer promises it, which
+/// must be a `Result`.
+fn lambda_channel(store: SyntaxArena, typing: ItemTyping, l: ExprId) -> Breach? {
+    let answer? = typing.type_at(l)?.answer else { return Breach.FailUnenclosed }
+    if answer.bottom() || seatless(store, l) || inferred_lambda(store, l) { return Breach.FailUnenclosed }
+    if answer.owns(OwnType.Result) { null } else { Breach.FailUnfallible(answer.spelled()) }
+}
+
+/// Whether the lambda `l` takes no seat: it writes none, and a block's body rides no pronoun.
+fn seatless(store: SyntaxArena, l: ExprId) -> bool {
+    match store.expr(l) {
+        .Lambda(params, _) -> params.is_empty(),
+        .BlockLambda(params, body) -> params.is_empty() && !store.pronoun_rides(body),
+        rest -> false,
+    }
+}
+
+/// Whether the lambda `l` is the value a `let` binds without writing its type, so that only its body
+/// says what it answers.
+fn inferred_lambda(store: SyntaxArena, l: ExprId) -> bool { store.stmt_ids().any((s) -> untyped_let_of(store, s) == l) }
+
+/// The value the statement `s` binds where it is a `let` writing no type; absent otherwise.
+fn untyped_let_of(store: SyntaxArena, s: StmtId) -> ExprId? {
+    match store.stmt(s) {
+        .Let(_, ty, v) or .MutLet(_, ty, v) -> if ty == null { v } else { null },
+        rest -> null,
+    }
+}
+
+/// The body of the lambda `e` is, a trailing block's among them; absent for any other node.
+fn lambda_of(store: SyntaxArena, e: ExprId) -> ExprId? {
+    store.lambda_parts(e)?.body ?? trailing_body(store, e)
+}
+
+/// The body of the trailing block `e` is; absent for any other node.
+fn trailing_body(store: SyntaxArena, e: ExprId) -> ExprId? {
+    match store.expr(e) { .BlockLambda(_, body) -> body, rest -> null }
+}
+
+/// The type the column `types` gives the node at `k`.
+fn node_type(types: List<SignedType?>, k: int) -> SignedType? { if k < types.length { types[k] } else { null } }
+
+/// The types the statements an entry runs give their nodes, the names they read and the bindings they
+/// make, and where each item's nodes begin among them.
+@derive(Saved)
+type EntryTypes = { types: List<SignedType?>, reads: List<NameRead>, binds: List<NameBound>, bases: List<EntryBase> }
+
+/// What a file that runs no statement types.
+fn no_entry() -> EntryTypes { EntryTypes { types: [], reads: [], binds: [], bases: [] } }
+
+/// A written item of an entry, by its place, and the index its first node has among the entry's.
+@derive(Saved)
+type EntryBase = { at: int, base: int }
+
+/// The statements `file` runs, typed as one body, once for all of its items.
+@query
+fn entry_types(engine: QueryEngine, file: SourceFileAddress) -> EntryTypes {
+    let read = entry_read(engine, file)
+    let signed? = entry_signed(read) else { return no_entry() }
+    let typed = kept_body(body_checked(engine, file, signed, false))
+    EntryTypes {
+        types: typed.types,
+        reads: typed.reads,
+        binds: typed.binds,
+        bases: [EntryBase { at: i.at, base: i.base } for i in read.items],
+    }
+}
+
+/// Each task a signature the written item `at` of `file` declares lets reach past its block: a fn's
+/// or a method's answer, a field of a record no `@owns` marks, a variant's payload.
+fn escape_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    BreachAt,
+> {
+    let fns = [escaped(
+        engine,
+        item.store.stmt_span(s),
+        answer_label(p!.name, sig!.answer.spelled()),
+        sig!.answer,
+    ) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sig in [fn_signature(engine, file, p!.name)] if sig != null]
+    let methods = [escaped(
+        engine,
+        item.store.stmt_span(s),
+        answer_label(name, m!.signed.signature.answer.spelled()),
+        m!.signed.signature.answer,
+    ) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for m in [signed_method(engine, a, name, item.store.is_static(s))] if m != null]
+    let names = [d for d in file_declares(engine, file).names if d.item == at]
+    let fields = [escaped(engine, record_place(item, d.name), field_label(f.name, f.ty!.spelled()), f.ty!) for d in names if d.kind == ItemKind.Record && !wears_mark(engine, d, OWNS_MARK) for f in record_signature(engine, file, d.name)?.fields ?? [] if f.ty != null]
+    let payloads = [escaped(engine, enum_place(item, d.name), carried_label(v.name, p.name, p.ty!.spelled()), p.ty!) for d in names if d.kind == ItemKind.Enum for v in enum_signature(engine, file, d.name)?.variants ?? [] for p in v.payloads if p.ty != null]
+    flatten(fns.concat(methods).concat(fields).concat(payloads))
+}
+
+/// A task `ty` holds that no marked owner settles, at `at`, as `label` says where; none where it
+/// holds none.
+fn escaped(engine: QueryEngine, at: Span?, label: string, ty: SignedType) -> List<BreachAt> {
+    if !holds_tasks(ty) || marked_owner(engine, ty) { return [] }
+    [BreachAt { at: kept_at(at), breach: Breach.Escaping(label) }]
+}
+
+/// Whether a value of `ty` holds a task: it is one, a nullable one, a list of them, or a type over one.
+fn holds_tasks(ty: SignedType) -> bool {
+    let held = ty.unwrapped()
+    held.owns(OwnType.Task) || held.owns(OwnType.Tasks) || held.args.any(holds_tasks(it))
+}
+
+/// Each slot a signature the written item `at` of `file` declares that holds no value: a record's
+/// field, a variant's payload, said where the record or the enum stands.
+fn slot_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    BreachAt,
+> {
+    let names = [d for d in file_declares(engine, file).names if d.item == at]
+    let fields = [BreachAt {
+        at: kept_at(record_place(item, d.name)),
+        breach: Breach.FieldVoid(f.name, f.ty!.spelled()),
+    } for d in names if d.kind == ItemKind.Record for f in record_signature(engine, file, d.name)?.fields ?? [] if f.ty != null && holds_nothing(f.ty!)]
+    let payloads = [BreachAt {
+        at: kept_at(enum_place(item, d.name)),
+        breach: Breach.PayloadVoid(v.name, p.name, p.ty!.spelled()),
+    } for d in names if d.kind == ItemKind.Enum for v in enum_signature(engine, file, d.name)?.variants ?? [] for p in v.payloads if p.ty != null && holds_nothing(p.ty!)]
+    fields.concat(payloads)
+}
+
+/// Whether a slot of `ty` holds nothing: `void`, or only absence.
+export fn holds_nothing(ty: SignedType) -> bool { ty.owns(OwnType.Void) || ty.absence() }
+
+/// Where the enum `name` the item `item` declares stands.
+fn enum_place(item: ReadItem, name: string) -> Span? {
+    let s? = item.stmts.find((st) -> item.store.enum_parts(st)?.name == name) else { return null }
+    item.store.stmt_span(s)
+}
+
+/// The breaches of the written item `at` of `file` that `words` gives words to, each with them.
+fn breaches_said(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    words: fn(Breach) -> List<string>?,
+) -> List<Found> {
+    [Found { at: span_of(r.at), args: w } for r in item_breaches(engine, file, at).rows for w in some_list(words(r.breach))]
+}
+
+/// No words where `held`, a breach whose voice takes none; absent otherwise.
+fn wordless(held: bool) -> List<string>? {
+    if !held { return null }
+    []
+}
+
+fn bitwise_runs(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .Bitwise(first, second) -> [first, second], rest -> null },
+    )
+}
+
+/// a run of bitwise operators mixing two of them
+export law bitwise_mixed_law {
+    kind: "type.mixed_bitwise"
+    reads: bitwise_runs
+    voice: bitwise_words
+    witness: "fn f(a: int, b: int) -> int { a | b & 3 }\n"
+}
+
+fn bitwise_words(a: List<string>) -> Voice { bitwise_mixed(a[0], a[1]) }
+
+fn defers_inert(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Inert(named) -> [named], rest -> null })
+}
+
+/// a `defer` whose body only names a value
+export law defer_inert {
+    kind: "type.defer_inert"
+    reads: defers_inert
+    voice: inert_words
+    witness: "fn f() -> int {\n    defer 1\n    2\n}\n"
+}
+
+fn inert_words(a: List<string>) -> Voice { deferred_inert(a[0]) }
+
+fn defers_unheard(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Unheard(answer) -> [answer], rest -> null })
+}
+
+/// a `defer` whose body answers a `Result` it drops
+export law defer_unheard {
+    kind: "type.defer"
+    reads: defers_unheard
+    voice: unheard_words
+    witness: "fn g() -> Result<int, string> { .Ok(1) }\n\nfn f() -> int {\n    defer g()\n    2\n}\n"
+}
+
+fn unheard_words(a: List<string>) -> Voice { deferred_unheard(a[0]) }
+
+fn errdefers_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .Unenclosed))
+}
+
+/// an `errdefer` no fn encloses
+export law errdefer_unenclosed_law {
+    kind: "type.errdefer"
+    reads: errdefers_unenclosed
+    voice: unenclosed_words
+    witness: "errdefer println(\"x\")\n1\n"
+}
+
+fn unenclosed_words(_a: List<string>) -> Voice { errdefer_unenclosed() }
+
+fn errdefers_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .InLambda))
+}
+
+/// an `errdefer` a lambda encloses
+export law errdefer_lambda {
+    kind: "type.errdefer"
+    reads: errdefers_in_lambda
+    voice: lambda_words
+    witness: "fn f() -> Result<int, string> {\n    let g = () -> {\n        errdefer println(\"x\")\n        1\n    }\n    .Ok(g())\n}\n"
+}
+
+fn lambda_words(_a: List<string>) -> Voice { errdefer_in_lambda() }
+
+fn errdefers_unfailing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .Unfailing(promise) -> [promise], rest -> null },
+    )
+}
+
+/// an `errdefer` in a fn that never fails
+export law errdefer_unfailing_law {
+    kind: "type.errdefer"
+    reads: errdefers_unfailing
+    voice: unfailing_words
+    witness: "fn f() -> int {\n    errdefer println(\"x\")\n    1\n}\n"
+}
+
+fn unfailing_words(a: List<string>) -> Voice { errdefer_unfailing(a[0]) }
+
+fn tasks_escaping(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Escaping(label) -> [label], rest -> null })
+}
+
+/// a task a signature lets outlive the block that spawned it
+export law task_escape {
+    kind: "type.task_escape"
+    reads: tasks_escaping
+    voice: escape_words
+    witness: "fn start() -> Task<int> {\n    spawn 1\n}\n"
+}
+
+fn escape_words(a: List<string>) -> Voice { task_outlives(a[0]) }
+
+fn shifts_wide(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .Shifted(count) -> ["${count}"], rest -> null },
+    )
+}
+
+/// a literal shift count past an `int`'s width
+export law shift_count {
+    kind: "type.shift_count"
+    reads: shifts_wide
+    voice: shift_words
+    witness: "fn f(a: int) -> int { a << 99 }\n"
+}
+
+fn shift_words(a: List<string>) -> Voice { shift_out_of_range(parse_int(a[0]) ?? 0) }
+
+fn forces_present(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Forced(named) -> [named], rest -> null })
+}
+
+/// `!` on a value never absent
+export law force_present {
+    kind: "type.force"
+    reads: forces_present
+    voice: forced_words
+    witness: "fn f(n: int) -> int { n! }\n"
+}
+
+fn forced_words(a: List<string>) -> Voice { forced_present(a[0]) }
+
+fn forces_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .ForcedAbsent))
+}
+
+/// `!` on a value always absent
+export law force_absent {
+    kind: "type.force"
+    reads: forces_absent
+    voice: forced_absent_words
+    witness: "fn f() -> int {\n    let n = null\n    n!\n}\n"
+}
+
+fn forced_absent_words(_a: List<string>) -> Voice { forced_absent() }
+
+fn propagates_present(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Propagated(named) -> [named], rest -> null })
+}
+
+/// `?` on a value never absent and no `Result`
+export law propagate_present {
+    kind: "type.propagate"
+    reads: propagates_present
+    voice: propagated_words
+    witness: "fn f(n: int) -> int? { n? }\n"
+}
+
+fn propagated_words(a: List<string>) -> Voice { propagated_present(a[0]) }
+
+fn propagates_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .PropagatedAbsent))
+}
+
+/// `?` on a value always absent
+export law propagate_absent {
+    kind: "type.propagate"
+    reads: propagates_absent
+    voice: propagated_absent_words
+    witness: "fn f() -> int? {\n    let n = null\n    n?\n}\n"
+}
+
+fn propagated_absent_words(_a: List<string>) -> Voice { propagated_absent() }
+
+fn fails_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .FailUnenclosed))
+}
+
+/// a `fail` no fn encloses
+export law fail_unenclosed_law {
+    kind: "type.fail"
+    reads: fails_unenclosed
+    voice: fail_unenclosed_words
+    witness: "fail 1\n"
+}
+
+fn fail_unenclosed_words(_a: List<string>) -> Voice { fail_unenclosed() }
+
+fn fails_unfallible(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .FailUnfallible(promise) -> [promise], rest -> null },
+    )
+}
+
+/// a `fail` in a fn promising no `Result`
+export law fail_unfallible_law {
+    kind: "type.fail"
+    reads: fails_unfallible
+    voice: fail_unfallible_words
+    witness: "fn f() -> int {\n    fail 1\n}\n"
+}
+
+fn fail_unfallible_words(a: List<string>) -> Voice { fail_unfallible(a[0]) }
+
+fn yields_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .YieldUnenclosed))
+}
+
+/// a `yield` no producer encloses
+export law yield_unenclosed_law {
+    kind: "flow.yield"
+    reads: yields_unenclosed
+    voice: yield_words
+    witness: "fn f() -> int {\n    yield 1\n    1\n}\n"
+}
+
+fn yield_words(_a: List<string>) -> Voice { yield_unenclosed() }
+
+fn elements_untyped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .ElementUntyped(named) -> [named], rest -> null },
+    )
+}
+
+/// a list literal whose elements give it no type
+export law element_untyped {
+    kind: "type.list_scalar"
+    reads: elements_untyped
+    voice: untyped_words
+    witness: "fn f() -> int {\n    let xs = [null, null]\n    xs.length\n}\n"
+}
+
+fn untyped_words(a: List<string>) -> Voice { list_element_untyped(a[0]) }
+
+fn map_values_untyped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .MapValueUntyped(named) -> [named], rest -> null },
+    )
+}
+
+/// a map literal whose values give it no type
+export law map_value_untyped_law {
+    kind: "type.list_scalar"
+    reads: map_values_untyped
+    voice: map_untyped_words
+    witness: "fn f() -> int {\n    let m = { \"a\": null }\n    1\n}\n"
+}
+
+fn map_untyped_words(a: List<string>) -> Voice { map_value_untyped(a[0]) }
+
+fn coalesces_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .CoalesceApart(carried, found) -> [carried, found], rest -> null },
+    )
+}
+
+/// `??` answers what its left side carries
+export law coalesce_answers_carried {
+    kind: "type.coalesce"
+    reads: coalesces_apart
+    voice: coalesce_apart_words
+    witness: "fn f(n: int?) -> int {\n    let v = n ?? \"s\"\n    1\n}\n"
+}
+
+fn coalesce_apart_words(a: List<string>) -> Voice { coalesce_answers(a[0], a[1]) }
+
+fn presences_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .PresenceApart(present, absent) -> [present, absent], rest -> null },
+    )
+}
+
+/// a presence match's arms answer one type
+export law presence_arms_agree {
+    kind: "type.match_opt"
+    reads: presences_apart
+    voice: presence_apart_words
+    witness: "fn f(n: int?) -> int {\n    let v = match n {\n        x? -> x\n        null -> \"s\"\n    }\n    1\n}\n"
+}
+
+fn presence_apart_words(a: List<string>) -> Voice { presence_arms_apart(a[0], a[1]) }
+
+fn elements_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .ElementVoid))
+}
+
+/// a list literal whose elements answer no value
+export law element_void {
+    kind: "type.list_scalar"
+    reads: elements_void
+    voice: void_words
+    witness: "fn f() -> int {\n    let xs = [println(\"x\")]\n    1\n}\n"
+}
+
+fn void_words(_a: List<string>) -> Voice { list_element_void() }
+
+fn fields_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .FieldVoid(field, spelled) -> [field, spelled], rest -> null },
+    )
+}
+
+/// a record field that holds no value
+export law field_void {
+    kind: "type.struct_scalar"
+    reads: fields_void
+    voice: field_void_words
+    witness: "type P = { x: void }\n"
+}
+
+fn field_void_words(a: List<string>) -> Voice { field_unslotted(a[0], a[1]) }
+
+fn payloads_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b {
+            .PayloadVoid(variant, payload, spelled) -> [variant, payload, spelled],
+            rest -> null,
+        },
+    )
+}
+
+/// a variant's payload that holds no value
+export law payload_void {
+    kind: "type.enum_payload"
+    reads: payloads_void
+    voice: payload_void_words
+    witness: "enum E {\n    a(void)\n    b\n}\n"
+}
+
+fn payload_void_words(a: List<string>) -> Voice { payload_unslotted(a[0], a[1], a[2]) }
+
+fn tasks_overwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .Overwritten))
+}
+
+/// a write over a place holding a task, which leaves it unjoined
+export law task_overwritten_law {
+    kind: "type.task_escape"
+    reads: tasks_overwritten
+    voice: overwritten_words
+    witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    mut t = spawn one()\n    t = spawn one()\n    t.await\n}\n"
+}
+
+fn overwritten_words(_a: List<string>) -> Voice { task_overwritten() }
+
+fn tasks_unheld(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Unheld(spelled) -> [spelled], rest -> null })
+}
+
+/// a value holding a task that its type can't own
+export law task_unheld_law {
+    kind: "type.task_escape"
+    reads: tasks_unheld
+    voice: unheld_words
+    witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    let m = {\"a\": spawn one()}\n    m.length\n}\n"
+}
+
+fn unheld_words(a: List<string>) -> Voice { task_unheld(a[0]) }
+
+fn jumps_unlooped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .Unlooped(word) -> [word], rest -> null })
+}
+
+/// a `break` or a `continue` no loop encloses
+export law jump_unlooped_law {
+    kind: "loop.jump"
+    reads: jumps_unlooped
+    voice: unlooped_words
+    witness: "fn f() -> int {\n    break\n    1\n}\n"
+}
+
+fn unlooped_words(a: List<string>) -> Voice { jump_unlooped(a[0]) }
+
+fn jumps_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> match b { .JumpInLambda(word) -> [word], rest -> null })
+}
+
+/// a `break` or a `continue` a lambda's body holds apart from its loop
+export law jump_in_lambda_law {
+    kind: "loop.jump"
+    reads: jumps_in_lambda
+    voice: jump_lambda_words
+    witness: "fn f(xs: List<int>) {\n    for x in xs {\n        let g = () -> {\n            break\n        }\n        g()\n    }\n}\n"
+}
+
+fn jump_lambda_words(a: List<string>) -> Voice { jump_behind_lambda(a[0]) }
+
+fn jumps_in_comprehension(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .JumpInComprehension(word) -> [word], rest -> null },
+    )
+}
+
+/// a `break` or a `continue` a comprehension holds
+export law jump_in_comprehension_law {
+    kind: "loop.jump"
+    reads: jumps_in_comprehension
+    voice: jump_comprehension_words
+    witness: "fn f(xs: List<int>) -> List<int> {\n    [{\n        if x > 1 { break }\n        x\n    } for x in xs]\n}\n"
+}
+
+fn jump_comprehension_words(a: List<string>) -> Voice { jump_in_comprehension(a[0]) }
+
+/// Every jump whose label names no `for` around it; a label nothing binds is the naming law's,
+/// said where it is read.
+fn jumps_unaimed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unaimed = breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .Unaimed(word, name) -> [word, name], rest -> null },
+    )
+    if unaimed.is_empty() { return [] }
+    let unread = [u.at!.lo for u in item_refusals(engine, file, at).unread if u.at != null]
+    [f for f in unaimed if !unread.contains(f.at?.lo ?? -1)]
+}
+
+/// a jump whose label names no enclosing `for`
+export law jump_unaimed_law {
+    kind: "loop.label"
+    reads: jumps_unaimed
+    voice: unaimed_words
+    witness: "fn f(xs: List<int>) {\n    let y = 1\n    for x in xs {\n        break y\n    }\n}\n"
+}
+
+fn unaimed_words(a: List<string>) -> Voice { jump_unaimed(a[0], a[1]) }
+
+fn guards_reading_binders(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(engine, file, at, (b) -> wordless(b is .GuardReadsBinder))
+}
+
+/// a select arm's guard reading a name its own arm binds
+export law guard_binder_law {
+    kind: "flow.guard_binder"
+    reads: guards_reading_binders
+    voice: guard_words
+    witness: "fn one() -> int {\n    1\n}\n\nfn f() -> int {\n    let job = spawn one()\n    select {\n        r in job if r > 0 -> r\n    }\n}\n"
+}
+
+fn guard_words(_a: List<string>) -> Voice { guard_reads_binder() }
+
+fn cleanups_unbounded(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .CleanupUnbounded(word, wait) -> [word, wait], rest -> null },
+    )
+}
+
+/// a `defer` whose body waits, bounded by no `within` it writes
+export law cleanup_unbounded_law {
+    kind: "flow.unbounded_cleanup"
+    reads: cleanups_unbounded
+    voice: cleanup_words
+    witness: "extern fn avra_fiber_sleep(ms: int)\n\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\n"
+}
+
+fn cleanup_words(a: List<string>) -> Voice { cleanup_unbounded(a[0], a[1]) }
+
+collect listed_body_law_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a body's breaches are read through, for a process to hand its engine.
+export fn body_law_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_body_law_facts) }

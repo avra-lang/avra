@@ -1,0 +1,707 @@
+//! THE SPLICE: a template's runs parsed once, kept for the process by their text, and copied into a
+//! store with each hole filled at its seat, a hole holding a template copied in turn. A sugar's
+//! meaning (`means()`, a `Rewrite`) is copied beside the sugar, its holes nodes of the store it
+//! rewrites; a generator's declarations (`Directive.source`) are copied into a store of their own,
+//! its holes values. Each copied node reads its names where its template was written.
+use core.{
+    ForeignOrigin,
+    LandedSeat,
+    apart_name,
+    let_renamed,
+    Arm,
+    At,
+    BodyView,
+    Expr,
+    Inits,
+    LambdaParts,
+    Minting,
+    minting,
+    Param,
+    Pat,
+    Rebuilder,
+    Scoped,
+    Span,
+    Stmt,
+    SyntaxArena,
+    ExprId,
+    PatId,
+    some_list,
+    StmtId,
+    HoleKind,
+    Filled,
+    Means,
+    TypeRef,
+    all_codes,
+    copier,
+    hole_runs,
+    is_name_cont,
+    named_ref,
+    new_node_store,
+    quote_kind,
+    spoiled_inits,
+    flatten,
+    same_expr,
+}
+use @std.meta.{Rewrite, Node}
+use diagnostics.{new_source_file}
+use features.{BlockWords, MeanCx, Meaning}
+use @std.relation.engine.{list_cell, map_cell}
+
+/// One template's parse: the store that holds it and the quote it was
+/// written in.
+export type Scratch = { store: SyntaxArena, body: ExprId }
+
+/// Where a template was written, as a splice finds it: the parse of the quote the file a home names
+/// holds at an offset, its own nodes; absent where that file is out of sight.
+export alias WrittenAt = fn(string, int) -> Scratch?
+
+/// A splice that reaches no file a template was written in.
+fn nothing_written() -> WrittenAt { (_home: string, _at: int) -> null }
+
+once fn kept() -> Cell<Map<string, Scratch>> { map_cell() }
+
+/// The door a language opens for the sugars of the stores it parses.
+export fn sugar_door(lang: Language) -> Means {
+    (store: SyntaxArena, sugar: ExprId) -> minted_means(lang, store, sugar)
+}
+
+/// What the sugar means, copied beside it: the nodes the copy minted, the
+/// last the root; none when the node is no sugar or its template cannot be
+/// read here.
+fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Minting, string> {
+    let node = store.expr(sugar)
+    if !sugared(node) { return .Ok(minting([])) }
+    let cx = MeanCx {
+        store: store,
+        at: sugar,
+        span: store.expr_span(sugar),
+        provided: store.provided_of(sugar),
+        door: sugar_door(lang),
+    }
+    let said? = node.means(cx) else { return node.minted(cx) }
+    .Ok(minting(rewritten_beside(lang, store, sugar, said?)))
+}
+
+/// Whether `e` is of a kind that means something: one whose `Meaning` writes what it means, or what
+/// it mints. Every kind is spelled, so a kind added is placed here.
+fn sugared(e: Expr) -> bool {
+    match e {
+        .ArmsBody or .Bitnot or .BlockLambda or .BracedHead or .ChainApply or .ChainCall or .ChainType or .Component or .GrammarLit or .If or .InstanceFn or .LetPattern or .Neg or .Pipe or .Table or .Trailed or .TypeLiteral -> true,
+        .Binary or .Block or .Body or .BoolLit or .BytesLit or .Call or .CallValue or .Catch or .Chain or .Channel or .Coalesce or .Collect or .Comp or .CtxRead or .ElseArm or .Emit or .Env or .Error or .FloatLit or .Force or .Ident or .Index or .IntLit or .Is or .Lambda or .ListLit or .MapLit or .Match or .MatchOpt or .MethodCall or .Named or .Not or .NullLit or .Produce or .Prop or .Propagate or .Range or .Receiver or .Select or .Spawn or .StrLit or .StructLit or .VariantLit or .WaitArm or .When or .With or .Within -> false,
+    }
+}
+
+/// A rewrite's template copied beside `sugar` with its holes filled and the names it binds made fresh, so
+/// none captures or is captured by a name of the code it lands in: the nodes made, the root last;
+/// none when the template can't be read here.
+export fn rewritten_beside(lang: Language, store: SyntaxArena, sugar: ExprId, said: Rewrite) -> List<
+    ExprId,
+> {
+    let copy? = copied_template(lang, store, said, "·e${sugar.index}") else { return [] }
+    let last? = copy.stmts.last() else { return [] }
+    let root? = store.answer_of(last) else { return [] }
+    let at = store.expr_span(sugar)
+    if at != null { for m in copy.exprs { store.place_expr(m, at!) } }
+    copy.exprs.filter(!same_expr(it, root)).concat([root])
+}
+
+/// A rewrite's statements copied in place of the statement `sugar`, holes filled and its own names
+/// made fresh: the statements made, in order; none when the template can't be read here.
+export fn stmts_rewritten_beside(lang: Language, store: SyntaxArena, sugar: StmtId, said: Rewrite) -> List<
+    StmtId,
+> {
+    copied_template(lang, store, said, "·s${sugar.index}")?.stmts ?? []
+}
+
+/// A template copied into `store`: what it is in the seat it fills (statements and arms, a field
+/// run's fields, or a record literal's fields), every expression the copy made, and the words for
+/// each fill it couldn't place.
+type TemplateCopy = {
+    stmts: List<StmtId>,
+    exprs: List<ExprId> = [],
+    arms: List<Arm> = [],
+    params: List<Param> = [],
+    inits: Inits = no_inits(),
+    refused: List<string> = [],
+    binders: List<PatId> = [],
+}
+
+/// A rewrite's template copied into `store`, holes filled and the names it binds marked `fresh`; absent
+/// when it is no template, or can't be read here.
+fn copied_template(lang: Language, store: SyntaxArena, said: Rewrite, fresh: string) -> TemplateCopy? {
+    let refused: Cell<List<string>> = Cell.new([])
+    let sp = Splice {
+        lang: lang,
+        store: store,
+        refused: refused,
+        unplaced: list_cell(),
+        spliced: map_cell(),
+        binders: list_cell(),
+        written: nothing_written(),
+        of: SpliceOf.Meaning,
+        fresh: fresh,
+    }
+    match said.node {
+        .Template(file, at, parts, fills) -> sp.copied(file, at, parts, fills, HoleKind.Statement),
+        .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) or .Many(_) -> null,
+    }
+}
+
+/// The template's runs with a hole between each, as the quote it was
+/// written in.
+fn woven_quote(parts: List<string>) -> string {
+    let holed = [p + "\${0}" for p in parts.slice(0, parts.length - 1)].join("")
+    "quote { ${holed}${parts.last()!} }"
+}
+
+/// THE ONE SPLICE DOOR: a template's runs, parsed once, copied into `store` as the seat `seat` takes
+/// it, each hole filled by `fills` at its own seat; the names it binds marked `fresh`, and each node it
+/// made marked as written at `origin`, where the names it reads and never binds resolve. Absent when the runs aren't a quote.
+fn template_copied(
+    lang: Language,
+    store: SyntaxArena,
+    written: Scratch?,
+    parts: List<string>,
+    fills: List<fn(HoleKind) -> Filled>,
+    seat: HoleKind,
+    fresh: string?,
+    origin: ForeignOrigin,
+) -> TemplateCopy? {
+    let s? = written ?? scratch(lang, woven_quote(parts)) else { return null }
+    let body? = s.store.expr(s.body).body_of() else { return null }
+    let stmts: List<StmtId> = match body.view {
+        .Verbatim(ss, _) -> ss,
+        .None or .Expanded(_) -> [],
+    }
+    let arms: List<Arm> = match body.view {
+        .Verbatim(_, written) -> written,
+        .None or .Expanded(_) -> [],
+    }
+    mut rb = copier(s.store, store, fills, hole_runs(s.store, s.body), sugar_door(lang)) with { fresh: fresh, binds: if fresh == null { [] } else { template_binds(s.store, stmts, arms) } }
+    let copy = seated_copy(s.store, stmts, arms, seat, origin.path, rb)
+    store.note_kept_origins(rb.made_exprs, rb.made_from, s.store)
+    store.note_made(rb.made_nodes(), origin)
+    copy with { exprs: flatten([rb.made_exprs, rb.holed_exprs]), binders: rb.holed_pats.concat(rb.filled_pats), refused: copy
+        .refused
+        .concat(["hole ${k}'s fill doesn't fit its seat" for k in rb.misfits])
+        .concat([u.why for u in rb.unplaceable]) }
+}
+
+/// Every name a template binds, under its statements and arms: a `let`'s, a pattern's, a fn's or a
+/// lambda's seat.
+fn template_binds(store: SyntaxArena, stmts: List<StmtId>, arms: List<Arm>) -> List<string> {
+    let armed = flatten(
+        [[At.Pat(p) for p in a.pats]
+            .concat([At.Expr(g!) for g in [a.guard] if g != null])
+            .concat([At.Expr(a.value)]) for a in arms],
+    )
+    flatten(
+        [bound_at(store, at) for root in [At.Stmt(s) for s in stmts].concat(armed) for at in under(store, root)],
+    )
+}
+
+/// `at` and every node under it.
+fn under(store: SyntaxArena, at: At) -> List<At> { [at].concat(flatten([under(store, k) for k in store.kids_walked(at)])) }
+
+/// The names one node binds.
+fn bound_at(store: SyntaxArena, at: At) -> List<string> {
+    match at {
+        .Stmt(s) -> [n! for n in [store.let_name(s)] if n != null]
+            .concat([p.name.of for p in store.fn_parts(s)?.params ?? []]),
+        .Pat(p) -> [b.name for b in store.pattern_binds(p)],
+        .Expr(e) -> [p.name.of for p in store.lambda_parts(e)?.params ?? []],
+        .Field(_, _) or .Param(_, _) -> [],
+    }
+}
+
+/// A template's body copied as its seat takes it: a field run its declarations' fields, a record
+/// literal's fields its literal's, any other seat its statements and arms.
+fn seated_copy(
+    src: SyntaxArena,
+    stmts: List<StmtId>,
+    arms: List<Arm>,
+    seat: HoleKind,
+    written_in: string,
+    mut rb: Rebuilder,
+) -> TemplateCopy {
+    match seat {
+        .Fields -> {
+            let fields = [fields_of(src.stmt(s)) for s in stmts]
+            let params = rb.params(flatten([f ?? [] for f in fields]))
+            TemplateCopy {
+                stmts: [],
+                params: params,
+                refused: if fields.any(it == null) { [no_fields(written_in)] } else { [] },
+            }
+        },
+        .Inits -> {
+            let inits? = literal_inits(src, stmts, rb) else {
+                return TemplateCopy {
+                    stmts: [],
+                    inits: spoiled_inits(),
+                    refused: [no_literal(written_in)],
+                }
+            }
+            TemplateCopy { stmts: [], inits: inits }
+        },
+        .Expression or .Name or .Binder or .Type or .Statement or .Arm or .Run or .Tail -> {
+            let copied = rb.stmts(stmts)
+            TemplateCopy { stmts: copied, arms: rb.arms(arms) }
+        },
+    }
+}
+
+/// The fields of the record literal a template's last statement answers, copied; absent when it
+/// answers none.
+fn literal_inits(src: SyntaxArena, stmts: List<StmtId>, mut rb: Rebuilder) -> Inits? {
+    let last? = stmts.last() else { return null }
+    let e? = src.answer_of(last) else { return null }
+    match src.expr(e) { .StructLit(_, names, values) -> rb.inits(names, values), rest -> null }
+}
+
+/// Whether a template's runs are nothing but holes: its kind is then whatever fills them.
+fn bare_template(lang: Language, parts: List<string>) -> bool {
+    let s? = scratch(lang, woven_quote(parts)) else { return false }
+    match quote_kind(s.store, s.body) {
+        .Holes -> true,
+        .Expr or .Stmts or .Arms or .Decls -> false,
+    }
+}
+
+/// A node of the store a meaning rewrites, in the seat its hole stands in: an id, as the seat reads
+/// it; a name, as written; a held node, where a node of its arena stands; a run of held nodes, where
+/// statements or a run stand. Absent for a fill that holds no node — a template a helper built,
+/// which is copied in its turn.
+fn node_filled(kind: HoleKind, fill: Node) -> Filled? {
+    match fill {
+        .Int(index) -> id_filled(kind, index),
+        .Name(text) -> Filled.Name(text),
+        .Many([.Name(arena), .Int(index)]) -> held_filled(kind, arena, index),
+        .Many(items) -> if items.all(held_at(it) != null) { run_filled(kind, items) } else { null },
+        .Template(_, _, _, _) or .Text(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> null,
+    }
+}
+
+/// An id in the seat it stands in: an expression or a pattern.
+fn id_filled(kind: HoleKind, index: int) -> Filled {
+    match kind {
+        .Expression or .Tail -> Filled.Expr(ExprId { index: index }),
+        .Binder -> Filled.Pat(PatId { index: index }),
+        rest -> Filled.Unplaceable("a rewrite's hole stands where an expression or a pattern does"),
+    }
+}
+
+/// A node of `arena` at `index`, in the seat it stands in, which must take a node of its arena.
+fn held_filled(kind: HoleKind, arena: string, index: int) -> Filled {
+    match kind {
+        .Expression or .Tail -> if arena == "expr" { Filled.Expr(ExprId { index: index }) } else { misplaced(arena, "an expression") },
+        .Binder -> if arena == "pat" { Filled.Pat(PatId { index: index }) } else { misplaced(arena, "a pattern") },
+        rest -> Filled.Unplaceable("a held node stands where an expression or a pattern does"),
+    }
+}
+
+/// A node of the arena a run's item holds: its arena's word and its index.
+type Held = { arena: string, index: int }
+
+/// The node a run's item holds, absent for an item that holds none.
+fn held_at(item: Node) -> Held? {
+    match item {
+        .Many([.Name(arena), .Int(index)]) -> Held { arena: arena, index: index },
+        rest -> null,
+    }
+}
+
+/// A run of held nodes in the seat it stands in: statements, or a run of expressions.
+fn run_filled(kind: HoleKind, items: List<Node>) -> Filled {
+    let held = [held_at(i) for i in items]
+    if held.any(it == null) { return holds_no_node() }
+    let run = [h! for h in held]
+    match kind {
+        .Statement or .Tail -> if run.all(it.arena == "stmt") { Filled.Stmts([StmtId { index: h.index } for h in run]) } else { misplaced_run("statements") },
+        .Run -> if run.all(it.arena == "expr") { Filled.Exprs([ExprId { index: h.index } for h in run]) } else { misplaced_run("expressions") },
+        rest -> Filled.Unplaceable("a run of held nodes stands where statements or a run do"),
+    }
+}
+
+fn holds_no_node() -> Filled { Filled.Unplaceable("a rewrite's hole holds no node") }
+
+fn misplaced(arena: string, seat: string) -> Filled {
+    Filled.Unplaceable("a held `${arena}` node stands where ${seat} does")
+}
+
+fn misplaced_run(seat: string) -> Filled {
+    Filled.Unplaceable("a run holding another arena's nodes stands where ${seat} do")
+}
+
+/// The template's scratch parse, made once.
+fn scratch(lang: Language, source: string) -> Scratch? {
+    let held: Scratch? = kept().get().get(source)
+    if held != null { return held }
+    let p = parse_program(lang, new_source_file("<means>", source), BlockWords {})
+    if !p.voices.list.is_empty() { return null }
+    let first? = p.stmts.first() else { return null }
+    let q? = p.store.answer_of(first) else { return null }
+    let made = Scratch { store: p.store, body: q }
+    kept().put(source, made)
+    made
+}
+
+/// Declarations a generator's directives made, spliced into a store of their own: the statements,
+/// and the words for each fill the splice couldn't place.
+export type SplicedDecls = { store: SyntaxArena, stmts: List<StmtId>, refused: List<string>, unplaced: List<string> = [] }
+
+/// Each node of `sources` spliced as declarations into one store: every template copied from the
+/// nodes `written` finds where it was written, else from its runs, and its nodes marked with the
+/// file that wrote it, every hole filled at its seat with the value the generator gave it, each
+/// lambda placed apart, and every block hygienic where it lands, in the file `here` names.
+export fn generated_spliced(sources: List<Node>, here: string?, written: WrittenAt) -> SplicedDecls {
+    let refused: Cell<List<string>> = Cell.new([])
+    let sp = Splice {
+        lang: avra(),
+        store: new_node_store(),
+        refused: refused,
+        unplaced: list_cell(),
+        spliced: map_cell(),
+        binders: list_cell(),
+        written: written,
+        of: SpliceOf.Generator,
+    }
+    let stmts = flatten([sp.stmts(n) for n in sources])
+    lambdas_apart(sp.store)
+    binders_apart(sp.store, sp.spliced.get(), sp.binders.get(), here)
+    SplicedDecls {
+        store: sp.store,
+        stmts: stmts,
+        refused: sp.refused.get(),
+        unplaced: sp.unplaced.get(),
+    }
+}
+
+/// What a splice copies: a generator's declarations, whose holes are values and whose nodes keep
+/// their template's spans; or a sugar's meaning, whose holes are nodes of the store it rewrites and
+/// whose nodes stand where the sugar does.
+enum SpliceOf {
+    Generator
+    Meaning
+}
+
+impl SpliceOf {
+    /// Whether a hole's fill is a node of the store the splice lands in, by its arena and index.
+    fn holds_nodes() -> bool { match self { .Meaning -> true, .Generator -> false } }
+
+    /// Whether the copied nodes keep the spans their template was written at.
+    fn spanned_home() -> bool { match self { .Generator -> true, .Meaning -> false } }
+}
+
+/// Templates being spliced into `store`, under `lang`, as `of` says: the words for what it couldn't
+/// place gathered in `refused`, each read a hole spliced in by name, by its index, each binder a hole
+/// named, and the scope names a meaning's copy marks `fresh`.
+type Splice = {
+    lang: Language,
+    store: SyntaxArena,
+    refused: Cell<List<string>>,
+    /// The words for each fill no seat could hold, among `refused`: the template's own refusal,
+    /// where the rest are this compiler's reading.
+    unplaced: Cell<List<string>>,
+    spliced: Cell<Map<string, bool>>,
+    binders: Cell<List<PatId>>,
+    /// Where each template copied was written, parsed.
+    written: WrittenAt,
+    of: SpliceOf,
+    fresh: string? = null,
+}
+
+impl Splice {
+    /// A value in the seat its hole stands in: a node the store holds, where the splice's holes hold
+    /// nodes; else a value. A run of templates has no expression position.
+    fn filled(kind: HoleKind, node: Node) -> Filled {
+        let held = if self.of.holds_nodes() { node_filled(kind, node) } else { null }
+        if held != null { return held! }
+        match kind {
+            .Expression -> match node {
+                .Many(_) -> Filled.Unplaceable(many_in_expression()),
+                .Template(_, _, _, _) or .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> Filled.Expr(self.expr(node)),
+            },
+            .Name -> Filled.Name(names_of(node).first() ?? ""),
+            .Binder -> self.binder(node),
+            .Type -> Filled.Type(self.written_type(node)),
+            .Statement or .Tail -> Filled.Stmts(self.stmts(node)),
+            .Arm -> Filled.Arms(self.arms(node)),
+            .Run -> Filled.Exprs(self.exprs(node)),
+            .Fields -> Filled.Params(self.params(node)),
+            .Inits -> Filled.Inits(self.inits(node)),
+        }
+    }
+
+    /// A template written in `file` at `at`, copied as `seat` takes it; a body of nothing but holes
+    /// is its fills in that seat.
+    fn copied(file: string, at: int, parts: List<string>, fills: List<Node>, seat: HoleKind) -> TemplateCopy {
+        if bare_template(self.lang, parts) { return self.bare(fills, seat) }
+        let sp = self
+        let copy? = template_copied(
+            self.lang,
+            self.store,
+            (self.written)(file, at),
+            parts,
+            [(kind: HoleKind) -> sp.filled(kind, fill) for fill in fills],
+            seat,
+            self.fresh,
+            ForeignOrigin { path: file, spanned_home: self.of.spanned_home() },
+        ) else {
+            self.refused.push(unreadable_template(file, at))
+            return TemplateCopy { stmts: [] }
+        }
+        if self.of.spanned_home() {
+            let site = point_at(at)
+            for e in copy.exprs { self.store.place_expr(e, site) }
+            for s in copy.stmts { self.store.stmts.place(s.index, site) }
+        }
+        // LICENSED loops.push_loop: a `Cell` takes one element per write, and no bulk write exists
+        for w in copy.refused {
+            self.refused.push(w)
+            self.unplaced.push(w)
+        }
+        // LICENSED loops.push_loop: a `Cell` takes one element per write, and no bulk write exists
+        for b in copy.binders { self.binders.push(b) }
+        copy
+    }
+
+    /// A body of nothing but holes, in the seat it is put in.
+    fn bare(fills: List<Node>, seat: HoleKind) -> TemplateCopy {
+        match seat {
+            .Arm -> TemplateCopy { stmts: [], arms: flatten([self.arms(x) for x in fills]) },
+            .Fields -> TemplateCopy { stmts: [], params: flatten([self.params(x) for x in fills]) },
+            .Inits -> TemplateCopy { stmts: [], inits: joined_inits([self.inits(x) for x in fills]) },
+            .Expression or .Statement or .Name or .Binder or .Type or .Run or .Tail -> TemplateCopy { stmts: flatten([self.stmts(x) for x in fills]) },
+        }
+    }
+
+    /// A value where statements stand: a template's, a run's each, any other its expression.
+    fn stmts(node: Node) -> List<StmtId> {
+        match node {
+            .Template(file, at, parts, fills) -> self.copied(file, at, parts, fills, HoleKind.Statement).stmts,
+            .Many(items) -> flatten([self.stmts(i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [self.store.alloc_stmt(Stmt.ExprStmt(self.expr(node)))],
+        }
+    }
+
+    /// A value where one expression stands.
+    fn expr(node: Node) -> ExprId {
+        match node {
+            .Template(file, at, parts, fills) -> self.template_expr(file, at, parts, fills),
+            .Name(text) -> {
+                let read = self.store.alloc_expr(Expr.Ident(Scoped(text)))
+                self.spliced.put("${read.index}", true)
+                read
+            },
+            .Text(text) -> self.store.alloc_expr(Expr.StrLit(text)),
+            .Int(value) -> self.store.alloc_expr(Expr.IntLit(value)),
+            .Float(bits) -> self.store.alloc_expr(Expr.FloatLit(bits)),
+            .Bool(value) -> self.store.alloc_expr(Expr.BoolLit(value)),
+            .Interp(parts, holes) -> {
+                let holed = [self.expr(h) for h in holes]
+                self.store.alloc_expr(Expr.Body("text", parts, holed, BodyView.None))
+            },
+            .Many(_) -> self.store.alloc_expr(Expr.Error),
+        }
+    }
+
+    /// A template as an expression: its one statement's value, or a block of its statements.
+    fn template_expr(file: string, at: int, parts: List<string>, fills: List<Node>) -> ExprId {
+        let stmts = self.copied(file, at, parts, fills, HoleKind.Expression).stmts
+        let last? = stmts.last() else { return self.store.alloc_expr(Expr.Error) }
+        let value? = self.store.answer_of(last) else { return self.store.alloc_expr(Expr.Block(stmts)) }
+        if stmts.length == 1 { value } else { self.store.alloc_expr(Expr.Block(stmts)) }
+    }
+
+    /// A value where a run of expressions stands: a run's each, or the one it is.
+    fn exprs(node: Node) -> List<ExprId> {
+        match node {
+            .Many(items) -> [self.expr(i) for i in items],
+            .Template(_, _, _, _) or .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [self.expr(node)],
+        }
+    }
+
+    /// A value where match arms stand.
+    fn arms(node: Node) -> List<Arm> {
+        match node {
+            .Template(file, at, parts, fills) -> self.copied(file, at, parts, fills, HoleKind.Arm).arms,
+            .Many(items) -> flatten([self.arms(i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+        }
+    }
+
+    /// A value where a run of fields stands: each template's fields.
+    fn params(node: Node) -> List<Param> {
+        match node {
+            .Template(file, at, parts, fills) -> self.copied(file, at, parts, fills, HoleKind.Fields).params,
+            .Many(items) -> flatten([self.params(i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+        }
+    }
+
+    /// A value where a record literal's fields stand: each literal's fields.
+    fn inits(node: Node) -> Inits {
+        match node {
+            .Template(file, at, parts, fills) -> self.copied(file, at, parts, fills, HoleKind.Inits).inits,
+            .Many(items) -> joined_inits([self.inits(i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> no_inits(),
+        }
+    }
+
+    /// A value where a binder stands: a number or a truth is a literal pattern, anything else the
+    /// names it spells.
+    fn binder(node: Node) -> Filled {
+        match node {
+            .Int(value) -> Filled.Pat(self.store.alloc_pat(Pat.Lit(self.store.alloc_expr(Expr.IntLit(value))))),
+            .Bool(value) -> Filled.Pat(self.store.alloc_pat(Pat.Lit(self.store.alloc_expr(Expr.BoolLit(value))))),
+            .Template(_, _, _, _) or .Many(_) or .Name(_) or .Text(_) or .Float(_) or .Interp(_, _) -> Filled.Names(names_of(node)),
+        }
+    }
+
+    /// A value where a written type stands: a name as the type it names, any other spelling read with
+    /// the language's `type` rule.
+    fn written_type(node: Node) -> TypeRef {
+        let text = names_of(node).first() ?? ""
+        if all_codes(text, is_name_cont) { return named_ref(text) }
+        parse_type_ref(self.lang, text) ?? named_ref(text)
+    }
+}
+
+/// The names a value spells: one, or several for a run.
+fn names_of(node: Node) -> List<string> {
+    match node {
+        .Name(text) or .Text(text) -> [text],
+        .Int(value) -> ["${value}"],
+        .Many(items) -> flatten([names_of(i) for i in items]),
+        .Template(_, _, _, _) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+    }
+}
+
+/// The empty place at `at`.
+fn point_at(at: int) -> Span { Span { lo: at, hi: at } }
+
+/// Each lambda of a copy placed where no other stands: a copy's places are its template's, and one
+/// template copied twice would put two lambdas at one place, which a lift names them by.
+fn lambdas_apart(store: SyntaxArena) {
+    for at in 0..store.exprs.count() {
+        let e = ExprId { index: at }
+        if store.lambda_parts(e) != null { store.place_expr(e, point_at(at)) }
+    }
+}
+
+/// A binder never captures a name written on the other side of a hole. Inside each fn, a lambda
+/// parameter or a `let` a template wrote that shares its name with one of the fn's own seats, where a
+/// read of that name a hole spliced in (`spliced`, by index) stands in its reach, means the seat: the
+/// binder and each read of it the template wrote are renamed apart. And an arm's binder a hole named
+/// (`holed`) that shares a seat's name, where a read of that name the template wrote stands in the
+/// arm, leaves that read to the seat: the binder and each spliced read of it are renamed apart. Every
+/// block keeps the hygiene law (`lets_kept_apart`), the code landing in the file `here` names.
+fn binders_apart(store: SyntaxArena, spliced: Map<string, bool>, holed: List<PatId>, here: string?) {
+    for s in store.stmt_ids() {
+        let f? = store.fn_parts(s) else { continue }
+        let seats = [p.name.of for p in f.params]
+        for e in store.every_expr(f.body) {
+            let stmts = store.block_stmts(e)
+            if stmts != null { store.lets_kept_apart(stmts!, here) }
+            if seats.is_empty() { continue }
+            let lam = store.lambda_parts(e)
+            if lam != null { lambda_apart(store, spliced, seats, e, lam!) }
+            if stmts != null { lets_apart(store, spliced, seats, stmts!) }
+            let arms = store.match_arms(e)
+            if arms != null { for a in arms! { arm_apart(store, spliced, holed, seats, a) } }
+        }
+    }
+}
+
+/// The lambda `e`'s parameters a template wrote that a seat of its fn's shares a name with, where a
+/// spliced read of the name stands in its body, renamed apart with each read of them it wrote.
+fn lambda_apart(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    seats: List<string>,
+    e: ExprId,
+    lam: LambdaParts,
+) {
+    let home? = store.home_of(e) else { return }
+    let inside = store.every_expr(lam.body)
+    let clashing = [p.name.of for p in lam.params if seats.contains(p.name.of) && spliced_read(store, spliced, inside, p.name.of)]
+    if clashing.is_empty() { return }
+    renamed_reads(store, spliced, inside, clashing, home)
+    store
+        .exprs
+        .replaced(
+            e.index,
+            Expr
+                .Lambda(
+                    [if clashing.contains(p.name.of) { p with { name: Scoped(apart_name(p.name.of)) } } else { p } for p in lam.params],
+                    lam.body,
+                ),
+        )
+}
+
+/// Each `let` a template wrote among `stmts` that a seat of its fn's shares a name with, where a
+/// spliced read of the name stands after it, renamed apart with each later read of it the template
+/// wrote. A `let` whose name a hole brought binds the landing's name: it shadows the seat from its
+/// line on, as any `let` does.
+fn lets_apart(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    seats: List<string>,
+    stmts: List<StmtId>,
+) {
+    for j, s in stmts {
+        let n? = store.let_name(s) else { continue }
+        if !seats.contains(n) { continue }
+        let home? = store.seat_home(s, LandedSeat.Names) else { continue }
+        let renamed? = let_renamed(store.stmt(s), apart_name(n)) else { continue }
+        let reads = flatten([store.every_expr(x) for x in store.stmts_exprs(stmts.drop(j + 1))])
+        if !spliced_read(store, spliced, reads, n) { continue }
+        renamed_reads(store, spliced, reads, [n], home)
+        store.stmt_replaced(s, renamed)
+    }
+}
+
+/// The binders of the arm `a` a hole named that a seat of its fn's shares a name with, where a read
+/// of the name the template wrote stands in the arm, renamed apart with each spliced read of them.
+fn arm_apart(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    holed: List<PatId>,
+    seats: List<string>,
+    a: Arm,
+) {
+    let reads = flatten([store.every_expr(x) for x in some_list(a.guard).concat([a.value])])
+    let named = [b for p in a.pats for b in store.pattern_binds(p) if holed.contains(b.pat) && seats.contains(b.name)]
+    for b in named {
+        if !written_read(store, spliced, reads, b.name) || store.bind_name(b.pat) == null { continue }
+        for x in reads { if store.ident_name(x) == b.name && spliced.has("${x.index}") { store.exprs.replaced(x.index, Expr.Ident(Scoped(apart_name(b.name)))) } }
+        store.pat_replaced(b.pat, Pat.Bind(Scoped(apart_name(b.name))))
+    }
+}
+
+/// Whether a read of `name` among `reads` is one the template wrote.
+fn written_read(store: SyntaxArena, spliced: Map<string, bool>, reads: List<ExprId>, name: string) -> bool {
+    reads.any((x) -> store.ident_name(x) == name && !spliced.has("${x.index}"))
+}
+
+/// Whether a read of `name` among `reads` is one a hole spliced in.
+fn spliced_read(store: SyntaxArena, spliced: Map<string, bool>, reads: List<ExprId>, name: string) -> bool {
+    reads.any((x) -> store.ident_name(x) == name && spliced.has("${x.index}"))
+}
+
+/// Each read among `reads` of one of `names` the template at `home` wrote, renamed apart.
+fn renamed_reads(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    reads: List<ExprId>,
+    names: List<string>,
+    home: string,
+) {
+    for x in reads {
+        let n? = store.ident_name(x) else { continue }
+        if names.contains(n) && !spliced.has("${x.index}") && store.home_of(x) == home { store.exprs.replaced(x.index, Expr.Ident(Scoped(apart_name(n)))) }
+    }
+}
+
+fn unreadable_template(file: string, at: int) -> string { "the template at ${file}:${at} isn't a quote this compiler reads" }

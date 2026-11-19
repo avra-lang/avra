@@ -1,0 +1,67 @@
+//! `tree/bindings.av` — WHICH KEY A CHORD MEETS. A `key` is live while the
+//! node that holds it, or anything that node holds, has the focus: the chord
+//! goes to the nearest, from the focused node out to the root, the way an
+//! event bubbles up a page. The chain is read off the tree by the focused
+//! node's seat, the number the walk gives it.
+use tree.chord.{Chord, chord, parsed}
+use tree.lists.{flatten}
+use tree.node.{Node}
+use tree.seats.{seat_named}
+
+/// A chord and what is done when it is pressed.
+export type Binding = { chord: Chord, handler: fn() -> void }
+
+/// How many nodes `n` and what it holds open in the walk.
+fn size(n: Node) -> int { 1 + n.children.fold(0, (a: int, c: Node) -> a + size(c)) }
+
+/// The nodes from the node at walk seat `seat` below `n` up to `n`, `at`
+/// being the seat of `n`: the chain of what holds the focus, nearest first.
+/// Empty when no node stands at the seat.
+fn chain(n: Node, at: int, seat: int) -> List<Node> {
+    if seat == at { return [n] }
+    if seat < at || seat >= at + size(n) { return [] }
+    let sizes = [size(c) for c in n.children]
+    let starts = [at + 1 + sizes.slice(0, j).fold(0, (a: int, k: int) -> a + k) for j in 0..sizes.length]
+    let inside = [j for j, c in n.children if seat >= starts[j] && seat < starts[j] + sizes[j]]
+        .first()
+    let j? = inside else { return [] }
+    chain(n.children[j], starts[j], seat).concat([n])
+}
+
+/// The binding a key node declares: its chord, and its `press` seat's
+/// handler. None when the chord is none or nothing is bound.
+fn binding_of(k: Node) -> Binding? {
+    let c? = parsed(k.words()) else { return null }
+    let pressed? = k.events.find(it.seat == seat_named("key", "press")) else { return null }
+    match pressed.handler { .Nothing(f) -> Binding { chord: c, handler: f }, _ -> null }
+}
+
+/// The bindings the keys held by `n` declare, in the order written.
+fn held_by(n: Node) -> List<Binding> {
+    let made = [binding_of(k) for k in n.children if !k.drawn()]
+    [b! for b in made if b != null]
+}
+
+/// The bindings live while the node at `seat` has the focus, nearest first;
+/// the root's alone when `seat` is none.
+export fn live(root: Node, seat: int?) -> List<Binding> {
+    flatten([held_by(n) for n in chain(root, 0, seat ?? 0)])
+}
+
+/// The binding the chord `c` meets, or none: the nearest live one that names it.
+export fn meeting(root: Node, seat: int?, c: Chord) -> Binding? {
+    live(root, seat).find(it.chord.text() == c.text())
+}
+
+/// Whether any key live while the node at `seat` has the focus names `c`.
+export fn names(root: Node, seat: int?, c: Chord) -> bool { meeting(root, seat, c) != null }
+
+/// The words that say why each key under `n` is dead: its chord is none.
+export fn dead_keys(n: Node) -> List<string> {
+    flatten([dead(k) for k in n.children if !k.drawn()])
+        .concat(flatten([dead_keys(c) for c in n.children]))
+}
+
+fn dead(k: Node) -> List<string> {
+    match chord(k.words()) { .Ok(_) -> [], .Err(why) -> [why] }
+}

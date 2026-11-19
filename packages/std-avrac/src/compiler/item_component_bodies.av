@@ -1,0 +1,37 @@
+//! WHERE A COMPONENT'S BODY IS MADE OF NOTHING ANY TRAIT SAYS: a component whose body holds
+//! statements is made of them, and what that means is a trait wearing `@composes` its file reaches.
+//! Read off the item's components and the composing traits the file reaches.
+use core.{Span}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.components.{composerless}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every component with a body the written item `at` of `file` declares: its name, where it
+/// stands.
+type Bodied = { name: string, at: Span? }
+
+fn bodied_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Bodied> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [Bodied { name: item.store.type_decl_name(s) ?? "this component", at: item.store.stmt_span(s) } for s in item.stmts if item.store.component_body(s) != null]
+}
+
+/// Every component with a body no composing trait says.
+fn composed_by_none(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let bodied = bodied_in(engine, file, at)
+    if bodied.is_empty() || !composers(engine, file).is_empty() { return [] }
+    [Found { at: b.at, args: [b.name] } for b in bodied]
+}
+
+/// a component's body is made of what one composing trait says
+export law component_composed {
+    kind: "type.component_body"
+    reads: composed_by_none
+    voice: none_words
+    witness: "component made {\n    let x = 1\n}\n"
+}
+
+fn none_words(a: List<string>) -> Voice { composerless(a[0]) }

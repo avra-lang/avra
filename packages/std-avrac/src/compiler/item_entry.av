@@ -1,0 +1,351 @@
+//! WHAT A PROGRAM FILE RUNS, AS IR: its top-level statements that run, in written order, one scope
+//! lowered as the program's entry, and the value of the last when it's an expression shown as text.
+use core.{
+    NamesRead,
+    BoxKind,
+    Expected,
+    ExprId,
+    Ins,
+    Layout,
+    Lowering,
+    Reg,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    lowering,
+    new_node_store,
+    owned_type,
+    rt_sig_of,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{RecordedRead}
+use @std.program.query_engine.{QueryEngine}
+
+/// The unit a program file's entry is known by.
+const ENTRY: string = "main"
+
+/// The statements an entry runs as one body of no seats answering nothing, its value shown; absent
+/// for a file that runs none.
+fn entry_signed(read: EntryRead) -> SignedBody? {
+    let shown? = read.stmts.last() else { return null }
+    SignedBody {
+        signature: FnSignature { type_params: [], params: [], answer: owned_type("void"), answer_width: null },
+        item: ReadItem { store: read.store, stmts: read.stmts, written: read.store.expr_count() },
+        body: read.body ?? read.store.block_over(read.stmts, null),
+        stmt: shown,
+        want: Expected.Free,
+        fnless: true,
+    }
+}
+
+/// The statements of `file` that run, lowered as its entry, its task tests held: a scope
+/// holding them, the value of the last shown as text, the tasks they hold joined, then the entry's
+/// exit, which answers the process's status. The names they bind stand in a scope of their own inside
+/// the entry's seats, of which it has none. A file that runs none has an entry that only exits.
+export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
+    lowered_entry_under(engine, file, framed_lambdas(engine, file.package_name, entry_unit(file)))
+}
+
+/// The entry of `file` lowered with none of its lambdas framed: what the survey of what a program
+/// reads reads, before it knows which lambdas a program frames.
+export fn entry_plain(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? { lowered_entry_under(engine, file, []) }
+
+/// The entry of `file`, its lambdas `framed` carrying their frame of contexts.
+fn lowered_entry_under(engine: QueryEngine, file: SourceFileAddress, framed: List<string>) -> LoweredFn? {
+    let read = entry_read(engine, file, true)
+    let signed? = entry_signed(read) else { return idle_entry(engine, file, read) }
+    let body = elaborated(engine, file, signed)
+    mut cx = lowering(
+        body.store,
+        lowered_program(engine, file, body.store, ENTRY, [], null, framed: framed) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, body.store, e, ty) },
+        body.core,
+        body.seats,
+        owned_type("int"),
+    ) with { names: NamesRead { reads: body.reads } }
+    cx.scope_enter()
+    cx.opened()
+    let value = cx.lowered_open(body.body)
+    let shown = shape_shown(cx, body.core[body.body.index])
+    let unprojected = answer_unprojected(read, shown)
+    if unprojected == null { shown_as_text(cx, shown, value) }
+    cx.closed()
+    cx.scope_exit(null)
+    cx.emit(Ins.Ret(0))
+    unit_lowered(cx, 0, Layout.Word) with { refused: body.refused, unread: body.unread, unprojected: unprojected }
+}
+
+/// `ty` as an entry's answer is shown: the shape a named type stands over; any other type itself.
+fn shape_shown(cx: Lowering, ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    cx.named_over(t) ?? t
+}
+
+/// The entry of a file that runs no statement: it exits, answering the process's status.
+fn idle_entry(engine: QueryEngine, file: SourceFileAddress, read: EntryRead) -> LoweredFn {
+    mut cx = lowering(
+        read.store,
+        lowered_program(engine, file, read.store, ENTRY, [], null),
+        [],
+        {},
+        owned_type("int"),
+    )
+    cx.scope_enter()
+    cx.scope_exit(null)
+    cx.emit(Ins.Ret(0))
+    unit_lowered(cx, 0, Layout.Word)
+}
+
+/// The types an entry's answer is shown as, by the words the language spells them with: a scalar,
+/// a text, a list or a map, or nothing at all.
+const PROJECTED: List<string> = ["int", "float", "bool", "string", "List", "Map", "void"]
+
+/// The entry's answer of type `shown`, where no text projection spells it: its type and the
+/// statement that answers, the last of `read` that holds a value; absent where one spells it,
+/// where it never arrives, or where its type names none, refused where it's written. A list that
+/// says nothing of what it holds, `[]`'s own type, is spelled by none.
+fn answer_unprojected(read: EntryRead, shown: SignedType?) -> Unprojected? {
+    let ty? = shown else { return null }
+    let spelled = match ty.head {
+        .Owned(name) -> PROJECTED.contains(name),
+        .Never or .Unnamed(_) -> true,
+        rest -> false,
+    }
+    if spelled && !ty.nullable() && !ty.dynamic && !(ty.listed()?.partial() ?? false) { return null }
+    let answering? = read.stmts.filter((s) -> read.store.stmt_value(s) != null).last() else { return null }
+    let span? = read.store.stmt_span(answering) else { return null }
+    Unprojected { name: ty.spelled(), lo: span.lo, hi: span.hi }
+}
+
+/// A file's running statements read back into one store, and where each item's nodes begin in it.
+type EntryRead = {
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+    items: List<ItemBase>,
+    /// The statements that run as one block, made as the store was read; absent where none runs.
+    body: ExprId?,
+}
+
+/// An item of the file, by its place, the index its first node has in the entry's store, and the
+/// statements of it that run.
+type ItemBase = { at: int, base: int, stmts: List<StmtId> }
+
+impl ItemBase {
+    /// The node `e` of the entry's store as the item's own store numbers it.
+    // LICENSED compiler.hand_sized_index: an item's nodes count from its base, the one place that offset is read
+    fn own(e: ExprId) -> ExprId { ExprId { index: e.index - self.base } }
+
+    /// The name the literal at `e` of the entry's store is laid out under where the item stands alone.
+    fn sourced(engine: QueryEngine, file: SourceFileAddress, e: ExprId, ty: SignedType) -> string? {
+        sourced_symbol(
+            engine,
+            file,
+            read_item(engine, file, self.at).store,
+            self.own(e),
+            ty,
+            self.at,
+        )
+    }
+}
+
+impl EntryRead {
+    /// The name the literal at `e`, standing in `store`, is laid out under: the item's own, read where
+    /// it stands alone, else the entry's for a literal no source wrote.
+    fn literal_symbol(
+        engine: QueryEngine,
+        file: SourceFileAddress,
+        store: SyntaxArena,
+        e: ExprId,
+        ty: SignedType,
+    ) -> string {
+        let item = self.items.filter(it.base <= e.index).last()
+        let sourced = item?.sourced(engine, file, e, ty)
+        sourced ?? made_symbol(file, store, ENTRY, e, ty)
+    }
+}
+
+/// A file's entry read back for one engine, at its file's places or each item's own, the engine
+/// reads that reading made, and each reader they have reached.
+type EntryHeld = { engine: int, file: SourceFileAddress, placed: bool, read: EntryRead, reads: List<RecordedRead>, reached: Cell<List<int>> }
+
+/// The entry read back last: a file's laws each read its entry, one after another.
+once fn entry_held() -> Cell<EntryHeld?> {
+    let held: Cell<EntryHeld?> = Cell.new(null)
+    held
+}
+
+/// Every item of `file` that runs a statement, read back into one store, and the statements among
+/// them that run: the reading held for `file`, its reads made again by a reader they haven't
+/// reached, else read and held. The store is read, never written: a body that elaborates forks it.
+/// Each item's places are counted from its own start, as its own reading counts them, unless
+/// `placed`, which counts them from the file's: what a lowering writes into the binary.
+fn entry_read(engine: QueryEngine, file: SourceFileAddress, placed: bool = false) -> EntryRead {
+    let held? = entry_held_for(engine, file, placed) else { return entry_read_held(engine, file, placed) }
+    let reader = engine.reader()
+    if !held.reached.get().contains(reader) {
+        engine.reads_made_again(held.reads)
+        held.reached.push(reader)
+    }
+    held.read
+}
+
+/// The reading held for `file` in `engine`, at its file's places or each item's own as `placed`
+/// says, absent where the one held is another's or none is.
+fn entry_held_for(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryHeld? {
+    let held? = entry_held().get() else { return null }
+    if held.engine == engine.serial &&
+        held.placed == placed &&
+        held.file.path_in_package == file.path_in_package &&
+        held.file.package_name == file.package_name { held } else { null }
+}
+
+/// `file`'s entry read back and held with the reads its reading made, in place of the one held.
+fn entry_read_held(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryRead {
+    engine.reads_begun()
+    let read = entry_read_back(engine, file, placed)
+    let reads = engine.reads_gathered()
+    entry_held()
+        .set(
+            EntryHeld {
+                engine: engine.serial,
+                file: file,
+                placed: placed,
+                read: read,
+                reads: reads,
+                reached: Cell.new([engine.reader()]),
+            },
+        )
+    read
+}
+
+/// Every item of `file` that runs a statement, read back into one store, each query it stands on
+/// asked.
+fn entry_read_back(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryRead {
+    let declaring = [d.item for d in file_declares(engine, file).names]
+    let store = new_node_store()
+    mut items: List<ItemBase> = []
+    mut stmts: List<StmtId> = []
+    for at in 0..item_count(engine, file) {
+        if declaring.contains(at) && !runs_in(engine, file, at) { continue }
+        let base = store.exprs.count()
+        let running = read_into(
+            engine,
+            file,
+            store,
+            at,
+            if placed { item_start(engine, file, at) } else { 0 },
+        )
+            .filter((s) -> runs(store, s))
+        items.push(ItemBase { at: at, base: base, stmts: running })
+        stmts = stmts.concat(running)
+    }
+    EntryRead {
+        store: store,
+        stmts: stmts,
+        items: items,
+        body: if stmts.is_empty() { null } else { store.block_over(stmts, null) },
+    }
+}
+
+/// Whether the item `at` of `file` holds a statement that runs, beside what it declares: a `let`
+/// whose value an expansion made declares what the expansion hoists, and still runs.
+fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
+    if generated_at(engine, file, at) != null {
+        let item = read_item(engine, file, at)
+        return item.stmts.any(runs(item.store, it))
+    }
+    let said = file_said_of_items(engine, file)
+    at < said.length && said[at].runs
+}
+
+/// Whether a top-level statement runs: one that declares nothing.
+fn runs(store: SyntaxArena, s: StmtId) -> bool { !store.is_declaration(s) }
+
+/// The entry's shown value printed as text, as the type it's typed with spells it: text as itself, a
+/// number or a truth by its row, a list or a record as the list of its parts' texts, as the
+/// evaluator prints it. A value of any other type isn't shown yet; a map, and a value of no type,
+/// show nothing.
+fn shown_as_text(mut cx: Lowering, ty: SignedType?, value: Reg) {
+    let shown? = ty else { return }
+    if shown.mapped() != null && !shown.nullable() && !shown.dynamic { return }
+    if !spellable(cx, shown, []) {
+        if !(cx.laid_out(shown) is .Void) { cx.missed("a shown `${shown.spelled()}`, which no text spells yet") }
+        return
+    }
+    cx.run_row(rt_sig_of("avra_puts")!, [value_spelled(cx, shown, value)])
+}
+
+/// Whether a value of `ty` is spelled as text: a number, a truth, text, a list of what is spelled,
+/// or a record whose every field is, met once on the way down; never a nullable, a `dyn`, an enum,
+/// a map or anything else.
+fn spellable(cx: Lowering, ty: SignedType, met: List<string>) -> bool {
+    let t = cx.named_over(ty) ?? ty
+    if t.nullable() || t.dynamic || met.contains(t.spelled()) { return false }
+    let l? = cx.program.checked.layout(t) else { return false }
+    match l {
+        .Word or .Real or .Truth -> t.head is .Owned,
+        .Boxed(box) -> match box {
+            .Text -> true,
+            .List -> spellable(cx, t.listed() ?? t, met.concat([t.spelled()])) && t.listed() != null,
+            .Record -> record_spellable(cx, t, met),
+            .Bytes or .Map or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> false,
+        },
+        .Fields(_) -> record_spellable(cx, t, met),
+        .Void or .Bare or .Tagged(_) or .Maybe(_) -> false,
+    }
+}
+
+/// Whether the record `ty` is spelled: each field typed, no `state` one, each spelled.
+fn record_spellable(cx: Lowering, ty: SignedType, met: List<string>) -> bool {
+    if cx.variants_of(ty) != null { return false }
+    let fields? = cx.fields_of(ty) else { return false }
+    fields.all((f) -> !f.state && f.ty != null && spellable(cx, f.ty!, met.concat([ty.spelled()])))
+}
+
+/// The text the value `v` of `ty`, which `spellable` passes, is spelled as: a list of numbers, truths
+/// or texts by the row that joins it; any other list, and a record, as the list of its parts' texts
+/// joined as text is.
+fn value_spelled(mut cx: Lowering, ty: SignedType, v: Reg) -> Reg {
+    let t = cx.named_over(ty) ?? ty
+    let text = Layout.Boxed(BoxKind.Text)
+    match cx.laid_out(t) {
+        .Word -> cx.call_row(text, rt_sig_of("avra_int_text")!, [v]),
+        .Real -> cx.call_row(text, rt_sig_of("avra_float_text")!, [v]),
+        .Truth -> cx.call_row(text, rt_sig_of("avra_bool_text")!, [v]),
+        .Boxed(box) -> match box {
+            .Text -> v,
+            .List -> list_spelled(cx, t.listed()!, v),
+            rest -> parts_spelled(cx, t, v),
+        },
+        rest -> parts_spelled(cx, t, v),
+    }
+}
+
+/// The list `v` of `elem`s spelled: by the row that joins it where one joins its elements, else
+/// each element spelled, the texts joined.
+fn list_spelled(mut cx: Lowering, elem: SignedType, v: Reg) -> Reg {
+    let e = cx.named_over(elem) ?? elem
+    let joining = match cx.laid_out(e) {
+        .Word -> "avra_ints_text",
+        .Truth -> "avra_bools_text",
+        .Boxed(box) -> if box is .Text { "avra_strs_text" } else { "" },
+        rest -> "",
+    }
+    if joining != "" && e.head is .Owned { return cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(joining)!, [v]) }
+    let texts = cx
+        .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+    let w = cx.walk_list(v, elem)
+    let here = cx.walk_turn(w)
+    cx.push_slot(texts, value_spelled(cx, elem, cx.walked_element(w, here)))
+    cx.loop_end()
+    cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_strs_text")!, [texts])
+}
+
+/// The record `v` of `ty` spelled: each field's text, in the order it declares them, joined.
+fn parts_spelled(mut cx: Lowering, ty: SignedType, v: Reg) -> Reg {
+    let fields = cx.fields_of(ty)!
+    let laid = cx.seat_layouts(fields)!
+    let texts = cx
+        .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+    for j, f in fields { cx.push_slot(texts, value_spelled(cx, f.ty!, cx.field_read(v, ty, laid, j))) }
+    cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_strs_text")!, [texts])
+}

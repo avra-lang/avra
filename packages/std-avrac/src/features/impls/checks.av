@@ -1,0 +1,245 @@
+//! The typing rule of a method call: a fn the subject's field of that name holds is called with the
+//! arguments; else the method's first seat takes the subject and each argument its own seat, as a
+//! call's do, and the call is what the method answers; else a static fn of the subject's type is
+//! called through it.
+use core.{Checking, Checks, ExprId, Expected, FOLD, GRAMMAR_PARSE, Refused, Seating, SignedType}
+use core.expr.{MethodCall}
+
+impl Checks for MethodCall {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject? = cx.check(self.subject, Expected.Free) else {
+            cx.checked_free(self.args)
+            return null
+        }
+        let described? = subject.described() else { return value_called(cx, self, e, subject, expected) }
+        let celled = cell_made(cx, self, described, expected)
+        if celled != null { return celled }
+        let reached = static_reached(cx, described, self)
+        let statics? = cx.static_of(described, reached) ?? cx
+            .chosen_among(cx.statics_among(described, self.name.of), self.args, 0) else {
+            return cx.variant_built(e, described, self.name.of, self.args, true, expected)
+        }
+        if cx.seats_named(e, statics, self.args, 0, "${described.spelled()}.${self.name.of}") { return null }
+        cx
+            .called(
+                statics,
+                self.args,
+                expected,
+                (at: int) -> member_seat(cx, described, self.name.of, at, true),
+                pinned_for(statics, described, expected),
+                [],
+                null,
+                "${described.word()}.${self.name.of}",
+            )
+    }
+}
+
+/// `Cell.new(v)` in a seat that wants a cell of a type: `v` is what the cell holds, heard whole — a
+/// value that takes its type from its seat checked in it — and the call is the cell the seat wants.
+/// Absent for any other call.
+fn cell_made(mut cx: Checking, m: MethodCall, described: SignedType, expected: Expected) -> SignedType? {
+    if described.owned() != "Cell" || m.name.of != "new" || m.args.length != 1 { return null }
+    let want? = match expected { .Exactly(t) -> t, rest -> null } else { return null }
+    if want.owned() != "Cell" { return null }
+    let held? = want.args.first() else { return null }
+    let v = m.args[0]
+    if takes_its_seat(cx, v) {
+        let _ = cx.check_seated(v, held, Seating.CellHolds)
+        return want
+    }
+    let read? = cx.check(v, Expected.Free) else { return want }
+    if !cx.stands_in(v, read, held) { cx.refused.push(Refused { at: v, want: held, found: read, seat: Seating.CellHolds }) }
+    want
+}
+
+/// Whether `v` takes its type from the seat it fills: a lambda, whose seat types its parameters; a
+/// variant or a member read by name; a literal.
+fn takes_its_seat(cx: Checking, v: ExprId) -> bool {
+    cx.store.closure_parts(v) != null ||
+        cx.store.expr(v) is .Prop ||
+        cx.store.expr(v).literal_form()
+}
+
+/// What a static called through `described` has filled before any argument: the body's own
+/// parameter pinned to itself; and through the bare name of a generic type it answers, the type the
+/// seat wants, as a variant's is — the want fills that type's parameters.
+fn pinned_for(statics: SignedType, described: SignedType, expected: Expected) -> Map<
+    string,
+    SignedType,
+> {
+    let own = self_pinned(described)
+    let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return own }
+    let answer? = statics.answer else { return own }
+    if !described.args.is_empty() || !answer.names_as(described) || !wanted.names_as(described) { return own }
+    mut pins = own
+    if answer.unifies(wanted, pins) { pins } else { own }
+}
+
+/// The static the call `m` through `described` reaches: the one it names, or a grammar's reading of
+/// octets where its `parse` is handed them.
+fn static_reached(mut cx: Checking, described: SignedType, m: MethodCall) -> string {
+    if m.name.of != GRAMMAR_PARSE || m.args.length != 1 { return m.name.of }
+    cx.program.static_reached(described, m.name.of, cx.read_ahead(m.args[0]))
+}
+
+/// A static called through the body's own type parameter `described` answers that parameter where
+/// it answers `Self`: the parameter is pinned to itself, never filled by the call.
+fn self_pinned(described: SignedType) -> Map<string, SignedType> {
+    match described.head { .Parameter(at, _) -> {"${at}": described}, rest -> {} }
+}
+
+/// A declared method's call: its receiver written where the method writes, its arguments held to its
+/// seats — against nothing where the receiver is refused. A verb the language owns is called by
+/// position, one that writes its receiver is handed a place a write lands in, and a
+/// list's walk names its fn's seat as the walk's.
+fn method_called(
+    mut cx: Checking,
+    m: MethodCall,
+    e: ExprId,
+    subject: SignedType,
+    method: SignedType,
+    expected: Expected,
+) -> SignedType? {
+    if subject.head is .Declared &&
+        cx.seats_named(e, method, m.args, 1, "${subject.spelled()}.${m.name.of}") { return null }
+    let named = m.args.find((a) -> cx.store.arg_label(a) != null)
+    if subject.head is .Owned && named != null {
+        cx.checked_free(m.args)
+        cx.unplaced(named!, m.name.of, cx.store.arg_label(named!) ?? "")
+        return null
+    }
+    let before = cx.refused.get().length
+    if subject.head is .Owned && method.seats.first()?.mutable ?? false { cx.place_written(e, m.subject, subject, m.name.of) }
+    if cx.refused.get().length != before { return cx.unfilled(m.args) }
+    if folds(cx, subject, m.name.of) { return fold_called(cx, m, e, subject, method, expected) }
+    let walks = walk_verb(subject, method)
+    if walks && cx.walk_misseated(m.name.of, m.args) { return null }
+    let applying = cx.refused.get().length
+    let answer = cx
+        .applied(
+            method,
+            subject,
+            m.args,
+            expected,
+            (at: int) -> if walks { Seating.Walk(subject.spelled(), m.name.of, at, e.index) } else { member_seat(cx, subject, m.name.of, at, false) },
+        )
+    if subject.owned() == "List" { cx.list_verb_seated(e, m.name.of, m.args, subject, applying) }
+    if subject.head is .Declared { cx.default_seated(e, m.name.of, m.args, subject, applying) }
+    answer
+}
+
+/// The method call `m` at `e` on a value of `subject`: a fn its field holds, else its method, else a
+/// static of its type called through it.
+fn value_called(mut cx: Checking, m: MethodCall, e: ExprId, subject: SignedType, expected: Expected) -> SignedType? {
+    if cx.cell_unmapped(e, subject, m.name.of, m.args) { return null }
+    let field = fn_field(cx.field_of(subject, m.name.of))
+    if field != null { return held_fn_called(cx, m, field!, expected) }
+    let method = cx.method_of(subject, m.name.of) ?? cx
+        .chosen_among(cx.methods_among(subject, m.name.of), m.args, 1)
+    if method != null { return method_called(cx, m, e, subject, method!, expected) }
+    let run = cx.run_chosen_among(cx.methods_among(subject, m.name.of), m.args, 1)
+    if run != null { return run }
+    if listed_whole(cx, m, subject) { return cx.variant_built(e, subject, m.name.of, m.args, true, expected) }
+    let through? = cx.static_of(subject, m.name.of) else {
+        cx.checked_free(m.args)
+        return null
+    }
+    cx
+        .called(
+            through,
+            m.args,
+            expected,
+            (at: int) -> Seating.Method(method_owner(cx, subject), m.name.of, at),
+        )
+}
+
+/// The type a method of `subject` is named under: a declared type by its name, whatever it's applied
+/// to; a type parameter by the trait it's bound by; any other as it's spelled.
+fn method_owner(cx: Checking, subject: SignedType) -> string {
+    match subject.head {
+        .Declared(_, name) -> name,
+        .Parameter(_, _) -> bound_word(cx, subject) ?? subject.spelled(),
+        rest -> subject.spelled(),
+    }
+}
+
+/// Whether `m` asks a value of `subject`, an enum a variant of which carries a payload, for `all`:
+/// the enum's own `all`, which lists none of it.
+fn listed_whole(cx: Checking, m: MethodCall, subject: SignedType) -> bool {
+    if m.name.of != "all" || !m.args.is_empty() { return false }
+    cx.enum_of(subject)?.variants?.any(it.payloads.length > 0) ?? false
+}
+
+/// The name of the trait the type parameter `subject` is bound by; absent where it's bound by none.
+fn bound_word(cx: Checking, subject: SignedType) -> string? {
+    let bound? = (cx.program.bound_of)(subject) else { return null }
+    match bound.head { .Declared(_, name) -> name, rest -> null }
+}
+
+/// The verb every enum answers, listing its variants: the language's, named bare.
+const ENUM_ALL: string = "all"
+
+/// The seat argument `at` of a call of the member `name` of `owner` fills, a static where `statics`:
+/// a fn's where the language itself gives the member, named as its calls say it — a static of a type
+/// the language owns beside that type, any other bare, as is an enum's `all` — else the method's
+/// of its type, a static's beside its type's name.
+fn member_seat(cx: Checking, owner: SignedType, name: string, at: int, statics: bool) -> Seating {
+    if (cx.program.own_member)(owner, name, statics) {
+        return Seating
+            .Argument(if statics && owner.head is .Owned { "${owner.spelled()}.${name}" } else { name }, at)
+    }
+    if statics && name == ENUM_ALL && cx.enum_of(owner) != null { return Seating.Argument(name, at) }
+    if statics { return Seating.Argument("${method_owner(cx, owner)}.${name}", at) }
+    Seating.Method(method_owner(cx, owner), name, at)
+}
+
+/// Whether a call of `name` on a value of `subject` is the list's own `fold`.
+fn folds(cx: Checking, subject: SignedType, name: string) -> bool { name == FOLD && subject.listed() != null && (cx.program.own_member)(subject, name, false) }
+
+/// A list's `fold`: refused in its own words where its arguments are no seed and fn of two seats,
+/// and where its fn, its seats filled, is no fn of the accumulator and the element.
+fn fold_called(
+    mut cx: Checking,
+    m: MethodCall,
+    e: ExprId,
+    subject: SignedType,
+    method: SignedType,
+    expected: Expected,
+) -> SignedType? {
+    if cx.fold_refused(e, subject, m.args, expected) { return null }
+    let before = cx.refused.get().length
+    let answer = cx
+        .applied(method, subject, m.args, expected, (at: int) -> Seating.Argument(m.name.of, at))
+    if m.args.length == 2 { cx.fold_misfit(m.args[1], before) }
+    answer
+}
+
+/// `ty` where it is a fn a field holds; absent for any other.
+fn fn_field(ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    if t.head is .Function { t } else { null }
+}
+
+/// The call of the fn of type `f` a field of the receiver holds. A fn value's type is no generic of
+/// its own: each parameter it names is the body's, pinned to itself.
+fn held_fn_called(mut cx: Checking, m: MethodCall, f: SignedType, expected: Expected) -> SignedType? {
+    cx
+        .called(f, m.args, expected, (at: int) -> Seating.Argument(m.name.of, at), pinned_to_themselves(f))
+}
+
+/// Each type parameter `ty` names, pinned to itself: the body's own, which a call never fills.
+fn pinned_to_themselves(ty: SignedType) -> Map<string, SignedType> {
+    mut out: Map<string, SignedType> = {}
+    for p in ty.parameter_types() { out.set("${parameter_place(p)}", p) }
+    out
+}
+
+/// The place among the body's parameters the parameter `p` stands at.
+fn parameter_place(p: SignedType) -> int { match p.head { .Parameter(at, _) -> at, rest -> 0 - 1 } }
+
+/// Whether `method` on a value of `subject` is a walk: a list's own verb handed one fn of the element.
+fn walk_verb(subject: SignedType, method: SignedType) -> bool {
+    if subject.owned() != "List" || method.seats.length != 2 { return false }
+    let f = method.seats[1].ty
+    f.head is .Function && f.seats.length == 1
+}

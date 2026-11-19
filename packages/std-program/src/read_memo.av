@@ -1,0 +1,59 @@
+//! ANSWERS REMEMBERED BESIDE AN ENGINE, READ AS THE ENGINE READS THEM. An answer kept per id
+//! outside the query engine keeps the engine reads its working-out made, and every later answer
+//! makes them again for whoever asks: a question answered from the memo depends on what the
+//! working-out read, as it would had it worked the answer out itself.
+use answer_record.{RecordedRead}
+use interned.{IdMemo, InternId, id_memo}
+use query_engine.{QueryEngine}
+use @std.meta.{identity}
+
+/// Answers kept per id, each with the reads that found it. An identity: every holder sees one memo.
+@identity
+export type ReadMemo<V> = {
+    /// Each id's kept answer.
+    answers: IdMemo<V>,
+    /// The reads each kept answer's working-out made.
+    reads: IdMemo<List<RecordedRead>>,
+    /// The reader each kept answer's reads last reached: one asking again under it has them.
+    reached: IdMemo<int>,
+}
+
+export fn read_memo<V>() -> ReadMemo<V> {
+    let answers: IdMemo<V> = id_memo()
+    let reads: IdMemo<List<RecordedRead>> = id_memo()
+    let reached: IdMemo<int> = id_memo()
+    ReadMemo { answers: answers, reads: reads, reached: reached }
+}
+
+impl ReadMemo<V> {
+    /// Whether `id`'s answer is kept.
+    fn known(id: InternId) -> bool { self.answers.known(id) }
+
+    /// The answer kept for `id`, its working-out's reads made again in `engine` by whoever asks
+    /// unless they reached that reader already.
+    fn held(engine: QueryEngine, id: InternId) -> V? {
+        let reader = engine.reader()
+        if self.reached.held(id) != reader {
+            engine.reads_made_again(self.reads.held(id) ?? [])
+            self.reached.keep(id, reader)
+        }
+        self.answers.held(id)
+    }
+
+    /// `compute`'s answer, kept for `id` with the reads it made in `engine`; those reads are the
+    /// asker's already.
+    fn worked_out(engine: QueryEngine, id: InternId, compute: fn() -> V?) -> V? {
+        engine.reads_begun()
+        let answer = compute()
+        let reads = engine.reads_gathered()
+        self.reads.keep(id, reads)
+        self.reached.keep(id, engine.reader())
+        self.answers.keep(id, answer)
+        answer
+    }
+
+    /// The answer for `id`: the kept one, else worked out by `compute` and kept.
+    fn answer(engine: QueryEngine, id: InternId, compute: fn() -> V?) -> V? {
+        if self.known(id) { self.held(engine, id) } else { self.worked_out(engine, id, compute) }
+    }
+}

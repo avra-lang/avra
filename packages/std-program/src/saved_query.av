@@ -1,0 +1,586 @@
+//! `@query` AND `@input`: a plain function becomes a remembered one. Its arguments and its answer
+//! are saved by the same generated code a `@derive(Saved)` field uses, so any type a field can
+//! hold can be asked or answered. Its first seat is the engine, and its body asks other queries
+//! by calling them. A module's queries are listed by one `collect`: see `ListedQuery`.
+//!
+//! `@folded_query(step)` is a query whose answer is worked out again from its last one: `step`
+//! takes the query's seats, then its last answer and each read that moved, and answers the new
+//! answer, or none where it doesn't fold that change and the body runs. The body stays the oracle
+//! (see `Folding`). Each query's `<name>_<seat>_in(q)` reads a moved question's arguments back, and
+//! `<name>_was(engine, m)` the answer it gave before:
+//!
+//!     @folded_query(reach_again)
+//!     fn reach(engine: QueryEngine, from: string) -> List<string> { … }
+//!
+//!     fn reach_again(engine: QueryEngine, from: string, last: List<string>, moved: List<MovedRead>) -> List<string>? {
+//!         let nodes = [n! for m in moved for n in [edges_of_node_in(m.question)] if n != null]
+//!         …
+//!     }
+use @std.meta.{
+    Code,
+    Declared,
+    Decls,
+    Diagnostic,
+    Directive,
+    Fn,
+    Named,
+    Param,
+    Stmts,
+    bool_node,
+    as_code,
+    code_hash,
+    literal,
+    name,
+    refuse,
+    wrapped,
+    declares,
+    nothing_made,
+}
+use query_engine.{
+    Folding,
+    FreshAnswer,
+    HeldAnswer,
+    HeldQuestion,
+    MovedRead,
+    QueryDefinition,
+    QueryEngine,
+    answers_held,
+    held_bool,
+    held_file,
+    held_int,
+    held_text,
+    key_reader,
+    keyed_arguments,
+    question_at,
+    question_kept,
+    round_trip_broken,
+    round_trips_checked,
+}
+use value_shapes.{ValueShape}
+use interned.{HIGH_LANE, LOW_LANE, KeyLane}
+use answer_record.{Question}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use saved_derive.{
+    FOLDED,
+    FOLD_LANE,
+    slot_folded,
+    word_folded,
+    read_saved_list,
+    SOURCE_NAME,
+    saved_record_statements,
+    source_code,
+    saved_shape,
+    slot_number,
+    slot_read,
+    slot_written,
+}
+use saved_layout.{
+    SavedAt,
+    SavedBytes,
+    SavedList,
+    SavedRecord,
+    SavedSlots,
+    SavedSource,
+    saved_bytes_in_memory,
+    saved_layout_writer,
+    saved_root_record,
+}
+
+/// Marks a generated fn answering a query's definition, for a `collect` to list.
+export fn query_definition(_f: Named) {}
+
+/// A generated definition, as a `collect` lists it. `collect queries: List<ListedQuery> =
+/// @query_definition in self as ListedQuery { definition: it } by it.name` lists a module's queries.
+export type ListedQuery = { definition: fn() -> QueryDefinition }
+
+/// The definitions of what a `collect` listed.
+export fn definitions_of(listed: List<ListedQuery>) -> List<QueryDefinition> { [(q.definition)() for q in listed] }
+
+/// `@query`: remembered across processes.
+export fn query(f: Fn) -> Declared { remembered(f, false, [], false, false) }
+
+/// `@input`: reads the outside world, so it runs once in every process, and its readers stand
+/// when it comes out the same.
+export fn input(f: Fn) -> Declared { remembered(f, true, [], false, false) }
+
+/// `@cut_query`: a query that cuts a change off — a projection near the inputs, worked out as the
+/// frontier opens wherever a change reaches it, and past which a change reaches nothing where it
+/// comes out the same. It answers a file's address, or what one names, so asking it then is
+/// asking what the build would.
+export fn cut_query(f: Fn) -> Declared { remembered(f, false, [], false, true) }
+
+/// `@cut_parted_query`: a parted query that cuts a change off, as `@cut_query` does.
+export fn cut_parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, true) }
+
+/// `@parted_query`: a query answering `AnswerParts`, which also answers one part at a time through
+/// `<name>_part(engine, …, part_name)`. A reader of one part stands when other parts change.
+export fn parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, false) }
+
+/// `@folded_query(step)`: a query whose answer is folded forward from its last one by `step`.
+export fn folded_query(f: Fn, step: Fn) -> Declared {
+    let problems = step_problems(f, step)
+    if !problems.is_empty() { return nothing_made(problems) }
+    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true, false)
+}
+
+fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool, cuts: bool) -> Declared {
+    let problems = problems_of(f)
+    if !problems.is_empty() { return nothing_made(problems) }
+    let made = [
+        Directive { twin: "", name: f.name, at: f.at, wraps: true, source: asking_wrapper(f) },
+    ]
+        .concat(held_answers(f))
+        .concat(held_questions(f))
+        .concat(
+            [
+                declares(arguments_door(f), f.at, arguments_writer(f)),
+                declares(compute_door(f), f.at, computing_door(f)),
+                declares(encoded_door(f), f.at, encoding_door(f)),
+                declares(answer_read_door(f), f.at, answer_reader(f)),
+                declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts)),
+                declares(known_door(f), f.at, known_answer_door(f)),
+                declares(question_door(f), f.at, asked_question_door(f)),
+            ],
+        )
+        .concat(in_place_door(f))
+        .concat(asked_in_doors(f))
+    Declared { made: made.concat(also_made), problems: [] }
+}
+
+/// A query's first seat is the engine that remembers it, and what it's asked and answers can be saved.
+fn problems_of(f: Fn) -> List<Diagnostic> {
+    if f.params.first()?.ty != "QueryEngine" { return [no_engine_seat(f)] }
+    let seats = [no_bytes_in_seat(f, p) for p in argument_seats(f) if saved_shape(p.kind) == null]
+    if saved_shape(f.answers) != null { seats } else { seats.concat([no_bytes_in_answer(f)]) }
+}
+
+fn arguments_door(f: Fn) -> string { "${f.name}_arguments" }
+
+fn compute_door(f: Fn) -> string { "${f.name}_compute" }
+
+fn definition_door(f: Fn) -> string { "${f.name}_definition" }
+
+fn known_door(f: Fn) -> string { "${f.name}_is_known" }
+
+fn question_door(f: Fn) -> string { "${f.name}_question" }
+
+fn fold_door(f: Fn) -> string { "${f.name}_fold" }
+
+fn asked_in_door(f: Fn, p: Param) -> string { "${f.name}_${p.name}_in" }
+
+fn was_door(f: Fn) -> string { "${f.name}_was" }
+
+fn held_door(f: Fn) -> string { "${f.name}_held" }
+
+fn asked_door(f: Fn) -> string { "${f.name}_asked" }
+
+/// How each argument of `f` is spelled in the key its questions are held by; absent where one is a
+/// value no key spells, and then every ask writes its arguments.
+fn argument_keys(f: Fn) -> List<Code>? {
+    let keys = [argument_key(saved_shape(p.kind)!, name(p.name)) for p in argument_seats(f)]
+    if keys.any(it == null) { null } else { [k! for k in keys] }
+}
+
+/// How one argument of `shape`, read as `value`, is spelled in a question's key; absent for a shape
+/// no key spells.
+fn argument_key(shape: ValueShape, value: Code) -> Code? {
+    match shape {
+        .Text -> quote { held_text(${value}) },
+        .Int -> quote { held_int(${value}) },
+        .Bool -> quote { held_bool(${value}) },
+        .Declared(type_name, _) -> if type_name == FILE_TYPE { quote { held_file(${value}) } } else { null },
+        .Offset or .Float or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> null,
+    }
+}
+
+/// The type a file argument is, which a question's key spells by its parts.
+const FILE_TYPE: string = "SourceFileAddress"
+
+/// The question a call asks, held under the key its arguments fold to, made anew where it's held
+/// by none.
+fn asked_of(f: Fn) -> Code {
+    let arguments = [name(p.name) for p in f.params]
+    let high = quote { ${folded_door(f)}(HIGH_LANE, ..${arguments}) }
+    let low = quote { ${folded_door(f)}(LOW_LANE, ..${arguments}) }
+    quote { question_at(${asked_door(f)}(), ${high}, ${low}) ?? question_kept(${asked_door(f)}(), ${high}, ${low}, ${question_of(f)}) }
+}
+
+/// The table of the questions `f` asked, by the key their arguments fold to, and the door folding
+/// it: the count of the arguments, then each in turn.
+fn held_questions(f: Fn) -> List<Directive> {
+    let seats = argument_seats(f)
+    let folds = [slot_folded(saved_shape(p.kind)!, name(p.name)) for p in seats]
+    let held = quote { once fn ${asked_door(f)}() -> HashKeyedTable<HeldQuestion> { hash_keyed_table() } }
+    let folding = quote {
+        fn ${folded_door(f)}(${FOLD_LANE}: KeyLane, ..${seats_of(f)}) -> int {
+            mut ${FOLDED} = ${name(FOLD_LANE)}.seed
+            ${word_folded(slot_number(seats.length))}
+            ${folds}
+            ${name(FOLD_LANE)}.finished(${name(FOLDED)})
+        }
+    }
+    [declares(asked_door(f), f.at, held), declares(folded_door(f), f.at, folding)]
+}
+
+/// The door folding a call's arguments into one lane of its question's key.
+fn folded_door(f: Fn) -> string { "${f.name}_folded" }
+
+/// Whether what a query's answer reads back as is held by the answer's hash: any answer but one that
+/// holds a cell, which each reader must make its own.
+fn answer_held(f: Fn) -> bool { !holds_a_cell(saved_shape(f.answers)!) }
+
+/// The table of what each answer of `f` read back as, by the answer's hash, where it's held.
+fn held_answers(f: Fn) -> List<Directive> {
+    if !answer_held(f) { return [] }
+    let source = quote {
+        once fn ${held_door(f)}() -> HashKeyedTable<HeldAnswer<${f.answer}>> { hash_keyed_table() }
+    }
+    let fresh = quote {
+        once fn ${fresh_door(f)}() -> Cell<List<FreshAnswer<${f.answer}>>> {
+            let fresh: Cell<List<FreshAnswer<${f.answer}>>> = Cell.new([])
+            fresh
+        }
+    }
+    [declares(held_door(f), f.at, source), declares(fresh_door(f), f.at, fresh)]
+}
+
+/// The last answer `f` computed in this process, for the ask that is waiting on it.
+fn fresh_door(f: Fn) -> string { "${f.name}_fresh" }
+
+/// Whether a shape holds a cell anywhere in it.
+fn holds_a_cell(shape: ValueShape) -> bool {
+    match shape {
+        .Celled(_) -> true,
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> shape.children().any((child) -> holds_a_cell(child)),
+    }
+}
+
+/// A generated fn's seat.
+fn seat(seat_name: string, seat_type: string) -> Decls { quote { fn _(${seat_name}: ${seat_type}) {} } }
+
+fn seats_of(f: Fn) -> List<Decls> { [seat(p.name, p.ty) for p in f.params] }
+
+/// The function callers call: saves its arguments, asks the engine, reads the answer back — once
+/// per answer: what an answer's bytes read back as is held by their hash, so a second ask of an
+/// answer this process has read back is still a read the engine records, and decodes nothing. An
+/// answer this process just computed for the same arguments is never read back at all: the value
+/// that was saved is the value.
+fn asking_wrapper(f: Fn) -> Decls {
+    if !answer_held(f) { return decoding_wrapper(f) }
+    quote {
+        fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
+            let held = ${asked_of(f)}
+            let asked = held.question
+            let answer = ${engine_of(f)}.hash_of_answer_held(held)
+            let kept = ${held_door(f)}().get(answer)
+            if kept != null { return kept!.value }
+            let fresh = ${fresh_door(f)}().get().first()
+            if fresh != null && fresh!.arguments == asked.arguments {
+                ${fresh_door(f)}().set([])
+                ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
+                return fresh!.value
+            }
+            let value = ${answer_read_door(f)}(${engine_of(f)}.answer_bytes_of(asked, answer))
+            if answers_held() { ${held_door(f)}().put(answer, HeldAnswer { value: value }) }
+            value
+        }
+    }
+}
+
+/// The function callers call, for an answer that is never held: every ask reads its bytes back.
+fn decoding_wrapper(f: Fn) -> Decls {
+    quote {
+        fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
+            ${answer_read_door(f)}(${engine_of(f)}.answer_to(${asked_of(f)}.question))
+        }
+    }
+}
+
+/// A call's arguments as saved bytes, or spelled as their keys where each has one. The engine's seat
+/// is no part of them.
+fn arguments_writer(f: Fn) -> Decls {
+    let keys = argument_keys(f)
+    if keys != null {
+        return quote {
+            fn ${arguments_door(f)}(..${seats_of(f)}) -> Bytes { keyed_arguments([..${keys!}]) }
+        }
+    }
+    let slots = [slot_written(saved_shape(p.kind)!, name(p.name)) for p in argument_seats(f)]
+    quote {
+        fn ${arguments_door(f)}(..${seats_of(f)}) -> Bytes {
+            ${saved_record_statements(slots)}
+        }
+    }
+}
+
+/// What the engine runs: reads the arguments back, calls the written body, saves the answer.
+fn computing_door(f: Fn) -> Decls {
+    let call_arguments = [name("engine")].concat(argument_reads(f))
+    let seats = [seat("engine", "QueryEngine"), seat("arguments", "Bytes")]
+    quote {
+        fn ${compute_door(f)}(..${seats}) -> Bytes {
+            ${arguments_opened(f, name("arguments"))}
+            let answer = ${wrapped(f)}(..${call_arguments})
+            ${fresh_kept(f)}
+            let saved = ${encoded_door(f)}(answer)
+            ${round_trip_checked(f)}
+            saved
+        }
+    }
+}
+
+/// `<name>_encoded(answer)`: the bytes an answer is saved as.
+fn encoding_door(f: Fn) -> Decls {
+    quote {
+        fn ${encoded_door(f)}(answer: ${f.answer}) -> Bytes {
+            ${saved_record_statements([slot_written(saved_shape(f.answers)!, quote { answer })])}
+        }
+    }
+}
+
+fn encoded_door(f: Fn) -> string { "${f.name}_encoded" }
+
+/// `<name>_answer_read(saved)`: the answer the saved bytes `saved` hold, read back where they lie.
+fn answer_read_door(f: Fn) -> string { "${f.name}_answer_read" }
+
+/// The one reader of a saved answer of `f`: its bytes' source bound, its root read.
+fn answer_reader(f: Fn) -> Decls {
+    quote {
+        fn ${answer_read_door(f)}(saved: SavedBytes) -> ${f.answer} {
+            let ${SOURCE_NAME} = saved.source
+            let record = saved.root()
+            ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
+        }
+    }
+}
+
+/// Under `AVRA_HELD_ROUNDTRIP`, a held-at-computation answer read back from the bytes it was saved
+/// as and saved again: different bytes trap naming the query, since the value held and the value
+/// read back would differ.
+fn round_trip_checked(f: Fn) -> Stmts {
+    if !answer_held(f) { return quote { } }
+    quote {
+        if round_trips_checked() {
+            let back = ${answer_read_door(f)}(saved_bytes_in_memory(saved))
+            if ${encoded_door(f)}(back) != saved { round_trip_broken(${literal(f.name)}) }
+        }
+    }
+}
+
+/// How the arguments `bytes` hold are opened to be read back: as keys where each argument has one,
+/// else as saved fields.
+fn arguments_opened(f: Fn, bytes: Code) -> Stmts {
+    if argument_keys(f) != null { return quote { let keys = key_reader(${bytes}) } }
+    quote {
+        let ${SOURCE_NAME} = SavedSource.InMemory(${bytes})
+        let record = saved_root_record(${source_code()}, ${bytes}.length)
+    }
+}
+
+/// Each argument of `f` read back, in order, from what `arguments_opened` opened.
+fn argument_reads(f: Fn) -> List<Code> {
+    if argument_keys(f) != null { return [key_read(saved_shape(p.kind)!) for p in argument_seats(f)] }
+    [slot_read(saved_shape(p.kind)!, quote { record }, slot_number(slot)) for slot, p in argument_seats(f)]
+}
+
+/// What the engine runs to fold an answer forward: reads the arguments and the last answer back,
+/// calls `step`, saves what it answers; none where it answers none.
+fn folding_door(f: Fn, step: Fn) -> Decls {
+    let call_arguments = [quote { engine }]
+        .concat(argument_reads(f))
+        .concat([quote { was }, quote { moved }])
+    quote {
+        fn ${fold_door(f)}(engine: QueryEngine, arguments: Bytes, last: SavedBytes, moved: List<MovedRead>) -> Bytes? {
+            ${arguments_opened(f, quote { arguments })}
+            let was = ${answer_read_door(f)}(last)
+            let answer? = ${step.name}(..${call_arguments}) else { return null }
+            ${fold_kept(f)}
+            let saved = ${encoded_door(f)}(answer)
+            ${round_trip_checked(f)}
+            saved
+        }
+    }
+}
+
+/// `<name>_<seat>_in(q)` for each seat of `f` that can't itself be absent: what the question `q`
+/// asked in that seat, where it's a question of `f`. A fold reads a moved question back by them.
+fn asked_in_doors(f: Fn) -> List<Directive> {
+    let reads = argument_reads(f)
+    let keyed = argument_keys(f) != null
+    [declares(asked_in_door(f, p), f.at, asked_in_source(f, p, reads, if keyed { i } else { 0 }, i)) for i, p in argument_seats(f) if !p.ty.ends_with("?")]
+        .concat([declares(was_door(f), f.at, was_source(f))])
+}
+
+/// `<name>_was(engine, m)`: the answer the moved read `m` gave before, read back where the store
+/// still keeps it; absent where `m` isn't a question of `f` or its answer is no longer kept. An
+/// answer that can itself be absent reads as absent then too.
+fn was_source(f: Fn) -> Decls {
+    let answer = if f.answer.ends_with("?") { f.answer } else { "${f.answer}?" }
+    quote {
+        export fn ${was_door(f)}(engine: QueryEngine, m: MovedRead) -> ${answer} {
+            if m.question.query_name != ${literal(f.name)} { return null }
+            let kept? = engine.store.answer_bytes(m.was) else { return null }
+            ${answer_read_door(f)}(kept)
+        }
+    }
+}
+
+/// The door reading seat `seat` of a question of `f` back: the `skipped` reads before it, then its.
+fn asked_in_source(f: Fn, p: Param, reads: List<Code>, skipped: int, seat: int) -> Decls {
+    let steps: List<Stmts> = [quote { let _ = ${reads[j]} } for j in 0..skipped]
+    quote {
+        export fn ${asked_in_door(f, p)}(q: Question) -> ${p.ty}? {
+            if q.query_name != ${literal(f.name)} { return null }
+            ${arguments_opened(f, quote { q.arguments })}
+            ${steps}
+            ${reads[seat]}
+        }
+    }
+}
+
+/// How the next key of `shape` reads back, for a shape a key spells.
+fn key_read(shape: ValueShape) -> Code {
+    match shape {
+        .Text -> quote { keys.text() },
+        .Int -> quote { keys.int() },
+        .Bool -> quote { keys.truth() },
+        rest -> quote { keys.file() },
+    }
+}
+
+/// The computed answer handed to the ask waiting on it, where answers are held.
+fn fresh_kept(f: Fn) -> Stmts {
+    if !answer_held(f) { return quote { } }
+    quote { if answers_held() { ${fresh_door(f)}().set([FreshAnswer { arguments: ${name("arguments")}, value: answer }]) } }
+}
+
+/// The folded answer handed to the ask waiting on it, where answers are held: the fold door's own
+/// `arguments`, which a name written in this quote reaches as the door's seat does.
+fn fold_kept(f: Fn) -> Stmts {
+    if !answer_held(f) { return quote { } }
+    quote { if answers_held() { ${fresh_door(f)}().set([FreshAnswer { arguments: arguments, value: answer }]) } }
+}
+
+fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool) -> Decls {
+    let folding = if folds { quote { Folding.By(${name(fold_door(f))}) } } else { quote { Folding.Full } }
+    quote {
+        @query_definition
+        export once fn ${definition_door(f)}() -> QueryDefinition {
+            QueryDefinition {
+                query_name: ${literal(f.name)},
+                code_hash: code_hash(${name(wrapped(f).name)}) ?? "",
+                is_input: ${as_code(bool_node(is_input))},
+                compute: ${name(compute_door(f))},
+                folding: ${folding},
+                cuts: ${as_code(bool_node(cuts))},
+            }
+        }
+    }
+}
+
+/// `<name>_question(engine, …)`: the question this call asks, as its wrapper asks it.
+fn asked_question_door(f: Fn) -> Decls {
+    quote {
+        export fn ${question_door(f)}(..${seats_of(f)}) -> Question { ${question_of(f)} }
+    }
+}
+
+/// `<name>_is_known(engine, …)`: whether anything is kept about this call, asking nothing.
+fn known_answer_door(f: Fn) -> Decls {
+    quote {
+        export fn ${known_door(f)}(..${seats_of(f)}) -> bool {
+            ${engine_of(f)}.store.question_known_as(${question_of(f)}.known_as) != null
+        }
+    }
+}
+
+/// `<name>_saved(engine, …)`: an answer that's a record or a list, where it lies, beside where its
+/// bytes are, so a reader of some of it reads that alone (a record's `<field>_in`, a list's `length`
+/// or one item) and decodes nothing else.
+fn in_place_door(f: Fn) -> List<Directive> {
+    let door = "${f.name}_saved"
+    match saved_shape(f.answers)! {
+        .Declared(_, _) -> {
+            let source = quote {
+                export fn ${door}(..${seats_of(f)}) -> SavedAt<SavedRecord> {
+                    let saved = ${engine_of(f)}.answer_to(${question_of(f)})
+                    SavedAt { source: saved.source, node: saved.root().record_in(saved.source, 0) }
+                }
+            }
+            [declares(door, f.at, source)]
+        },
+        .Listed(_) -> {
+            let source = quote {
+                export fn ${door}(..${seats_of(f)}) -> SavedAt<SavedList> {
+                    let saved = ${engine_of(f)}.answer_to(${question_of(f)})
+                    SavedAt { source: saved.source, node: saved.root().list_in(saved.source, 0) }
+                }
+            }
+            [declares(door, f.at, source)]
+        },
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> [],
+    }
+}
+
+/// `<name>_part(engine, …, part_name)`: one part of the answer.
+fn part_door(f: Fn) -> List<Directive> {
+    let door = "${f.name}_part"
+    let source = quote {
+        export fn ${door}(..${seats_of(f).concat([seat("part_name", "string")])}) -> Bytes? {
+            ${engine_of(f)}.part_of_answer_to(${question_of(f)}, ${name("part_name")})
+        }
+    }
+    [declares(door, f.at, source)]
+}
+
+fn engine_of(f: Fn) -> Code { name(f.params[0].name) }
+
+fn argument_seats(f: Fn) -> List<Param> { f.params.slice(1, f.params.length) }
+
+/// The question a call asks: this query's, about these arguments saved.
+fn question_of(f: Fn) -> Code {
+    let arguments = [name(p.name) for p in f.params]
+    if argument_keys(f) != null { return quote { ${definition_door(f)}().question_keyed(${arguments_door(f)}(..${arguments})) } }
+    quote { ${definition_door(f)}().question_about(${arguments_door(f)}(..${arguments})) }
+}
+
+fn no_bytes_in_seat(f: Fn, p: Param) -> Diagnostic {
+    refuse(
+        "`${f.name}` is remembered by what it's asked, and `${p.name}` holds a `${p.kind.spelled()}`, which has no bytes to save",
+    )
+}
+
+fn no_bytes_in_answer(f: Fn) -> Diagnostic {
+    refuse(
+        "`${f.name}` is remembered by what it answers, and a `${f.answers.spelled()}` has no bytes to save",
+    )
+}
+
+/// A fold's step takes the query's seats, then its last answer and the questions that moved, and
+/// answers the new answer or none: so the answer itself can't be absent.
+fn step_problems(f: Fn, step: Fn) -> List<Diagnostic> {
+    let n = f.params.length
+    let leading = step.params.length == n + 2 &&
+        [p.ty == f.params[i].ty for i, p in step.params.take(n)].all(it)
+    let tail = leading &&
+        step.params[n].ty == f.answer &&
+        step.params[n + 1].ty == "List<MovedRead>"
+    if f.answer.ends_with("?") { return [nullable_fold(f)] }
+    if !tail || step.answer != "${f.answer}?" { [step_shape(f, step)] } else { [] }
+}
+
+fn step_shape(f: Fn, step: Fn) -> Diagnostic {
+    refuse(
+        "`${step.name}` folds `${f.name}` forward, so it takes `${f.name}`'s seats, then `last: ${f.answer}` and `moved: List<MovedRead>`, and answers `${f.answer}?`",
+    )
+}
+
+fn nullable_fold(f: Fn) -> Diagnostic {
+    refuse(
+        "`${f.name}` answers a `${f.answer}`, and a fold's step answers none where it doesn't fold, so the answer it folds can't itself be absent",
+    )
+}
+
+fn no_engine_seat(f: Fn) -> Diagnostic {
+    refuse("`${f.name}` is remembered by the engine, so its first seat is `engine: QueryEngine`")
+}

@@ -1,0 +1,57 @@
+//! A REGISTER'S TYPE AS ITS LAYOUT: the registry's type read the way the machine reads it, so what
+//! consumes a lowered body asks a register's layout and never the registry.
+use core.{BoxKind, Layout, TypeId}
+use features.{Decls}
+
+impl Decls {
+    /// `b` laid out: each register by its index, each seat, and the answer.
+    fn laid(b: Body) -> Body {
+        b with { layouts: [self.register_layout(t) for t in b.reg_types], seats: [self.register_layout(t) for t in b.params], answer: self.register_layout(b.ret) }
+    }
+
+    /// What a value of `ty` is to the machine.
+    fn register_layout(ty: TypeId) -> Layout {
+        if self.types.valued_carrier(ty) { return Layout.Tagged(self.types.counted_mask(ty)) }
+        if self.types.travels_wide(ty) { return Layout.Fields(self.field_layouts(ty)) }
+        match self.types.shape_of(self.types.machine_type(ty)) {
+            .Int or .Error or .TypeName(_, _) or .Var(_, _, _) -> Layout.Word,
+            .Void -> Layout.Void,
+            .Float -> Layout.Real,
+            .Bool -> Layout.Truth,
+            .Ptr or .Null -> Layout.Bare,
+            .Str -> Layout.Boxed(BoxKind.Text),
+            .Bytes -> Layout.Boxed(BoxKind.Bytes),
+            .List(_) or .EmptyList -> Layout.Boxed(BoxKind.List),
+            .Map(_, _) or .EmptyMap -> Layout.Boxed(BoxKind.Map),
+            .Cell(_) -> Layout.Boxed(BoxKind.Cell),
+            .Task(_) or .Tasks -> Layout.Boxed(BoxKind.Task),
+            .Range -> Layout.Boxed(BoxKind.Range),
+            .Struct(_, _) -> Layout.Boxed(BoxKind.Record),
+            .Enum(_, _) or .Res(_, _) -> Layout.Boxed(BoxKind.Enum),
+            .App(d, _, _) -> match self.decl(d).kind {
+                .Enum or .CollectEnum -> Layout.Boxed(BoxKind.Enum),
+                .Record or .Builtin or .Named or .Alias or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .State or .Fn or .Method -> Layout.Boxed(BoxKind.Record),
+            },
+            .Dyn(_, _) -> Layout.Boxed(BoxKind.Dyn),
+            .Fn(_, _, _) -> Layout.Boxed(BoxKind.Closure),
+            .Union(_) -> Layout.Boxed(BoxKind.Union),
+            .Opt(inner) -> self.nullable_layout(inner),
+        }
+    }
+
+    /// A value record's fields laid out, in slot order.
+    fn field_layouts(ty: TypeId) -> List<Layout> {
+        [self.register_layout(f) for f in self.types.flat_fields(self.types.machine_type(ty))]
+    }
+
+    /// What a nullable of `inner` is: the pointer itself, the same registers where a spare tag stands
+    /// for absence, a one-slot box over a flat record, else a pair.
+    fn nullable_layout(inner: TypeId) -> Layout {
+        let carried = self.register_layout(inner)
+        if self.types.seen_shape(inner) is .Opt { return Layout.Maybe(carried) }
+        if self.types.rides_pointer(inner) { return carried }
+        if self.types.is_word_enum(inner) { return Layout.Word }
+        if self.types.is_flat(inner) { return Layout.Boxed(BoxKind.Slot) }
+        Layout.Maybe(carried)
+    }
+}

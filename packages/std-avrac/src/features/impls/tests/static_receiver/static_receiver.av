@@ -1,0 +1,143 @@
+// proves: a writing method called through a non-`mut` receiver never
+// writes into the binary's own static data (avra-qt94). A settled
+// aggregate literal (an empty list, a constant record) is shared by
+// every construction that reaches it, so the receiver's own box is
+// thawed before any write lands — through a nested field, through a
+// list element (by field and by index), through an Option unwrap,
+// and across a method calling another writing method, a bounded
+// generic's dispatch, a generic impl's own receiver, and a trait
+// default method — however many hops the write takes, however it is
+// reached. A genuine `mut` local receiver still writes through,
+// unaffected. A `dyn` receiver's own wrapped value is thawed the same
+// way, at the box that carries it.
+
+type W = { out: List<int> }
+
+impl W {
+    mut fn add(v: int) { self.out.push(v) }
+    mut fn add_twice(v: int) {
+        self.add(v)
+        self.add(v)
+    }
+}
+
+fn fresh() -> W { W { out: [] } }
+fn plain(w: W) { w.add(7) }
+fn plain_twice(w: W) { w.add_twice(7) }
+
+type Inner = { n: int }
+type Outer = { inner: Inner }
+
+impl Outer {
+    mut fn bump() { self.inner.n = self.inner.n + 1 }
+}
+
+fn fresh_outer() -> Outer { Outer { inner: Inner { n: 0 } } }
+fn poke(o: Outer) { o.bump() }
+
+type Item = { tag: int }
+type Holder = { items: List<Item> }
+
+impl Holder {
+    mut fn mark(i: int) { self.items[i].tag = 9 }
+}
+
+fn fresh_holder() -> Holder { Holder { items: [Item { tag: 0 }] } }
+fn touch(h: Holder) { h.mark(0) }
+
+fn mut_local_control() -> int {
+    mut w: W = fresh()
+    w.add(7)
+    w.out.length
+}
+
+trait Ticker {
+    mut fn tick()
+    fn count() -> int
+}
+
+type Counter = { n: int }
+
+impl Ticker for Counter {
+    fn tick() { self.n = self.n + 1 }
+    fn count() -> int { self.n }
+}
+
+fn fresh_counter() -> Counter { Counter { n: 0 } }
+
+fn dyn_ticked() -> int {
+    mut d: dyn Ticker = fresh_counter()
+    d.tick()
+    d.count()
+}
+
+// red-team (avra-qt94): a bounded generic's dispatch reaches a
+// writing member the same way a dyn contract's does — a fresh, and
+// so possibly settled, instance handed to a non-`mut` type parameter.
+fn poke_bounded<T: Ticker>(t: T) { t.tick() }
+
+// red-team: a generic impl's own receiver, over the type's Vars.
+type Box<T> = { v: T }
+
+impl Box<T> {
+    mut fn set(x: T) { self.v = x }
+}
+
+fn fresh_box() -> Box<int> { Box { v: 0 } }
+fn poke_box(b: Box<int>) { b.set(9) }
+
+// red-team: a list ELEMENT reached by index, not by field.
+fn fresh_ws() -> List<W> { [fresh()] }
+fn poke_indexed(xs: List<W>) { xs[0].add(3) }
+
+// red-team: an Option unwrap chain reaching the settled receiver.
+fn fresh_opt() -> W? { fresh() }
+fn poke_opt(o: W?) { o!.add(1) }
+
+// red-team: a trait DEFAULT method, writing through `self` by calling
+// an abstract member the impl supplies — reached on a concrete
+// (declared-dispatch) non-`mut` receiver, never a `dyn` one.
+trait Steps {
+    mut fn bump() { self.step() }
+    mut fn step()
+    fn seen() -> int
+}
+
+type CD = { n: int }
+
+impl Steps for CD {
+    fn step() { self.n = self.n + 1 }
+    fn seen() -> int { self.n }
+}
+
+fn fresh_cd() -> CD { CD { n: 0 } }
+fn poke_default(c: CD) { c.bump() }
+
+plain(fresh())
+let basic = fresh()
+
+plain_twice(fresh())
+let via = fresh()
+
+poke(fresh_outer())
+let nested = fresh_outer()
+
+touch(fresh_holder())
+let holder = fresh_holder()
+
+poke_bounded(fresh_counter())
+let bounded = fresh_counter()
+
+poke_box(fresh_box())
+let boxed = fresh_box()
+
+poke_indexed(fresh_ws())
+let indexed = fresh_ws()
+
+poke_opt(fresh_opt())
+let opt = fresh_opt()
+
+poke_default(fresh_cd())
+let cd = fresh_cd()
+
+"basic ${basic.out.length} via ${via.out.length} nested ${nested.inner.n} list ${holder.items[0].tag} mut-local ${mut_local_control()} dyn ${dyn_ticked()} bounded ${bounded.n} box ${boxed.v} indexed ${indexed[0].out.length} opt ${opt!.out.length} default ${cd.n}"

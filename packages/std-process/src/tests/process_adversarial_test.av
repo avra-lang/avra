@@ -1,0 +1,753 @@
+// The red team's set, kept apart from the feature's own story so it
+// can grow: degenerate shapes, every wrong value in every slot, the
+// two engines, ownership, and refusal quality. Each case names the
+// attack; the fixtures are the shell and a hand-built tool.
+use @std.process.{
+    Tool,
+    tool,
+    tool_from_env,
+    cmd,
+    Command,
+    Pipeline,
+    Stdin,
+    Ready,
+    Env,
+    EnvPair,
+    Output,
+    ProcessError,
+    minimal,
+    inherited,
+    exit_text,
+    parallel,
+    race,
+    serving,
+}
+use @std.time.{ms, secs, now_ms, now_ns, sleep}
+use @std.text.{from_codepoint}
+
+fn posix_sh() -> Result<Tool, ProcessError> {
+    tool("sh")
+}
+
+/// A tool that ends its options at `--`, standing on echo.
+fn dashed() -> Tool {
+    Tool { name: "t", path: "/bin/echo", terminator: "--" }
+}
+
+/// One NUL byte, minted in process — no file, no environment needed.
+fn nul() -> string {
+    from_codepoint(0)
+}
+
+/// A tool whose path names a program that does NOT exist, truncated at
+/// a NUL to one that does — the attack in one value.
+fn holed_tool() -> Tool {
+    Tool { name: "echo", path: "/bin/echo${nul()}/not/here", terminator: null }
+}
+
+/// A refusal's own words.
+fn said(r: Result<string, ProcessError>) -> string {
+    match r { .Ok(s) -> s, .Err(e) -> e.describe().message }
+}
+
+fn kind(e: ProcessError) -> string {
+    match e {
+        .NotFound(p, _) -> "not_found:${p}",
+        .Denied(p, _) -> "denied:${p}",
+        .NoCwd(d) -> "no_cwd:${d}",
+        .BadEnvName(n) -> "bad_env_name:${n}",
+        .Failed(x, o) -> "failed:${exit_text(x)}:${o.stdout.trim()}",
+        .TimedOut(after, o) -> "timeout:${after}:${o.stdout.trim()}",
+        .TooMuch(_, cap, _) -> "toomuch:${cap}",
+        .Unplaceable(w, _) -> "unplaceable:${w}",
+        .Holed(_, at) -> "holed:${at}",
+        .NotReady(waited, _) -> "not_ready:${waited >= 0}",
+        .StageFailed(i, x, _) -> "stage_failed:${i}:${exit_text(x)}",
+        .Unscripted(p, a) -> "unscripted:${p} ${a}",
+        .Empty(what) -> "empty:${what}",
+        .Host(e, call) -> "host:${e}:${call}",
+    }
+}
+
+fn shown(r: Result<string, ProcessError>) -> string {
+    match r { .Ok(s) -> s, .Err(e) -> kind(e) }
+}
+
+fn text(c: Command) -> Result<string, ProcessError> {
+    (c.run()?).stdout
+}
+
+fn shell(line: string) -> Result<Command, ProcessError> {
+    let s = posix_sh()?
+    cmd(s, ["-c", line])
+}
+
+fn negative_timeout() -> Result<string, ProcessError> {
+    text(shell("echo neg")? with { timeout: ms(0 - 5) })
+}
+
+fn zero_timeout() -> Result<string, ProcessError> {
+    text(shell("echo x")? with { timeout: ms(0) })
+}
+
+fn bad_cwd() -> Result<string, ProcessError> {
+    text(shell("pwd")? with { cwd: "/no/such/dir/anywhere" })
+}
+
+fn file_as_cwd() -> Result<string, ProcessError> {
+    text(shell("pwd")? with { cwd: "/etc/hosts" })
+}
+
+fn split_env_name() -> Result<string, ProcessError> {
+    text(shell("echo \$A")? with { env: minimal().with_var("A=B", "x") })
+}
+
+fn empty_env_name() -> Result<string, ProcessError> {
+    text(shell("echo x")? with { env: minimal().with_var("", "x") })
+}
+
+/// What a flooding child leaves in the partial capture when it breaks
+/// a cap — the SIZE, which is what diverged.
+/// A command carrying one environment pair, run.
+fn named(n: string, v: string) -> Result<Output, ProcessError> {
+    let c = shell("true")? with { env: Env.Only([EnvPair { name: n, value: v }]) }
+    c.run()
+}
+
+fn env_said(r: Result<Output, ProcessError>) -> string {
+    match r { .Ok(_) -> "ok", .Err(e) -> e.describe().kind.replace("process.", "") }
+}
+
+fn captured_over(cap: int) -> int {
+    match flooded(cap) { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+fn flooded(cap: int) -> Result<int, ProcessError> {
+    let c = shell("yes")? with { timeout: secs(5), max_capture: cap }
+    match c.run() {
+        .Ok(o) -> o.stdout.length,
+        .Err(e) -> match e { .TooMuch(s, n, part) -> part.stdout.length, rest -> { fail e } },
+    }
+}
+
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_reap(h: int) -> int
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_close(h: int) -> int
+
+/// A child in its OWN GROUP, run to its end and reaped, then its
+/// group signalled twice — the answers, negated.
+fn emptied_group() -> string {
+    let t = avra_proc_stage()
+    let _ = avra_proc_word(t, "-c")
+    let _ = avra_proc_word(t, "exit 0")
+    // NEW_PGROUP so the child leads a group; NULL in, PIPE out and err
+    let h = avra_proc_spawn(t, "/bin/sh", "", 16 + 2 + 4 + 1024, 0 - 1)
+    // REAPED, NOT MERELY POLLED AT. `reap` does not wait, so the bound
+    // counts immediate asks and a shell takes tens of thousands of
+    // them to start and exit — a bound of 400 left the group ALIVE and
+    // the case read as a failing fix rather than a short loop.
+    mut turns = 0
+    while turns < 400000 && avra_proc_reap(h) == 0 { turns = turns + 1 }
+    let first = 0 - avra_proc_signal(h, 15, 1)
+    let second = 0 - avra_proc_signal(h, 15, 1)
+    let _ = avra_proc_close(h)
+    "${first}/${second}"
+}
+
+fn grandchild_is_stopped() -> Result<string, ProcessError> {
+    // the child prints its grandchild's pid and exits; the grandchild
+    // holds our pipe past the grace, so the run is truncated — and the
+    // grandchild is stopped with the group, never left behind. A kill
+    // lands when the grandchild is next scheduled, and a killed process
+    // nobody has reaped is a zombie: the probe waits up to two seconds,
+    // far under the five the grandchild would sleep if it were missed
+    let o = shell("sleep 5 & echo \$!")? with { drain_grace: ms(200) }
+    let out = o.run()?
+    let pid = out.stdout.trim()
+    let probe = text(
+        shell(
+            "for i in 1 2 3 4 5 6 7 8 9 10; do ps -o stat= -p ${pid} | grep -qv Z || { echo dead; exit; }; sleep 0.2; done; echo alive",
+        )?,
+    )?
+    "${out.truncated}/${probe.trim()}"
+}
+
+fn mib_intact() -> Result<string, ProcessError> {
+    let c = shell("head -c 1048576 /dev/zero | tr '\\0' x")?
+    "${(c.run()?).stdout.length}"
+}
+
+fn nul_kept() -> Result<string, ProcessError> {
+    let c = shell("printf 'a\\0b'")?
+    "${(c.run()?).stdout.length}"
+}
+
+fn huge_stdin_to_a_deaf_child() -> Result<string, ProcessError> {
+    let t = tool("true")?
+    mut big = "x"
+    while big.length < 300000 { big = big + big }
+    let o = (cmd(t, []) with { stdin: Stdin.Text(big) }).run()?
+    "ok:${o.stdout.length}"
+}
+
+fn partial_rides_the_timeout() -> Result<string, ProcessError> {
+    text(shell("echo partial; sleep 5")? with { timeout: ms(200) })
+}
+
+fn codes() -> Result<string, ProcessError> {
+    let big_c = shell("exit 255")?
+    let wrapped_c = shell("exit 256")?
+    let big = (big_c.outcome()?).exit
+    let wrapped = (wrapped_c.outcome()?).exit
+    "${exit_text(big)}/${exit_text(wrapped)}"
+}
+
+fn hand_built(path: string) -> Result<string, ProcessError> {
+    text(cmd(Tool { name: "hand", path: path, terminator: "--" }, []))
+}
+
+fn many() -> Result<string, ProcessError> {
+    let t = tool("true")?
+    mut clean = 0
+    for i in 0..120 {
+        if (cmd(t, []).outcome()?).exit is .Clean { clean = clean + 1 }
+    }
+    "${clean}"
+}
+
+/// A command whose shell variable shares its name with a local. The
+/// local must not reach the child: the shell expands `$AVRA_PROBE`,
+/// and the `${…}` spelling would have handed over "decoy" instead.
+fn shadowed_var() -> Result<string, ProcessError> {
+    let AVRA_PROBE = "decoy"
+    let c = shell("echo \$AVRA_PROBE")? with { env: minimal().with_var("AVRA_PROBE", "seen") }
+    "${(c.run()?).stdout.trim()}${AVRA_PROBE.replace("decoy", "")}"
+}
+
+fn hostile_words() -> Result<string, ProcessError> {
+    let echo = tool("echo")?
+    (cmd(echo, ["b c", "d\"e", "\$HOME", "; rm -rf /", "--flag", "`id`"]).run()?).stdout.trim()
+}
+
+fn inherited_home() -> Result<string, ProcessError> {
+    let c = shell("echo \$HOME")? with { env: inherited() }
+    (c.run()?).stdout.trim()
+}
+
+fn three_thousand_words() -> Result<string, ProcessError> {
+    let echo = tool("echo")?
+    let words = ["w${i}" for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]
+    mut all: List<string> = []
+    for round in 0..300 { all = all.concat(words) }
+    "${(cmd(echo, all).run()?).stdout.split(" ").length}"
+}
+
+fn failed_message() -> string {
+    match shell("echo one >&2; echo two >&2; exit 4") {
+        .Ok(c) -> match c.run() { .Ok(_) -> "ran", .Err(e) -> e.describe().message },
+        .Err(_) -> "no shell",
+    }
+}
+
+fn empty_pipeline() -> Result<string, ProcessError> {
+    let o = Pipeline { stages: [] }.run()?
+    "ran:${o.stdout.length}"
+}
+
+fn single_stage() -> Result<string, ProcessError> {
+    let c = shell("echo solo")?
+    (Pipeline { stages: [c] }.run()?).stdout.trim()
+}
+
+fn stopped_twice() -> Result<string, ProcessError> {
+    let c = shell("sleep 5")?
+    mut child = c.start(Ready.Started, secs(1))?
+    let a = child.stop()
+    let b = child.stop()
+    "${exit_text(a)}/${exit_text(b)}"
+}
+
+fn waited_after_stop() -> Result<string, ProcessError> {
+    let c = shell("echo said; sleep 5")?
+    mut child = c.start(Ready.Line("said"), secs(2))?
+    let a = child.stop()
+    let began = now_ms()
+    let o = child.wait(null)?
+    "${exit_text(a)}/${exit_text(o.exit)}/${o.out.stdout.trim()}/${now_ms() - began < 500}"
+}
+
+fn read_after_wait() -> Result<string, ProcessError> {
+    let c = shell("echo x")?
+    mut child = c.start(Ready.Started, secs(1))?
+    let o = child.wait(secs(1))?
+    let l = child.read_line(secs(2)) ?? "-"
+    "${o.out.stdout.trim()}/${l}/${child.is_alive()}"
+}
+
+fn consumer_quits_early() -> Result<string, ProcessError> {
+    let head = tool("head")?
+    let producer = shell("yes")? with { timeout: secs(5) }
+    let o = producer.pipe(cmd(head, ["-n", "2"])).run()?
+    o.stdout.replace("\n", ",")
+}
+
+fn unstartable_sibling() -> Result<string, ProcessError> {
+    let ok = shell("sleep 5")?
+    let ghost = cmd(Tool { name: "ghost", path: "/no/such", terminator: null }, [])
+    "${(parallel([ok, ghost], 2)?).length}"
+}
+
+fn odd_limits() -> Result<string, ProcessError> {
+    let a = shell("echo a")?
+    "${(parallel([a, a], 0)?).length}/${(parallel([a], 0 - 3)?).length}/${(parallel([], 4)?).length}"
+}
+
+fn race_of_none() -> Result<string, ProcessError> {
+    "${(race([], ms(10))?).took_ms}"
+}
+
+fn race_with_a_ghost_first() -> Result<string, ProcessError> {
+    let ghost = cmd(Tool { name: "ghost", path: "/no/such", terminator: null }, [])
+    let second = shell("echo second")?
+    (race([ghost, second], ms(10))?).out.stdout.trim()
+}
+
+fn started_in_no_dir() -> Result<string, ProcessError> {
+    let c = shell("pwd")? with { cwd: "/no/such/dir" }
+    "${(c.start(Ready.Started, secs(1))?).pid()}"
+}
+
+fn alive_after_exit() -> Result<string, ProcessError> {
+    let c = shell("exit 0")?
+    mut child = c.start(Ready.Exit, secs(2))?
+    let before = child.is_alive()
+    let o = child.wait(secs(1))?
+    "${before}/${exit_text(o.exit)}/${child.is_alive()}"
+}
+
+fn middle_stdin_ignored() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    let head = shell("echo up")?
+    (head.pipe(cmd(cat, []) with { stdin: Stdin.Text("mine") }).run()?).stdout.trim()
+}
+
+/// THIS PROCESS'S CONSUMED CPU, the only witness that tells a WAIT from
+/// a SPIN — both take the same wall time. Declared here and nowhere
+/// else: the language needs no such row, this law does.
+extern fn avra_proc_cpu_ms() -> i64
+
+/// A command whose child ends at once, with a drain grace the driver
+/// must WAIT OUT — the window where there is nothing left to poll.
+/// Answers the elapsed milliseconds and the CPU milliseconds the wait
+/// itself cost.
+fn quick_with_grace(g: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("echo done")? with { drain_grace: ms(g) }).run()?
+    now_ms() - began
+}
+
+fn cpu_of_grace(g: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("echo done")? with { drain_grace: ms(g) }).run()?
+    avra_proc_cpu_ms() - cpu
+}
+
+/// THE SAME GRACE WITH A GRANDCHILD STILL HOLDING THE PIPE. The child
+/// ends at once and a background sibling keeps stdout open, so the
+/// driver has something to poll for the whole window — the state the
+/// old row handled correctly. Its CPU is the control: the defect was
+/// the state with NOTHING to watch, never the grace loop itself.
+/// The elapsed time of a grace a grandchild holds open — the window
+/// that IS waited out, whole.
+fn held_grace(g: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("sleep 3 & echo done")? with { drain_grace: ms(g) }).run()?
+    now_ms() - began
+}
+
+fn cpu_of_held_grace(g: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("sleep 3 & echo done")? with { drain_grace: ms(g) }).run()?
+    avra_proc_cpu_ms() - cpu
+}
+
+/// A child that closes an UNUSED stream AT ONCE and keeps living for
+/// `secs` more, writing nothing anywhere — one watched descriptor
+/// answers HUP for the rest of the run while the process itself is
+/// not gone. The state `avra_proc_ready`'s row must not spin on: the
+/// same law as a grace with nothing left to watch, one member short
+/// of an empty set.
+fn hup_alive(secs: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("exec 2>&- ; sleep ${secs}")?).outcome()?
+    now_ms() - began
+}
+
+fn cpu_of_hup_alive(secs: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("exec 2>&- ; sleep ${secs}")?).outcome()?
+    avra_proc_cpu_ms() - cpu
+}
+
+/// A GRANDCHILD HOLDING THE PIPE UNDER `parallel`: one stage's direct
+/// child exits at once, and a sibling it left behind writes into the
+/// inherited pipe a beat later, inside the drain grace. A collector
+/// that reads a stage's own reap as "the capture is whole" misses a
+/// word still arriving after it.
+fn parallel_grandchild_word() -> Result<string, ProcessError> {
+    let outs = parallel(
+        [
+            shell("echo p1")?,
+            shell("echo p2; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) },
+            shell("echo p3")?,
+        ],
+        3,
+    )?
+    [o.out.stdout.replace("\n", "/").trim() for o in outs].join("+")
+}
+
+/// The same shape through `race`: the winner is the stage with the
+/// grandchild, and its word must still land.
+fn race_grandchild_word() -> Result<string, ProcessError> {
+    let r = race(
+        [
+            shell("echo winner; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) },
+            shell("sleep 5")?,
+        ],
+        ms(0),
+    )?
+    r.out.stdout.replace("\n", "/").trim()
+}
+
+/// A grandchild that NEVER exits under `parallel`: the grace floor
+/// expires, the tree is killed, and the capture is TRUNCATED — never a
+/// silent short answer with nothing to tell the caller apart.
+fn parallel_grandchild_never_exits() -> Result<string, ProcessError> {
+    let outs = parallel([shell("echo a; sleep 30 &")? with { drain_grace: ms(200) }], 1)?
+    "${outs[0].out.truncated}/${outs[0].out.stdout.trim()}"
+}
+
+/// A capped stage under `parallel`, a grandchild present too: the cap
+/// is a bound break and wins at once — no grace is paid once broken,
+/// so this returns fast despite a five-second grace on the command.
+fn parallel_capped_pays_no_grace() -> Result<int, ProcessError> {
+    let began = now_ms()
+    match parallel(
+        [
+            shell("yes | head -c 200000; (sleep 0.2; echo late) &")? with { max_capture: 1000, drain_grace: secs(5) },
+        ],
+        1,
+    ) { .Ok(_) -> .Err(ProcessError.Empty("expected TooMuch")), .Err(_) -> .Ok(now_ms() - began) }
+}
+
+fn napped() -> int {
+    sleep(secs(5))
+    0
+}
+
+fn served_asleep(c: Command) -> bool { serving(c, Ready.Started, secs(2), () -> napped()) is .Ok }
+
+/// A child served around a body whose task is cancelled mid-body:
+/// whether it was stopped before it could leave its mark.
+fn unwound_child_stopped() -> Result<bool, ProcessError> {
+    let s = tool("sh")?
+    let mark = "/tmp/avra-unwound-${now_ns()}"
+    let t = spawn served_asleep(cmd(s, ["-c", "sleep 1; : > ${mark}"]))
+    sleep(ms(100))
+    t.cancel()
+    sleep(ms(50))
+    let left = (cmd(s, ["-c", "sleep 1.3; test -e ${mark} && rm ${mark}"]).outcome()?).exit is .Clean
+    !left
+}
+
+spec "std/process adversarial" {
+    given "a NUL makes a value two values, so the host is never handed one" {
+        then "a tool path holding a NUL refuses — it does NOT run the truncated program" {
+            shown(text(cmd(holed_tool(), ["x"]))) == "holed:9"
+        }
+        then "the refusal says what it means, and where" {
+            said(text(cmd(holed_tool(), ["x"]))) == "a word holding a NUL is two words — the host reads to byte 9 and no further"
+        }
+        then "an ARGUMENT holding a NUL refuses — a word from data arrives whole or not at all" {
+            shown(text(cmd(dashed(), ["ok", "ab${nul()}cd"]))) == "holed:2"
+        }
+        then "the WORKING DIRECTORY holding a NUL refuses" {
+            shown(text(cmd(dashed(), ["x"]) with { cwd: "/tm${nul()}p" })) == "holed:3"
+        }
+        then "an ENVIRONMENT value holding a NUL refuses" {
+            shown(text(cmd(dashed(), ["x"]) with { env: minimal().with_var("K", "a${nul()}b") })) == "holed:3"
+        }
+        then "`tool` refuses a NUL in the name before it searches" {
+            match tool("ec${nul()}ho") { .Ok(_) -> false, .Err(e) -> kind(e) == "holed:2" }
+        }
+        then "`tool_from_env` refuses a holed variable rather than reading another one" {
+            match tool_from_env("PA${nul()}TH", "sh") {
+                .Ok(_) -> false,
+                .Err(e) -> kind(e) == "holed:2",
+            }
+        }
+        then "X_only: a holed name is null under Only" {
+            minimal().with_var("AB", "v").get("AB${nul()}CD") == null
+        }
+        then "X_inherit: a holed name is null under Inherit" {
+            inherited().get("PA${nul()}TH") == null
+        }
+        then "X_intact: an unholed name still reads under Only" {
+            minimal().with_var("AB", "v").get("AB") == "v"
+        }
+        then "a NUL-free command still runs — the guard refuses nothing it should not" {
+            shown(text(cmd(dashed(), ["fine"]))).trim() == "fine"
+        }
+    }
+    given "children and pipelines at their edges" {
+        then "an empty pipeline is refused, never a trap on its last stage" {
+            shown(empty_pipeline()) == "empty:the pipeline"
+        }
+        then "a pipeline of one stage is that stage" {
+            shown(single_stage()) == "solo"
+        }
+        then "a child stopped twice remembers the exit it met" {
+            shown(stopped_twice()) == "by signal 15/by signal 15"
+        }
+        then "a wait after a stop answers the stop's outcome at once, words included" {
+            shown(waited_after_stop()) == "by signal 15/by signal 15/said/true"
+        }
+        then "output delivered by wait is not read again" {
+            shown(read_after_wait()) == "x/-/false"
+        }
+        then "a producer killed by SIGPIPE under a clean consumer succeeded" {
+            shown(consumer_quits_early()) == "y,y,"
+        }
+        then "a sibling that cannot start fails the whole and the rest are stopped" {
+            shown(unstartable_sibling()) == "not_found:ghost"
+        }
+        then "a limit below one is one; nothing at all is nothing" {
+            shown(odd_limits()) == "2/1/0"
+        }
+        then "a race of nothing is refused" {
+            shown(race_of_none()) == "empty:the race"
+        }
+        then "a later stage's stdin is the pipe, whatever its command says" {
+            shown(middle_stdin_ignored()) == "up"
+        }
+        then "a racer that cannot start fails the race, spelled as the missing tool" {
+            shown(race_with_a_ghost_first()) == "not_found:ghost"
+        }
+        then "a child cannot start in a directory that is not there" {
+            shown(started_in_no_dir()) == "no_cwd:/no/such/dir"
+        }
+        then "a child ready by exit is not alive, and stays not alive after wait" {
+            shown(alive_after_exit()) == "false/clean/false"
+        }
+    }
+    given "refusal quality" {
+        then "a failure's message quotes stderr's first line and no more" {
+            failed_message() == "the child exited with code 4: one …"
+        }
+    }
+    given "the hatch and the wide" {
+        then "inheriting the world hands the child the invoker's HOME" {
+            shown(inherited_home()).length > 0 && shown(inherited_home()) != "not_found:sh"
+        }
+        then "three thousand words arrive as three thousand words" {
+            shown(three_thousand_words()) == "3000"
+        }
+    }
+    given "degenerate shapes and bounds" {
+        then "a negative timeout is a deadline already passed, never no deadline" {
+            shown(negative_timeout()) == "timeout:0:"
+        }
+        then "a zero timeout times out before the child speaks" {
+            shown(zero_timeout()) == "timeout:0:"
+        }
+        then "no ok_exits accepts nothing, and says so" {
+            shown(text(cmd(dashed(), ["x"]) with { ok_exits: [] })) == "failed:clean:x"
+        }
+        then "a cap of zero lifts the cap" {
+            shown(text(cmd(dashed(), ["five"]) with { max_capture: 0 })) == "five\n"
+        }
+        then "a mebibyte comes back whole under the default cap" {
+            shown(mib_intact()) == "1048576"
+        }
+        then "a NUL byte in the output is kept and counted" {
+            shown(nul_kept()) == "3"
+        }
+        then "stdin the child never reads is an EPIPE we survive" {
+            shown(huge_stdin_to_a_deaf_child()) == "ok:0"
+        }
+        then "what the child said before the deadline rides the timeout" {
+            shown(partial_rides_the_timeout()) == "timeout:200:partial"
+        }
+        then "exit 255 is a code; a shell's 256 wraps to clean, as the kernel says" {
+            shown(codes()) == "with code 255/clean"
+        }
+        then "a hundred and twenty children reuse the handle table" {
+            shown(many()) == "120"
+        }
+    }
+    given "every wrong value in a slot" {
+        then "a directory that is not there is named, not the tool" {
+            shown(bad_cwd()) == "no_cwd:/no/such/dir/anywhere"
+        }
+        then "a file as a directory is refused the same way" {
+            shown(file_as_cwd()) == "no_cwd:/etc/hosts"
+        }
+        then "an environment name holding `=` is refused, never split" {
+            shown(split_env_name()) == "bad_env_name:A=B"
+        }
+        then "an empty environment name is refused" {
+            shown(empty_env_name()) == "bad_env_name:"
+        }
+        then "a tool path that is nothing, a text file, a directory" {
+            "${shown(hand_built("/no/such"))} ${shown(hand_built("/etc/hosts"))} ${shown(hand_built("/"))} ${shown(hand_built(""))}" == "not_found:hand denied:hand denied:hand not_found:hand"
+        }
+        then "a short flag attaches its value; a long one fuses with `=`" {
+            cmd(dashed(), [])
+                .flag("-o", "x")
+                .flag("--depth", "1")
+                .flag("-fplugin", "p")
+                .args
+                .join(" ") == "-ox --depth=1 -fplugin=p"
+        }
+        then "an empty path stays empty instead of naming the directory" {
+            cmd(dashed(), []).path("").args.join("|") == ""
+        }
+    }
+    given "an environment entry with no name" {
+        then "the face refuses one, whatever its value" {
+            env_said(named("", "V")) == "bad_env_name" && env_said(named("", "")) == "bad_env_name"
+        }
+        then "a name set to EMPTY is set, and is not the same thing" {
+            env_said(named("AVRA_RT_SET", "")) == "ok"
+        }
+    }
+    given "the cap bounds what it captures, not merely what it accepts" {
+        // A FLOODING CHILD gave 679 KB natively and 52 MB under the
+        // evaluator for a cap of 1000 — the decision agreed and the
+        // CAPTURE did not, which is a divergence in a value the caller
+        // reads. A drain that empties the pipe before testing the bound
+        // is bounded by the child's speed, not by the cap.
+        then "a cap of 1000 keeps at most a chunk past it, not megabytes" {
+            captured_over(1000) <= 2000
+        }
+        then "the same cap keeps the same amount whatever the engine's speed" {
+            captured_over(64) <= 128 && captured_over(64) >= 64
+        }
+    }
+    given "a group whose members are gone" {
+        // A GROUP OUTLIVES ITS LEADER, which is why a signal must not
+        // test the leader's life — and the same reasoning bounds it:
+        // once the group is genuinely EMPTY the OS may recycle the
+        // pgid, and a late signal lands on an unrelated group. The
+        // pgid is a raw OS number no generation can guard, so the
+        // slot records the first emptiness it ever observes.
+        then "the first signal to an emptied group answers ESRCH, and so does every later one" {
+            emptied_group() == "3/3"
+        }
+    }
+    given "the tree, not the child" {
+        then "a grandchild holding the pipe is truncated and stopped with the group" {
+            shown(grandchild_is_stopped()) == "true/dead"
+        }
+    }
+    given "the words are data" {
+        then "shell metacharacters in words reach the child as themselves" {
+            shown(hostile_words()) == "b c d\"e \$HOME ; rm -rf / --flag `id`"
+        }
+        // A SHELL VARIABLE IS SPELLED `$NAME`, NEVER `${NAME}`, and the
+        // difference is silent. `"${HOME}"` is Avra's interpolation: with
+        // nothing of that name it is a loud F3000, and with a `let HOME`
+        // in scope it COMPILES CLEAN and the command becomes the local's
+        // value — measured here, `echo /tmp/not-your-home`, no
+        // diagnostics. So the loud half protects a writer only while no
+        // local shares the name, and a command line is exactly where
+        // HOME, PATH and USER are likely to be locals too.
+        then "a same-named local does not reach the child — the `\$NAME` spelling is the shell's" {
+            shown(shadowed_var()) == "seen"
+        }
+    }
+    given "a grace with nothing left to watch — the wait is a wait, never a spin" {
+
+        // A CHILD THAT IS GONE AND DRAINED LEAVES NOTHING TO POLL, and
+        // the driver still waits the grace out (a grandchild may hold
+        // the pipes). `avra_proc_ready` slept only while the child was
+        // alive, so this window returned instantly and the loop spun:
+        // one core for the whole grace, two seconds per command by
+        // default. The row waits whenever it is asked to, so the time
+        // is SLEPT — measurable as elapsed time here, and as user time
+        // in the suite's own clock.
+        then "a holder's grace is waited out, not raced" {
+            (held_grace(300) catch 0) >= 250
+        }
+        then "a longer grace waits longer — the window is the caller's number" {
+            (held_grace(600) catch 0) >= 550
+        }
+        then "and it is not waited twice — the floor is the grace, not a multiple" {
+            (held_grace(300) catch 9999) < 2000
+        }
+        // THE ELAPSED TIME CANNOT TELL A WAIT FROM A SPIN: both take the
+        // grace. The CPU can, and it is the whole claim — so the law is
+        // asserted where it lives. A 500 ms grace slept costs a few
+        // milliseconds of CPU; spun it cost ~500.
+        then "the grace is SLEPT — it costs wall time and almost no CPU" {
+            (cpu_of_grace(500) catch 9999) < 100
+        }
+        then "a longer grace costs no more CPU than a shorter one" {
+            (cpu_of_grace(1000) catch 9999) < 100
+        }
+        // THE CONTROL, and it is what makes the claim exact: with a
+        // grandchild holding the pipe there IS something to poll, and
+        // the window was always slept — on the old row too. So the
+        // defect was the state with nothing to watch, never the grace.
+        then "a grace with a grandchild holding the pipe was never the spin" {
+            (cpu_of_held_grace(500) catch 9999) < 100
+        }
+        // AND THE FLOOR IS NOT PAID WHERE NOBODY CAN SPEAK: with both
+        // ends closed the window has nothing to protect, so the wait
+        // ends with the pipes and not with the clock. A holder still
+        // gets its whole floor — the case above proves that one waits.
+        then "a grace with nothing left to hold it ends with the pipes, not the clock" {
+            (quick_with_grace(2000) catch 9999) < 500
+        }
+    }
+    given "one stream hung up while the child lives — the wait is a wait, never a spin" {
+
+        // STDERR CLOSES AT ONCE and the child sleeps on unwritten. POLLHUP
+        // is sticky, so a row that leaves a hung-up descriptor in its
+        // poll set answers every later call at once regardless of the
+        // timeout it was asked for — measured before this law held: a
+        // core pegged for the child's whole life, ~250,000 calls in
+        // just over a second. WHETHER THE PIPE IS TRULY EMPTY IS NOT
+        // POLLIN's TO ANSWER EITHER: Darwin sets it alongside POLLHUP
+        // the whole time the peer is gone, so a check keyed on POLLIN
+        // alone holds on Linux and lies on Darwin. FIONREAD settles it
+        // on both.
+        then "the wait is elapsed time" {
+            (hup_alive(1) catch 0) >= 900
+        }
+        then "and it costs almost no CPU" {
+            (cpu_of_hup_alive(1) catch 9999) < 100
+        }
+    }
+    given "a grandchild holding the pipe, one door out — a collector that declares on stop" {
+
+        then "parallel pays the grace, and a sibling's word is not lost" {
+            shown(parallel_grandchild_word()) == "p1/+p2/said/+p3/"
+        }
+        then "race pays the grace too — the winner's sibling still lands" {
+            shown(race_grandchild_word()) == "winner/said/"
+        }
+        then "a grandchild that never exits is truncated, not hung on forever" {
+            shown(parallel_grandchild_never_exits()) == "true/a"
+        }
+        then "a bound break pays no grace — a capped stage returns fast" {
+            (parallel_capped_pays_no_grace() catch 9999) < 500
+        }
+    }
+    given "a task unwound inside `serving`'s body" {
+        then "the child is stopped with its tree" { unwound_child_stopped() catch false }
+    }
+}

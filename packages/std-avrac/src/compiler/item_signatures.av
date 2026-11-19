@@ -1,0 +1,975 @@
+//! WHAT A FN'S SIGNATURE SAYS, every type it writes resolved: to one of the fn's own type parameters,
+//! to a type the language owns, or to the declaration its file's top level names. It's read off the
+//! declaring item's tape and the names layer alone, and a declared type is known by its file and
+//! name, never by where it stands, so a signature moves only when what it writes or what its names
+//! name does.
+use core.{
+    owned_type,
+    Annotation,
+    Expr,
+    some_list,
+    template_file,
+    FieldSeat,
+    carries_composed,
+    VariantSeat,
+    fp_str,
+    ExprId,
+    flatten,
+    NamedParts,
+    OwnType,
+    INFERRED,
+    headed_type,
+    Param,
+    SignedSeat,
+    SignedType,
+    StmtId,
+    CollectKind,
+    CollectScope,
+    Plain,
+    SyntaxArena,
+    TypeHead,
+    TypeRef,
+    new_node_store,
+    seat_spelled,
+    width_named,
+    widthless,
+}
+use compiler.typing.{builtin_type_name}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{content_hash}
+use @std.program.bounded_cache.{BoundedCache, bounded_cache}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.io.{env}
+use @std.text.{parse_int}
+use @std.program.source_facts.{PlacedTape}
+use @std.program.syntax_tape.{SyntaxTape, tape_read}
+
+/// A fn's parameter: its name, its type when written, the promises its seat makes, and the width it
+/// crosses to C at, if it names one. A width is the seat's, never the value's: the type is the
+/// language's one integer.
+@derive(Saved)
+export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settled: bool, width: string?, defaulted: bool = false, state: bool = false, spread: bool = false, rest: bool = false, unshared: bool = false }
+
+/// A fn's signature: its type parameters, its parameters, its answer and the width its answer
+/// crosses from C at, if it names one; and the trait each type parameter is bound by, absent for one
+/// bound by none.
+@derive(Saved)
+export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string?, bounds: List<SignedType?> = [] }
+
+/// The signature of a body taking nothing and answering `ty`: a value's.
+export fn value_signature(ty: SignedType) -> FnSignature { FnSignature { type_params: [], params: [], answer: ty, answer_width: null } }
+
+/// What a name declared over a shape stands over: its type parameters and the shape, resolved where
+/// it's declared. An alias is that shape; a named type is a distinct type over it.
+@derive(Saved)
+export type NameOver = { type_params: List<string>, of: SignedType }
+
+/// The signature of the fn `file` declares as `name`, absent when it declares none.
+@query
+export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let written? = written_fn(item.store, item.stmts, name) else { return null }
+    declared_signature(engine, file, written)
+}
+
+/// The type a top-level binding — a `const`, a `collect` or a `state` — `file` declares as `name` is written
+/// with, resolved where it's written: a generated one's in the generator's file. Absent when it
+/// declares none or writes no type.
+@query
+export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
+    let item? = [ItemKind.Const, ItemKind.Collect, ItemKind.State]
+        .find_map((k) -> declaring_item(engine, file, name, k)) else { return null }
+    let s? = item
+        .stmts
+        .find((x) -> item.store.let_name(x) == name && item.store.binding_ty(x) != null) else { return null }
+    Signing { engine: engine, file: file, type_params: [], writer: written_by(item.store, s) }
+        .signed(item.store.binding_ty(s)!)
+}
+
+/// Every fn `file` declares as `name`, signed, in the order they're declared: a verb file may
+/// declare one name over several receivers.
+@query
+export fn fn_signatures(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
+    FnSignature,
+> {
+    [s! for d in file_declares(engine, file).names if d.name == name && d.kind == ItemKind.Fn for s in [item_fn_signature(engine, file, d.item, name)] if s != null]
+}
+
+/// The signature of the fn `name` the item at `at` in `file` declares.
+fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> FnSignature? {
+    let item = read_item(engine, file, at)
+    let written? = written_fn(item.store, item.stmts, name) else { return null }
+    declared_signature(engine, file, written)
+}
+
+/// The signature the fn `written` in `file` declares, signed where it's written: its answer's width
+/// apart.
+fn declared_signature(engine: QueryEngine, file: SourceFileAddress, written: WrittenFn) -> FnSignature {
+    let signing = Signing {
+        engine: engine,
+        file: file,
+        type_params: written.type_params,
+        writer: written.writer,
+    }
+    FnSignature {
+        type_params: written.type_params,
+        params: [signing.param(p) for p in written.params if p.seated()],
+        answer: signing.signed(widthless(written.ret)!),
+        answer_width: width_of(written.ret),
+        bounds: signing.bounds(written),
+    }
+}
+
+/// Types written in `file` under its own type parameters `type_params`, signed.
+fn signing_in(engine: QueryEngine, file: SourceFileAddress, type_params: List<string>) -> Signing {
+    Signing { engine: engine, file: file, type_params: type_params }
+}
+
+/// What the alias `file` declares as `name` stands for, absent when it declares none or names itself.
+@query
+export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: string) -> NameOver? {
+    let parts? = alias_written(engine, file, name) else { return null }
+    let home = declared_place(file, name)
+    if alias_path(engine, home, home, []) != null { return null }
+    name_over(engine, file, parts)
+}
+
+/// The alias `file` declares as `name` as it's written, absent when it declares none.
+fn alias_written(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamedParts? {
+    let item? = declaring_item(engine, file, name, ItemKind.Alias) else { return null }
+    [a! for s in item.stmts for a in [item.store.alias_parts(s)] if a != null].find(it.name == name)
+}
+
+/// The aliases the alias `here` passes through, alias by alias, on its way to naming `home` in what
+/// it's written to stand for, through none among `seen`; absent where it never names it. An alias
+/// that names itself stands for nothing.
+fn alias_path(engine: QueryEngine, here: DeclaredAt, home: DeclaredAt, seen: List<DeclaredAt>) -> List<
+    DeclaredAt,
+>? {
+    if seen.any((x) -> same_declared(x, here)) { return null }
+    let named = aliases_named(engine, here)
+    if named.any((d) -> same_declared(d, home)) { return [] }
+    named.find_map((d) -> alias_through(engine, d, home, seen.concat([here])))
+}
+
+/// `d`, then the aliases it passes through on its way to naming `home`; absent where it never does.
+fn alias_through(engine: QueryEngine, d: DeclaredAt, home: DeclaredAt, seen: List<DeclaredAt>) -> List<
+    DeclaredAt,
+>? {
+    let rest? = alias_path(engine, d, home, seen) else { return null }
+    [d].concat(rest)
+}
+
+/// The aliases the alias `here` names in what it's written to stand for, as its file resolves them.
+fn aliases_named(engine: QueryEngine, here: DeclaredAt) -> List<DeclaredAt> {
+    let parts? = alias_written(engine, here.file, here.name) else { return [] }
+    [declared_place(d!.file, d!.name) for t in types_written(parts.of) if !parts.tparams.contains(t.name) for d in [resolved(engine, here.file, Space.Type, t.name).named()] if d != null && d!.kind == ItemKind.Alias]
+}
+
+/// `t` and every type written inside it: its arguments, a union's members, a fn type's seats and
+/// answer.
+fn types_written(t: TypeRef) -> List<TypeRef> {
+    let inside = t
+        .applied
+        .concat(t.alternatives)
+        .concat([s.ty for s in t.seats])
+        .concat(if t.answer == null { [] } else { [t.answer!] })
+    [t].concat(flatten([types_written(x) for x in inside]))
+}
+
+/// The shape the named type `file` declares as `name` stands over, absent when it declares none.
+@query
+export fn named_shape(engine: QueryEngine, file: SourceFileAddress, name: string) -> NameOver? {
+    let parts? = named_written(engine, file, name) else { return null }
+    name_over(engine, file, parts)
+}
+
+/// The named type `file` declares as `name` as it's written, absent when it declares none.
+fn named_written(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamedParts? {
+    let item? = declaring_item(engine, file, name, ItemKind.Named) else { return null }
+    [n! for s in item.stmts for n in [item.store.named_parts(s)] if n != null].find(it.name == name)
+}
+
+/// What a name `file` declares over a shape stands over.
+fn name_over(engine: QueryEngine, file: SourceFileAddress, parts: NamedParts) -> NameOver {
+    NameOver {
+        type_params: parts.tparams,
+        of: signing_in(engine, file, parts.tparams).signed(parts.of),
+    }
+}
+
+/// The shape the named type `ty` stands over, bound to the arguments it's applied to, through every
+/// named type between; absent for any other type, a dynamic one among them. A name over a nullable is
+/// as absent as its shape, so it stands over it under the nulls it carries.
+export fn named_over(engine: QueryEngine, ty: SignedType) -> SignedType? {
+    let shape? = shape_under(engine, ty, NAMED_DEPTH) else { return null }
+    if ty.under == null && shape.spelled() == ty.spelled() { null } else { shape }
+}
+
+/// The shape the named type `ty` is written over, one name down: what a value crossing into it
+/// (`Name(value)`) is, another named type where it names one.
+export fn named_next_over(engine: QueryEngine, ty: SignedType) -> SignedType? { shape_under(engine, ty, 0) }
+
+/// How many named types a shape is read through before one that stands over itself is left as it is.
+const NAMED_DEPTH: int = 32
+
+/// The shape `ty` stands over, read through at most `depth` named types.
+fn shape_under(engine: QueryEngine, ty: SignedType, depth: int) -> SignedType? {
+    if ty.dynamic { return null }
+    let held = ty.under
+    if held != null { return if ty.nulls > held.nulls { null } else { held with { nulls: ty.nulls } } }
+    if ty.nullable() { return null }
+    let at? = declared_at(ty) else { return null }
+    let over? = named_shape(engine, at.file, at.name) else { return null }
+    if ty.args.length != over.type_params.length { return null }
+    let shape = over.of.bound(ty.args)
+    if depth == 0 { shape } else { shape_under(engine, shape, depth - 1) ?? shape }
+}
+
+/// A record's signature: its type parameters and its fields, in order, a spread's in its place; and
+/// each parameter's bound, where it writes them (a component does).
+@derive(Saved)
+export type RecordSignature = { type_params: List<string>, fields: List<FieldSeat>, bounds: List<SignedType?> = [] }
+
+/// The signature of the record (or component) `file` declares as `name`, absent when it declares
+/// none: a component holding a body carries what its composing trait names past its own fields.
+@query
+export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? {
+    let item? = record_item(engine, file, name) else { return null }
+    let s? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == name) else { return component_signature(engine, file, item, name) }
+    let parts = item.store.struct_parts(s)!
+    let signing = signing_in(engine, file, parts.tparams)
+    let placing = item.store.component_parts(s) != null
+    let written = [field_seat(engine, signing, f) with { placed: placing && f.state, made: placing && reads_self(item.store, f.default) } for f in parts.fields]
+    let home = declared_place(file, name)
+    let spread = (at: int) -> [g for x in parts.spreads if x.at == at && !spreads_home(engine, file, x.of.name, home) for g in spread_fields(engine, signing.signed(x.of))]
+    let own = [f for at in 0..written.length + 1 for f in spread(at).concat(if at < written.length { [written[at]] } else { [] })]
+    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)) }
+}
+
+/// A component's signature as a record's: its type parameters with their bounds, and its fields — its head's, then each
+/// member as the field that holds it, an event's the nullable fn its handler is, in order, then what
+/// it carries.
+fn component_signature(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> RecordSignature? {
+    let s? = item.stmts.find((s) -> item.store.component_parts(s)?.name == name) else { return null }
+    let parts = item.store.component_parts(s)!
+    let signing = signing_in(engine, file, parts.tparams)
+    let own = [field_seat(engine, signing, p) for p in parts.head.concat(parts.holders)]
+    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)) }
+}
+
+/// The signature of `name` over `tparams`: its own fields `own`, then, where `item` declares it a
+/// component holding a body, the fields of the record its one composing trait names, unless it
+/// already holds every one.
+fn carrying(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    name: string,
+    tparams: List<string>,
+    own: List<FieldSeat>,
+) -> RecordSignature {
+    RecordSignature {
+        type_params: tparams,
+        fields: own.concat(carried_past(engine, file, item, name, own)),
+    }
+}
+
+/// What the component `name` that `item` declares, where it holds a body, carries past its own fields
+/// `own`: the fields of the record its one composing trait names, unless it already holds every one.
+fn carried_past(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    name: string,
+    own: List<FieldSeat>,
+) -> List<FieldSeat> {
+    if !item
+        .stmts
+        .any(
+            (s) -> item.store.component_parts(s)?.name == name &&
+                item.store.component_body(s) != null,
+        ) { return [] }
+    let carried = carried_fields(engine, file)
+    if carries_composed([f.name for f in own], [f.name for f in carried]) { carried } else { [] }
+}
+
+/// The fields a component of `file` holding a body carries: those of the record the one trait that
+/// composes it names; none where no one trait does.
+fn carried_fields(engine: QueryEngine, file: SourceFileAddress) -> List<FieldSeat> {
+    let traits = composers(engine, file)
+    if traits.length != 1 { return [] }
+    let record? = composed_record(engine, traits[0]) else { return [] }
+    record_signature(engine, record.file, record.name)?.fields ?? []
+}
+
+/// The record the trait `t`'s `@composes(R)` names, read in the trait's own file.
+fn composed_record(engine: QueryEngine, t: TraitAt) -> DeclaredName? {
+    let mark? = composes_mark(engine, t) else { return null }
+    let item? = read_trait(engine, t) else { return null }
+    let carried? = item.store.ident_name(mark.args[0]) else { return null }
+    resolved(engine, t.file, Space.Type, carried).named()
+}
+
+/// THE TRAITS THAT MAY COMPOSE A COMPONENT OF `file`, by what the file can name: the nearest files,
+/// walking out along what each one names, that declare a trait wearing `@std/meta`'s `@composes`.
+/// A file names where each declaration it imports is written, and each file of its own module that
+/// declares a component.
+@query
+export fn composers(engine: QueryEngine, file: SourceFileAddress) -> List<TraitAt> {
+    mut seen = [file_key(file)]
+    mut ring = [file]
+    while !ring.is_empty() {
+        let found = flatten([composing_in(engine, g) for g in ring])
+        if !found.is_empty() { return found }
+        let next = flatten([named_files(engine, g) for g in ring])
+        ring = [g for at, g in next if !seen.contains(file_key(g)) && next.find_index(file_key(it) == file_key(g)) == at]
+        seen = seen.concat([file_key(g) for g in ring])
+    }
+    []
+}
+
+/// The traits wearing `@composes` the file `g` declares.
+fn composing_in(engine: QueryEngine, g: SourceFileAddress) -> List<TraitAt> {
+    [t for d in file_declares(engine, g).names if d.kind == ItemKind.Trait for t in [TraitAt { file: g, name: d.name }] if composes_mark(engine, t) != null]
+}
+
+/// The files `g` names, one step out: where each declaration it imports is written, and each file of
+/// its own module that declares a component.
+fn named_files(engine: QueryEngine, g: SourceFileAddress) -> List<SourceFileAddress> {
+    let scope? = file_scope(engine, g) else { return [] }
+    let own = scope.own
+    [d.file for d in own.values.values().concat(own.types.values()).concat(own.syntaxes.values())]
+        .concat(
+            [f for f in module_files(engine, g.package_name, module_segments(g), true) if file_declares(engine, f).names.any(it.kind == ItemKind.Component)],
+        )
+}
+
+/// The trait `t`'s `@composes(R)`: an annotation of one argument whose fn is `@std/meta`'s `composes`,
+/// its name read among written names alone, as a generator's site reads it.
+fn composes_mark(engine: QueryEngine, t: TraitAt) -> Annotation? {
+    let item? = read_trait(engine, t) else { return null }
+    let s? = item.stmts.find((s) -> item.store.declared_name(s) == t.name) else { return null }
+    let scope? = file_scope(engine, t.file) else { return null }
+    let meta = resolved_in(engine, scope, t.file, Space.Value, COMPOSES).named()?.file?.package_name == META
+    if !meta { return null }
+    item.store.annotations_of(s).find(it.name == COMPOSES && it.args.length == 1)
+}
+
+/// The item declaring the trait `t`.
+fn read_trait(engine: QueryEngine, t: TraitAt) -> ReadItem? { declaring_item(engine, t.file, t.name, ItemKind.Trait) }
+
+/// A file as one key.
+fn file_key(f: SourceFileAddress) -> string { "${f.package_name}/${f.path_in_package}" }
+
+/// The annotation a trait wears to name what every component it composes carries.
+const COMPOSES: string = "composes"
+
+/// Whether the expression `e` reads the instance it stands in (`self`).
+export fn reads_self(store: SyntaxArena, e: ExprId?) -> bool {
+    let at? = e else { return false }
+    store.expr(at) is .Receiver || store.walked(at).any((k) -> reads_self(store, k))
+}
+
+/// The field `p` signed: a `state`, or a prop whose type compares by value, is a cell — its parent
+/// writes it at every paint, and a change is what the component sees. An event's field holds its
+/// handler.
+fn field_seat(engine: QueryEngine, signing: Signing, p: Param) -> FieldSeat {
+    let ty: SignedType? = if p.ty == null { holder_type(signing, p) } else { signing.signed(p.ty!) }
+    FieldSeat {
+        name: p.name.of,
+        ty: ty,
+        state: p.state || p.prop && ty != null && compares_by_value(engine, ty!),
+    }
+}
+
+/// The type the field holding the handler of the event `p` declares has: the fn its handler is,
+/// handed the seats the event says and answering nothing, absent until one is set. Absent for a
+/// seat that says none, and for an event a seat of which isn't typed.
+fn holder_type(signing: Signing, p: Param) -> SignedType? {
+    let says? = p.says else { return null }
+    if says.any(it.ty == null) { return null }
+    headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: signing.signed(s.ty!), mutable: false, settled: false } for s in says], answer: owned_type("void"), nulls: 1 }
+}
+
+/// Whether two values of `ty` compare by value: a number, a truth, text or bytes, an enum none of
+/// whose variants carries a payload, a record of one field that does, a name over one, or a nullable
+/// of one.
+export fn compares_by_value(engine: QueryEngine, ty: SignedType) -> bool {
+    if ty.nullable() { return compares_by_value(engine, ty.unwrapped()) }
+    if ty.dynamic { return false }
+    if ty.owned() != null {
+        return [OwnType.Int, OwnType.Float, OwnType.Bool, OwnType.Str, OwnType.Bytes]
+            .any((o) -> ty.owns(o))
+    }
+    let over = named_over(engine, ty)
+    if over != null { return compares_by_value(engine, over!) }
+    let at? = declared_at(ty) else { return false }
+    let variants = enum_signature(engine, at.file, at.name)?.variants
+    if variants != null { return variants!.all(it.payloads.is_empty()) }
+    let fields? = record_signature(engine, at.file, at.name)?.fields else { return false }
+    fields.length == 1 &&
+        fields[0].ty != null &&
+        compares_by_value(engine, fields[0].ty!.bound(ty.args))
+}
+
+/// The fields a spread of `spread` brings, its record's own, bound to the arguments it's applied to.
+fn spread_fields(engine: QueryEngine, spread: SignedType) -> List<FieldSeat> {
+    let at? = declared_at(spread) else { return [] }
+    let record? = record_signature(engine, at.file, at.name) else { return [] }
+    [f with { ty: f.ty?.bound(spread.args) } for f in record.fields]
+}
+
+/// Whether the record `name` names from `file` is `home`, or spreads, record by record, back to it:
+/// a spread whose fields would ask for its own.
+fn spreads_home(engine: QueryEngine, file: SourceFileAddress, name: string, home: DeclaredAt) -> bool {
+    let d? = spread_record(engine, file, name) else { return false }
+    spread_chain(engine, d, home, []) != null
+}
+
+/// The record `name` names from `file`, where it names one.
+fn spread_record(engine: QueryEngine, file: SourceFileAddress, name: string) -> DeclaredAt? {
+    let d? = resolved(engine, file, Space.Type, name).named() else { return null }
+    if d.kind != ItemKind.Record { return null }
+    DeclaredAt { file: d.file, name: d.name }
+}
+
+/// The records a spread chain passes through from `from` to `to`, `from` first and `to` left out —
+/// none where `from` is `to`; absent where no chain of spreads gets there without passing `seen`.
+fn spread_chain(engine: QueryEngine, from: DeclaredAt, to: DeclaredAt, seen: List<DeclaredAt>) -> List<
+    DeclaredAt,
+>? {
+    if same_declared(from, to) { return [] }
+    if seen.any((d) -> same_declared(d, from)) { return null }
+    let item? = record_item(engine, from.file, from.name) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
+        .find(it.name == from.name) else { return null }
+    for x in parts.spreads {
+        let next = spread_record(engine, from.file, x.of.name)
+        let rest = if next == null { null } else { spread_chain(engine, next!, to, seen.concat([from])) }
+        if rest != null { return [from].concat(rest!) }
+    }
+    null
+}
+
+/// Whether `a` and `b` are one declaration.
+fn same_declared(a: DeclaredAt, b: DeclaredAt) -> bool { same_file(a.file, b.file) && a.name == b.name }
+
+/// The declaration `file` makes as `name`, as a place.
+fn declared_place(file: SourceFileAddress, name: string) -> DeclaredAt { DeclaredAt { file: file, name: name } }
+
+/// Where a type is declared: its file and its name there.
+type DeclaredAt = { file: SourceFileAddress, name: string }
+
+/// Where the type `ty` names is declared, absent for a type the program doesn't declare.
+fn declared_at(ty: SignedType) -> DeclaredAt? {
+    match ty.head {
+        .Declared(file, name) -> declared_place(file, name),
+        .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
+    }
+}
+
+/// The type parameters the record, component or enum `file` declares as `name` writes, a gathered
+/// enum's as its gathering gives them; absent when it declares none. A written declaration's are read
+/// off it alone.
+export fn written_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string>? {
+    let record? = record_item(engine, file, name) else { return enum_params(engine, file, name) }
+    [t! for s in record.stmts for t in [record.store.struct_parts(s)?.tparams ?? record.store.component_parts(s)?.tparams] if t != null && record.store.declared_name(s) == name]
+        .first()
+}
+
+/// The type parameters the enum `file` declares as `name` writes, a gathered one's as its gathering
+/// gives them; absent when it declares none.
+fn enum_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string>? {
+    let item? = declaring_item(engine, file, name, ItemKind.Enum) else { return gathered_signature(engine, file, name)?.type_params }
+    [p! for s in item.stmts for p in [item.store.enum_parts(s)] if p != null].find(it.name == name)?.tparams
+}
+
+/// An enum's signature: its type parameters and its variants, in order.
+@derive(Saved)
+export type EnumSignature = { type_params: List<string>, variants: List<VariantSeat> }
+
+/// The signature of the enum `file` declares as `name`, written or gathered; absent when it declares
+/// none.
+@query
+export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.Enum) else { return gathered_signature(engine, file, name) }
+    let parts? = [p! for s in item.stmts for p in [item.store.enum_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let signing = signing_in(engine, file, parts.tparams)
+    EnumSignature {
+        type_params: parts.tparams,
+        variants: [VariantSeat {
+            name: v.name.of,
+            payloads: [FieldSeat {
+                name: p.name.of,
+                ty: if p.ty == null { null } else { signing.signed(p.ty!) },
+            } for p in v.payloads],
+        } for v in parts.variants],
+    }
+}
+
+/// The members a `collect` or a `collect enum` gathers, in its order, when they're read here, else
+/// why not where something says.
+@derive(Saved)
+type Members = { known: bool, members: List<DeclaredName>, why: string? = null }
+
+/// The members the `collect` or `collect enum` `file` declares as `name` gathers, what generators make
+/// among them when `made`, read for the package `program` (empty: its own): `gathered` asked once per
+/// declaration.
+@query
+fn collect_members(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    made: bool,
+    program: string,
+) -> Members {
+    let unknown = Members { known: false, members: [] }
+    let item? = declaring_item(engine, file, name, ItemKind.Collect) ?? declaring_item(
+        engine,
+        file,
+        name,
+        ItemKind.CollectEnum,
+    ) else { return unknown }
+    let shape? = [g! for s in item.stmts for g in [gathering_shape(item.store, s)] if g != null]
+        .find(it.name == name) else { return unknown }
+    let found? = gathered(engine, file, shape.kind, shape.scope, shape.order, made, program) else { return unknown with { why: gathering_unmade(engine, file, shape.scope, program) } }
+    Members { known: true, members: found }
+}
+
+/// The members a gathering `file` declares as `name` takes, read for the package `program` (empty: its
+/// own); absent where they're read only once built.
+fn members_of(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    made: bool,
+    program: string,
+) -> List<DeclaredName>? {
+    let m = collect_members(engine, file, name, made, program)
+    if m.known { m.members } else { null }
+}
+
+/// What a `collect` or a `collect enum` gathers by: its name, its kind, its scope and its order.
+type GatheringShape = { name: string, kind: CollectKind, scope: CollectScope, order: List<Plain> }
+
+fn gathering_shape(store: SyntaxArena, s: StmtId) -> GatheringShape? {
+    let listed? = store.collect_parts(s) else {
+        let e? = store.collect_enum_parts(s) else { return null }
+        return GatheringShape { name: e.name, kind: e.kind, scope: e.scope, order: e.order }
+    }
+    GatheringShape {
+        name: listed.name,
+        kind: listed.kind,
+        scope: listed.scope,
+        order: listed.order,
+    }
+}
+
+/// The signature of the `collect enum` `file` declares as `name`: a variant per member it gathers,
+/// carrying the member's payload fields. Absent when it declares none, or gathers only once built.
+fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
+    if declaring_item(engine, file, name, ItemKind.CollectEnum) == null { return null }
+    let members? = members_of(engine, file, name, false, "") else { return null }
+    EnumSignature {
+        type_params: [],
+        variants: [VariantSeat {
+            name: m.name,
+            payloads: member_payloads(engine, m),
+            member: headed_type(TypeHead.Declared(m.file, m.name)),
+        } for m in members],
+    }
+}
+
+/// The item at `at` in `file`, read back: its statements, then each declaration it hoists.
+/// Whether `file` writes a `spec`: a suite's spec cases, which a program's own run never reaches.
+export fn writes_specs(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    (0..item_count(engine, file))
+        .any(
+            (at) -> {
+                let item = read_item(engine, file, at)
+                item.stmts.any((s) -> item.store.spec_parts(s) != null)
+            },
+        )
+}
+
+/// `read`, the item at `at` in `file` as another reader read it back, for whoever is asking now: each
+/// query a held item stands on asked, and nothing read back.
+fn item_asked(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadItem) -> ReadItem {
+    let made = generated_at(engine, file, at)
+    if made != null {
+        let _ = generated_expanded(engine, file, made!.tape)
+        return read
+    }
+    let _ = item_under(engine, file, at)
+    read
+}
+
+/// The item at `at` in `file`, read back where its own text starts — each place it holds counted
+/// from there (`file_placed`) — each query it stands on asked.
+fn item_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {
+    let made = generated_at(engine, file, at)
+    if made != null {
+        let tape = generated_expanded(engine, file, made!.tape)
+        return held_read(made_key(file, at, tape), () -> PlacedTape { start: 0, tape: tape }, null)
+    }
+    let item = item_under(engine, file, at)
+    held_read(
+        printed_key(file, at, 0, item.print ?? fp_str(item.text)),
+        () -> placed_item(engine, file, item, 0),
+        at,
+    )
+}
+
+/// What a written item read back is held under: its file, its place, and its text's print.
+export fn written_key(file: SourceFileAddress, at: int, start: int, text: string) -> string { printed_key(file, at, start, fp_str(text)) }
+
+/// What a written item whose text prints as `print` read back is held under.
+fn printed_key(file: SourceFileAddress, at: int, start: int, print: int) -> string { "${spelled_file(file)}#${at}#${start}#${print}" }
+
+/// What a made item read back is held under: its file, its place, and its whole tape's print —
+/// places included, so a template that moves makes another key.
+export fn made_key(file: SourceFileAddress, at: int, tape: SyntaxTape) -> string {
+    let print = content_hash(tape.saved_bytes())
+    "${spelled_file(file)}#${at}#made#${print.high_word}:${print.low_word}"
+}
+
+/// The item `key` names, read back from the tape `placed` answers: the one held under the key, else
+/// read and held. `key` names its content — a written item's text, a made one's whole tape — so two
+/// items share an entry only where they read back alike.
+fn held_read(key: string, placed: fn() -> PlacedTape, at: int?) -> ReadItem {
+    if !items_held() { return item_whole(placed(), at) }
+    let kept = held_items().get(key)
+    if kept != null { return kept! }
+    let before = avra_mem_live()
+    let read = item_whole(placed(), at)
+    held_items().put(key, read, avra_mem_live() - before)
+    read
+}
+
+/// An item's tape read back into a store of its own: its statements, then each declaration it
+/// hoists, which a read by name finds as it finds the written ones.
+fn item_whole(placed: PlacedTape, at: int?) -> ReadItem {
+    let store = new_node_store()
+    let stmts = item_read_back(store, placed)
+    ReadItem {
+        store: store,
+        stmts: stmts.concat(store.hoisted_decls()),
+        written: store.expr_count(),
+        at: at,
+    }
+}
+
+/// The items read back this process, by their file, place and text, weighed by the bytes each took
+/// to read back: a reader asks the queries the item stands on as any read does, and an item is read
+/// back again only once it's been let go, the least recently read first.
+once fn held_items() -> BoundedCache<ReadItem> {
+    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+    bounded_cache<ReadItem>(parse_int(env("AVRA_HELD_BYTES") ?? "") ?? HELD_BYTES)
+}
+
+/// How many bytes the read-back items held may take together, unless `AVRA_HELD_BYTES` sets another
+/// bound: a tiny one lets each item go as soon as another is read — the same items, read again.
+const HELD_BYTES: int = 320000000
+
+/// The bytes the process holds live now: what bounds the held items, and no answer reads it.
+extern fn avra_mem_live() -> int
+
+/// Whether read-back items are held: on, unless `AVRA_HELD_ITEMS_OFF` is set, which reads every item
+/// back at every read — the same items, read again.
+fn items_held() -> bool { held_items_off() == null }
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn held_items_off() -> string? { env("AVRA_HELD_ITEMS_OFF") }
+
+/// The statements of the item at `at` in `file`, read back into `store`, its places counted from
+/// `start`.
+fn read_into(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    at: int,
+    start: int = 0,
+) -> List<StmtId> {
+    item_read_back(store, placed_item(engine, file, item_under(engine, file, at), start))
+}
+
+/// A written item's meant tape, placed at `start`.
+fn placed_item(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder, start: int) -> PlacedTape {
+    PlacedTape { start: start, tape: tape_read(meant_tape(engine, file, item)) }
+}
+
+/// The item that declares `name` as `kind` in `file`, read back, absent when none does: a written
+/// one, and only where the file writes nothing of that name, one a generator made.
+///
+/// `written` is how many nodes the read wrote: each node below it is the item's source, each at or
+/// above it one an elaboration minted into the store since, which is no site the source writes.
+///
+/// `at` is the item its places are counted from the start of (`file_placed`); absent where they're
+/// counted from its file's, or, for an entry read item by item, from each item's (`ItemBase`).
+type ReadItem = { store: SyntaxArena, stmts: List<StmtId>, written: int, at: int? = null }
+
+fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ReadItem? {
+    let written = file_declares(engine, file).names.filter(it.name == name)
+    let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
+    let declared? = made.find(it.kind == kind) else { return null }
+    read_item(engine, file, declared.item)
+}
+
+/// The item declaring the record `file` declares as `name`, or the component a record of its fields
+/// stands for.
+fn record_item(engine: QueryEngine, file: SourceFileAddress, name: string) -> ReadItem? {
+    declaring_item(engine, file, name, ItemKind.Record) ?? declaring_item(
+        engine,
+        file,
+        name,
+        ItemKind.Component,
+    )
+}
+
+/// The width a written type names, if it names one.
+fn width_of(written: TypeRef?) -> string? {
+    let w? = written else { return null }
+    if width_named(w.name) != null { w.name } else { null }
+}
+
+/// What a fn writes of its signature: its type parameters and the bound each is written with, its
+/// parameters and its answer, and the file whose template wrote it where that isn't its own.
+type WrittenFn = { type_params: List<string>, bounds: List<TypeRef?> = [], params: List<Param>, ret: TypeRef, writer: SourceFileAddress? }
+
+/// What the fn `name` among `stmts` writes, a declared fn's or an extern's.
+fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenFn? {
+    stmts.find_map((s) -> written_at(store, s, name))
+}
+
+/// What the statement `s` writes as the fn `name`, a declared fn's or an extern's; absent for any
+/// other statement.
+fn written_at(store: SyntaxArena, s: StmtId, name: string) -> WrittenFn? {
+    let declared? = store.fn_parts(s) else {
+        let external? = store.extern_parts(s) else { return null }
+        if external.name != name { return null }
+        return WrittenFn {
+            type_params: [],
+            params: external.params,
+            ret: external.ret,
+            writer: written_by(store, s),
+        }
+    }
+    if declared.name != name { return null }
+    WrittenFn {
+        type_params: [t.name.of for t in declared.tparams],
+        bounds: [t.ty for t in declared.tparams],
+        params: declared.params,
+        ret: declared.ret,
+        writer: written_by(store, s),
+    }
+}
+
+/// Where a signature's types are resolved: its file's top level, under the fn's own type parameters,
+/// `Self` as the type a trait's method is asked for, and for a statement a template wrote, the file
+/// that wrote it (`writer`): a type the template wrote is read there, one a hole filled where it lands.
+type Signing = {
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    type_params: List<string>,
+    self_type: SignedType? = null,
+    writer: SourceFileAddress? = null,
+    bounds: List<SignedType?> = [],
+    /// The names over a nullable whose shapes are being signed, outermost first: one naming itself
+    /// carries no absence.
+    naming: List<string> = [],
+}
+
+impl Signing {
+    /// The bound each of the type parameters `tparams` is written with, signed; absent for one written
+    /// with none.
+    fn bounds_written(tparams: List<Param>) -> List<SignedType?> { [if p.ty == null { null } else { self.signed(p.ty!) } for p in tparams] }
+
+    /// The trait each of a written fn's type parameters is bound by, absent for one bound by none.
+    fn bounds(written: WrittenFn) -> List<SignedType?> { [if b == null { null } else { self.signed(b!) } for b in written.bounds] }
+
+    /// The trait the type parameter `ty` is bound by, applied as the bound writes it; absent for any
+    /// other type, or one bound by none.
+    fn bound_of(ty: SignedType) -> SignedType? {
+        if ty.nullable() || ty.dynamic { return null }
+        let at? = match ty.head { .Parameter(i, _) -> i, rest -> null } else { return null }
+        if at >= self.bounds.length { null } else { self.bounds[at] }
+    }
+
+    fn param(p: Param) -> SignedParam {
+        SignedParam {
+            name: p.name.of,
+            ty: if p.ty == null { null } else { self.signed(widthless(p.ty)!) },
+            mutable: p.promises.mutable,
+            settled: p.promises.settled,
+            width: width_of(p.ty),
+            defaulted: p.default != null,
+            state: p.state || p.promises.state,
+            spread: p.spread != null,
+            rest: p.is_rest(),
+            unshared: p.promises.unshared,
+        }
+    }
+
+    /// A written type with every name in it resolved, an alias standing for what it names, and a
+    /// union's members in one order whatever order they were written in; unknown where it is applied
+    /// to another count of type arguments than it takes, refused where it's written.
+    fn signed(written: TypeRef) -> SignedType { applied_signed(self.engine, written, self.resolved_as_written(written)) }
+
+    /// `signed`, as written, whatever it is applied to.
+    fn resolved_as_written(written: TypeRef) -> SignedType {
+        if written.spliced && self.writer != null { return (self with { writer: null }).signed(written with { spliced: false }) }
+        if written.name == "Self" && self.self_type != null && written.applied.is_empty() {
+            return self.self_type! with { nulls: if written.optional { 1 } else { 0 }, dynamic: written.dynamic }
+        }
+        let made = SignedType {
+            head: when {
+                written.arrow -> TypeHead.Function
+                !written.alternatives.is_empty() -> TypeHead.Union
+                _ -> self.head_of(written.name)
+            },
+            args: [self.signed(a) for a in written.applied],
+            nulls: if written.optional { 1 } else { 0 },
+            dynamic: written.dynamic,
+            seats: [SignedSeat { ty: self.signed(s.ty), mutable: s.mutable, settled: s.settled } for s in written.seats],
+            answer: if written.arrow { self.signed(written.answered()) } else { null },
+            alternatives: union_ordered(
+                self.engine,
+                [self.signed(a) for a in written.alternatives],
+                self.file.package_name,
+            ),
+        }
+        let target? = self.aliased(made.head) else { return self.absent_as_named(made) }
+        target.of.bound(made.args) with { nulls: target.of.nulls + made.nulls, dynamic: target.of.dynamic || made.dynamic }
+    }
+
+    /// `made` as absent as the shape it names: a name written over a nullable carries that shape, and
+    /// its nulls beside those written after the name; an alias that stands for nothing, refused where
+    /// it's declared, is whatever fills its seat; any other type is itself.
+    fn absent_as_named(made: SignedType) -> SignedType {
+        let at? = declared_at(made) else { return made }
+        if alias_written(self.engine, at.file, at.name) != null { return headed_type(TypeHead.Inferred) }
+        let key = "${at.file.package_name}/${at.file.path_in_package}/${at.name}"
+        if self.naming.contains(key) { return made }
+        let parts? = named_written(self.engine, at.file, at.name) else { return made }
+        if !parts.of.optional || parts.tparams.length != made.args.length { return made }
+        let shape = (signing_in(self.engine, at.file, parts.tparams) with { naming: self.naming.concat([key]) })
+            .signed(parts.of)
+            .bound(made.args)
+        if !shape.nullable() { return made }
+        made with { nulls: made.nulls + shape.nulls, under: shape }
+    }
+
+    /// A type named alone, an alias standing for what it names.
+    fn named(name: string) -> SignedType {
+        let made = headed_type(self.head_of(name))
+        let target? = self.aliased(made.head) else { return self.absent_as_named(made) }
+        target.of
+    }
+
+    /// What a head names when it names an alias.
+    fn aliased(head: TypeHead) -> NameOver? {
+        match head {
+            .Declared(file, name) -> alias_target(self.engine, file, name),
+            .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
+        }
+    }
+
+    /// What a type name names: a type parameter, a type the language owns, or a declaration, read
+    /// where the template that wrote it stands first, then where the body stands.
+    fn head_of(name: string) -> TypeHead {
+        if name == INFERRED { return TypeHead.Inferred }
+        let at = self.type_params.index_of(name)
+        if at >= 0 { return TypeHead.Parameter(at, name) }
+        if builtin_type_name(avra().rows.types, name) || name == RANGE { return TypeHead.Owned(name) }
+        let homed = if self.writer == null { null } else { resolved(self.engine, self.writer!, Space.Type, name).named() }
+        let d? = homed ?? resolved(self.engine, self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
+        TypeHead.Declared(d.file, d.name)
+    }
+}
+
+/// The type of a range (`(lo..hi)`): the language's own, as the prelude's verbs name it.
+const RANGE: string = "Range"
+
+/// The file whose template wrote the statement `s` of `store`; absent for one its own file wrote.
+fn written_by(store: SyntaxArena, s: StmtId) -> SourceFileAddress? {
+    let origin? = store.stmt_origins.at(s.index) else { return null }
+    template_file(origin.path)
+}
+
+impl SignedParam {
+    fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty?.spelled() ?? "_") }
+
+    /// Whether a call hands the seat a value by position: it's typed, promises nothing, has no
+    /// default and spreads nothing.
+    fn plain() -> bool {
+        self.ty != null &&
+            !self.mutable &&
+            !self.settled &&
+            !self.state &&
+            !self.defaulted &&
+            !self.spread
+    }
+}
+
+/// Where an expression its source wrote stands: its item, its index among that item's nodes, its
+/// fingerprint and its span.
+@derive(Saved)
+export type WrittenSite = { item: int, index: int, print: int, lo: int, hi: int }
+
+impl WrittenSite {
+    /// The expression the site is, in its item's own store.
+    fn expr() -> ExprId { ExprId { index: self.index } }
+}
+
+/// Where each expression of the kind `kind` that the items of `file` write stands, item by item, each
+/// item's in its nodes' order.
+@query
+export fn written_sites(engine: QueryEngine, file: SourceFileAddress, kind: int) -> List<
+    WrittenSite,
+> {
+    flatten(
+        [item_sites(read_item(engine, file, at), at, kind) for at in 0..item_count(engine, file)],
+    )
+}
+
+/// Where each expression of the kind `kind` that the item `at`, read as `item`, writes stands.
+fn item_sites(item: ReadItem, at: int, kind: int) -> List<WrittenSite> {
+    let store = item.store
+    [WrittenSite {
+        item: at,
+        index: x.index,
+        print: store.expr_fingerprint(x),
+        lo: store.expr_span(x)!.lo,
+        hi: store.expr_span(x)!.hi,
+    } for x in store.exprs_by_kind(0, item.written, kind) if source_wrote(store, x)]
+}
+
+/// Where a record literal an item of a file holds stands, counted from its item's start, and the
+/// shape its site folds.
+@derive(Saved)
+export type LiteralPrint = { print: int, item: int, lo: int }
+
+/// Where each record literal the items of `file` hold stands, with the shape its site folds: each
+/// literal that stands somewhere, item by item.
+@query
+export fn literal_prints(engine: QueryEngine, file: SourceFileAddress) -> List<LiteralPrint> {
+    flatten(
+        [item_literal_prints(read_item(engine, file, at), at) for at in 0..item_count(engine, file)],
+    )
+}
+
+/// Where each record literal `item` writes stands, with its site's shape.
+fn item_literal_prints(item: ReadItem, at: int) -> List<LiteralPrint> {
+    let store = item.store
+    [LiteralPrint { print: store.site_fingerprint(x), item: at, lo: span.lo } for x in store.exprs_by_kind(0, item.written, store.tag_expr(Expr.StructLit("", [], []))) for span in some_list(store.expr_span(x))]
+}
+
+collect listed_signature_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a fn's signature reads through, for a process to hand its engine.
+export fn signature_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_signature_facts) }

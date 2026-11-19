@@ -1,0 +1,126 @@
+//! The lowering rules of a loop and of leaving one: `while` tests its condition each turn and runs
+//! its body in a scope of its own, its back edge a cancel point; `break` ends the innermost loop whose
+//! turn it stands in, or the one its label names, `continue` starts its next turn. A `for` over a list lowers as what it
+//! means, a walk whose back edge is none; one the meaning doesn't take walks by its own rule.
+use core.{
+    Bound,
+    Lowering,
+    OwnType,
+    Reg,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    owned_type,
+    some_list,
+    supplied,
+}
+use core.stmt.{ForEach, Jump, While}
+
+impl StmtLowers for While {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        cx.loop_start()
+        cx.loop_tested(self.cond)
+        for b in self.stmts { cx.lower_stmt(b) }
+        cx.back_edge(s)
+        cx.loop_end()
+    }
+}
+
+impl StmtLowers for Jump {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        if self.label == null { return cx.jumped_written(self.again) }
+        let label? = cx.store.ident_name(self.label!) else { return cx.missed("a jump naming no loop") }
+        cx.jumped_to(label, self.again)
+    }
+}
+
+impl StmtLowers for ForEach {
+    /// A walk its meaning doesn't take: over a list naming its index or leaving by a label, over a
+    /// map's keys beside its values, over octets, or over a range leaving by a label; each turn binds
+    /// its place, then what stands there. It's shaped otherwise elsewhere, so it's noted.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let ty? = cx.seen_at(self.subject) else { return cx.stmt_unlowered(s) }
+        let elem = ty.listed()
+        if elem != null { return listed_each(cx, self, elem!) }
+        let value = ty.mapped()
+        if value != null { return mapped_each(cx, self, ty.args[0], value!) }
+        if ty.owns(OwnType.Bytes) { return octets_each(cx, self) }
+        if ty.owns(OwnType.Range) { return ranged_each(cx, self) }
+        let item = supplied(ty)
+        if item != null && self.index == null { return sourced_each(cx, self, ty, item!) }
+        cx.stmt_unlowered(s)
+    }
+
+    /// A walk over a list, as its meaning: one the program's other lowerings may shape otherwise, so
+    /// it's noted.
+    fn meant_lowered(mut cx: Lowering, s: StmtId, meant: List<StmtId>) {
+        cx.reshaped()
+        cx.walking(meant)
+        for m in meant { cx.lower_stmt(m) }
+    }
+}
+
+/// `for x in xs` or `for i, x in xs`: the list read once — a text's `chars` view the text itself, each
+/// code point decoded where it stands — each turn binding its place and its element.
+fn listed_each(mut cx: Lowering, f: ForEach, elem: SignedType) {
+    cx.reshaped()
+    let text = cx.chars_viewed(f.subject)
+    let w = if text != null { cx.walk_chars(cx.lower(text!)) } else { cx.walk_list(cx.lower(f.subject), elem) }
+    let here = cx.walk_turn(w)
+    if f.index != null { cx.bind(f.index!.of, Bound.Value(cx.walk_place(w, here), owned_type("int"))) }
+    turned_body(cx, f, cx.walked_element(w, here), elem)
+}
+
+/// `for k, v in m`: its keys and its values read once, side by side, each turn binding a key, then its
+/// value.
+fn mapped_each(mut cx: Lowering, f: ForEach, key: SignedType, value: SignedType) {
+    cx.reshaped()
+    let w = cx.walk_map(cx.lower(f.subject), key)
+    let here = cx.walk_turn(w.keys)
+    if f.index != null { cx.bind(f.index!.of, Bound.Value(cx.key_at(w, here), key)) }
+    turned_body(cx, f, cx.value_at(w, value, here), value)
+}
+
+/// `for b in bytes`: the octets read once, each turn binding one, an `int`.
+fn octets_each(mut cx: Lowering, f: ForEach) {
+    cx.reshaped()
+    let b = cx.lower(f.subject)
+    let w = cx.walk_octets(b)
+    let here = cx.walk_turn(w)
+    if f.index != null { cx.bind(f.index!.of, Bound.Value(here, w.elem)) }
+    turned_body(cx, f, cx.octet_at(b, here), w.elem)
+}
+
+/// `for i in lo..hi`: the range read once, each turn binding its count.
+fn ranged_each(mut cx: Lowering, f: ForEach) {
+    cx.reshaped()
+    turned_body(cx, f, cx.walk_turn(cx.walk_range(cx.lower(f.subject))), owned_type("int"))
+}
+
+/// `for x in source`: the supply read once, each turn pulling its next item — `next` parks until one
+/// arrives or the supply ends — and the loop ending where it hands none. The pull is kept in a cell
+/// from the condition to the body, which binds what it carries.
+fn sourced_each(mut cx: Lowering, f: ForEach, source: SignedType, item: SignedType) {
+    let src = cx.lower(f.subject)
+    let fields? = cx.fields_of(source) else { return cx.missed("a `Source` whose fields aren't known") }
+    let n? = fields.find_index(it.name == "next") else { return cx.missed("a `Source` without its `next`") }
+    let laid? = cx.seat_layouts(fields) else { return cx.missed("a `Source` whose fields aren't laid out") }
+    let pull = fields[n].ty!
+    let next = cx.field_read(src, source, laid, n)
+    let maybe = item with { nulls: item.nulls + 1 }
+    let l = cx.laid_out(maybe)
+    let held = cx.seeded_cell(l, cx.hollow_of(maybe))
+    cx.loop_start()
+    cx.stored(held, cx.called_code(l, cx.code_of(next), next, [], pull))
+    cx.loop_cond(cx.present(cx.loaded(l, held), maybe))
+    turned_body(cx, f, cx.carried(cx.loaded(l, held), maybe), item)
+}
+
+/// A turn's body, its loop labelled by the names it binds and the element bound to `v`, then the turn
+/// closed.
+fn turned_body(mut cx: Lowering, f: ForEach, v: Reg, elem: SignedType) {
+    cx.labelled([f.name.of].concat(some_list(f.index?.of)))
+    cx.bind(f.name.of, Bound.Value(v, elem))
+    for st in f.stmts { cx.lower_stmt(st) }
+    cx.loop_end()
+}

@@ -1,0 +1,235 @@
+// `@unique(a, b) c`: one key over several columns, held by one index. A row
+// repeating the whole key is refused the way a `@unique` column's is, naming
+// the key's fields; a row that differs in one of them is kept.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Fact = {
+    id: int = 0,
+    entity: string,
+    property: string,
+    @unique(entity, property) value: string,
+    @unique slug: string,
+}
+
+@model
+type Wall = {
+    id: int = 0,
+    name: string,
+}
+
+@model
+type Pin = {
+    id: int = 0,
+    wall: Wall,
+    @unique(wall) title: string,
+}
+
+@model
+type Shift = {
+    id: int = 0,
+    day: string,
+    @unique(day) hour: int? = null,
+}
+
+fn facts() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    Fact.create_table(db)?
+    db
+}
+
+fn fact(db: Db, entity: string, property: string, value: string, slug: string) -> Result<
+    Fact,
+    ModelError,
+> {
+    Fact { entity: entity, property: property, value: value, slug: slug }.insert(db)
+}
+
+fn count(db: Db, name: string) -> Result<int, SqlError> {
+    (db.scalar(sql("select count(*) from \"${name}\""))?).int()
+}
+
+/// The statements of the indexes a table was given, in name order.
+fn keys(db: Db, name: string) -> Result<string, SqlError> {
+    (db
+        .scalar(
+            sql(
+                "select coalesce(group_concat(sql, ';'), '') from (select sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name)",
+                [.Text(name)],
+            ),
+        )?)
+        .text()
+}
+
+fn made_keys() -> Result<string, SqlError> { keys(facts()?, "Fact") }
+
+fn claimed_twice() -> Result<string, SqlError> {
+    let db = facts()?
+    Fact.create_table(db)?
+    keys(db, "Fact")
+}
+
+fn kept_apart() -> Result<int, ModelError> {
+    let db = modeled(facts())?
+    let _ = fact(db, "e", "p", "v", "one")?
+    let _ = fact(db, "e", "p", "w", "two")?
+    let _ = fact(db, "e", "q", "v", "three")?
+    let _ = fact(db, "f", "p", "v", "four")?
+    modeled(count(db, "Fact"))
+}
+
+fn repeated() -> Result<int, ModelError> {
+    let db = modeled(facts())?
+    let _ = fact(db, "e", "p", "v", "one")?
+    let _ = fact(db, "e", "p", "v", "two")?
+    0
+}
+
+fn slug_repeated() -> Result<int, ModelError> {
+    let db = modeled(facts())?
+    let _ = fact(db, "e", "p", "v", "one")?
+    let _ = fact(db, "e", "p", "w", "one")?
+    0
+}
+
+fn updated_into() -> Result<int, ModelError> {
+    let db = modeled(facts())?
+    let _ = fact(db, "e", "p", "v", "one")?
+    let other = fact(db, "e", "p", "w", "two")?
+    (other with { value: "v" }).update(db)
+}
+
+fn kind_of(r: Result<int, ModelError>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(e) -> e.describe().kind }
+}
+
+fn said(r: Result<int, ModelError>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(e) -> e.describe().message }
+}
+
+fn cause_of(r: Result<int, ModelError>) -> string {
+    match r {
+        .Ok(_) -> "",
+        .Err(e) -> match e.cause() {
+            c? -> c.describe().message
+            null -> "no cause"
+        },
+    }
+}
+
+fn shown(r: Result<int, ModelError>) -> string {
+    match r {
+        .Ok(_) -> "",
+        .Err(e) -> [i.path.text() + " " + i.rule for i in e.issues().all].join(", "),
+    }
+}
+
+fn read_by_key() -> Result<string, ModelError> {
+    let db = modeled(facts())?
+    let _ = fact(db, "e", "p", "v", "one")?
+    let _ = fact(db, "e", "p", "w", "two")?
+    let _ = fact(db, "e", "q", "v", "three")?
+    [f.slug for f in modeled(Fact.where(db, entity: "e", property: "p", value: "w"))?].join(",")
+}
+
+fn pinned() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    Wall.create_table(db)?
+    Pin.create_table(db)?
+    db
+}
+
+fn pins_on_two_walls() -> Result<int, ModelError> {
+    let db = modeled(pinned())?
+    let one = Wall { name: "one" }.insert(db)?
+    let two = Wall { name: "two" }.insert(db)?
+    let _ = Pin { wall: one, title: "t" }.insert(db)?
+    let _ = Pin { wall: two, title: "t" }.insert(db)?
+    modeled(count(db, "Pin"))
+}
+
+fn pins_on_one_wall() -> Result<int, ModelError> {
+    let db = modeled(pinned())?
+    let one = Wall { name: "one" }.insert(db)?
+    let _ = Pin { wall: one, title: "t" }.insert(db)?
+    let _ = Pin { wall: one, title: "t" }.insert(db)?
+    0
+}
+
+fn pin_keys() -> Result<string, SqlError> { keys(pinned()?, "Pin") }
+
+fn empty_hours() -> Result<int, ModelError> {
+    let db = modeled(Db.memory())?
+    modeled(Shift.create_table(db))?
+    let _ = Shift { day: "mon" }.insert(db)?
+    let _ = Shift { day: "mon" }.insert(db)?
+    let _ = Shift { day: "mon", hour: 9 }.insert(db)?
+    modeled(count(db, "Shift"))
+}
+
+fn full_hours() -> Result<int, ModelError> {
+    let db = modeled(Db.memory())?
+    modeled(Shift.create_table(db))?
+    let _ = Shift { day: "mon", hour: 9 }.insert(db)?
+    let _ = Shift { day: "mon", hour: 9 }.insert(db)?
+    0
+}
+
+spec "std/db a key over several columns" {
+    given "a model whose field is unique within two others" {
+        then "the table's own statement is the columns alone, the bare mark still a column's" {
+            Fact.create_table_sql() == "CREATE TABLE IF NOT EXISTS \"Fact\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"entity\" TEXT NOT NULL, \"property\" TEXT NOT NULL, \"value\" TEXT NOT NULL, \"slug\" TEXT NOT NULL UNIQUE, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1)"
+        }
+        then "its shape records the key after the columns, in key order" {
+            Fact.shape().ends_with("\nvalue|TEXT|notnull|-|-|-|-|-\nunique(entity,property,value)")
+        }
+        then "making the table makes one index over the named fields, then the marked one" {
+            (made_keys() catch "failed") == "CREATE UNIQUE INDEX \"Fact_unique(entity,property,value)\" ON \"Fact\" (\"entity\", \"property\", \"value\")"
+        }
+        then "claiming the table again makes nothing more" {
+            (claimed_twice() catch "failed") == "CREATE UNIQUE INDEX \"Fact_unique(entity,property,value)\" ON \"Fact\" (\"entity\", \"property\", \"value\")"
+        }
+        then "rows that differ in any one field of the key are all kept" { kind_of(kept_apart()) == "ok 4" }
+        then "the key reads its rows through `where`" { (read_by_key() catch "failed") == "two" }
+    }
+    given "a second row holding the whole key" {
+        then "is refused as a model constraint violation" { kind_of(repeated()) == "db.constraint.unique" }
+        then "in words naming the marked field, the fields it is unique within, and the mark" {
+            said(repeated())
+                .starts_with(
+                    "`value` must be unique within `entity`, `property` — declared @unique(entity, property) on `Fact.value`",
+                )
+        }
+        then "with SQLite's own failure still its cause" {
+            cause_of(repeated()) == "UNIQUE constraint failed: Fact.entity, Fact.property, Fact.value"
+        }
+        then "and a form shows it under the marked field" { shown(repeated()) == "value unique" }
+        then "an update into another row's key is refused the same way" {
+            kind_of(updated_into()) == "db.constraint.unique" &&
+                said(updated_into()).contains("within `entity`, `property`")
+        }
+    }
+    given "a model with a key and a unique column" {
+        then "a repeated column is attributed to the column, never the key" {
+            said(slug_repeated())
+                .starts_with("`slug` must be unique — declared @unique on `Fact.slug`")
+        }
+    }
+    given "a field unique within a link" {
+        then "the key holds the link's own column" {
+            (pin_keys() catch "failed") == "CREATE UNIQUE INDEX \"Pin_unique(wall_id,title)\" ON \"Pin\" (\"wall_id\", \"title\")"
+        }
+        then "the same value under two parents is kept" { kind_of(pins_on_two_walls()) == "ok 2" }
+        then "twice under one parent it is refused, naming the link as written" {
+            said(pins_on_one_wall())
+                .starts_with("`title` must be unique within `wall` — declared @unique(wall) on `Pin.title`")
+        }
+    }
+    given "a key over a field that may hold nothing" {
+        then "rows holding nothing in it repeat no other" { kind_of(empty_hours()) == "ok 3" }
+        then "rows holding a value in it do" { kind_of(full_hours()) == "db.constraint.unique" }
+    }
+}

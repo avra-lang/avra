@@ -1,0 +1,368 @@
+//! The task board — the UI library's showcase. The screen is made of
+//! COMPOSITIONS: a component whose body is what it is made of. `filters`
+//! is three `tab`s and a button; `new_task` is a field and a button, and
+//! the draft a user is typing is THAT instance's own `state`; the rest
+//! of the program's state is the module's.
+//!
+//! Each handler is written where its control is: `on press { … }` is a
+//! closure over what its composition could see, so row 3's Remove names
+//! row 3's task. The task rows are ONE keyed list (`list visible() by
+//! it.id`), so the row identity is the task id and an insert or a
+//! removal touches no other row.
+//!
+//! THE BOARD'S TASKS ARE THE SERVER'S, and so is its model: page and server
+//! import one `@crud` `Todo` (`@ui.board_model`), and the page asks and
+//! sends through that model's description of its doors — add is a POST, a
+//! tick a PATCH, a removal a DELETE — with no request spelled and no parse
+//! written. The board draws the list the server last answered, read from the
+//! ask itself: no copy of the tasks is kept beside it. A change is a LAYER
+//! over that list, shown at once and gone when the server's list has caught
+//! up with it; the changes to one task go out in order (`@std.ui.app`'s
+//! write lanes).
+//!
+//! The board names no target. A page mounts it (`web/`) and so does a
+//! terminal (`term/`).
+use @std.json.{DecodeError}
+use @std.json.codec.{json}
+use @std.json.typed.{array_of, as_bool, bool_text, elements}
+use @std.time.{ms}
+use @std.ui.app.{Async, Fetch, Overlay, ask_list, fetch, later, send}
+use @std.ui.shipped.{ship}
+use @std.http_message.route.{Nothing, Routes}
+use @ui.board_model.model.{Todo}
+use @std.ui.components.{
+    button,
+    card,
+    checkbox,
+    column,
+    dialog,
+    divider,
+    field,
+    heading,
+    item,
+    list,
+    progress,
+    row,
+    surface,
+    text,
+}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{Theme, default_theme}
+
+/// Which tasks the board shows.
+@json
+enum Show { All, Active, Done }
+
+/// The board's heading.
+fn title() -> string { "Tasks" }
+
+// ── state ───────────────────────────────────────────────────────
+
+state filter: Show = .All
+state dark: bool = false
+state newest_first: bool = false
+state dialog_open: bool = false
+state reminded: bool = false
+state tasks_ask: Fetch<List<Todo>> = fetch()
+state saving: Fetch<Todo> = fetch()
+state removing: Fetch<Nothing> = fetch()
+
+// ── the state a page carries ────────────────────────────────────
+
+/// Name the states a server's page carries to the module: what the view
+/// reads and a request decides. A state not named here is never shipped.
+export fn ship_state() {
+    ship("filter", Show.json_shape(), () -> filter.json_text(), (j: string) -> filter_written(j))
+    ship("dark", "bool", () -> bool_text(dark), (j: string) -> dark_written(j))
+    ship(
+        "tasks",
+        "[${Todo.json_shape()}]",
+        () -> array_of([t.json_text() for t in tasks()]),
+        (j: string) -> tasks_written(j),
+    )
+}
+
+/// What a request for the done tasks in the dark decides, as a server's
+/// handler would before it draws the page.
+export fn requested() {
+    filter = .Done
+    dark = true
+}
+
+fn filter_written(j: string) -> bool {
+    match Show.from_json_text(j) {
+        .Ok(shown) -> {
+            filter = shown
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+fn dark_written(j: string) -> bool {
+    match as_bool(j, "") {
+        .Ok(on) -> {
+            dark = on
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+/// The tasks a server's page carries stand as the answer of an ask already made.
+export fn tasks_written(j: string) -> bool {
+    match todos_of(j) {
+        .Ok(read) -> {
+            tasks_ask.now.set(Async.Ready(read))
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+/// The tasks the server last answered with; none until one has come.
+fn tasks() -> List<Todo> { [t for t in tasks_ask.value() ?? [] if named(t)] }
+
+/// Whether the server has named the task. Id 0 is a task the server has not stored; it names each on insert.
+fn named(t: Todo) -> bool { t.id != 0 }
+
+fn todos_of(j: string) -> Result<List<Todo>, DecodeError> {
+    [Todo.from_json_text(entry)? for entry in elements(j, "")?]
+}
+
+/// The counts are DERIVED from the list, never stored beside it.
+fn done_count() -> int { [t for t in tasks() if t.done].length }
+
+fn open_count() -> int { [t for t in tasks() if !t.done].length }
+
+fn admits(t: Todo) -> bool {
+    match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
+}
+
+export fn theme() -> Theme { default_theme with { mode: if dark { .Dark } else { .System } } }
+
+/// The server's doors, described by the model both sides share.
+fn doors() -> Routes<Todo> { Todo.paths("/tasks") }
+
+/// `title` is sent as the next task — nothing, when it says nothing. It is a row once the server names it.
+fn add(title: string) {
+    if title == "" { return }
+    let _ = send(saving, doors().create!, Todo { title: title }, foresee: Overlay.Append("id"))
+}
+
+/// The task is sent with the state the box now shows, and shown so at once.
+fn mark(t: Todo, done: bool) {
+    let _ = send(
+        saving,
+        doors().update!,
+        t with { done: done },
+        foresee: Overlay.Patch("id", "${t.id}"),
+    )
+}
+
+/// The task is sent away, and hidden at once.
+fn remove(t: Todo) {
+    let _ = send(removing, doors().remove!, t.id, foresee: Overlay.Hide("id", "${t.id}"))
+}
+
+// ── view: state in, tree out ────────────────────────────────────
+
+fn theme_label() -> string { if dark { "Light mode" } else { "Dark mode" } }
+
+fn tab_style(on: bool) -> Style {
+    if on { sunk_style() } else { Style { radius: .S } }
+}
+
+fn title_style(done: bool) -> Style {
+    if done { Style { color: .Muted } } else { Style { color: .Text } }
+}
+
+fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
+
+/// A run of controls on one line.
+fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
+
+fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
+
+/// One filter: pressed, it is the filter in force.
+component tab(label: string) {
+    shows: Show
+    button self.label {
+        on press { filter = self.shows }
+        style: tab_style(filter == self.shows)
+    }
+}
+
+component header {
+    row {
+        layout: spread_layout()
+        column {
+            layout: Layout { gap: .Xs }
+            heading title() { rank: 1 }
+            text "Every task is a value; the screen is a function of state." { style: Style { color: .Muted } }
+        }
+        button theme_label() {
+            on press { dark = !dark }
+            style: sunk_style()
+        }
+    }
+}
+
+component filters {
+    row {
+        layout: inline_layout()
+        tab "All" { shows: .All }
+        tab "Active" { shows: .Active }
+        tab "Done" { shows: .Done }
+        button "Clear done" {
+            on press { for t in tasks() { if t.done { remove(t) } } }
+            disabled: done_count() == 0
+            style: sunk_style()
+        }
+        button "Newest first" {
+            on press { newest_first = !newest_first }
+            style: tab_style(newest_first)
+        }
+    }
+}
+
+/// The field a task is typed into. THE DRAFT IS THIS INSTANCE'S: nothing
+/// else on the board reads what is being typed, so nothing else holds it.
+component new_task {
+    state draft: string = ""
+    row {
+        layout: inline_layout()
+        field "New task" {
+            value: self.draft
+            placeholder: "Type a task…"
+            on input { body -> self.draft = body }
+        }
+        button "Add" {
+            on press {
+                add(self.draft)
+                self.draft = ""
+            }
+            style: sunk_style()
+        }
+    }
+}
+
+/// One task's row. Its key is the task's id, so its node goes where the
+/// task goes.
+component task_row(task: Todo) {
+    item {
+        checkbox self.task.title {
+            checked: self.task.done
+            on change { checked -> mark(self.task, checked) }
+            style: title_style(self.task.done)
+        }
+        button "Remove" {
+            on press { remove(self.task) }
+            style: sunk_style()
+        }
+    }
+}
+
+/// The task rows: ONE list of keyed rows, so a reorder or an insert
+/// keeps every node. An empty view is a word, never a stray row.
+component task_rows {
+    if visible().is_empty() {
+        text "Nothing here yet." { style: Style { color: .Muted } }
+    } else {
+        list {
+            for t in visible() { task_row t { key: "${t.id}" } }
+        }
+    }
+}
+
+/// The tasks the filter admits, in the order the board shows them. The
+/// rows are keyed, so turning the order CARRIES each row: none is made.
+fn visible() -> List<Todo> {
+    let admitted = [t for t in tasks() if admits(t)]
+    if newest_first { [admitted[admitted.length - 1 - j] for j, t in admitted] } else { admitted }
+}
+
+component board {
+    card "Board" {
+        style: Style { fill: .SurfaceRaised, radius: .M }
+        layout: Layout { gap: .M, pad: around(.M) }
+        progress "Done" {
+            amount: done_count()
+            max: tasks().length
+        }
+        filters {}
+        new_task {}
+        divider {}
+        task_rows {}
+    }
+}
+
+/// The reminder fires: the footer says so.
+fn remind_now() -> bool {
+    reminded = true
+    true
+}
+
+/// The server's tasks are asked for at start; a change that reaches them asks again.
+fn load() {
+    let _ = ask_list(tasks_ask, doors().list!, Nothing {})
+}
+
+/// How the last changes stand, in words.
+fn saved_words() -> string {
+    let lost? = saving.failure() ?? removing.failure() else { return loading_words() }
+    " · save failed: ${lost}"
+}
+
+/// How the list's last ask stands, in words.
+fn loading_words() -> string {
+    let why? = tasks_ask.failure() else { return "" }
+    " · load failed: ${why}"
+}
+
+/// A reminder is asked for: a timer, whatever the target keeps it with.
+fn remind() {
+    let _ = later(ms(100), remind_now)
+}
+
+component footer {
+    row {
+        layout: spread_layout()
+        text "${open_count()} open · ${done_count()} done of ${tasks().length}${if reminded { " · reminder" } else { "" }}${saved_words()}" {
+            style: Style { color: .Muted }
+        }
+        button "Remind me" {
+            on press { remind() }
+            style: sunk_style()
+        }
+        button "About" {
+            on press { dialog_open = true }
+            style: sunk_style()
+        }
+    }
+}
+
+component about {
+    dialog "About" {
+        open: dialog_open
+        on dismiss { dialog_open = false }
+        heading "Task board" { rank: 2 }
+        text "The board is made of compositions; each keeps what is its own."
+        button "Close" {
+            on press { dialog_open = false }
+            style: sunk_style()
+        }
+    }
+}
+
+export fn view() -> surface {
+    surface {
+        style: Style { fill: .Surface, radius: .M }
+        layout: Layout { gap: .M, pad: around(.L) }
+        header {}
+        board {}
+        footer {}
+        about {}
+    }
+}

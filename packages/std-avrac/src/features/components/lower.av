@@ -1,0 +1,119 @@
+//! An instance's compile-time `check`: the record's own method, run
+//! over the instance as the compiler settles it, its diagnostics
+//! spoken at the instance. An instance only a run can build — one
+//! that reads a parameter or the world — is not checked.
+use core.{ExprId, TypeId, Reg, Annotation, binding_read, settles_alone}
+use features.{LowerCx, SettleRoot, StructSig, Unsettled, nothing}
+use features.structs.{defaulted_reg}
+use @std.meta.{Diagnostic}
+use diagnostics.{Diag, refusal, warning}
+
+/// A component instance's fields its wrapping statement fills (fills.av's law), written into the
+/// record its literal built.
+fn augmented(mut cx: LowerCx, e: ExprId, x: ExprId, base: Reg) -> Reg {
+    let owner? = cx.view.store.instance_owner(e) else { return base }
+    let ty = cx.type_at(x)
+    let sig? = cx.fields_of(ty) else { return base }
+    for f in instance_fills(cx.view.store, owner, sig.names) {
+        cx.field_written(base, ty, f.slot, filled_reg(cx, f.fill, sig.types[f.slot]))
+    }
+    base
+}
+
+fn filled_reg(mut cx: LowerCx, fill: StatementFill, ty: TypeId) -> Reg {
+    match fill {
+        .Doc(text) -> cx.const_str(text),
+        .Annotated(marks) -> annotation_list_reg(cx, marks, ty),
+    }
+}
+
+/// Every matching annotation, one `R` each, packed into the field's
+/// own `List<R>`.
+fn annotation_list_reg(mut cx: LowerCx, anns: List<Annotation>, list_ty: TypeId) -> Reg {
+    let elem_ty: TypeId = cx.view.types.element(list_ty) ?? list_ty
+    let regs = [annotation_elem_reg(cx, a, elem_ty) for a in anns]
+    let size = cx.box_size(regs.length)
+    cx.grown_box(cx.view.types.shape_of(list_ty), size, regs)
+}
+
+/// One annotation's own `R`, as `element_fill` says: an omitted trailing field defaults by the law an
+/// omitted struct-literal field takes (`structs/lower.av`'s `defaulted_reg`).
+fn annotation_elem_reg(mut cx: LowerCx, a: Annotation, elem_ty: TypeId) -> Reg {
+    let fsig = cx.fields_of(elem_ty)
+    match element_fill(a, field_count(fsig)) {
+        .Zero -> cx.mint_ty(elem_ty),
+        .Arg(one) -> cx.reg_of(one),
+        .Packed(args) -> packed_reg(cx, a, elem_ty, fsig!, args),
+    }
+}
+
+/// How many fields a record has; absent for a type that is no record.
+fn field_count(sig: StructSig?) -> int? {
+    let held? = sig else { return null }
+    held.names.length
+}
+
+fn packed_reg(mut cx: LowerCx, a: Annotation, elem_ty: TypeId, fsig: StructSig, args: List<ExprId>) -> Reg {
+    cx
+        .packed_struct(
+            elem_ty,
+            [if slot < args.length { cx.reg_of(args[slot]) } else { defaulted_reg(cx, a.callee, fsig, slot) } for slot in 0..fsig.names.length],
+        )
+}
+
+fn checked(mut cx: LowerCx, e: ExprId, check: ExprId) {
+    if !settleable(cx, e, check) { return }
+    match cx.jobs.settle(cx.view.file, SettleRoot.Expr(check), cx.seats) {
+        .Ok(x) -> { for d in x.saids() { cx.out.voices.speak(said(cx, e, d)) } },
+        .Err(why) -> unchecked(cx, e, why),
+    }
+}
+
+/// Whether the instance settles alone: `settles_alone` over each name its check reads, as the
+/// resolver bound it.
+fn settleable(cx: LowerCx, e: ExprId, check: ExprId) -> bool {
+    let at? = cx.view.store.expr_span(e) else { return false }
+    let reads = [binding_read(cx.view.store, b!) for x in cx.view.store.every_expr(check) for b in [cx.names.binding(x)] if b != null]
+    settles_alone(cx.view.store, at, reads)
+}
+
+/// A check that could not run: it trapped or ran past its budget —
+/// the library's check failed, and says so. One that reads what only
+/// a run knows is no failure.
+fn unchecked(mut cx: LowerCx, e: ExprId, why: Unsettled) {
+    match why {
+        .Trap(words) or .Budget(words) -> cx.out.voices.speak(check_failed(cx, e, words)),
+        .Reach(_) or .Param(_) or .Spoken or .Recursive -> nothing(),
+    }
+}
+
+// ── voices ──
+
+/// What a `check` says when it gave no way out.
+const checked_help: string = "change the instance's settings, or the library's `check` that refuses them"
+
+fn checked_kind() -> string { "lower.component_checked" }
+
+fn said(cx: LowerCx, e: ExprId, d: Diagnostic) -> Diag {
+    let at = d.at ?? cx.view.loc_of(e)
+    if d.warning {
+        return warning(
+            checked_kind(),
+            at,
+            d.message,
+            "`check` says so of this instance",
+            d.help ?? checked_help,
+        )
+    }
+    refusal(checked_kind(), at, d.message, "`check` refused this instance", d.help ?? checked_help)
+}
+
+fn check_failed(cx: LowerCx, e: ExprId, words: string) -> Diag {
+    refusal(
+        checked_kind(),
+        cx.view.loc_of(e),
+        "this instance's `check` did not run: ${words}",
+        "checked here",
+        "a `check` runs at compile time over the settings — what fails there is the component's to fix",
+    )
+}

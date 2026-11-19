@@ -1,0 +1,154 @@
+//! CHILD-RUN PROGRAM TESTS — a program whose own END is the proof. A
+//! `.refuses` one ends through `avra_trap` (a `!` on an absent value,
+//! or any other law that speaks and quits), exit 2, its words on
+//! stderr; a `.verdict` one ends with its own run cancelled, exit 1,
+//! the runtime's one line on stderr. A suite
+//! calls every case IN ONE PROCESS, so calling such a program there
+//! would end the suite at the first one — each leg runs as a CHILD
+//! instead, through the same `@std/process` door the light phase
+//! already spawns suite binaries with: native is the built program
+//! itself, eval is this same compiler re-exec'd into the light
+//! phase's own `@refuse-eval` hand-off (`stage.av`), which runs the
+//! evaluator over the one file's own scoped derivation — never the
+//! whole-package `Program` `avra run` builds, which would refuse a
+//! sibling program test's top level as a second entry.
+use @std.avrac.compiler.{RefusesCall, ChildEnd, Toolchain}
+use @std.avrac.core.{counted}
+use @std.path.{joined_path, relative_path}
+use @std.process.{
+    cmd,
+    Env,
+    Exit,
+    Outcome as ChildOutcome,
+    ProcessError,
+    exit_text,
+    inherited,
+    minimal,
+}
+use @std.time.{secs, Duration}
+use stage.{refuse_eval_words}
+
+/// Whether a child ended as its marker says: that very code, never a
+/// signal, a clean run or another code.
+fn ended_so(e: Exit, end: ChildEnd) -> bool {
+    match e { .Code(n) -> n == end.code(), .Clean or .Signal(_, _) -> false }
+}
+
+/// One leg's own verdict against the end and the voice it owes.
+fn leg_wrong(leg: string, call: RefusesCall, o: ChildOutcome) -> string? {
+    if !ended_so(o.exit, call.end) { return other_end(leg, call.end, o) }
+    if !o.out.stderr.contains(call.voice) { return other_voice(leg, call.voice, o) }
+    null
+}
+
+/// A leg is bounded as a HANG, never as a slow pass: a `.refuses` eval
+/// leg is a `from_sources` derivation of seconds of CPU, and its WALL time
+/// scales with the machine — measured past 30 s under sixteen spinning
+/// processes on an eight-core Sprite, and 90-113 s under a peer's load. A
+/// 30 s bound sat below that honest wall time, so a loaded runner read as
+/// a failing test; this one is far past any honest run (the number
+/// `commands/tests/runs.av`'s `hang_bound` also uses), so it catches a
+/// stuck child and never a busy machine.
+fn hang_bound() -> Duration { secs(600) }
+
+/// One leg run as a child and judged against the voice — a program
+/// under test, never a workload, so a leg that outlives its window is
+/// refused rather than hung on.
+fn leg(program: string, args: List<string>, env: Env, name: string, call: RefusesCall) -> Result<
+    string?,
+    ProcessError,
+> {
+    // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
+    let o = (cmd(tool(program)?, args) with { env: env, timeout: hang_bound() }).outcome()?
+    leg_wrong(name, call, o)
+}
+
+/// One leg, a host refusal folded into the same voice a wrong end
+/// would carry.
+fn leg_or_host(program: string, args: List<string>, env: Env, name: string, call: RefusesCall) -> string? {
+    match leg(program, args, env, name, call) {
+        .Ok(w) -> w,
+        .Err(e) -> "${name} could not run: ${e.describe().message}",
+    }
+}
+
+/// Where a `.refuses` test's native leg is built — under `build/`,
+/// named by its path relative to the package root so two tests never
+/// collide.
+fn refuses_binary(root: string, path: string) -> string {
+    let safe = relative_path(root, path).replace("/", "_").replace(".", "_")
+    joined_path(joined_path(root, "build"), "refuses-${safe}")
+}
+
+/// What a built program under test runs in: the minimal environment.
+fn tested_env() -> Env {
+    // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
+    minimal()
+}
+
+/// What the eval leg runs in: the compiler's own environment, whole.
+fn compiler_env() -> Env {
+    inherited()
+}
+
+/// One child-run test, both engines: the built program first (its own
+/// binary, cached like any other build), then the evaluator over the
+/// same scoped derivation, run through the light phase's own
+/// `@refuse-eval` hand-off — ending exactly as a native binary does,
+/// so one voice serves both. THE EVAL LEG IS THE COMPILER, so it runs in
+/// the compiler's own environment: a manifest's `[link]` hole is filled
+/// from it, and a leg without it derives nothing. The built program is
+/// a program under test and keeps the minimal one.
+fn one_refuses(self_binary: string, tools: Toolchain, call: RefusesCall) -> string? {
+    let ws = file_workspace(call.path)
+    let binary = refuses_binary(ws.root, call.path)
+    let native = match ws.linked_program(call.path, binary, tools) {
+        .Ok(b) -> b.binary,
+        .Err(e) -> { return "${call.path}: native build failed — ${e.describe().message}" },
+    }
+    let by_native = leg_or_host(native, [], tested_env(), "native", call)
+    if by_native != null { return "${call.path}: ${by_native!}" }
+    let by_eval = leg_or_host(
+        self_binary,
+        refuse_eval_words(ws.root, call.path),
+        compiler_env(),
+        "eval",
+        call,
+    )
+    if by_eval != null { return "${call.path}: ${by_eval!}" }
+    null
+}
+
+/// Every `.refuses` test judged in order; the first wrong voice stops
+/// the run and is spoken — the ordinary suites never run behind a
+/// refusal law that does not hold.
+fn checked_refuses(self_binary: string?, tools: Toolchain, calls: List<RefusesCall>) -> int {
+    let bin? = self_binary else {
+        eprintln("avra: could not find this compiler's own binary to run the evaluator leg")
+        return 1
+    }
+    for call in calls {
+        let wrong = one_refuses(bin, tools, call)
+        if wrong != null {
+            eprintln(wrong!)
+            return 1
+        }
+    }
+    println("${counted(calls.length, "refusal")} proved")
+    0
+}
+
+// ── The voices ──
+
+/// What an end is called where a leg owed it.
+fn owed(end: ChildEnd) -> string {
+    match end { .Trap -> "a trap", .Verdict -> "a verdict" }
+}
+
+fn other_end(leg: string, end: ChildEnd, o: ChildOutcome) -> string {
+    "${leg} exited ${exit_text(o.exit)}, wanted ${owed(end)} (code ${end.code()})\n${o.out.stderr}"
+}
+
+fn other_voice(leg: string, voice: string, o: ChildOutcome) -> string {
+    "${leg} ended with a different voice\nwanted: ${voice}\ngot: ${o.out.stderr}"
+}

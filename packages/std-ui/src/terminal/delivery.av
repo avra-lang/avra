@@ -1,0 +1,40 @@
+//! `terminal/delivery.av` — WHAT DELIVERS A PRIMITIVE'S EVENTS IN A TERMINAL:
+//! one row per primitive and event, naming the key that fires it. A component
+//! declares `on press` and names no target; this table is the terminal's half
+//! of that. Every seat a program declares has its row here, or the program is
+//! refused as it builds.
+use tree.node.{Prim}
+use tree.seats.{Seat, SeatRow, seat_rows}
+use terminal.key.{Key}
+
+/// What a terminal does with one primitive's event: the key that fires it,
+/// or none where no key does — a field's text and a slider's amount are said
+/// by what is typed into them. `.Shortcut` is a key primitive's own chord.
+export type TerminalRow = { prim: Prim, event: string, by: Key? }
+
+/// The terminal's rows.
+export const terminal_rows: List<TerminalRow> = table<TerminalRow> {
+    prim      | event     | by
+    .Button   | "press"   | .Enter
+    .Checkbox | "change"  | .Enter
+    .Dialog   | "dismiss" | .Escape
+    .Field    | "input"   | null
+    .Form     | "submit"  | .Enter
+    .Key      | "press"   | .Shortcut
+    .Link     | "press"   | .Enter
+    .Slider   | "change"  | null
+    .Switch   | "change"  | .Enter
+}
+
+/// The program's seats as a terminal delivers them, by seat number.
+const terminal_seats: List<TerminalRow> = [in_terminal(g.row) for g in seat_rows]
+
+/// The one row that says what delivers `s` in a terminal.
+fn in_terminal(s: SeatRow) -> TerminalRow {
+    let found = [r for r in terminal_rows if s.delivered_by(r.prim, r.event)]
+    s.delivered_once("a terminal", found.length)
+    found[0]
+}
+
+/// The key a terminal fires a seat by, when one does.
+export fn terminal_key(seat: Seat) -> Key? { terminal_seats[seat.number()].by }

@@ -1,0 +1,80 @@
+// The reach column: a row that reads or writes the process's world
+// says so, and a settlement may run only the rest.
+use @std.avrac.core.{rt_sigs}
+
+spec "core/runtime_api — reach" {
+    given "the registry" {
+        then "every row whose answer the compiler cannot see reaches the world, and no other" {
+            rt_sigs().all(worldly(it.name) == (it.reach is .World))
+        }
+        then "the world rows are counted" {
+            [r for r in rt_sigs() if r.reach is .World].length == 96
+        }
+        then "the rows that embed are the file readers" {
+            [r.name for r in rt_sigs() if r.reach is .Embed].join(",") == "avra_embed,avra_embed_octets,avra_embed_digest"
+        }
+    }
+}
+
+/// THE WORLD IS WIDER THAN I/O. A row reaches it when its answer is
+/// not a function of what the compiler can see — a file, a clock, the
+/// environment, a child process, and MEMORY the program addresses: the
+/// adoption reads octets at an address, which means nothing until the
+/// program runs and must never be folded at compile time. And the
+/// SCHEDULER: a task runs when the process runs it, so no settlement
+/// spawns, joins, parks, waits, claims, sleeps, forks or seeds its order. Opening a mapping resolves a
+/// path against the filesystem's current state; closing one releases
+/// OS resources — both observable outside the program, neither a
+/// function of the arguments alone. And ANOTHER PROCESS'S EXISTENCE:
+/// whether a pid still runs changes on its own, outside this one. And
+/// THIS PROCESS'S OWN id: OS-assigned, not a function of its logic. And
+/// CHANGE TRACKING: whether a box is observed, and the log of the boxes
+/// written this turn, are the process's own state, not a function of the
+/// arguments. A GUARDED RUN is none of it: it calls a closure, and the
+/// closure's own reach is what a settlement judges.
+/// The unwind's PUSH is none of it: every body's cold exit carries
+/// one, it runs only while a task unwinds, and no settlement does. Nor
+/// is the shield's bracket: the unwind bit it sets is the running task's own. A CONTEXT is the
+/// world's too: what a read answers is the frame the running task carries when it runs, which no
+/// settlement sees, and a set or its end changes that frame.
+fn worldly(name: string) -> bool {
+    name.starts_with("avra_task_") ||
+        name.starts_with("avra_ctx_") ||
+        name.starts_with("avra_tasks_") ||
+        name.starts_with("avra_unwind_") && name != "avra_unwind_push" ||
+        name.starts_with("avra_fiber_") && !name.starts_with("avra_fiber_shield_") ||
+        name.starts_with("avra_wait_") ||
+        name.starts_with("avra_gate_") ||
+        name.starts_with("avra_sched_") ||
+        name.starts_with("avra_tick_") ||
+        name.starts_with("avra_cores_") ||
+        name.starts_with("avra_io_") ||
+        name.starts_with("avra_fd_") ||
+        name == "avra_now_ns" ||
+        name == "avra_time_since" ||
+        name == "avra_stamp_next" ||
+        name == "avra_clock_virtual" ||
+        name == "avra_host_env" ||
+        name == "avra_puts" ||
+        name == "println" ||
+        name == "eprintln" ||
+        name == "avra_eputs" ||
+        name == "avra_errno_text" ||
+        name == "avra_exec_self" ||
+        name.starts_with("avra_spawn_") ||
+        name == "avra_selfhost_read_file" ||
+        name == "avra_bytes_adopted" ||
+        name == "avra_mmap_open" ||
+        name == "avra_mmap_close" ||
+        name == "avra_pid_alive" ||
+        name == "avra_own_pid" ||
+        name == "avra_parked_on" ||
+        name == "avra_cpu_ns" ||
+        name == "avra_file_touch" ||
+        name == "avra_random_bytes" ||
+        name == "avra_sig_raise" ||
+        name == "avra_box_observe" ||
+        name == "avra_box_unobserve" ||
+        name == "avra_turn_next" ||
+        name == "avra_changes_take"
+}

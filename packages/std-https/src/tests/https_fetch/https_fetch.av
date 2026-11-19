@@ -1,0 +1,44 @@
+//! proves: requests by URL over `http` and `https` alike, evaluated and
+//! native: one set of options, the TLS server verified as `localhost`
+//! and its connection reused, the plain server beside it spoken to in
+//! the clear, and an `https` URL under options with no TLS refused
+//! before a socket.
+use @std.net.{listen}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.http.client.{Answer, ClientError, netted}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, fetch}
+use @std.https.{over_tls, tls_carried, verified}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type Named = { name: string }
+
+fn shown(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${a.status} ${a.body.text() ?? "?"}", .Err(e) -> e.describe().message }
+}
+
+fn run() -> Result<string, ClientError> {
+    let sl = netted(listen("127.0.0.1", 0))?
+    let secure = served(sl, () -> Named { name: "secure" }, limits(), timing()) { n, q -> text(200, "${n.name} ${q.target() ?? "?"}") }
+        .secured(over_tls(tls_carried(serving_localhost())?))
+    let pl = netted(listen("127.0.0.1", 0))?
+    let plain = served(pl, () -> Named { name: "plain" }, limits(), timing()) { n, q -> text(200, "${n.name} ${q.target() ?? "?"}") }
+    spawn secure.run(1)
+    spawn plain.run(1)
+    let o = Options { pool: pool(), tls: verified(tls_carried(trusting_localhost())?) }
+    let lines = [
+        shown(fetch(.Get, "https://localhost:${sl.port}/a", .Empty, o)),
+        shown(fetch(.Post, "https://localhost:${sl.port}/b", .Text("x"), o)),
+        shown(fetch(.Get, "http://127.0.0.1:${pl.port}/c", .Empty, o)),
+        "secure connections ${secure.connections()}",
+        shown(fetch(.Get, "https://localhost:${sl.port}/d", .Empty, Options { pool: pool() })),
+    ]
+    o.pool.close_all()
+    secure.stop()
+    plain.stop()
+    .Ok(lines.join("\n"))
+}
+
+match run() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

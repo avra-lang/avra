@@ -1,0 +1,23 @@
+//! Tables — `table<Row> { header | names \n cell | cell … }`: the
+//! manifest shape. PURE SUGAR: the header names the row type's
+//! fields and every row means a `Row { … }` literal (the node's
+//! `minted`), so the struct literal's own laws judge each cell and
+//! the list's law the rows.
+use features.{LanguageFeature}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+export fn tables() -> LanguageFeature {
+    LanguageFeature tables {
+        gram: grammar {
+            primary = "table" "<" row:NAME ">" "{" BREAK header:NAME ( "|" header:NAME )* BREAK ( rows:table_row BREAK )* "}" @expect("}", "expected `}` to close the table, or a cell that stopped early — a cell is a value up to `+`, so `==`, `??`, `|>` and the bitwise operators need parentheses") -> Expr.Table
+            // A CELL PARSES BELOW THE BITWISE BAND. `|` is this
+            // literal's column separator, so a cell that could
+            // contain a bare `|` would eat its own row: `"x" | f`
+            // read as one bitwise-or is a row of ONE cell where the
+            // header names two. `additive` is the first level under
+            // the band, and a cell that genuinely wants the whole
+            // grammar parenthesises — `primary` takes `( … )`.
+            table_row = elems:additive ( "|" elems:additive )* -> Expr.ListLit
+        }
+    }
+    tables
+}

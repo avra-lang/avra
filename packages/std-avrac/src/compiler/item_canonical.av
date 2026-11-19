@@ -1,0 +1,99 @@
+//! A FILE AS CANONICAL AVRA, FROM A PARSE ALONE: its text read whole under the words its items read
+//! under, printed, and held to the receipts a rewrite owes. Formatting moves no token that typing
+//! decides, so nothing here types: a file is asked for its text and its words' shapes, and no more.
+use core.{joined}
+use compiler.format.{lossless_defect, remarks_and_docs_defect, render_source_of}
+use diagnostics.{SourceFile, has_errors, new_source_file, render_among}
+use features.{BlockWords}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{file_context, source_text}
+
+/// What a file's text is to the formatter: canonical as it stands, not yet, or one it refuses —
+/// a file whose parse speaks, said in its first line.
+@derive(Saved)
+export enum Canonical {
+    Stands
+    Differs
+    Refused(why: string)
+}
+
+/// The words a file's text is read whole under: each component by its shape, each sublanguage it
+/// imports readied, so a block of one is read by its grammar and a provider that moves a word moves
+/// what the file's parse says.
+fn whole_words(engine: QueryEngine, file: SourceFileAddress) -> BlockWords {
+    context_words(file_context(engine, file)) with { grammars: [g! for w in file_grammars(engine, file) for g in [readied(w)] if g != null] }
+}
+
+/// A file's text as the formatter reads it: named as the program spells the file.
+fn whole_source(engine: QueryEngine, file: SourceFileAddress) -> SourceFile { new_source_file(spelled_file(file), source_text(engine, file) ?? "") }
+
+/// A FILE AS CANONICAL AVRA, without its closing newline — or its parse's report.
+export fn file_formatted(engine: QueryEngine, file: SourceFileAddress) -> Result<string, string> {
+    formatted_under(whole_source(engine, file), whole_words(engine, file))
+}
+
+/// `file_formatted`, gated for a write by the receipts (`write_checked_under`).
+export fn file_write_checked(engine: QueryEngine, file: SourceFileAddress) -> Result<string, string> {
+    write_checked_under(whole_source(engine, file), whole_words(engine, file))
+}
+
+/// A TEXT AS CANONICAL AVRA, read under `words`, without its closing newline — or its parse's
+/// report. It prints the text AS WRITTEN, never a generated declaration; and it refuses one whose
+/// parse speaks, since a tree with holes prints those regions back as nothing. A text that doesn't
+/// type is no bar.
+export fn formatted_under(src: SourceFile, words: BlockWords) -> Result<string, string> {
+    let parsed = parse_program(avra(), src, words)
+    if !has_errors(parsed.voices.list) { return .Ok(render_source_of(parsed.store, parsed.stmts, src.text)) }
+    .Err(joined([render_among(d, [src]) for d in parsed.voices.list], "\n\n"))
+}
+
+/// `formatted_under`, gated for a write: the LOSSLESS receipt must hold — the same significant
+/// tokens, remarks and doc groups the text carried, in order — or the CANON one: the same meaning,
+/// remarks and doc groups, tokens free to move. It writes nothing; it answers the text safe to write.
+export fn write_checked_under(src: SourceFile, words: BlockWords) -> Result<string, string> {
+    let text = formatted_under(src, words)?
+    // the receipt compares what reaches disk: the text and the file's closing newline
+    let after = "${text}\n"
+    let bad? = lossless_defect(src.text, after) else { return .Ok(text) }
+    let canon? = canon_defect(src, after, words) else { return .Ok(text) }
+    .Err(write_refused(bad, canon))
+}
+
+/// What a rewrite `after` of `src` moved that a canon rewrite may not: a remark or a doc group, a
+/// statement, or a statement's meaning, each read under the same `words`.
+fn canon_defect(src: SourceFile, after: string, words: BlockWords) -> string? {
+    let moved = remarks_and_docs_defect(src.text, after)
+    if moved != null { return moved }
+    let was = parse_program(avra(), src, words)
+    if has_errors(was.voices.list) { return "the source has parse errors" }
+    let now = parse_program(avra(), new_source_file(src.file, after), words)
+    if has_errors(now.voices.list) { return "the rewrite does not reparse" }
+    if was.stmts.length != now.stmts.length { return "the statement count moved: ${was.stmts.length} -> ${now.stmts.length}" }
+    let at? = (0..was.stmts.length)
+        .find(
+            (i) -> was.store.stmt_fingerprint(was.stmts[i]) != now.store.stmt_fingerprint(now.stmts[i]),
+        ) else { return null }
+    "statement ${at}'s meaning moved"
+}
+
+/// WHETHER A FILE STANDS CANONICAL: its text printed back is its text, byte for byte. The answer is
+/// kept with what it read — the file's text and its words' shapes — so a file nobody edited, under
+/// providers nobody edited, is not parsed or printed again.
+@query
+export fn file_canonical(engine: QueryEngine, file: SourceFileAddress) -> Canonical {
+    match file_formatted(engine, file) {
+        .Ok(text) -> if "${text}\n" == source_text(engine, file) ?? "" { Canonical.Stands } else { Canonical.Differs },
+        .Err(report) -> Canonical.Refused(report.split("\n").first() ?? report),
+    }
+}
+
+collect listed_canonical_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a file's canonical form reads through, for a process to hand its engine.
+export fn canonical_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_canonical_facts) }
+
+fn write_refused(bad: string, canon: string) -> string { "avra fmt: refusing to write — ${bad} (canon: ${canon})" }

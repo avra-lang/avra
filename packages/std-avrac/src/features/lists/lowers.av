@@ -1,0 +1,30 @@
+//! The lowering rule of a list literal: one box sized for every plain element and every spread's
+//! length, then each plain element pushed and each spread's slots appended, in written order. A list
+//! the source alone spells is the binary's own data, read by its address, and an empty list of plain
+//! scalars is the runtime's one empty packed list. A list of plain scalars is made packed. A `collect` is
+//! an empty list, grown by each value its statements leave as they run.
+use core.{ExprId, Lowering, Lowers, Reg, rt_sig_of}
+use core.expr.{Collect, ListLit}
+
+impl Lowers for ListLit {
+    /// The elements first, then the size, then the box, then what fills it.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.untyped(e) }
+        if self.elems.is_empty() && cx.packs(ty) { return cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_empty_words")!, []) }
+        let data = cx.static_literal(e)
+        if data != null { return data! }
+        let spread = [cx.store.spread_operand(k) != null for k in self.elems]
+        let regs = [cx.lower(cx.store.spread_operand(k) ?? k) for k in self.elems]
+        cx.listed(ty, regs, spread)
+    }
+}
+
+impl Lowers for Collect {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let elem? = ty.listed() else { return cx.unlowered(e) }
+        let built = cx.list_made(ty, cx.const_int(0))
+        cx.gathering(built, elem, self.stmts)
+        built
+    }
+}

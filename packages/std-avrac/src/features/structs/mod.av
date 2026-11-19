@@ -1,0 +1,74 @@
+//! Structs — the first user-defined type. `type Name = { field: ty,
+//! ... }` declares a nominal record; `Name { field: value, ... }`
+//! builds one; reads ride the spine's postfix ladder (`p.x`).
+//! `type Name = <type>` declares a NAMED TYPE over a shape — always
+//! DISTINCT from it, never an alias; `Name(v)` wraps and `v.of`
+//! reads the shape back, free at runtime. `alias Name = <type>` is
+//! the other door: a SHORTHAND, the same type under a second name. Two
+//! `stmt` branches on `type` carry the two forms, the record's last and
+//! alone recovering.
+//! Fields are scalars until ownership analysis covers managed
+//! values. The literal branch merges into `primary` BEFORE the
+//! spine's bare NAME; a non-literal brace falls through by
+//! backtracking, so conditions like `if x { ... }` stay whole.
+use features.{LanguageFeature, PropertyRow, RefusalRow}
+use features.structs.{index_compared}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode, Remedy}
+
+export fn structs() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind                     | summary                                                                | remedy
+        "resolve.duplicate_type" | "two types share one name"                                             | Remedy.Help
+        "type.struct_scalar"     | "a struct field holds a value"                                         | Remedy.Help
+        "type.duplicate_field"   | "a struct's fields have distinct names"                                | Remedy.Help
+        "type.record_pattern"    | "a record pattern names the subject's record and its fields"           | Remedy.Help
+        "type.spread"            | "a spread places another record's fields"                              | Remedy.Help
+        "type.spread_value"      | "a literal's spread is a record of the literal's own type or a subset" | Remedy.Help
+        "type.spread_nullable"   | "a spread source is never null"                                        | Remedy.Help
+        "type.spread_field"      | "a spread carries only fields the literal's type declares, same types" | Remedy.Help
+        "type.spread_missing"    | "a spread literal's entries cover every field without a default"       | Remedy.Help
+        "type.spread_dead"       | "a field written before a spread that carries it is overwritten"       | Remedy.Help
+        "type.spread_generic"    | "a spread literal builds a record that takes no type parameters"       | Remedy.Help
+        "type.struct_fields"     | "a literal provides each declared field exactly once"                  | Remedy.Fix
+        "type.struct_targs"      | "a literal's written type arguments pin the record's parameters"       | Remedy.Help
+        "type.with_struct"       | "`with` copies a struct value"                                         | Remedy.Help
+        "type.named"             | "a named type stands over one written shape"                           | Remedy.Help
+        "type.alias"             | "an alias names one type that is not itself"                           | Remedy.Help
+        "type.tparam"            | "a declaration's type parameters are fresh, distinct names"            | Remedy.Help
+        "type.identity_field"    | "an identity's field is a Cell, or another identity"                   | Remedy.Help
+        "type.lacks"             | "only a record lacks a field — each once, and none it declares"      | Remedy.Help
+        "type.sealed"            | "a sealed type is built and rewritten in the module that declares it"  | Remedy.Help
+        "parse.spread"           | "a field spread is written `..R`"                                      | Remedy.Help
+    }
+    let properties = table<PropertyRow> {
+        name | takes      | check          | lower
+        "of" | on_nominal | check_named_of | lower_named_of
+    }
+    LanguageFeature structs {
+        gram: grammar {
+            stmt = "type" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END -> Stmt.NamedType
+            stmt = "type" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" "{" BREAK? ( ( fields:field | spread_fault | ".." spreads:type | bare_spread ) ( ( "," | BREAK ) BREAK? ( fields:field | spread_fault | ".." spreads:type | bare_spread ) )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> Stmt.StructDecl
+            spread_fault = ".." "." type -> Refusal.spread_three_dots | "." type -> Refusal.spread_one_dot | ".." type "=" expression -> Refusal.spread_valued | ".." type ":" type -> Refusal.spread_typed
+            bare_spread = ".." -> Refusal.spread_bare
+            field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
+            stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
+            primary = name:NAME ( "<" targs:type ( "," targs:type )* ","? ">" )? "{" BREAK? ( ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) ( ( "," | BREAK ) BREAK? ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) )* ","? BREAK? )? "}" -> Expr.StructLit by struct_lit_written
+            pattern = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
+            asked = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
+            destructure = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
+            fields_rest = ".." -> Pat.Wild @alias
+            field_pat = name:NAME ":" pat:pattern -> Record.FieldPat | name:NAME -> Record.FieldPat(pat = Pat.Bind(name = name))
+        }
+        diags: codes
+        properties: properties
+        refusals: [
+            RefusalRow { name: "spread_three_dots", kind: "parse.spread", voice: spread_three_dots },
+            RefusalRow { name: "spread_one_dot", kind: "parse.spread", voice: spread_one_dot },
+            RefusalRow { name: "spread_valued", kind: "parse.spread", voice: spread_valued },
+            RefusalRow { name: "spread_typed", kind: "parse.spread", voice: spread_typed },
+            RefusalRow { name: "spread_bare", kind: "parse.spread", voice: spread_bare },
+        ]
+    }
+    structs
+}

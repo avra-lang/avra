@@ -1,0 +1,61 @@
+//! proves the standing `queue`, `worker` and `drain` run over the store
+//! home through `homed:` — three jobs sent, two settled, the failing one
+//! attempted twice and buried in its letter, no row left.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, HomeError, Order, Overflow, Terms}
+use @std.queue_store.{Store, store_home, wire_of}
+use @std.queue_store.fault.{homed}
+use @std.relation.stable.{CodecFault, Reader, Writer}
+use @std.sqlite.{Db}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+fn job_written(w: Writer, j: Job) {
+    w.int(j.n)
+}
+
+fn job_read(r: Reader) -> Result<Job, CodecFault> {
+    Job { n: r.int()? }
+}
+
+fn made(t: Terms) -> Result<Store<Job>, HomeError> {
+    store_home<Job>(
+        homed(Db.memory())?,
+        "jobs",
+        t,
+        wire_of<Job>(7, "Job{n:int}", job_written, job_read),
+    )
+}
+
+fn pay(d: Delivery<Job>) -> Result<int, string> {
+    if d.item.n == 2 { .Err("job 2 failed") } else { .Ok(d.item.n) }
+}
+
+let terms = Terms {
+    capacity: 8,
+    lease: ms(60000),
+    retries: 2,
+    dead: "jobs/dead",
+    overflow: Overflow.park,
+    order: Order.fifo,
+}
+let store = made(terms)
+let stood = match store { .Ok(_) -> "store", .Err(_) -> "memory" }
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    name: "jobs"
+    retries: 2
+    homed: match store { .Ok(s) -> s.home(), .Err(_) -> null }
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters.sink
+}
+for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
+let sent = jobs.home().depth() catch 0 - 1
+let settled = drain(settle) catch 0 - 1
+let left = jobs.home().depth() catch 0 - 1
+let rows = match store { .Ok(s) -> s.depth() catch 0 - 1, .Err(_) -> 0 - 1 }
+"${stood} sent ${sent} settled ${settled} left ${left} rows ${rows} buried ${letters.source.taken()!.item.n}"

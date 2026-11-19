@@ -1,0 +1,83 @@
+//! Items a take could not read. A row whose octets are no item of the
+//! reader's is moved out of its queue, in the take's own transaction,
+//! so the items behind it flow; it is kept whole and can be listed,
+//! until it is forgotten.
+use @std.queue.{HomeError, Key, key}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time}
+use fault.{homed}
+use rows.{FlowUnread}
+
+/// Why no item could be read from a row: it was written under a shape
+/// that is not the reader's, its octets are no item of the reader's
+/// shape, or a reason another build numbered.
+export enum Unread {
+    Shape
+    Octets
+    Other(code: int)
+}
+
+/// An item set aside: the id it had in its queue, its key, the shape
+/// and octets it was written with, when it was sent, when it was set
+/// aside, and why.
+export type Unreadable = {
+    id: string,
+    key: Key,
+    shape: int,
+    body: Bytes,
+    sent_at: Time,
+    at: Time,
+    why: Unread,
+}
+
+/// A reason as its row holds it.
+fn code(why: Unread) -> int {
+    match why { .Shape -> 1, .Octets -> 2, .Other(code) -> code }
+}
+
+/// The reason a row's number names.
+fn reason(code: int) -> Unread {
+    match code { 1 -> Unread.Shape, 2 -> Unread.Octets, _ -> Unread.Other(code) }
+}
+
+/// Move the item `row` out of its queue. Both statements belong to the
+/// caller's transaction: the item is in its queue or set aside, never
+/// both and never neither.
+export fn set_aside(db: Db, row: int, why: Unread, now: Time) -> Result<int, HomeError> {
+    let _ = homed(db.run(sql(file_unread, [.Int(row), .Int(now.ns), .Int(code(why))])))?
+    homed(db.run(sql(drop_read, [.Int(row)])))
+}
+
+/// The items of `queue` set aside, oldest first, each under the id
+/// its home answered it by: its row's number behind the database's
+/// `mark`.
+export fn aside(db: Db, queue: string, mark: string) -> Result<List<Unreadable>, HomeError> {
+    [Unreadable {
+        id: "${mark}${u.item}",
+        key: key(u.key),
+        shape: u.shape,
+        body: u.body,
+        sent_at: u.sent_at,
+        at: u.at,
+        why: reason(u.why),
+    } for u in homed(FlowUnread.where(db, queue: queue))?]
+}
+
+/// How many items of `queue` are set aside.
+export fn aside_count(db: Db, queue: string) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(count_unread, [.Text(queue)])))?).int())
+}
+
+/// Delete the items of `queue` set aside before `before`. Answers how
+/// many went.
+export fn forget_aside(db: Db, queue: string, before: Time) -> Result<int, HomeError> {
+    homed(db.run(sql(forget_unread, [.Text(queue), .Int(before.ns)])))
+}
+
+const file_unread: string = "INSERT INTO \"FlowUnread\" (\"queue\", \"item\", \"key\", \"shape\", \"body\", \"sent_at\", \"at\", \"why\") SELECT \"queue\", \"id\", \"key\", \"shape\", CAST(\"body\" AS BLOB), \"sent_at\", ?2, ?3 FROM \"FlowItem\" WHERE \"id\" = ?1"
+
+const drop_read: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = ?1"
+
+const forget_unread: string = "DELETE FROM \"FlowUnread\" WHERE \"queue\" = ?1 AND \"at\" < ?2"
+
+const count_unread: string = "SELECT count(*) FROM \"FlowUnread\" WHERE \"queue\" = ?1"

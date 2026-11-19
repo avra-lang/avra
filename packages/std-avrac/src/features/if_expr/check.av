@@ -1,0 +1,91 @@
+//! The typing rule: the condition is a `bool`; the branches must
+//! agree, and their shared type is the expression's. An Error
+//! anywhere ABSORBS — its cause was already diagnosed. A condition
+//! that is a PRESENCE TEST on an effectively-final name narrows
+//! that name inside the branch its truth proves: `!= null` the
+//! then, `== null` the else — sugar over bind-fresh, never
+//! load-bearing (spec 10.4).
+use core.{ExprId, TypeId, Decision}
+use features.{TypeCx, Asked, this_is}
+use diagnostics.{Voice, said_as}
+
+fn if_type(mut cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.view.store.expr(e) {
+        .If(c, t, f) -> {
+            cx.require_bool(c, Decision.If)
+            if cx.facts.guards(e) {
+                cx.facts.mark_guard(t)
+                if f != null { cx.facts.mark_guard(f!) }
+            }
+            walk_branches(cx, c, t, f)
+            let other? = f else { return cx.type(void) }
+            if cx.facts.guards(e) { return cx.type(void) }
+            branch_type(cx, e, t, other)
+        },
+        _ -> cx.error_type,
+    }
+}
+
+/// Both branches typed — the PROVEN one under its narrow.
+fn walk_branches(mut cx: TypeCx, c: ExprId, t: ExprId, f: ExprId?) {
+    let asked: Asked? = cx.ask_of(c)
+    if asked == null {
+        let _ = cx.walk_type(t)
+        walk_other(cx, f, null)
+        return
+    }
+    let a = asked!
+    if a.on_present {
+        let _ = cx.walk_narrowed(a.subject, t)
+        walk_other(cx, f, null)
+        return
+    }
+    let _ = cx.walk_type(t)
+    walk_other(cx, f, a.subject)
+}
+
+/// The else side, when there is one — under the narrow its subject
+/// proves, when it has one.
+fn walk_other(mut cx: TypeCx, f: ExprId?, narrowed: ExprId?) {
+    let other? = f else { return }
+    let at? = narrowed else {
+        let _ = cx.walk_type(other)
+        return
+    }
+    let _ = cx.walk_narrowed(at, other)
+}
+
+/// The branches' one type. They JOIN when they can, and the seat's own
+/// agreement door widens the join into what it wants (`if flag { card }
+/// else { null }` answers `Card?` in a `Result<Card?, E>` seat); a
+/// planted want judges them only where they cannot join among
+/// themselves, which is where it is what each is BOXED into (`dyn
+/// View` over a note and a badge). A branch that LEAVES answers nothing
+/// and joins with anything, so the other answers for both.
+fn branch_type(mut cx: TypeCx, e: ExprId, t: ExprId, f: ExprId) -> TypeId {
+    if !cx.stays(t) { return cx.type_at(f) }
+    if !cx.stays(f) { return cx.type_at(t) }
+    if cx.errored(t) || cx.errored(f) { return cx.error_type }
+    let joined: TypeId? = cx.join_of(cx.type_at(t), cx.type_at(f))
+    if joined != null {
+        let both = joined!
+        let _ = cx.accepts(t, both)
+        let _ = cx.accepts(f, both)
+        return both
+    }
+    if cx.want_at(e) != null { return cx.arms_agree("type.mismatch", "an `if`'s branches", "the first branch", e, t, [f]) }
+    if cx.types_disagree(cx.type_at(t), cx.type_at(f)) {
+        return cx
+            .spoken(said_as("type.mismatch", cx.loc_of(f), branches_apart(cx.name_at(t), cx.name_at(f))))
+    }
+    cx.type_at(t)
+}
+
+/// An `if` no seat judges whose first branch answers `first`, its second `found`.
+export fn branches_apart(first: string, found: string) -> Voice {
+    Voice {
+        message: "an `if`'s branches disagree: `${first}` vs `${found}`",
+        label: this_is(found),
+        help: "make both branches answer one type — or declare the seat's type (`let x: T = if …`)",
+    }
+}

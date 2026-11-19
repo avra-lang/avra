@@ -1,0 +1,50 @@
+// A declaration's own work is its own: one process judges a file of two fns over a store, one
+// fn's body is edited, and a second process judges it over the same store. Only the edited fn is
+// typed again; the other's answers stand.
+use @std.avrac.testing.held.{Held, empty_store, held_at}
+
+fn syntax_source(a_body: string) -> string {
+    "fn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    2\n}\n"
+}
+
+/// What a second process works out judging the file as `after`, over the store a judging of it
+/// as `before` left.
+fn syntax_reworked(before: string, after: string) -> List<string> {
+    let store = empty_store()
+    let _ = syntax_held(before).worked_judging("/w/src/main.av", store)
+    syntax_held(after).worked_judging("/w/src/main.av", store)
+}
+
+fn syntax_held(main: string) -> Held {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+        "/w",
+    )
+}
+
+/// How many fn bodies the second process types again.
+fn syntax_retyped(before: string, after: string) -> int {
+    syntax_reworked(before, after).filter(it == "typed_fn").length
+}
+
+spec "compiler/workspace — a declaration's syntax is declaration-grain" {
+    given "two declarations in one file, `a` edited and `b` untouched" {
+        then "`b` is not typed again — the cutoff the decl grain exists for" {
+            syntax_retyped(syntax_source("1"), syntax_source("1 + 1")) <= 1
+        }
+        then "`a` is typed again with its own edited body" {
+            syntax_retyped(syntax_source("1"), syntax_source("1 + 1")) >= 1
+        }
+        then "an edit that only reindents `a` still types nothing of `b`" {
+            syntax_retyped(
+                syntax_source("1"),
+                "fn a() -> int {\n\n    1\n}\nfn b() -> int {\n    2\n}\n",
+            ) <= 1
+        }
+    }
+    given "the same, unedited source" {
+        then "judged twice, the second works nothing out — no drift from re-asking" {
+            syntax_reworked(syntax_source("1"), syntax_source("1")).is_empty()
+        }
+    }
+}

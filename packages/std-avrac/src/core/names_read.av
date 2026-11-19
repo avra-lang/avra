@@ -1,0 +1,128 @@
+//! THE NAMES A BODY READS, as its typing resolved them: for each node that reads a name, the binding
+//! of the body's own it reads — where that was bound, and each lambda the read crosses to reach it —
+//! or the program's name read from where the node was written, and whether the read writes the
+//! binding's seat. Typing records it where it resolves the name; every later reader asks here.
+
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+
+/// Where a binding of a body was made: a statement (`let`, `mut`, `state`, `const`, a local fn), an
+/// expression (a lambda's seat, a walk's turn), a pattern, the body's own seat by its index, or its
+/// receiver. A statement's, an expression's and a pattern's index is its node's in the body's tree.
+@derive(Saved)
+export enum BindSite {
+    Stmt(index: int)
+    Expr(index: int)
+    Pat(index: int)
+    Seat(index: int)
+    Receiver
+}
+
+/// A name read at the node `at`: the binding it reads, absent for a name the program declares — read
+/// from `home`, the template that wrote the node, where one did; each lambda between the read and
+/// its binding, innermost first, whose capture the read is; and whether the read writes the binding's
+/// seat: a store to it, the receiver of a method that writes it, a `mut` seat handed it.
+@derive(Saved)
+export type NameRead = {
+    at: int,
+    name: string,
+    binder: BindSite?,
+    home: string? = null,
+    crossed: List<int> = [],
+    writes: bool = false,
+}
+
+/// A binding a body makes: where, its name, the type it binds when that's known, and whether it's a
+/// bare pattern name that compares the subject with the const it names instead of binding.
+@derive(Saved)
+export type NameBound = { site: BindSite, name: string, ty: SignedType?, compared: bool = false }
+
+/// The names a body reads, each by the node that reads it, and the bindings it makes.
+export type NamesRead = { reads: List<NameRead>, binds: List<NameBound> = [] }
+
+impl NamesRead {
+    /// The name the node `e` reads, absent for a node that reads none.
+    fn at(e: ExprId) -> NameRead? { self.reads.find(it.at == e.index) }
+
+    /// What the lambda `lam` captures: each read inside it whose binding lies outside it.
+    fn captured(lam: ExprId) -> List<NameRead> { self.reads.filter(it.crossed.contains(lam.index)) }
+
+    /// The binding made at `site` under `name`, absent where none was.
+    fn bound_at(site: BindSite, name: string) -> NameBound? { self.binds.find(it.name == name && same_binder(it.site, site)) }
+
+    /// Every read of the binding `b`.
+    fn of_binder(b: BindSite) -> List<NameRead> { self.reads.filter(it.binder != null && same_binder(it.binder!, b)) }
+}
+
+/// Whether two binders name one binding.
+export fn same_binder(a: BindSite, b: BindSite) -> bool {
+    match a {
+        .Stmt(i) -> match b { .Stmt(j) -> i == j, rest -> false },
+        .Expr(i) -> match b { .Expr(j) -> i == j, rest -> false },
+        .Pat(i) -> match b { .Pat(j) -> i == j, rest -> false },
+        .Seat(i) -> match b { .Seat(j) -> i == j, rest -> false },
+        .Receiver -> b is .Receiver,
+    }
+}
+
+/// The index of the expression a binder is, -1 for any other.
+export fn expr_index(b: BindSite?) -> int {
+    let at? = b else { return -1 }
+    match at { .Expr(i) -> i, rest -> -1 }
+}
+
+/// THE BODY CONSTS A CONST'S VALUE READS: each `const` the body declared before it whose name the
+/// value reads, by its statement, in the order first read; absent where the value reads any other
+/// binding of the body — a seat, a `let`, a pattern's name — which holds a value only while the body
+/// runs. A binding the value makes itself (a lambda's seat, a block's own `let`) is the value's.
+export fn body_const_reads(
+    store: SyntaxArena,
+    names: NamesRead,
+    value: ExprId,
+    settled: List<int> = [],
+) -> List<StmtId>? {
+    let spanned? = store.expr_span(value) else { return null }
+    mut consts: List<StmtId> = []
+    for e in store.every_expr(value) {
+        let read? = names.at(e) else { continue }
+        let site? = read.binder else { continue }
+        if binder_within(store, site, spanned) || settled_seat(site, settled) { continue }
+        let s? = match site { .Stmt(i) -> StmtId { index: i }, rest -> null } else { return null }
+        if store.const_value(s) == null { return null }
+        if !consts.any(same_stmt(it, s)) { consts.push(s) }
+    }
+    consts
+}
+
+/// Whether `site` is a seat among `settled`.
+fn settled_seat(site: BindSite, settled: List<int>) -> bool {
+    match site { .Seat(j) -> settled.contains(j), rest -> false }
+}
+
+/// The seats among `settled` that `value` reads, each once.
+export fn settled_seat_reads(
+    store: SyntaxArena,
+    names: NamesRead,
+    value: ExprId,
+    settled: List<int>,
+) -> List<int> {
+    mut out: List<int> = []
+    for e in store.every_expr(value) {
+        let site? = names.at(e)?.binder else { continue }
+        let j? = match site { .Seat(j) -> j, rest -> null } else { continue }
+        if settled.contains(j) && !out.contains(j) { out.push(j) }
+    }
+    out
+}
+
+/// Whether the binding made at `site` stands inside `span`.
+fn binder_within(store: SyntaxArena, site: BindSite, span: Span) -> bool {
+    let at = match site {
+        .Stmt(i) -> store.stmt_span(StmtId { index: i }),
+        .Expr(i) -> store.expr_span(ExprId { index: i }),
+        .Pat(i) -> store.pat_span(PatId { index: i }),
+        .Seat(_) or .Receiver -> null,
+    }
+    let held? = at else { return false }
+    held.lo >= span.lo && held.hi <= span.hi
+}

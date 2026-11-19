@@ -1,0 +1,301 @@
+// An input's digest tells apart everything a read can see — nothing
+// there first, then every part of every kind.
+use core.{distinct}
+use compiler.host.{Read, Input, InputName, InputKind, Listed, Stamp}
+
+/// Every read here digests apart from every other.
+fn apart(reads: List<Read>) -> bool {
+    distinct([r.input().digest.key for r in reads]).length == reads.length
+}
+
+fn same(a: Read, b: Read) -> bool {
+    a.input().digest.key == b.input().digest.key
+}
+
+fn no_octets() -> Bytes { "".bytes() }
+
+fn stamp(path: string, mark: int?) -> Stamp {
+    Stamp { path: path, mark: mark }
+}
+
+fn entry(name: string, dir: bool) -> Listed {
+    Listed { name: name, dir: dir }
+}
+
+fn named(kind: InputKind, key: string) -> InputName {
+    InputName { kind: kind, key: key }
+}
+
+spec "compiler/input_door" {
+    given "nothing there" {
+        then "a missing file, an empty file, an unset variable and an empty one digest apart, under one key" {
+            apart(
+                [Read.Text("k", null), Read.Text("k", ""), Read.Env("k", null), Read.Env("k", "")],
+            )
+        }
+        then "missing octets, no octets, a missing range and an empty range digest apart" {
+            apart(
+                [
+                    Read.Octets("k", null),
+                    Read.Octets("k", no_octets()),
+                    Read.Range("k", 0, 0, null),
+                    Read.Range("k", 0, 0, no_octets()),
+                ],
+            )
+        }
+        then "no directory and an empty directory digest apart" {
+            let none: List<Listed> = []
+            apart([Read.Listing("k", null), Read.Listing("k", none)])
+        }
+        then "nothing there is a different value in every kind" {
+            apart(
+                [
+                    Read.Text("k", null),
+                    Read.Octets("k", null),
+                    Read.Range("k", 0, 0, null),
+                    Read.Listing("k", null),
+                    Read.Exists("k", false),
+                    Read.Env("k", null),
+                    Read.Tool("k", null),
+                    Read.Compiler(null),
+                ],
+            )
+        }
+        then "an empty text is not an empty run of octets, and neither is a file that is there" {
+            apart([Read.Text("k", ""), Read.Octets("k", no_octets()), Read.Exists("k", true)])
+        }
+        then "nothing there differs from every one-character value" {
+            apart(
+                [
+                    Read.Text("k", null),
+                    Read.Text("k", ""),
+                    Read.Text("k", " "),
+                    Read.Text("k", "0"),
+                    Read.Text("k", "\n"),
+                ],
+            )
+        }
+    }
+    given "a read the host refused" {
+        then "a refusal is neither absence nor an empty file" {
+            apart(
+                [
+                    Read.Text("k", null),
+                    Read.Text("k", ""),
+                    Read.Refused(named(InputKind.Text, "k"), "permission denied"),
+                ],
+            )
+        }
+        then "two refusals of one name in different words digest apart" {
+            apart(
+                [
+                    Read.Refused(named(InputKind.Text, "k"), "permission denied"),
+                    Read.Refused(named(InputKind.Text, "k"), "a link stands on the way"),
+                    Read.Refused(named(InputKind.Text, "k"), ""),
+                ],
+            )
+        }
+        then "a refusal belongs to its name: another key or another kind digests apart" {
+            apart(
+                [
+                    Read.Refused(named(InputKind.Text, "k"), "no"),
+                    Read.Refused(named(InputKind.Text, "j"), "no"),
+                    Read.Refused(named(InputKind.Octets, "k"), "no"),
+                ],
+            )
+        }
+        then "a refusal whose words are a file's text is not that file" {
+            apart([Read.Text("k", "no"), Read.Refused(named(InputKind.Text, "k"), "no")])
+        }
+        then "a refusal keeps the name it was asked by" {
+            let seen = Read.Refused(named(InputKind.Env, "HOME"), "no").input()
+            seen.name.kind is .Env && seen.name.key == "HOME"
+        }
+    }
+    given "a stamp" {
+        then "no tool, a tool the host cannot tell, and a zero mark digest apart" {
+            apart(
+                [
+                    Read.Tool("cc", null),
+                    Read.Tool("cc", stamp("/bin/cc", null)),
+                    Read.Tool("cc", stamp("/bin/cc", 0)),
+                    Read.Tool("cc", stamp("", null)),
+                    Read.Tool("cc", stamp("", 0)),
+                ],
+            )
+        }
+        then "each of a stamp's two parts moves the digest alone" {
+            apart(
+                [
+                    Read.Tool("cc", stamp("/bin/cc", 7)),
+                    Read.Tool("cc", stamp("/bin/c2", 7)),
+                    Read.Tool("cc", stamp("/bin/cc", 8)),
+                ],
+            )
+        }
+        then "a mark the host cannot give is apart from every mark" {
+            apart(
+                [
+                    Read.Tool("cc", stamp("/bin/cc", null)),
+                    Read.Tool("cc", stamp("/bin/cc", 0)),
+                    Read.Tool("cc", stamp("/bin/cc", 1)),
+                    Read.Tool("cc", stamp("/bin/cc", 0 - 1)),
+                ],
+            )
+        }
+        then "the compiler and a variable holding its print are two inputs" {
+            apart([Read.Compiler("p"), Read.Env("", "p")])
+        }
+        then "two binaries, an empty print and no print are four compilers" {
+            apart([Read.Compiler("a"), Read.Compiler("b"), Read.Compiler(""), Read.Compiler(null)])
+        }
+        then "one tool found under two words is two names" {
+            apart([Read.Tool("cc", stamp("/bin/cc", 7)), Read.Tool("clang", stamp("/bin/cc", 7))])
+        }
+    }
+    given "the boundary between a name and what it saw" {
+        then "a character moved from the key into the text is another input" {
+            apart(
+                [
+                    Read.Text("ab", "c"),
+                    Read.Text("a", "bc"),
+                    Read.Text("abc", ""),
+                    Read.Text("", "abc"),
+                ],
+            )
+        }
+        then "a variable's name and value do not run together" {
+            apart([Read.Env("AB", "C"), Read.Env("A", "BC"), Read.Env("ABC", null)])
+        }
+        then "a character moved between two listed names is another listing" {
+            apart(
+                [
+                    Read.Listing("d", [entry("ab", false), entry("c", false)]),
+                    Read.Listing("d", [entry("a", false), entry("bc", false)]),
+                    Read.Listing("d", [entry("abc", false)]),
+                    Read.Listing("d", [entry("ab", false), entry("c", false), entry("", false)]),
+                ],
+            )
+        }
+        then "a listing's order, and whether a name is a directory, are part of it" {
+            apart(
+                [
+                    Read.Listing("d", [entry("a", false), entry("b", false)]),
+                    Read.Listing("d", [entry("b", false), entry("a", false)]),
+                    Read.Listing("d", [entry("a", true), entry("b", false)]),
+                    Read.Listing("d", [entry("a", false), entry("b", true)]),
+                ],
+            )
+        }
+        then "a listed name moved into the key is another listing" {
+            apart([Read.Listing("d", [entry("a", false)]), Read.Listing("da", [entry("", false)])])
+        }
+    }
+    given "every part of a read" {
+        then "the key moves the digest in every kind" {
+            apart([Read.Text("a", "x"), Read.Text("b", "x")]) &&
+                apart([Read.Octets("a", "x".bytes()), Read.Octets("b", "x".bytes())]) &&
+                apart([Read.Range("a", 0, 1, "x".bytes()), Read.Range("b", 0, 1, "x".bytes())]) &&
+                apart([Read.Listing("a", null), Read.Listing("b", null)]) &&
+                apart([Read.Exists("a", true), Read.Exists("b", true)]) &&
+                apart([Read.Env("a", "x"), Read.Env("b", "x")]) &&
+                apart([Read.Tool("a", null), Read.Tool("b", null)])
+        }
+        then "what was seen moves the digest in every kind" {
+            apart([Read.Text("k", "x"), Read.Text("k", "y")]) &&
+                apart([Read.Octets("k", "x".bytes()), Read.Octets("k", "y".bytes())]) &&
+                apart([Read.Range("k", 0, 1, "x".bytes()), Read.Range("k", 0, 1, "y".bytes())]) &&
+                apart([Read.Exists("k", true), Read.Exists("k", false)]) &&
+                apart([Read.Env("k", "x"), Read.Env("k", "y")])
+        }
+        then "a range's window is part of its name: the same octets from elsewhere are another input" {
+            apart(
+                [
+                    Read.Range("k", 0, 4, "abcd".bytes()),
+                    Read.Range("k", 4, 4, "abcd".bytes()),
+                    Read.Range("k", 0, 8, "abcd".bytes()),
+                    Read.Octets("k", "abcd".bytes()),
+                ],
+            )
+        }
+        then "a range's window is spelled into its key" {
+            let n = Read.Range("assets/big.bin", 0, 512, null).name()
+            n.kind is .Range && n.key == "assets/big.bin@0+512"
+        }
+        then "a key that spells a window is not that window" {
+            apart(
+                [
+                    Read.Range("k@1+2", 3, 4, null),
+                    Read.Range("k", 1, 2, null),
+                    Read.Octets("k@1+2", null),
+                ],
+            )
+        }
+        then "a text longer than a word, differing in its last character, digests apart" {
+            apart(
+                [
+                    Read.Text("k", "0123456789abcdef"),
+                    Read.Text("k", "0123456789abcdeg"),
+                    Read.Text("k", "0123456789abcde"),
+                ],
+            )
+        }
+    }
+    given "one read asked twice" {
+        then "the same read answers the same digest and the same name" {
+            let a = Read.Text("std-io:src/io.av", "fn f() {}\n").input()
+            let b = Read.Text("std-io:src/io.av", "fn f() {}\n").input()
+            a.digest.key == b.digest.key &&
+                a.digest.word == b.digest.word &&
+                a.name.key == b.name.key &&
+                a.name.kind is .Text
+        }
+        then "a text and the same octets asked as octets are two inputs over two names" {
+            !same(Read.Text("k", "abc"), Read.Octets("k", "abc".bytes()))
+        }
+        then "a name is kept as written — a path is never resolved" {
+            Read.Text("app:./src/../src/a.av", null).name().key == "app:./src/../src/a.av"
+        }
+    }
+    given "a frame, pinned — a digest is stored, so a kind keeps its number and a frame its order" {
+        then "a text digests to its pinned key" {
+            Read.Text("k", "abc").input().digest.key == "d99502a639277d9d5a9e43b6c4cc0255e552485106421eb8bbedeec4993312cc"
+        }
+        then "octets digests to its pinned key" {
+            Read.Octets("k", "abc".bytes()).input().digest.key == "435e68340d5dc59b4818077fa95c3bd0e89cc543b2d2776dd7c064b6ce012896"
+        }
+        then "a range digests to its pinned key" {
+            Read.Range("k", 1, 2, "bc".bytes()).input().digest.key == "62baa111c1b92b1840d81316598f386d6a562b5dc112410926a91f3288596001"
+        }
+        then "a listing digests to its pinned key" {
+            Read.Listing("k", [entry("a", false), entry("b", true)]).input().digest.key == "06324e77d21318bb2eed0a0f388c2f16ac820ca702362e8adf89468196fc9064"
+        }
+        then "an existence digests to its pinned key" {
+            Read.Exists("k", true).input().digest.key == "2d7801ec8687ea2712d306b6166a16d62d8989992e3b0dc3973797bdacb81698"
+        }
+        then "a variable digests to its pinned key" {
+            Read.Env("k", "abc").input().digest.key == "5a44bc1bee2dfd121c93d8fb3cbc14680d482d864d7a7182b12f521f3455182e"
+        }
+        then "a tool digests to its pinned key" {
+            Read.Tool("k", stamp("/bin/cc", 20)).input().digest.key == "79cd47851e9aa798bcaf4428c71c77e60b9af33d3c467783cb3aec4d68319626"
+        }
+        then "the compiler digests to its pinned key" {
+            Read.Compiler("p").input().digest.key == "9345d848978cd376fcee3de3da5403ba116c3b920b16fbd4bd69cbfb1d285831"
+        }
+        then "a refusal digests to its pinned key" {
+            Read.Refused(named(.Text, "k"), "denied").input().digest.key == "dd14c36f5411f35e5fe205b007e26698d0fa7fb85d674274632d4c0ce48e394b"
+        }
+        then "an absent text digests to its pinned key" {
+            Read.Text("k", null).input().digest.key == "1b9b65ab7f095b492578bf3996ea96cd2d41bdd3e19c17a184cd9c558caf6988"
+        }
+        then "absent octets digests to its pinned key" {
+            Read.Octets("k", null).input().digest.key == "62349ca97137318ceaa4ab7eaaf4dd813d47dacd725e05a4f776b95127562696"
+        }
+        then "an unset variable digests to its pinned key" {
+            Read.Env("k", null).input().digest.key == "0a7bb132eaa784e92c0b511fead4c6ac69c340f7c7f48b2568895668ea6dd918"
+        }
+        then "a text's word — what a cell is cut by — is pinned to its digest's first eight octets" {
+            "${Read.Text("k", "abc").input().digest.word}" == "-7098474309114227239"
+        }
+    }
+}

@@ -1,0 +1,31 @@
+//! proves: a cancel that stands when a task reaches a descriptor park
+//! is met there — the task unwinds without parking, and nothing after
+//! the park runs
+use @std.net.{Bell, Listener, NetError, listen}
+use @std.time.{ms, secs, sleep}
+
+/// Woken by the bell, then an accept nobody will answer; `left` counts
+/// the frame's leaving, and reads 10 once the accept comes back.
+fn accepts(b: Bell, l: Listener, left: Cell<int>) -> int {
+    defer left.set(left.get() + 1)
+    let _ = b.waited(secs(5))
+    let _ = l.accept()
+    left.set(10)
+    0
+}
+
+fn run() -> Result<string, NetError> {
+    let b = Bell {}
+    let l = listen("127.0.0.1", 0)?
+    let left = Cell.new(0)
+    let t = spawn accepts(b, l, left)
+    sleep(ms(20))
+    b.ring()
+    t.cancel()
+    sleep(ms(20))
+    let seen = left.get()
+    l.close()?
+    .Ok("${seen}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

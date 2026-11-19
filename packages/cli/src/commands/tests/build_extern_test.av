@@ -1,0 +1,87 @@
+//! An extern nothing a program links carries is refused when the program is BUILT, in the dev build
+//! as in the release one: its symbol named, and the package that declares it where that is not the
+//! program's own — never a binary that dies at its first call with the loader's words. `avra_ran`,
+//! `scratch_dir` and `exit_is_zero` are the neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// What a build is refused with, an extern nothing links named.
+fn uncarried(symbol: string) -> string { "`${symbol}` is extern and nothing this program links carries it" }
+
+/// A package of one file, `main`, under the tree's scratch directory, depending on `deps`.
+fn package_of(name: string, main: string, deps: string) -> string {
+    let root = "${scratch_dir()}/extern_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n${deps}",
+    )
+    let _ = write_text("${root}/src/main.av", main)
+    root
+}
+
+/// A program that calls an extern no library it links defines.
+const calls_missing = "extern fn avra_test_nowhere() -> int\nprintln(\"\${avra_test_nowhere()}\")\n"
+
+/// What `avra build` over `args` said on stderr, and whether it failed.
+fn refused_saying(args: List<string>) -> string? {
+    match avra_ran(["build"].concat(args)) {
+        .Ok(o) -> if exit_is_zero(o.exit) { null } else { o.out.stderr },
+        .Err(_) -> null,
+    }
+}
+
+/// A library declaring an extern its manifest links nothing for, and a program calling it through it.
+fn through_a_dependency() -> string {
+    let lib = "${scratch_dir()}/extern_owner_${stamp()}"
+    let _ = make_dirs("${lib}/src")
+    let _ = write_text(
+        "${lib}/avra.toml",
+        "[package]\nname = \"@zz/xowner\"\nversion = \"0.0.1\"\n",
+    )
+    let _ = write_text(
+        "${lib}/src/owner.av",
+        "extern fn avra_test_owned() -> int\nexport fn held() -> int { avra_test_owned() }\n",
+    )
+    package_of(
+        "through",
+        "use @zz.xowner.{held}\nprintln(\"\${held()}\")\n",
+        "\n[dependencies]\n\"@zz/xowner\" = { path = \"${lib}\" }\n",
+    )
+}
+
+spec "avra build — an extern nothing the program links carries" {
+    given "a program calling one, built as a developer builds it" {
+        then "is refused at build, naming the symbol" {
+            refused_saying([package_of("dev", calls_missing, "")])?.contains(uncarried("avra_test_nowhere")) ?? false
+        }
+    }
+    given "the same program built --release" {
+        then "is refused in the same words" {
+            refused_saying(["--release", package_of("release", calls_missing, "")])?.contains(uncarried("avra_test_nowhere")) ?? false
+        }
+    }
+    given "a program that built, edited to call one" {
+        then "the edit is refused, though the build before it linked" {
+            let root = package_of("edited", "println(\"before\")\n", "")
+            let _ = avra_ran(["build", root])
+            let _ = write_text("${root}/src/main.av", calls_missing)
+            refused_saying([root])?.contains(uncarried("avra_test_nowhere")) ?? false
+        }
+    }
+    given "an extern a dependency declares and links nothing for" {
+        then "the refusal names that package" {
+            let said = refused_saying([through_a_dependency()]) ?? ""
+            said.contains("${uncarried("avra_test_owned")}, and @zz/xowner declares it")
+        }
+    }
+    given "a program whose externs its links carry" {
+        then "builds and runs" {
+            let root = package_of("carried", "println(\"carried\")\n", "")
+            match avra_ran(["build", root]) {
+                .Ok(o) -> exit_is_zero(o.exit) && clean_stdout(binary_ran("${root}/src/main")) == "carried\n",
+                .Err(_) -> false,
+            }
+        }
+    }
+}

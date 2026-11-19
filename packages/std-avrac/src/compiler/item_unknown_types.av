@@ -1,0 +1,292 @@
+//! WHERE A WRITTEN TYPE NAMES NO TYPE: a name in a statement's own signature — a binding's
+//! annotation, a seat's, a field's, a payload's, an answer's, a bound, what a `type` or an `alias`
+//! names — that is no type parameter in scope, no type the language owns, and no declaration the
+//! file or the template that wrote it sees. Read off a written item's syntax and its file's names, so
+//! a build asks it of every file it reaches for nothing more than the walk.
+use core.{
+    At,
+    seat_worn_twice,
+    ExprId,
+    INFERRED,
+    StmtId,
+    body_behavior,
+    SyntaxArena,
+    TypeRef,
+    flatten,
+    some_list,
+    spelled,
+    width_named,
+}
+use compiler.laws.{Found, law}
+use compiler.typing.{
+    bound_no_trait,
+    dyn_no_trait,
+    builtin_type_name,
+    in_signature,
+    names_no_type,
+    width_off_seat,
+}
+use diagnostics.{Voice}
+use features.{self_word}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A type name that names no type: the statement it's written in, the name, and whether it's a
+/// machine width written off an `extern fn`'s seats.
+@derive(Saved)
+type UnnamedAt = { at: FindingAt?, name: string, width: bool }
+
+/// Every type name in one written item that names no type.
+@derive(Saved)
+type ItemUnnamed = { rows: List<UnnamedAt>, bounds: List<UnnamedAt> = [], contracts: List<UnnamedAt> = [] }
+
+/// Where the names of a statement's types are read: its file, the file whose template wrote it, the
+/// type parameters its item declares, an impl's type's own among them, and the names a refused `use`
+/// of the file binds, which answer to that `use` alone.
+type TypeScope = {
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    writer: SourceFileAddress?,
+    params: List<string>,
+    refused: List<string>,
+}
+
+/// Every type name a statement of the written item `at` of `file` writes in its signature that names
+/// no type, statement by statement.
+@query
+fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
+    if at >= item_count(engine, file) { return ItemUnnamed { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return ItemUnnamed { rows: [] } }
+    let stmts = flatten([stmts_under(item.store, At.Stmt(top)) for top in item.stmts])
+    let params = flatten([item.store.tparams_in_scope(s) for s in stmts])
+        .concat(flatten([a.params for a in impls_at(engine, file, at)]))
+    let refused = refused_imports(engine, file)
+    let scoped = (s: StmtId) -> TypeScope {
+        engine: engine,
+        file: file,
+        writer: written_by(item.store, s),
+        params: params,
+        refused: refused,
+    }
+    ItemUnnamed {
+        rows: flatten([unnamed_in(scoped(s), item.store, s) for s in stmts])
+            .concat(
+                flatten(
+                    [seats_unnamed(scoped(top), item.store, e) for top in item.stmts for e in exprs_under(item.store, At.Stmt(top))],
+                ),
+            ),
+        bounds: flatten([bounds_untraited(scoped(s), item.store, s) for s in stmts]),
+        contracts: flatten([contracts_untraited(scoped(s), item.store, s) for s in stmts]),
+    }
+}
+
+/// Every expression at and under the node `at`, a quote's own left out.
+fn exprs_under(store: SyntaxArena, at: At) -> List<ExprId> {
+    let below = flatten([exprs_under(store, k) for k in store.kids_walked(at)])
+    match at { .Expr(e) -> if quoted(store, e) { [] } else { [e].concat(below) }, rest -> below }
+}
+
+/// Every name the seats of the lambda or trailing block `e` write as a type that names none, where
+/// `e` stands; none for any other node, nor for one naming a seat twice, which is refused whole.
+fn seats_unnamed(scope: TypeScope, store: SyntaxArena, e: ExprId) -> List<UnnamedAt> {
+    let seats = match store.expr(e) {
+        .Lambda(params, _) or .BlockLambda(params, _) -> params,
+        rest -> [],
+    }
+    if seat_worn_twice(seats) != null { return [] }
+    [UnnamedAt { at: kept_at(store.expr_span(e)), name: n, width: width_named(n) != null } for p in seats for t in some_list(p.ty) for n in scope.unnamed(t, false)]
+}
+
+/// Every `dyn` a type `s` writes in its signature stands over that names no trait, where `s` stands.
+fn contracts_untraited(scope: TypeScope, store: SyntaxArena, s: StmtId) -> List<UnnamedAt> {
+    [UnnamedAt { at: kept_at(store.stmt_span(s)), name: n, width: false } for t in store.type_roots(s) for n in scope.untraited(t)]
+}
+
+/// Every bound a type parameter of `s` wears that names no trait, as it's written, where `s` stands.
+fn bounds_untraited(scope: TypeScope, store: SyntaxArena, s: StmtId) -> List<UnnamedAt> {
+    [UnnamedAt { at: kept_at(store.stmt_span(s)), name: spelled(b), width: false } for b in store.bound_roots(s) if !scope.names_trait(b) && !scope.refused.contains(b.name)]
+}
+
+/// Every statement at and under the node `at`, a quote's own left out: the code it writes reads its
+/// types where it lands.
+fn stmts_under(store: SyntaxArena, at: At) -> List<StmtId> {
+    match at {
+        .Stmt(s) -> [s].concat(stmts_below(store, at)),
+        .Expr(e) -> if quoted(store, e) { [] } else { stmts_below(store, at) },
+        rest -> stmts_below(store, at),
+    }
+}
+
+/// Every statement under the node `at`'s children.
+fn stmts_below(store: SyntaxArena, at: At) -> List<StmtId> { flatten([stmts_under(store, k) for k in store.kids_walked(at)]) }
+
+/// Whether `e` is a quote.
+fn quoted(store: SyntaxArena, e: ExprId) -> bool {
+    let body? = store.expr(e).body_of() else { return false }
+    body_behavior(body.word) is .Quote
+}
+
+/// Every name `s` writes in its signature that names no type, where `s` stands.
+fn unnamed_in(scope: TypeScope, store: SyntaxArena, s: StmtId) -> List<UnnamedAt> {
+    let seats = store.extern_parts(s) != null
+    let bounds = store.bound_roots(s).length
+    let first = if store.binding_ty(s) == null { 0 } else { 1 }
+    let roots = store.type_roots(s)
+    let signed = roots.take(first).concat(roots.drop(first + bounds))
+    let applied = flatten([b.type_args() for b in store.bound_roots(s)])
+    [UnnamedAt { at: kept_at(store.stmt_span(s)), name: n, width: width_named(n) != null } for t in signed.concat(applied) for n in scope.unnamed(t, seats)]
+        .concat(
+            [UnnamedAt { at: kept_at(store.stmt_span(s)), name: INFERRED, width: false } for _t in uninferred(store, s, signed)],
+        )
+}
+
+/// Each `_` the statement `s` writes in its signature, `signed`, where nothing infers it: a fn's
+/// anywhere in a seat's type, and in its answer anywhere but as the whole failure side of a
+/// `Result`, which its `fail`s give; any other statement's wherever it stands.
+fn uninferred(store: SyntaxArena, s: StmtId, signed: List<TypeRef>) -> List<TypeRef> {
+    let parts? = store.fn_parts(s) else { return flatten([holes_in(t) for t in signed]) }
+    let seats = flatten([holes_in(p.ty!) for p in parts.params if p.ty != null])
+    let failure = if parts.ret.name == RESULT && parts.ret.type_args().length == 2 { parts.ret.type_args()[1] } else { null }
+    let answer = if failure != null && failure!.name == INFERRED { flatten([holes_in(a) for a in parts.ret.type_args().take(1)]) } else { holes_in(parts.ret) }
+    seats.concat(answer)
+}
+
+/// `t` and every type written inside it that is the hole `_`.
+fn holes_in(t: TypeRef) -> List<TypeRef> {
+    let inside = flatten([holes_in(a) for a in t.type_args().concat(t.alternatives)])
+    if t.name == INFERRED && !t.arrow { [t].concat(inside) } else { inside }
+}
+
+/// The type whose failure side a fn's `fail`s infer.
+const RESULT: string = "Result"
+
+impl TypeScope {
+    /// Every name in `t`, its arguments and its alternatives among them, that names no type; a
+    /// machine width names one only as the whole of an `extern fn`'s seat, where `seat`, and what a
+    /// `dyn` stands over is the contract law's.
+    fn unnamed(t: TypeRef, seat: bool) -> List<string> {
+        let named = t.arrow ||
+            t.dynamic ||
+            self.names_type(t.name) ||
+            seat && width_named(t.name) != null
+        let own = if named { [] } else { [t.name] }
+        own.concat(flatten([self.unnamed(a, false) for a in t.type_args().concat(t.alternatives)]))
+    }
+
+    /// Every name in `t`, its arguments and its alternatives among them, a `dyn` stands over that
+    /// names no trait.
+    fn untraited(t: TypeRef) -> List<string> {
+        let own = if t.dynamic &&
+            !t.arrow &&
+            !self.refused.contains(t.name) &&
+            !self.names_trait(t with { dynamic: false, optional: false }) { [t.name] } else { [] }
+        own.concat(flatten([self.untraited(a) for a in t.type_args().concat(t.alternatives)]))
+    }
+
+    /// Whether the bound `b` names a trait, bare: one the template that wrote it or its file sees.
+    fn names_trait(b: TypeRef) -> bool {
+        if b.optional || b.dynamic || b.arrow { return false }
+        let homed = self.writer != null &&
+            resolved(self.engine, self.writer!, Space.Type, b.name).named()?.kind == ItemKind.Trait
+        homed ||
+            resolved(self.engine, self.file, Space.Type, b.name).named()?.kind == ItemKind.Trait
+    }
+
+    /// Whether `name`, written as a type, names one: no name (a fn type's or a union's), the
+    /// inferred type, `Self`, a type parameter, a type the language owns, or a type
+    /// the template that wrote it or its file sees.
+    fn names_type(name: string) -> bool {
+        if name.is_empty() ||
+            name == INFERRED ||
+            name == self_word ||
+            self.params.contains(name) ||
+            self.refused.contains(name) { return true }
+        if builtin_type_name(avra().rows.types, name) || name == RANGE { return true }
+        let homed = self.writer != null &&
+            resolved(self.engine, self.writer!, Space.Type, name).named() != null
+        homed || resolved(self.engine, self.file, Space.Type, name).named() != null
+    }
+}
+
+/// Each of `rows` as its law finds it, its voice handed the name.
+fn named_found(rows: List<UnnamedAt>) -> List<Found> { [Found { at: span_of(r.at), args: [r.name] } for r in rows] }
+
+/// Each of `rows` of `file` as its law finds it, behind the parse refusal of a file of its module
+/// where one holds: the name may be declared where nothing could be read.
+fn unread_named_found(engine: QueryEngine, file: SourceFileAddress, rows: List<UnnamedAt>) -> List<
+    Found,
+> {
+    [f with { unread: unread_here(engine, file, f.args[0]) } for f in named_found(rows)]
+}
+
+/// Every type name the written item `at` of `file` writes that names no type: a machine width off an
+/// `extern fn`'s seats where `widths`, any other where not.
+fn unnamed_found(engine: QueryEngine, file: SourceFileAddress, at: int, widths: bool) -> List<Found> {
+    let rows = item_unknown_types(engine, file, at).rows.filter(it.width == widths)
+    if widths { named_found(rows) } else { unread_named_found(engine, file, rows) }
+}
+
+/// Every type name the written item `at` of `file` writes that names no type.
+fn unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, false) }
+
+/// Every machine width the written item `at` of `file` writes off an `extern fn`'s seats.
+fn widths_off_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, true) }
+
+/// Every bound the written item `at` of `file` writes that names no trait.
+fn bounds_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    unread_named_found(engine, file, item_unknown_types(engine, file, at).bounds)
+}
+
+/// Every `dyn` the written item `at` of `file` writes over a name that names no trait.
+fn contracts_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    unread_named_found(engine, file, item_unknown_types(engine, file, at).contracts)
+}
+
+/// a `dyn` stands over a trait
+export law dyn_names_a_trait {
+    kind: "type.trait"
+    reads: contracts_unknown
+    voice: contract_words
+    witness: "type P = { x: int }\n\nfn f(d: dyn P) -> int { 1 }\n"
+}
+
+fn contract_words(a: List<string>) -> Voice { dyn_no_trait(a[0]) }
+
+/// a type parameter's bound names a trait
+export law bound_names_a_trait {
+    kind: "type.trait"
+    reads: bounds_unknown
+    voice: bound_words
+    witness: "type P = { x: int }\n\nfn g<T: P>(a: T) -> int { 1 }\n"
+}
+
+fn bound_words(a: List<string>) -> Voice { bound_no_trait(a[0]) }
+
+/// a type written in a signature names a type
+export law type_unknown {
+    kind: "type.unknown"
+    reads: unknown_types
+    voice: unknown_words
+    witness: "fn g() -> int {\n    let x: List<Nope> = []\n    x.length\n}\n"
+}
+
+/// a machine width is written only on an `extern fn`'s seat
+export law width_off_a_seat {
+    kind: "type.unknown"
+    reads: widths_off_seats
+    voice: width_words
+    witness: "fn n() -> i64 { 3 }\n"
+}
+
+fn unknown_words(a: List<string>) -> Voice { names_no_type(a[0], in_signature) }
+
+fn width_words(a: List<string>) -> Voice { width_off_seat(a[0]) }
+
+collect listed_unnamed_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the type-naming law is read through, for a process to hand its engine.
+export fn unnamed_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unnamed_facts) }

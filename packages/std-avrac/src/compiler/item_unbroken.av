@@ -1,0 +1,300 @@
+//! THE UNBROKEN LAW ON THE PROGRAM LAYER: a fn wearing `@std/meta`'s `@unbroken` lets no other task
+//! run inside it except at a park row it calls. Its body is lowered once more with each written node
+//! noted (`NodeNotes`), so the law reads what lowering itself resolved at that node: the fn or default
+//! a call reaches, a call through a value, a runtime row that may switch the task out; a spawn and a
+//! `select` are read off the node. A call to C (a row a call names, a park row among them), to the
+//! prelude's own verbs, or to another `@unbroken`
+//! fn is allowed; a default left out is refused where any node of its own may wait, or where it's
+//! written in another file; any other fn, a value, a spawn and a waiting row are refused. Only a node
+//! that may wait at all is judged, so what lowering adds at another node is not. A fn, a method and
+//! a static are judged alike; a generic one is judged where it's lowered for its fills, never here.
+use core.{
+    CalledFn,
+    ExprId,
+    Expr,
+    NodeMet,
+    NodeNotes,
+    SyntaxArena,
+    StmtId,
+    WaitProbe,
+    flatten,
+    node_notes,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.tasks.{
+    broken_call_said,
+    broken_default_said,
+    broken_spawn_said,
+    broken_value_said,
+    broken_wait_said,
+}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// One way an `@unbroken` fn breaks: where, and the words its voice is handed — which way first, then
+/// the fn's name and what broke it.
+@derive(Saved)
+type BrokenAt = { at: FindingAt?, words: List<string> }
+
+/// Every way the `@unbroken` fns of one written item break.
+@derive(Saved)
+type ItemBroken = { rows: List<BrokenAt> }
+
+/// Every way an `@unbroken` fn the written item `at` of `file` declares lets another task run.
+@query
+fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBroken {
+    if at >= item_count(engine, file) { return ItemBroken { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return ItemBroken { rows: [] } }
+    let fns = flatten(
+        [fn_broken(engine, file, p!.name) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && marks_unbroken(engine, file, item.store, s)],
+    )
+    let methods = flatten(
+        [method_broken(engine, file, a, item.store, s) for a in impls_at(engine, file, at) if a.params.is_empty() for s in impl_fns(item, a) if marks_unbroken(engine, file, item.store, s)],
+    )
+    ItemBroken { rows: fns.concat(methods) }
+}
+
+/// Whether the statement `s` of `store`, written in `file`, wears `@std/meta`'s `@unbroken`.
+fn marks_unbroken(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> bool {
+    let scope? = file_scope(engine, file) else { return false }
+    store
+        .annotations_of(s)
+        .any((a) -> meta_unbroken(resolved_in(engine, scope, file, Space.Value, a.name).named()))
+}
+
+/// Whether `d` is `@std/meta`'s `unbroken`.
+fn meta_unbroken(d: DeclaredName?) -> bool {
+    let named? = d else { return false }
+    named.file.package_name == META && named.name == UNBROKEN
+}
+
+/// Every way the fn `file` declares as `name` lets another task run, by its nodes and what lowering
+/// met at each.
+fn fn_broken(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<BrokenAt> {
+    let signed? = signed_body(engine, file, name) else { return [] }
+    if !signed.signature.type_params.is_empty() { return [] }
+    let notes = node_notes(signed.item.written)
+    let _ = signed_lowered(
+        engine,
+        file,
+        answered_fn(engine, file, name, signed),
+        name,
+        null,
+        [],
+        [],
+        notes,
+    )
+    noted_broken(engine, file, signed.item.store, signed.body, name, notes)
+}
+
+/// Every way the body `body` of `store`, the `@unbroken` `owner`'s, lets another task run: by its
+/// nodes, and what lowering met at each, as `notes` holds it.
+fn noted_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    body: ExprId,
+    owner: string,
+    notes: NodeNotes,
+) -> List<BrokenAt> {
+    let own = flatten([node_broken(store, owner, e) for e in store.every_expr(body)])
+    let met = [b! for m in notes.met.get() for b in [met_broken(engine, file, store, owner, m)] if b != null]
+    distinct_broken(own.concat(met))
+}
+
+/// Every way the method or static the impl at `a` writes at `s` of `store` lets another task run.
+fn method_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    a: ImplAt,
+    store: SyntaxArena,
+    s: StmtId,
+) -> List<BrokenAt> {
+    let parts? = store.fn_parts(s) else { return [] }
+    if !parts.tparams.is_empty() { return [] }
+    let statics = store.is_static(s)
+    let method? = signed_method(engine, a, parts.name, statics) else { return [] }
+    let notes = node_notes(method.signed.item.written)
+    let _ = method_lowered(engine, a, parts.name, statics, null, [], notes)
+    noted_broken(engine, file, method.signed.item.store, method.signed.body, parts.name, notes)
+}
+
+/// What the node `e` breaks by its own kind: a spawn, or a `select`, which waits.
+fn node_broken(store: SyntaxArena, owner: string, e: ExprId) -> List<BrokenAt> {
+    let at = kept_at(store.expr_span(e))
+    match store.expr(e).wait_probe() {
+        .Spawn -> [BrokenAt { at: at, words: [SPAWN, owner] }],
+        .Select -> [BrokenAt { at: at, words: [WAIT, owner, "select"] }],
+        rest -> [],
+    }
+}
+
+/// What lowering met at a node, judged: absent where it's allowed, or where the node can't wait.
+fn met_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    owner: string,
+    m: NodeMet,
+) -> BrokenAt? {
+    let e = ExprId { index: met_node(m) }
+    let probe = store.expr(e).wait_probe()
+    if probe is .None { return null }
+    let at = kept_at(store.expr_span(e))
+    match m {
+        .Calls(_, c) -> call_broken(engine, file, owner, c, at),
+        .Value(_) -> if calls_at(probe) { BrokenAt { at: at, words: [VALUE, owner] } } else { null },
+        .Waits(_, row) -> if probe is .Call { null } else { BrokenAt { at: at, words: [WAIT, owner, spelled_at(store.expr(e)) ?? row] } },
+    }
+}
+
+/// The written node lowering met `m` at.
+fn met_node(m: NodeMet) -> int {
+    match m { .Calls(node, _) or .Value(node) or .Waits(node, _) -> node }
+}
+
+/// Whether a node of this kind calls.
+fn calls_at(p: WaitProbe) -> bool {
+    match p { .Call or .Method or .Value -> true, rest -> false }
+}
+
+/// A call of `c` from the `@unbroken` fn `owner` of `file`, judged by its callee's declaration.
+fn call_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    c: CalledFn,
+    at: FindingAt?,
+) -> BrokenAt? {
+    if c.external || c.file.package_name == PRELUDE_ROWS { return null }
+    if !(c.defaulted is .Not) {
+        return if default_may_wait(engine, file, c) { BrokenAt { at: at, words: [DEFAULT, owner, c.name] } } else { null }
+    }
+    if callee_unbroken(engine, c) { return null }
+    BrokenAt { at: at, words: [CALL, owner, c.name] }
+}
+
+/// Whether the fn, method or static `c` calls wears `@unbroken`: a method by the impls of its file
+/// that write one of its name for its type.
+fn callee_unbroken(engine: QueryEngine, c: CalledFn) -> bool {
+    let owner? = c.owner else {
+        let item? = declaring_item(engine, c.file, c.name, ItemKind.Fn) else { return false }
+        return item
+            .stmts
+            .any(
+                (s) -> item.store.fn_parts(s)?.name == c.name &&
+                    marks_unbroken(engine, c.file, item.store, s),
+            )
+    }
+    [at for at in 0..item_count(engine, c.file)]
+        .any((at) -> impl_marks(engine, c.file, at, owner, c.name))
+}
+
+/// Whether an impl of `owner` the written item `at` of `file` writes marks its fn `name` `@unbroken`.
+fn impl_marks(engine: QueryEngine, file: SourceFileAddress, at: int, owner: string, name: string) -> bool {
+    let item = read_item(engine, file, at)
+    impls_at(engine, file, at)
+        .any(
+            (a) -> impl_of(item, a) == owner &&
+                impl_fns(item, a)
+                    .any(
+                        (s) -> item.store.fn_parts(s)?.name == name &&
+                            marks_unbroken(engine, file, item.store, s),
+                    ),
+        )
+}
+
+/// The type the impl at `a` of `item` is written for.
+fn impl_of(item: ReadItem, a: ImplAt) -> string? {
+    let s? = impl_stmt_at(item, a) else { return null }
+    item.store.impl_parts(s)?.target
+}
+
+/// Whether the default `c` runs may wait: one written in another file than `file` may; one here may
+/// where any node of its own may.
+fn default_may_wait(engine: QueryEngine, file: SourceFileAddress, c: CalledFn) -> bool {
+    if spelled_file(c.file) != spelled_file(file) || c.seat_of != null { return true }
+    let owner? = c.owner else { return true }
+    let kind = if c.defaulted is .Field { ItemKind.Record } else { ItemKind.Fn }
+    let item? = declaring_item(engine, c.file, owner, kind) else { return true }
+    let d? = written_default(item.store, item.stmts, owner, c.name) else { return true }
+    item.store.every_expr(d).any((x) -> may_wait(item.store.expr(x).wait_probe()))
+}
+
+/// The default the fn or record `owner` among `stmts` writes for its seat or field `name`.
+fn written_default(store: SyntaxArena, stmts: List<StmtId>, owner: string, name: string) -> ExprId? {
+    for s in stmts {
+        let f = store.fn_parts(s)
+        if f != null && f!.name == owner { return f!.params.find(it.name.of == name)?.default }
+        let r = store.struct_parts(s)
+        if r != null && r!.name == owner { return r!.fields.find(it.name.of == name)?.default }
+    }
+    null
+}
+
+/// The member a node reads or calls, as its source spells it.
+fn spelled_at(x: Expr) -> string? {
+    match x {
+        .Prop(_, name) or .Chain(_, name) or .MethodCall(_, name, _) -> name.of,
+        .Select(_, _) -> "select",
+        rest -> null,
+    }
+}
+
+/// Each way once, in the order met.
+fn distinct_broken(rows: List<BrokenAt>) -> List<BrokenAt> {
+    let keys = [broken_key(r) for r in rows]
+    [r for i, r in rows if !keys.take(i).contains(keys[i])]
+}
+
+/// What tells one way from another: where, and its words.
+fn broken_key(r: BrokenAt) -> string {
+    let span = span_of(r.at)
+    "${span?.lo ?? -1}:${span?.hi ?? -1} ${r.words.join(" ")}"
+}
+
+/// The ways an `@unbroken` fn breaks, as the voice's first word names them.
+const CALL: string = "call"
+const DEFAULT: string = "default"
+const VALUE: string = "value"
+const SPAWN: string = "spawn"
+const WAIT: string = "wait"
+
+/// The mark's own name, in `@std/meta`.
+const UNBROKEN: string = "unbroken"
+
+/// The package whose verbs are the language's own rows.
+const PRELUDE_ROWS: string = "@std/prelude"
+
+/// Every way the `@unbroken` fns of the written item `at` of `file` break.
+fn unbroken_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(r.at), args: r.words } for r in item_broken(engine, file, at).rows]
+}
+
+/// an `@unbroken` fn lets no other task run inside it
+export law unbroken_holds {
+    kind: "flow.broken"
+    reads: unbroken_broken
+    voice: unbroken_words
+    witness: "use @std.meta.{unbroken}\n\nfn helper(n: int) -> int { n + 1 }\n\n@unbroken\nfn ring(n: int) -> int { helper(n) }\n"
+}
+
+fn unbroken_words(a: List<string>) -> Voice {
+    match a[0] {
+        "call" -> broken_call_said(a[1], a[2]),
+        "default" -> broken_default_said(a[1], a[2]),
+        "value" -> broken_value_said(a[1]),
+        "spawn" -> broken_spawn_said(a[1]),
+        rest -> broken_wait_said(a[1], a[2]),
+    }
+}
+
+collect listed_unbroken_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unbroken law is read through, for a process to hand its engine.
+export fn unbroken_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unbroken_facts) }

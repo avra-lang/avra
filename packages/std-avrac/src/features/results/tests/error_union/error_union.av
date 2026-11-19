@@ -1,0 +1,118 @@
+// proves: `Result<T, A or B>` end to end — construction (`fail`),
+// total and selective `catch` over a 2- and a 3-member union, `?`
+// PROPAGATION widening a plain error into a union (the box LIFT) and
+// a narrower union into a wider one (the pointer MOVE, no lift), and
+// order-independent interning (`A or B` meets `B or A` as one type).
+enum NotFound { NotFound(name: string) }
+enum Timeout { Timeout(ms: int) }
+enum Denied { Denied }
+
+fn two_member(kind: int) -> Result<int, NotFound or Timeout> {
+    if kind == 0 {
+        fail NotFound.NotFound("widget")
+    }
+    if kind == 1 {
+        fail Timeout.Timeout(30)
+    }
+    42
+}
+
+// TOTAL by naming every member.
+fn caught_total(kind: int) -> int {
+    two_member(kind) catch {
+        .NotFound(e) -> 1
+        .Timeout(e) -> 2
+    }
+}
+
+// SELECTIVE: NotFound recovers, Timeout keeps propagating — the
+// enclosing fn promises the NARROWED remainder, a real Union
+// subtraction (avra-8sb5.40.10.1's own `subtracted`).
+fn selective(kind: int) -> Result<int, Timeout> {
+    let v = two_member(kind) catch .NotFound(e) -> -1
+    v
+}
+
+fn read_selective(kind: int) -> int {
+    match selective(kind) { .Ok(v) -> v, .Err(_) -> -99 }
+}
+
+// A THREE-MEMBER union, total catch by naming every member.
+fn three_member(kind: int) -> Result<int, NotFound or Timeout or Denied> {
+    if kind == 0 { fail NotFound.NotFound("x") }
+    if kind == 1 { fail Timeout.Timeout(9) }
+    if kind == 2 { fail Denied.Denied }
+    7
+}
+
+fn caught_three(kind: int) -> int {
+    three_member(kind) catch {
+        .NotFound(e) -> 10
+        .Timeout(e) -> 20
+        .Denied(e) -> 30
+    }
+}
+
+// PROPAGATION'S TRAP: `f` fails a PLAIN `NotFound`; `g` promises a
+// WIDER union and reraises it through `?` — the runtime value must
+// carry a discriminant it never needed as a plain box, so the caller
+// tells `NotFound` from `Denied` correctly on the OTHER side of the
+// widen.
+fn f_plain() -> Result<int, NotFound> {
+    fail NotFound.NotFound("boom")
+}
+
+fn g_widened() -> Result<int, NotFound or Denied> {
+    let v = f_plain()?
+    v
+}
+
+fn read_widened() -> int {
+    g_widened() catch {
+        .NotFound(e) -> 111
+        .Denied(e) -> 222
+    }
+}
+
+// A UNION propagating into a WIDER union: the box moves, no lift.
+fn h_narrow() -> Result<int, NotFound or Timeout> {
+    fail Timeout.Timeout(1)
+}
+
+fn h_wide() -> Result<int, NotFound or Timeout or Denied> {
+    let v = h_narrow()?
+    v
+}
+
+fn read_wide() -> int {
+    h_wide() catch {
+        .NotFound(e) -> 1
+        .Timeout(e) -> 2
+        .Denied(e) -> 3
+    }
+}
+
+// ORDER-INDEPENDENCE: `A or B` and `B or A` are ONE type, so `?` between
+// them needs no lift — a plain pointer move.
+fn order_a(kind: int) -> Result<int, NotFound or Timeout> {
+    two_member(kind)
+}
+
+fn order_b(kind: int) -> Result<int, Timeout or NotFound> {
+    order_a(kind)?
+}
+
+fn read_order(kind: int) -> int {
+    order_b(kind) catch {
+        .NotFound(e) -> 1
+        .Timeout(e) -> 2
+    }
+}
+
+// A catch-all still works over a union — it binds the WHOLE error,
+// same as it always has over an enum.
+fn caught_all(kind: int) -> int {
+    two_member(kind) catch e -> 55
+}
+
+"total ${caught_total(0)} ${caught_total(1)} ${caught_total(42)} sel ${read_selective(0)} ${read_selective(1)} three ${caught_three(0)} ${caught_three(1)} ${caught_three(2)} widen ${read_widened()} wide ${read_wide()} order ${read_order(0)} ${read_order(1)} all ${caught_all(0)}"

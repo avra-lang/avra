@@ -1,0 +1,246 @@
+// THE STORE'S CONTRACT, which is three claims and every one of them is load-bearing:
+//
+//   * PRESENCE IS O(1) AND NEEDS NOTHING READ — `has` is one `exists`, which is what
+//     makes "has this changed?" cheap enough to ask about every node.
+//   * A ROW IS PRESENT ONLY WHEN ITS EDGES ARE — the second write is the COMMIT, so a
+//     crash between them reads as ABSENT rather than as half a value.
+//   * A KEY NAMES CONTENT, and the family is folded first, so two families naming the
+//     same parts stay apart.
+
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use @std.relation.engine.{map_cell}
+use compiler.store.{Keeping, Reading, Store, Stored, node_key, store_at, store_with, cas_blob}
+
+/// One directory per run, so no earlier run's rows answer for this one.
+once fn store_base() -> string { "/tmp/avra-store-test/${stamp()}" }
+
+/// A store of one spec's own, so two specs cannot see each other's rows.
+fn at(name: string) -> Store { store_at("${store_base()}/${name}") }
+
+spec "store" {
+    given "a key names content, and the family separates" {
+        then "the same parts under two families are two keys" {
+            node_key(Stored.Sig, ["a", "b"]) != node_key(Stored.Unit, ["a", "b"])
+        }
+        then "the same parts under one family are one key" {
+            node_key(Stored.Sig, ["a", "b"]) == node_key(Stored.Sig, ["a", "b"])
+        }
+        then "different parts are different keys" {
+            node_key(Stored.Sig, ["a", "b"]) != node_key(Stored.Sig, ["a", "c"])
+        }
+    }
+    given "a store that has seen nothing" {
+
+        then "nothing is present" {
+            !at("empty").has(Stored.Sig, node_key(Stored.Sig, ["x"]))
+        }
+        then "and nothing is handed back" {
+            at("empty").get(Stored.Sig, node_key(Stored.Sig, ["x"])) == null
+        }
+    }
+    given "a row that was remembered" {
+
+        then "it is present and answers its bytes" {
+            let s = at("kept")
+            let k = node_key(Stored.Unit, ["body", "int"])
+            let _ = s.keep(Stored.Unit, k, "the lowered body", ["edge-one", "edge-two"])
+            s.has(Stored.Unit, k) && s.get(Stored.Unit, k) == "the lowered body"
+        }
+    }
+    given "a row whose EDGES never arrived" {
+
+        then "it reads as ABSENT, because the second write is the commit" {
+            let s = at("uncommitted")
+            let k = node_key(Stored.Obj, ["half"])
+            // THE DATA IS REALLY THERE — directories made, bytes written — and only the
+            // EDGES are missing. A fixture that failed to write would pass this for the
+            // wrong reason, which is the fixture that cannot exhibit the defect.
+            let shard = "${store_base()}/uncommitted/obj/${k.substring(0, 2)}"
+            let _ = make_dirs(shard)
+            let _ = write_text("${shard}/${k}", "the data landed")
+            !s.has(Stored.Obj, k) && s.get(Stored.Obj, k) == null
+        }
+    }
+    given "an answer kept with what it read" {
+
+        then "it stands while every read still has its digest" {
+            let s = at("valid")
+            let k = node_key(Stored.Unit, ["valid"])
+            let _ = s
+                .keep_reading(
+                    Stored.Unit,
+                    k,
+                    "answer",
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "b.av", digest: "d2" }],
+                )
+            s.get_valid(Stored.Unit, k, (n: string) -> if n == "a.av" { "d1" } else { "d2" }) == "answer"
+        }
+        then "ONE read whose digest moved makes it a miss, though the bytes are there" {
+            let s = at("moved")
+            let k = node_key(Stored.Unit, ["moved"])
+            let _ = s
+                .keep_reading(
+                    Stored.Unit,
+                    k,
+                    "answer",
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "b.av", digest: "d2" }],
+                )
+            s.get(Stored.Unit, k) == "answer" &&
+                s.get_valid(Stored.Unit, k, (n: string) -> if n == "a.av" { "d1" } else { "d3" }) == null
+        }
+        then "a read that cannot be read now is a miss" {
+            let s = at("gone")
+            let k = node_key(Stored.Unit, ["gone"])
+            let _ = s
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d1" }])
+            s.get_valid(Stored.Unit, k, (n: string) -> null) == null
+        }
+        then "a name holding a space reads back whole" {
+            let s = at("spaced")
+            let k = node_key(Stored.Unit, ["spaced"])
+            let _ = s
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a b.av", digest: "d1" }])
+            s.get_valid(Stored.Unit, k, (n: string) -> if n == "a b.av" { "d1" } else { null }) == "answer"
+        }
+        then "a read that cannot be spelled whole refuses the keep" {
+            let s = at("unspelled")
+            let k = node_key(Stored.Unit, ["unspelled"])
+            !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d 1" }]) &&
+                !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a\nb", digest: "d1" }]) &&
+                !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "" }]) &&
+                s.get(Stored.Unit, k) == null
+        }
+        then "a row kept with edges that are no pairs is a miss" {
+            let s = at("plain")
+            let k = node_key(Stored.Unit, ["plain"])
+            let _ = s.keep(Stored.Unit, k, "answer", ["edge-one"])
+            s.get_valid(Stored.Unit, k, (n: string) -> "d1") == null
+        }
+        then "a row that read nothing stands" {
+            let s = at("nothing")
+            let k = node_key(Stored.Unit, ["nothing"])
+            let _ = s.keep_reading(Stored.Unit, k, "answer", [])
+            s.get_valid(Stored.Unit, k, (n: string) -> null) == "answer"
+        }
+        then "a row never kept is a miss" {
+            at("never")
+                .get_valid(Stored.Unit, node_key(Stored.Unit, ["never"]), (n: string) -> "d1") == null
+        }
+        then "an aside store judges its reads alike" {
+            let s = store_with("${store_base()}/aside", "", Keeping.Aside(map_cell()))
+            let k = node_key(Stored.Unit, ["aside"])
+            let _ = s
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d1" }])
+            s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "answer" &&
+                s.get_valid(Stored.Unit, k, (n: string) -> "d2") == null
+        }
+        then "a file family's edges are judged too" {
+            let s = at("files")
+            let k = node_key(Stored.Obj, ["files"])
+            let _ = s.keep_file(Stored.Obj, k, "/dev/null", [])
+            s.get_valid(Stored.Obj, k, (n: string) -> null) != null
+        }
+    }
+    given "rows that read inputs" {
+        then "the suspect set of a moved input is the rows that read it, ids only" {
+            let s = at("suspects")
+            let a = node_key(Stored.Unit, ["a"])
+            let b = node_key(Stored.Unit, ["b"])
+            let c = node_key(Stored.Unit, ["c"])
+            let _ = s
+                .keep_reading(
+                    Stored.Unit,
+                    a,
+                    "1",
+                    [
+                        Reading { name: "a.av", digest: "d1" },
+                        Reading { name: "shared.av", digest: "d9" },
+                    ],
+                )
+            let _ = s
+                .keep_reading(
+                    Stored.Unit,
+                    b,
+                    "2",
+                    [
+                        Reading { name: "b.av", digest: "d2" },
+                        Reading { name: "shared.av", digest: "d9" },
+                    ],
+                )
+            let _ = s.keep_reading(Stored.Unit, c, "3", [Reading { name: "c.av", digest: "d3" }])
+            s.suspects(["a.av"], s.readers()).length == 1 &&
+                s.suspects(["shared.av"], s.readers()).length == 2 &&
+                s.suspects(["a.av", "shared.av"], s.readers()).length == 2 &&
+                s.suspects([], s.readers()).is_empty() &&
+                s.suspects(["nothing.av"], s.readers()).is_empty()
+        }
+        then "a moved input names exactly its readers, and no moved input names none" {
+            let s = at("suspects-exact")
+            let a = node_key(Stored.Unit, ["a"])
+            let b = node_key(Stored.Unit, ["b"])
+            let c = node_key(Stored.Unit, ["c"])
+            let _ = s
+                .keep_reading(
+                    Stored.Unit,
+                    a,
+                    "1",
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "s.av", digest: "d9" }],
+                )
+            let _ = s.keep_reading(Stored.Unit, b, "2", [Reading { name: "s.av", digest: "d9" }])
+            let _ = s.keep_reading(Stored.Unit, c, "3", [Reading { name: "c.av", digest: "d3" }])
+            let readers = s.suspects(["s.av"], s.readers())
+            readers.length == 2 &&
+                readers.any(it.ends_with("\n${a}")) &&
+                readers.any(it.ends_with("\n${b}")) &&
+                s.suspects(["c.av"], s.readers()).length == 1 &&
+                s.suspects(["c.av"], s.readers())[0].ends_with("\n${c}") &&
+                s.suspects([], s.readers()).is_empty()
+        }
+        then "a write after the index was built is seen" {
+            let s = at("suspects-later")
+            let a = node_key(Stored.Unit, ["a"])
+            let _ = s.keep_reading(Stored.Unit, a, "1", [Reading { name: "a.av", digest: "d1" }])
+            let before = s.suspects(["z.av"], s.readers()).length
+            let _ = s
+                .keep_reading(
+                    Stored.Unit,
+                    node_key(Stored.Unit, ["z"]),
+                    "2",
+                    [Reading { name: "z.av", digest: "d1" }],
+                )
+            before == 0 && s.suspects(["z.av"], s.readers()).length == 1
+        }
+    }
+
+    given "rows one print filed" {
+        then "its own print reads them" {
+            let root = "${store_base()}/own"
+            let k = node_key(Stored.Sig, ["m"])
+            let _ = printed(root, "print-a").keep(Stored.Sig, k, "record", [])
+            printed(root, "print-a").get(Stored.Sig, k) == "record"
+        }
+        then "another print reads none of them, in any family" {
+            let root = "${store_base()}/other"
+            let sig = node_key(Stored.Sig, ["m"])
+            let unit = node_key(Stored.Unit, ["u"])
+            let _ = printed(root, "print-a").keep(Stored.Sig, sig, "record", [])
+            let _ = printed(root, "print-a").keep(Stored.Unit, unit, "unit", [])
+            printed(root, "print-b").get(Stored.Sig, sig) == null &&
+                printed(root, "print-b").get(Stored.Unit, unit) == null
+        }
+    }
+}
+
+fn printed(root: string, print: string) -> Store { store_with(root, print, Keeping.Disk) }
+
+/// A text over the shared store's cut.
+fn big_text() -> string {
+    mut s = "0123456789abcdef"
+    for _i in 0..13 { s = s + s }
+    s
+}
+
+spec "compiler/the machine's blobs" {
+    then "a process whose hosts are all in memory keeps no blob in the machine's cache" { !cas_blob(big_text()) }
+}

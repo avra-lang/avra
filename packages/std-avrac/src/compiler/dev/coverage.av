@@ -1,0 +1,210 @@
+//! WHAT EACH VOICE CARRIES BEYOND ITS WORDS, read from the registry
+//! and the compiler's own rendering of each witness — never from the
+//! source's text. A registered kind owes a witness (its golden), a
+//! `help:` line in what the witness renders, and — when its row says
+//! `Remedy.Fix` — a `fix (` line. A rule owes its `///` and, where a
+//! rewrite is expressible, a `@fixes` example. `avra voices` holds
+//! the gaps to a baseline that only shrinks.
+use core.{flatten, joined}
+use diagnostics.{Remedy}
+use compiler.{RuleEntry, rule_id}
+
+/// What a voice lacks. A registry: every consumer spells every arm.
+export enum Lack {
+    NoWitness
+    NoHelp
+    NoFix
+    NoDoc
+    BadFix
+    BadRemedy
+    NoRemedy
+}
+
+/// One gap: a kind or a rule, and what it lacks.
+export type Gap = { subject: string, lack: Lack }
+
+impl Lack {
+    fn word() -> string {
+        match self {
+            .NoWitness -> "no_witness",
+            .NoHelp -> "no_help",
+            .NoFix -> "no_fix",
+            .NoDoc -> "no_doc",
+            .BadFix -> "bad_fix",
+            .BadRemedy -> "bad_remedy",
+            .NoRemedy -> "no_remedy",
+        }
+    }
+}
+
+impl Shown {
+    /// Whether the diagnostic of this kind, as rendered, has a line
+    /// opening with `prefix` — the renderer's own `help: ` and `fix (`.
+    fn says(prefix: string) -> bool {
+        voice_block(self.rendered, self.code.kind).any(it.starts_with(prefix))
+    }
+}
+
+impl Gap {
+    /// The baseline's one-line currency.
+    fn line() -> string { "${self.subject}\t${self.lack.word()}" }
+}
+
+/// Every gap in the registry's kinds, in registry order.
+export fn kind_gaps(runs: List<Shown>) -> List<Gap> {
+    flatten([kind_lacks(s) for s in runs])
+}
+
+/// The gaps the keeper finds by RUNNING a help's claim: a structured fix
+/// that does not do what it says, and a remedy row that does not hold.
+export fn remedy_gaps(runs: List<Shown>) -> List<Gap> {
+    [Gap { subject: k, lack: Lack.BadFix } for k in unsound_fixes(runs)]
+        .concat([Gap { subject: k, lack: Lack.BadRemedy } for k in remedy_failures()])
+}
+
+/// Every gap in the rule table, in table order.
+export fn rule_gaps(entries: List<RuleEntry>) -> List<Gap> {
+    flatten([rule_lacks(r) for r in entries])
+}
+
+fn kind_lacks(s: Shown) -> List<Gap> {
+    [Gap { subject: s.code.kind, lack: l } for l in lacks_of(s)]
+}
+
+/// A `Beyond` witness is a stated fact: no lone source reaches the
+/// kind, so its voice cannot be read here and owes nothing.
+fn lacks_of(s: Shown) -> List<Lack> {
+    match s.witness {
+        .Absent -> [Lack.NoWitness],
+        .Beyond(_) -> [],
+        .Source(_) or .Package(_) or .Built(_) -> witnessed_lacks(s),
+    }
+}
+
+fn witnessed_lacks(s: Shown) -> List<Lack> {
+    let owes_fix = match s.code.remedy { .Fix -> true, .Help -> false }
+    flatten(
+        [
+            if s.says("help: ") { [] } else { [Lack.NoHelp] },
+            if owes_fix && !s.says("fix (") { [Lack.NoFix] } else { [] },
+            if names_a_form(s) && !s.says("fix (") && !remedy_kinds().contains(s.code.kind) { [Lack.NoRemedy] } else { [] },
+        ],
+    )
+}
+
+/// Whether the witness's help puts a code form in backticks — a claim
+/// about the grammar that only a remedy row (or a structured fix, which
+/// the keeper splices) holds the compiler to.
+fn names_a_form(s: Shown) -> bool {
+    voice_block(s.rendered, s.code.kind).any(is_form_line)
+}
+
+fn is_form_line(l: string) -> bool {
+    l.starts_with("help: ") && [p for i, p in l.split("`") if i % 2 == 1].any(is_form)
+}
+
+fn is_form(span: string) -> bool {
+    ["(", "{", "->", "=", "<"].any((f: string) -> span.contains(f))
+}
+
+fn rule_lacks(r: RuleEntry) -> List<Gap> {
+    let id = rule_id(r)
+    flatten(
+        [
+            if r.doc == "" { [Gap { subject: id, lack: Lack.NoDoc }] } else { [] },
+            if r.fixes.is_empty() && r.says.is_empty() { [Gap { subject: id, lack: Lack.NoFix }] } else { [] },
+        ],
+    )
+}
+
+/// The lines of every diagnostic headed by `kind`, each up to the next
+/// head — a witness may speak one kind more than once.
+fn voice_block(rendered: string, kind: string) -> List<string> {
+    let lines = rendered.split("\n")
+    let starts = [i for i, l in lines if heads_any(l)]
+    flatten(
+        [lines.slice(s, block_end(starts, s, lines.length)) for s in starts if heads(lines[s], kind)],
+    )
+}
+
+/// Where the diagnostic opening at `s` ends: the next head, or the text's end.
+fn block_end(starts: List<int>, s: int, total: int) -> int {
+    starts.find(it > s) ?? total
+}
+
+fn heads(line: string, kind: string) -> bool {
+    line.starts_with("error[${kind}]") || line.starts_with("warning[${kind}]")
+}
+
+fn heads_any(line: string) -> bool {
+    line.starts_with("error[") || line.starts_with("warning[")
+}
+
+/// The baseline's lines for `gaps`.
+export fn gap_lines(gaps: List<Gap>) -> List<string> {
+    [g.line() for g in gaps]
+}
+
+/// The inventory, as the table `avra voices --report` prints and
+/// docs/VOICES.md commits: per kind-family counts of witnessed,
+/// helped and fix-bearing kinds, then the rules.
+export fn coverage_report(runs: List<Shown>, entries: List<RuleEntry>) -> string {
+    let families = distinct_families(runs)
+    joined(
+        [
+            "# The voices inventory",
+            "",
+            "GENERATED by `avra voices --report` from the assembled registry and",
+            "the compiler's own rendering of each witness — `make voices` refuses",
+            "a report the compiler did not make, and a NEW kind or rule that lacks",
+            "its help, fix or golden. Gaps are baselined in `tools/voices.baseline`,",
+            "which only shrinks.",
+            "",
+            "## Kinds",
+            "",
+            "| family | kinds | witnessed | help | fix |",
+            "|---|---|---|---|---|",
+        ]
+            .concat([family_row(f, runs) for f in families])
+            .concat([total_row(runs)])
+            .concat(rules_section(entries)),
+        "\n",
+    )
+}
+
+fn distinct_families(runs: List<Shown>) -> List<string> {
+    let all = [family_of(s.code.kind) for s in runs]
+    [f for i, f in all if all.index_of(f) == i]
+}
+
+fn family_of(kind: string) -> string {
+    kind.split(".").first() ?? kind
+}
+
+fn family_row(family: string, runs: List<Shown>) -> string {
+    row_of(family, [s for s in runs if family_of(s.code.kind) == family])
+}
+
+fn total_row(runs: List<Shown>) -> string {
+    row_of("**all**", runs)
+}
+
+fn row_of(label: string, rows: List<Shown>) -> string {
+    let witnessed = [s for s in rows if s.witness.runs()]
+    let helped = [s for s in witnessed if s.says("help: ")]
+    let fixed = [s for s in witnessed if s.says("fix (")]
+    "| ${label} | ${rows.length} | ${witnessed.length} | ${helped.length} | ${fixed.length} |"
+}
+
+fn rules_section(entries: List<RuleEntry>) -> List<string> {
+    let doc = [r for r in entries if r.doc != ""]
+    let fix = [r for r in entries if !r.fixes.is_empty()]
+    [
+        "",
+        "## Rules",
+        "",
+        "| rules | documented | with a `@fixes` example |",
+        "|---|---|---|",
+        "| ${entries.length} | ${doc.length} | ${fix.length} |",
+    ]
+}

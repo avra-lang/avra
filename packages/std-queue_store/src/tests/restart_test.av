@@ -1,0 +1,259 @@
+// A queue in a file: what a restart keeps, and what two connections to
+// one file may each be handed. Every case runs over a file of its own
+// and leaves none behind.
+use @std.io.{list_dir, make_dirs, remove}
+use @std.queue.{Delivery, HomeError, Order, Terms, key}
+use @std.sqlite.{Db, OpenConfig, sql}
+use @std.time.{Time, ms, sleep, stamp}
+use fault.{homed}
+use queue_store.{Store, Sync, open_logged, store_home}
+use @std.queue.tests.support.laws.{terms}
+use tests.support.wires.{int_wire}
+
+/// Where every case's directory is made.
+const root: string = "/tmp/avra-queue-store"
+
+/// Whether `work` holds over a database file no other case names. The
+/// file, what SQLite kept beside it and its directory are gone after.
+fn scratched(work: fn(string) -> Result<bool, HomeError>) -> bool {
+    let dir = "${root}/${stamp()}"
+    let _ = make_dirs(dir)
+    let held = work("${dir}/queue.db") catch false
+    for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+    let _ = remove(dir)
+    let _ = remove(root)
+    held
+}
+
+fn opened(path: string, t: Terms) -> Result<Store<int>, HomeError> {
+    store_home<int>(homed(Db.open(path))?, "jobs", t, int_wire())
+}
+
+/// Three items sent and the first taken, every handle then dropped.
+fn left_behind(path: string, t: Terms, at: Cell<int>) -> Result<Delivery<int>, HomeError> {
+    let q = opened(path, t)? with { clock: () -> Time { ns: at.get() } }
+    for i in 1..4 { let _ = q.send(i, key("k${i}"))? }
+    let held? = q.take()? else { return .Err(HomeError.Refused("nothing to take")) }
+    let _ = q.db.close()
+    held
+}
+
+fn restart_keeps_items(path: string) -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let t = terms(1, Order.fifo)
+    let held = left_behind(path, t, at)?
+    let q = opened(path, t)? with { clock: () -> Time { ns: at.get() } }
+    let depth = q.depth()?
+    let early = q.take()?
+    at.set(1000 + ms(1).ns)
+    let again? = q.take()? else { return false }
+    depth == 3 &&
+        early == null &&
+        again.id == held.id &&
+        again.item == 1 &&
+        again.epoch == held.epoch + 1 &&
+        !q.ack(held)? &&
+        q.ack(again)? &&
+        q.depth()? == 2
+}
+
+fn restart_keeps_order(path: string) -> Result<bool, HomeError> {
+    let t = terms(0, Order.fifo)
+    let _ = left_behind(path, t, Cell.new(1000))?
+    let q = opened(path, t)?
+    mut seen: List<int> = []
+    for _i in 0..3 {
+        let d? = q.take()? else { return false }
+        let _ = q.ack(d)?
+        seen.push(d.item)
+    }
+    [n for i, n in seen if n == i + 1].length == 3 && q.depth()? == 0
+}
+
+fn restart_keeps_names(path: string) -> Result<bool, HomeError> {
+    let before = opened(path, terms(60000, Order.fifo))?
+    let first = before.send_as(1, key("a"), "welcome-1")?
+    let _ = before.db.close()
+    let after = opened(path, terms(60000, Order.fifo))?
+    after.send_as(2, key("a"), "welcome-1")? == first && after.depth()? == 1
+}
+
+// ── Two connections ──
+
+fn pair(path: string, order: Order) -> Result<List<Store<int>>, HomeError> {
+    let t = terms(60000, order) with { capacity: 64 }
+    [opened(path, t)?, opened(path, t)?]
+}
+
+fn live_lease_is_one_connections(path: string) -> Result<bool, HomeError> {
+    let both = pair(path, Order.by_key)?
+    let _ = both[0].send(1, key("a"))?
+    let mine? = both[0].take()? else { return false }
+    let theirs = both[1].take()?
+    theirs == null && !both[1].ack(mine with { epoch: mine.epoch + 1 })? && both[1].ack(mine)?
+}
+
+fn fifo_holds_across_connections(path: string) -> Result<bool, HomeError> {
+    let both = pair(path, Order.fifo)?
+    let _ = both[0].send(1, key("a"))?
+    let _ = both[1].send(2, key("b"))?
+    let mine? = both[0].take()? else { return false }
+    let blocked = both[1].take()?
+    let _ = both[0].ack(mine)?
+    let next? = both[1].take()? else { return false }
+    mine.item == 1 && blocked == null && next.item == 2
+}
+
+/// Take until the queue hands out nothing or `most` were handed out,
+/// yielding between takes.
+fn takes(q: Store<int>, most: int, got: Cell<List<string>>) -> bool {
+    for _i in 0..most {
+        let d? = q.take() catch null else { return true }
+        got.push(d.id)
+        sleep(ms(0))
+    }
+    false
+}
+
+fn concurrent_takes_share_nothing(path: string) -> Result<bool, HomeError> {
+    let both = pair(path, Order.by_key)?
+    for i in 0..24 { let _ = both[i % 2].send(i, key("k${i}"))? }
+    let a: Cell<List<string>> = Cell.new([])
+    let b: Cell<List<string>> = Cell.new([])
+    let first = spawn takes(both[0], 48, a)
+    let second = spawn takes(both[1], 48, b)
+    let _ = first.await
+    let _ = second.await
+    let all = a.get().concat(b.get())
+    all.length == 24 && a.get().all((id: string) -> !b.get().contains(id)) && both[0].depth()? == 24
+}
+
+fn busy_asks_back(path: string) -> Result<bool, HomeError> {
+    let t = terms(60000, Order.fifo)
+    let writer = opened(path, t)?
+    let waiting = store_home<int>(
+        homed(Db.open_with(OpenConfig.config_at(path) with { busy: 0 }))?,
+        "jobs",
+        t,
+        int_wire(),
+    )?
+    let _ = homed(writer.db.begin())?
+    let asked_back = match waiting.send(1, key("a")) {
+        .Err(.Unreachable(_)) -> true,
+        rest -> false,
+    }
+    let _ = homed(writer.db.commit())?
+    asked_back && waiting.send(1, key("a"))? != null && writer.depth()? == 1
+}
+
+// ── The sync ──
+
+/// The level a connection syncs its commits at, as SQLite numbers it.
+fn sync_of(db: Db) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql("PRAGMA synchronous")))?).int())
+}
+
+fn reopened_log_syncs_every_send(path: string) -> Result<bool, HomeError> {
+    let first = open_logged(path)?
+    let _ = store_home<int>(first, "jobs", terms(60000, Order.fifo), int_wire())?
+    let _ = first.close()
+    let again = homed(Db.open(path))?
+    let found = sync_of(again)?
+    let _ = store_home<int>(again, "jobs", terms(60000, Order.fifo), int_wire())?
+    found == 2 && sync_of(again)? == 2
+}
+
+fn fresh_log_syncs_every_send(path: string) -> Result<bool, HomeError> {
+    let db = open_logged(path)?
+    let q = store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire())?
+    let _ = q.send(1, key("a"))?
+    sync_of(db)? == 2
+}
+
+/// The sync level in force inside a send's commit, inside a take's,
+/// and at rest after each, read through the home's clock.
+fn levels_through(db: Db) -> Result<string, HomeError> {
+    let seen: Cell<List<int>> = Cell.new([])
+    let noting = () -> {
+        seen.push(sync_of(db) catch 0 - 1)
+        Time { ns: 1000 }
+    }
+    let q = store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire())? with { clock: noting }
+    let _ = q.send(1, key("a"))?
+    seen.push(sync_of(db)?)
+    let _ = q.take()?
+    seen.push(sync_of(db)?)
+    seen.get().map((n: int) -> "${n}").join(" ")
+}
+
+fn log_syncs_sends_and_eases_takes(path: string) -> Result<bool, HomeError> {
+    levels_through(open_logged(path)?)? == "2 2 1 2"
+}
+
+fn journal_syncs_every_commit(path: string) -> Result<bool, HomeError> {
+    levels_through(homed(Db.open(path))?)? == "2 2 2 2"
+}
+
+fn on_checkpoint_syncs_the_log_less(path: string) -> Result<bool, HomeError> {
+    let db = open_logged(path)?
+    let q = store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire(), Sync.on_checkpoint)?
+    sync_of(db)? == 1 && q.send(1, key("a"))? != null && q.depth()? == 1
+}
+
+fn on_checkpoint_asks_a_log(path: string) -> Result<bool, HomeError> {
+    let db = homed(Db.open(path))?
+    match store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire(), Sync.on_checkpoint) {
+        .Err(.Refused(why)) -> why.contains("write-ahead log") && why.contains("`delete`"),
+        rest -> false,
+    }
+}
+
+spec "std/queue_store — a file" {
+    given "a file kept in a write-ahead log" {
+        then "reopened, syncs at level 2 from its open, and under a home" {
+            scratched(reopened_log_syncs_every_send)
+        }
+        then "new, syncs at level 2 after a home's first send" {
+            scratched(fresh_log_syncs_every_send)
+        }
+        then "syncs a send's commit at level 2, a take's at 1, and rests at 2" {
+            scratched(log_syncs_sends_and_eases_takes)
+        }
+        then "syncs at level 1 under on_checkpoint, and still sends" {
+            scratched(on_checkpoint_syncs_the_log_less)
+        }
+    }
+    given "a file kept in a rollback journal" {
+        then "syncs a send's commit and a take's at level 2" {
+            scratched(journal_syncs_every_commit)
+        }
+        then "refuses on_checkpoint, naming the journal it found" {
+            scratched(on_checkpoint_asks_a_log)
+        }
+    }
+    given "a restart" {
+        then "keeps every item, and redelivers a held one once its lease ran out" {
+            scratched(restart_keeps_items)
+        }
+        then "keeps the order items were sent in" {
+            scratched(restart_keeps_order)
+        }
+        then "keeps the names it was sent" {
+            scratched(restart_keeps_names)
+        }
+    }
+    given "two connections to one file" {
+        then "a live lease is one connection's, and its ack is any connection's" {
+            scratched(live_lease_is_one_connections)
+        }
+        then "fifo holds across them" {
+            scratched(fifo_holds_across_connections)
+        }
+        then "taking at once, no item is handed out twice" {
+            scratched(concurrent_takes_share_nothing)
+        }
+        then "a write lock held by one asks the other back later" {
+            scratched(busy_asks_back)
+        }
+    }
+}

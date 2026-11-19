@@ -1,0 +1,200 @@
+//! `@derive(Exact)` — two nodes of one kind, compared by their actual
+//! VALUES, never by a folded hash. `@derive(Identity)`/`@derive(Matchable)`
+//! both answer an int a repeated `${x}` binder can trust as a
+//! PRE-FILTER only: `fp`/`fp_str` are un-keyed rolling hashes
+//! (core/fp.av) and two different subtrees can share one (the same
+//! hazard `same_ins`/`same_ins_list` close for the IR, core/ir.av).
+//! This derive is the verdict behind that filter — the fold `same_ins`
+//! writes BY HAND for `Ins`'s thirty-some variants, generated here
+//! instead because `Expr`/`Stmt`/`Pat` carry many more.
+//!
+//! EVERY FIELD COMPARES BY ITS OWN VALUE. An `ExprId`/`StmtId`/`PatId`
+//! dereferences through the store and recurses (`exact_expr` et al,
+//! mutually generated); a `string` compares with `==`, never
+//! `fp_str`; a payload-free enum (`BinOp`) compares with `==` too. A
+//! compound type neither Expr nor Stmt nor Pat owns is READ OFF ITS
+//! DECLARATION: a record compares field by field, an enum variant by
+//! variant, a list element by element (`Arm`, `CompClause`, `Variant`,
+//! `Case`, `FormatPart`). The ones whose equality is deliberately not
+//! every field — a mark ignores its call, an expansion equals any
+//! expansion — or that hold themselves (`Param`, `TypeRef`) keep a
+//! hand-written `exact_*` row beside that type's own `*_fp`."
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Code,
+    Arms,
+    Kind,
+    Held,
+    held_of,
+    type_exported,
+    name,
+    beside,
+}
+
+/// The compiler's derive for exact node equality.
+export trait Exact {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            beside(
+                t,
+                quote {
+            impl SyntaxArena {
+                fn ${exact_of(t.name)}(a: ${t}, b: ${t}) -> bool {
+                    match a { ${[exact_variant_arm(t, v) for v in t.variants]} }
+                }
+            }
+        },
+            ),
+        ]
+    }
+
+    /// No marks: a payload's type says everything this derive compares.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
+}
+
+/// One variant's arm: `a`'s fields bind under their own names, `b`'s
+/// under the SAME names suffixed `_b` — two payloads of one variant,
+/// never one payload compared against itself. A DIFFERENT variant on
+/// `b`'s side is a miss, never a defect: the outer match already
+/// spells every variant of `a`, so nothing here forgets one.
+fn exact_variant_arm(t: MetaType, v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> match b { .${v} -> true, rest -> false } } }
+    quote { .${v}(${binders_a(v)}) -> match b { .${v}(${binders_b(v)}) -> ${anded(field_eqs(t, v))}, rest -> false } }
+}
+
+fn binders_a(v: MetaVariant) -> List<string> { [f.name for f in v.fields if carried(f)] }
+
+fn binders_b(v: MetaVariant) -> List<string> { ["${f.name}_b" for f in v.fields if carried(f)] }
+
+fn field_eqs(t: MetaType, v: MetaVariant) -> List<Code> { [field_eq(t, f) for f in v.fields if reached(f)] }
+
+/// HOW A PAYLOAD'S TYPE COMPARES — Identity's own registry
+/// (identity_derive.av's `part`), with every hashed fold answering a
+/// real comparison instead: an id dereferences and recurses, a
+/// `string` and every scalar compare with `==`, a compound type calls
+/// its own hand-written `exact_*` sibling. A type absent here is a
+/// defect at the generated code, exactly as Identity's registry
+/// refuses one.
+fn field_eq(t: MetaType, f: Field) -> Code {
+    eq_through(t, f.kind, name(f.name), name("${f.name}_b"), [])
+}
+
+/// A value's comparison through its TYPE: a row when it has one, else
+/// its own declaration — never one it is already inside of (a type
+/// holding itself keeps a row, and an absent one is a defect at the
+/// generated code, naming it).
+fn eq_through(t: MetaType, k: Kind, a: Code, b: Code, inside: List<string>) -> Code {
+    let row = eq_row(k.spelled(), a, b)
+    if row != null { return row! }
+    match k {
+        .Int or .Bool or .Str -> quote { ${a} == ${b} },
+        .List(inner) -> quote {
+            (${a}.length == ${b}.length && [i for i in 0..${a}.length].all((at) -> ${eq_through(t, inner, quote { ${a}[at] }, quote { ${b}[at] }, inside)}))
+        },
+        .Opt(inner) -> quote {
+            (if ${a} == null || ${b} == null { ${a} == null && ${b} == null } else { ${eq_through(t, inner, quote { ${a}! }, quote { ${b}! }, inside)} })
+        },
+        .Named(n, _) -> declared_eq(t, n, a, b, inside),
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> quote { a_payload_type_the_exact_derive_has_no_row_for() },
+    }
+}
+
+/// A payload's declaration compared: a NAMED type through the shape it
+/// stands over (`type Scoped = string`, read through `.of`), a record
+/// field by field, an enum variant by variant.
+fn declared_eq(t: MetaType, n: string, a: Code, b: Code, inside: List<string>) -> Code {
+    let unread = quote { a_payload_type_the_exact_derive_has_no_row_for() }
+    if inside.contains(n) { return unread }
+    let declared? = type_exported(t.module, n) else { return unread }
+    let entered = inside.concat([n])
+    let shape? = declared.shape_over() else { return held_eq(t, held_of(declared), a, b, entered) }
+    eq_through(t, shape, quote { ${a}.of }, quote { ${b}.of }, entered)
+}
+
+/// A held shape compared: a record's fields `&&`-ed in order, an enum
+/// paired variant by variant.
+fn held_eq(t: MetaType, held: Held, a: Code, b: Code, entered: List<string>) -> Code {
+    match held {
+        .Record(fields) -> anded(
+            [eq_through(t, f.kind, quote { ${a}.${f.name} }, quote { ${b}.${f.name} }, entered) for f in fields if reached(f)],
+        ),
+        .Enum(variants) -> {
+            let arms = [variant_eq(t, v, b, entered) for v in variants]
+            quote { (match ${a} { ${arms} }) }
+        },
+    }
+}
+
+/// One variant of a declared enum: both sides' payloads bound under
+/// names of their own, a different variant on `b`'s side a miss.
+fn variant_eq(t: MetaType, v: MetaVariant, b: Code, inside: List<string>) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> match ${b} { .${v} -> true, rest -> false } } }
+    let left = ["${f.name}_x${inside.length}" for f in v.fields if carried(f)]
+    let right = ["${f.name}_y${inside.length}" for f in v.fields if carried(f)]
+    let same = anded(
+        [eq_through(
+            t,
+            f.kind,
+            name("${f.name}_x${inside.length}"),
+            name("${f.name}_y${inside.length}"),
+            inside,
+        ) for f in v.fields if reached(f)],
+    )
+    quote { .${v}(${left}) -> match ${b} { .${v}(${right}) -> ${same}, rest -> false } }
+}
+
+/// The rows: the payload types compared by name.
+fn eq_row(ty: string, a: Code, b: Code) -> Code? {
+    match ty {
+        "ExprId" -> quote { self.exact_expr(self.expr(${a}), self.expr(${b})) },
+        "StmtId" -> quote { self.exact_stmt(self.stmt(${a}), self.stmt(${b})) },
+        "PatId" -> quote { self.exact_pat(self.pat(${a}), self.pat(${b})) },
+        "ExprId?" -> quote { self.exact_opt_expr(${a}, ${b}) },
+        "List<ExprId>" -> quote { self.exact_expr_ids(${a}, ${b}) },
+        "List<StmtId>" -> quote { self.exact_stmt_ids(${a}, ${b}) },
+        "List<PatId>" -> quote { self.exact_pat_ids(${a}, ${b}) },
+        "List<Param>" -> quote { self.exact_params(${a}, ${b}) },
+        "List<Mark>" -> quote { exact_marks(${a}, ${b}) },
+        "List<string>" -> quote { exact_strs(${a}, ${b}) },
+        "List<Plain>" -> quote { exact_plains(${a}, ${b}) },
+        "List<Scoped>" -> quote { exact_scopeds(${a}, ${b}) },
+        "TypeRef" or "TypeRef?" -> quote { exact_type_ref(${a}, ${b}) },
+        "List<TypeRef>" -> quote { exact_type_refs(${a}, ${b}) },
+        "BodyView" -> quote { self.exact_view(${a}, ${b}) },
+        "CollectKind" -> quote { exact_collect_kind(${a}, ${b}) },
+        "CollectScope" -> quote { exact_collect_scope(${a}, ${b}) },
+        "Projection" -> quote { exact_projection(${a}, ${b}) },
+        _ -> null,
+    }
+}
+
+/// Every field's comparison, `&&`-ed together — `true` for a variant
+/// the registry never reaches (none do: every arm here came from a
+/// real field).
+fn anded(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { true } }
+    mut acc = parts.first()!
+    for p in parts.slice(1, parts.length) { acc = quote { ${acc} && ${p} } }
+    acc
+}
+
+/// The three arenas this derive knows, lowercased for the method name
+/// it generates — `shape_derive.av`'s `kind_of`, this derive's OWN
+/// copy under its own name: a module's files share one namespace and
+/// `kind_of` is already shape_derive.av's, and a derive's file stands
+/// alone (CLAUDE.md) rather than importing a sibling's.
+fn exact_kind_of(owner: string) -> string {
+    match owner {
+        "Expr" -> "expr",
+        "Stmt" -> "stmt",
+        "Pat" -> "pat",
+        _ -> "a_type_the_exact_derive_does_not_know",
+    }
+}
+
+fn exact_of(owner: string) -> string { "exact_${exact_kind_of(owner)}" }

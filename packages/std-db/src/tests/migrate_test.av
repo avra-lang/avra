@@ -1,0 +1,357 @@
+// The diff between a recorded shape and a declared one, over shape texts alone:
+// what grows by itself, and what moves and needs an author. Every expected
+// statement and word is written by hand from the law.
+use @std.db.{model}
+use @std.db.shape.{Shape, shape_read, shape_text}
+use @std.db.migrate.{
+    Plan,
+    Renamed,
+    Moving,
+    diff,
+    grows_alone,
+    is_current,
+    plan_all,
+    statements,
+    refusals,
+    report,
+    notes,
+}
+
+@model
+type Note = {
+    id: int = 0,
+    title: string,
+    @unique slug: string,
+}
+
+const KEY: string = "id|INTEGER|null|key|-|-|-|-"
+const VERSION: string = "__avra_version__|INTEGER|notnull|-|-|1|-|-"
+const TITLE: string = "title|TEXT|notnull|-|-|-|-|-"
+const N: string = "n|INTEGER|null|-|-|-|-|-"
+
+fn shape(lines: List<string>) -> Shape { shape_read("t\n${lines.join("\n")}")! }
+
+fn base() -> List<string> { [KEY, VERSION, TITLE] }
+
+/// The base shape with an optional column and a key over it and the title.
+fn keyed() -> List<string> { base().concat([N, "unique(title,n)"]) }
+
+/// The plan from the base shape plus `before` to the base shape plus `after`.
+fn plan(after: List<string>) -> Plan { diff(shape(base()), shape(after), []) }
+
+fn plan_from(before: List<string>, after: List<string>) -> Plan { diff(shape(before), shape(after), []) }
+
+fn kind(m: Moving) -> string {
+    match m {
+        .Dropped(c) -> "dropped:${c}",
+        .Retyped(c, _, _) -> "retyped:${c}",
+        .Rekeyed(c) -> "rekeyed:${c}",
+        .Required(c) -> "required:${c}",
+        .Tightened(c) -> "tightened:${c}",
+        .Loosened(c) -> "loosened:${c}",
+        .Uniqued(c) -> "uniqued:${c}",
+        .Ununiqued(c) -> "ununiqued:${c}",
+        .Defaulted(c) -> "defaulted:${c}",
+        .Relinked(c) -> "relinked:${c}",
+    }
+}
+
+fn moves(p: Plan) -> string { [kind(m) for m in p.moving].join(",") }
+
+fn sql(p: Plan) -> string { statements(p).join(";") }
+
+fn without_title() -> List<string> { [KEY, VERSION] }
+
+/// The plan taking a column `n` recorded under the word `was` to one declared `now`.
+fn worded(was: string, now: string) -> Plan {
+    plan_from(
+        base().concat(["n|${was}|null|-|-|-|-|-"]),
+        base().concat(["n|${now}|null|-|-|-|-|-"]),
+    )
+}
+
+/// A plan in brief: how many steps, what moves, what is run.
+fn brief(p: Plan) -> string { "${p.steps.length}|${moves(p)}|${sql(p)}" }
+
+spec "std/db migrate" {
+    given "a model with no table" {
+        then "is created from its declared columns" {
+            sql(diff(null, shape(base()), [])) == "CREATE TABLE IF NOT EXISTS \"t\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1, \"title\" TEXT NOT NULL)"
+        }
+        then "and that is growth" { grows_alone(diff(null, shape(base()), [])) }
+    }
+    given "a declared shape equal to the recorded one" {
+        then "plans nothing" { sql(plan(base())) == "" && moves(plan(base())) == "" }
+        then "whatever order the lines are in" { sql(plan([TITLE, VERSION, KEY])) == "" && moves(plan([TITLE, VERSION, KEY])) == "" }
+    }
+    given "growth" {
+        then "a new optional column is added" {
+            sql(plan(base().concat(["note|TEXT|null|-|-|-|-|-"]))) == "ALTER TABLE \"t\" ADD COLUMN \"note\" TEXT"
+        }
+        then "a new required column that carries a default is added" {
+            sql(plan(base().concat(["n|INTEGER|notnull|-|-|0|-|-"]))) == "ALTER TABLE \"t\" ADD COLUMN \"n\" INTEGER NOT NULL DEFAULT 0"
+        }
+        then "a new optional link is added with its reference" {
+            sql(plan(base().concat(["owner|INTEGER|null|-|-|-|Parent|SET NULL"]))) == "ALTER TABLE \"t\" ADD COLUMN \"owner\" INTEGER REFERENCES \"Parent\"(\"id\") ON DELETE SET NULL"
+        }
+        then "none of these moves anything" {
+            grows_alone(
+                plan(base().concat(["note|TEXT|null|-|-|-|-|-", "n|INTEGER|notnull|-|-|0|-|-"])),
+            )
+        }
+        then "a column renamed under a hint is renamed in place" {
+            sql(
+                diff(
+                    shape(base()),
+                    shape([KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]),
+                    [Renamed { from: "title", to: "name" }],
+                ),
+            ) == "ALTER TABLE \"t\" RENAME COLUMN \"title\" TO \"name\""
+        }
+        then "and moves nothing" {
+            grows_alone(
+                diff(
+                    shape(base()),
+                    shape([KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]),
+                    [Renamed { from: "title", to: "name" }],
+                ),
+            )
+        }
+    }
+    given "a rename" {
+        then "without its hint is a dropped column and a new one" {
+            let p = plan([KEY, VERSION, "name|TEXT|null|-|-|-|-|-"])
+            moves(p) == "dropped:title" && sql(p) == "ALTER TABLE \"t\" ADD COLUMN \"name\" TEXT"
+        }
+        then "whose hint names no recorded column is no rename" {
+            let p = diff(
+                shape(base()),
+                shape([KEY, VERSION, "name|TEXT|null|-|-|-|-|-"]),
+                [Renamed { from: "ghost", to: "name" }],
+            )
+            moves(p) == "dropped:title" && sql(p) == "ALTER TABLE \"t\" ADD COLUMN \"name\" TEXT"
+        }
+        then "whose hint names no recorded column leaves a recorded column of the new name alone" {
+            let p = diff(shape(base()), shape(base()), [Renamed { from: "ghost", to: "title" }])
+            moves(p) == "" && sql(p) == ""
+        }
+        then "that also changes a fact renames, and the change moves" {
+            let p = diff(
+                shape(base()),
+                shape([KEY, VERSION, "name|TEXT|null|-|-|-|-|-"]),
+                [Renamed { from: "title", to: "name" }],
+            )
+            moves(p) == "loosened:name" &&
+                sql(p) == "ALTER TABLE \"t\" RENAME COLUMN \"title\" TO \"name\""
+        }
+    }
+    given "a new column the rows already there cannot answer" {
+        then "a required one with no default is refused" { moves(plan(base().concat(["n|INTEGER|notnull|-|-|-|-|-"]))) == "required:n" }
+        then "nothing is applied for it" { sql(plan(base().concat(["n|INTEGER|notnull|-|-|-|-|-"]))) == "" }
+        then "a required link is refused, default or none" {
+            moves(plan(base().concat(["owner|INTEGER|notnull|-|-|-|Parent|NO ACTION"]))) == "required:owner" &&
+                moves(plan(base().concat(["owner|INTEGER|notnull|-|-|1|Parent|NO ACTION"]))) == "required:owner"
+        }
+        then "a unique one is refused" { moves(plan(base().concat(["u|TEXT|null|-|unique|-|-|-"]))) == "uniqued:u" }
+        then "a second key is refused" { moves(plan(base().concat(["k|INTEGER|null|key|-|-|-|-"]))) == "rekeyed:k" }
+    }
+    given "a type word changed for one that holds every value alike" {
+        then "a word that spells no affinity is numeric, and INTEGER holds what it held: a step, nothing run, nothing moved" {
+            brief(worded("no_type_this_names", "INTEGER")) == "1||"
+        }
+        then "and the other way round" { brief(worded("INTEGER", "DECIMAL")) == "1||" }
+        then "two words of one affinity are one column" {
+            brief(worded("INT", "INTEGER")) == "1||" && brief(worded("VARCHAR", "TEXT")) == "1||"
+        }
+        then "the letters decide in SQLite's order, not the word's sense" {
+            brief(worded("FLOATING POINT", "INTEGER")) == "1||" &&
+                brief(worded("CHARINT", "TEXT")) == "0|retyped:n|"
+        }
+        then "the plan is not current, and says what it changes" {
+            !is_current(worded("NUMERIC", "INTEGER")) &&
+                notes(worded("NUMERIC", "INTEGER")).join("") == "`t.n` is recorded as NUMERIC and declared INTEGER — both hold every value alike, so the table stays as it is and its record takes the new word"
+        }
+        then "a report shows it under the table" {
+            report([worded("NUMERIC", "INTEGER")])
+                .join("\n")
+                .starts_with("t:\n  ~ `t.n` is recorded as NUMERIC")
+        }
+        then "a numeric word for REAL, TEXT or BLOB still moves: those change what a value is held as" {
+            brief(worded("NUMERIC", "REAL")) == "0|retyped:n|" &&
+                brief(worded("NUMERIC", "TEXT")) == "0|retyped:n|" &&
+                brief(worded("NUMERIC", "BLOB")) == "0|retyped:n|"
+        }
+        then "a key's word is never reworded: only INTEGER to the letter makes a key the row's number" {
+            moves(plan(["id|INT|null|key|-|-|-|-", VERSION, TITLE])) == "retyped:id"
+        }
+        then "a reworded column that also changes a fact still moves for the fact" {
+            brief(
+                plan_from(
+                    base().concat(["n|NUMERIC|null|-|-|-|-|-"]),
+                    base().concat(["n|INTEGER|notnull|-|-|-|-|-"]),
+                ),
+            ) == "1|tightened:n|"
+        }
+    }
+    given "a column that changes" {
+        then "its type moves" { moves(plan([KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-"])) == "retyped:title" }
+        then "loosening to optional moves" { moves(plan([KEY, VERSION, "title|TEXT|null|-|-|-|-|-"])) == "loosened:title" }
+        then "gaining NOT NULL moves" {
+            moves(plan_from([KEY, VERSION, "title|TEXT|null|-|-|-|-|-"], base())) == "tightened:title"
+        }
+        then "gaining a unique moves" { moves(plan([KEY, VERSION, "title|TEXT|notnull|-|unique|-|-|-"])) == "uniqued:title" }
+        then "losing a unique moves" {
+            moves(plan_from([KEY, VERSION, "title|TEXT|notnull|-|unique|-|-|-"], base())) == "ununiqued:title"
+        }
+        then "its default moves" { moves(plan([KEY, "__avra_version__|INTEGER|notnull|-|-|2|-|-", TITLE])) == "defaulted:__avra_version__" }
+        then "its link target moves" {
+            moves(
+                plan_from(
+                    base().concat(["o|INTEGER|null|-|-|-|A|NO ACTION"]),
+                    base().concat(["o|INTEGER|null|-|-|-|B|NO ACTION"]),
+                ),
+            ) == "relinked:o"
+        }
+        then "its on-delete action moves" {
+            moves(
+                plan_from(
+                    base().concat(["o|INTEGER|null|-|-|-|A|NO ACTION"]),
+                    base().concat(["o|INTEGER|null|-|-|-|A|CASCADE"]),
+                ),
+            ) == "relinked:o"
+        }
+        then "its key moves" { moves(plan(["id|INTEGER|null|-|-|-|-|-", VERSION, TITLE])) == "rekeyed:id" }
+        then "a column no longer declared moves" { moves(plan(without_title())) == "dropped:title" }
+        then "and is not applied" { sql(plan(without_title())) == "" }
+    }
+    given "several changes at once" {
+        then "each is its own refusal, in declared order" {
+            moves(
+                plan_from(
+                    base().concat(["a|TEXT|null|-|-|-|-|-"]),
+                    [KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-", "z|TEXT|notnull|-|-|-|-|-"],
+                ),
+            ) == "retyped:title,required:z,dropped:a"
+        }
+    }
+    given "a refusal in words" {
+        then "a dropped column names the table, the column and the way out" {
+            refusals(plan(without_title()))[0] == "`t.title` is recorded and no longer declared — dropping a column loses its values; say `@renamed_from(\"title\")` on the field that continues it, or migrate by hand"
+        }
+        then "a tightened column says what would break" {
+            refusals(plan_from([KEY, VERSION, "title|TEXT|null|-|-|-|-|-"], base()))[0] == "`t.title` was optional and is required now — rows holding nothing in it would break the table; fill them, then migrate"
+        }
+    }
+    given "a shape text" {
+        then "that has no columns is no shape" { shape_read("t") == null }
+        then "with a line of seven facts is no shape" { shape_read("t\nid|INTEGER|null|key|-|-|-") == null }
+        then "with a flag that is neither word is no shape" { shape_read("t\nid|INTEGER|maybe|key|-|-|-|-") == null }
+        then "with one unreadable line among good ones is no shape" { shape_read("t\n${KEY}\nbroken\n${VERSION}") == null }
+        then "read back from a model keeps every column fact" {
+            let s = shape_read(Note.shape())!
+            s.name == "Note" &&
+                s.columns.length == 4 &&
+                s.columns.find(it.name == "slug")!.unique &&
+                s.columns.find(it.name == "id")!.key
+        }
+        then "and renders to the very text it was read from" {
+            let s = shape_read(Note.shape())!
+            shape_text(s) == Note.shape()
+        }
+    }
+    given "a key over several columns" {
+        then "is a line after the columns, read back in key order" {
+            shape(base().concat([N, "unique(title,n)"])).uniques[0].join(" ") == "title n"
+        }
+        then "and renders after the columns however the lines were ordered" {
+            shape_text(shape(["unique(title,n)", N, "unique(n,title)"].concat(base())))
+                .ends_with("${TITLE}\nunique(n,title)\nunique(title,n)")
+        }
+        then "of one column is no shape" { shape_read("t\n${KEY}\nunique(id)") == null }
+        then "with an unnamed column is no shape" { shape_read("t\n${KEY}\nunique(id,,n)") == null }
+        then "with no column lines is no shape" { shape_read("t\nunique(a,b)") == null }
+        then "a table that is new is made, then given its key" {
+            sql(diff(null, shape(base().concat(["unique(title,id)"])), [])) == "CREATE TABLE IF NOT EXISTS \"t\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1, \"title\" TEXT NOT NULL);CREATE UNIQUE INDEX \"t_unique(title,id)\" ON \"t\" (\"title\", \"id\")"
+        }
+        then "the same key recorded and declared plans nothing" {
+            is_current(plan_from(keyed(), keyed()))
+        }
+        then "a new key over the columns already there is one statement, and nothing moves" {
+            sql(plan_from(base().concat([N]), keyed())) == "CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\")" &&
+                moves(plan_from(base().concat([N]), keyed())) == ""
+        }
+        then "a new key over a new column follows the column" {
+            sql(plan_from(base(), keyed())) == "ALTER TABLE \"t\" ADD COLUMN \"n\" INTEGER;CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\")"
+        }
+        then "a key no longer declared is ended, and nothing moves" {
+            sql(plan_from(keyed(), base().concat([N]))) == "DROP INDEX \"t_unique(title,n)\"" &&
+                moves(plan_from(keyed(), base().concat([N]))) == ""
+        }
+        then "a key whose columns change ends and begins again" {
+            sql(plan_from(keyed(), base().concat([N, "unique(n,title)"]))) == "DROP INDEX \"t_unique(title,n)\";CREATE UNIQUE INDEX \"t_unique(n,title)\" ON \"t\" (\"n\", \"title\")"
+        }
+        then "a key that gains a column ends and begins again" {
+            sql(plan_from(keyed(), base().concat([N, "unique(title,n,id)"]))) == "DROP INDEX \"t_unique(title,n)\";CREATE UNIQUE INDEX \"t_unique(title,n,id)\" ON \"t\" (\"title\", \"n\", \"id\")"
+        }
+        then "a renamed column inside a key ends the key, renames, and begins it under the new name" {
+            sql(
+                diff(
+                    shape(keyed()),
+                    shape([KEY, VERSION, N, "name|TEXT|notnull|-|-|-|-|-", "unique(name,n)"]),
+                    [Renamed { from: "title", to: "name" }],
+                ),
+            ) == "DROP INDEX \"t_unique(title,n)\";ALTER TABLE \"t\" RENAME COLUMN \"title\" TO \"name\";CREATE UNIQUE INDEX \"t_unique(name,n)\" ON \"t\" (\"name\", \"n\")"
+        }
+        then "a dropped column inside a key still moves" {
+            moves(plan_from(keyed(), base())) == "dropped:n"
+        }
+        then "the report says a key's statements like any step's" {
+            report([plan_from(base().concat([N]), keyed())]).join("\n") == "t:\n  CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\");"
+        }
+    }
+    given "the whole program against a database" {
+        then "a table the database lacks is created" {
+            let plans = plan_all([shape(base())], [], [])
+            plans.length == 1 && !is_current(plans[0]) && statements(plans[0]).length == 1
+        }
+        then "a database that already has every declared table is current" {
+            plan_all([shape(base())], [shape(base())], []).all(is_current(it))
+        }
+        then "an added column is a step and nothing moves" {
+            let p = plan_all(
+                [shape(base().concat(["n|INTEGER|null|-|-|-|-|-"]))],
+                [shape(base())],
+                [],
+            )[0]
+            statements(p).length == 1 && moves(p) == "" && !is_current(p)
+        }
+        then "a dropped column moves" {
+            moves(plan_all([shape(without_title())], [shape(base())], [])[0]) == "dropped:title"
+        }
+        then "a renamed column without its hint is refused as a drop" {
+            let renamed = [KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]
+            moves(plan_all([shape(renamed)], [shape(base())], [])[0]) == "required:name,dropped:title"
+        }
+        then "under its hint it is renamed in place" {
+            let renamed = [KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]
+            let p = plan_all(
+                [shape(renamed)],
+                [shape(base())],
+                [Renamed { from: "title", to: "name" }],
+            )[0]
+            moves(p) == "" && statements(p).length == 1
+        }
+        then "a type change moves" {
+            moves(
+                plan_all(
+                    [shape([KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-"])],
+                    [shape(base())],
+                    [],
+                )[0],
+            ) == "retyped:title"
+        }
+        then "a live table nothing declares is left alone" {
+            plan_all([shape(base())], [shape(base()), shape_read("other\n${KEY}")!], []).length == 1
+        }
+    }
+}

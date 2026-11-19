@@ -1,0 +1,28 @@
+// A VALUE A NESTED SCOPE ALREADY COUNTED for the arm that yields it carries that count into the
+// merge; the scope it was bound in still releases its own on the way.
+type Conn = { name: string, rows: List<string> }
+
+fn fresh(n: int) -> Conn { Conn { name: "c${n}", rows: ["r${n}"] } }
+
+fn take(held: Cell<Conn?>, n: int) -> Conn? {
+    match held.get() {
+        c? -> {
+            held.set(null)
+            c
+        }
+        null -> fresh(n)
+    }
+}
+
+fn churned(rounds: int) -> int {
+    let held: Cell<Conn?> = Cell.new(null)
+    mut total = 0
+    for i in 0..rounds {
+        if i % 2 == 0 { held.set(fresh(i)) }
+        let got? = take(held, i) else { continue }
+        total = total + got.rows.length
+    }
+    total
+}
+
+"${churned(1000)}"

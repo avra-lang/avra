@@ -1,0 +1,75 @@
+//! WHERE A CONST'S RUN BREAKS A SETTLEMENT'S LAW: its value, worked out at compile time, read the
+//! world, trapped, or ran past its budget. Read off the one settlement every body naming the const reads
+//! (`const_settlement`), and said in the voice the settling pass speaks (`unsettled_voice`).
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{owner_budget_spent, unsettled_of, unsettled_voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Each const the written item `at` of `file` declares, and each one its bodies declare that settles
+/// at compile time, whose run broke the settlement's law `kind`: at its value, its voice handed its
+/// name and the words the law carries. An item whose embedded
+/// file's literal is refused already spoke: its run's failure to read it says nothing more.
+fn settles_broken(kind: string, engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
+    Found,
+> {
+    if at >= item_count(engine, file) || !embeds_refused(engine, file, at).is_empty() { return [] }
+    let item = read_item(engine, file, at)
+    let store = item.store
+    mut found: List<Found> = []
+    for s in item.stmts {
+        let value? = store.const_value(s) else { continue }
+        let name? = store.let_name(s) else { continue }
+        let d? = resolved(engine, file, Space.Value, name).named() else { continue }
+        if d.kind != ItemKind.Const || d.item != at || !same_file(d.file, file) { continue }
+        let broken? = settled_in(engine, d)?.broken else { continue }
+        if broken.kind == kind { found
+                .push(
+                    Found {
+                        at: store.expr_span(value),
+                        args: [name, broken.words, file.package_name],
+                    },
+                ) }
+    }
+    found
+        .concat(
+            [Found { at: span_of(c.at), args: [c.name, c.words, file.package_name] } for c in item_refusals(engine, file, at).broken if c.kind == kind],
+        )
+}
+
+fn settles_trapped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { settles_broken("const.trap", engine, file, at) }
+
+fn settles_spent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { settles_broken("const.budget", engine, file, at) }
+
+fn settles_reaching(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { settles_broken("const.reach", engine, file, at) }
+
+fn reach_said(a: List<string>) -> Voice { unsettled_voice(a[0], unsettled_of("const.reach", a[1]))! }
+
+fn trap_said(a: List<string>) -> Voice { unsettled_voice(a[0], unsettled_of("const.trap", a[1]))! }
+
+fn budget_said(a: List<string>) -> Voice { owner_budget_spent(a[0], a[1], a[2]) }
+
+/// a const whose value traps while it settles at compile time
+export law const_trapped {
+    kind: "const.trap"
+    reads: settles_trapped
+    voice: trap_said
+    witness: "fn boom() -> int {\n    avra_trap(\"boom\")\n    1\n}\n\nextern fn avra_trap(s: string)\n\nconst X: int = boom()\n"
+}
+
+/// a const whose value runs past its budget while it settles at compile time
+export law const_over_budget {
+    kind: "const.budget"
+    reads: settles_spent
+    voice: budget_said
+    witness: "fn spin() -> int {\n    mut n = 0\n    while n >= 0 { n = n + 1 }\n    n\n}\n\nconst X: int = spin()\n"
+}
+
+/// a const whose value reads the world while it settles at compile time
+export law const_reaching {
+    kind: "const.reach"
+    reads: settles_reaching
+    voice: reach_said
+    witness: "extern fn avra_now_ns() -> int\n\nconst T: int = avra_now_ns()\n"
+}

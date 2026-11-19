@@ -1,0 +1,82 @@
+//! proves a queue stands on any home: a second home, written here,
+//! notes each verb it is asked and hands it to a memory home, and a
+//! `queue`, a `worker` and `drain` run over it alone.
+use @std.queue.{
+    queue,
+    worker,
+    drain,
+    key,
+    open_memory,
+    Dead,
+    Delivery,
+    Home,
+    Key,
+    Memory,
+    Order,
+    Overflow,
+    Parcel,
+    Terms,
+}
+use @std.task.{unbounded_channel}
+use @std.time.{Duration, ms}
+
+type Job = { n: int }
+
+fn noted<V>(asked: Cell<List<string>>, verb: string, answer: V) -> V {
+    asked.push(verb)
+    answer
+}
+
+fn noting(under: Home<Job>, asked: Cell<List<string>>) -> Home<Job> {
+    Home {
+        send: (item: Job, k: Key) -> noted(asked, "send", (under.send)(item, k)),
+        send_all: (batch: List<Parcel<Job>>) -> noted(asked, "send_all", (under.send_all)(batch)),
+        take: (max: int) -> noted(asked, "take", (under.take)(max)),
+        began: (d: Delivery<Job>) -> noted(asked, "began", (under.began)(d)),
+        ack: (d: Delivery<Job>) -> noted(asked, "ack", (under.ack)(d)),
+        ack_all: (held: List<Delivery<Job>>) -> noted(asked, "ack_all", (under.ack_all)(held)),
+        release: (d: Delivery<Job>, after: Duration) -> noted(asked, "release", (under.release)(d, after)),
+        bury: (d: Delivery<Job>, inter: fn(Job) -> bool) -> noted(asked, "bury", (under.bury)(d, inter)),
+        depth: () -> noted(asked, "depth", (under.depth)()),
+    }
+}
+
+fn pay(d: Delivery<Job>) -> Result<int, string> {
+    if d.item.n == 2 { .Err("job 2 failed") } else { .Ok(d.item.n) }
+}
+
+fn times(asked: Cell<List<string>>, verb: string) -> int {
+    asked.get().filter(it == verb).length
+}
+
+let asked: Cell<List<string>> = Cell.new([])
+fn opened() -> Memory<Job>? {
+    let made = open_memory<Job>(
+        Terms {
+            capacity: 8,
+            lease: ms(60000),
+            retries: 2,
+            dead: "jobs/dead",
+            overflow: Overflow.park,
+            order: Order.fifo,
+        },
+    )
+    match made { .Ok(m) -> m, .Err(_) -> null }
+}
+
+let memory = opened()!
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    name: "jobs"
+    retries: 2
+    homed: noting(memory.home(), asked)
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters.sink
+}
+for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
+let settled = drain(settle) catch 0 - 1
+let left = jobs.home().depth() catch 0 - 1
+"${settled} ${left} ${memory.depth()} ${letters.source.taken()!.item.n} send ${times(asked, "send")} take ${times(asked, "take")} began ${times(asked, "began")} ack ${times(asked, "ack")} release ${times(asked, "release")} bury ${times(asked, "bury")} depth ${times(asked, "depth")}"

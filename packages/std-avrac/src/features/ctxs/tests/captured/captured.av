@@ -1,0 +1,29 @@
+// proves: a lambda that reads a context runs under the frame it was made under, wherever it is
+// called; one made where nothing is set reads the default; a task its block owns starts under the
+// frame of its spawn; and the caller's frame stands after each
+extern fn avra_puts(s: string)
+
+ctx depth: int = 0
+
+fn made_deep() -> fn() -> int {
+    ctx depth = 7
+    () -> ctx.depth
+}
+
+fn counted(f: fn() -> int) -> int {
+    ctx depth = 100
+    f() + ctx.depth
+}
+
+fn run() -> string {
+    let deep = made_deep()
+    let plain = () -> ctx.depth
+    ctx depth = 3
+    avra_puts("${deep()} ${plain()} ${ctx.depth}")
+    avra_puts("${counted(deep)} ${counted(() -> ctx.depth)}")
+    let t = spawn { ctx.depth * 2 }
+    avra_puts("${t.await} ${ctx.depth}")
+    "${ctx.depth}"
+}
+
+run()

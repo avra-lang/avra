@@ -1,0 +1,154 @@
+//! WHERE A WRITTEN TYPE IS APPLIED TO WHAT IT DOESN'T TAKE: a type the language owns or one the
+//! program declares, written in a statement's own signature, applied to another count of type
+//! arguments than it takes — none where it takes none, all where it is generic — and a map keyed by
+//! what is no text. Read off a written item's syntax and its file's names, said where the statement
+//! stands, as the old path says it.
+use core.{At, INFERRED, SignedType, StmtId, TypeHead, TypeRef, flatten, headed_type, spelled}
+use compiler.laws.{Found, law}
+use compiler.typing.{applied_bare, applied_counted, applied_unappliable, shape_named}
+use diagnostics.{Voice}
+use features.{self_word, type_row}
+use features.maps.{map_unkeyed}
+use @std.text.{parse_int}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every type the written item `at` of `file` writes, statement by statement, applied to what it
+/// doesn't take: how, the type's name, then the counts or the key.
+fn applied_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    let stmts = flatten([stmts_under(item.store, At.Stmt(top)) for top in item.stmts])
+    let params = flatten([item.store.tparams_in_scope(s) for s in stmts])
+        .concat(flatten([a.params for a in impls_at(engine, file, at)]))
+    let scope = AppliedScope { engine: engine, file: file, params: params }
+    flatten(
+        [[Found { at: span_of(kept_at(item.store.stmt_span(s))), args: words } for words in flatten([scope.misapplied(t) for t in item.store.type_roots(s)])] for s in stmts],
+    )
+}
+
+/// The type `written` a body reads, signed as `signed`: unknown where it is applied to another count of
+/// type arguments than the type it names takes, its refusal said where it's written.
+fn applied_signed(engine: QueryEngine, written: TypeRef, signed: SignedType) -> SignedType {
+    if written.arrow || !written.alternatives.is_empty() { return signed }
+    let takes? = match signed.head {
+        .Owned(name) -> if name == written.name { type_row(avra().rows.types, name)?.arity ?? 0 } else { null },
+        .Declared(file, name) -> if name == written.name && !declared_gathered(engine, file, name) { AppliedScope { engine: engine, file: file, params: [] }.takes(name) } else { null },
+        rest -> null,
+    } else { return signed }
+    let keyed = written.name != MAP ||
+        takes != 2 ||
+        signed.args.length != 2 ||
+        keys_by_text(signed.args[0])
+    if takes == written.applied.length && keyed { signed } else { headed_type(TypeHead.Unnamed(written.name)) }
+}
+
+/// Whether `file` declares `name` as a gathered enum, whose type parameters are its members' to give:
+/// asking them while a member's own record is signed would ask that record of itself, so its count
+/// is its declaration's law, never a signing's.
+fn declared_gathered(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { declaring_item(engine, file, name, ItemKind.CollectEnum) != null }
+
+/// Whether a map keyed by `key` is keyed by text, or by a name no type stands behind, whose own law
+/// says it.
+fn keys_by_text(key: SignedType) -> bool {
+    match key.head {
+        .Owned(name) -> name == STRING && !key.nullable() && key.args.is_empty(),
+        .Unnamed(_) or .Inferred -> true,
+        rest -> false,
+    }
+}
+
+/// Where a statement's written types are read: its file, and the type parameters its item declares.
+type AppliedScope = { engine: QueryEngine, file: SourceFileAddress, params: List<string> }
+
+/// A map's key as a seat reads it, and where its names are read.
+type KeySeen = { scope: AppliedScope, key: TypeRef }
+
+impl AppliedScope {
+    /// The type `t` and each it holds, where applied to what it doesn't take, outermost first.
+    fn misapplied(t: TypeRef) -> List<List<string>> {
+        let own = if t.arrow { [] } else { self.own_misapplied(t) }
+        own.concat(flatten([self.misapplied(a) for a in t.type_args().concat(t.alternatives)]))
+    }
+
+    /// The type `t` itself applied to what it doesn't take; nothing for a name that names no type
+    /// this law knows the parameters of.
+    fn own_misapplied(t: TypeRef) -> List<List<string>> {
+        let name = t.name
+        if name.is_empty() || name == INFERRED || name == self_word || self.params.contains(name) { return [] }
+        let takes? = self.takes(name) else { return [] }
+        let found = t.applied.length
+        if takes == 0 && found > 0 { return [["none", name]] }
+        if takes > 0 && found == 0 { return [["bare", name, "${takes}"]] }
+        if found != takes { return [["count", name, "${found}", "${takes}"]] }
+        if name == MAP && self.unkeyed(t.applied[0]) { return [["key", spelled(self.keyed_as(t.applied[0], []).key)]] }
+        []
+    }
+
+    /// How many type arguments the type `name` takes: a type the language owns, or a record, an
+    /// enum or an alias the file sees; absent for any other.
+    fn takes(name: string) -> int? {
+        let row = type_row(avra().rows.types, name)
+        if row != null { return row!.arity }
+        if shape_named(name) != null { return 0 }
+        let d? = resolved(self.engine, self.file, Space.Type, name).named() else { return null }
+        match d.kind {
+            .Record or .Enum -> declared_params(self.engine, d.file, d.name).length,
+            .Alias -> alias_written(self.engine, d.file, d.name)?.tparams?.length,
+            .Fn or .Const or .State or .Named or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .Ctx -> null,
+        }
+    }
+
+    /// Whether a map keyed by `key` is keyed by what is no text: anything but `string`, or a name
+    /// the file sees no type by, whose own law says it. An alias is what it names.
+    fn unkeyed(key: TypeRef) -> bool {
+        let seen = self.keyed_as(key, [])
+        let k = seen.key
+        if k.arrow || k.optional || !k.alternatives.is_empty() || seen.scope.params.contains(k.name) { return true }
+        if k.name == STRING { return !k.applied.is_empty() }
+        if k.name == INFERRED || k.name == self_word { return false }
+        let d? = resolved(seen.scope.engine, seen.scope.file, Space.Type, k.name).named() else { return seen.scope.takes(k.name) != null }
+        d.kind != ItemKind.Alias
+    }
+
+    /// `key` as a seat reads it: an alias taking no type arguments read as what it names, alias by
+    /// alias through none among `seen`, where its own file reads it; any other type itself.
+    fn keyed_as(key: TypeRef, seen: List<string>) -> KeySeen {
+        let own = KeySeen { scope: self, key: key }
+        if key.arrow ||
+            !key.applied.is_empty() ||
+            !key.alternatives.is_empty() ||
+            self.params.contains(key.name) { return own }
+        let d? = resolved(self.engine, self.file, Space.Type, key.name).named() else { return own }
+        if d.kind != ItemKind.Alias || seen.contains(d.name) { return own }
+        let named? = alias_written(self.engine, d.file, d.name) else { return own }
+        if !named.tparams.is_empty() { return own }
+        let there = (self with { file: d.file, params: [] })
+            .keyed_as(named.of, seen.concat([d.name]))
+        there with { key: there.key with { optional: there.key.optional || key.optional } }
+    }
+}
+
+/// The map type's name, whose first argument keys it.
+const MAP: string = "Map"
+
+/// The text type's name, which keys every map.
+const STRING: string = "string"
+
+/// a type is applied to the type arguments it takes, and a map is keyed by text
+export law type_applied_as_declared {
+    kind: "type.applied"
+    reads: applied_refused
+    voice: applied_words
+    witness: "fn f(m: Map<int, int>) -> int { 1 }\n"
+}
+
+fn applied_words(a: List<string>) -> Voice {
+    match a[0] {
+        "none" -> applied_unappliable(a[1]),
+        "bare" -> applied_bare(a[1], parse_int(a[2]) ?? 0),
+        "count" -> applied_counted(a[1], parse_int(a[2]) ?? 0, parse_int(a[3]) ?? 0),
+        _ -> map_unkeyed(a[1]),
+    }
+}

@@ -1,0 +1,135 @@
+// A question's identity, held by its arguments' keys: two argument lists a naive concatenation would
+// merge are two questions, each answered with its own arguments read back.
+use address.{SourceFileAddress}
+use tests.support.store_in_memory.{store_in_memory}
+use query_engine.{QueryEngine, held_bool, held_file, held_int, held_key_of, held_text, query_engine}
+use @std.text.{from_codepoint}
+use saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+@query
+fn two_texts(_engine: QueryEngine, a: string, b: string) -> string { "${a}|${b}" }
+
+@query
+fn text_then_int(_engine: QueryEngine, a: string, n: int) -> string { "${a}|${n}" }
+
+@query
+fn truth_then_text(_engine: QueryEngine, t: bool, a: string) -> string { "${t}|${a}" }
+
+@query
+fn one_file(_engine: QueryEngine, file: SourceFileAddress) -> string { "${file.package_name}|${file.path_in_package}" }
+
+collect listed_keyed: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn keyed_engine() -> QueryEngine { query_engine(store_in_memory(), definitions_of(listed_keyed)) }
+
+fn texts_known(engine: QueryEngine, a: string, b: string) -> string {
+    two_texts_definition().question_keyed(two_texts_arguments(engine, a, b)).known_as.held_key()
+}
+
+fn text_int_known(engine: QueryEngine, a: string, n: int) -> string {
+    text_then_int_definition()
+        .question_keyed(text_then_int_arguments(engine, a, n))
+        .known_as
+        .held_key()
+}
+
+fn truth_text_known(engine: QueryEngine, t: bool, a: string) -> string {
+    truth_then_text_definition()
+        .question_keyed(truth_then_text_arguments(engine, t, a))
+        .known_as
+        .held_key()
+}
+
+fn file_known(engine: QueryEngine, package: string, path: string) -> string {
+    one_file_definition()
+        .question_keyed(
+            one_file_arguments(
+                engine,
+                SourceFileAddress { package_name: package, path_in_package: path },
+            ),
+        )
+        .known_as
+        .held_key()
+}
+
+spec "saved_query — a question's identity holds its arguments apart" {
+    then "two texts that trade a character are two questions" {
+        let e = keyed_engine()
+        texts_known(e, "ab", "c") != texts_known(e, "a", "bc")
+    }
+    then "an empty text and a text that holds its neighbour's characters are two questions" {
+        let e = keyed_engine()
+        texts_known(e, "", "x") != texts_known(e, "x", "")
+    }
+    then "a text's digits never pass for the int beside it" {
+        let e = keyed_engine()
+        text_int_known(e, "5", 3) != text_int_known(e, "", 53)
+    }
+    then "a text holding a key's own spelling stays one text" {
+        let e = keyed_engine()
+        text_int_known(e, "1;", 2) != text_int_known(e, "1", 2)
+    }
+    then "a truth never passes for a text's first character" {
+        let e = keyed_engine()
+        truth_text_known(e, true, "") != truth_text_known(e, false, "t")
+    }
+    then "a file's package and path never trade a segment" {
+        let e = keyed_engine()
+        file_known(e, "a/b", "c") != file_known(e, "a", "b/c")
+    }
+    then "the same arguments are the same question" {
+        let e = keyed_engine()
+        texts_known(e, "ab", "c") == texts_known(e, "ab", "c")
+    }
+    then "each answer reads its own arguments back" {
+        let e = keyed_engine()
+        two_texts(e, "ab", "c") == "ab|c" && two_texts(e, "a", "bc") == "a|bc"
+    }
+    then "an int and a truth read back as asked" {
+        let e = keyed_engine()
+        text_then_int(e, "5", 3) == "5|3" &&
+            text_then_int(e, "", 53) == "|53" &&
+            truth_then_text(e, false, "t") == "false|t"
+    }
+    then "a question spelled as keys is never known as one whose arguments are saved bytes" {
+        let e = keyed_engine()
+        let arguments = two_texts_arguments(e, "ab", "c")
+        two_texts_definition().question_keyed(arguments).known_as.held_key() != two_texts_definition().question_about(arguments).known_as.held_key()
+    }
+    then "a truth and a file never begin a question's keys alike" {
+        let e = keyed_engine()
+        truth_then_text(e, false, "abc") == "false|abc" &&
+            truth_then_text(e, true, "abc") == "true|abc"
+    }
+    then "a file reads back as asked" {
+        let e = keyed_engine()
+        one_file(e, SourceFileAddress { package_name: "a/b", path_in_package: "c" }) == "a/b|c"
+    }
+}
+
+/// A file's key as its kind, then each part as a text key, joined: the spelling a key is held to.
+fn file_key_spelled_apart(a: SourceFileAddress) -> string { "f" + held_text(a.package_name) + held_text(a.path_in_package) }
+
+spec "a key's spelling" {
+    given "awkward arguments" {
+        then "a file's key is its kind and its two texts' keys, whatever they hold" {
+            let files = [
+                SourceFileAddress { package_name: "", path_in_package: "" },
+                SourceFileAddress { package_name: "s3:abc", path_in_package: "12:x:" },
+                SourceFileAddress {
+                    package_name: "@a/b",
+                    path_in_package: "src/${from_codepoint(0)}.av",
+                },
+                SourceFileAddress {
+                    package_name: "p",
+                    path_in_package: ["x" for _i in 0..300].join(""),
+                },
+            ]
+            files.all((f) -> held_file(f) == file_key_spelled_apart(f))
+        }
+        then "one key is the key, several are joined in order" {
+            held_key_of([held_text("s1:a")]) == held_text("s1:a") &&
+                held_key_of([held_text(""), held_int(12), held_bool(true)]) == "s0:i12;T"
+        }
+    }
+}

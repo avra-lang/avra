@@ -1,0 +1,59 @@
+//! Maps — `{ "k": v, … }`, string-keyed and insertion-ordered by
+//! design. `m.get(k)` answers `V?`, `m.set(k, v)` mutates a place,
+//! `m.length` measures; `{}` is adopted by whatever map claims it,
+//! as `[]` is by a list.
+use features.{
+    LanguageFeature,
+    MethodRow,
+    ReceiverEffect,
+    TypeRow,
+    PropertyRow,
+    no_variants,
+    measured_reg,
+    lower_is_empty,
+    bool_answer,
+    unknown_answer,
+    void_answer,
+}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn maps() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind              | summary
+        "type.map_key"    | "a map's keys are strings"
+        "type.spread_map" | "a map literal spreads maps"
+        "type.map_value"  | "a map's values share one type"
+        "type.map_entry"  | "a map's entries are the prelude's `Entry`"
+    }
+    let methods = table<MethodRow> {
+        name       | takes  | check          | lower          | effect               | answers
+        "get"      | on_map | check_get      | lower_get      | ReceiverEffect.Lends | unknown_answer
+        "set"      | on_map | check_set      | lower_set      | ReceiverEffect.Write | void_answer
+        "has"      | on_map | check_has      | lower_has      | ReceiverEffect.Read  | bool_answer
+        "keys"     | on_map | check_keys     | lower_keys     | ReceiverEffect.Read  | unknown_answer
+        "values"   | on_map | check_values   | lower_values   | ReceiverEffect.Read  | unknown_answer
+        "entries"  | on_map | check_entries  | lower_entries  | ReceiverEffect.Read  | unknown_answer
+        "remove"   | on_map | check_remove   | lower_remove   | ReceiverEffect.Write | unknown_answer
+        "is_empty" | on_map | check_is_empty | lower_is_empty | ReceiverEffect.Read  | bool_answer
+    }
+    let types = table<TypeRow> {
+        name  | arity | slots | judge       | builds    | variants
+        "Map" | 2     | true  | string_keys | map_shape | no_variants
+    }
+    let properties = table<PropertyRow> {
+        name     | takes  | check            | lower
+        "length" | on_map | check_map_length | measured_reg
+    }
+    LanguageFeature maps {
+        gram: grammar {
+            primary = "{" BREAK? "}" -> Expr.MapLit | "{" BREAK? entries:map_entry ( "," BREAK? entries:map_entry )* ","? BREAK? "}" @expect("}", "expected `}` to close the map") -> Expr.MapLit | b:block -> b
+            map_entry = key:expression ":" value:expression -> MapEntry.Pair | ".." from:postfix -> MapEntry.Spread
+        }
+        diags: codes
+        methods: methods
+        types: types
+        properties: properties
+    }
+    maps
+}

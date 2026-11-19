@@ -1,0 +1,35 @@
+// proves: rows_read's own shape stays correct once .93 stops treating a
+// SIBLING branch's call as a barrier to a Cell load's dependent. `state`
+// (from `rows.get()`) is read once before the branch, then once more
+// inside EACH arm — the `==1` arm's own check is its last use on that
+// path, ahead of an unrelated call; the `==2` arm's check is its last use
+// on ITS path, with no call at all. The call and either use never occur
+// together on one executed path, so the Cell stays a view; noise forces
+// the freed slot a wrongly-early release would leave to be reused, which
+// is what would turn an unsafe fix into a visible trap rather than a
+// silent one.
+type Kernel = { seen: List<int> }
+type Holder = { rows: Cell<List<int>>, kernel: Cell<Kernel> }
+impl Kernel {
+    fn touch(i: int) {
+        let _ = self.seen.concat([i])
+    }
+}
+impl Holder {
+    fn checked(f: int) -> int {
+        let state = self.rows.get()
+        if f >= state.length { return -1 }
+        if state[f] == 1 {
+            self.kernel.get().touch(f)
+            1
+        } else if state[f] == 2 {
+            2
+        } else {
+            0
+        }
+    }
+}
+mut noise: List<string> = []
+for j in 0..200 { noise = noise.concat(["pad-${j}-to-force-a-reused-slot"]) }
+let h = Holder { rows: Cell.new([1, 2, 0, 1, 2]), kernel: Cell.new(Kernel { seen: [] }) }
+"${h.checked(0)} ${h.checked(1)} ${h.checked(2)} ${h.checked(3)} ${h.checked(4)} ${noise.length}"

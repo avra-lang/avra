@@ -1,0 +1,168 @@
+// The expression half of the semantic dispatch under attack: a
+// node's `kids` and `heirs` are its record's own impl, reached on the
+// `Expr` value. The vertical story is the package suite; these are
+// the programs that tried to break the walk or the want channel and
+// found nothing. Topic-split like the family's other adversarial
+// files: degenerate shapes, the walk, the want channel, ownership.
+use @std.avrac.testing.{shown, refusals}
+
+/// A record and an enum every attack shares, so each source shows only
+/// its attack.
+const prelude: string = "type Id = { n: int }\nenum Color { Red, Blue, Green }\n"
+
+spec "features/dispatch" {
+    given "degenerate shapes" {
+        then "an empty list's length is zero" {
+            shown("let xs: List<int> = []\nxs.length") == "0"
+        }
+        then "a one-element list keeps its element" {
+            shown("[7].length") == "1"
+        }
+        then "a one-arm match answers that arm" {
+            shown("match 1 { _ -> 9 }") == "9"
+        }
+        then "a block whose value is its only node" {
+            shown("{ 3 }") == "3"
+        }
+        then "an empty map's length is zero" {
+            shown("let m: Map<string, int> = {}\nm.length") == "0"
+        }
+    }
+    given "the walk reaches every kid" {
+        then "binary operands" {
+            shown("1 + 2 * 3") == "7"
+        }
+        then "boolean negation" {
+            shown("!false") == "true"
+        }
+        then "index subject and index" {
+            shown("[10, 20][1]") == "20"
+        }
+        then "property subject" {
+            shown("${prelude}Id { n: 4 }.n") == "4"
+        }
+        then "list literal elements" {
+            shown("[1, 2, 3].length") == "3"
+        }
+        then "comprehension element and first head" {
+            shown("[x * 2 for x in [1, 2, 3]].length") == "3"
+        }
+        then "map literal keys and values" {
+            shown("{\"a\": 1, \"b\": 2}.length") == "2"
+        }
+        then "interpolation holes" {
+            shown("\"v = \${1 + 2}\"") == "v = 3"
+        }
+        then "if condition, branches through heirs" {
+            shown("if true { 1 } else { 2 }") == "1"
+        }
+        then "when conditions and values" {
+            shown("when { true -> 1, _ -> 2 }") == "1"
+        }
+        then "block value" {
+            shown("{ let a = 2\n a + 1 }") == "3"
+        }
+        then "call arguments" {
+            shown("fn f(a: int) -> int { a }\nf(3)") == "3"
+        }
+        then "named argument value" {
+            shown("fn f(a: int) -> int { a }\nf(a: 3)") == "3"
+        }
+        then "struct literal field values" {
+            shown("${prelude}Id { n: 5 }.n") == "5"
+        }
+        then "with subject and field values" {
+            shown("${prelude}(Id { n: 1 } with { n: 2 }).n") == "2"
+        }
+        then "match subject" {
+            shown("match 1 { 1 -> 10, _ -> 20 }") == "10"
+        }
+        then "coalesce sides" {
+            shown("let x: int? = null\nx ?? 5") == "5"
+        }
+        then "force value" {
+            shown("let x: int? = 4\nx!") == "4"
+        }
+        then "propagate value" {
+            shown("fn f(x: int?) -> int? { x? + 1 }\nf(1) ?? 0") == "2"
+        }
+        then "match-opt subject, arms through heirs" {
+            shown("let x: int? = 6\nmatch x { v? -> v\nnull -> 0 }") == "6"
+        }
+        then "chain subject" {
+            shown("${prelude}let s: Id? = Id { n: 7 }\ns?.n ?? 0") == "7"
+        }
+        then "method-call subject and arguments" {
+            shown(
+                "fn dbl(x: int) -> int { x * 2 }\n${prelude}impl Id {\n    fn scaled(k: int) -> int { self.n * k }\n}\nId { n: 3 }.scaled(2)",
+            ) == "6"
+        }
+        then "lambda body through the call value" {
+            shown("let f = (a: int) -> a + 1\nf(2)") == "3"
+        }
+        then "range bounds" {
+            shown("(0..4).map((i) -> i * 2).length") == "4"
+        }
+    }
+    given "the want channel reaches every heir" {
+        then "if arms hear a variant want" {
+            shown(
+                "${prelude}let c: Color = if true { .Red } else { .Blue }\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+        then "when values hear a variant want" {
+            shown(
+                "${prelude}let c: Color = when { true -> .Red, _ -> .Blue }\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+        then "match arms hear a variant want" {
+            shown(
+                "${prelude}let c: Color = match 0 { 0 -> .Red, _ -> .Blue }\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+        then "a block value hears the want" {
+            shown(
+                "${prelude}let c: Color = { .Red }\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+        then "match-opt arms hear the want" {
+            shown(
+                "${prelude}let x: int? = 3\nlet c: Color = match x { v? -> .Red\nnull -> .Blue }\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+        then "a comprehension element hears the list want" {
+            shown("let xs: List<int> = [x for x in [1, 2, 3]]\nxs.length") == "3"
+        }
+        then "a named argument hears the callee's seat want" {
+            shown(
+                "${prelude}fn g(c: Color) -> Color { c }\nlet c: Color = g(c: .Red)\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+        then "a nested branch three deep still hears it" {
+            shown(
+                "${prelude}let c: Color = if true { if false { .Blue } else { .Red } } else { .Green }\nmatch c { .Red -> 1, .Blue -> 2, .Green -> 3 }",
+            ) == "1"
+        }
+    }
+    given "ownership through the walk" {
+        then "managed values ride a comprehension and an if arm" {
+            shown(
+                "let xs: List<string> = [\"a\${1}\", \"b\${2}\"]\nlet s: string = if xs.length == 2 { xs[0] + xs[1] } else { \"-\" }\ns",
+            ) == "a1b2"
+        }
+        then "an interpolation inside a match arm settles" {
+            shown("let n = 3\nmatch n { 3 -> \"three \${n}\", _ -> \"other\" }") == "three 3"
+        }
+        then "a string list built by a comprehension" {
+            shown("[v for v in [\"x\", \"y\", \"z\"]].length") == "3"
+        }
+    }
+    given "the walk still refuses what it always refused" {
+        then "a binary operand of the wrong type refuses, and only once" {
+            refusals("1 + \"a\"") == 1
+        }
+        then "an index of the wrong type refuses, and only once" {
+            refusals("[1, 2][true]") == 1
+        }
+    }
+}

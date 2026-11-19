@@ -1,0 +1,67 @@
+// The table over keys that collide, keys near zero and growth, with the empty table first.
+use answer_record.{ContentHash}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+
+fn key(high_word: int, low_word: int) -> ContentHash { ContentHash { high_word: high_word, low_word: low_word } }
+
+fn text_table() -> HashKeyedTable<string> { hash_keyed_table() }
+
+spec "hash_keyed_table — values under content hashes" {
+    given "an empty table" {
+        then "nothing is found, and it says it's empty" {
+            let table_here = text_table()
+            table_here.get(key(0, 0)) == null &&
+                table_here.is_empty() &&
+                table_here.values().is_empty()
+        }
+    }
+    given "the zero key" {
+        then "it is found like any other" {
+            let table_here = text_table()
+            table_here.put(key(0, 0), "zero")
+            table_here.get(key(0, 0)) == "zero" && !table_here.is_empty()
+        }
+    }
+    given "keys landing on one slot" {
+        then "each finds its own value" {
+            let table_here = text_table()
+            for high in 0..6 { table_here.put(key(high, 16), "${high}") }
+            (0..6).all((high) -> table_here.get(key(high, 16)) == "${high}") &&
+                table_here.get(key(6, 16)) == null
+        }
+    }
+    given "a key put twice" {
+        then "the later value stands, in the first one's place" {
+            let table_here = text_table()
+            table_here.put(key(1, 1), "first")
+            table_here.put(key(2, 2), "other")
+            table_here.put(key(1, 1), "later")
+            table_here.values().join(",") == "later,other"
+        }
+    }
+    given "negative words" {
+        then "they find a slot like any other" {
+            let table_here = text_table()
+            table_here.put(key(-1, -1), "low")
+            table_here.put(key(-2, -9223372036854775807), "lower")
+            table_here.get(key(-1, -1)) == "low" &&
+                table_here.get(key(-2, -9223372036854775807)) == "lower"
+        }
+    }
+    given "far more keys than it started with" {
+        then "every one is found, in the order it arrived" {
+            let table_here = text_table()
+            for i in 0..5000 { table_here.put(key(i * 7, i * 8), "${i}") }
+            (0..5000).all((i) -> table_here.get(key(i * 7, i * 8)) == "${i}") &&
+                table_here.values()[4999] == "4999"
+        }
+    }
+    given "two holders of one table" {
+        then "a write through one reads through the other" {
+            let one = text_table()
+            let other = one
+            one.put(key(3, 3), "shared")
+            other.get(key(3, 3)) == "shared"
+        }
+    }
+}
