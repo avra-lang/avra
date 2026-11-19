@@ -2,6 +2,24 @@
 // `reach_twin_two.av` declare each outer type alike, in one module, and change only what it
 // reaches through a coded type.
 
+use @std.relation.{Storable, codec}
+use @std.relation.shape.{Form, descriptor_unspelled}
+use tests.reach_home.{Limb, limb_shape}
+
+@codec
+type Stem = { l: Limb }
+
+/// The header `Stem`'s descriptor records for `Limb`, and how many types it says `Stem`
+/// reaches.
+fn stem_reads() -> string {
+    let d = descriptor_unspelled(Stem.codec_descriptor())!
+    let header = d.reached.find(it.name == "Limb")?.form ?? Form.Unsaid
+    match header {
+        .Coded(h, _, _) -> "${h == limb_shape()} ${d.reached.length}",
+        .Unsaid or .Record or .Variants or .Over or .Dense -> "uncoded ${d.reached.length}",
+    }
+}
+
 spec "std/relation — a shape folds what a nested coded type reaches" {
     given "a type reached through a coded one gained a field" {
         then "the coded one's shape moved" { one_bough() != two_bough() }
@@ -25,5 +43,10 @@ spec "std/relation — a shape folds what a nested coded type reaches" {
                 one_ping_kept()
         }
         then "a field gained across a cycle moves the type on its other side" { one_tick() != two_tick() }
+    }
+    given "a coded type from another module reaching a type private there" {
+        then "the outer's descriptor misses the private reach and records another header for the nested type" {
+            stem_reads() == "false 1"
+        }
     }
 }
