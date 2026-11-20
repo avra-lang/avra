@@ -1,5 +1,6 @@
 //! The typing rules of a component instance: one a component expands is what its meaning is — the
-//! literal under the `check` call where its component judges it;
+//! literal under the `check` call where its component judges it — and a named one of a generic
+//! component binds its name to it;
 //! else its heads and block check for what they are, and an instance is the component's type, which
 //! a named instance binds its name to; an instance fn binds its seats in a fenced scope over its
 //! statements.
@@ -9,9 +10,10 @@ use core.expr.{Component}
 impl Checks for Component {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let expanded = cx.store.meant(e)
-        if expanded != null && self.name == null {
+        if expanded != null && (self.name == null || generic_instance(cx, self.word)) {
             let meant = cx.meaning_checked(e, expanded!, expected)
             fate_judged(cx, e, meant)
+            if self.name != null { cx.bind(self.name!.of, meant ?? instance_type(cx, self.word, self.targs)) }
             return meant
         }
         cx.checked_free(self.heads)
@@ -49,6 +51,13 @@ fn instance_type(cx: Checking, word: string, targs: List<TypeRef>) -> SignedType
         .Declared(_, _) -> named with { args: if targs.is_empty() { inferred_args(cx, named) } else { [cx.written(t) for t in targs] } },
         rest -> null,
     }
+}
+
+/// Whether `word` names a component that declares type parameters: a named instance of one is its
+/// meaning, which alone says what its fields make of the parameters its written arguments leave.
+fn generic_instance(cx: Checking, word: string) -> bool {
+    let named = cx.type_named(word, null)
+    cx.record_of(named)?.params ?? 0 > 0
 }
 
 /// The type arguments an instance that writes none leaves its component's parameters: each one the

@@ -4,6 +4,8 @@
 //! empty. A program not made yet says why, by the first thing it met.
 use core.{
     SettledSeat,
+    Slot,
+    StaticBox,
     SeatMark,
     plain_mark,
     BinOp,
@@ -186,11 +188,14 @@ export fn program_reached(engine: QueryEngine, file: SourceFileAddress) -> Progr
         )
     let seen = program_seen(declared, rows)
     let units = [ReachedUnit { called: m.called, kept: m.kept, sees: seen.sees(named[i]) } for i, m in walk.met]
+    let filed = unit_filing(units)
     ProgramReach
         .Program(
             ReachedProgram {
                 units: units,
                 homes: [unit_home(u) for u in units],
+                files: filed.files,
+                unit_files: filed.at,
                 unit_keys: flatten([unit_key_words(engine, u) for u in units]),
                 entry_kept: kept,
                 entry_sees: seen.sees(root_named),
@@ -315,6 +320,7 @@ fn program_walked_again(
         checks: checks,
         walk: walk,
         program: file.package_name,
+        entry: file,
         calls: map_cell(),
         recheck: list_cell(),
     }
@@ -336,21 +342,21 @@ fn program_walked_again(
     mut rechecked: List<int> = []
     for b in bodies {
         let made = names_wanted(
-            [call_made(met_for(fold.engine, c, fold.program)) for c in b.was.callees],
+            [call_made(met_for(fold.engine, c, fold.program, [fold.entry])) for c in b.was.callees],
         )
         let made_now = names_wanted(
-            [call_made(met_for(fold.engine, c, fold.program)) for c in b.now.callees],
+            [call_made(met_for(fold.engine, c, fold.program, [fold.entry])) for c in b.now.callees],
         )
         let calls_now = names_wanted([c.symbol for c in b.now.callees])
         for raw in b.was.callees {
-            let c = met_for(fold.engine, raw, fold.program)
+            let c = met_for(fold.engine, raw, fold.program, [fold.entry])
             if made_now.has(call_made(c)) { continue }
             let at? = fold.place_of(c.symbol) else { return null }
             if !calls_now.has(c.symbol) { cut.push(at) }
             if called_text(fold.held(at)) == called_text(c) { rechecked.push(at) }
         }
         for raw in b.now.callees {
-            let c = met_for(fold.engine, raw, fold.program)
+            let c = met_for(fold.engine, raw, fold.program, [fold.entry])
             if made.has(call_made(c)) { continue }
             let held? = fold.meets(c) else { return null }
             if !held { seeds.push(c) }
@@ -367,6 +373,7 @@ fn program_walked_again(
         fold.program,
         false,
         null,
+        [fold.entry],
     ) { .Met(w) -> in_name_order(w), .Stopped(_why, _at) -> { return null } }
     if !grown.unlowered.is_empty() { return null }
     for e in grown.externs {
@@ -376,7 +383,7 @@ fn program_walked_again(
     let grown_names = names_wanted([m.called.symbol for m in grown.met])
     for m in grown.met {
         for raw in m.facts.callees() {
-            let c = met_for(fold.engine, raw, fold.program)
+            let c = met_for(fold.engine, raw, fold.program, [fold.entry])
             if grown_names.has(c.symbol) { continue }
             let held? = fold.meets(c) else { return null }
             if !held { return null }
@@ -398,7 +405,7 @@ fn program_walked_again(
         for c in facts.callees {
             let to? = fold.place_of(c.symbol) else { return null }
             if !gone[to] &&
-                called_text(fold.held(to)) == called_text(met_for(fold.engine, c, fold.program)) { rechecked.push(to) }
+                called_text(fold.held(to)) == called_text(met_for(fold.engine, c, fold.program, [fold.entry])) { rechecked.push(to) }
         }
     }
     if !fold.files_kept(gone) { return null }
@@ -482,6 +489,8 @@ type WalkFold = {
     checks: TaskChecks,
     walk: WalkedProgram,
     program: string,
+    /// The file whose statements are the program's entry.
+    entry: SourceFileAddress,
     calls: Cell<Map<string, CalledFn>>,
     /// The place of each body of a fn that isn't generic a call makes otherwise now.
     recheck: Cell<List<int>>,
@@ -709,16 +718,16 @@ impl WalkFold {
             let b = after.at(at)
             if b == null && !calls_into(u, highs) { continue }
             let facts? = (if b != null { b!.now } else { facts_read(self.engine, u.called) }) else { return false }
-            for c in facts.callees { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } }
+            for c in facts.callees { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program, [self.entry])) } }
         }
-        for m in after.grown.met { for c in m.facts.callees() { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } } }
+        for m in after.grown.met { for c in m.facts.callees() { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program, [self.entry])) } } }
         let starts = every_callee_of(entry.placed_keeping(self.walk.entry_kept))
             .concat(hosted_in(self.engine, file, self.program))
             .concat(package_hosted(self.engine, self.program, file))
-        for c in starts { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program)) } }
+        for c in starts { if wanted.has(c.symbol) { calls.push(met_for(self.engine, c, self.program, [self.entry])) } }
         for at in places {
             let u = self.walk.units[at]
-            for h in hosted_in(self.engine, u.called.file, self.program) { if h.symbol == u.called.symbol { calls.push(met_for(self.engine, h, self.program)) } }
+            for h in hosted_in(self.engine, u.called.file, self.program) { if h.symbol == u.called.symbol { calls.push(met_for(self.engine, h, self.program, [self.entry])) } }
         }
         for at in places {
             let symbol = self.walk.units[at].called.symbol
@@ -820,18 +829,29 @@ fn distinct_files(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
 /// declares, in the order the shape reaches each first such body; then each file it reaches that
 /// writes a word as a name it cannot be or declares a method whose name its type already took. Each
 /// file is answered on its own (`file_refused`) over the shape's bodies by file (`refusal_shape`), so
-/// an edit to one body re-asks its file alone, and this stands wherever every file's answer does.
+/// an edit to one body re-asks its file alone, and this stands wherever every file's answer does. A
+/// file `vouched` names stands on the verdict that vouches for it: no law is asked of it.
 @query
-export fn program_refused(engine: QueryEngine, file: SourceFileAddress, package: string) -> List<
-    SourceFileAddress,
-> {
-    let erring = entry_erring(engine, file, package)
+export fn program_refused(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    package: string,
+    vouched: List<string>,
+) -> List<SourceFileAddress> {
+    let erring = entry_erring(engine, file, package, vouched)
     if erring.any(is_manifest) { return erring }
     let shape? = refusal_shape(engine, file) else { return erring }
     let entry? = entry_lowered(engine, file) else { return erring }
     let own = if body_refuses(engine, file, entry.refused, entry.unread) ||
         entry.unprojected != null { [file] } else { [] }
-    let answers = [file_refused(engine, f.file, f.entry, f.units, f.unlowered) for f in shape.files]
+    let answers = [file_refused(
+        engine,
+        f.file,
+        f.entry,
+        f.units,
+        f.unlowered,
+        vouched.contains(spelled_file(f.file)),
+    ) for f in shape.files]
     let bodies = sorted_by(
         [FileAt { file: f.file, at: f.unit_at[answers[i].body] } for i, f in shape.files if answers[i].body >= 0],
         (a: FileAt, b: FileAt) -> a.at < b.at,
@@ -970,7 +990,8 @@ export type FileRefusal = { body: int, missed: int, reached: int, law: bool }
 
 /// HOW THE FILE `file` REFUSES A BUILD, over the bodies of it a shape reaches, `units` lowered and
 /// `unlowered` not yet, and whether it is the entry's: a file is reached where it is the entry's, a
-/// body of it with facts is reached, or one is not lowered yet.
+/// body of it with facts is reached, or one is not lowered yet. A file a verdict vouches for (`vouched`)
+/// is asked no law over the whole file.
 @query
 export fn file_refused(
     engine: QueryEngine,
@@ -978,6 +999,7 @@ export fn file_refused(
     entry: bool,
     units: List<CalledFn>,
     unlowered: List<Missed>,
+    vouched: bool,
 ) -> FileRefusal {
     let facts = [unit_facts_lying(engine, c) for c in units]
     let faceted = [i for i, f in facts if f != null]
@@ -995,6 +1017,7 @@ export fn file_refused(
             ) ?? -1,
         reached: faceted.first() ?? -1,
         law: reached &&
+            !vouched &&
             (misnames(engine, file) || takes_method_names(engine, file) || asks_ungiven(engine, file)),
     }
 }
@@ -1169,9 +1192,10 @@ fn program_reached_again(
         } for u in units],
     )
     let sees = if met.is_empty() && gone.is_empty() && redeclared.is_empty() { shape.entry_sees } else { shaped.entry_sees(file) ?? "" }
+    let filed = unit_filing(units)
     ProgramReach
         .Program(
-            shape with { units: units, homes: [unit_home(u) for u in units], unit_keys: keys, entry_sees: sees, declared: declared, declared_counts: [declared_of(u.called.symbol).length for u in walk.units] },
+            shape with { units: units, homes: [unit_home(u) for u in units], files: filed.files, unit_files: filed.at, unit_keys: keys, entry_sees: sees, declared: declared, declared_counts: [declared_of(u.called.symbol).length for u in walk.units] },
         )
 }
 
@@ -1556,6 +1580,29 @@ export type ReachedProgram = {
     declared: List<BodySeen>,
     /// How many of `declared`, from its start, each unit declares, in the order of `units`.
     declared_counts: List<int> = [],
+    /// The files the units are read from, each once, in the order first met.
+    files: List<SourceFileAddress> = [],
+    /// Each unit's file, as its place in `files`, in the order of `units`.
+    unit_files: List<int> = [],
+}
+
+/// The files `units` are read from, each once in the order first met, and each unit's place among
+/// them.
+type UnitFiling = { files: List<SourceFileAddress>, at: List<int> }
+
+fn unit_filing(units: List<ReachedUnit>) -> UnitFiling {
+    let words = [spelled_file(u.called.file) for u in units]
+    mut first: Map<string, int> = {}
+    for i, w in words {
+        if !first.has(w) { first.set(w, i) }
+    }
+    let named = distinct(words)
+    mut rank: Map<string, int> = {}
+    for j, w in named { rank.set(w, j) }
+    UnitFiling {
+        files: [units[first.get(w)!].called.file for w in named],
+        at: [rank.get(w)! for w in words],
+    }
 }
 
 /// A body standing for one nothing answers: its name, why it isn't lowered, and how it's called.
@@ -1671,7 +1718,85 @@ export fn keyed_objects(
         ),
         dir,
     ) for b in 0..CHUNKS if occupied.has("${b}")]
+        .concat(frames_keyed(engine, shape, held, salt, dir))
 }
+
+/// EACH FILE'S FRAMES AS AN OBJECT OF THEIR OWN: what places them is where each item of the file
+/// starts, and what they are is the file's bodies, so an edit that moves an item remakes its file's
+/// frames and never a body's chunk. Each keyed by the file, its items' starts and its units' keys
+/// (`held`, in the order of the shape's units).
+fn frames_keyed(
+    engine: QueryEngine,
+    shape: ShapeAt,
+    held: List<string>,
+    salt: List<string>,
+    dir: string,
+) -> List<Made> {
+    let by_file = keys_by_file(held, shape.unit_files())
+    [Made { which: Owned.Frames(j), key: key, obj: "${dir}/${key}.o", source: "" } for j, f in shape.files() for key in [frames_key(engine, f, by_file.get("${j}") ?? [], salt)]]
+}
+
+/// The units' keys `held`, by the file each unit's at in `filed` names, each file's in the units'
+/// order.
+fn keys_by_file(held: List<string>, filed: List<int>) -> Map<string, List<string>> {
+    mut by: Map<string, List<string>> = {}
+    for i, h in held {
+        let at = "${filed[i]}"
+        by.set(at, (by.get(at) ?? []).concat([h]))
+    }
+    by
+}
+
+/// The key of the frames of `file`, whose units are keyed `keys`.
+fn frames_key(engine: QueryEngine, file: SourceFileAddress, keys: List<string>, salt: List<string>) -> string {
+    digest_of(
+        salt
+            .concat(["frames", spelled_file(file)])
+            .concat(["${s}" for s in item_starts(engine, file)])
+            .concat(keys)
+            .join("\n"),
+    )
+}
+
+/// THE FRAMES OF THE FILE AT `at` OF THE SHAPE'S FILES, as a module of data alone: each frame its
+/// file's bodies lay out, placed in the file; absent where one of them no longer lowers.
+export fn frames_lowered(engine: QueryEngine, shape: ShapeAt, at: int) -> Lowered? {
+    let filed = shape.unit_files()
+    let taken = [shaped_taken(engine, shape.unit(i)) for i in 0..filed.length if filed[i] == at]
+    if taken.any(it == null) { return null }
+    Lowered {
+        fns: [],
+        entry: unit_body(ENTRY, [], Layout.Void, [], []),
+        types: new_type_registry(),
+        diagnostics: [],
+        externs: [],
+        statics: distinct_statics([s for t in taken for s in t!.body.statics if s.debug]),
+    }
+}
+
+/// A BODY'S FRAMES PLACED IN THEIR FILES: a frame laid out by its item counts its site from the
+/// item's start, and here, once, from its file's (`file_placed`). A chunk's module reads a frame
+/// another module defines, so no chunk holds a place in its file.
+fn placed_frames(engine: QueryEngine, b: LoweredFn) -> LoweredFn { b with { statics: [placed_frame(engine, s) for s in b.statics] } }
+
+fn placed_frame(engine: QueryEngine, s: Static) -> Static {
+    let at? = s.at_item else { return s }
+    let file? = home_file(engine, s.home) else { return s }
+    let site? = s.boxes.first() else { return s }
+    let cells? = slots_of(site) else { return s }
+    if cells.length != 3 { return s }
+    let lo? = slot_int(cells[1]) else { return s }
+    let hi? = slot_int(cells[2]) else { return s }
+    let placed = file_placed(engine, file, at, FindingAt { lo: lo, hi: hi })
+    s with { boxes: [StaticBox.Slots([cells[0], Slot.Int(placed.lo), Slot.Int(placed.hi)])].concat(s.boxes.drop(1)), at_item: null }
+}
+
+fn slots_of(b: StaticBox) -> List<Slot>? { match b { .Slots(cells) -> cells, rest -> null } }
+
+fn slot_int(c: Slot) -> int? { match c { .Int(n) -> n, rest -> null } }
+
+/// A frame as a chunk's module reads it: declared, its file's frames module defining it.
+fn read_elsewhere(s: Static) -> Static { if s.debug { s with { boxes: [], elsewhere: true } } else { s } }
 
 /// How many words a unit's key takes in `ReachedProgram.unit_keys`.
 const KEY_WORDS: int = 5
@@ -1725,6 +1850,10 @@ impl ShapeAt {
     }
 
     fn homes() -> List<int> { ReachedProgram.homes_in(self.source, self.shape) }
+
+    fn files() -> List<SourceFileAddress> { ReachedProgram.files_in(self.source, self.shape) }
+
+    fn unit_files() -> List<int> { ReachedProgram.unit_files_in(self.source, self.shape) }
 
     /// The symbols of the bodies chunk `b` is home to, in the shape's order.
     fn symbols_in(b: int) -> List<string> { [self.unit(i).called.symbol for i, home in self.homes() if home == b] }
@@ -2077,7 +2206,7 @@ export fn bucket_asked(
         own: own,
         entry: entry_body(root),
         externs: seen.rows,
-        statics: distinct_statics(flatten([t.body.statics for t in held]).concat(entry_data)),
+        statics: [read_elsewhere(s) for s in distinct_statics(flatten([t.body.statics for t in held]).concat(entry_data))],
         declared: seen.bodies,
     }
 }
@@ -2163,7 +2292,7 @@ fn declared_stub(d: BodySeen, b: int) -> Body { unit_body(d.name, d.seats, d.ans
 /// A body the shape holds, lowered and placed as the shape keeps it; absent where it isn't lowered.
 fn shaped_taken(engine: QueryEngine, u: ReachedUnit) -> Taken? {
     let f? = reached_body(engine, u.called) else { return null }
-    Taken { called: u.called, body: f.placed_keeping(u.kept), kept: u.kept }
+    Taken { called: u.called, body: placed_frames(engine, f.placed_keeping(u.kept)), kept: u.kept }
 }
 
 /// THE CHUNK A BODY FALLS IN, by its symbol alone: a body added or taken away moves no other body's
@@ -2218,6 +2347,7 @@ export fn made_reaching(
     lazy: bool = false,
     home: SourceFileAddress? = null,
     unhashed_absent: bool = false,
+    framing: List<SourceFileAddress>? = null,
 ) -> MadeProgram {
     let root = survey.placed(unplaced, checks)
     let walked = match walked_from(
@@ -2229,6 +2359,7 @@ export fn made_reaching(
         program,
         lazy,
         home,
+        framing ?? some_list(home),
     ) { .Met(w) -> w, .Stopped(why, at) -> { return MadeProgram.Unmade(why, at) } }
     let refusing = distinct_files(
         refused_in.concat([m.called.file for m in walked.met if m.facts.refused() > 0]),
@@ -2369,6 +2500,7 @@ fn walked_from(
     program: string?,
     lazy: bool = false,
     home: SourceFileAddress? = null,
+    roots: List<SourceFileAddress>? = null,
 ) -> Walking {
     walked(
         survey,
@@ -2383,6 +2515,7 @@ fn walked_from(
         program,
         lazy,
         home,
+        roots ?? some_list(home),
     )
 }
 
@@ -2399,6 +2532,7 @@ fn walked(
     program: string?,
     lazy: bool,
     home: SourceFileAddress? = null,
+    roots: List<SourceFileAddress> = [],
 ) -> Walking {
     let engine = survey.engine
     mut queue: List<Calls> = [Calls.Held(start)]
@@ -2420,12 +2554,12 @@ fn walked(
         let count = match calls { .Held(held) -> held.length, .Lying(_, lying) -> lying.length }
         for i in 0..count {
             let c = match calls {
-                .Held(held) -> met_for(engine, held[i], program),
+                .Held(held) -> met_for(engine, held[i], program, roots),
                 .Lying(source, lying) -> {
                     let call = lying.record_in(source, i)
                     let symbol = CalledFn.symbol_in(source, call)
                     if seen.has(symbol) && !least.holds(symbol) { continue }
-                    met_for(engine, CalledFn.read_from(source, call), program)
+                    met_for(engine, CalledFn.read_from(source, call), program, roots)
                 },
             }
             if seen.has(c.symbol) {
@@ -2535,13 +2669,14 @@ fn held_of(wrappers: List<FnWrapper>) -> Map<string, bool> {
     held
 }
 
-/// `c` as the program of the package `program` meets it: a collect's unit gathering `in closure`
-/// gathers over that program's closure; a body whose lambdas read a context frames them; any other
-/// as it stands.
-fn met_for(engine: QueryEngine, c: CalledFn, program: string?) -> CalledFn {
+/// `c` as the program of the package `program` that runs from the files `roots` meets it: a collect's
+/// unit gathering `in closure` gathers over that program's closure; a body whose lambdas read a
+/// context, or whose placed boxes carry their frame, frames them, as a program from those roots does;
+/// any other as it stands.
+fn met_for(engine: QueryEngine, c: CalledFn, program: string?, roots: List<SourceFileAddress>) -> CalledFn {
     let p? = program else { return c }
     if c.gathers_closure { return c with { gathered_for: p } }
-    let framed = framed_lambdas(engine, p, c.symbol)
+    let framed = framed_lambdas(engine, roots, c.symbol)
     if framed.is_empty() { c } else { c with { framed: framed } }
 }
 
@@ -2550,7 +2685,7 @@ fn taken_walk(engine: QueryEngine, walked: Walked) -> Walk {
     Walk {
         taken: [Taken {
             called: m.called,
-            body: reached_body(engine, m.called)!.placed_keeping(m.kept),
+            body: placed_frames(engine, reached_body(engine, m.called)!.placed_keeping(m.kept)),
             kept: m.kept,
         } for m in walked.met],
         externs: walked.externs,
@@ -2928,7 +3063,10 @@ enum BodyAsked {
 /// Which query lowers the body a call of `c` runs. A trait's own static is asked first where `c`
 /// names a static, and stands where it gives a body.
 fn body_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
-    if c.case_item != null { return BodyAsked.Case(c.file, c.case_item!, c.case_index, c.symbol) }
+    if c.case_item != null {
+        let case = BodyAsked.Case(c.file, c.case_item!, c.case_index, c.symbol)
+        return if c.framed.is_empty() { case } else { BodyAsked.Framed(case, c.framed) }
+    }
     match c.defaulted {
         .Field -> BodyAsked
             .FieldDefault(c.file, c.owner!, c.name, if c.parameters.is_empty() { null } else { c.parameters }),
@@ -2971,7 +3109,7 @@ fn asked_body(engine: QueryEngine, asked: BodyAsked) -> LoweredFn? {
         .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, []),
         .EveryVariant(of, owner, name) -> lowered_every_variant(engine, of, owner, name),
         .Gathered(file, name, program) -> lowered_gathered(engine, file, name, program),
-        .Case(file, item, index, symbol) -> lowered_case(engine, file, item, index, symbol),
+        .Case(file, item, index, symbol) -> lowered_case(engine, file, item, index, symbol, []),
         .Framed(inner, framed) -> framed_body(engine, inner, framed),
         .Nothing -> null,
     }
@@ -2982,6 +3120,7 @@ fn framed_question(engine: QueryEngine, inner: BodyAsked, framed: List<string>) 
     match inner {
         .Under(file, name, under) -> lowered_under_question(engine, file, name, under, framed),
         .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, framed),
+        .Case(file, item, index, symbol) -> lowered_case_question(engine, file, item, index, symbol, framed),
         rest -> asked_question(engine, inner),
     }
 }
@@ -2992,6 +3131,7 @@ fn framed_body(engine: QueryEngine, inner: BodyAsked, framed: List<string>) -> L
     match inner {
         .Under(file, name, under) -> lowered_under(engine, file, name, under, framed),
         .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, framed),
+        .Case(file, item, index, symbol) -> lowered_case(engine, file, item, index, symbol, framed),
         rest -> asked_body(engine, inner),
     }
 }
@@ -3009,7 +3149,7 @@ fn asked_question(engine: QueryEngine, asked: BodyAsked) -> Question? {
         .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, []),
         .EveryVariant(of, owner, name) -> lowered_every_variant_question(engine, of, owner, name),
         .Gathered(file, name, program) -> lowered_gathered_question(engine, file, name, program),
-        .Case(file, item, index, symbol) -> lowered_case_question(engine, file, item, index, symbol),
+        .Case(file, item, index, symbol) -> lowered_case_question(engine, file, item, index, symbol, []),
         .Framed(inner, framed) -> framed_question(engine, inner, framed),
         .Nothing -> null,
     }

@@ -370,6 +370,13 @@ impl FileScope {
     fn kept_apart(space: Space, name: string) -> List<DeclaredName> {
         [d for d in self.siblings if d.name == name && space_of(d.kind) == space]
     }
+
+    /// The name of every declaration in `space` the file's siblings keep apart, as a set.
+    fn apart_in(space: Space) -> Map<string, bool> {
+        mut names: Map<string, bool> = {}
+        for d in self.siblings { if space_of(d.kind) == space { names.set(d.name, true) } }
+        names
+    }
 }
 
 /// Every name the top level of `file`, whose scope is `scope`, names a declaration by in `space`,
@@ -380,14 +387,13 @@ export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddr
 > {
     let shared = module_bindings(engine, file.package_name, module_segments(file), true).shared
     let prelude = if file.package_name == PRELUDE { [] } else { module_names(engine, module_files(engine, PRELUDE, [], false)) }
+    let apart = scope.apart_in(space)
     distinct(
         scope
             .own
             .names_in(space)
             .concat(shared.names_in(space))
-            .concat(
-                [d.name for d in prelude if lends(d, space) && scope.kept_apart(space, d.name).is_empty()],
-            ),
+            .concat([d.name for d in prelude if lends(d, space) && !apart.has(d.name)]),
     )
 }
 

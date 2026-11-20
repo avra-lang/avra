@@ -1072,10 +1072,40 @@ LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRe
     return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
 }
 
-// The payload address of a headered global already laid out.
+// A headered global another module lays out, declared here so a read
+// finds it by name; its payload stands 16 bytes in, as every one's does.
+// A static's name is a logical one, so a global modules share wears it as
+// the linker's (`avra_mangle_symbol`), as a fn's does.
+void avra_llvm_static_declared(LLVMModuleRef m, const char* name) {
+    char* linked = avra_mangle_symbol(name);
+    if (!LLVMGetNamedGlobal(m, linked)) {
+        LLVMValueRef g = LLVMAddGlobal(m, LLVMInt8TypeInContext(LLVMGetModuleContext(m)), linked);
+        LLVMSetLinkage(g, LLVMExternalLinkage);
+    }
+    free(linked);
+}
+
+// A headered global laid out here, made the other modules' to read under
+// the linker's name for it.
+void avra_llvm_static_shared(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (!g) { avra_trap("compiler defect: a shared static names no data"); }
+    char* linked = avra_mangle_symbol(name);
+    LLVMSetValueName2(g, linked, strlen(linked));
+    LLVMSetLinkage(g, LLVMExternalLinkage);
+    free(linked);
+}
+
+// The payload address of a headered global already laid out, or of one
+// another module lays out (`avra_llvm_static_declared`).
 LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (!g) {
+        char* linked = avra_mangle_symbol(name);
+        g = LLVMGetNamedGlobal(m, linked);
+        free(linked);
+    }
     if (!g) { avra_trap("compiler defect: a static read names no data"); }
     LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(ctx), 16, 0);
     return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);

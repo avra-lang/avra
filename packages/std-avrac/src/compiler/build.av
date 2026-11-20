@@ -52,6 +52,7 @@ use compiler.lower.{Body, Lowered, program_symbol}
 use @std.grammar.{render_grammar}
 use compiler.memory.{sound_checked}
 use compiler.store.{Store, Stored, Keeping, node_key, store_beside, Reading, pack_holding}
+use compiler.store.mapped.{mapped, mapped_close, mapped_digest}
 use features.{tree_saved}
 use compiler.host.{no_target, read_manifest, Stamp, Read}
 use compiler.hosts.{BuildHost, hosts_of, host_word}
@@ -411,11 +412,15 @@ fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
 /// is kept apart from one made without.
 fn proof_mode() -> string { if sound_checked() { "+sound" } else { "" } }
 
-/// A binary's bytes as one digest — null when it cannot be read back. BLAKE3: the
+/// A binary's bytes as one digest — null when it cannot be read back — read through a mapping a window
+/// at a time, so a compiler's own print never holds its binary whole. BLAKE3: the
 /// content hash that names a kept object and detects a stale one.
 export fn digest_of_binary(at: string) -> string? {
     // LICENSED input.object_digest: the bytes are the key itself; a read that fails answers null and keys nothing
-    match read_bytes(at) { .Ok(bytes) -> digest_of_octets(bytes), .Err(_) -> null }
+    let m? = mapped(at) else { return null }
+    let digest = mapped_digest(m)
+    mapped_close(m)
+    digest
 }
 
 /// THE CHECKOUT: the NEAREST ancestor holding a `.git` — a worktree's own

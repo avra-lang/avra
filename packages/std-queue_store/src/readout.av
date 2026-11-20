@@ -2,97 +2,252 @@
 //! home kept for the shape it was written under, as JSON. A record is
 //! an object of its fields, an enum the name of its variant or an
 //! object of it over its payload, a letter its item, its fate and its
-//! path. What no descriptor here follows — a float, a nested type, a
-//! byte layout of another number — is no reading, never a guess.
-use @std.json.{Json, field}
-use @std.relation.shape.{Descriptor, descriptor_unspelled}
-use @std.relation.stable.{CodecFault, Reader, reader}
+//! path. A nested type is followed through the descriptor's own reach
+//! of it, to any depth. What it does not describe — a float, a place, a
+//! type an earlier build named alone, a byte layout of another number —
+//! is no reading, never a guess, and the answer says why.
+//!
+//! The walk is bounded: a descriptor that nests past `deepest` levels,
+//! or asks more than `budget` values of the octets it reads, is refused,
+//! so a corrupt or hostile descriptor costs a bounded walk.
+use @std.json.{Field, Json, field}
+use @std.relation.shape.{Descriptor, Form, ShapeReach, ShapeSlot, descriptor_unspelled}
+use @std.relation.stable.{CodecFault, Reader, dense_read, indexed_scope, reader, text_read}
 use letters.{DeadParts, dead_parts}
 
 /// The byte layout a descriptor is followed in.
 const coded_format: int = 3
 
-/// The item `body` holds, written under the shape `descriptor` spells;
-/// absent where it cannot be read whole.
-export fn read_out(descriptor: string, body: Bytes) -> Json? {
-    match whole(descriptor, body) { .Ok(j) -> j, .Err(_) -> null }
-}
+/// The most levels a value is followed down.
+const deepest: int = 64
 
-/// The value `body` holds, every octet of it read.
-fn whole(descriptor: string, body: Bytes) -> Result<Json, CodecFault> {
-    let r = reader(body)
-    let v = described(descriptor, r)?
-    if !r.done() { fail CodecFault.Trailing }
+/// The item `body` holds, written under the shape `descriptor` spells,
+/// or why it cannot be read whole.
+export fn read_through(descriptor: string, body: Bytes) -> Result<Json, string> {
+    let w = Walk { r: reader(body), steps: Cell.new(budget(body)) }
+    let v = described(w, descriptor, 0)?
+    if !w.r.done() { fail faulted(CodecFault.Trailing) }
     v
 }
 
-/// The value at `r` under `descriptor`: a coded type's, a letter's, or
-/// a plain wire's.
-fn described(descriptor: string, r: Reader) -> Result<Json, CodecFault> {
-    let shape = descriptor_unspelled(descriptor)
-    if shape != null { return coded(shape!, r) }
-    let dead = dead_parts(descriptor)
-    if dead != null { return lettered(dead!, r) }
-    match descriptor {
-        "int" -> .Ok(Json.Int(r.int()?)),
-        "string" -> .Ok(Json.Str(r.text()?)),
-        _ -> { fail CodecFault.OtherShape },
+/// The values a walk of `body` may read: a value with octets of its own
+/// reads at least one, so a reading past this is a descriptor that asks
+/// values of nothing.
+fn budget(body: Bytes) -> int { 64 * body.length + 4096 }
+
+/// One item's octets being read: the reader, and the values left to read.
+type Walk = { r: Reader, steps: Cell<int> }
+
+/// The names a descriptor's slots reach, and the descriptor that answers
+/// for its own name.
+type Within = { top: Descriptor, reached: Map<string, ShapeReach> }
+
+impl Walk {
+    /// One more value read at `depth`, refused past either bound.
+    fn step(depth: int) -> Result<bool, string> {
+        if depth > deepest { fail too_deep() }
+        let left = self.steps.get()
+        if left <= 0 { fail too_many() }
+        self.steps.set(left - 1)
+        true
     }
 }
 
-/// A coded type's value: its shape's header, then its slots in order.
-fn coded(d: Descriptor, r: Reader) -> Result<Json, CodecFault> {
-    if d.format != coded_format || r.fixed()? != d.hash { fail CodecFault.OtherShape }
-    if d.tagged { return variant(d, r) }
-    .Ok(Json.Obj([field(s.name, slot(s.ty, r)?) for s in d.slots]))
+/// The value at `w` under `descriptor`: a coded type's, a letter's, or a
+/// plain wire's.
+fn described(w: Walk, descriptor: string, depth: int) -> Result<Json, string> {
+    let shape = descriptor_unspelled(descriptor)
+    if shape != null { return coded(w, shape!, depth) }
+    let dead = dead_parts(descriptor)
+    if dead != null { return lettered(w, dead!, depth) }
+    match descriptor {
+        "int" -> .Ok(Json.Int(read(w.r.int())?)),
+        "string" -> .Ok(Json.Str(read(w.r.text())?)),
+        "" -> { fail no_descriptor() },
+        _ -> { fail not_a_descriptor() },
+    }
 }
 
-/// An enum's value: its variant by place, and the payload it carries.
-fn variant(d: Descriptor, r: Reader) -> Result<Json, CodecFault> {
-    let s = d.slots[r.ordinal(d.slots.length)?]
+/// A coded type's value: its shape's header, then its slots.
+fn coded(w: Walk, d: Descriptor, depth: int) -> Result<Json, string> {
+    if d.format != coded_format { fail other_layout(d.format) }
+    mut reached: Map<string, ShapeReach> = {}
+    for r in d.reached { reached.set(r.name, r) }
+    let at = Within { top: d, reached: reached }
+    headed(w, at, d.name, d.hash, d.tagged, d.slots, d.scoped, depth)
+}
+
+/// A value its own codec wrote: the header `hash`, then its slots.
+fn headed(
+    w: Walk,
+    at: Within,
+    name: string,
+    hash: int,
+    tagged: bool,
+    slots: List<ShapeSlot>,
+    scoped: bool,
+    depth: int,
+) -> Result<Json, string> {
+    if read(w.r.fixed())? != hash { fail other_shape(name) }
+    bodied(w, at, tagged, slots, scoped, depth)
+}
+
+/// A record's slots in order, or an enum's variant by place and its
+/// payload.
+fn bodied(w: Walk, at: Within, tagged: bool, slots: List<ShapeSlot>, scoped: bool, depth: int) -> Result<
+    Json,
+    string,
+> {
+    if !tagged { return .Ok(Json.Obj([field(s.name, value(w, at, s.ty, scoped, depth)?) for s in slots])) }
+    let s = slots[read(w.r.ordinal(slots.length))?]
     if s.ty == "" { return .Ok(Json.Str(s.name)) }
-    .Ok(Json.Obj([field(s.name, Json.Arr([slot(t, r)? for t in s.ty.split(",")]))]))
+    .Ok(
+        Json
+            .Obj(
+                [
+                    field(
+                        s.name,
+                        Json.Arr([value(w, at, t, scoped, depth)? for t in outer_split(s.ty)]),
+                    ),
+                ],
+            ),
+    )
 }
 
-/// One slot's value, as its spelling says it was written: marks after
-/// the type are no part of the octets.
-fn slot(spelled: string, r: Reader) -> Result<Json, CodecFault> {
+/// One value, as its spelling says it was written: marks after the type
+/// are no part of the octets, and `scoped` says how its texts cross.
+fn value(w: Walk, at: Within, spelled: string, scoped: bool, depth: int) -> Result<Json, string> {
+    let _ = w.step(depth)?
     let ty = spelled.split(" @").first() ?? spelled
     if ty.ends_with("?") {
-        if !r.present()? { return .Ok(Json.Null) }
-        return slot(ty.substring(0, ty.length - 1), r)
+        if !read(w.r.present())? { return .Ok(Json.Null) }
+        return value(w, at, ty.substring(0, ty.length - 1), scoped, depth + 1)
     }
     if ty.starts_with("List<") && ty.ends_with(">") {
-        let n = r.count()?
+        let n = read(w.r.count())?
         let each = ty.substring(5, ty.length - 1)
-        return .Ok(Json.Arr([slot(each, r)? for _i in 0..n]))
+        return .Ok(Json.Arr([value(w, at, each, scoped, depth + 1)? for _i in 0..n]))
     }
+    if ty.starts_with("Map<") && ty.ends_with(">") { return mapped(w, at, ty.substring(4, ty.length - 1), scoped, depth) }
     match ty {
-        "int" -> .Ok(Json.Int(r.int()?)),
-        "bool" -> .Ok(Json.Bool(r.bool()?)),
-        "string" -> .Ok(Json.Str(r.text()?)),
-        _ -> { fail CodecFault.OtherShape },
+        "int" -> .Ok(Json.Int(read(w.r.int())?)),
+        "bool" -> .Ok(Json.Bool(read(w.r.bool())?)),
+        "string" -> .Ok(
+            Json
+                .Str(if scoped { read(text_read(w.r, indexed_scope()))? } else { read(w.r.text())? }),
+        ),
+        "Bytes" -> .Ok(octets_json(read(w.r.octets())?)),
+        _ -> named(w, at, ty, scoped, depth + 1),
     }
+}
+
+/// A map as an object of its entries in order, each value of the
+/// spelling after the key's.
+fn mapped(w: Walk, at: Within, inside: string, scoped: bool, depth: int) -> Result<Json, string> {
+    let parts = outer_split(inside)
+    if parts.length != 2 || parts[0] != "string" { fail undescribed("Map<${inside}>") }
+    let n = read(w.r.count())?
+    mut out: List<Field> = []
+    for _i in 0..n {
+        let k = read(w.r.text())?
+        out.push(field(k, value(w, at, parts[1], scoped, depth + 1)?))
+    }
+    .Ok(Json.Obj(out))
+}
+
+/// A value of a named type, as the descriptor's reach of it says: the
+/// type itself answers for its own name where nothing reaches it.
+fn named(w: Walk, at: Within, n: string, scoped: bool, depth: int) -> Result<Json, string> {
+    let r = at.reached.get(n)
+    if r == null {
+        if n != "" && n == at.top.name { return bodied(w, at, at.top.tagged, at.top.slots, scoped, depth) }
+        fail undescribed(n)
+    }
+    let s = r!
+    match s.form {
+        .Record -> bodied(w, at, false, s.slots, scoped, depth),
+        .Variants -> bodied(w, at, true, s.slots, scoped, depth),
+        .Over -> {
+            if s.slots.length != 1 { fail undescribed(n) }
+            value(w, at, s.slots[0].ty, scoped, depth)
+        },
+        .Dense -> .Ok(Json.Int(read(dense_read(w.r, indexed_scope(), n, (i: int) -> i))?)),
+        .Coded(hash, own, tagged) -> headed(w, at, n, hash, tagged, s.slots, own, depth),
+        .Unsaid -> { fail undescribed(n) },
+    }
+}
+
+/// Octets as the list of their numbers.
+fn octets_json(b: Bytes) -> Json { Json.Arr([Json.Int(b.at(i)) for i in 0..b.length]) }
+
+/// A list of spellings split at its commas outside every `<…>`.
+fn outer_split(s: string) -> List<string> {
+    mut out: List<string> = []
+    mut depth = 0
+    mut from = 0
+    for i in 0..s.length {
+        let c = s.char_code(i)
+        if c == 60 { depth = depth + 1 }
+        if c == 62 { depth = depth - 1 }
+        if c == 44 && depth == 0 {
+            out.push(s.substring(from, i).trim())
+            from = i + 1
+        }
+    }
+    out.push(s.substring(from, s.length).trim())
+    out
 }
 
 /// A letter: its item under the item's descriptor, its fate with the
 /// error under the error's, and the queues it passed through.
-fn lettered(p: DeadParts, r: Reader) -> Result<Json, CodecFault> {
-    let item = whole(p.item, r.octets()?)?
-    let fate = match r.count()? {
-        0 -> Json.Obj([field("failed", whole(p.error, r.octets()?)?)]),
+fn lettered(w: Walk, p: DeadParts, depth: int) -> Result<Json, string> {
+    let item = inner(w, p.item, read(w.r.octets())?, depth)?
+    let fate = match read(w.r.count())? {
+        0 -> Json.Obj([field("failed", inner(w, p.error, read(w.r.octets())?, depth)?)]),
         1 -> Json.Str("unanswered"),
-        _ -> { fail CodecFault.NotVariant },
+        _ -> { fail faulted(CodecFault.NotVariant) },
     }
-    let n = r.count()?
+    let n = read(w.r.count())?
     .Ok(
         Json
             .Obj(
                 [
                     field("item", item),
                     field("fate", fate),
-                    field("path", Json.Arr([Json.Str(r.text()?) for _i in 0..n])),
+                    field("path", Json.Arr([Json.Str(read(w.r.text())?) for _i in 0..n])),
                 ],
             ),
     )
 }
+
+/// A part a letter holds as octets, read whole under its own descriptor
+/// and within the letter's bounds.
+fn inner(w: Walk, descriptor: string, body: Bytes, depth: int) -> Result<Json, string> {
+    let part = Walk { r: reader(body), steps: w.steps }
+    let v = described(part, descriptor, depth + 1)?
+    if !part.r.done() { fail faulted(CodecFault.Trailing) }
+    v
+}
+
+/// A reader's answer, its fault spoken.
+fn read<T>(v: Result<T, CodecFault>) -> Result<T, string> {
+    match v { .Ok(x) -> .Ok(x), .Err(f) -> .Err(faulted(f)) }
+}
+
+// ── The voices ──
+
+fn faulted(f: CodecFault) -> string { "the octets do not read as the descriptor says: ${f.word()}" }
+
+fn no_descriptor() -> string { "the database keeps no descriptor of the shape it was written under" }
+
+fn not_a_descriptor() -> string { "the descriptor kept for its shape spells no shape this build reads" }
+
+fn other_layout(format: int) -> string { "written in byte layout ${format}, and this build reads ${coded_format}" }
+
+fn other_shape(name: string) -> string { "`${name}` was written under another shape than its descriptor names" }
+
+fn undescribed(name: string) -> string { "its descriptor names `${name}` and does not describe it" }
+
+fn too_deep() -> string { "its descriptor nests deeper than ${deepest} levels" }
+
+fn too_many() -> string { "its descriptor asks more values than its octets can hold" }

@@ -154,6 +154,22 @@ fn places_handed(
                 )
         }
     }
+    overshown(cx, lit, fields)
+}
+
+/// Each entry of the literal `lit` for a member shown over a place, written beside a place handed
+/// that place: what it shows would stand over what the caller already holds, so the two are one
+/// setting too many.
+fn overshown(mut cx: Checking, lit: StructLit, fields: List<FieldSeat>) {
+    for at, f in lit.fields {
+        let seat? = fields.find(it.name == f.of) else { continue }
+        let over? = seat.over else { continue }
+        let placed? = lit.fields.find_index(it.of == over) else { continue }
+        if !fields.any(it.name == over && it.placed) { continue }
+        if !cx.placed(cx.store.unnamed(lit.values[placed])) { continue }
+        let ty? = seat.ty else { continue }
+        cx.unhanded(lit.values[at], ty, lit.name.of, at, "${f.of} ${over}", Unhanded.Overshown)
+    }
 }
 
 /// The literal at `e` naming `name`, which resolves to `named`, no record: refused where that is an
