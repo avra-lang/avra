@@ -107,27 +107,29 @@ impl DeclaredName {
 @derive(Saved)
 export type Declarations = { names: List<DeclaredName> }
 
-/// What a file declares.
+/// What a file declares: each item's names, as its summary holds them.
 @cut_query
 export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
     Declarations {
-        names: [tape_declared(file, at, n) for at, item in items_under(engine, file) for n in tape_declares(meant_tape(engine, file, item))],
+        names: [n for at in item_ids(engine, file) for n in file_declares_at(engine, file, at).names],
     }
 }
 
-/// What `file` declares as `name`, in the order it's written: what an edit that declares other names
-/// leaves standing.
-@cut_query
+/// What `file` declares, one part per name, each in the order it's written: a name added, renamed or
+/// moved moves its own part alone.
+@cut_parted_query
+fn declares_by_name(engine: QueryEngine, file: SourceFileAddress) -> AnswerParts { parts_by_name(file_declares(engine, file).names) }
+
+/// What `file` declares as `name`, in the order it's written: a part read, which an edit that
+/// declares other names leaves standing.
 export fn file_declares_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> Declarations {
-    Declarations { names: file_declares(engine, file).names.filter(it.name == name) }
+    Declarations { names: declarations_in(declares_by_name_part(engine, file, name)) }
 }
 
-/// What the item `at` of `file` declares: what an item added or renamed elsewhere leaves standing.
-@cut_query
+/// What the item `at` of `file` declares, as its summary holds it: what an item added or renamed
+/// elsewhere leaves standing.
 export fn file_declares_at(engine: QueryEngine, file: SourceFileAddress, at: int) -> Declarations {
-    Declarations {
-        names: [tape_declared(file, at, n) for n in tape_declares(meant_tape(engine, file, item_under(engine, file, at)))],
-    }
+    Declarations { names: [tape_declared(file, at, n) for n in item_declares(engine, file, at)] }
 }
 
 /// A name a tape declares, as the item at `at` in `file` declares it.

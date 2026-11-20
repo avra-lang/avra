@@ -47,6 +47,9 @@ export type LoweredProgram = {
     /// The methods a `dyn` of a trait has, in the trait's order; absent for a type that's no trait the
     /// program declares.
     traits: fn(SignedType) -> List<TraitMember>?,
+    /// Whether a `dyn` of a trait is placed: its trait wears `@std/meta`'s `placed`, so a box of it is
+    /// drawn under the frame of contexts it was placed under.
+    placed: fn(SignedType) -> bool,
     /// The symbol a type the program declares is known by, absent for any other.
     type_symbol: fn(SignedType) -> string?,
     /// The types tagged so far, each once.
@@ -928,12 +931,8 @@ impl Lowering {
     /// binding's value.
     mut fn lane_value(b: Bound) -> Reg { self.shared_cell(b) ?? self.held(b) }
 
-    /// What a box carries in the lane `name`: the frame in force for a framed lambda's frame lane, else
-    /// what the binding `name` holds.
-    mut fn lane_of(name: string) -> Reg {
-        if name == FRAME_LANE { return self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_ctx_frame")!, []) }
-        self.lane_value(self.bound(name)!)
-    }
+    /// What a box carries in the lane `name`: what the binding `name` holds.
+    mut fn lane_of(name: string) -> Reg { self.lane_value(self.bound(name)!) }
 
     // ── Registers ───────────────────────────────────────────────────
     // A register is minted with the instruction that defines it, after every register that

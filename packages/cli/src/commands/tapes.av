@@ -9,7 +9,7 @@ use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
     program_new_only,
     default_opt,
-    unset_link_holes_of,
+    program_unset_holes,
     FileWarned,
     ChildEnd,
     RefusesCall,
@@ -34,7 +34,8 @@ use @std.avrac.compiler.{
     finding_diag,
     held_kinds,
     finding_line,
-    item_count,
+    item_ids,
+    every_item_id,
     findings_in_file,
     manifest_voices,
     manifests_refused,
@@ -117,6 +118,7 @@ use @std.avrac.compiler.{
     bucket_lowered,
     seen_bodies,
     SeenBodies,
+    frames_lowered,
     program_code_hashes,
     HashAnswer,
     unhashed,
@@ -283,7 +285,7 @@ impl Runnable for TapesCmd {
         let disk? = disk_at(root, args.option("only") ?? "") else { return std_unfound() }
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
-        let engine = query_engine(store, avra_fact_definitions())
+        let engine = query_engine(store, avra_fact_definitions(), disk.name)
         // LICENSED input.timing: a phase timing is reported, never an input of what is found
         if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
         if args.option("share") != "" { return share_said(store, engine, disk, args.option("share")) }
@@ -476,6 +478,7 @@ fn disk_built(
         avra_fact_definitions().concat(definitions_of(listed_build_facts)),
         ahead_count(),
         asks_timed,
+        (e: QueryEngine) -> vouched_files(e, disk),
     )
     let store = worked.store
     let engine = worked.engine
@@ -485,18 +488,11 @@ fn disk_built(
     if refused != null { return .Err(refused!) }
     let stopped = net_stops(net, () -> program_new_only(engine, disk.name))
     if stopped != null { return .Err(stopped!) }
-    let _ = program_placed(
-        worked,
-        joined_path(root, ".avra-cache/tapes"),
-        disk.file_at(bin),
-        ahead_count(),
-        asks_timed,
-    )
+    let _ = program_placed(worked, disk.file_at(bin), ahead_count(), asks_timed)
     let asked = binary_asked(engine, disk, bin, stem, mode, tools)
     let found: Cell<List<SourceFileAddress>?> = Cell.new(null)
     let _ = program_shaped_beside(
         worked,
-        joined_path(root, ".avra-cache/tapes"),
         asked.entry,
         ahead_count(),
         env("AVRA_QUERY_TIMES") == "1",
@@ -504,7 +500,7 @@ fn disk_built(
             let refusing = phased(
                 engine,
                 "the refusals",
-                () -> program_refused(engine, asked.entry, disk.name),
+                () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
             )
             found.set(refusing)
             refusing.is_empty()
@@ -513,7 +509,7 @@ fn disk_built(
     let refusing = found.get() ?? phased(
         engine,
         "the refusals",
-        () -> program_refused(engine, asked.entry, disk.name),
+        () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
     )
     if !refusing.is_empty() {
         let said = refusals_said(
@@ -677,7 +673,30 @@ fn binary_asked(
         linker: t.linker,
         wasm_opt: t.wasm_opt,
         fallback: t.fallback && t.wasm_opt != "",
+        tools: tools_marked([t.linker, t.wasm_opt].concat([s.path for s in t.tools])),
     }
+}
+
+/// THE TOOLS A LINK RUNS, EACH BY ITS IDENTITY: its path and the disk's mark of what stands there
+/// (size, times, inode), in the order given, each once. A kept binary is a function of the tools that
+/// linked it: one replaced in place is another mark, so the binary is linked again. A tool the host
+/// can't mark vouches for nothing: it reads as this process's own, and no binary stands on it.
+fn tools_marked(paths: List<string>) -> List<string> {
+    mut marked: List<string> = []
+    for p in paths {
+        if p == "" || marked.any(it.starts_with("${p}\t")) { continue }
+        // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+        let mark = stamp(p)
+        // LICENSED input.clock: an unmarked tool's word is this process's alone, so no kept binary answers for it
+        marked.push(if mark == null { "${p}\tunmarked ${now_ns()}" } else { "${p}\t${mark!}" })
+    }
+    marked
+}
+
+/// The C compiler a native link runs, where the PATH finds one.
+fn link_compiler() -> string {
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+    match process_tool("clang") { .Ok(cc) -> cc.path, .Err(_) -> "" }
 }
 
 /// Where a build keeps its objects and binaries, under its package: a non-host target's beside it,
@@ -702,6 +721,7 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
         layered: mode.layered && hosted.is_empty(),
         inlined: inlines_runtime(),
         placed: relative_path(joined_path(disk.root, BUILD_DIR), dir_of(stem)),
+        tools: tools_marked([link_compiler(), fast_linker()]),
     }
 }
 
@@ -743,6 +763,7 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
         asked.wasm_opt,
         asked.fallback,
         asked.placed,
+        asked.tools,
     )
 }
 
@@ -845,6 +866,9 @@ type BinaryAsked = {
     /// The directory the binary is placed in, from `dir`: where a layered binary finds its layers
     /// from when it's run there.
     placed: string = "",
+    /// Each tool the link runs, by its identity (`tools_marked`): a kept binary is a function of the
+    /// tools that linked it, so one that moved is linked again.
+    tools: List<string> = [],
 }
 
 /// HOW THE PROGRAM LAYER MAKES A BINARY: the level its objects are emitted at, as clang spells it;
@@ -925,6 +949,7 @@ fn program_binary(
     wasm_opt: string,
     fallback: bool,
     placed: string,
+    tools: List<string>,
 ) -> BuiltBinary {
     let made = binary_made(
         engine,
@@ -944,6 +969,7 @@ fn program_binary(
             wasm_opt: wasm_opt,
             fallback: fallback,
             placed: placed,
+            tools: tools,
         },
     )
     match made { .Linked(kept, stood) -> BuiltBinary.Linked(file_name(kept), stood), rest -> made }
@@ -1033,8 +1059,9 @@ fn binary_made(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
 
 /// What makes a program's objects besides its own answers: the compiler that emits them,
 /// the backend's code, as the build's own code hash, the level they are emitted at, whether the
-/// runtime's hot leaves are inlined, and the runtime and archives it links. Every key a build's
-/// objects make — each object's, its link's, a layered link's — holds it.
+/// runtime's hot leaves are inlined, the runtime and archives it links, and the tools its links run
+/// (`tools_marked`). Every key a build's objects make — each object's, its link's, a layered link's —
+/// holds it.
 fn objects_salt(engine: QueryEngine, asked: BinaryAsked) -> List<string> {
     [
         asked.compiler,
@@ -1044,6 +1071,7 @@ fn objects_salt(engine: QueryEngine, asked: BinaryAsked) -> List<string> {
         asked.target,
     ]
         .concat(asked.linked)
+        .concat(asked.tools)
 }
 
 /// The build `asked` names, as its answer stands where its kept binary still does; else made again
@@ -1067,6 +1095,7 @@ fn standing_binary(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
         asked.wasm_opt,
         asked.fallback,
         asked.placed,
+        asked.tools,
     )
     match answer {
         .Linked(kept, stood) -> {
@@ -1167,6 +1196,8 @@ fn times_said(engine: QueryEngine) {
     eprintln("phases: ${times.phases_spoken()}")
     eprintln("split: ${times.split()}")
     eprintln("cutoff: ${engine.cutoff_said()}")
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if env("AVRA_QUERY_FAMILIES") == "1" { eprintln("families:\n${times.every_family()}") }
 }
 
 /// Each form only the program layer builds that the program of the package on `disk` uses, said one a
@@ -1733,7 +1764,7 @@ fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {
 /// compiler doesn't hold.
 fn file_findings(engine: QueryEngine, h: ProgramFile) -> List<string?> {
     let src = new_source_file(h.full, text_at(h.full) ?? "")
-    [rendered_finding(finding_diag(f, h.full), src) for at in 0..item_count(engine, h.file) for f in findings_in_file(engine, h.file, at)]
+    [rendered_finding(finding_diag(f, h.full), src) for at in item_ids(engine, h.file) for f in findings_in_file(engine, h.file, at)]
         .concat([render(d, src) for d in file_rule_findings(engine, h.file, src)])
 }
 
@@ -2055,7 +2086,9 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                     shown,
                 )
         }
-        for item, held in file_impls(engine, file) {
+        let ids = every_item_id(engine, file)
+        for k, held in file_impls(engine, file) {
+            let item = ids[k]
             // a generated item's places are its template's, which the workspace's lambdas are paired by
             if generated_at(engine, file, item) != null { continue }
             for i in held.filter(it.params.is_empty()) {
@@ -2475,7 +2508,7 @@ fn flag_tests(ins: List<Ins>) -> FlagTests {
         counted = match tested {
             .Unwinding -> counted with { calls: counted.calls + 1 },
             .Tick -> counted with { edges: counted.edges + 1 },
-            .Frame -> counted,
+            .Frame or .Heard -> counted,
         }
     }
     counted
@@ -2495,7 +2528,7 @@ impl FlagCuts {
         match tested {
             .Unwinding -> if ours { self with { ours: self.ours + 1 } } else { self with { theirs: self.theirs + 1 } },
             .Tick -> self with { edges: self.edges + 1 },
-            .Frame -> self,
+            .Frame or .Heard -> self,
         }
     }
 }
@@ -2916,6 +2949,7 @@ fn programs_in(root: string) -> List<ProgramTest> {
     let engine = query_engine(
         program_store_at(joined_path(root, ".avra-cache/tapes")),
         avra_fact_definitions(),
+        disk.name,
     )
     let files = sorted_texts([joined_path(root, f) for f in root_sources(engine, disk.name)])
     let printing = [ProgramTest {
@@ -2994,7 +3028,7 @@ fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool, all_made:
         }
         let nested? = disk_at(root, "") else { return std_unfound() }
         let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
-        let inner = query_engine(store, avra_fact_definitions())
+        let inner = query_engine(store, avra_fact_definitions(), nested.name)
         tally = ran_in(
             inner,
             nested,
@@ -3065,6 +3099,7 @@ fn ran_in(
             asking = query_engine(
                 program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
                 avra_fact_definitions(),
+                disk.name,
             )
             continue
         }
@@ -3190,7 +3225,7 @@ export fn program_tested(paths: List<string>, timed: bool = false, net: NetSaid 
     for r in roots {
         let disk? = disk_at(r, "") else { return std_unfound() }
         let store = program_store_at(joined_path(r, ".avra-cache/tapes"))
-        let engine = query_engine(store, avra_fact_definitions())
+        let engine = query_engine(store, avra_fact_definitions(), disk.name)
         let refused = manifests_door(engine, disk)
         if refused != null { return refused! }
         let specs = [disk.file_at(f) for f in package_sources(engine, disk.name, "src") if in_scope(scope, joined_path(r, f)) && writes_specs(engine, disk.file_at(f))]
@@ -3353,8 +3388,9 @@ fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool
     let engine = query_engine(
         program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
         avra_fact_definitions(),
+        disk.name,
     )
-    let refusing = program_refused(engine, entry, disk.name)
+    let refusing = program_refused(engine, entry, disk.name, vouched_files(engine, disk))
     if !refusing.is_empty() {
         let _ = refusals_said(engine, disk, refusing, entry)
         return 3
@@ -3701,7 +3737,7 @@ fn bucket_kept(
     let owed = [o for o in made if !exists_at(o.obj)]
     if traced() {
         qtrace("Q\tobjects\t${owed.length}\t${made.length}\n")
-        for o in owed { qtrace("Q\towed\t${bucket_of(o)}\t${shape.symbols_in(bucket_of(o)).join(",")}\n") }
+        for o in owed { qtrace("Q\towed\t${owed_said(shape, o)}\n") }
     }
     if !owed.is_empty() {
         let _ = make_dirs(joined_path(asked.dir, "obj"))
@@ -3718,10 +3754,7 @@ fn bucket_kept(
             ),
         )
         if emitted != null {
-            if owed
-                .any(
-                    (o) -> bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen) == null,
-                ) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
+            if owed.any((o) -> !owed_lowers(engine, asked, shape, hashes, o, seen)) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
             return BuiltBinary.Unlinked(emitted!)
         }
     }
@@ -3822,6 +3855,15 @@ fn fallback_placed(kept: string, stem: string) -> string? {
     null
 }
 
+/// An owed object as a traced build says it: a chunk and the symbols it is home to, or a file's
+/// frames and the file.
+fn owed_said(shape: ShapeAt, o: Made) -> string {
+    match o.which {
+        .Frames(at) -> "frames\t${spelled_file(shape.files()[at])}",
+        rest -> "${bucket_of(o)}\t${shape.symbols_in(bucket_of(o)).join(",")}",
+    }
+}
+
 /// The bucket `m` is the object of.
 fn bucket_of(m: Made) -> int {
     match m.which { .Bucket(i, _of) -> i, rest -> 0 }
@@ -3838,7 +3880,25 @@ fn bucket_made_whole(
     o: Made,
     seen: SeenBodies,
 ) -> Lowered {
-    bucket_lowered(bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen)!)
+    match o.which {
+        .Frames(at) -> frames_lowered(engine, shape, at)!,
+        rest -> bucket_lowered(bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen)!),
+    }
+}
+
+/// Whether the object `o` holds is still made of bodies that lower.
+fn owed_lowers(
+    engine: QueryEngine,
+    asked: BinaryAsked,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    o: Made,
+    seen: SeenBodies,
+) -> bool {
+    match o.which {
+        .Frames(at) -> frames_lowered(engine, shape, at) != null,
+        rest -> bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen) != null,
+    }
 }
 
 /// How heavy each of `owed` is to emit, without reading a body: how many of the shape's bodies its
@@ -4443,13 +4503,11 @@ fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
     let reached = graph_said(engine, disk)
     // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
     let from_env = (n: string) -> env(n)
-    let unset = flatten(
-        [unset_link_holes_of(
-            () -> manifest_source(disk.package_root(p)),
-            read_manifest(manifest_source(disk.package_root(p))),
-            p == disk.name,
-            from_env,
-        ) for p in reached_packages(engine, disk)],
+    let unset = program_unset_holes(
+        engine,
+        disk.name,
+        (p: string) -> manifest_source(disk.package_root(p)),
+        from_env,
     )
     let graph = reached with { voices: reached.voices.concat(unset), sources: reached
         .sources

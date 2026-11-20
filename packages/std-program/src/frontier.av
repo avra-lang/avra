@@ -347,6 +347,9 @@ impl EntryAt {
 
 /// How a walk of what a change reaches decides a place: a cutting answer that stands, which the walk
 /// stops at; one that moved, whose readers are decided in turn; any other.
+/// Each place's readers a delta wrote: `readers` from `starts[at]` up to `starts[at + 1]`.
+type WrittenReaders = { starts: List<int>, readers: List<int> }
+
 export const CUT_STANDS: int = 1
 export const CUT_MOVED: int = 2
 export const NOT_CUT: int = 3
@@ -441,39 +444,92 @@ impl Frontier {
     /// EVERY PLACE REACHED FROM `changed` BY READING: each answer that read one, and each that read
     /// one of those, each once — walked forward along the base's readers and the reads of each place
     /// a delta wrote, so only what a change reaches is read. A base reader a delta since rewrote is
-    /// reached as well, which only checks it. Each reader of a changed place, and of a place `decide`
-    /// called a cut that moved, is decided as the walk meets it: a cut that stands (`CUT_STANDS`) is
-    /// neither reached nor walked past. Absent when a delta's entry's reads, or a reader the walk
-    /// meets, don't lie within the frontier.
+    /// reached as well, which only checks it. Absent when a delta's entry's reads, or a reader the walk
+    /// meets, don't lie within the frontier, or the readers met go round.
+    ///
+    /// THE PLACES ARE SETTLED IN READING ORDER, never in the order of their questions' hashes: every
+    /// place the change can reach is found first, then each is settled only once every place it reads
+    /// among them is, so what it meets is final. Each place that read a place reached is decided, the
+    /// change reaching it through a place that moved or one merely reached alike: a cut that stands
+    /// (`CUT_STANDS`) was just worked out equal, so it is neither reached nor walked past; any other is
+    /// reached. So the places reached, and the places decided, are the same whatever order the
+    /// frontier keeps its places in: a hash that moves with unrelated code moves no warm work.
     fn readers_of(changed: List<int>, decide: fn(int) -> int) -> List<bool>? {
-        mut written: List<List<int>> = [[] for _i in 0..self.extent]
-        for o in self.overlaid.values() {
-            if o.delta == null { continue }
-            let reads? = self.reads_at(o.place) else { return null }
-            for r in reads { written[r].push(o.place) }
-        }
-        let base = self.base.columns
-        mut reached = [false for _i in 0..self.extent]
-        mut deciding = [false for _i in 0..self.extent]
-        for c in changed { deciding.set(c, true) }
+        let written? = self.written_readers() else { return null }
+        // Every place the change can reach, and how many places it reads among them, each counted once.
+        mut reachable = [false for _i in 0..self.extent]
+        mut waiting = [0 for _i in 0..self.extent]
+        mut named_by = [-1 for _i in 0..self.extent]
         mut pending = changed
         while !pending.is_empty() {
             let at = pending.pop()
-            if reached[at] { continue }
-            reached.set(at, true)
-            let readers = if at < base.length() { base.readers_at(at).concat(written[at]) } else { written[at] }
+            if reachable[at] { continue }
+            reachable.set(at, true)
+            let readers = self.readers_now(at, written)
             if !readers.all((r) -> place_below(r, self.extent)) { return null }
             for r in readers {
-                if reached[r] { continue }
-                if deciding[at] {
-                    let decided = decide(r)
-                    if decided == CUT_STANDS { continue }
-                    if decided == CUT_MOVED { deciding.set(r, true) }
-                }
-                pending.push(r)
+                if named_by[r] == at { continue }
+                named_by.set(r, at)
+                waiting.set(r, waiting[r] + 1)
+                if !reachable[r] { pending.push(r) }
             }
         }
+        named_by = [-1 for _i in 0..self.extent]
+        // Each place settled once all it reads among them are: reached, or cut off.
+        mut changed_here = [false for _i in 0..self.extent]
+        for c in changed { changed_here.set(c, true) }
+        mut reached = [false for _i in 0..self.extent]
+        mut met = [false for _i in 0..self.extent]
+        mut ready = [at for at in 0..self.extent if reachable[at] && waiting[at] == 0]
+        mut settled = 0
+        mut at_ready = 0
+        while at_ready < ready.length {
+            let at = ready[at_ready]
+            at_ready = at_ready + 1
+            settled = settled + 1
+            if changed_here[at] { reached.set(at, true) } else if met[at] && decide(at) != CUT_STANDS { reached.set(at, true) }
+            for r in self.readers_now(at, written) {
+                if named_by[r] == at { continue }
+                named_by.set(r, at)
+                if reached[at] { met.set(r, true) }
+                waiting.set(r, waiting[r] - 1)
+                if waiting[r] == 0 { ready.push(r) }
+            }
+        }
+        if settled != reachable.filter(it).length { return null }
         reached
+    }
+
+    /// The readers of `at` now: the base's, and each place a delta wrote whose reads name it.
+    fn readers_now(at: int, written: WrittenReaders) -> List<int> {
+        let own = [written.readers[i] for i in written.starts[at]..written.starts[at + 1]]
+        if at < self.base.columns.length() { self.base.columns.readers_at(at).concat(own) } else { own }
+    }
+
+    /// THE READERS DELTAS WROTE, laid flat: the places each delta's entry reads, turned round into
+    /// each place's readers, two lists of numbers however many places there are. Absent when a delta's
+    /// entry's reads don't lie within the frontier.
+    fn written_readers() -> WrittenReaders? {
+        mut count = [0 for _i in 0..self.extent + 1]
+        mut wrote: List<int> = []
+        mut read: List<int> = []
+        for o in self.overlaid.values() {
+            if o.delta == null { continue }
+            let reads? = self.reads_at(o.place) else { return null }
+            for r in reads {
+                count.set(r + 1, count[r + 1] + 1)
+                wrote.push(o.place)
+                read.push(r)
+            }
+        }
+        for at in 0..self.extent { count.set(at + 1, count[at + 1] + count[at]) }
+        mut filled = count
+        mut readers = [0 for _i in 0..wrote.length]
+        for i, r in read {
+            readers.set(filled[r], wrote[i])
+            filled.set(r, filled[r] + 1)
+        }
+        WrittenReaders { starts: count, readers: readers }
     }
 
     /// The way a change in `changed` reaches the place `to` by reading: a changed place first, each

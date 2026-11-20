@@ -81,6 +81,7 @@ use features.{
     valued_seat,
     stateless_seat,
     unshared_seat,
+    overshown_seat,
 }
 use features.fns.{
     cellless_seat,
@@ -933,7 +934,7 @@ fn seat_converted(f: Found, r: RefusedSeat, text: string) -> Found {
 }
 
 /// The text of the written item `at` of `file`; none past its items.
-fn item_text(engine: QueryEngine, file: SourceFileAddress, at: int) -> string { if at < item_count(engine, file) { item_under(engine, file, at).text } else { "" } }
+fn item_text(engine: QueryEngine, file: SourceFileAddress, at: int) -> string { if item_held(engine, file, at) { item_under(engine, file, at).text } else { "" } }
 
 /// `f` offering the conversion `c` where there is one: its help handed the voice last, its text the
 /// fix where `f` stands.
@@ -1755,7 +1756,7 @@ fn extern_valued_words(engine: QueryEngine, file: SourceFileAddress, r: RefusedS
 
 /// Where `file` declares the extern `name`, said beside a read of it: in its own item.
 fn extern_declared(engine: QueryEngine, file: SourceFileAddress, name: string) -> Aside {
-    let found = [Aside { label: DECLARED_HERE, at: sp!, item: i } for i in 0..item_count(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.extern_parts(s)?.name == name for sp in [item.store.stmt_span(s)] if sp != null]
+    let found = [Aside { label: DECLARED_HERE, at: sp!, item: i } for i in item_ids(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.extern_parts(s)?.name == name for sp in [item.store.stmt_span(s)] if sp != null]
     found.first() ?? Aside { label: DECLARED_HERE, at: null }
 }
 
@@ -3373,6 +3374,23 @@ export law seat_unshared {
 }
 
 fn unshared_words(a: List<string>) -> Voice { unshared_seat(a[0], a[2]) }
+
+fn seats_overshown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { handed_refused(engine, file, at, Unhanded.Overshown) }
+
+/// a member a component shows over one of its places, given beside a place for it
+export law seat_overshown {
+    kind: "type.seat"
+    reads: seats_overshown
+    voice: overshown_words
+    witness: "use @std.ui.components.{field}\n\nstate draft: string = \"\"\n\nlet f = field \"Name\" {\n    value: draft\n    shown: \"x\"\n}\n"
+}
+
+/// The words of a member shown over a placed place: its component, the member, and the place, which
+/// `a[2]` carries as `member place`.
+fn overshown_words(a: List<string>) -> Voice {
+    let both = a[2].split(" ")
+    overshown_seat(a[0], both[0], both[1])
+}
 
 /// one call handing two `mut` seats one place
 export law seat_handed_twice {

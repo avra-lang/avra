@@ -58,15 +58,7 @@ fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Use
     if !item.store.refusals().is_empty() { return [] }
     let lines = uses_written(item)
     if lines.is_empty() { return [] }
-    let before = flatten(
-        [[UseWritten {
-            at: if l.placed { Span { lo: l.lo, hi: l.hi } } else { null },
-            path: l.path,
-            items: l.items,
-            bound: l.bound,
-            exported: l.exported,
-        } for l in item_front(engine, file, k).uses] for k in 0..at],
-    )
+    let before = [UseWritten { at: null, path: l.path, items: l.items, bound: l.bound, exported: l.exported } for l in front_before(engine, file, at).uses]
     flatten([line_faults(engine, file, l, before.concat(lines.take(j))) for j, l in lines])
 }
 
@@ -217,7 +209,7 @@ export fn unread_in_module(
 ) -> Unread? {
     if module.package != file.package_name { return null }
     for f in module_files(engine, module.package, module.local, module.as_root) {
-        for i in 0..item_count(engine, f) {
+        for i in item_ids(engine, f) {
             let r? = read_item(engine, f, i).store.refusals().first() else { continue }
             let found = refused_found(r)
             let at = if found.at == null { null } else { span_of(file_placed(engine, f, i, kept_at(found.at)!)) }

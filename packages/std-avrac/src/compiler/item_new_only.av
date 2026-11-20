@@ -78,7 +78,7 @@ type FileNewOnly = { forms: List<NewOnly> }
 fn file_new_only(engine: QueryEngine, file: SourceFileAddress) -> FileNewOnly {
     if is_manifest(file) { return FileNewOnly { forms: [] } }
     FileNewOnly {
-        forms: forms_once(flatten([item_new_only(engine, file, at) for at in 0..item_count(engine, file)])),
+        forms: forms_once(flatten([item_new_only(engine, file, at) for at in item_ids(engine, file)])),
     }
 }
 
@@ -147,10 +147,11 @@ fn writes_never(t: TypeRef) -> bool {
 }
 
 /// Whether `e` writes fewer type arguments than what it names takes: a call of a declared fn, or a
-/// record's literal. Counts are read off the declarations, so this only sets a judge aside.
+/// record's literal; or writes any after a method's name. Counts are read off the declarations, so this only sets a judge aside.
 fn prefix_pinned(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) {
         .Call(callee, pins, _) -> !pins.is_empty() && pins.length < fn_type_params(engine, file, callee.of)?.length ?? 0,
+        .MethodCall(_, _, _) -> !store.struct_targs_of(e).is_empty(),
         _ -> {
             let written = store.struct_targs_of(e)
             let parts? = store.struct_lit_parts(e) else { return false }

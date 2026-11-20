@@ -13,6 +13,7 @@ use core.{flatten}
 use diagnostics.{new_source_file, spliced, Diag}
 use @std.errors.{Suggestion}
 use compiler.{avra}
+use testing.held.{entry_of, held_alone}
 
 /// What an applied remedy must come to — `becomes`.
 export enum Then {
@@ -771,13 +772,13 @@ fn unsound(s: Shown) -> bool {
         .Package(_) or .Built(_) or .Unread(_, _) or .Absent or .Beyond(_) -> "",
     }
     if text.is_empty() { return false }
-    let drawn = [d for d in avra().analyze(new_source_file("witness.av", text)).diagnostics if d.kind == s.code.kind]
+    let drawn = [d for d in held_alone(text).judged(entry_of("alone")).diagnostics if d.kind == s.code.kind]
     [spliced_fails(s.code.kind, text, d, sg) for d in drawn for sg in d.suggestions].any(it)
 }
 
 fn spliced_fails(kind: string, text: string, d: Diag, sg: Suggestion) -> bool {
     let after? = spliced(text, sg.edits) else { return true }
-    let out = avra().check(new_source_file("witness.av", after))
+    let out = held_alone(after).judged(entry_of("alone")).report()
     unreadable(out) || out.contains("[${kind}]: ${d.message}")
 }
 

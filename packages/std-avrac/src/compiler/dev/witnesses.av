@@ -17,8 +17,8 @@
 //! fired.
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
-use compiler.{avra, new_workspace, one_shot_let_go, Want}
-use compiler.host.{memory_host}
+use compiler.{avra}
+use testing.held.{empty_store, entry_of, held_alone}
 use @std.program.source_facts.{FileOctets}
 use testing.{
     held_at,
@@ -75,13 +75,11 @@ impl Witness {
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
 
-/// A package witness BUILT: derived through the door `avra build` takes, so it
-/// says what a build says — the refusal, or the warnings of a program that lowers.
+/// A package witness BUILT on the program layer, as `avra build` builds it: what its build says,
+/// then what making the program refuses — the refusal, or the warnings of a program that lowers.
 fn built_report(files: Map<string, string>) -> string {
-    one_shot_let_go()
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
-    ws.alone()
-    match ws.derived("/w/src/main.av", Want.Binary) { .Err(report) -> report, .Ok(d) -> d.warnings }
+    let j = held_at(files, "/w").judged_at("/w/src/main.av")
+    match j.made() { .Ok(_) -> j.report(), .Err(why) -> why }
 }
 
 /// One code's witness, run: what the compiler actually said, and
@@ -117,7 +115,7 @@ fn shown(c: DiagCode) -> Shown {
 /// reaches the code.
 export fn rendered_over(w: Witness) -> string {
     match w {
-        .Source(text) -> avra().check(new_source_file("witness.av", text)),
+        .Source(text) -> held_alone(text).judged(entry_of("alone")).report(),
         .Package(files) -> package_report(files),
         .Built(files) -> built_report(files),
         .Unread(files, unread) -> unread_report(files, unread),
@@ -165,20 +163,13 @@ fn package_text(files: Map<string, string>) -> string {
 /// program — never the witness itself, so a golden does not print it.
 fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.starts_with("/std/") }
 
-/// A package witness compiled: its files laid out in memory at `/w`,
-/// and what the program there says. One one-shot workspace is alive at a
-/// time, so the one before is let go.
+/// A package witness on the program layer: its files laid out in memory at `/w`, and what the
+/// program its entry runs says there — its manifests and package graph first — or, with no entry,
+/// where its entry says nothing, what a check of the whole package says.
 fn package_report(files: Map<string, string>) -> string {
-    one_shot_let_go()
-    let host = memory_host(files, files.keys())
-    let ws = new_workspace(
-        if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host },
-        "/w",
-        avra(),
-    )
-    ws.alone()
-    let entry: string? = if files.has("/w/src/main.av") { "/w/src/main.av" } else { null }
-    match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
+    let held = held_at(files, "/w")
+    let entered = if files.has("/w/src/main.av") { held.judged_at("/w/src/main.av").report() } else { "" }
+    if entered != "" { entered } else { held.checked_over(empty_store()) }
 }
 
 /// Every registered code's witness, as the files a program on disk holds: a lone source at
@@ -719,6 +710,20 @@ fn witnesses() -> List<CodeWitness> {
                     "an instance's component is another file's, which a lone source cannot import — the golden is features/components/tests/components_test.av",
                 ),
         },
+        CodeWitness {
+            code: "type.component_default",
+            witness: program_golden("state_member_default_reads_state"),
+        },
+        CodeWitness { code: "type.slot_shadows", witness: program_golden("builds_slot_shadows") },
+        CodeWitness { code: "ctx.unknown", witness: program_golden("ctx_unknown") },
+        CodeWitness { code: "ctx.where", witness: program_golden("ctx_set_at_top") },
+        CodeWitness { code: "ctx.required", witness: program_golden("ctx_required_unset") },
+        CodeWitness { code: "ctx.unread", witness: program_golden("builds_ctx_set_unread") },
+        CodeWitness { code: "ctx.cached", witness: program_golden("ctx_cached_untold") },
+        CodeWitness {
+            code: "ctx.old_path",
+            witness: Witness.Source("ctx depth: int = 0\n\nfn deep() -> int { ctx.depth }\n\ndeep()\n"),
+        },
         CodeWitness { code: "type.plan_residual", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plans_mismatch", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plan_scan", witness: Witness.Beyond(planned_golden) },
@@ -804,6 +809,13 @@ fn witnesses() -> List<CodeWitness> {
             witness: Witness
                 .Beyond(
                     "it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for",
+                ),
+        },
+        CodeWitness {
+            code: "manifest.no_manifest",
+            witness: Witness
+                .Beyond(
+                    "it names a directory handed to `check` that holds no manifest — a directory's own shape, which no lone source text can stand in for",
                 ),
         },
         CodeWitness { code: "source.missing", witness: unread_beside("missing") },
@@ -1674,6 +1686,15 @@ fn entry_program(main: string, others: Map<string, string>) -> Witness {
 
 /// A lawful manifest, for a witness to add one wrong line to.
 export const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// A kind only the program layer speaks: the run here is the old path's, in memory, so its golden is
+/// the program-refusal case `case`, which holds the program layer to its words on disk.
+fn program_golden(case: string) -> Witness {
+    Witness
+        .Beyond(
+            "only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/${case}",
+        )
+}
 
 /// A package witness whose program sees `@std/meta`, vendored in memory.
 export fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }

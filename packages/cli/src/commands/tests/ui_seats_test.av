@@ -1,0 +1,49 @@
+//! `@derive(View)` over primitives that keep a place, one mistake each, beside one that keeps it
+//! well: a member a place's default reads stands, two events may set one place, and every mark
+//! the derive reads is refused where it cannot hold — on a primitive at its member, and on a
+//! component that is no primitive at all. `avra_ran` and `scratch_dir` are the neighbouring tests'.
+use @std.io.{make_dirs, write_text}
+use @std.meta.{embed}
+use @std.time.{stamp}
+
+/// Primitives that keep a place: one well formed, the rest each wrong once.
+const seat_parts: string = embed("ui_view/seat_parts.txt")
+
+/// A program instancing the well-formed one.
+const seat_main: string = embed("ui_view/seat_main.txt")
+
+/// What `avra check` says about the package, once.
+once fn seated_check() -> string {
+    let root = "${scratch_dir()}/ui_seats_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"ui_seats\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/parts.av", seat_parts)
+    let _ = write_text("${root}/src/main.av", seat_main)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> "the check did not run" }
+}
+
+/// Every refusal the run spoke, in order.
+fn seat_refusals() -> List<string> { [l for l in seated_check().split("\n") if l.starts_with("error[")] }
+
+/// Every refusal the fixture owes, in the order written.
+const seats_owed = [
+    "error[@std/ui:unprojected]: a primitive says what each member projects to, and `spare` says nothing",
+    "error[@std/ui:over]: what is shown over `value` is told each paint and may be left out, and `shown` is `int?`",
+    "error[@std/ui:over]: `also` is marked `@over(nothing)`, and `nothing` is no `state` member of this primitive",
+    "error[@std/ui:over]: `value` is shown under one member, and `shown` is already shown over it",
+    "error[@std/ui:sets]: `change` says `int`, and the place it sets, `checked`, is `bool`",
+    "error[@std/ui:sets]: `reset` sets `checked` to `7`, and `checked` is `bool`",
+    "error[@std/ui:sets]: `clear` sets `gone`, and `gone` is no `state` member of this primitive",
+    "error[@std/ui:stateful-primitive]: a primitive keeps a place its own gesture moves, and no event of it sets `checked`",
+    "error[@std/ui:marked-composition]: a composition projects nothing of its own, and `shown` is marked `@over`",
+    "error[annotation.unread_mark]: every mark is read by something that claims it",
+]
+
+spec "@derive(View) — a primitive that keeps a place" {
+    given "one mistake per member, beside a primitive that keeps its place well" {
+        then "is refused once per mistake, in these words and no others" { seat_refusals().join("\n") == seats_owed.join("\n") }
+        then "says nothing of the well-formed one: its seed, its shown member, its two setting events" {
+            !seated_check().contains("`good`") && !seated_check().contains("`initial`")
+        }
+    }
+}

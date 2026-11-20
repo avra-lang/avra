@@ -12,9 +12,8 @@
 //! (features/components/lower.av's `augmented`), never a second read
 //! of the declaration's own annotations.
 use core.{root_of, flatten, fp_list, list_eq, some_list}
-use features.{Code, Fix, Fixes, Decl, Decls, Analysed}
-use compiler.{analyze_source, Analysis, avra, new_workspace, one_shot_let_go}
-use compiler.host.{memory_host}
+use features.{Code, Fix, Fixes, Decl, Decls}
+use testing.held.{Held, RuleItem, held_alone, held_at}
 use compiler.lower.{component_root_kind}
 use diagnostics.{spliced}
 
@@ -29,96 +28,85 @@ fn first_of(applied: fn(Code) -> Fix?, cs: List<Code>) -> Fix? {
     nearest_fix(applied, hit) ?? first_of(applied, cs.slice(1, cs.length))
 }
 
-/// EVERY top-level statement of the example, each at its own root: an
-/// expression statement stands as its expression (the same reduction a
-/// rule's own pattern root takes, `core.root_of`), every other
-/// statement as itself. An example that leads with a `type` or an
-/// `impl` is setup the fn under test needs, so the walk starts at every
-/// statement and reaches the fn wherever it sits; empty only for text
-/// that parsed to no statement at all (an @fixes/@keeps whose text does
-/// not parse is the honest miss it looks like, never a crash).
-/// ONE TEXT, ONE TREE (avra-8sb5.25.21): a quote pattern's own body
-/// takes the same tail law a program's does (`features/quote/
-/// builders.av`'s `build_quote`), so a both-branches-answering
-/// `if`/`else` is `Expr.If` on both sides of a match — the pattern
-/// and a bare example alike — and no shielding is owed here for it.
-export fn example_roots(a: Analysis) -> List<Code> {
-    [a.code_at(root_of(a.view.store, s)) for s in a.view.stmts]
+/// The top-level roots of an example's items, each as a rule's code: what a fix is tried on.
+export fn example_roots(items: List<RuleItem>) -> List<Code> {
+    [held_code(i.file, root_of(i.file.view.store, s)) for i in items for s in i.stmts]
 }
 
-/// An example's whole program as ONE fold: each top-level statement
-/// folds to one value, then the list folds — so the boundary between
-/// two statements is recorded, and a text that differs only in a
-/// trailing statement cannot pass for its sibling. Absent for text
-/// that parsed to nothing.
-fn example_fp(a: Analysis) -> int? {
-    if a.view.stmts.is_empty() { return null }
-    fp_list([a.view.store.subtree_fp(root_of(a.view.store, s)) for s in a.view.stmts])
+/// An example's fingerprint: its items' roots, folded in order; none for an example with none.
+fn example_fp(items: List<RuleItem>) -> int? {
+    let roots = [i.file.view.store.subtree_fp(root_of(i.file.view.store, s)) for i in items for s in i.stmts]
+    if roots.is_empty() { return null }
+    fp_list(roots)
 }
 
-/// The first hit `applied` finds under any of `roots`, in order.
 fn nearest_fix_in(applied: fn(Code) -> Fix?, roots: List<Code>) -> Fix? {
     let r? = roots.first() else { return null }
     nearest_fix(applied, r) ?? nearest_fix_in(applied, roots.slice(1, roots.length))
 }
 
-/// The example's program: a lone source, or — when it names files —
-/// the entry of the package those files complete, under a lawful
-/// manifest. One one-shot workspace is alive at a time, so the one
-/// before is let go.
-fn example_analysis(before: string, files: Map<string, string>) -> Analysis {
-    if files.is_empty() { return analyze_source(before) }
+/// An example as the program layer holds it: a lone source, or — where it names `files` — the
+/// main of a package of them.
+fn example_held(before: string, files: Map<string, string>) -> Held {
+    if files.is_empty() { return held_alone(before) }
     mut all = files
     all.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
     all.set("/w/src/main.av", before)
-    one_shot_let_go()
-    let ws = new_workspace(memory_host(all, all.keys()), "/w", avra())
-    ws.alone()
-    ws.analyze_file("/w/src/main.av")
+    held_at(all, "/w")
 }
 
-/// Whether `rule`, applied to `before`, answers a rewrite whose
-/// rendered text — re-parsed — is span-blind equal to `after`.
+/// Where an example's main stands in what holds it.
+fn example_main(files: Map<string, string>) -> string { if files.is_empty() { "/alone/src/main.av" } else { "/w/src/main.av" } }
+
+/// What a rule reads of each item of an example's main, judged on the program layer.
+fn example_files(before: string, files: Map<string, string>) -> List<RuleItem> {
+    let held = example_held(before, files)
+    held.judged_at(example_main(files)).rule_items(example_main(files))
+}
+
+/// Whether the fix `applied` makes of `before` renders as `after`, root for root.
 export fn checks_fixes(
     applied: fn(Code) -> Fix?,
     before: string,
     after: string,
     files: Map<string, string> = {},
 ) -> bool {
-    let roots = example_roots(example_analysis(before, files))
+    let roots = example_roots(example_files(before, files))
     let hit? = nearest_fix_in(applied, roots) else { return false }
     let text? = hit.rendered() else { return false }
     same_fingerprint(text, after)
 }
 
-/// Whether the rule answers nothing anywhere in `before`.
+/// Whether `applied` fixes nothing in `before`.
 export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
-    nearest_fix_in(applied, example_roots(analyze_source(before))) == null
+    nearest_fix_in(applied, example_roots(example_files(before, {}))) == null
 }
 
-/// An `@fixes(before)` example with no "after": the rule answers a
-/// `Fix.Delete` at `before`'s nearest hit, and deleting what it names
-/// (`rule_delete.av`'s `delete_edits` — the SAME builder `avra fix`
-/// splices) leaves a file that still analyses clean. There is no
-/// rewritten form to fingerprint against, unlike `checks_fixes`.
+/// Whether the delete `applied` makes of `before`, spliced as the layer's own fix splices it
+/// (`held_delete_edits`), leaves a program the layer judges clean.
 export fn checks_delete(applied: fn(Code) -> Fix?, before: string, files: Map<string, string> = {}) -> bool {
-    let a = example_analysis(before, files)
-    let hit? = nearest_fix_in(applied, example_roots(a)) else { return false }
-    let what? = deleted(hit) else { return false }
-    let edits? = delete_edits(
-        Analysed { view: a.view, names: a.names, facts: a.facts },
-        a.view.source.text,
-        what,
-    ) else {
-        return false
-    }
-    let after? = spliced(a.view.source.text, edits) else { return false }
-    example_analysis(after, files).clean()
+    let items = example_files(before, files)
+    let found? = items.find_map((i) -> example_roots([i]).find_map((r) -> nearest_code(applied, r))) else { return false }
+    let item? = items.find((i) -> example_roots([i]).any((r) -> nearest_code(applied, r) != null)) else { return false }
+    let hit? = applied(found) else { return false }
+    if deleted(hit) == null { return false }
+    let edits = [e with { loc: e.loc with { lo: e.loc.lo + item.start, hi: e.loc.hi + item.start } } for e in held_delete_edits(found.of, found.at)]
+    if edits.is_empty() { return false }
+    let after? = spliced(before, edits) else { return false }
+    example_held(after, files).judged_at(example_main(files)).clean()
 }
 
+/// The code at or under `root` where `applied` first makes a fix, in the order `nearest_fix` tries
+/// them.
+fn nearest_code(applied: fn(Code) -> Fix?, root: Code) -> Code? {
+    if applied(root) != null { return root }
+    root.kids().find_map((k) -> nearest_code(applied, k))
+}
+
+/// Whether two sources' examples fingerprint alike.
 fn same_fingerprint(rendered: string, after: string) -> bool {
-    let r? = example_fp(analyze_source(rendered)) else { return false }
-    let a? = example_fp(analyze_source(after)) else { return false }
+    let r? = example_fp(example_files(rendered, {})) else { return false }
+    let a? = example_fp(example_files(after, {})) else { return false }
     r == a
 }
 
@@ -167,40 +155,41 @@ export fn example_gaps(entries: List<RuleEntry>) -> List<ExampleGap> {
 
 /// Every example a GIVEN walk leaves partly unexamined — the keeper's
 /// own door, so a test can hand it a narrow walk and watch it refuse.
-export fn coverage_gaps(entries: List<RuleEntry>, walk: fn(Analysis) -> List<Code>) -> List<
+export fn coverage_gaps(entries: List<RuleEntry>, walk: fn(List<RuleItem>) -> List<Code>) -> List<
     ExampleGap,
 > {
     flatten([rule_example_gaps(walk, r) for r in entries])
 }
 
-fn rule_example_gaps(walk: fn(Analysis) -> List<Code>, r: RuleEntry) -> List<ExampleGap> {
+fn rule_example_gaps(walk: fn(List<RuleItem>) -> List<Code>, r: RuleEntry) -> List<ExampleGap> {
     let kept = [kept_gap(walk, r, i, k) for i, k in r.keeps]
     let fixed = [fix_gap(walk, r, i, f) for i, f in r.fixes]
     flatten([some_list(g) for g in kept.concat(fixed)])
 }
 
-fn kept_gap(walk: fn(Analysis) -> List<Code>, r: RuleEntry, i: int, before: string) -> ExampleGap? {
+fn kept_gap(walk: fn(List<RuleItem>) -> List<Code>, r: RuleEntry, i: int, before: string) -> ExampleGap? {
     example_gap(walk, r, "keeps ${i}", before, {})
 }
 
-fn fix_gap(walk: fn(Analysis) -> List<Code>, r: RuleEntry, i: int, f: Fixes) -> ExampleGap? {
+fn fix_gap(walk: fn(List<RuleItem>) -> List<Code>, r: RuleEntry, i: int, f: Fixes) -> ExampleGap? {
     example_gap(walk, r, "fixes ${i}", f.before, f.files)
 }
 
 /// One example's gap, judged by the walk it is given: absent when the
 /// walk covers every top-level statement the example parses to.
 fn example_gap(
-    walk: fn(Analysis) -> List<Code>,
+    walk: fn(List<RuleItem>) -> List<Code>,
     r: RuleEntry,
     example: string,
     before: string,
     files: Map<string, string>,
 ) -> ExampleGap? {
-    let a = example_analysis(before, files)
-    if a.view.stmts.is_empty() {
+    let items = example_files(before, files)
+    let statements = [i.stmts.length for i in items].sum()
+    if statements == 0 {
         return ExampleGap { rule: rule_id(r), example: example, lack: ExampleLack.NoStatement }
     }
-    if walk(a).length >= a.view.stmts.length { return null }
+    if walk(items).length >= statements { return null }
     ExampleGap { rule: rule_id(r), example: example, lack: ExampleLack.NotReached }
 }
 

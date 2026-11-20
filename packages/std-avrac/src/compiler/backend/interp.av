@@ -171,11 +171,18 @@ type Machine = {
     // the tasks a timer ends that have not ended, by place: the heap
     // ends each where its time comes, and the machine hears it here
     clocked: List<int> = [],
+    // the recordings of what open queries hear of contexts while no task stands: a run at compile
+    // time, which files no task, keeps them here rather than in a task's slot
+    loose_heard: Val = Val.N,
     arrays: List<List<Val>>,
     // an aggregate's reference count, index-aligned with `arrays`:
     // a box holds one on creation, Retain/Release move it, and zero
     // frees the box, releasing everything it holds; -1 never dies
     counts: List<int>,
+    // the cell of an aggregate marked as its frame of contexts (the
+    // runtime's `MARK_FRAME`), by the aggregate's handle: the one cell a
+    // reframe replaces. Only a box that carries a frame is here.
+    frame_cells: Map<string, int> = {},
     // the array ids freed and not yet handed out again
     spare: Spares,
     // whether a box at zero is FREED. A standalone program run — the
@@ -1348,6 +1355,7 @@ impl Machine {
             .Unwinding -> Val.B(self.running >= 0 && avra_vtask_unwinding(self.tasks[self.running].vt) != 0),
             .Tick -> Val.B(true),
             .Frame -> self.ctx_frame(),
+            .Heard -> self.ctx_heard_now(),
         }
     }
 
@@ -2041,7 +2049,17 @@ impl Machine {
             .CtxBack -> self.ctx_back_val(),
             .CtxFrame -> self.ctx_frame_val(),
             .CtxEnter -> self.ctx_enter_val(vals),
+            .CtxFramePushed -> self.ctx_frame_pushed_val(vals),
             .CtxReframed -> self.ctx_reframed_val(vals),
+            .CtxHeard -> self.ctx_heard_val(vals),
+            .CtxListen -> self.ctx_listen_val(),
+            .CtxListened -> self.ctx_listened_val(),
+            .CtxHolds -> self.ctx_holds_val(vals),
+            .CtxHeardDrop -> {
+                self.releases_val(vals[0])
+                Val.I(0)
+            },
+            .CtxReheard -> self.ctx_reheard_val(vals),
             .TaskId -> self.task_id_val(),
             .TaskEndedBy -> self.task_ended_by_val(vals),
             .UnwindPush -> self.unwind_push_val(vals),
@@ -2381,6 +2399,7 @@ impl Machine {
         }
         self.arrays.set(id, elems)
         self.counts.set(id, 1)
+        if self.frame_cells.length > 0 { self.frame_cells.remove(Val.A(id).handle()) }
         Val.A(id)
     }
 
@@ -2597,7 +2616,12 @@ impl Machine {
         match v {
             // a word is its own copy
             .F(_) -> v,
-            .A(id) -> { self.shared_array([x for x in self.arrays[id]]) },
+            .A(id) -> {
+                let copy = self.shared_array([x for x in self.arrays[id]])
+                let at = self.frame_cells.get(v.handle())
+                if at != null { self.frame_cells.set(copy.handle(), at!) }
+                copy
+            },
             .M(id) -> self.map_copy(id),
             .I(_) or .B(_) or .S(_) or .Y(_) or .P(_) or .C(_) or .N or .Gone -> v,
         }

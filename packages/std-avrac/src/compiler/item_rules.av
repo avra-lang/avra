@@ -102,7 +102,7 @@ export type KeptDiag = {
 export fn file_rule_rows(engine: QueryEngine, program: string, file: SourceFileAddress) -> FileRuleRows {
     let src = rule_source(engine, file)
     let facts = flatten(
-        [item_fact_findings(engine, program, file, at, src) for at in 0..item_count(engine, file)],
+        [item_fact_findings(engine, program, file, at, src) for at in item_ids(engine, file)],
     )
         .concat(
             [found_placed(found_in_file(engine, file, i.at, f), src) for i in entry_fact_found(engine, file).items for f in i.found],
@@ -119,7 +119,7 @@ fn file_syntax_findings(engine: QueryEngine, file: SourceFileAddress, source: So
 > {
     let back = read_back(
         source.file,
-        [placed_item(engine, file, item_under(engine, file, at), item_start(engine, file, at)) for at in 0..item_count(engine, file)],
+        [placed_item(engine, file, item_under(engine, file, at), item_start(engine, file, at)) for at in item_ids(engine, file)],
     )
     placed_syntax_findings(
         SyntaxFile { view: SyntaxView { store: back.store, source: source } },
@@ -128,7 +128,7 @@ fn file_syntax_findings(engine: QueryEngine, file: SourceFileAddress, source: So
     )
         .concat(
             flatten(
-                [item_syntax_findings(engine, file, at, source) for at in 0..item_count(engine, file)],
+                [item_syntax_findings(engine, file, at, source) for at in item_ids(engine, file)],
             ),
         )
 }
@@ -410,7 +410,7 @@ export type SeatFns = { names: List<string> }
 export fn file_seat_fns(engine: QueryEngine, file: SourceFileAddress) -> SeatFns {
     SeatFns {
         names: flatten(
-            [seat_fns_of(item.store, item.stmts) for at in 0..item_count(engine, file) for item in [read_item(engine, file, at)]],
+            [seat_fns_of(item.store, item.stmts) for at in item_ids(engine, file) for item in [read_item(engine, file, at)]],
         ),
     }
 }
@@ -488,8 +488,7 @@ export type DeclKeys = { keys: List<string> }
 /// field's mark. A `use` line's own names are no read.
 @query
 export fn file_reads(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
-    let items = item_count(engine, file) + file_generated(engine, file).items.length
-    let read = [r for at in 0..items for r in names_read(read_item(engine, file, at).store)]
+    let read = [r for at in every_item_id(engine, file) for r in names_read(read_item(engine, file, at).store)]
     DeclKeys {
         keys: distinct(
             [decl_key(d!) for r in read for d in [read_declaration(engine, file, r)] if d != null],
@@ -511,8 +510,7 @@ fn read_declaration(engine: QueryEngine, file: SourceFileAddress, r: ReadName) -
 /// key once a call.
 @query
 export fn file_calls(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
-    let items = item_count(engine, file) + file_generated(engine, file).items.length
-    let calls = [r for at in 0..items for r in calls_written(read_item(engine, file, at).store)]
+    let calls = [r for at in every_item_id(engine, file) for r in calls_written(read_item(engine, file, at).store)]
     DeclKeys {
         keys: [decl_key(d!) for r in calls for d in [read_declaration(engine, file, r)] if d != null],
     }

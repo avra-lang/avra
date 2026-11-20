@@ -6,7 +6,11 @@
 //! prunes it down to sites still found — never grows it (idiom_baseline.av).
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
-use @std.path.{relative_path, under_dir}
+use @std.path.{dir_of, joined_path, relative_path, under_dir}
+use @std.avrac.compiler.host.{no_manifest, no_source}
+use @std.avrac.diagnostics.{render_among}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
 use @std.relation.engine.{count_reads}
 use @std.avrac.compiler.{Checked, Finding, work_counts, work_whole_reads, work_whys}
 
@@ -31,6 +35,14 @@ impl Runnable for CheckCmd {
 /// path's own rule (`file_home`), or, belonging to none, a package of that one file — checked as the
 /// old `check` says it, held to its baseline where one is named.
 fn program_door_checked(args: CliResult, path: string) -> int {
+    if is_a_dir(path) {
+        let dir = rooted(path)
+        if !exists_at(joined_path(dir, "avra.toml")) {
+            println(render_among(no_manifest(dir, package_root(dir_of(dir))), []))
+            return 1
+        }
+        if !is_a_dir(joined_path(dir, "src")) { return root_programs_checked(args, dir) }
+    }
     let net = net_said([path], NetJudge.Check)
     let disk? = checked_disk(path) else { return std_unfound() }
     disk_checked(
@@ -42,6 +54,25 @@ fn program_door_checked(args: CliResult, path: string) -> int {
         args.has_flag("counts"),
         args.has_flag("read_lists"),
     )
+}
+
+/// A package root with no `src/`: each source file directly in it checked as `check` checks that file
+/// alone, the worst exit theirs — or, holding none, refused: nothing was checked.
+fn root_programs_checked(args: CliResult, dir: string) -> int {
+    let names = sorted_by(
+        [n for n in names_at(dir) ?? [] if n.ends_with(".av")],
+        (a, b) -> text_before(a, b),
+    )
+    if names.is_empty() {
+        println(render_among(no_source(dir), []))
+        return 1
+    }
+    mut worst = 0
+    for n in names {
+        let code = program_door_checked(args, joined_path(dir, n))
+        if code > worst { worst = code }
+    }
+    worst
 }
 
 /// The program `check` of `path` reads on the program layer; absent where no std stands beside this

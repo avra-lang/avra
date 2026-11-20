@@ -1,9 +1,8 @@
-// `avra check`'s whole-program answer, kept across processes: each `checked_at`
-// mints a fresh Workspace, so two calls over one root are two processes sharing
-// only the store.
+// `avra check`'s answer, kept across processes: each check is a process of its own, the compiler
+// run as a user runs it on the program layer (`layer_checked`), so two checks over one root share
+// only the store — and a warm check says what a cold one says.
 use @std.io.{make_dirs, write_text, remove}
 use @std.time.{stamp}
-use commands.{checked_at}
 
 /// One directory per run, so no earlier run's cache answers for this one.
 once fn run_base() -> string { "/tmp/avra-check-reuse-test/${stamp()}" }
@@ -33,9 +32,12 @@ fn warned_pkg(name: string) -> string {
 const PAIR: string = "export type P = { x: int }\nimpl P {\n    fn w() -> int {\n        self.x = 1\n        1\n    }\n}\n"
 const WARNS: string = "export fn u(p: P) -> int { p.w() }\n"
 
-/// `check` of `r` after `edit`, reused and saying `words`.
-fn reused_saying(r: string, words: string) -> bool {
-    match checked_at(r) { .Ok(c) -> c.reused && c.warnings.contains(words), .Err(_) -> false }
+/// `check` of `r` saying `words`. Whether a check after an edit is answered whole from the store was
+/// the old path's mechanism (its whole-program verdict kept); the program layer reads an edited file
+/// again by design, and how little it works then is the edit witnesses' (gate edit-*), so a case here
+/// holds what the check SAYS.
+fn saying(r: string, words: string) -> bool {
+    match layer_checked(r) { .Ok(c) -> c.warnings.contains(words), .Err(_) -> false }
 }
 
 /// A library of `files` under a root of its own, checked once before `edit` lands and once
@@ -62,7 +64,7 @@ fn attacked_pkg(name: string, files: Map<string, string>) -> string {
 }
 
 fn said_at(r: string) -> string {
-    match checked_at(r) {
+    match layer_checked(r) {
         .Ok(c) -> "ok ${c.warnings.replace(r, "<root>")}",
         .Err(why) -> "refused ${why.replace(r, "<root>")}",
     }
@@ -227,39 +229,39 @@ spec "cli check_reuse" {
         }
     }
     given "a checked package, a comment added to one file" {
-        then "the check is reused and its warning prints on the line it moved to" {
+        then "its warning prints on the line it moved to" {
             let r = warned_pkg("comment-above")
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/b.av", "// note\n// note\n${WARNS}")
-            reused_saying(r, "b.av:3")
+            saying(r, "b.av:3")
         }
         then "a comment in another file leaves the warning on its line" {
             let r = warned_pkg("comment-beside")
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/a.av", "// note\n${PAIR}")
-            reused_saying(r, "b.av:1")
+            saying(r, "b.av:1")
         }
-        then "a comment at a clean file's end keeps it reused" {
+        then "a comment at a clean file's end leaves it clean" {
             let r = two_file_pkg("comment-end")
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/a.av", "export fn f() -> int {\n    1\n}\n// note\n")
-            match checked_at(r) { .Ok(c) -> c.reused, .Err(_) -> false }
+            match layer_checked(r) { .Ok(c) -> c.warnings == "", .Err(_) -> false }
         }
-        then "a second comment edit is reused too" {
+        then "a second comment edit moves its warning again" {
             let r = warned_pkg("comment-twice")
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/b.av", "// one\n${WARNS}")
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/b.av", "// one\n// two\n// three\n${WARNS}")
-            reused_saying(r, "b.av:4")
+            saying(r, "b.av:4")
         }
     }
     given "a checked package, a token moved in a comment's clothes" {
         then "a commented-out call is no comment edit: the check reads the file again" {
             let r = warned_pkg("comment-out")
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/b.av", "export fn u(p: P) -> int { // p.w()\n    1\n}\n")
-            match checked_at(r) {
+            match layer_checked(r) {
                 .Ok(c) -> !c.reused && !c.warnings.contains("writes through"),
                 .Err(_) -> false,
             }
@@ -268,25 +270,25 @@ spec "cli check_reuse" {
     given "a checked package, then checked again unchanged" {
         then "the second check reuses the whole-program answer" {
             let r = two_file_pkg("unchanged")
-            let _ = checked_at(r)
-            match checked_at(r) { .Ok(c) -> c.reused, .Err(_) -> false }
+            let _ = layer_checked(r)
+            match layer_checked(r) { .Ok(c) -> c.reused, .Err(_) -> false }
         }
     }
     given "a checked package, one file edited, checked a third time" {
-        then "a body rewritten answers from the verdict with only its file read again" {
+        then "a body rewritten checks clean, as it did" {
             let r = two_file_pkg("one-edited")
-            let _ = checked_at(r)
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/b.av", "export fn g() -> int {\n    f() + 2\n}\n")
-            match checked_at(r) { .Ok(c) -> c.reused, .Err(_) -> false }
+            match layer_checked(r) { .Ok(c) -> c.warnings == "", .Err(_) -> false }
         }
         then "a further, truly unchanged check reuses the whole program again" {
             let r = two_file_pkg("one-edited-again")
-            let _ = checked_at(r)
-            let _ = checked_at(r)
+            let _ = layer_checked(r)
+            let _ = layer_checked(r)
             let _ = write_text("${r}/src/b.av", "export fn g() -> int {\n    f() + 2\n}\n")
-            let _ = checked_at(r)
-            match checked_at(r) { .Ok(c) -> c.reused, .Err(_) -> false }
+            let _ = layer_checked(r)
+            match layer_checked(r) { .Ok(c) -> c.reused, .Err(_) -> false }
         }
     }
 }

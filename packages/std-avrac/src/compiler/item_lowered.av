@@ -299,7 +299,8 @@ fn signed_lowered(
         file,
         name,
         settled_unit_name(name, parameters, settled),
-        body_written_at(engine, file, signed),
+        signed.item.store.expr_span(signed.body),
+        signed.item.at,
     ), names: NamesRead { reads: body.reads }, roots: [body.body] }
     cx.unbroken = wears_meta(engine, file, signed.item.store, signed.stmt, UNBROKEN)
     if signed.receiver != null { cx.seated_written(RECEIVER, signed.receiver!.filled(fills), signed.receiver_written) }
@@ -451,17 +452,6 @@ fn bound_fills(parameters: List<ParameterLayout>) -> Map<string, SignedType> {
     found
 }
 
-/// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
-/// of the program as it lowers, the lambdas it lifts, the data it lays out and the types it tags
-/// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
-/// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
-/// in it.
-/// Where the body `signed` writes stands in `file`; absent for one no source spans.
-fn body_written_at(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> Span? {
-    let written? = signed.item.store.expr_span(signed.body) else { return null }
-    span_in_file(engine, file, signed.item, written)
-}
-
 /// `span`, counted from the start of the item `frame` of `file`, counted from the file's start; as it
 /// is where `frame` is absent, a span of a store read at its file's places.
 fn in_file(engine: QueryEngine, file: SourceFileAddress, frame: int?, span: Span) -> Span {
@@ -488,6 +478,11 @@ fn written_site(
     "${file.package_name}/${path}:${new_source_file(file.path_in_package, text).linecol(at.lo).line}"
 }
 
+/// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
+/// of the program as it lowers, the lambdas it lifts, the data it lays out and the types it tags
+/// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
+/// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
+/// in it.
 fn lowered_program(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -540,6 +535,7 @@ fn lowered_program(
         data: data,
         literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, unit, e, ty, frame),
         traits: (ty: SignedType) -> trait_members(engine, ty),
+        placed: (ty: SignedType) -> trait_placed(engine, ty),
         type_symbol: (ty: SignedType) -> type_symbol(ty),
         tagged: tagged,
         wrappers: wrappers,
@@ -635,16 +631,18 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
 }
 
 /// The `Frame` an unwind out of the unit `unit` pushes: its label the name its body is declared by,
-/// its place the body's span in `file`, laid out as the binary's data, the place first. Absent for a
-/// body no source spans.
-fn unwind_frame(file: SourceFileAddress, label: string, unit: string, at: Span?) -> Static? {
+/// its place the body's span in `file`, counted from the start of the item `item` where one holds it,
+/// laid out as the binary's data, the place first. Absent for a body no source spans.
+fn unwind_frame(file: SourceFileAddress, label: string, unit: string, at: Span?, item: int?) -> Static? {
     let span? = at else { return null }
     let site = StaticBox
         .Slots([Slot.Text(spelled_file(file)), Slot.Int(span.lo), Slot.Int(span.hi)])
     Static {
         name: "frame\$${declared_symbol(file, unit)}",
         boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])],
+        home: template_home(file),
         debug: true,
+        at_item: item,
     }
 }
 
@@ -1365,6 +1363,21 @@ fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
         },
     } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
 }
+
+/// Whether the trait a `dyn` of `ty` names wears `@std/meta`'s `placed`.
+fn trait_placed(engine: QueryEngine, ty: SignedType) -> bool {
+    let at? = declared_at(ty) else { return false }
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return false }
+    item
+        .stmts
+        .any(
+            (s) -> item.store.trait_parts(s)?.name == at.name &&
+                wears_meta(engine, at.file, item.store, s, PLACED),
+        )
+}
+
+/// The `@std/meta` mark a trait whose boxes are drawn under the frame they were placed under wears.
+const PLACED: string = "placed"
 
 /// The symbol the type `ty` names is known by: a declared type's, or a word the language owns under
 /// the language's own name; absent for any other.
