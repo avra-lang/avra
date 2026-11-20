@@ -215,14 +215,46 @@ fn valued(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Typ
 /// the driver brings each hungry lambda here with the seat that
 /// starved it, if one did.
 export fn unfed_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId?) {
+    if cx.facts.spoke_unfed(e) { return }
+    cx.facts.mark_unfed(e)
     let name = first_param_name(cx, e)
-    if seat == null { return never_heard(cx, e, name) }
+    if seat == null { return never_heard(cx, e, name, "int") }
     let at = seat!
+    let open: BareSeat? = bare_seat(cx, e, at)
+    if open != null { return never_heard(cx, e, open!.name, cx.view.types.name_of(open!.seat)) }
     if name == "it" && cx.view.types.arrow_parts(at) != null { return pronoun_unseated(cx, e, at) }
     if name == "it" { return pronoun_starved(cx, e, at) }
     if cx.view.types.arrow_parts(at) != null { return misfit_lambda(cx, e, at) }
     if cx.view.store.written_as_block(e) { return block_at_scalar(cx, e, at) }
     lambda_at_scalar(cx, e, at)
+}
+
+/// A lambda's bare parameter, and the seat its slot holds there.
+type BareSeat = { name: string, seat: TypeId }
+
+/// The first bare parameter of a lambda, under a slot `at` of its arity,
+/// whose seat a type variable still leaves open.
+fn bare_seat(cx: TypeCx, e: ExprId, at: TypeId) -> BareSeat? {
+    let arrow? = cx.view.types.arrow_parts(at) else { return null }
+    let parts? = cx.view.store.lambda_parts(e) else { return null }
+    if parts.params.length != arrow.seats.length { return null }
+    for j, pp in parts.params {
+        if pp.ty == null && opens(cx, arrow.seats[j]) { return BareSeat { name: pp.name.of.text(), seat: arrow.seats[j] } }
+    }
+    null
+}
+
+/// Whether a type variable stands anywhere in `ty`.
+fn opens(cx: TypeCx, ty: TypeId) -> bool {
+    match cx.view.types.shape_of(ty) {
+        .Var(_, _, _) -> true,
+        .List(inner) or .Cell(inner) or .Task(inner) or .Opt(inner) -> opens(cx, inner),
+        .Map(k, v) or .Res(k, v) -> opens(cx, k) || opens(cx, v),
+        .App(_, _, args) -> args.any((a) -> opens(cx, a)),
+        .Fn(ps, _, ret) -> ps.any((p) -> opens(cx, p)) || opens(cx, ret),
+        .Union(members) -> members.any((m) -> opens(cx, m)),
+        _ -> false,
+    }
 }
 
 fn first_param_name(cx: TypeCx, e: ExprId) -> string {
@@ -260,14 +292,17 @@ fn offered_list(names: List<string>) -> string {
     names.map("`${it}`").join(", ")
 }
 
-fn never_heard(mut cx: TypeCx, e: ExprId, name: string) { cx.emit(said_as("type.lambda", cx.loc_of(e), lambda_seat_unheard(name))) }
+fn never_heard(mut cx: TypeCx, e: ExprId, name: string, shown: string) {
+    cx.emit(said_as("type.lambda", cx.loc_of(e), lambda_seat_unheard(name, shown)))
+}
 
-/// A lambda's seat `name` wearing no type, where no slot gives it one.
-export fn lambda_seat_unheard(name: string) -> Voice {
+/// A lambda's seat `name` wearing no type, where no slot gives it one;
+/// `shown` is the seat as its slot spells it, the help's example.
+export fn lambda_seat_unheard(name: string, shown: string = "int") -> Voice {
     Voice {
         message: "`${name}` needs a type — this lambda's slot tells it nothing",
         label: "in this lambda",
-        help: "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats",
+        help: "annotate — `(${name}: ${shown}) -> …` — or hand the lambda to a slot that knows its seats",
     }
 }
 

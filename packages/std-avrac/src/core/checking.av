@@ -479,8 +479,9 @@ export enum HoleFault {
 export enum LambdaFault {
     /// Two of the lambda's seats wear the name `name`.
     SeatTwice(name: string)
-    /// The lambda's seat `name` wears no type, and no slot gives it one.
-    Unheard(name: string)
+    /// The lambda's seat `name` wears no type, and no slot gives it one: `shown` is the seat as its
+    /// slot spells it, a type variable still open in it, or `int` where there is no slot.
+    Unheard(name: string, shown: string)
     /// The lambda stands in a seat of `seat`, which takes no fn: a trailing block where `block`.
     Unseated(seat: string, block: bool)
     /// The call's callee `callee` holds a value of `held`, no fn.
@@ -1735,7 +1736,8 @@ impl Checking {
             .Exactly(want) -> !self.holds_fn(want) &&
                 self
                     .lambda_faulted(e, LambdaFault.Unseated(want.spelled(), self.store.written_as_block(e))),
-            .Free or .Dropped -> unheard != null && self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.text())),
+            .Free or .Dropped -> unheard != null &&
+                self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.text(), "int")),
             .Unknown or .Partly(_) -> false,
         }
     }
@@ -3504,10 +3506,12 @@ impl Checking {
                 self.unmet(values[at], seat, read, seat_of(at), before)
             }
         }
+        mut opened: List<int> = []
         for at, v in values {
             let seat = seats[at]
             if !(seat.head is .Function) { continue }
             let open = !seat.fills_all(found)
+            if open && self.store.closure_parts(v) != null { opened.push(at) }
             let lambda = self.store.closure_parts(v) != null
             let before = self.refused.get().length
             let read = if open && !lambda { self.check(v, Expected.Partly(seat.filled_or_never(found))) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
@@ -3526,7 +3530,27 @@ impl Checking {
                 self.unanswered(v, seat, read!, found, seat_of(at), before)
             }
         }
+        for at in opened {
+            if self.seat_unheard(values[at], seats[at], found) { agreed = false }
+        }
         if agreed { found } else { null }
+    }
+
+    /// Whether the lambda `v`, in the fn seat `seat` of a call whose parameters are filled as `found`
+    /// once every value had its say, is refused for a bare seat of its own that a parameter still
+    /// open leaves unknown: `(req, n: int)` in `fn(Req<R>, int)` where nothing pins `R`.
+    mut fn seat_unheard(v: ExprId, seat: SignedType, found: Map<string, SignedType>) -> bool {
+        let lam? = self.store.body_fn(v) else { return false }
+        let parts? = self.store.lambda_parts(lam) else { return false }
+        if parts.params.length != seat.seats.length || parts.params.any(it.implicit) { return false }
+        for j, p in parts.params {
+            let held = seat.seats[j].ty
+            if p.ty == null && !held.fills_all(found) {
+                return self
+                    .lambda_faulted(lam, LambdaFault.Unheard(p.name.of.text(), held.filled(found).spelled()))
+            }
+        }
+        false
     }
 
     /// What the lambda `v` fills of the fn seat `seat` where only what the call's answer was wanted as
