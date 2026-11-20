@@ -632,17 +632,22 @@ fn applied_trait_fn(
         name,
     ) else { return null }
     if !written.type_params.is_empty() { return null }
+    let own = item.store.decl_tparams(s)
+    // `Self` stands past the trait's own parameters, so filling them never reaches the receiver: a
+    // receiver that is the caller's own parameter `R` shares its place with the trait's first
     let signed = written_signature(
         Signing {
             engine: engine,
             file: at.file,
-            type_params: item.store.decl_tparams(s),
-            self_type: receiver,
+            type_params: own,
+            self_type: headed_type(TypeHead.Parameter(own.length, "Self")),
             writer: written.writer,
         },
         written,
     )
-    signed with { type_params: [], params: [p with { ty: p.ty?.bound(args) } for p in signed.params], answer: signed.answer.bound(args) }
+    let filled = [if j < args.length { args[j] } else { headed_type(TypeHead.Parameter(j, t)) } for j, t in own]
+        .concat([receiver])
+    signed with { type_params: [], params: [p with { ty: p.ty?.bound(filled) } for p in signed.params], answer: signed.answer.bound(filled) }
 }
 
 /// The static every enum whose variants carry nothing has, as a fn of nothing: `all`, its variants in
