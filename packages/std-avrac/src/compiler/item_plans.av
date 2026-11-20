@@ -28,7 +28,7 @@ type RowAsk = { field: string, value: ExprId, at: ExprId }
 type PlanFound = { at: Span?, relation: string, field: string, rows: int }
 
 /// Every planner finding in the written item `at` of `file`: of each comprehension its typed nodes hold.
-fn plans_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<PlanFound> {
+fn plans_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<PlanFound> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
@@ -264,11 +264,11 @@ fn hands_row(store: SyntaxArena, k: ExprId, row: string) -> bool {
 /// Whether the row appears anywhere in `e`, a lambda's body among it.
 fn mentions_row(store: SyntaxArena, e: ExprId, row: string) -> bool { store.every_expr(e).any((k) -> reads_name(store, k, row)) }
 
-fn residuals(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn residuals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: f.at, args: [f.relation] } for f in plans_found(engine, file, at) if f.field.is_empty()]
 }
 
-fn scans(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn scans(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: f.at, args: [f.relation, f.field, "${f.rows}"] } for f in plans_found(engine, file, at) if !f.field.is_empty()]
 }
 

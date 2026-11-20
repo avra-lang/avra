@@ -9,19 +9,19 @@ use @std.program.query_engine.{QueryEngine}
 
 /// Every declaration in the written item `at` of `file` that lost its name to one its file declared
 /// first, a value's.
-fn values_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn values_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [named_lost(engine, c) for c in lost_in(engine, file, at) if same_file(c.holder.file, file) && names_value(c.lost.kind)]
 }
 
 /// Every declaration in the written item `at` of `file` that lost its name to one its file declared
 /// first, a type's.
-fn types_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn types_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [named_lost(engine, c) for c in lost_in(engine, file, at) if same_file(c.holder.file, file) && !names_value(c.lost.kind)]
 }
 
 /// Every declaration in the written item `at` of `file` that lost its name to another file of its
 /// module, beside where that one stands.
-fn module_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn module_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found {
         at: declaration_span(engine, c.lost),
         args: [c.lost.name, below_root(c.holder.file.path_in_package)],
@@ -32,7 +32,7 @@ fn module_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
 fn named_lost(engine: QueryEngine, c: NameClash) -> Found { Found { at: declaration_span(engine, c.lost), args: [c.lost.name] } }
 
 /// The clashes of the module's own declarations whose loser the written item `at` of `file` holds.
-fn lost_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<NameClash> {
+fn lost_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<NameClash> {
     if !item_held(engine, file, at) { return [] }
     let scope? = file_scope(engine, file) else { return [] }
     [c for c in scope.clashes if !c.imported && same_file(c.lost.file, file) && c.lost.item == at]

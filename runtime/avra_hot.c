@@ -11,7 +11,7 @@ void avra_rc_retain(void* p) {
     Header* h = avra_hdr(p);
     if (h == 0 || avra_kind(h) < 0) return;
     CENSUS(g_rc_retains++);
-    CENSUS(note_retain(AVRA_CALLER()));
+    CENSUS(note_retain(p, AVRA_CALLER()));
     if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(p, h); return; }
     h->rc++;
 }
@@ -22,6 +22,7 @@ void avra_rc_release(void* p) {
     if (__builtin_expect(avra_rc_guard_on, 0)) { avra_release_guarded(p, h); return; }
     if (avra_kind(h) < 0) return;
     CENSUS(g_rc_releases++);
+    CENSUS(note_release(p, AVRA_CALLER()));
     h->rc--;
     if (__builtin_expect(h->rc > 0, 1)) return;
     CENSUS(g_rc_frees++);

@@ -60,7 +60,7 @@ spec "a control is spoken to by its words" {
             let on: Cell<bool> = Cell.new(false)
             let page = headless(
                 () -> checkbox "Agree" {
-                    checked: on.get()
+                    shown: on.get()
                     on change { checked -> on.set(checked) }
                 },
             )
@@ -109,7 +109,7 @@ spec "a control a reader cannot reach does not speak" {
                 () -> column {
                     button "Open" { on press { open.set(true) } }
                     dialog "About" {
-                        open: open.get()
+                        shown: open.get()
                         items: [button "Close" { on press { open.set(false) } }]
                     }
                 },
@@ -120,27 +120,30 @@ spec "a control a reader cannot reach does not speak" {
             let open: Cell<bool> = Cell.new(true)
             let page = headless(
                 () -> dialog "About" {
-                    open: open.get()
+                    shown: open.get()
                     on dismiss { open.set(false) }
                 },
             )
             page.dismiss() && !open.get() && !page.dismiss()
         }
-        then "a closed one, and one that hears no dismissal, answer nothing" {
+        then "a closed one answers nothing" {
             let shut = headless(() -> dialog "About" { on dismiss {} })
-            let deaf = headless(() -> dialog "About" { open: true })
-            !shut.dismiss() && !deaf.dismiss()
+            !shut.dismiss()
+        }
+        then "one the program holds open hears the user, and stands open still" {
+            let held = headless(() -> dialog "About" { shown: true })
+            held.dismiss() && held.dismiss()
         }
         then "the dialog over the rest is the one that hears it" {
             let heard: Cell<string> = Cell.new("")
             let page = headless(
                 () -> column {
                     dialog "Under" {
-                        open: true
+                        shown: true
                         on dismiss { heard.set("under") }
                     }
                     dialog "Over" {
-                        open: true
+                        shown: true
                         on dismiss { heard.set("over") }
                     }
                 },
@@ -212,7 +215,7 @@ spec "a form is sent by what stands in it" {
 spec "the screen is read as text" {
     given "a value holding a quote, a backslash and a line break" {
         then "it stays inside its own quotes, on its own line" {
-            let page = headless(() -> field "Name" { value: "a\"\nbutton \"Forged\" \\" })
+            let page = headless(() -> field "Name" { shown: "a\"\nbutton \"Forged\" \\" })
             page.text() == "field \"Name\" value=\"a\\\"\\nbutton \\\"Forged\\\" \\\\\" placeholder=\"\""
         }
     }

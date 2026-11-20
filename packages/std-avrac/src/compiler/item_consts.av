@@ -77,7 +77,7 @@ export type BrokenSettlement = { kind: string, words: string }
 /// of nothing answering the const's type, run in the evaluator, and crossed back under that type. Read
 /// by every body that names the const and by the law that refuses a run that breaks a settlement's.
 @query
-fn const_settlement(engine: QueryEngine, file: SourceFileAddress, name: string, item: int) -> ConstSettlement {
+fn const_settlement(engine: QueryEngine, file: SourceFileAddress, name: string, item: ItemId) -> ConstSettlement {
     if const_loop(engine, file, name) != null { return unsettled_as(UNTYPED_LOOP) }
     if const_value_loop(engine, file, name) != null { return settles_from_itself(name) }
     match const_body_at(engine, file, name, item) {
@@ -160,7 +160,7 @@ fn value_run(
 export fn argument_lifted(
     engine: QueryEngine,
     file: SourceFileAddress,
-    item: int,
+    item: ItemId,
     at: int,
     seat: SignedType,
 ) -> Result<Lifted, BrokenSettlement> {
@@ -182,7 +182,7 @@ export fn argument_lifted(
 
 /// The const `name` of the written item `item` of `file` as its run answers it, in a heap of its own:
 /// what a seat taking its value is handed. Absent where it doesn't run.
-export fn const_lifted(engine: QueryEngine, file: SourceFileAddress, name: string, item: int) -> Lifted? {
+export fn const_lifted(engine: QueryEngine, file: SourceFileAddress, name: string, item: ItemId) -> Lifted? {
     if const_loop(engine, file, name) != null || const_value_loop(engine, file, name) != null { return null }
     let body = match const_body_at(engine, file, name, item) {
         .Ok(b) -> b,
@@ -244,7 +244,7 @@ fn body_const_value(
     s: StmtId,
     ty: SignedType,
     seeds: List<ConstSeed>,
-    frame: int? = null,
+    frame: ItemId? = null,
 ) -> NamedValue {
     let settled = body_const_settlement(engine, file, store, unit, s, ty, seeds, frame)
     let why = settled.unsettled
@@ -262,7 +262,7 @@ fn body_const_settlement(
     s: StmtId,
     ty: SignedType,
     seeds: List<ConstSeed>,
-    frame: int? = null,
+    frame: ItemId? = null,
 ) -> ConstSettlement {
     let value? = store.const_value(s) else { return unsettled_as(valueless()) }
     let name = store.let_name(s) ?? "const"
@@ -338,7 +338,7 @@ fn embedded(engine: QueryEngine, path: string, kind: EmbedKind) -> Result<Bytes,
 fn const_body(engine: QueryEngine, d: DeclaredName) -> Result<SignedBody, string> { const_body_at(engine, d.file, d.name, d.item) }
 
 /// The `const` `name` of the written item `at` of `file` as `const_body` gives it.
-fn const_body_at(engine: QueryEngine, file: SourceFileAddress, name: string, at: int) -> Result<
+fn const_body_at(engine: QueryEngine, file: SourceFileAddress, name: string, at: ItemId) -> Result<
     SignedBody,
     string,
 > {

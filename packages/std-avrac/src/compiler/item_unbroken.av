@@ -46,7 +46,7 @@ type ItemBroken = { rows: List<BrokenAt> }
 
 /// Every way an `@unbroken` fn the written item `at` of `file` declares lets another task run.
 @query
-fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBroken {
+fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBroken {
     if !item_held(engine, file, at) { return ItemBroken { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemBroken { rows: [] } }
@@ -192,12 +192,11 @@ fn callee_unbroken(engine: QueryEngine, c: CalledFn) -> bool {
                     marks_unbroken(engine, c.file, item.store, s),
             )
     }
-    [at for at in 0..item_count(engine, c.file)]
-        .any((at) -> impl_marks(engine, c.file, at, owner, c.name))
+    item_ids(engine, c.file).any((at) -> impl_marks(engine, c.file, at, owner, c.name))
 }
 
 /// Whether an impl of `owner` the written item `at` of `file` writes marks its fn `name` `@unbroken`.
-fn impl_marks(engine: QueryEngine, file: SourceFileAddress, at: int, owner: string, name: string) -> bool {
+fn impl_marks(engine: QueryEngine, file: SourceFileAddress, at: ItemId, owner: string, name: string) -> bool {
     let item = read_item(engine, file, at)
     impls_at(engine, file, at)
         .any(
@@ -273,7 +272,7 @@ const UNBROKEN: string = "unbroken"
 const PRELUDE_ROWS: string = "@std/prelude"
 
 /// Every way the `@unbroken` fns of the written item `at` of `file` break.
-fn unbroken_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn unbroken_broken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: span_of(r.at), args: r.words } for r in item_broken(engine, file, at).rows]
 }
 

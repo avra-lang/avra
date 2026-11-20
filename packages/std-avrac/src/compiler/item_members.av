@@ -253,7 +253,7 @@ type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int
 
 /// Every miss in the written item `at` of `file`, in node order: the asker's view of them, made once.
 /// An item that didn't parse misses nothing.
-fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisses {
+fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemMisses {
     if !item_held(engine, file, at) { return ItemMisses { rows: [] } }
     let view = item_view(engine, file, at)
     let held? = view.misses.get() else {
@@ -265,7 +265,7 @@ fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMis
 }
 
 /// Every miss in the written item `at` of `file`, read back as `item`.
-fn misses_made(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> ItemMisses {
+fn misses_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> ItemMisses {
     if !item.store.refusals().is_empty() { return ItemMisses { rows: [] } }
     ItemMisses {
         rows: flatten([misses_in(engine, t) for t in item_typed_nodes(engine, file, at, item)]),
@@ -274,7 +274,7 @@ fn misses_made(engine: QueryEngine, file: SourceFileAddress, at: int, item: Read
 
 /// The nodes the written item `at` of `file`, read as `item`, holds, typed: the statements it runs
 /// where its file is an entry, as the entry types them, else its own bodies'.
-fn typed_nodes_read(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn typed_nodes_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     TypedNodes,
 > {
     let bodies = written_types(engine, file, at, item)
@@ -295,7 +295,7 @@ type WrittenMethod = { name: string, statics: bool }
 
 /// The types of each body the written item `at` of `file` holds that is typed in the item's own
 /// store: each fn's and then each impl's method's and static's an annotation doesn't wrap.
-fn written_types(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn written_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     List<SignedType?>,
 > {
     let names = [p!.name for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && !wraps_body(engine, file, p!.name)]
@@ -313,7 +313,7 @@ fn written_types(engine: QueryEngine, file: SourceFileAddress, at: int, item: Re
 /// The statements the written item `at` of `file` runs where its file is an entry, typed; absent
 /// where it runs none. An item that only declares — a name, or an impl's members — runs nothing,
 /// and reads none of its file's others.
-fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: int) -> TypedNodes? {
+fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> TypedNodes? {
     if !runs_in(engine, file, at) { return null }
     if entry_types(engine, file).bases.is_empty() { return null }
     let read = entry_read(engine, file)
@@ -324,7 +324,7 @@ fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: int) -> TypedNo
         store: read.store,
         type_at: (k: int) -> if k < types.length { types[k] } else { null },
         lo: mine.base,
-        hi: read.items.find(it.at > at)?.base ?? read.store.expr_count(),
+        hi: read.base_after(at),
         entry: true,
         file: file,
         reader: file.package_name,
@@ -693,7 +693,7 @@ fn declares_grammar(engine: QueryEngine, d: DeclaredName) -> bool { grammar_decl
 
 /// Whether the item `at` of `file` declares the type `name` with a grammar: one answer per name.
 @cut_query
-fn grammar_declared(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
+fn grammar_declared(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
     let item = read_item(engine, file, at)
     item.stmts.any((s) -> item.store.type_decl_name(s) == name && item.store.grammar_of(s) != null)
 }
@@ -1416,7 +1416,7 @@ fn member_answers(engine: QueryEngine, subject: SignedType, name: string, reader
 /// there, or the file reads as no items here.
 fn home_unsettled(engine: QueryEngine, subject: SignedType) -> bool {
     match subject.head {
-        .Declared(file, _) -> !item_held(engine, file, 0) || !generator_sites(engine, file).is_empty(),
+        .Declared(file, _) -> !holds_items(engine, file) || !generator_sites(engine, file).is_empty(),
         rest -> false,
     }
 }
@@ -1442,9 +1442,9 @@ fn home_gives_named(
     name: string,
     statics: bool,
 ) -> bool {
-    !item_held(engine, file, 0) ||
+    !holds_items(engine, file) ||
         !generator_sites(engine, file).is_empty() ||
-        (0..item_count(engine, file)).any(writes_member(engine, file, it, declared, name, statics))
+        item_ids(engine, file).any(writes_member(engine, file, it, declared, name, statics))
 }
 
 /// Whether an impl of `declared` the written item `at` of `file` holds writes a static `name`, or
@@ -1452,7 +1452,7 @@ fn home_gives_named(
 fn writes_member(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     declared: string,
     name: string,
     statics: bool,
@@ -1525,13 +1525,16 @@ fn absent_known(s: SignedType) -> bool { s.nullable() && !s.absence() && plain_k
 fn plain_known(s: SignedType) -> bool { !s.nullable() && !s.dynamic && !s.generic() && !s.inferred() && !(s.head is .Unnamed) }
 
 /// Every miss in the written item `at` of `file` that `pick` words, as its law finds it.
-fn misses_of(engine: QueryEngine, file: SourceFileAddress, at: int, pick: fn(Miss) -> List<string>) -> List<
-    Found,
-> {
+fn misses_of(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    pick: fn(Miss) -> List<string>,
+) -> List<Found> {
     [Found { at: span_of(r.at), args: a } for r in item_misses(engine, file, at).rows for a in [pick(r.miss)] if !a.is_empty()]
 }
 
-fn fields_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fields_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1546,7 +1549,7 @@ fn fields_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 /// Every property read on a value of a type the language owns that it doesn't have, in the written
 /// item `at` of `file`: handed the name, the type and the members it answers to, its name's place
 /// beside, where a guess respells it.
-fn own_props_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn own_props_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [f! for r in item_misses(engine, file, at).rows for f in [own_prop_found(r)] if f != null]
 }
 
@@ -1563,7 +1566,7 @@ fn own_prop_found(r: MissAt) -> Found? {
 
 /// Every method of a type the language owns read as a property, uncalled, in the written item `at`
 /// of `file`: handed the name and the type, the call it lacks offered where the read ends.
-fn uncalled_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn uncalled_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [f! for r in item_misses(engine, file, at).rows for f in [uncalled_found(r)] if f != null]
 }
 
@@ -1590,7 +1593,7 @@ fn end_place(at: FindingAt?) -> Span? {
     Span { lo: held.hi, hi: held.hi }
 }
 
-fn methods_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn methods_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1609,15 +1612,15 @@ fn chain_method_found(at: FindingAt?, m: Miss) -> List<Found> {
     }
 }
 
-fn indexes_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn indexes_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .Index(found) -> [found], rest -> [] })
 }
 
-fn texts_indexed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn texts_indexed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .Text -> ["string"], rest -> [] })
 }
 
-fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1626,7 +1629,7 @@ fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
     )
 }
 
-fn fields_carried(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fields_carried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1639,7 +1642,7 @@ fn fields_carried(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
     )
 }
 
-fn fields_unset(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fields_unset(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1648,7 +1651,7 @@ fn fields_unset(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
     )
 }
 
-fn arities_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1660,7 +1663,7 @@ fn arities_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
     )
 }
 
-fn defaulted_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn defaulted_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1672,7 +1675,7 @@ fn defaulted_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
     )
 }
 
-fn shorts_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn shorts_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1684,15 +1687,15 @@ fn shorts_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     )
 }
 
-fn spreads_overwriting(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn spreads_overwriting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .SpreadDead(field) -> [field], rest -> [] })
 }
 
-fn args_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn args_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .ArgsAbsent(found) -> [found], rest -> [] })
 }
 
-fn args_fieldless(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn args_fieldless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1701,7 +1704,7 @@ fn args_fieldless(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
     )
 }
 
-fn seats_carried(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn seats_carried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1714,7 +1717,7 @@ fn seats_carried(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     )
 }
 
-fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1723,11 +1726,11 @@ fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
     )
 }
 
-fn arguments_dead(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn arguments_dead(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .ArgumentDead(seat) -> [seat], rest -> [] })
 }
 
-fn literals_uninterned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn literals_uninterned(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [f for r in item_misses(engine, file, at).rows for f in uninterned_found(r.at, r.miss)]
 }
 
@@ -1742,11 +1745,11 @@ fn uninterned_found(at: FindingAt?, m: Miss) -> List<Found> {
 
 /// A walk on a written `[]`, whose elements nothing says: the walk, its verb's name. The walk law
 /// (`walk_knows_elements`) says it, beside the walks checking found unknowable.
-fn empty_walks(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn empty_walks(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .EmptyWalked(name) -> [name], rest -> [] })
 }
 
-fn list_verbs_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn list_verbs_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1759,11 +1762,11 @@ fn list_verbs_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
     )
 }
 
-fn hashes_unnamed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn hashes_unnamed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .HashedUnnamed -> ["hashed"], rest -> [] })
 }
 
-fn method_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn method_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1775,7 +1778,7 @@ fn method_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: int) 
     )
 }
 
-fn static_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn static_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1787,7 +1790,7 @@ fn static_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: int) 
     )
 }
 
-fn withs_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn withs_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1796,7 +1799,7 @@ fn withs_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
     )
 }
 
-fn chains_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn chains_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1805,15 +1808,15 @@ fn chains_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     )
 }
 
-fn whens_untotal(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn whens_untotal(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .WhenUntotal -> ["_"], rest -> [] })
 }
 
-fn whens_total_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn whens_total_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .WhenTotalTwice -> ["_"], rest -> [] })
 }
 
-fn spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1822,7 +1825,7 @@ fn spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
     )
 }
 
-fn spreads_fieldless(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn spreads_fieldless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1831,28 +1834,28 @@ fn spreads_fieldless(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
     )
 }
 
-fn spreads_generic(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn spreads_generic(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .SpreadGeneric(name) -> [name], rest -> [] })
 }
 
-fn uncallables(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn uncallables(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .Uncallable(found) -> [found], rest -> [] })
 }
 
 /// Each bare variant literal of the written item `at` of `file` built where nothing names its enum.
-fn variants_unenumed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn variants_unenumed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: span_of(r.at), args: [u.name] } for r in refused_in(engine, file, at) for u in some_list(unenumed_of(r.seat)) if u.want.is_empty()]
 }
 
 /// Each bare variant literal of the written item `at` of `file` built in a seat of a type that is
 /// no enum.
-fn variants_unwanted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn variants_unwanted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: span_of(r.at), args: [u.name, u.want] } for r in refused_in(engine, file, at) for u in some_list(unenumed_of(r.seat)) if !u.want.is_empty() && u.variants.is_empty()]
 }
 
 /// Each bare variant literal of the written item `at` of `file` built in a seat of an enum with no
 /// such variant: its voice handed the enum, the name, then each variant the enum holds.
-fn variants_unbuilt(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn variants_unbuilt(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: span_of(r.at), args: [u.want, u.name].concat(u.variants) } for r in refused_in(engine, file, at) for u in some_list(unenumed_of(r.seat)) if !u.variants.is_empty()]
 }
 
@@ -1868,13 +1871,13 @@ fn unenumed_of(seat: Seating) -> UnenumedIn? {
     }
 }
 
-fn lets_unblocked(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn lets_unblocked(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .LetUnblocked -> ["let"], rest -> [] })
 }
 
 /// Every read or call through a type's name that the type doesn't answer `how`: its voice handed the
 /// type, the name, then what the type holds.
-fn types_named(engine: QueryEngine, file: SourceFileAddress, at: int, how: string) -> List<Found> {
+fn types_named(engine: QueryEngine, file: SourceFileAddress, at: ItemId, how: string) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1886,21 +1889,21 @@ fn types_named(engine: QueryEngine, file: SourceFileAddress, at: int, how: strin
     )
 }
 
-fn variants_uncalled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "variant_called") }
+fn variants_uncalled(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { types_named(engine, file, at, "variant_called") }
 
-fn records_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "record_read") }
+fn records_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { types_named(engine, file, at, "record_read") }
 
-fn statics_uncalled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "static_called") }
+fn statics_uncalled(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { types_named(engine, file, at, "static_called") }
 
-fn doors_uncalled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "door_called") }
+fn doors_uncalled(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { types_named(engine, file, at, "door_called") }
 
-fn statics_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "static_read") }
+fn statics_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { types_named(engine, file, at, "static_read") }
 
-fn params_as_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn params_as_values(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .ParamAsValue(name) -> [name], rest -> [] })
 }
 
-fn literal_spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn literal_spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1909,7 +1912,7 @@ fn literal_spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: int)
     )
 }
 
-fn types_as_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn types_as_values(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -1923,7 +1926,7 @@ fn types_as_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 }
 
 /// Every `?.` call over a value that's never absent, what the call means said beside it.
-fn chain_calls_present(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn chain_calls_present(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [chain_found(r.at, c) for r in item_misses(engine, file, at).rows for c in chain_called(r.miss)]
 }
 
@@ -1962,7 +1965,7 @@ fn chain_method_miss(engine: QueryEngine, t: TypedNodes, e: ExprId, subject: Exp
 }
 
 /// Every `?.(…)` call of what holds no fn when present, what the call means said beside it.
-fn chain_uncallables(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn chain_uncallables(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [chain_found(r.at, c) for r in item_misses(engine, file, at).rows for c in chain_uncalled(r.miss)]
 }
 
@@ -1988,7 +1991,7 @@ fn said_beside(at: FindingAt?, args: List<string>, means: string, lo: int, hi: i
     }
 }
 
-fn members_unfitting(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn members_unfitting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -2000,7 +2003,7 @@ fn members_unfitting(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
     )
 }
 
-fn contract_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn contract_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -2009,11 +2012,11 @@ fn contract_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: int
     )
 }
 
-fn maps_unknowable(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn maps_unknowable(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .MapUnknowable(name) -> [name], rest -> [] })
 }
 
-fn owned_literals(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn owned_literals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [f for r in item_misses(engine, file, at).rows for f in owned_found(r.at, r.miss)]
 }
 
@@ -2027,15 +2030,15 @@ fn owned_found(at: FindingAt?, m: Miss) -> List<Found> {
     }
 }
 
-fn entries_unseen(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn entries_unseen(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .EntryUnseen -> ["-"], rest -> [] })
 }
 
-fn roundings_unseen(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn roundings_unseen(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .ToIntUnseen(name) -> [name], rest -> [] })
 }
 
-fn own_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn own_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -2044,7 +2047,7 @@ fn own_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
     )
 }
 
-fn variants_read_missed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn variants_read_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(
         engine,
         file,
@@ -2165,7 +2168,7 @@ export law rounding_needs_the_prelude {
 fn rounding_unseen_words(a: List<string>) -> Voice { to_int_unseen(a[0]) }
 
 /// A dot-call named by a keyword.
-fn keywords_called(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn keywords_called(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .Keyword(name) -> [name], rest -> [] })
 }
 
@@ -2356,7 +2359,7 @@ export law when_total_last {
     witness: "fn g() -> int {\n    when {\n        _ -> 2\n        1 < 2 -> 1\n    }\n}\n"
 }
 
-fn whens_total_early(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn whens_total_early(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .WhenTotalEarly -> ["_"], rest -> [] })
 }
 
@@ -2568,7 +2571,9 @@ fn own_method_words(a: List<string>) -> Voice { methodless(a[0], a[1]) }
 
 /// The misses where the list verb `verb` is called on a list whose elements it reads none of: the
 /// list's type, then its element's.
-fn verbs_unfit(engine: QueryEngine, file: SourceFileAddress, at: int, verb: string) -> List<Found> {
+fn verbs_unfit(engine: QueryEngine, file: SourceFileAddress, at: ItemId, verb: string) -> List<
+    Found,
+> {
     misses_of(
         engine,
         file,
@@ -2580,9 +2585,9 @@ fn verbs_unfit(engine: QueryEngine, file: SourceFileAddress, at: int, verb: stri
     )
 }
 
-fn bytes_unfit(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { verbs_unfit(engine, file, at, "bytes") }
+fn bytes_unfit(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { verbs_unfit(engine, file, at, "bytes") }
 
-fn join_unfit(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { verbs_unfit(engine, file, at, "join") }
+fn join_unfit(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { verbs_unfit(engine, file, at, "join") }
 
 /// `bytes` reads a list of octets or of bytes
 export law bytes_reads_octets {

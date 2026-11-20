@@ -194,7 +194,7 @@ impl ItemTyping {
 fn item_typing(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     item: ReadItem,
     defaults: bool,
 ) -> ItemTyping {
@@ -213,7 +213,7 @@ type Deferral = { stmt: StmtId, body: ExprId, errs: bool }
 
 /// Every breach in the written item `at` of `file`, in node order. An item that didn't parse breaks
 /// nothing.
-fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBreaches {
+fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBreaches {
     if !item_held(engine, file, at) { return breaches_made(engine, file, at) }
     let view = item_view(engine, file, at)
     let held? = view.breaches.get() else {
@@ -225,7 +225,7 @@ fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemB
 }
 
 /// What `item_breaches` answers, made.
-fn breaches_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBreaches {
+fn breaches_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBreaches {
     if !item_held(engine, file, at) { return ItemBreaches { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemBreaches { rows: [] } }
@@ -681,7 +681,9 @@ fn deferral(store: SyntaxArena, s: StmtId) -> Deferral? {
 }
 
 /// Each fn's and method's body the written item `at` of `file` holds in its own store, typed.
-fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<FnBody> {
+fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+    FnBody,
+> {
     let fns = [FnBody { root: p!.body, promise: sig!.answer, typed: typed! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sig in [fn_signature(engine, file, p!.name)] if sig != null for typed in [written_typed(engine, file, p!.name)] if typed != null]
     let methods = [FnBody {
         root: m!.signed.body,
@@ -694,7 +696,7 @@ fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadIt
 /// Each body the written item `at` of `file` holds beside its fns' and methods', typed: a seat's or a
 /// field's default, a const's value, a state's start — none of which a fn encloses — and a body a
 /// trait's member writes, which its member's promise holds.
-fn defaults_typed(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn defaults_typed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     FnBody,
 > {
     [FnBody {
@@ -925,9 +927,9 @@ type EntryTypes = { types: List<SignedType?>, reads: List<NameRead>, binds: List
 /// What a file that runs no statement types.
 fn no_entry() -> EntryTypes { EntryTypes { types: [], reads: [], binds: [], bases: [] } }
 
-/// A written item of an entry, by its place, and the index its first node has among the entry's.
+/// A written item of an entry, by its id, and the index its first node has among the entry's.
 @derive(Saved)
-type EntryBase = { at: int, base: int }
+type EntryBase = { at: ItemId, base: int }
 
 /// The statements `file` runs, typed as one body, once for all of its items.
 @query
@@ -945,7 +947,7 @@ fn entry_types(engine: QueryEngine, file: SourceFileAddress) -> EntryTypes {
 
 /// Each task a signature the written item `at` of `file` declares lets reach past its block: a fn's
 /// or a method's answer, a field of a record no `@owns` marks, a variant's payload.
-fn escape_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn escape_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     BreachAt,
 > {
     let fns = [escaped(
@@ -981,7 +983,7 @@ fn holds_tasks(ty: SignedType) -> bool {
 
 /// Each slot a signature the written item `at` of `file` declares that holds no value: a record's
 /// field, a variant's payload, said where the record or the enum stands.
-fn slot_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn slot_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     BreachAt,
 > {
     let names = [d for d in file_declares_at(engine, file, at).names if d.item == at]
@@ -1009,7 +1011,7 @@ fn enum_place(item: ReadItem, name: string) -> Span? {
 fn breaches_said(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     words: fn(Breach) -> List<string>?,
 ) -> List<Found> {
     [Found { at: span_of(r.at), args: w } for r in item_breaches(engine, file, at).rows for w in some_list(words(r.breach))]
@@ -1021,7 +1023,7 @@ fn wordless(held: bool) -> List<string>? {
     []
 }
 
-fn bitwise_runs(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn bitwise_runs(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1040,7 +1042,7 @@ export law bitwise_mixed_law {
 
 fn bitwise_words(a: List<string>) -> Voice { bitwise_mixed(a[0], a[1]) }
 
-fn defers_inert(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn defers_inert(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Inert(named) -> [named], rest -> null })
 }
 
@@ -1054,7 +1056,7 @@ export law defer_inert {
 
 fn inert_words(a: List<string>) -> Voice { deferred_inert(a[0]) }
 
-fn defers_unheard(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn defers_unheard(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Unheard(answer) -> [answer], rest -> null })
 }
 
@@ -1068,7 +1070,7 @@ export law defer_unheard {
 
 fn unheard_words(a: List<string>) -> Voice { deferred_unheard(a[0]) }
 
-fn errdefers_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn errdefers_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .Unenclosed))
 }
 
@@ -1082,7 +1084,7 @@ export law errdefer_unenclosed_law {
 
 fn unenclosed_words(_a: List<string>) -> Voice { errdefer_unenclosed() }
 
-fn errdefers_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn errdefers_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .InLambda))
 }
 
@@ -1096,7 +1098,7 @@ export law errdefer_lambda {
 
 fn lambda_words(_a: List<string>) -> Voice { errdefer_in_lambda() }
 
-fn errdefers_unfailing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn errdefers_unfailing(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1115,7 +1117,7 @@ export law errdefer_unfailing_law {
 
 fn unfailing_words(a: List<string>) -> Voice { errdefer_unfailing(a[0]) }
 
-fn tasks_escaping(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn tasks_escaping(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Escaping(label) -> [label], rest -> null })
 }
 
@@ -1129,7 +1131,7 @@ export law task_escape {
 
 fn escape_words(a: List<string>) -> Voice { task_outlives(a[0]) }
 
-fn shifts_wide(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn shifts_wide(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1148,7 +1150,7 @@ export law shift_count {
 
 fn shift_words(a: List<string>) -> Voice { shift_out_of_range(parse_int(a[0]) ?? 0) }
 
-fn forces_present(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn forces_present(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Forced(named) -> [named], rest -> null })
 }
 
@@ -1162,7 +1164,7 @@ export law force_present {
 
 fn forced_words(a: List<string>) -> Voice { forced_present(a[0]) }
 
-fn forces_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn forces_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .ForcedAbsent))
 }
 
@@ -1176,7 +1178,7 @@ export law force_absent {
 
 fn forced_absent_words(_a: List<string>) -> Voice { forced_absent() }
 
-fn propagates_present(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn propagates_present(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Propagated(named) -> [named], rest -> null })
 }
 
@@ -1190,7 +1192,7 @@ export law propagate_present {
 
 fn propagated_words(a: List<string>) -> Voice { propagated_present(a[0]) }
 
-fn propagates_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn propagates_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .PropagatedAbsent))
 }
 
@@ -1204,7 +1206,7 @@ export law propagate_absent {
 
 fn propagated_absent_words(_a: List<string>) -> Voice { propagated_absent() }
 
-fn fails_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fails_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .FailUnenclosed))
 }
 
@@ -1218,7 +1220,7 @@ export law fail_unenclosed_law {
 
 fn fail_unenclosed_words(_a: List<string>) -> Voice { fail_unenclosed() }
 
-fn fails_unfallible(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fails_unfallible(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1237,7 +1239,7 @@ export law fail_unfallible_law {
 
 fn fail_unfallible_words(a: List<string>) -> Voice { fail_unfallible(a[0]) }
 
-fn yields_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn yields_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .YieldUnenclosed))
 }
 
@@ -1251,7 +1253,7 @@ export law yield_unenclosed_law {
 
 fn yield_words(_a: List<string>) -> Voice { yield_unenclosed() }
 
-fn elements_untyped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn elements_untyped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1270,7 +1272,7 @@ export law element_untyped {
 
 fn untyped_words(a: List<string>) -> Voice { list_element_untyped(a[0]) }
 
-fn map_values_untyped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn map_values_untyped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1289,7 +1291,7 @@ export law map_value_untyped_law {
 
 fn map_untyped_words(a: List<string>) -> Voice { map_value_untyped(a[0]) }
 
-fn coalesces_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn coalesces_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1308,7 +1310,7 @@ export law coalesce_answers_carried {
 
 fn coalesce_apart_words(a: List<string>) -> Voice { coalesce_answers(a[0], a[1]) }
 
-fn presences_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn presences_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1327,7 +1329,7 @@ export law presence_arms_agree {
 
 fn presence_apart_words(a: List<string>) -> Voice { presence_arms_apart(a[0], a[1]) }
 
-fn elements_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn elements_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .ElementVoid))
 }
 
@@ -1341,7 +1343,7 @@ export law element_void {
 
 fn void_words(_a: List<string>) -> Voice { list_element_void() }
 
-fn fields_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn fields_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1360,7 +1362,7 @@ export law field_void {
 
 fn field_void_words(a: List<string>) -> Voice { field_unslotted(a[0], a[1]) }
 
-fn payloads_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn payloads_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1382,7 +1384,7 @@ export law payload_void {
 
 fn payload_void_words(a: List<string>) -> Voice { payload_unslotted(a[0], a[1], a[2]) }
 
-fn tasks_overwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn tasks_overwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .Overwritten))
 }
 
@@ -1396,7 +1398,7 @@ export law task_overwritten_law {
 
 fn overwritten_words(_a: List<string>) -> Voice { task_overwritten() }
 
-fn tasks_unheld(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn tasks_unheld(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Unheld(spelled) -> [spelled], rest -> null })
 }
 
@@ -1410,7 +1412,7 @@ export law task_unheld_law {
 
 fn unheld_words(a: List<string>) -> Voice { task_unheld(a[0]) }
 
-fn jumps_unlooped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn jumps_unlooped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .Unlooped(word) -> [word], rest -> null })
 }
 
@@ -1424,7 +1426,7 @@ export law jump_unlooped_law {
 
 fn unlooped_words(a: List<string>) -> Voice { jump_unlooped(a[0]) }
 
-fn jumps_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn jumps_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> match b { .JumpInLambda(word) -> [word], rest -> null })
 }
 
@@ -1438,7 +1440,7 @@ export law jump_in_lambda_law {
 
 fn jump_lambda_words(a: List<string>) -> Voice { jump_behind_lambda(a[0]) }
 
-fn jumps_in_comprehension(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn jumps_in_comprehension(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,
@@ -1459,7 +1461,7 @@ fn jump_comprehension_words(a: List<string>) -> Voice { jump_in_comprehension(a[
 
 /// Every jump whose label names no `for` around it; a label nothing binds is the naming law's,
 /// said where it is read.
-fn jumps_unaimed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn jumps_unaimed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     let unaimed = breaches_said(
         engine,
         file,
@@ -1481,7 +1483,7 @@ export law jump_unaimed_law {
 
 fn unaimed_words(a: List<string>) -> Voice { jump_unaimed(a[0], a[1]) }
 
-fn guards_reading_binders(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn guards_reading_binders(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .GuardReadsBinder))
 }
 
@@ -1495,7 +1497,7 @@ export law guard_binder_law {
 
 fn guard_words(_a: List<string>) -> Voice { guard_reads_binder() }
 
-fn cleanups_unbounded(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn cleanups_unbounded(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     breaches_said(
         engine,
         file,

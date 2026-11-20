@@ -43,6 +43,9 @@ export type Lane = { name: string, slots: int }
 /// binding is written with.
 export const FRAME_LANE: string = "\$frame"
 
+/// The slot a framed lambda's box holds its frame in: its first lane, after its code.
+export const FN_FRAME: int = 1
+
 impl Lowering {
     /// The lambda `lam` at the node `site`, of the fn type `ty` that `lift_refusal` passes, its body
     /// lowered as its own unit against `program`; a task's, when `tasked`, answers its value in a
@@ -118,20 +121,41 @@ impl Lowering {
 
     /// The box of layout `l` holding the code at `symbol`, then `captures`' words, sized for them: a
     /// value of the fn type `of`.
-    mut fn fn_box(l: Layout, symbol: string, captures: List<Reg>, of: SignedType) -> Reg {
+    mut fn fn_box(
+        l: Layout,
+        symbol: string,
+        captures: List<Reg>,
+        of: SignedType,
+        framed: bool = false,
+    ) -> Reg {
         let words = flatten([self.leaves(c) for c in captures])
         let dst = self
             .call_row(
                 l,
                 rt_sig_of("avra_array_sized")!,
-                [self.const_int(1 + [self.layout_of(w).slots() for w in words].sum())],
+                [
+                    self
+                        .const_int(
+                            1 +
+                                if framed { 1 } else { 0 } +
+                                [self.layout_of(w).slots() for w in words].sum(),
+                        ),
+                ],
             )
         let code = self.mint(Layout.Word)
         self.emit(Ins.FnAddr(code, symbol))
         self.run_row(rt_sig_of("avra_array_push")!, [dst, code])
+        if framed { self.run_row(rt_sig_of("avra_ctx_frame_pushed")!, [dst]) }
         for w in words { self.push_leaf(dst, w) }
         self.box_typed(dst, of)
         dst
+    }
+
+    /// The box a making of `lift` makes, of the fn type `of`: its code, then the frame in force where it
+    /// carries one, marked as its frame, then each lane it captures.
+    mut fn lift_boxed(l: Layout, lift: Lift, of: SignedType) -> Reg {
+        let lanes = [self.lane_of(n) for n in lift.lanes if n != FRAME_LANE]
+        self.fn_box(l, lift.body.symbol, lanes, of, lift.lanes.contains(FRAME_LANE))
     }
 
     /// The box in `box` noted as a value of `of`, keyed alike wherever its type is spelled; an unknown

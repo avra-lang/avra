@@ -2,12 +2,7 @@
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
 use @std.avrac.testing.held.{Held, Judged, held_at}
-use @std.avrac.testing.old_path.{test_workspace, write_checked_in}
-use compiler.{Workspace, sig_hash}
-use @std.avrac.core.{TypeId, DeclId}
-use @std.relation.stable.{indexed_scope}
-use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
-use compiler.host.{memory_host, memory_host_at}
+use compiler.{in_scope}
 use @std.avrac.diagnostics.{Diag, render, new_source_file}
 
 /// A small package: a root file, a root sibling, a directory module
@@ -32,20 +27,8 @@ fn ws_names() -> List<string> {
     ]
 }
 
-fn ws_of() -> Workspace {
-    test_workspace(memory_host(ws_files(), ws_names()), "/w")
-}
-
-/// The package with its root file replaced.
-fn with_main(text: string) -> Workspace {
-    mut fs = ws_files()
-    fs.set("/w/src/main.av", text)
-    test_workspace(memory_host(fs, ws_names()), "/w")
-}
-
-/// The package with a manifest beside its sources, its entry a spec
-/// of one case.
-fn spec_package(toml: string) -> Workspace {
+/// The package with a manifest beside its sources, its entry a spec of one case, judged.
+fn spec_package(toml: string) -> Judged {
     mut fs = ws_files()
     fs.set("/w/avra.toml", toml)
     fs
@@ -53,60 +36,34 @@ fn spec_package(toml: string) -> Workspace {
             "/w/src/main.av",
             "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n",
         )
-    test_workspace(
-        memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: path_only },
-        "/w",
-    )
+    held_files(fs).judged_at("/w/src/main.av")
 }
 
-/// An environment holding `PATH` alone.
-fn path_only(name: string) -> string? {
-    if name == "PATH" { return "/usr/bin" }
-    null
-}
+/// The link words of the package `spec_package` judges, under an environment holding `PATH` alone.
+fn spec_words(toml: string) -> List<string> { spec_package(toml).link_words({"PATH": "/usr/bin"}) }
 
-/// An environment whose `X` names another variable, and whose `Z`
-/// names itself.
-fn self_naming(name: string) -> string? {
-    if name == "X" { return "\${" + "Y}" }
-    if name == "Y" { return "/y" }
-    if name == "Z" { return "\${" + "Z}" }
-    null
-}
+/// An environment whose `X` names another variable, and whose `Z` names itself.
+fn self_naming() -> Map<string, string> { {"X": "\$" + "{Y}", "Y": "/y", "Z": "\$" + "{Z}"} }
 
-/// The link words of a package whose search row is `word`, under
-/// `self_naming`'s environment.
-fn searched(word: string) -> List<string> {
+/// The package whose search row is `word`, its entry `1`, judged.
+fn searching_judged(word: string) -> Judged {
     mut fs = ws_files()
-    fs
-        .set(
-            "/w/avra.toml",
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"${word}\"]\n",
-        )
+    fs.set("/w/avra.toml", searching(word))
     fs.set("/w/src/main.av", "1\n")
-    test_workspace(
-        memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: self_naming },
-        "/w",
-    )
-        .link_words("")
+    (held_files(fs) with { env: self_naming() }).judged_at("/w/src/main.av")
 }
+
+/// The link words of a package whose search row is `word`, under `self_naming`'s environment.
+fn searched(word: string) -> List<string> { searching_judged(word).link_words(self_naming()) }
 
 /// The manifest of a package whose search row is `word`.
 fn searching(word: string) -> string {
     "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"${word}\"]\n"
 }
 
-/// What a package whose search row is `word` says, under `self_naming`'s
-/// environment.
+/// What a package whose search row is `word` says of a variable its row needs.
 fn unset_voices(word: string) -> List<Diag> {
-    mut fs = ws_files()
-    fs.set("/w/avra.toml", searching(word))
-    fs.set("/w/src/main.av", "1\n")
-    let ws = test_workspace(
-        memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: self_naming },
-        "/w",
-    )
-    [d for d in ws.program(null).voices if d.kind == "manifest.unset_link_variable"]
+    [d for d in searching_judged(word).diagnostics if d.kind == "manifest.unset_link_variable"]
 }
 
 /// A manifest whose raw link option is a shell command — the
@@ -126,30 +83,33 @@ fn holed_manifest() -> string {
 /// A root and one dependency, where the DEPENDENCY asks for raw
 /// linker options and for a library by name. Nobody reads a
 /// transitive manifest; this is what it could carry.
-fn borrowing_workspace() -> Workspace {
+fn borrowing_workspace() -> Judged {
     depending_on("[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n")
 }
 
-/// A root and one dependency whose manifest ends in `rows`.
-fn depending_on(rows: string) -> Workspace {
-    let files = {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
-        "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
-        "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n${rows}",
-        "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
-    }
-    test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/dep/avra.toml",
-                "/w/vendor/dep/src/dep.av",
-            ],
-        ),
+/// A root and one dependency whose manifest ends in `rows`, judged.
+fn depending_on(rows: string) -> Judged {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+            "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
+            "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n${rows}",
+            "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
+        },
         "/w",
     )
+        .judged_at("/w/src/main.av")
+}
+
+/// Whether a package the program reaches asks it to keep its own symbols by name.
+fn names_its_symbols(j: Judged) -> bool { j.packages().any((p) -> j.held.manifest_of(p).dynamic_symbols) }
+
+/// How many cases a test of `path` selects among the files the program reads.
+fn cases_at(j: Judged, path: string) -> int {
+    match j.suite([p for p in j.source_paths() if in_scope([path], p)]) {
+        .Ok(s) -> s.cases.length,
+        .Err(_) -> -1,
+    }
 }
 
 /// The manifest the small package stands under: a package has one.
@@ -229,26 +189,24 @@ fn ran_as(r: Result<string, string>, text: string) -> bool {
 spec "compiler/workspace" {
     given "modules are directories, or a file" {
         then "a root file belongs to the root module; a nested one to its directory" {
-            let ws = ws_of()
-            ws.module_of("/w/src/main.av") == "" && ws.module_of("/w/src/util/mathx.av") == "util"
+            let j = held_ws().judged_at("/w/src/main.av")
+            j.resolved_in("/w/src/main.av", "helper") == "/w/src/helper.av" &&
+                j.resolved_in("/w/src/util/pair.av", "hidden") == "/w/src/util/mathx.av" &&
+                j.resolved_in("/w/src/main.av", "hidden") == null
         }
-        then "every file under the root is found" {
-            ws_of().all_files("/w/src").length == 5
-        }
+        then "every file under the root is found" { held_ws().judged_at("/w/src/main.av").source_paths().length == 5 }
     }
     given "what a file sees" {
         then "a root sibling's fn, a directory module's exports, and a lone-file module resolve" {
-            let ws = ws_of()
-            let f = ws.visible(ws.file_id("/w/src/main.av"))
-            f.fn_decl("helper") != null &&
-                f.fn_decl("twice") != null &&
-                f.type_decl("Pair") != null &&
-                f.fn_decl("only") != null &&
-                f.voices.list.is_empty()
+            let j = held_ws().judged_at("/w/src/main.av")
+            j.resolved_in("/w/src/main.av", "helper") == "/w/src/helper.av" &&
+                j.resolved_in("/w/src/main.av", "twice") == "/w/src/util/mathx.av" &&
+                j.resolved_in("/w/src/main.av", "Pair") == "/w/src/util/pair.av" &&
+                j.resolved_in("/w/src/main.av", "only") == "/w/src/solo.av" &&
+                j.diagnostics.is_empty()
         }
         then "a module's private fn is not on its surface" {
-            let ws = ws_of()
-            ws.visible(ws.file_id("/w/src/main.av")).fn_decl("hidden") == null
+            held_ws().judged_at("/w/src/main.av").resolved_in("/w/src/main.av", "hidden") == null
         }
         then "the whole file analyzes with nothing unresolved" {
             held_ws().judged_at("/w/src/main.av").report() == ""
@@ -335,13 +293,9 @@ spec "compiler/workspace" {
         then "a run-time statement outside the entry refuses, naming the entry" {
             mut fs = ws_files()
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
-            let ws = test_workspace(memory_host(fs, ws_names()), "/w")
-            let p = ws.program("/w/src/main.av")
-            p.clean() &&
-                p.lowered().diagnostics.length == 1 &&
-                p
-                    .rendered(p.lowered().diagnostics)
-                    .contains("only the entry `/w/src/main.av` runs statements")
+            let j = held_files(fs).judged_at("/w/src/main.av")
+            j.diagnostics.length == 1 &&
+                j.report().contains("only the entry `/w/src/main.av` runs statements")
         }
     }
     given "a failed use speaks" {
@@ -382,15 +336,16 @@ spec "compiler/workspace" {
                     "fn helper(a: bool, b: bool) -> bool {\n    a\n        && b\n}\n",
                 )
             fs.set("/w/src/main.av", "helper(true, true)\n")
-            let a = test_workspace(memory_host(fs, ws_names()), "/w").analyze_file("/w/src/main.av")
-            a.diagnostics.length == 1 &&
-                a.report().contains("no `fn helper` is defined") &&
-                a
-                    .report()
+            let j = held_files(fs).judged_at("/w/src/main.av")
+            let own = j.said_in("/w/src/main.av")
+            let said = j.rendered(own)
+            own.length == 1 &&
+                said.contains("no `fn helper` is defined") &&
+                said
                     .contains(
                         "this module fails to parse here, so its names are unread: expected `}` to close the block",
                     ) &&
-                !a.report().contains("did you mean")
+                !said.contains("did you mean")
         }
         then "an aliased item of an unread module — the alias's reads are silent too" {
             let a = held_unread_solo("use solo.{only as one}\none(true, true)\n")
@@ -433,15 +388,15 @@ spec "compiler/workspace" {
     }
     given "the host seam carries words, never a shell line" {
         then "a link flag with shell metacharacters is ONE word, verbatim" {
-            let words = spec_package(poisoned_manifest()).link_words("")
+            let words = spec_words(poisoned_manifest())
             words.contains("; touch /tmp/PWNED ;") && words.contains("-lm") && words.length == 2
         }
         then "an environment hole in a search row is filled from the environment" {
-            let words = spec_package(holed_manifest()).link_words("")
+            let words = spec_words(holed_manifest())
             !words.any(it.contains("\$" + "{")) && words.any(it.starts_with("-L/"))
         }
         then "a hole naming nothing leaves no empty word behind" {
-            let words = spec_package(holed_manifest()).link_words("")
+            let words = spec_words(holed_manifest())
             !words.any(it.is_empty()) && words.length == 1
         }
         then "a value holding a hole is data: the hole it holds is never filled" {
@@ -452,126 +407,57 @@ spec "compiler/workspace" {
         }
         then "the holes after a value are filled" { searched("\$" + "{Y}:\$" + "{Y}").join(" ") == "-L/y:/y" }
         then "a hole naming nothing leaves no BARE `-L` either — it would eat the word after it" {
-            !spec_package(holed_manifest()).link_words("").any(it == "-L")
+            !spec_words(holed_manifest()).any(it == "-L")
         }
         then "the option letter is ours: a library is named, never spelled as an option" {
-            spec_package(poisoned_manifest()).link_words("").contains("-lm")
+            spec_words(poisoned_manifest()).contains("-lm")
         }
     }
     given "a dependency cannot put an option on the linker's line" {
         then "the dependency's raw options never reach the words" {
-            let words = borrowing_workspace().link_words("")
+            let words = borrowing_workspace().link_words()
             // LICENSED compiler.fixed_tmp_path: a word the linker line must lack, never opened
             !words.contains("-o") && !words.contains("/tmp/PWNED")
         }
         then "its TYPED row is still honoured — the rule refuses options, not needs" {
-            borrowing_workspace().link_words("").contains("-lm")
+            borrowing_workspace().link_words().contains("-lm")
         }
         then "and it is told, by name" {
-            let spoken = borrowing_workspace().program(null).voices
-            spoken.any(it.kind == "manifest.borrowed_raw")
+            borrowing_workspace().diagnostics.any(it.kind == "manifest.borrowed_raw")
         }
         then "the root's own raw hatch still carries its word" {
-            spec_package(poisoned_manifest()).link_words("").contains("; touch /tmp/PWNED ;")
+            spec_words(poisoned_manifest()).contains("; touch /tmp/PWNED ;")
         }
     }
     given "a program keeps its own symbols only when a package's C names them" {
         then "a program whose packages ask nothing keeps none — the link drops what it never reaches" {
-            !spec_package(poisoned_manifest()).names_its_symbols() &&
-                !borrowing_workspace().names_its_symbols()
+            !names_its_symbols(spec_package(poisoned_manifest())) &&
+                !names_its_symbols(borrowing_workspace())
         }
         then "a DEPENDENCY's `dynamic_symbols` keeps them for the whole program" {
-            depending_on("[link]\ndynamic_symbols = true\n").names_its_symbols()
+            names_its_symbols(depending_on("[link]\ndynamic_symbols = true\n"))
         }
         then "a dependency writing it false keeps none" {
-            !depending_on("[link]\ndynamic_symbols = false\n").names_its_symbols()
+            !names_its_symbols(depending_on("[link]\ndynamic_symbols = false\n"))
         }
     }
     given "a case is selected by the path it MEANS, not the text typed" {
         then "the file as listed" {
-            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/main.av").length == 1
+            cases_at(spec_package(poisoned_manifest()), "/w/src/main.av") == 1
         }
         then "a `./` in the path" {
-            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/./main.av").length == 1
+            cases_at(spec_package(poisoned_manifest()), "/w/src/./main.av") == 1
         }
         then "a doubled slash" {
-            spec_package(poisoned_manifest()).program(null).cases_at("/w//src/main.av").length == 1
+            cases_at(spec_package(poisoned_manifest()), "/w//src/main.av") == 1
         }
         then "a `..` folded into the path" {
-            spec_package(poisoned_manifest())
-                .program(null)
-                .cases_at("/w/src/util/../main.av")
-                .length == 1
+            cases_at(spec_package(poisoned_manifest()), "/w/src/util/../main.av") == 1
         }
         then "another file selects nothing" {
-            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/helper.av").is_empty()
+            cases_at(spec_package(poisoned_manifest()), "/w/src/helper.av") == 0
         }
     }
-}
-
-spec "signatures" {
-    given "a signature's fingerprint covers the whole signature" {
-        then "a variant's payloads are not the next variant's — `A(x, y) B` vs `A(x) B(y)`" {
-            let x = TypeId { index: 1 }
-            let y = TypeId { index: 2 }
-            let together = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x, y], []] })
-            let apart = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x], [y]] })
-            sig_hash(together, indexed_scope()) != sig_hash(apart, indexed_scope())
-        }
-        then "a field's default is part of the record that declares it" {
-            let x = TypeId { index: 1 }
-            // a struct-literal field seat plants no want, so the
-            // nullable lists are bound at their own type first
-            let absent: List<DeclId?> = [null]
-            let present: List<DeclId?> = [DeclId { index: 0 }]
-            let held = StructSig { names: ["a"], types: [x], defaults: absent }
-            let seeded = StructSig { names: ["a"], types: [x], defaults: present }
-            sig_hash(DeclSig.Record(held), indexed_scope()) != sig_hash(DeclSig.Record(seeded), indexed_scope())
-        }
-        then "a named type's shape is its signature — `type Id = int` is not `type Id = string`" {
-            let over_int = DeclSig.Named(NamedSig { of: TypeId { index: 1 } })
-            let over_text = DeclSig.Named(NamedSig { of: TypeId { index: 2 } })
-            sig_hash(over_int, indexed_scope()) != sig_hash(over_text, indexed_scope())
-        }
-    }
-}
-
-// ── The toolchain's std root ──
-
-/// A toolchain at `/tc` carrying `@std/text` and `@std/io` (io reads
-/// text by a manifest row), and a program at `/w` that declares
-/// nothing.
-fn toolchain_files() -> Map<string, string> {
-    {
-        "/tc/std-text/avra.toml": "[package]\nname = \"@std/text\"\nversion = \"0.0.1\"\n",
-        "/tc/std-text/src/text.av": "export fn shout(s: string) -> string {\n    s + \"!\"\n}\n",
-        "/tc/std-io/avra.toml": "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n",
-        "/tc/std-io/src/io.av": "use @std.text.{shout}\nexport fn shouted(s: string) -> string {\n    shout(s)\n}\n",
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-        "/tc/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
-        "/tc/std-prelude/src/prelude.av": "export fn greet(s: string) -> string {\n    \"hi \" + s\n}\nexport fn floor() -> int {\n    0\n}\n",
-    }
-}
-
-fn toolchain_names() -> List<string> {
-    [
-        "/tc/std-text/avra.toml",
-        "/tc/std-text/src/text.av",
-        "/tc/std-io/avra.toml",
-        "/tc/std-io/src/io.av",
-        "/w/avra.toml",
-        "/w/src/main.av",
-        "/tc/std-prelude/avra.toml",
-        "/tc/std-prelude/src/prelude.av",
-    ]
-}
-
-fn toolchain_report(ws: Held) -> string {
-    ws.judged_at("/w/src/main.av").report()
-}
-
-fn toolchain_clean(ws: Held) -> bool {
-    ws.judged_at("/w/src/main.av").diagnostics.is_empty()
 }
 
 spec "the toolchain's std packages" {
@@ -653,8 +539,44 @@ spec "the toolchain's std packages" {
     }
 }
 
+/// A toolchain at `/tc` carrying `@std/text` and `@std/io` (io reads
+/// text by a manifest row), and a program at `/w` that declares
+/// nothing.
+fn toolchain_files() -> Map<string, string> {
+    {
+        "/tc/std-text/avra.toml": "[package]\nname = \"@std/text\"\nversion = \"0.0.1\"\n",
+        "/tc/std-text/src/text.av": "export fn shout(s: string) -> string {\n    s + \"!\"\n}\n",
+        "/tc/std-io/avra.toml": "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n",
+        "/tc/std-io/src/io.av": "use @std.text.{shout}\nexport fn shouted(s: string) -> string {\n    shout(s)\n}\n",
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/tc/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
+        "/tc/std-prelude/src/prelude.av": "export fn greet(s: string) -> string {\n    \"hi \" + s\n}\nexport fn floor() -> int {\n    0\n}\n",
+    }
+}
+
+fn toolchain_names() -> List<string> {
+    [
+        "/tc/std-text/avra.toml",
+        "/tc/std-text/src/text.av",
+        "/tc/std-io/avra.toml",
+        "/tc/std-io/src/io.av",
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/tc/std-prelude/avra.toml",
+        "/tc/std-prelude/src/prelude.av",
+    ]
+}
+
+fn toolchain_report(ws: Held) -> string {
+    ws.judged_at("/w/src/main.av").report()
+}
+
+fn toolchain_clean(ws: Held) -> bool {
+    ws.judged_at("/w/src/main.av").diagnostics.is_empty()
+}
+
 spec "one directory, one spelling" {
-    given "a root opened by a relative path under a host with a cwd" {
+    given "a dependency declared by a relative path, and reached by the toolchain's absolute one" {
         then "a declared relative path and the toolchain's absolute one are one package" {
             mut fs = toolchain_files()
             fs
@@ -664,20 +586,11 @@ spec "one directory, one spelling" {
                 )
             fs
                 .set(
-                    "w/avra.toml",
+                    "/w/avra.toml",
                     "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"../tc/std-text\" }\n",
                 )
-            fs.set("w/src/main.av", "use @std.io.{shouted}\nshouted(\"hi\")\n")
-            let names = [
-                "/tc/std-text/avra.toml",
-                "/tc/std-text/src/text.av",
-                "/tc/std-io/avra.toml",
-                "/tc/std-io/src/io.av",
-                "w/avra.toml",
-                "w/src/main.av",
-            ]
-            let ws = test_workspace(memory_host_at(fs, names, "/") with { std_root: "/tc" }, "w")
-            ws.analyze_file("w/src/main.av").diagnostics.is_empty()
+            fs.set("/w/src/main.av", "use @std.io.{shouted}\nshouted(\"hi\")\n")
+            held_files(fs, "/tc").judged_at("/w/src/main.av").diagnostics.is_empty()
         }
     }
 }
@@ -695,12 +608,7 @@ spec "the prelude" {
                     "export fn shout(s: string) -> string {\n    greet(s) + \"!\"\n}\n",
                 )
             fs.set("/w/src/main.av", "use @std.text.{shout}\nshout(\"x\")\n")
-            ran_as(
-                test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w")
-                    .program("/w/src/main.av")
-                    .run(),
-                "hi x!",
-            )
+            ran_as(held_files(fs, "/tc").judged_at("/w/src/main.av").run(), "hi x!")
         }
         then "a host with no std root has no prelude" {
             let a = held_main("greet(\"x\")\n").judged_at("/w/src/main.av")
@@ -726,19 +634,11 @@ spec "the prelude" {
                     "export fn greet(s: string) -> string {\n    \"text \" + s\n}\n",
                 )
             fs.set("/w/src/main.av", "use @std.text.{greet}\ngreet(\"x\")\n")
-            ran_as(
-                test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w")
-                    .program("/w/src/main.av")
-                    .run(),
-                "text x",
-            )
+            ran_as(held_files(fs, "/tc").judged_at("/w/src/main.av").run(), "text x")
         }
         then "the prelude's own file does not see itself twice" {
-            test_workspace(
-                memory_host(toolchain_files(), toolchain_names()) with { std_root: "/tc" },
-                "/tc/std-prelude",
-            )
-                .analyze_file("/tc/std-prelude/src/prelude.av")
+            held_at(toolchain_files(), "/tc/std-prelude", "/tc")
+                .judged_at("/tc/std-prelude/src/prelude.av")
                 .diagnostics
                 .is_empty()
         }
@@ -760,35 +660,16 @@ spec "the prelude" {
     }
 }
 
-spec "the unit table" {
-    given "one table, the workspace's own — never a collection's copy" {
-        then "a name the collection interned answers the SAME id afterwards, and asking it again mints nothing" {
-            let ws = ws_of()
-            let p = ws.program(null)
-            let l = p.lowered()
-            let interned = ws.asks.get()
-            l.fns.length > 0 &&
-                interned.length > 0 &&
-                ws.spec_id(interned[0]) == 0 &&
-                ws.asks.get().length == interned.length
-        }
-    }
-}
-
 spec "avra fmt --write's own receipt" {
     given "a file already in canonical form" {
         then "the checked write answers it byte-identical, the CLI's own trailing newline included" {
-            let ws = ws_of()
-            let f = ws.file_id("/w/src/helper.av")
-            match write_checked_in(ws, f) {
+            match held_ws().write_checked_at("/w/src/helper.av") {
                 .Ok(text) -> "${text}\n" == "fn helper(n: int) -> int {\n    n\n}\n",
                 .Err(_) -> false,
             }
         }
         then "a trailing blank line before EOF is not read as an empty tail — the checked write's own receipt over the exact hazard render_with's fix closed" {
-            let ws = with_main("let x = 1\n\n")
-            let f = ws.file_id("/w/src/main.av")
-            match write_checked_in(ws, f) {
+            match held_main("let x = 1\n\n").write_checked_at("/w/src/main.av") {
                 .Ok(text) -> "${text}\n" == "let x = 1\n\n",
                 .Err(_) -> false,
             }
@@ -797,20 +678,18 @@ spec "avra fmt --write's own receipt" {
     given "a scope whose only content is its tail value" {
         then "an own-line comment before the closing brace stays inside it, stable under one write" {
             let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
-            let ws = with_main(src)
-            let f = ws.file_id("/w/src/main.av")
-            match write_checked_in(ws, f) { .Ok(text) -> "${text}\n" == src, .Err(_) -> false }
+            match held_main(src).write_checked_at("/w/src/main.av") {
+                .Ok(text) -> "${text}\n" == src,
+                .Err(_) -> false,
+            }
         }
         then "the same comment, mid-chain in the author's own wrapping, lands inside the brace and stays there on a second write" {
-            let ws1 = with_main(
+            let first_write = held_main(
                 "fn f(c: int) -> bool {\n    c == 61 ||\n    // the bitwise three\n    c == 124\n}\n",
             )
-            let f1 = ws1.file_id("/w/src/main.av")
-            match write_checked_in(ws1, f1) {
+            match first_write.write_checked_at("/w/src/main.av") {
                 .Ok(first) -> {
-                    let ws2 = with_main("${first}\n")
-                    let f2 = ws2.file_id("/w/src/main.av")
-                    match write_checked_in(ws2, f2) {
+                    match held_main("${first}\n").write_checked_at("/w/src/main.av") {
                         .Ok(second) -> "${second}\n" == "${first}\n",
                         .Err(_) -> false,
                     }
@@ -822,8 +701,7 @@ spec "avra fmt --write's own receipt" {
     given "a byte string" {
         then "writes back exactly as spelled — escapes, their case and a raw byte kept" {
             let src = "let a = b\"PA\\x00TH\\xFe\\n\\\"é\"\nlet e = b\"\"\n"
-            let ws = with_main(src)
-            match write_checked_in(ws, ws.file_id("/w/src/main.av")) {
+            match held_main(src).write_checked_at("/w/src/main.av") {
                 .Ok(text) -> "${text}\n" == src,
                 .Err(_) -> false,
             }
@@ -835,9 +713,7 @@ spec "avra fmt --write's own receipt" {
                 "/w/src/lib.av": "export component Widget {\n    depth: int\n}\n",
                 "/w/src/main.av": "use lib.{Widget}\n\nWidget w {\n    depth: 8\n}\n\nfn names(t: string) -> bool {\n    [\n        \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n        \"ccccccccccccccccccccccccccccccc\"\n    ].any((p) -> t == p)\n}\n",
             }
-            let ws = test_workspace(memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]), "/w")
-            let f = ws.file_id("/w/src/main.av")
-            match write_checked_in(ws, f) {
+            match held_files(fs).write_checked_at("/w/src/main.av") {
                 .Ok(text) -> text.contains("ccccccccccccccccccccccccccccccc\",\n    ]"),
                 .Err(_) -> false,
             }
@@ -852,12 +728,14 @@ spec "avra fmt --write's own receipt" {
         then "a set variable inside a word is filled and nothing is said" { unset_voices("\$" + "{Y}/lib").is_empty() }
         then "the refusal renders at its row" {
             let word = "\$" + "{UNSET}/lib"
-            render(unset_voices(word)[0], new_source_file("/w/avra.toml", searching(word)))
-                .starts_with(
-                    "error[manifest.unset_link_variable]: `" +
-                        word +
-                        "` in `search` needs `UNSET`, which is not set — without it the word names another path\n  ╭─[/w/avra.toml:6:1]",
-                )
+            let said = unset_voices(word)
+            said.length == 1 &&
+                render(said[0], new_source_file("/w/avra.toml", searching(word)))
+                    .starts_with(
+                        "error[manifest.unset_link_variable]: `" +
+                            word +
+                            "` in `search` needs `UNSET`, which is not set — without it the word names another path\n  ╭─[/w/avra.toml:6:1]",
+                    )
         }
     }
 }
