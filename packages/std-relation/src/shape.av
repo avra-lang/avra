@@ -8,6 +8,7 @@
 //! variants. A record crosses by POSITION and an enum by its variant's
 //! PLACE, so either may grow at its end and nowhere else.
 use @std.text.{parse_int}
+use stable.{StableHasher, stable_hasher}
 
 /// One slot: a record's field or an enum's variant. `ty` spells what
 /// it carries, marks included; `defaulted` says a reader may fill it
@@ -140,15 +141,32 @@ export fn reaches_met(mut met: Map<string, ShapeReach>, run: string) {
     }
 }
 
-/// A coded type's reach of itself, spelled as a run of one, its codec's header `hash` filled.
-export fn reach_coded(run: string, hash: int) -> ShapeReach {
-    let c = Parts { all: run.split("|"), at: Cell.new(1) }
-    let r = c.reach()!
-    match r.form {
-        .Coded(_, scoped, tagged) -> r with { form: Form.Coded(hash, scoped, tagged) },
-        .Unsaid or .Record or .Variants or .Over or .Dense -> r,
+/// A reach spelled as a run of one.
+export fn reach_unspelled(run: string) -> ShapeReach { Parts { all: run.split("|"), at: Cell.new(1) }.reach()! }
+
+/// A coded type as a reach of a type that wears it, read from its own descriptor `own`: its
+/// declaration's fingerprint `shape`, its codec's header `hash`, its texts' crossing and its
+/// slots.
+export fn reach_described(own: string, shape: int, hash: int) -> ShapeReach {
+    let d = descriptor_unspelled(own)!
+    ShapeReach {
+        name: d.name,
+        shape: shape,
+        form: Form.Coded(hash, d.scoped, d.tagged),
+        slots: d.slots,
     }
 }
+
+/// A coded type's fingerprint: its name's fingerprint `seed`, the byte layout's number, the
+/// reached run's count, then each reach's value.
+export fn shape_fold(seed: int, format: int, parts: List<int>) -> int {
+    parts
+        .fold(stable_hasher(seed).int(format).count(parts.length), (h: StableHasher, p: int) -> h.int(p))
+        .finish()
+}
+
+/// Whether no name of `a` is among `b`.
+export fn apart(a: List<string>, b: List<string>) -> bool { !a.any((n: string) -> b.contains(n)) }
 
 /// A coded type's descriptor: what `own` spells, its fingerprint and reaches filled.
 export fn descriptor_filled(own: string, hash: int, reached: List<ShapeReach>) -> string {
