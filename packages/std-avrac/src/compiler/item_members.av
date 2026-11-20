@@ -324,7 +324,7 @@ fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: int) -> TypedNo
         store: read.store,
         type_at: (k: int) -> if k < types.length { types[k] } else { null },
         lo: mine.base,
-        hi: read.items.find(it.at > at)?.base ?? read.store.expr_count(),
+        hi: read.base_after(at),
         entry: true,
         file: file,
         reader: file.package_name,
@@ -1416,7 +1416,7 @@ fn member_answers(engine: QueryEngine, subject: SignedType, name: string, reader
 /// there, or the file reads as no items here.
 fn home_unsettled(engine: QueryEngine, subject: SignedType) -> bool {
     match subject.head {
-        .Declared(file, _) -> !item_held(engine, file, 0) || !generator_sites(engine, file).is_empty(),
+        .Declared(file, _) -> !holds_items(engine, file) || !generator_sites(engine, file).is_empty(),
         rest -> false,
     }
 }
@@ -1442,9 +1442,9 @@ fn home_gives_named(
     name: string,
     statics: bool,
 ) -> bool {
-    !item_held(engine, file, 0) ||
+    !holds_items(engine, file) ||
         !generator_sites(engine, file).is_empty() ||
-        (0..item_count(engine, file)).any(writes_member(engine, file, it, declared, name, statics))
+        item_ids(engine, file).any(writes_member(engine, file, it, declared, name, statics))
 }
 
 /// Whether an impl of `declared` the written item `at` of `file` holds writes a static `name`, or

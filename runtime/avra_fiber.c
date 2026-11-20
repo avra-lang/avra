@@ -1912,6 +1912,7 @@ static void switched_to_fresh(Fiber* self, Fiber* next) {
     g_current = next;
     avra_task_local = next->local;
     avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
+    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);
@@ -1933,6 +1934,7 @@ static inline void switch_to(Fiber* next) {
     g_current = next;
     avra_task_local = next->local;
     avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
+    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);

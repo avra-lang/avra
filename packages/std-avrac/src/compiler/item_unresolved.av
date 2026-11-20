@@ -51,8 +51,7 @@ fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs
 /// cut off where it comes out the same, so an item's laws read it and none of the file's other items.
 @cut_query
 fn read_refused(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    (0..item_count(engine, file))
-        .any((i: int) -> read_item(engine, file, i).store.refusals().any(builder_refused(it)))
+    item_ids(engine, file).any((i: int) -> item_read_refused(engine, file, i))
 }
 
 /// Whether `r` is a builder's refusal of what the grammar read.
@@ -110,7 +109,7 @@ fn early_reads(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fo
 /// Where the statement of `file`'s top level that binds `name` stands, said beside a read of it: in
 /// its own item.
 fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Aside {
-    let found = [Aside { label: "defined here", at: sp!, item: i } for i in 0..item_count(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.let_name(s) == name for sp in [item.store.stmt_span(s)] if sp != null]
+    let found = [Aside { label: "defined here", at: sp!, item: i } for i in item_ids(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.let_name(s) == name for sp in [item.store.stmt_span(s)] if sp != null]
     found.first() ?? Aside { label: "defined here", at: null }
 }
 
@@ -214,10 +213,7 @@ fn names_seen(engine: QueryEngine, file: SourceFileAddress, space: Space) -> Lis
 /// The names `file` binds at its top level, statement by statement: one answer a file, which every
 /// item's law reads and an edit that binds no top-level name leaves standing.
 @cut_query
-fn top_level_defined(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
-    let items = [read_item(engine, file, i) for i in 0..item_count(engine, file)]
-    [n! for item in items for s in item.stmts for n in [item.store.let_name(s)] if n != null]
-}
+fn top_level_defined(engine: QueryEngine, file: SourceFileAddress) -> List<string> { [n for i in item_ids(engine, file) for n in item_lets(engine, file, i)] }
 
 /// a name read that nothing binds or declares
 export law value_unresolved {

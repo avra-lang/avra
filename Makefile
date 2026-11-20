@@ -1438,13 +1438,19 @@ pool-check:
 # assembled grammar's untold run written as code, one fn per rule. A
 # parser the grammar no longer prints never runs (`avra()` holds it to
 # the grammar's print and falls back to the engine), so a stale one is
-# a slow compiler, never a wrong one; this keeper refuses it.
+# a slow compiler, never a wrong one; this keeper refuses it. A fresh one
+# is then held to the engine on every file of std-avrac: a form whose
+# rule the generated parser cannot hold traps or differs there.
 parser:
 	@./avra grammar --untold > build/untold_parser.av.gen
 	@cmp -s build/untold_parser.av.gen packages/std-avrac/src/compiler/untold_parser.av || { \
 	  echo "parser: packages/std-avrac/src/compiler/untold_parser.av is not what the grammar makes — it is generated, never edited:"; \
 	  echo "parser:   ./avra grammar --untold > packages/std-avrac/src/compiler/untold_parser.av"; \
 	  diff packages/std-avrac/src/compiler/untold_parser.av build/untold_parser.av.gen 2>/dev/null | head -20; exit 1; }
+	@./avra parsers packages/std-avrac > build/parsers.out 2>&1 || { \
+	  grep -vE '^watch' build/parsers.out | tail -20; \
+	  echo "parser: the generated parser and the grammar engine part on a file of std-avrac, whose feature cases hold every form"; exit 1; }
+	@grep '^parsers:' build/parsers.out
 	@echo "parser: $$(grep -c '^fn avra_r' packages/std-avrac/src/compiler/untold_parser.av) rule(s) run as generated code, made from the grammar the compiler assembles"
 
 # EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.

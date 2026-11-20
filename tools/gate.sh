@@ -19,22 +19,12 @@
 #
 # A test row runs every suite (AVRA_SUITE_ALL=1), so it names every failing case, never only the first.
 #
-# GATE_OLD_PATH=0 drops every row that compares against the old path (they read AVRA_PROGRAM=0);
-# when the old path goes, its default goes to 0 and those rows go with one line each.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
-# THE NET IS OFF unless a row's claim is the net: the old path's check before every program-layer
-# compile doubles what each row costs and proves nothing a row here asks of it. The rows that keep it
-# (AVRA_PROGRAM_NET=1) are the ones that count what it says: the build slice's net-on cli builds and
-# their "program-layer false refusal" count, the findings slices' build of every package, held to that
-# same count, and the cli's suite, which holds the words a user meets through a child build/avra (at
-# slice_cli). `tapes --findings` passes no door, so the net never stood in it.
-export AVRA_PROGRAM_NET=0
 
-OLD_PATH=${GATE_OLD_PATH:-1}
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
 # every `test` row's failing NAMES are held to tools/gate/<package>.names, the cases a sandbox fails
@@ -44,7 +34,7 @@ DOORS_B="std-ui std-http"
 
 slices() {
     cat <<'EOF'
-build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm, net on and off, 0 false refusals
+build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm
 avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
 avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
 avrac-b    test packages/std-avrac — src/features/[a-e]*
@@ -62,17 +52,11 @@ sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run ov
 cost       make cost: the census compiler, cold, over tools/cost.baseline's snapshot; every count within 0.05% of its row
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
-findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
+findings-a tapes --findings on std-avrac and cli, 0 refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
 findings-d the last third
-refusal-a  witness_program_refusal over a third of its cases, dealt in turn
-refusal-b  the next third
-refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack; tools/queue-witness run native
-warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
-warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
-warnings-c witness_program_warnings — the cli edited, built warm on the program layer
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, frame_place_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack, carried_store_attack, derive_members_witness; tools/queue-witness run native
 edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived"
 edit-b     witness_program_edit, WITNESS_ONLY=1
 edit-c     witness_program_edit, WITNESS_ONLY=5
@@ -176,7 +160,6 @@ judged() {
 }
 
 # a row that compares against the old path: run only while the old path stands
-old_row() { [ "$OLD_PATH" = 1 ] || return 0; row "$@"; }
 
 # every store under the packages named emptied — a nested package's and a program test's too — so the
 # rows after read them cold
@@ -185,26 +168,25 @@ cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec fin
 # build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made in
 # ONE generation — from the committed seed's link where no compiler stands, else from the one that does
 # — with the package libraries beside it, built without building the compiler again. A gate's
-# compiler makes no claim of the net, so it is built without it; the two-generation fixed point is the
-# build slice's.
+# two-generation fixed point is the build slice's.
 compiler() {
     if compiler_stands; then return 0; fi
     if [ ! -x build/avra ]; then row compiler-recover make recover || return 1; fi
-    row compiler-gen1 env AVRA_PROGRAM_NET=0 make avra || return 1
-    row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
+    row compiler-gen1 make avra || return 1
+    row compiler-libs make -o avra libs
 }
 
-# what `$1`'s cold build of packages/cli took, in seconds, net on or off by `$2`
+# what the cold build of packages/cli took, in seconds, and the warm one after it
 cli_built() {
     cold cli
     find "$AVRA_CACHE_DIR" -mindepth 1 -delete
     c0=$(date +%s)
-    row "cli-build-$1-cold" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
+    row cli-build-cold env -u AVRA_STORE_KEPT_HERE build/avra build packages/cli || return 1
     c1=$(date +%s)
-    row "cli-build-$1-warm" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
-    echo "cli build net $1: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
+    row cli-build-warm env -u AVRA_STORE_KEPT_HERE build/avra build packages/cli || return 1
+    echo "cli build: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
     # the warm build's heir waited out, before a row after empties the store it saves
-    env AVRA_PROGRAM_NET="$2" build/avra build packages/cli >/dev/null 2>&1 || :
+    build/avra build packages/cli >/dev/null 2>&1 || :
 }
 
 slice_build() {
@@ -212,9 +194,7 @@ slice_build() {
     row avra-a make avra && cp build/avra "$out/avra-a"
     cold cli
     row avra-b make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
-    cli_built on 1
-    cli_built off 0
-    judged cli-build-false-refusals "$(cat "$out"/cli-build-*.log | grep -c 'program-layer false refusal')"
+    cli_built
 }
 
 # the std-avrac suite over `$@`, its paths under the package: one row for every path of std-avrac's
@@ -282,15 +262,11 @@ tested() {
 # the lines the pin file `$1` lists, sorted, each once; none where there is no such file
 listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
-# THE CLI'S SUITE RUNS WITH THE NET: its cases run build/avra as a user does and hold the words a user
-# meets, refusals among them, and where the program layer accepts a program the old path refuses, those
-# words are the net's — so the suite holds the shipped default, the net on. The one suite that runs the
-# compiler as a child; every other test row holds what it runs in-process.
+# THE CLI'S SUITE: the one suite that runs the compiler as a child; every other test row holds what it
+# runs in-process.
 slice_cli() {
     cold cli
-    export AVRA_PROGRAM_NET=1
     children_kept tested cli-suite packages/cli
-    export AVRA_PROGRAM_NET=0
     children_of_failed cli-suite
 }
 
@@ -361,16 +337,12 @@ slice_doors_b() {
     row ui-host make -s -o avra ui-host
 }
 
-# each package named: tapes --findings with no refusal; built — a library stops at "declares no entry
-# point", which is no refusal — with no program-layer false refusal; the cli's builds are the build slice's
+# each package named: tapes --findings with no refusal
 findings_on() {
     for p in "$@"; do
         cold "$p"
         row "findings-$p" build/avra tapes "$root/packages/$p" --findings
         judged "refusals-$p" "$(grep -c '^error\[' "$out/findings-$p.log")"
-        [ "$p" != cli ] || continue
-        sh tools/bounded.sh "$ROW_SECS" env AVRA_PROGRAM_NET=1 build/avra build "packages/$p" >"$out/build-$p.log" 2>&1
-        judged "false-refusals-$p" "$(grep -c 'program-layer false refusal' "$out/build-$p.log")"
     done
 }
 HEAVY_FINDINGS="std-avrac cli"
@@ -378,11 +350,6 @@ slice_findings_a() { findings_on $HEAVY_FINDINGS; }
 # a third of every other package, the `$1`-th (from 0)
 findings_third() {
     findings_on $(for d in packages/*/src; do basename "$(dirname "$d")"; done | grep -vxE "$(echo $HEAVY_FINDINGS | tr ' ' '|')" | dealt "$1" 3)
-}
-
-# the refusal witness over a third of its cases — each a package (tools/lib/cases.sh) — the `$1`-th (from 0)
-refusal_third() {
-    old_row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$1" 3)
 }
 
 slice_witness_b() {
@@ -396,26 +363,21 @@ slice_witness_b() {
     row docs-cache-attack sh tools/docs_cache_attack.sh
     row obj-gone-attack sh tools/obj_gone_attack.sh
     row chunk-owed-attack sh tools/chunk_owed_attack.sh
+    row frame-place-attack sh tools/frame_place_attack.sh
     row moved-tree-attack sh tools/moved_tree_attack.sh
     row layer-sites-attack sh tools/layer_sites_attack.sh
     row closure-gather-attack sh tools/closure_gather_attack.sh
     row store-bound-attack sh tools/store_bound_attack.sh
     row path-leak-attack sh tools/path_leak_attack.sh
     row case-leftover-attack sh tools/case_leftover_attack.sh
-    old_row fixes-witness sh tools/witness_program_fixes.sh build/avra
     row root-listing-attack sh tools/root_listing_attack.sh
     row two-compilers-attack sh tools/two_compilers_attack.sh
     row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
     row queue-witness build/avra run tools/queue-witness
     row std-answers-attack sh tools/std_answers_attack.sh build/avra
-    old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
-    old_row suites-witness sh tools/witness_program_suites.sh build/avra
-    old_row doors-witness sh tools/witness_program_doors.sh build/avra
-    old_row differential-witness sh tools/witness_program_differential.sh build/avra
+    row carried-store-attack env CARRIED_ATTACK_AVRA="$root/build/avra" sh tools/carried_store_attack.sh
+    row derive-members-witness env WITNESS_NET_ONLY=1 sh tools/derive_members_witness.sh build/avra
 }
-
-# the warnings witness's part `$1`
-warnings_part() { old_row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
 
 # the edit witness's edits `$1`
 edit_part() { row edit-witness env WITNESS_ONLY="$1" sh tools/witness_program_edit.sh build/avra; }
@@ -449,13 +411,7 @@ if compiler; then
         findings-b) findings_third 0 ;;
         findings-c) findings_third 1 ;;
         findings-d) findings_third 2 ;;
-        refusal-a) refusal_third 0 ;;
-        refusal-b) refusal_third 1 ;;
-        refusal-c) refusal_third 2 ;;
         witness-b) slice_witness_b ;;
-        warnings-a) warnings_part cold ;;
-        warnings-b) warnings_part "check cases" ;;
-        warnings-c) warnings_part edit ;;
         edit-a) edit_part "embed infer composed gathered check lawed derived" ;;
         edit-b) edit_part 1 ;;
         edit-c) edit_part 5 ;;

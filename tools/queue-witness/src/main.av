@@ -15,7 +15,7 @@
 //! prints what it saw and exits 1 when that is not what the laws owe.
 use @std.cli.{argv}
 use @std.io.{list_dir, make_dirs, remove}
-use @std.process.{Child, Command, Exit, Ready, cmd, exit, inherited, tool_at}
+use @std.process.{Child, Command, Exit, Ready, cmd, exit, inherited, this_program}
 use @std.queue.{queue, worker, drain, Dead, Delivery, DrainError, HomeError}
 use @std.queue_store.durable.{db, stored}
 use @std.queue_store.fault.{homed}
@@ -24,9 +24,6 @@ use @std.queue_store.queue_store.{open_logged}
 use @std.relation.{codec}
 use @std.sqlite.{sql}
 use @std.time.{ms, now_ms, secs, sleep, stamp}
-
-extern fn avra_selfhost_get_arg_cstr(i: int) -> string
-extern fn avra_self_dir() -> string
 
 @codec
 type Job = { n: int }
@@ -37,14 +34,9 @@ const items: int = 40
 /// The steps a worker is stopped at.
 const steps: List<string> = ["taken", "writing", "settled"]
 
-/// This program's own binary.
-fn me() -> string {
-    "${avra_self_dir()}/${avra_selfhost_get_arg_cstr(0).split("/").last() ?? ""}"
-}
-
 /// This program run as the part `words` name, its output read.
 fn part(words: List<string>) -> Command {
-    cmd(tool_at("self", me()), words) with { env: inherited(), timeout: secs(30), stop_grace: ms(200) }
+    cmd(this_program(), words) with { env: inherited(), timeout: secs(30), stop_grace: ms(200) }
 }
 
 fn count(text: string) -> Result<int, HomeError> {

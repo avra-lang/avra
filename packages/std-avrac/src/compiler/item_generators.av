@@ -502,7 +502,7 @@ export fn wraps_body(
 /// How many fields `@std/meta`'s `Fn` declares: the slots a crossed `Fn` is written with.
 fn fn_slots(engine: QueryEngine) -> int {
     let d? = declarations_of(engine, META, [], false, META_FN).find(it.kind == ItemKind.Record) else { return 0 }
-    let sig? = record_signature(engine, d.file, d.name) else { return 0 }
+    let sig? = record_signature_written(engine, d.file, d.name) else { return 0 }
     sig.fields.length
 }
 
@@ -524,7 +524,7 @@ export fn validator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<
 
 /// Each annotation's own fn or derived trait a file's declarations name, in the order written.
 fn annotated_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> {
-    let scope? = file_scope(engine, file) else { return [] }
+    let scope? = written_file_scope(engine, file) else { return [] }
     flatten([declared_sites(engine, scope, file, d) for d in file_declares(engine, file).names])
         .concat(method_sites(engine, scope, file))
 }
@@ -535,7 +535,7 @@ fn method_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress) 
     GeneratorSite,
 > {
     flatten(
-        [impl_method_sites(engine, scope, a) for k in 0..item_count(engine, file) for a in written_impls_at(engine, scope, file, k)],
+        [impl_method_sites(engine, scope, a) for k in item_ids(engine, file) for a in written_impls_at(engine, scope, file, k)],
     )
 }
 
@@ -544,8 +544,8 @@ fn method_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress) 
 fn written_impls_at(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, at: int) -> List<
     ImplAt,
 > {
-    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in item_impls(engine, file, at) for d in [
-        declared_of(resolved_in(engine, scope, file, Space.Type, i.target).named()) ?? own_declared(
+    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in filed_impls(engine, file, at) for d in [
+        declared_of(stratum_resolved(engine, scope, file, Space.Type, i.target).named()) ?? own_declared(
             i.target,
         ),
     ] if d != null]
@@ -570,7 +570,7 @@ fn impl_method_sites(engine: QueryEngine, scope: FileScope, a: ImplAt) -> List<G
 
 /// The sites written on the method `name` a file's impls write, as `site` names one.
 export fn method_sites_of(engine: QueryEngine, m: MethodSite, name: string) -> List<GeneratorSite> {
-    let scope? = file_scope(engine, m.at.file) else { return [] }
+    let scope? = written_file_scope(engine, m.at.file) else { return [] }
     [x for x in impl_method_sites(engine, scope, m.at) if x.name == name && x.method?.statics == m.statics]
 }
 
@@ -578,7 +578,7 @@ export fn method_sites_of(engine: QueryEngine, m: MethodSite, name: string) -> L
 export fn declaration_sites(engine: QueryEngine, file: SourceFileAddress, d: DeclaredName) -> List<
     GeneratorSite,
 > {
-    let scope? = file_scope(engine, file) else { return [] }
+    let scope? = written_file_scope(engine, file) else { return [] }
     declared_sites(engine, scope, file, d)
 }
 
@@ -719,7 +719,7 @@ fn annotation_sites(
     a: Annotation,
 ) -> List<GeneratorSite> {
     let store = read.store
-    let named? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return [] }
+    let named? = stratum_resolved(engine, scope, file, Space.Value, a.name).named() else { return [] }
     if named.file.package_name == META && named.name == DERIVE {
         return [derive_site(name, item, t!) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
     }
@@ -916,7 +916,7 @@ fn handed_arg(
     let store = read.store
     let seat? = meta_seat_of(ty) else { return spelled_arg(engine, scope, file, read, e, 0) }
     let name? = store.ident_name(e) else { return HandedArg.Unfit(unnamed_decl()) }
-    let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Unfit(unnamed_decl()) }
+    let d? = stratum_resolved(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Unfit(unnamed_decl()) }
     if seat.takes(d.kind) { HandedArg.Decl(HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat }) } else { HandedArg.Unfit(unnamed_decl()) }
 }
 
@@ -942,12 +942,12 @@ export fn spelled_arg(
     }
     let name? = store.ident_name(e) else { return HandedArg.Uncrossed(unspelled_arg()) }
     if depth >= CONST_CHAIN { return HandedArg.Uncrossed(unspelled_arg()) }
-    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let d? = stratum_resolved(engine, scope, file, Space.Value, name).named() else { return HandedArg.Uncrossed(unspelled_arg()) }
     if d.kind != ItemKind.Const { return HandedArg.Uncrossed(unspelled_arg()) }
     let item = read_item(engine, d.file, d.item)
     let s? = item.stmts.find((x) -> item.store.let_name(x) == d.name) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let v? = item.store.const_value(s) else { return HandedArg.Uncrossed(unspelled_arg()) }
-    let there? = file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let there? = written_file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let spelled = spelled_arg(engine, there, d.file, item, v, depth + 1)
     if spelled is .Uncrossed { HandedArg.Settled(d.file, d.name, d.item, settled_print(engine, d)) } else { spelled }
 }
@@ -977,7 +977,7 @@ fn defaulted_arg(engine: QueryEngine, named: DeclaredName, at: int) -> HandedArg
     let params = item.store.fn_parts(s)!.params
     if at >= params.length { return HandedArg.Uncrossed(unspelled_arg()) }
     let e? = params[at].default else { return HandedArg.Uncrossed(unspelled_arg()) }
-    let scope? = file_scope(engine, named.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let scope? = written_file_scope(engine, named.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let spelled = spelled_arg(engine, scope, named.file, item, e, 0)
     if !(spelled is .Uncrossed) { return spelled }
     settled_default(engine, named, params[at].name.of)
@@ -1118,12 +1118,12 @@ export fn derive_claims(
     s: StmtId,
     name: string,
 ) -> List<string>? {
-    let scope? = file_scope(engine, file) else { return null }
+    let scope? = written_file_scope(engine, file) else { return null }
     let worn = store.annotations_of(s)
     if worn.is_empty() { return null }
     mut claims: List<string> = []
     for a in worn {
-        let d? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return null }
+        let d? = stratum_resolved(engine, scope, file, Space.Value, a.name).named() else { return null }
         if d.file.package_name != META || d.name != DERIVE { return null }
         for e in a.args {
             let t? = trait_named(engine, scope, file, arg_lit(store, e).text) else { return null }
@@ -1186,7 +1186,7 @@ const CLAIMS: string = "marks"
 
 /// The trait `name` names from `file`, absent for a name naming none.
 fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {
-    let d? = resolved_in(engine, scope, file, Space.Type, name).named() else { return null }
+    let d? = stratum_resolved(engine, scope, file, Space.Type, name).named() else { return null }
     if d.kind == ItemKind.Trait { TraitAt { file: d.file, name: d.name } } else { null }
 }
 

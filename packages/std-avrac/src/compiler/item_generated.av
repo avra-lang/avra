@@ -217,17 +217,46 @@ fn written_quote(engine: QueryEngine, home: string, at: int) -> Scratch? {
 /// does: the item whose text holds the offset, where a quote stands there in it.
 @query
 fn quote_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<int> {
-    [i for i in 0..item_count(engine, file) for start in [item_start(engine, file, i)] if start <= at &&
+    [i for i in item_ids(engine, file) for start in [item_start(engine, file, i)] if start <= at &&
         at < start + item_under(engine, file, i).text.length &&
         read_item(engine, file, i).store.quote_at(at - start) != null]
         .take(1)
 }
 
-/// What a file's generated items declare, each standing at its place past the file's written items.
+/// Every item of `file` by id: its written items, then its generated ones, each in order.
+export fn every_item_id(engine: QueryEngine, file: SourceFileAddress) -> List<int> {
+    item_ids(engine, file)
+        .concat([generated_id(k) for k in 0..file_generated(engine, file).items.length])
+}
+
+/// The items of `file` that stand before the item `at`, by id, in order: for a written item, the
+/// written ones before it; for a generated one, every written item and the generated ones made
+/// before it; every written item where the file holds no `at`.
+export fn items_before(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<int> {
+    let ids = item_ids(engine, file)
+    let k? = generated_rank(at) else {
+        let rank = ids.index_of(at)
+        return if rank < 0 { ids } else { ids.take(rank) }
+    }
+    ids.concat([generated_id(j) for j in 0..k])
+}
+
+/// Where the item `at` stands among every item of `file`, counted from the first: a written item by
+/// its place among the written ones, a generated one past them all by its place among those made;
+/// past every written item for one the file doesn't hold. Read without what generators make.
+export fn item_order(engine: QueryEngine, file: SourceFileAddress, at: int) -> int {
+    let ids = item_ids(engine, file)
+    let k? = generated_rank(at) else {
+        let rank = ids.index_of(at)
+        return if rank < 0 { ids.length } else { rank }
+    }
+    ids.length + k
+}
+
+/// What a file's generated items declare, each by its generated id.
 export fn generated_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
-    let first = item_count(engine, file)
     Declarations {
-        names: [tape_declared(file, first + at, n) for at, g in file_generated(engine, file).items for n in g.tape.declares],
+        names: [tape_declared(file, generated_id(k), n) for k, g in file_generated(engine, file).items for n in g.tape.declares],
     }
 }
 
@@ -261,10 +290,10 @@ fn taken_names(engine: QueryEngine, file: SourceFileAddress, items: List<Generat
     string,
 > {
     if items.is_empty() { return [] }
-    let scope? = file_scope(engine, file) else { return [] }
+    let scope? = written_file_scope(engine, file) else { return [] }
     distinct(
-        [n.name for g in items if !g.wraps for n in g.tape.declares if resolved_in(engine, scope, file, Space.Value, n.name).named() != null ||
-            resolved_in(engine, scope, file, Space.Type, n.name).named() != null],
+        [n.name for g in items if !g.wraps for n in g.tape.declares if stratum_resolved(engine, scope, file, Space.Value, n.name).named() != null ||
+            stratum_resolved(engine, scope, file, Space.Type, n.name).named() != null],
     )
 }
 
@@ -513,8 +542,7 @@ fn kept_problem(d: Diagnostic) -> KeptProblem {
 /// a written one, and past the generated ones: a question kept from an older state of the file may
 /// name a place it no longer has, and is answered as a written place past the file's end is.
 export fn generated_at(engine: QueryEngine, file: SourceFileAddress, at: int) -> GeneratedItem? {
-    if item_held(engine, file, at) { return null }
-    let k = at - item_count(engine, file)
+    let k? = generated_rank(at) else { return null }
     let items = file_generated(engine, file).items
     if k >= items.length { return null }
     items[k]

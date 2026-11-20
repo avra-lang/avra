@@ -235,7 +235,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
     match d.kind {
         .Record or .Component -> {
             let parts? = item.store.struct_parts(s) else { return null }
-            let signed = record_signature(engine, d.file, d.name)?.fields ?? []
+            let signed = record_signature_written(engine, d.file, d.name)?.fields ?? []
             base with { fields: [field_meta(
                 engine,
                 d.file,
@@ -503,7 +503,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
     let item = read_item(engine, m.file, m.item)
     let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
     let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
-    let signed = record_signature(engine, m.file, m.name)?.fields ?? []
+    let signed = record_signature_written(engine, m.file, m.name)?.fields ?? []
     MetaVariant {
         name: m.name,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
@@ -533,7 +533,7 @@ fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
 /// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
 /// `@std/meta`'s `Marker`.
 fn marks_a_member(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
-    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    let d? = written_resolution(engine, file, Space.Value, name).named() else { return false }
     let sig? = fn_signature(engine, d.file, d.name) else { return false }
     meta_named(sig.answer, MARKER)
 }
@@ -546,7 +546,7 @@ const MARKER: string = "Marker"
 fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
     let item = read_item(engine, m.file, m.item)
     let carried = [p.name.of for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
-    [f for f in record_signature(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
+    [f for f in record_signature_written(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
 }
 
 /// A record's field or a variant's payload `file` writes as a `Field`: its name, its type as written
@@ -595,7 +595,7 @@ fn by_value(engine: QueryEngine, ty: SignedType?) -> bool {
             if shape != null { return by_value(engine, shape) }
             let e = enum_signature(engine, file, name)
             if e != null { return e!.variants.all(it.payloads.is_empty()) }
-            let fields = record_signature(engine, file, name)?.fields ?? []
+            let fields = record_signature_written(engine, file, name)?.fields ?? []
             fields.length == 1 && !fields[0].state && by_value(engine, fields[0].ty)
         },
         rest -> false,
@@ -695,8 +695,8 @@ fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem,
 /// THE CALL LAW: an annotation whose fn's first seat takes a value is a rule and carries a call; one
 /// whose first seat takes a declaration runs at compile time and carries none.
 fn rule_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
-    let scope? = file_scope(engine, file) else { return true }
-    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return true }
+    let scope? = written_file_scope(engine, file) else { return true }
+    let d? = stratum_resolved(engine, scope, file, Space.Value, name).named() else { return true }
     let sig? = fn_signature(engine, d.file, d.name) else { return true }
     let first? = sig.params.first() else { return true }
     !takes_a_declaration(first.ty)
@@ -820,8 +820,8 @@ export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: strin
     let path = name.split(".")
     let last? = path.last() else { return absent_lifted() }
     let reader? = (if path.length == 1 { file } else { dotted_file(engine, path.take(path.length - 1)) }) else { return absent_lifted() }
-    let scope? = file_scope(engine, reader) else { return absent_lifted() }
-    let d? = resolved_in(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
+    let scope? = written_file_scope(engine, reader) else { return absent_lifted() }
+    let d? = stratum_resolved(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
     lifted_decl(engine, d.file, d.name)
 }
 
