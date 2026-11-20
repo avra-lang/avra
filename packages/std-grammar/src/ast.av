@@ -172,9 +172,10 @@ export type Operators = {
 /// which without spelling the ladder twice. `slot` is a `.Named` prim's
 /// class, as its place in the ready grammar's `terms`, or a `.Lit` prim's
 /// text, as its place in `lits` — -1 until `ready` numbers it, and for any
-/// other prim.
+/// other prim. `label_slot` is its label's place in the ready grammar's
+/// `labels`, -1 until then and for an item with no label.
 @derive(Fielded)
-export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect?, head: bool = false, trailer: bool = false, @unwritten listed: bool = false, @unwritten slot: int = 0 - 1 }
+export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect?, head: bool = false, trailer: bool = false, @unwritten listed: bool = false, @unwritten slot: int = 0 - 1, @unwritten label_slot: int = 0 - 1 }
 
 /// THE LIST LAW: a label that can bind MORE THAN ONCE in one match
 /// COLLECTS, and one that binds once carries its value. `listed` is
@@ -303,7 +304,14 @@ export const DELIMITERS: List<Delimiter> = [
 ]
 
 /// The literal closing what `text` opens, absent when `text` opens nothing.
-export fn closer_of(text: string) -> string? { DELIMITERS.find(it.opener == text)?.closer }
+export fn closer_of(text: string) -> string? { closers().get(text) }
+
+/// Each delimiter's closer, by its opener, made once a process.
+once fn closers() -> Map<string, string> {
+    mut by_opener: Map<string, string> = {}
+    for d in DELIMITERS { by_opener.set(d.opener, d.closer) }
+    by_opener
+}
 
 impl Prim {
     /// The token this atom answers to by name — what an `@expect`

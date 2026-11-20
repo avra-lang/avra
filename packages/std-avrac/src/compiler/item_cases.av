@@ -27,7 +27,7 @@ export fn file_cases(engine: QueryEngine, file: SourceFileAddress) -> FileCases 
     let text = source_text(engine, file) ?? ""
     FileCases {
         cases: flatten(
-            [item_cases(engine, file, read_item(engine, file, at), at, text) for at in 0..item_count(engine, file)],
+            [item_cases(engine, file, read_item(engine, file, at), at, text) for at in item_ids(engine, file)],
         ),
     }
 }
@@ -119,7 +119,8 @@ export fn case_bodies(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
     [b! for k in 0..count for b in [case_signed(engine, file, at, k)] if b != null]
 }
 
-/// The case `index` the spec in the item `at` of `file` writes, lowered as the unit `symbol`.
+/// The case `index` the spec in the item `at` of `file` writes, lowered as the unit `symbol`, its
+/// lambdas `framed` carrying their frame of contexts.
 @query
 export fn lowered_case(
     engine: QueryEngine,
@@ -127,9 +128,10 @@ export fn lowered_case(
     at: int,
     index: int,
     symbol: string,
+    framed: List<string>,
 ) -> LoweredFn? {
     let signed? = case_signed(engine, file, at, index) else { return null }
-    lowered_signed(engine, file, signed, symbol, null)
+    lowered_signed(engine, file, signed, symbol, null, [], framed)
 }
 
 collect listed_case_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
@@ -165,6 +167,7 @@ export fn made_suite(
         null,
         [],
         files.first()?.package_name,
+        framing: files,
     )
     let lowered = match made {
         .Made(l) -> l,

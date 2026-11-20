@@ -28,6 +28,14 @@ import sys
 import ratchet_rows as rows_lib
 
 BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost.baseline")
+# THE CANDIDATES THE LAST ACCEPT SAW (`avra census --candidates`), so a run can name the new ones. A
+# candidate is work, never a regression: a new one is said, never failed on.
+CANDIDATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost.candidates")
+CANDIDATES_HEAD = """\
+# THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its
+# technique's top sites (`avra census --candidates`, docs/ZERO_COST.md). `make cost` names every
+# candidate this file lacks; a candidate is a registry row or a ticket at discovery.
+"""
 TOLERANCE_PPM = 500
 HEAD = """\
 # THE EXACT-COUNT BASELINE: what the census compiler does, cold, on each fixed workload of the pinned
@@ -42,6 +50,7 @@ PRINTED = (
     (r"rc: (\d+) list reads, (\d+) list writes", ("list_reads", "list_writes")),
     (r"alloc: (\d+) boxes, (\d+) list buffers", ("boxes", "list_buffers")),
     (r"rc: (\d+) copies, (\d+) string compares", ("copies", "string_compares")),
+    (r"rc: (\d+) opens of an empty literal", ("empty_opens",)),
 )
 # The queries a cold check worked out, its inputs aside, from the counts line `check --counts` prints;
 # and the answers a warm run worked out again, from its `worked:` line.
@@ -145,6 +154,39 @@ def accepted(now, base, same_snapshot):
     return rows_lib.lowered(now, base) if same_snapshot else dict(now)
 
 
+def candidates_of(text):
+    """`candidate: <technique> <count> <fn> <where>` lines -> {(technique, fn): line}."""
+    found = {}
+    for line in text.splitlines():
+        w = line.split(" ")
+        if len(w) >= 4 and w[0] == "candidate:":
+            found[(w[1], w[3])] = line[len("candidate: "):]
+    return found
+
+
+def recorded(text):
+    """The record's `<technique> <fn>` lines -> their keys."""
+    return {tuple(line.split(" ")[:2]) for line in text.splitlines() if line and not line.startswith("#") and len(line.split(" ")) >= 2}
+
+
+def new_candidates(found, known):
+    return ["cost: new candidate: %s" % found[k] for k in sorted(found) if k not in known]
+
+
+def candidates_said(run_dir, accept):
+    """The run's new candidates said; under an accept, the record rewritten to what it saw."""
+    path = os.path.join(run_dir, "candidates.txt")
+    if not os.path.exists(path):
+        return
+    found = candidates_of(open(path).read())
+    known = recorded(open(CANDIDATES).read()) if os.path.exists(CANDIDATES) else set()
+    for line in new_candidates(found, known):
+        print(line)
+    print("cost: %d candidates, %d new" % (len(found), len([k for k in found if k not in known])))
+    if accept:
+        open(CANDIDATES, "w").write(CANDIDATES_HEAD + "".join("%s %s\n" % k for k in sorted(found)))
+
+
 def main(argv):
     if argv[1:] == ["--self-test"]:
         return self_test()
@@ -181,6 +223,7 @@ def main(argv):
                 print("cost: an accept never raises a row over the same snapshot")
                 return 1
         open(BASELINE, "w").write(render(ran, accepted(now, base, same)))
+        candidates_said(run_dir, True)
         print("cost: tools/cost.baseline recorded (snapshot %s)" % ran)
         return 0
     if ran != pinned:
@@ -190,6 +233,7 @@ def main(argv):
     for line in fell + failed:
         print(line)
     print("cost: %d rows, %d over, %d fell" % (len(base), len(failed), len(fell)))
+    candidates_said(run_dir, False)
     return 1 if failed else 0
 
 
@@ -197,11 +241,11 @@ def self_test():
     rows_lib.self_test()
     run = ("rc: 100 retains, 90 releases, 10 reclaims\nrc: 5 empty lists made, 1 grown\n"
            "rc: 1000 list reads, 200 list writes\nalloc: 50 boxes, 7 list buffers\n"
-           "rc: 3 copies, 4 string compares\nmem: noise\n")
+           "rc: 3 copies, 4 string compares\nrc: 2 opens of an empty literal\nmem: noise\n")
     got = counts_of(run)
     assert got == {"retains": 100, "releases": 90, "reclaims": 10, "empty_lists": 5, "empty_grown": 1,
                    "list_reads": 1000, "list_writes": 200, "boxes": 50, "list_buffers": 7,
-                   "copies": 3, "string_compares": 4}, got
+                   "copies": 3, "string_compares": 4, "empty_opens": 2}, got
     assert set(got) == set(CENSUS)
     assert counts_of("counts: files_loaded=3 queries_computed=41 store_rows_written=41\n") == {"queries_computed": 41}
     assert counts_of("worked: 69 answers here; item_under 14\n") == {"worked": 69}
@@ -236,6 +280,11 @@ def self_test():
     assert accepted({("w", "boxes"): 1200}, {("w", "boxes"): 1000}, False) == {("w", "boxes"): 1200}
     assert unprinted({("edit-body", "worked"): 3}) == []
     assert unprinted({("check-cli", "queries_computed"): 3})[0] == "cost: check-cli printed no retains"
+    # a candidate is keyed by its technique and fn; one the record lacks is said, by its line
+    found = candidates_of("candidate: reuse-in-place 40 f packages/x.av:3\ncandidate: strided-list 9 g packages/y.av\n")
+    assert set(found) == {("reuse-in-place", "f"), ("strided-list", "g")}
+    assert recorded("# head\nreuse-in-place f\n") == {("reuse-in-place", "f")}
+    assert new_candidates(found, {("reuse-in-place", "f")}) == ["cost: new candidate: strided-list 9 g packages/y.av"]
     print("cost_ratchet self-test: ok")
     return 0
 

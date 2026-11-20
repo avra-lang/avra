@@ -157,8 +157,8 @@ export type TapeWriter = {
     facts: SectionWriter = SectionWriter {},
     above: SectionWriter = SectionWriter {},
     place_facts: SectionWriter = SectionWriter {},
-    /// Each kind of node met, and the number each of its nodes was written as.
-    written: List<WrittenNodes> = [],
+    /// Each kind of node met, by the kind, and the number each of its nodes was written as.
+    written: Map<string, WrittenNodes> = {},
     /// For each node being written, innermost last, whether it stands in another file.
     standing: List<bool> = [],
     /// Whether this tape is a face, which leaves out every body.
@@ -274,20 +274,20 @@ impl TapeWriter {
 
     /// The number the node at `index` of `kind` was written as, absent when it's not on the tape yet.
     fn number_of(kind: string, index: int) -> int? {
-        let nodes? = self.written.find(it.kind == kind) else { return null }
+        let nodes? = self.written.get(kind) else { return null }
         nodes.numbers.get(index)
     }
 
     /// The node at `index` of `kind` is written as `number`, so a later mention of it refers to it.
     fn wrote(kind: string, index: int, number: int) {
-        let nodes = self.written.find(it.kind == kind) ?? self.kind_met(kind)
+        let nodes = self.written.get(kind) ?? self.kind_met(kind)
         nodes.numbers.put(index, number)
     }
 
     /// A kind of node met for the first time.
     fn kind_met(kind: string) -> WrittenNodes {
         let nodes = WrittenNodes { kind: kind, numbers: dense_window() }
-        self.written.push(nodes)
+        self.written.set(kind, nodes)
         nodes
     }
 

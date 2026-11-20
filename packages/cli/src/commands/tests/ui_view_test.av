@@ -46,7 +46,7 @@ fn help_under(opening: string) -> string {
 const owed = [
     "error[type.component_event]: `button` declares no event `hovr` — an instance hears the events its component declares",
     "error[@std/ui:unprojected]: a primitive says what each member projects to, and `value` says nothing",
-    "error[@std/ui:stateful-primitive]: a primitive draws what it is told, and `held` is a place it would keep",
+    "error[@std/ui:stateful-primitive]: a primitive keeps a place its own gesture moves, and no event of it sets `held`",
     "error[@std/ui:attribute]: `Lable` is no attribute of a node",
     "error[@std/ui:attribute-misfit]: `Level` carries `int`, and `words` is `string`",
     "error[@std/ui:unnamed-mark]: `@attr` names what it marks its member as, and this one names nothing",
@@ -65,6 +65,7 @@ const owed = [
     "error[@std/ui:primitive-body]: a primitive is drawn by its target, and `wordy` holds a body of its own",
     "error[@std/ui:box]: a view carries the shared box, and `boxless` spreads none",
     "error[@std/ui:not-a-prim]: `Nope` is no primitive a target draws",
+    "error[type.variant_lit]: `Prim` has no variant `Nope`",
     "error[@std/ui:said-twice]: a node says its own words once, and another member already says them — `Label` would be lost",
     "error[@std/ui:said-twice]: a node carries an attribute once, and `Title` is already another member's",
     "error[@std/ui:said-twice]: a node's style holds `color` once, and another member already fills it",
@@ -73,11 +74,11 @@ const owed = [
 spec "@derive(View) — a component that is no primitive" {
     given "one mistake per member, and per component" {
         then "is refused once per mistake, in these words and no others" { spoken().join("\n") == owed.join("\n") }
-        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 24 }
+        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 25 }
     }
     given "a member that says nothing" {
         then "is told the ways to say it" {
-            help_under("error[@std/ui:unprojected]") == "help: mark it `@attr(.Label)`, `@children` or `@style(color)`, or declare it an event — `on value`"
+            help_under("error[@std/ui:unprojected]") == "help: mark it `@attr(.Label)`, `@children` or `@style(color)`, declare it an event — `on value` — or read it in a place's default — `state value: T = self.value`"
         }
     }
     given "an attribute the node does not have" {
@@ -97,9 +98,9 @@ spec "@derive(View) — a component that is no primitive" {
             help_under("error[@std/ui:prim]") == "help: name the primitive it is — `@prim(.Text)` above it — or write in its body the views it is made of"
         }
     }
-    given "a primitive that would keep state" {
-        then "is told who keeps it" {
-            help_under("error[@std/ui:stateful-primitive]") == "help: state is kept by the composition that uses the primitive — a component whose body is made of views"
+    given "a primitive that keeps a place no event of it sets" {
+        then "is told to mark the event that moves it, or keep the state above it" {
+            help_under("error[@std/ui:stateful-primitive]") == "help: mark the event that moves it — `@sets(held) on change(…)` — or keep the state in the composition that uses the primitive"
         }
     }
     given "an instance hearing an event its component does not declare" {
