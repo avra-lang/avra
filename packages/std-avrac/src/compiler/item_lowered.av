@@ -540,6 +540,7 @@ fn lowered_program(
         data: data,
         literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, unit, e, ty, frame),
         traits: (ty: SignedType) -> trait_members(engine, ty),
+        placed: (ty: SignedType) -> trait_placed(engine, ty),
         type_symbol: (ty: SignedType) -> type_symbol(ty),
         tagged: tagged,
         wrappers: wrappers,
@@ -1365,6 +1366,21 @@ fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
         },
     } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
 }
+
+/// Whether the trait a `dyn` of `ty` names wears `@std/meta`'s `placed`.
+fn trait_placed(engine: QueryEngine, ty: SignedType) -> bool {
+    let at? = declared_at(ty) else { return false }
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return false }
+    item
+        .stmts
+        .any(
+            (s) -> item.store.trait_parts(s)?.name == at.name &&
+                wears_meta(engine, at.file, item.store, s, PLACED),
+        )
+}
+
+/// The `@std/meta` mark a trait whose boxes are drawn under the frame they were placed under wears.
+const PLACED: string = "placed"
 
 /// The symbol the type `ty` names is known by: a declared type's, or a word the language owns under
 /// the language's own name; absent for any other.

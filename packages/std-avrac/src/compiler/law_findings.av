@@ -200,24 +200,33 @@ fn fails_build(f: LawFinding) -> bool { !(held_laws().find(it.name == f.by)?.war
 /// The files the build of the program whose entry is `entry`, in `package`, reads that a law's
 /// finding refuses — what the entry reaches, never a file of its package nothing it reaches
 /// imports: a build judges its reach, as `check` and `test` judge the package — in the order the
-/// package's files are read, or, where a manifest it stands on refuses it, those manifests alone.
-export fn entry_erring(engine: QueryEngine, entry: SourceFileAddress, package: string) -> List<
-    SourceFileAddress,
-> {
+/// package's files are read, or, where a manifest it stands on refuses it, those manifests alone. A
+/// file `vouched` names (`spelled_file`) stands on the verdict that vouches for it, and no law is asked
+/// of it.
+export fn entry_erring(
+    engine: QueryEngine,
+    entry: SourceFileAddress,
+    package: string,
+    vouched: List<string>,
+) -> List<SourceFileAddress> {
     let manifests = manifests_refused(engine, package)
     if !manifests.is_empty() { return manifests }
     mut reached: Map<string, bool> = {}
     for f in entry_files(engine, entry) { reached.set(spelled_file(f), true) }
-    [f for f in program_files(engine, package) if reached.has(spelled_file(f)) && file_erring(engine, f).errors > 0]
+    [f for f in program_files(engine, package) if reached.has(spelled_file(f)) &&
+        !vouched.contains(spelled_file(f)) &&
+        file_erring(engine, f).errors > 0]
 }
 
 /// The files the program rooted at `package` reads that a law's finding refuses, in any item,
 /// reached or not — or, where a manifest it stands on refuses it, those manifests alone, since no
-/// file of a program its manifests refuse is read.
-export fn program_erring(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
+/// file of a program its manifests refuse is read. A file `vouched` names is asked no law.
+export fn program_erring(engine: QueryEngine, package: string, vouched: List<string> = []) -> List<
+    SourceFileAddress,
+> {
     let manifests = manifests_refused(engine, package)
     if !manifests.is_empty() { return manifests }
-    [f for f in program_files(engine, package) if file_erring(engine, f).errors > 0]
+    [f for f in program_files(engine, package) if !vouched.contains(spelled_file(f)) && file_erring(engine, f).errors > 0]
 }
 
 /// What the laws that warn find in one file's written items, each site once, in the order the file
@@ -241,13 +250,12 @@ fn same_site(a: LawFinding, b: LawFinding) -> bool { kind_of(a) == kind_of(b) &&
 /// The kind a finding's law speaks under.
 fn kind_of(f: LawFinding) -> string { held_laws().find(it.name == f.by)?.kind ?? f.by }
 
-/// THE WARNINGS A BUILD OF THE PROGRAM ROOTED AT `package` SAYS: each file it reads that a law
-/// warns of, with what it finds there. Kept as one answer, so a build nothing moved reads no file's
-/// findings.
+/// THE WARNINGS A BUILD OF THE PROGRAM ROOTED AT `package` SAYS: each of the package's own files a
+/// law warns of, with what it finds there; a dependency's warnings are its own check's. Kept as one
+/// answer, so a build nothing moved reads no file's findings.
 @query
 export fn program_warned(engine: QueryEngine, package: string) -> List<FileWarned> {
-    [w for f in program_files(engine, package) for w in [file_warned(engine, f)] if !w.findings.is_empty()]
-
+    [w for f in program_files(engine, package) if f.package_name == package for w in [file_warned(engine, f)] if !w.findings.is_empty()]
 }
 
 /// An aside as a finding keeps it.

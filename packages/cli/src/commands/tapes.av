@@ -9,7 +9,7 @@ use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
     program_new_only,
     default_opt,
-    unset_link_holes_of,
+    program_unset_holes,
     FileWarned,
     ChildEnd,
     RefusesCall,
@@ -476,6 +476,7 @@ fn disk_built(
         avra_fact_definitions().concat(definitions_of(listed_build_facts)),
         ahead_count(),
         asks_timed,
+        (e: QueryEngine) -> vouched_files(e, disk),
     )
     let store = worked.store
     let engine = worked.engine
@@ -504,7 +505,7 @@ fn disk_built(
             let refusing = phased(
                 engine,
                 "the refusals",
-                () -> program_refused(engine, asked.entry, disk.name),
+                () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
             )
             found.set(refusing)
             refusing.is_empty()
@@ -513,7 +514,7 @@ fn disk_built(
     let refusing = found.get() ?? phased(
         engine,
         "the refusals",
-        () -> program_refused(engine, asked.entry, disk.name),
+        () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
     )
     if !refusing.is_empty() {
         let said = refusals_said(
@@ -1167,6 +1168,8 @@ fn times_said(engine: QueryEngine) {
     eprintln("phases: ${times.phases_spoken()}")
     eprintln("split: ${times.split()}")
     eprintln("cutoff: ${engine.cutoff_said()}")
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if env("AVRA_QUERY_FAMILIES") == "1" { eprintln("families:\n${times.every_family()}") }
 }
 
 /// Each form only the program layer builds that the program of the package on `disk` uses, said one a
@@ -2475,7 +2478,7 @@ fn flag_tests(ins: List<Ins>) -> FlagTests {
         counted = match tested {
             .Unwinding -> counted with { calls: counted.calls + 1 },
             .Tick -> counted with { edges: counted.edges + 1 },
-            .Frame -> counted,
+            .Frame or .Heard -> counted,
         }
     }
     counted
@@ -2495,7 +2498,7 @@ impl FlagCuts {
         match tested {
             .Unwinding -> if ours { self with { ours: self.ours + 1 } } else { self with { theirs: self.theirs + 1 } },
             .Tick -> self with { edges: self.edges + 1 },
-            .Frame -> self,
+            .Frame or .Heard -> self,
         }
     }
 }
@@ -3354,7 +3357,7 @@ fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool
         program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
         avra_fact_definitions(),
     )
-    let refusing = program_refused(engine, entry, disk.name)
+    let refusing = program_refused(engine, entry, disk.name, vouched_files(engine, disk))
     if !refusing.is_empty() {
         let _ = refusals_said(engine, disk, refusing, entry)
         return 3
@@ -4443,13 +4446,11 @@ fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
     let reached = graph_said(engine, disk)
     // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
     let from_env = (n: string) -> env(n)
-    let unset = flatten(
-        [unset_link_holes_of(
-            () -> manifest_source(disk.package_root(p)),
-            read_manifest(manifest_source(disk.package_root(p))),
-            p == disk.name,
-            from_env,
-        ) for p in reached_packages(engine, disk)],
+    let unset = program_unset_holes(
+        engine,
+        disk.name,
+        (p: string) -> manifest_source(disk.package_root(p)),
+        from_env,
     )
     let graph = reached with { voices: reached.voices.concat(unset), sources: reached
         .sources

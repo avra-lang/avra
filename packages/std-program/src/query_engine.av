@@ -277,7 +277,7 @@ export type QueryEngine = {
     reads_checked: Cell<int>,
     sets: NameSets,
     /// Whether each set's every package is one the store shares, by the set's id.
-    sets_shared: Cell<Map<string, bool>>,
+    sets_shared: HashKeyedTable<bool>,
     /// Which engine of this process it is: no two engines a process makes share one. What a table
     /// a caller keeps per engine, outside it, is keyed by.
     serial: int,
@@ -310,7 +310,6 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
     let held: Cell<int> = Cell.new(0)
     let proved: Cell<int> = Cell.new(0)
     let reads_checked: Cell<int> = Cell.new(0)
-    let sets_shared: Cell<Map<string, bool>> = Cell.new({})
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
@@ -334,7 +333,7 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         proved: proved,
         reads_checked: reads_checked,
         sets: name_sets(),
-        sets_shared: sets_shared,
+        sets_shared: hash_keyed_table(),
         serial: next_serial(),
     }
     for definition in definitions {
@@ -905,10 +904,10 @@ impl QueryEngine {
 
     /// Whether every package of the set `id` is one the store shares.
     fn set_shared(id: int) -> bool {
-        let known = self.sets_shared.get().get("${id}")
+        let known = self.sets_shared.get_at(id, id)
         if known != null { return known! }
         let shared = self.sets.members_of(id).all((name) -> self.store.shares_package(name))
-        self.sets_shared.put("${id}", shared)
+        self.sets_shared.put_at(id, id, shared)
         shared
     }
 

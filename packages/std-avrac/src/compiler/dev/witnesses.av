@@ -719,6 +719,19 @@ fn witnesses() -> List<CodeWitness> {
                     "an instance's component is another file's, which a lone source cannot import — the golden is features/components/tests/components_test.av",
                 ),
         },
+        CodeWitness {
+            code: "type.component_default",
+            witness: program_golden("state_member_default_reads_state"),
+        },
+        CodeWitness { code: "type.slot_shadows", witness: program_golden("builds_slot_shadows") },
+        CodeWitness { code: "ctx.unknown", witness: program_golden("ctx_unknown") },
+        CodeWitness { code: "ctx.where", witness: program_golden("ctx_set_at_top") },
+        CodeWitness { code: "ctx.required", witness: program_golden("ctx_required_unset") },
+        CodeWitness { code: "ctx.unread", witness: program_golden("builds_ctx_set_unread") },
+        CodeWitness {
+            code: "ctx.old_path",
+            witness: Witness.Source("ctx depth: int = 0\n\nfn deep() -> int { ctx.depth }\n\ndeep()\n"),
+        },
         CodeWitness { code: "type.plan_residual", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plans_mismatch", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plan_scan", witness: Witness.Beyond(planned_golden) },
@@ -1674,6 +1687,15 @@ fn entry_program(main: string, others: Map<string, string>) -> Witness {
 
 /// A lawful manifest, for a witness to add one wrong line to.
 export const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// A kind only the program layer speaks: the run here is the old path's, in memory, so its golden is
+/// the program-refusal case `case`, which holds the program layer to its words on disk.
+fn program_golden(case: string) -> Witness {
+    Witness
+        .Beyond(
+            "only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/${case}",
+        )
+}
 
 /// A package witness whose program sees `@std/meta`, vendored in memory.
 export fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }

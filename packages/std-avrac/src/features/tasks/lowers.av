@@ -28,8 +28,7 @@ impl Lowers for Spawn {
         if cx.store.expr_span(self.body) == null { return cx.missed_as("a spawn no source wrote") }
         let lift = cx.lift(thunk(parts.body), ty, self.body, cx.program, true)
         cx.kept_lift(lift)
-        let task = cx
-            .fn_box(cx.laid_out(ty), lift.body.symbol, [cx.lane_of(name) for name in lift.lanes], ty)
+        let task = cx.lift_boxed(cx.laid_out(ty), lift, ty)
         cx.call_row(cx.layout_at(e), rt_sig_of("avra_task_spawn")!, [task])
     }
 }
@@ -107,8 +106,7 @@ impl Lowers for Produce {
         let lift = cx
             .lift_ended(thunk(parts.body), body, self.body, cx.program, true) { cx -> sink_called(cx, "close", []) }
         cx.kept_lift(lift)
-        let task = cx
-            .fn_box(cx.laid_out(body), lift.body.symbol, [cx.lane_of(name) for name in lift.lanes], body)
+        let task = cx.lift_boxed(cx.laid_out(body), lift, body)
         cx.closed()
         let ran = owned_type("Task") with { args: [body.answer ?? owned_type("void")] }
         let work = cx.call_row(cx.laid_out(ran), rt_sig_of("avra_task_spawn")!, [task])

@@ -1,0 +1,245 @@
+// Peeking an item that nests: records, lists and nullables of records,
+// a payload enum, a map, a type that wears its own codec and one that
+// reaches itself, each read through the descriptor its home kept, a
+// letter of one too. A descriptor an earlier build wrote names nested
+// types without describing them, and the home that opens next writes
+// its own over it. A descriptor or octets no build wrote read as none,
+// with the reason, and the walk stays bounded.
+use @std.json.{to_text}
+use @std.queue.{queue, Dead, Fate, HomeError}
+use @std.relation.{codec}
+use @std.relation.shape.{Descriptor, descriptor_unspelled}
+use @std.sqlite.{Db, sql}
+use @std.text.{from_codepoint}
+use @std.time.{Time, now_ns}
+use durable.{db, stored}
+use fault.{homed}
+use letters.{stored_dead}
+use operate.{Peeked, peek}
+use queue_store.{store_home_with, wire}
+use readout.{read_through}
+
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+type PkAddr = { street: string, n: int }
+
+@codec
+type PkUnit = { name: string }
+
+enum PkPay {
+    Cash
+    Card(num: string, at: PkAddr?)
+}
+
+@codec
+type PkOrder = {
+    ship: PkAddr,
+    extra: List<PkAddr>,
+    bill: PkAddr?,
+    unit: PkUnit,
+    pay: PkPay,
+    notes: Map<string, int>,
+}
+
+@codec
+type PkKnot = { name: string, kids: List<PkKnot> }
+
+fn order(bill: PkAddr?) -> PkOrder {
+    PkOrder {
+        ship: PkAddr { street: "a st", n: 1 },
+        extra: [PkAddr { street: "b st", n: 2 }],
+        bill: bill,
+        unit: PkUnit { name: "kg" },
+        pay: PkPay.Card("4242", PkAddr { street: "c st", n: 3 }),
+        notes: {"gift": 1},
+    }
+}
+
+fn item_text(p: Peeked) -> string {
+    let j? = p.item else { return "unread: ${p.unread ?? "?"}" }
+    to_text(j)
+}
+
+fn told(r: Result<string, HomeError>) -> string {
+    match r { .Ok(t) -> t, .Err(_) -> "failed" }
+}
+
+fn peeked(name: string) -> Result<string, HomeError> {
+    .Ok([item_text(p) for p in peek(ctx.db, name)?].join("\n"))
+}
+
+fn run(text: string) -> Result<int, HomeError> {
+    homed(ctx.db.run(sql(text)))
+}
+
+/// Records nested in a record, a list and a nullable, present and
+/// absent; a coded record; a payload enum; a map; a record that reaches
+/// itself.
+fn nested() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<PkOrder> orders {
+        name: "orders"
+        durable: stored<PkOrder>(clock: ticking)
+    }
+    queue<PkKnot> knots {
+        name: "knots"
+        durable: stored<PkKnot>(clock: ticking)
+    }
+    let _ = orders.send(order(PkAddr { street: "d st", n: 4 }))?
+    let _ = orders.send(order(null) with { pay: PkPay.Cash, extra: [], notes: {} })?
+    let _ = knots.send(PkKnot { name: "a", kids: [PkKnot { name: "b", kids: [] }] })?
+    .Ok("${peeked("orders")?}\n${peeked("knots")?}")
+}
+
+/// A letter of a nested item.
+fn lettered() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Dead<PkOrder, string>> lost {
+        name: "lost"
+        durable: stored_dead<PkOrder>(clock: ticking)
+    }
+    let _ = lost
+        .send(
+            Dead {
+                item: order(null),
+                fate: Fate.Failed("no route"),
+                path: ["orders", "orders/dead"],
+            },
+        )?
+    peeked("lost")
+}
+
+/// The descriptor as an earlier build spelled it: no name, no scope, and
+/// each reached type its name and fingerprint alone.
+fn first_spelled(d: Descriptor) -> string {
+    let slots = [p for s in d.slots for p in [s.name, s.ty, if s.defaulted { "1" } else { "0" }]]
+    let reached = [p for r in d.reached for p in [r.name, "${r.shape}"]]
+    [
+        "avra.shape.1",
+        "${d.hash}",
+        "${d.format}",
+        if d.tagged { "1" } else { "0" },
+        "${d.slots.length}",
+    ]
+        .concat(slots)
+        .concat(["${d.reached.length}"])
+        .concat(reached)
+        .join("|")
+}
+
+/// An item whose home an earlier build opened reads as none and says
+/// why; the home opened next writes its own descriptor over that one,
+/// and the item reads.
+fn earlier_build() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<PkOrder> orders {
+        name: "orders"
+        durable: stored<PkOrder>(clock: ticking)
+    }
+    let _ = orders.send(order(null))?
+    let old = first_spelled(descriptor_unspelled(PkOrder.codec_descriptor())!)
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowShape\" SET \"descriptor\" = ?1", [.Text(old)])))?
+    let before = peeked("orders")?
+    let _ = store_home_with<PkOrder>(ctx.db, "orders", orders.home().terms, wire<PkOrder>())?
+    let kept = homed(
+        (homed(
+            ctx.db
+                .scalar(
+                    sql(
+                        "SELECT count(*) FROM \"FlowShape\" WHERE \"descriptor\" = ?1",
+                        [.Text(PkOrder.codec_descriptor())],
+                    ),
+                ),
+        )?)
+            .int(),
+    )?
+    .Ok("${before} | kept ${kept} | ${peeked("orders")?}")
+}
+
+/// A record of 2^levels values, none of which reads an octet.
+fn doubling(levels: int) -> string {
+    let reaches = [p for i in 0..levels for p in ["L${i}", "0", "r", "2", "x", "L${i + 1}", "0", "y", "L${i + 1}", "0"]]
+    ["avra.shape.2", "T", "0", "3", "0", "0", "1", "x", "L0", "0", "${levels + 1}"]
+        .concat(reaches)
+        .concat(["L${levels}", "0", "r", "0"])
+        .join("|")
+}
+
+/// What a doubling record of `levels` reads as over eight zero octets:
+/// `whole` where it reads, else its reason.
+fn doubled(levels: int) -> string {
+    match read_through(doubling(levels), [from_codepoint(0) for _i in 0..8].join("").bytes()) {
+        .Ok(_) -> "whole",
+        .Err(why) -> why,
+    }
+}
+
+/// Rows whose descriptor or octets no build wrote: a descriptor cut
+/// short, one that reaches itself through octets it never reads, one
+/// that doubles past any octets, and octets shorter than the descriptor
+/// claims. Each reads as none with its reason, and nothing traps.
+fn hostile() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<PkOrder> orders {
+        name: "orders"
+        durable: stored<PkOrder>(clock: ticking)
+    }
+    for _i in 0..4 { let _ = orders.send(order(null))? }
+    let whole = PkOrder.codec_descriptor()
+    let shapes = [
+        whole.substring(0, whole.length / 2),
+        "avra.shape.2|T|0|3|0|0|1|a|A|0|1|A|0|r|1|a|A|0",
+        doubling(40),
+    ]
+    for i, d in shapes {
+        let _ = homed(
+            ctx.db
+                .run(
+                    sql(
+                        "INSERT INTO \"FlowShape\" (\"hash\", \"descriptor\") VALUES (?1, ?2)",
+                        [.Int(i + 1), .Text(d)],
+                    ),
+                ),
+        )?
+        let _ = homed(
+            ctx.db
+                .run(
+                    sql(
+                        "UPDATE \"FlowItem\" SET \"shape\" = ?1, \"body\" = x'0000000000000000' WHERE \"id\" = ?1",
+                        [.Int(i + 1)],
+                    ),
+                ),
+        )?
+    }
+    let _ = run("UPDATE \"FlowItem\" SET \"body\" = substr(\"body\", 1, 12) WHERE \"id\" = 4")?
+    let items = peeked("orders")?
+    .Ok("${items} | still ${orders.home().depth()?}")
+}
+
+spec "std/queue_store — peeking an item that nests" {
+    given "an item of nested records" {
+        then "each nested record, list, nullable, coded record, enum and map reads as its own" {
+            told(nested()) == "{\"ship\":{\"street\":\"a st\",\"n\":1},\"extra\":[{\"street\":\"b st\",\"n\":2}],\"bill\":{\"street\":\"d st\",\"n\":4},\"unit\":{\"name\":\"kg\"},\"pay\":{\"Card\":[\"4242\",{\"street\":\"c st\",\"n\":3}]},\"notes\":{\"gift\":1}}\n{\"ship\":{\"street\":\"a st\",\"n\":1},\"extra\":[],\"bill\":null,\"unit\":{\"name\":\"kg\"},\"pay\":\"Cash\",\"notes\":{}}\n{\"name\":\"a\",\"kids\":[{\"name\":\"b\",\"kids\":[]}]}"
+        }
+        then "a letter of one reads as its item, its fate and its path" {
+            told(lettered()) == "{\"item\":{\"ship\":{\"street\":\"a st\",\"n\":1},\"extra\":[{\"street\":\"b st\",\"n\":2}],\"bill\":null,\"unit\":{\"name\":\"kg\"},\"pay\":{\"Card\":[\"4242\",{\"street\":\"c st\",\"n\":3}]},\"notes\":{\"gift\":1}},\"fate\":{\"failed\":\"no route\"},\"path\":[\"orders\",\"orders/dead\"]}"
+        }
+    }
+    given "a descriptor an earlier build wrote" {
+        then "the item reads as none, saying which type it does not describe, until a home of this build opens" {
+            told(earlier_build()) == "unread: its descriptor names `PkAddr` and does not describe it | kept 1 | {\"ship\":{\"street\":\"a st\",\"n\":1},\"extra\":[{\"street\":\"b st\",\"n\":2}],\"bill\":null,\"unit\":{\"name\":\"kg\"},\"pay\":{\"Card\":[\"4242\",{\"street\":\"c st\",\"n\":3}]},\"notes\":{\"gift\":1}}"
+        }
+    }
+    given "a descriptor that asks values of no octets" {
+        then "over eight octets a doubling of 11 levels reads whole and one of 12 is refused" {
+            "${doubled(11)} | ${doubled(12)}" == "whole | its descriptor asks more values than its octets can hold"
+        }
+    }
+    given "a descriptor or octets no build wrote" {
+        then "each reads as none with its reason, and the walk is bounded" {
+            told(hostile()) == "unread: the descriptor kept for its shape spells no shape this build reads\nunread: its descriptor nests deeper than 64 levels\nunread: its descriptor asks more values than its octets can hold\nunread: the octets do not read as the descriptor says: truncated | still 4"
+        }
+    }
+}

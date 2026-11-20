@@ -748,6 +748,41 @@ export fn pack_questions(directory: string, name: string) -> List<Question>? {
     [q! for span in pack.question_spans(null) for q in [pack.question_known_as(span.key)] if q != null]
 }
 
+/// What one query's questions weigh in a pack: how many it keeps, the octets of their records, and
+/// the octets of the answers they name, each answer weighed once, under the first query naming it.
+export type FamilyWeight = { query_name: string, questions: int, question_octets: int, answer_octets: int }
+
+/// What each query's questions weigh in the pack `name` of `directory`, the heaviest first; absent
+/// for a pack that doesn't stand whole.
+export fn pack_families(directory: string, name: string) -> List<FamilyWeight>? {
+    let pack? = mapped_pack("${directory}/${name}") else { return null }
+    mut answers: Map<string, int> = {}
+    for span in pack.answer_spans(null) { answers.set(span.key.held_key(), span.length) }
+    mut weighed: Map<string, bool> = {}
+    mut weights: Map<string, FamilyWeight> = {}
+    for span in pack.question_spans(null) {
+        let q? = pack.question_known_as(span.key) else { continue }
+        mut w = weights.get(q.query_name) ?? FamilyWeight {
+            query_name: q.query_name,
+            questions: 0,
+            question_octets: 0,
+            answer_octets: 0,
+        }
+        w = w with { questions: w.questions + 1, question_octets: w.question_octets + span.length }
+        for r in pack.records_of(span.key) {
+            let key = r.answer.held_key()
+            if weighed.has(key) { continue }
+            weighed.set(key, true)
+            w = w with { answer_octets: w.answer_octets + (answers.get(key) ?? 0) }
+        }
+        weights.set(q.query_name, w)
+    }
+    sorted_by([w for _name, w in weights], heavier)
+}
+
+/// Whether `a` weighs more than `b`.
+export fn heavier(a: FamilyWeight, b: FamilyWeight) -> bool { a.question_octets + a.answer_octets > b.question_octets + b.answer_octets }
+
 /// How many binaries' frontiers a store keeps.
 const KEPT_FRONTIERS: int = 2
 

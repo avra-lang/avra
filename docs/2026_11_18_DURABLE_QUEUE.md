@@ -142,7 +142,7 @@ Where it still differs from §1, and what closes each gap:
 
 | §1 says | Today | Closed by |
 |---|---|---|
-| `durable: true` | `durable: stored<Email>()` | a type argument inferred from the seat that wants it; `@std/queue` cannot name the store, so the setting stays a value the store hands over |
+| `durable: true` | `durable: stored<Email>()` | a NULLABLE seat pinning a call's type argument (`durable: Durable<T>?` does not pin `stored()`; a plain `Durable<T>` seat would); `@std/queue` cannot name the store, so the setting stays a value the store hands over |
 | no `name:` | `name: "emails"` | a component reading its own instance name |
 | declared at a file's top level | declared inside the fn that sets `ctx db` | a `ctx` read charged where a fn value is called, and top-level instances as declarations (ruled, being built) |
 | `tx.send(emails, …)` | `emails.send(…, tx: tx)` | a generic method (`impl Tx { fn send<T>(q: queue<T>, …) }` is refused today) |
@@ -150,6 +150,7 @@ Where it still differs from §1, and what closes each gap:
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
 | `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
+| `q.send(self.item, id: …)` in a component method | the id passed by position (`schedule.sent_for`) | `avra test`'s program layer making a method that hands `self`'s field beside a named argument (it refuses to test the suite, naming the method) |
 
 Delayed and recurring work (Q5):
 
@@ -183,8 +184,61 @@ let ticking = spawn nightly.run()
   is skipped. A wait that wakes past a tick by more than `catch_up` fires `missed`. A clock
   that steps back sends no tick twice. `check` refuses `catch_up` longer than a durable
   queue's `dedupe`.
-- Owed: `take`'s walk of the free index steps over delayed rows not yet due (one per take,
-  each), a cost to row in ZERO_COST before a queue holds many long delays.
+- At the last instant a take, a renewed hold and a release are held to it (`Time.plus_held`),
+  so a clock at the range's end hands an item out and back without a trap.
+- A free row is IN LINE or it WAITS. `in_line: Time?` is set by a plain send and by the take
+  that finds a waiting row due, and cleared by the take that leases it; a delayed send, a
+  release and a let-go leave it absent. So the take reads two indexes and walks neither past
+  rows not yet due: `@index(present: in_line) queue` (the line, in send order) and
+  `@index(queue, present: leased_until) leased_until` (the leases). Each take call first puts
+  in line every waiting row due by its instant (`found_due`, one `UPDATE` over `FlowItem_held`,
+  DDL `(queue, ready_at) WHERE leased_until IS NULL AND in_line IS NULL`: two absences no field
+  mark says, and a mark for both would copy two facts the row holds). A row is put in line
+  once, so 10 000 rows due at once cost one walk, ~47 steps a row, and are handed out by their
+  send. The line branch still asks `ready_at <= now`, so a row put in line before the clock
+  stepped back waits again. The taken and waiting indexes stay DDL, their rows said by `epoch`.
+- A home opens over an earlier build's database with `FlowItem.migrate`: the column and its
+  index are added, the old free index dropped, a backup taken; every free row then waits and
+  the first take puts the due ones in line. A table a newer build grew (a moving plan) is
+  opened as it stands; one that would grow inside a transaction is refused like a fresh one.
+- Paid (was owed): the take's walk of the free index stepped over every delayed row. SQLite VM
+  steps, 10 000 rows that wait an hour ahead of one due row. A take row is one `take()` through
+  the store (begin, put in line, the take, commit; `due_test.av` holds it within 16 steps of a
+  take past none, per order and per way of waiting); every other row is the statement alone,
+  read from the tree, in the sqlite3 shell:
+
+  | statement | before | after |
+  |---|---|---|
+  | take, `after:` sends, fifo / by_key | 50 342 / 50 323 | 376 / 357 |
+  | the same, sent in a transaction | 50 342 / 50 323 | 376 / 357 |
+  | take, backoff releases, by_key | 50 323 | 357 |
+  | take past none (the floor) | 342 / 323 | 372 / 353 |
+  | send / `after:` send | 101 / 101 | 108 / 109 |
+  | ack / release | 74 / 57 | 77 / 60 |
+  | the lapsed-lease branch, by_key | 50 116 | 129 |
+  | depth (`FlowRoom`) | 9 | 9 |
+  | operate's delayed count | 80 026 | 60 046 |
+  | `drop_oldest` past the 10 000, all never taken | 78 | 80 114 |
+
+  A take past none costs ~30 steps more (the put-in-line `UPDATE`: one more statement per
+  take call). `drop_oldest` now finds the oldest waiting row by `min(id)` over the rows that
+  wait, so it walks them; a `drop_oldest` queue refuses delayed sends, so they are its backoffs
+  alone, which the free index walked too. The delayed count still walks what it counts. A
+  plain `(queue, ready_at)` index on the free rows was measured worse (100 226): the planner
+  took it for the candidate and sorted by id.
+- Paid (was owed): `drop_oldest` walked every row backing off. A home whose terms give up the
+  oldest (`drop_oldest`, `latest`) makes `FlowItem_untaken`, `(queue) WHERE leased_until IS NULL
+  AND in_line IS NULL AND epoch = 0`: the rows that wait and no take reached, in send order, so
+  the statement's `min(id)` over them is one index entry. The statement, and so the row it
+  gives up, is unchanged. 10 000 rows backing off, fifo / by_key: 50 123 / 50 114 → 126 / 117
+  (`store_test` holds it equal past 2000 backing-off rows and past 10). The index is a cost on
+  every write of a database that holds such a queue — send 108 → 114, `after:` send 109 → 120,
+  take 121 → 124 (fifo) and 292 → 303 (by_key), ack 77 → 80, release 60 → 70 — and none on
+  any other database.
+- Still owed, by choice: operate's delayed count walks the rows that wait (50 054 past 10 000
+  backing off; 60 046 when the 10 000 are the delayed rows it counts). An index-only count is
+  measured — `(queue, ready_at)` under the same three conditions answers 52 — but it costs every
+  write of every database the steps above, for an operator's command, which may walk.
 
 Jobs and operating a queue (Q6):
 
@@ -213,20 +267,34 @@ server app { group "/admin/queues" { queue_admin(ctx.db, operator) } }
   `buries_in:`), one of them, not both. The program's letter is `buries_in:`, not `dead:`: a job always
   has a fate (its own letter by default), and `flow.no_fate` reads a field named `dead`.
 - `run(resize)` is `resize.run()`, as a schedule's is: there is no overloading.
-- Every home records its terms and item shape when it opens (`FlowTerms`), and a letter's descriptor
-  holds its item's and its error's. A database describes its own queues with no program.
+- Every home records its terms, spans to the nanosecond, and item shape when it opens (`FlowTerms`),
+  and a letter's descriptor holds its item's and its error's. A database describes its own queues with no program.
 - `@std.queue_store.operate`: `queues`, `queue_named`, `letters`, `peek` (items as JSON records, each
   read through the descriptor of the shape its row was written under, so another build's rows read
-  too; a nested type is not followed and reads as none), `retry` (a live item due now; a letter's item
+  too), `retry` (a live item due now; a letter's item
   back to the queue it was buried out of, as a fresh item) and `discard` (the item and its name). A
   live lease wins over both. Reads write nothing.
+- Paid (was owed): `peek` follows nested types. A descriptor (`avra.shape.2`, `@std.relation.shape`)
+  names its type and says whether its texts cross through a scope; each type its wire reaches is a
+  reach of its own — name, fingerprint, FORM (`Record`, `Variants`, `Over`, `Dense`, or
+  `Coded(hash, scoped, tagged)` for one that wears its own codec) and its slots — and a slot names a
+  type by its reach, so a type that reaches itself is one reach, never inlined. Every variable run
+  is counted, so no boundary moves. `verdict` still judges by fingerprints: a nested record that
+  grew is `Moved` (it is read whole), as before. An item that cannot be read is `item: null` with
+  `unread:` saying why; the walk is bounded at 64 levels and `64 × octets + 4096` values, so a
+  corrupt, cyclic or doubling descriptor answers a reason, never a trap. A descriptor an earlier
+  build wrote (`avra.shape.1`: names and fingerprints only) still reads and is still judged; its
+  nested items read as none until a home of this build opens, whose `know_shape` writes its own
+  spelling over a different one of the same hash. The codec's hashes and its encode/decode are
+  unchanged; only the `codec_descriptor()` text grew, and it is read on the open path only.
 - `@std.queue_store.admin.queue_admin(db, allowed, clock)`: those verbs as routes, JSON out, each a 403
   to a request `allowed` refuses; nothing serves until a program mounts it. `@std/crud` does not fit:
   its doors are row edits, and these are laws (a lease check, a move across queues, a name freed).
 - The two-process witness is `tools/queue-witness` (`avra run tools/queue-witness`, about a
   second): a sender and two `in_tx` workers over one file handle 40 items once each, and a worker
   stopped after its take, inside its handler and after its ack leaves the item to its lease, its
-  handler's write undone, or nothing. It runs as its own binary, so it is no suite program.
+  handler's write undone, or nothing. It runs as its own binary (`@std/process`'s `this_program()`),
+  so it is no suite program.
 - Owed: `avra explain flow` and `avra queue peek` (the CLI; the std API they read is `queues` and
   `peek`), and a CI target that runs the witness.
 
@@ -381,6 +449,21 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 | `@model` with a `Bytes` field | REFUSED: the derive has no `Bytes` kind; a `Time` column's DDL type is a placeholder word. std-db's to fix, before or with Q2 |
 | a SQL function registered from Avra (`flow_json`) | not possible: no C callback trampoline. That projection waits; `peek` and the admin router do not |
 | `ctx db = …` when the read is through a fn value | a false `ctx.unread` warning; reported |
+
+### 8b. Re-probed on the batch-55 binary (2026-11-19)
+
+| Asked | Answer |
+|---|---|
+| `fn f<T, E = never>()`, `component c<T, E = never>` | not in this compiler ("expected `(`", "expected `{`") |
+| a partial type argument (`pair<int>(3)` for `pair<A, B>`) | not in this compiler: "takes 2 type arguments, found 1" |
+| a call pinned by a nullable seat (`b: made()` into `Box<int>?`, a record or component field) | not in this compiler: "`T` is not pinned by the arguments"; a non-null seat pins it |
+| `==` on `ptr` | not in this compiler: "`==` compares by value" |
+| `dead:` on the queue (`queue<T, E>`) | `q emails { dead: undeliverable }` compiles with NO type argument written, both read from the field; writing one (`q<Email>`) is `type.struct_targs`, and a queue with no letter cannot name `E` |
+| `dead:` as a job's letter field | `flow.no_fate` refuses any instance that leaves a field named `dead` unset, so `buries_in:` stays |
+| a ctx read in a spawned task under `avra test` | still traps `the context … is required`; `avra run` reads it. The suites' warm-ups before a spawn stay |
+| a component `check` that builds another instance | still skipped at build; a plain one refuses |
+| a schedule's `check` (no name, weekday 8) | still not run at build |
+| a foreign generic record literal as a generic fn's tail | works (`letters.read`) |
 
 Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect contracts (§7.2), Postgres.
 

@@ -1,0 +1,84 @@
+// One build's declarations of the types `reach_twin_two.av` declares again: each family's
+// outer type is written alike in both, and only what it reaches through a coded type differs.
+use @std.relation.{Storable, codec}
+use @std.relation.stable.{indexed_scope}
+
+type Sprig = { x: int }
+
+@codec
+type Bough = { s: Sprig }
+
+@codec
+type Trunk = { b: Bough }
+
+@codec
+type Hollow = {}
+
+@codec
+type Core = { h: Hollow }
+
+@codec
+type Shell = { c: Core }
+
+type Left = { x: int, y: int }
+
+type Right = { z: int }
+
+@codec
+type Joint = { l: Left, r: Right }
+
+@codec
+type Frame = { j: Joint }
+
+@codec
+type Crate = { o: Bough?, os: List<Bough> }
+
+@codec
+type Vine = { kids: List<Vine>, b: Bough }
+
+@codec
+type Ping = { pongs: List<Pong> }
+
+@codec
+type Pong = { ping: Ping? }
+
+@codec
+type Tick = { tock: Tock? }
+
+@codec
+type Tock = { ticks: List<Tick> }
+
+export fn one_trunk() -> int { Trunk.codec_shape() }
+
+export fn one_bough() -> int { Bough.codec_shape() }
+
+export fn one_shell() -> int { Shell.codec_shape() }
+
+export fn one_frame() -> int { Frame.codec_shape() }
+
+export fn one_crate() -> int { Crate.codec_shape() }
+
+export fn one_vine() -> int { Vine.codec_shape() }
+
+export fn one_ping() -> int { Ping.codec_shape() }
+
+export fn one_pong() -> int { Pong.codec_shape() }
+
+export fn one_tick() -> int { Tick.codec_shape() }
+
+export fn one_vine_kept() -> bool {
+    let v = Vine {
+        kids: [Vine { kids: [], b: Bough { s: Sprig { x: 2 } } }],
+        b: Bough { s: Sprig { x: 1 } },
+    }
+    let back = Vine.decoded_in(indexed_scope(), v.encoded_in(indexed_scope())) catch _ -> v with { kids: [] }
+    back.kids.length == 1 && back.kids[0].b.s.x == 2 && back.b.s.x == 1
+}
+
+export fn one_ping_kept() -> bool {
+    let p = Ping { pongs: [Pong { ping: Ping { pongs: [] } }, Pong { ping: null }] }
+    let back = Ping.decoded_in(indexed_scope(), p.encoded_in(indexed_scope())) catch _ -> Ping {
+        pongs: [],
+    }
+    back.pongs.length == 2 && back.pongs[0].ping != null && back.pongs[1].ping == null
+}
