@@ -1,7 +1,18 @@
 //! The typing rules of absence: `null`, `??`, `!`, and `let x? = v else { … }`, whose else block
 //! checks in a scope of its own, its value dropped, before `x` is bound to what `v` holds when it's
 //! present.
-use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, null_type}
+use core.{
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    Seating,
+    SignedType,
+    StmtChecks,
+    StmtId,
+    null_type,
+    owned_type,
+}
 use core.expr.{Chain, Coalesce, Force, MatchOpt, NullLit, Propagate}
 use core.stmt.{LetElse}
 
@@ -85,12 +96,27 @@ fn present_checked(mut cx: Checking, m: MatchOpt, held: SignedType?, want: Expec
 }
 
 impl Checks for Propagate {
-    /// `v?` is what `v` holds when it carries on: a `Result`'s ok side, an optional's value.
+    /// `v?` is what `v` holds when it carries on: a `Result`'s ok side, an optional's value. `v` is
+    /// checked once, under the want the `?` implies where one can be formed — so a generic method
+    /// whose parameter only its answer names hears it.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        let s? = cx.check(self.subject, Expected.Free) else { return null }
-        cx.propagated(self.subject, s)
+        let want = carried_want(cx, expected)
+        let s? = cx.check_seated(self.subject, want, Seating.Propagated) else { return null }
+        cx.propagated(self.subject, s, want != null)
         cx.payload_of(s, "Ok") ?? present(s)
     }
+}
+
+/// What a `?` standing under `expected` asks of its subject, by the enclosing fn's own answer:
+/// `Result<w, E>` in a fn failing with `E`, `w?` in one answering absence. Absent under no want, in a
+/// lambda, or where the fn's answer isn't known whole.
+fn carried_want(cx: Checking, expected: Expected) -> SignedType? {
+    let w? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
+    if w.generic() || w.inferred() || w.unknown() || cx.scopes.get().any(it.fenced) { return null }
+    let promise? = cx.answer else { return null }
+    if promise.generic() || promise.inferred() || promise.unknown() || promise.dynamic { return null }
+    if promise.resulted() { return owned_type("Result") with { args: [w, promise.args[1]] } }
+    if promise.nullable() { w with { nulls: w.nulls + 1 } } else { null }
 }
 
 impl Checks for Chain {

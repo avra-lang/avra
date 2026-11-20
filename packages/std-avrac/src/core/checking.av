@@ -799,6 +799,10 @@ export enum Seating {
     /// A literal of `record` that leaves its parameter `param` filled by nothing: `shown` spells the
     /// type arguments that would pin it, `fields` are the unwritten fields whose type names it.
     LiteralUnpinned(record: string, param: string, shown: List<string>, fields: List<string>)
+    /// The subject of a `?`, a seat of its own law: what it fails with or leaves absent carries out
+    /// of the fn as the fn's answer promises. What it holds when it carries on is the `?`'s value,
+    /// judged where that value stands.
+    Propagated
     /// A bare `null` handed seat `at` of `callee`, which names a type parameter nothing fills.
     NullPin(callee: string, at: int)
     /// A comprehension's range bound, the high one where `high`, that is no `int`.
@@ -1119,6 +1123,7 @@ impl Checking {
 
     mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
         let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
+        if self.seat_wanting(want) is .Propagated { return self.carried_out(e, found) }
         if found.generic() && (want.generic() || found.head is .Function) ||
             want.inferred() ||
             found.inferred() { return }
@@ -1434,6 +1439,8 @@ impl Checking {
     /// The type a node's seat wants, kept by the node: what the core may answer in its place.
     fn seat_kept(e: ExprId, expected: Expected) {
         let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
+        // a `?`'s subject carries out what the fn's answer promises; it is never lifted into the want
+        if self.seat_wanting(wanted) is .Propagated { return }
         self.seats.put("${e.index}", wanted)
     }
 
@@ -3578,7 +3585,15 @@ impl Checking {
     /// is promised, a lambda's where its seat gives one. Refused where there is none, or the promise
     /// can't carry what it passes — absence into an answer never absent, a failure into one that is
     /// no `Result` or fails with another type.
-    mut fn propagated(subject: ExprId, held: SignedType) {
+    mut fn propagated(subject: ExprId, held: SignedType, seated: bool = false) {
+        if seated { return }
+        self.carried_out(subject, held)
+    }
+
+    /// THE `?` SEAT'S LAW, asked once — by the agreement door where the `?` seated its subject,
+    /// else by `propagated`: `subject`, of `held`, carries its failure or absence out of the fn as
+    /// the fn's answer promises, a failure the promised one covers.
+    mut fn carried_out(subject: ExprId, held: SignedType) {
         let failing = held.resulted()
         if self.meanings || !failing && !held.nullable() || held.absence() { return }
         let passed = self.passing(failing, held)
