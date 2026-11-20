@@ -28,16 +28,19 @@ git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
     echo "cost: snapshot $snapshot is not in this clone and could not be fetched"; exit 1; }
 command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to one core"; exit 1; }
 
-# The cold workloads: a name, the machine's store it runs over, then the command the census compiler
-# runs in the snapshot. A STORE IS NOT THE COMPILER: every run but one has the machine's store off, so
-# its rows are what the compiler does, whatever a store holds; `cold-with-store-fill` is the cli's
-# cold check over an empty store, which it fills — the store's own price, ratcheted apart.
+# The cold workloads: a name, the machine's store it runs over, the census tables it takes, then the
+# command the census compiler runs in the snapshot. A STORE IS NOT THE COMPILER: every run but one has
+# the machine's store off, so its rows are what the compiler does, whatever a store holds;
+# `cold-with-store-fill` is the cli's cold check over an empty store, which it fills — the store's own
+# price, ratcheted apart, its sites the check's own and so read once, from check-cli. The death
+# census stamps a word per 16 bytes of slab, half again the memory a run holds, so the build — the
+# largest run, its fns the check's own — takes the site tables alone, under the cap.
 workloads() {
     cat << 'EOF'
-check-cli off check --counts packages/cli
-build-cli off build packages/cli
-check-program off check --counts packages/std-program
-cold-with-store-fill filled check --counts packages/cli
+check-cli off deaths check --counts packages/cli
+build-cli off sites build packages/cli
+check-program off deaths check --counts packages/std-program
+cold-with-store-fill filled none check --counts packages/cli
 EOF
 }
 
@@ -87,8 +90,14 @@ counted() {
     [ "${store:-off}" != filled ] || machine=1
     sleep 3
     started=$(date +%s)
-    # the census reports at exit only where the run accounts (AVRA_MEM_STATS)
-    (cd "$src" && unset AVRA_MACHINE_STORE_DIR && AVRA_MACHINE_STORE=$machine AVRA_MEM_STATS=1 AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
+    # the census reports at exit only where the run accounts (AVRA_MEM_STATS), and the tables the
+    # workload takes (the C side's own counts, which move no counter of the run's); NO STORE IS
+    # INHERITED: the machine's cache is this run's own and its HOME is empty
+    mkdir -p "$cache/home"
+    (cd "$src" && unset AVRA_MACHINE_STORE_DIR && export AVRA_CENSUS_SITES=1 AVRA_CENSUS_DEATHS=1 && \
+        { [ "${census:-deaths}" = deaths ] || unset AVRA_CENSUS_DEATHS; } && \
+        { [ "${census:-deaths}" != none ] || unset AVRA_CENSUS_SITES; } && \
+        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_MEM_STATS=1 AVRA_CENSUS_TOP=1000000 AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
         sh "$root/tools/memcap.sh" "${COST_CAP_MB:-8000}" taskset -c 0 build/avra "$@" \
         > "$root/$out/$name.stdout" 2> "$root/$out/$name.out") || {
         tail -20 "$out/$name.out"; echo "cost: $name failed ($*)"; exit 1; }
@@ -117,6 +126,17 @@ warm_edits() {
     find "$out/settle.out" "$out"/back-*.out -delete
 }
 
+# A cold run's site lines with every address its census binary's symbol: <name>.sites, which
+# `avra census --candidates` reads.
+resolved() {
+    grep -E '^(typed|streq|empty-open): site 0x|^(pair|move|reuse): ' "$out/$1.out" > "$out/$1.raw" || :
+    grep -oE '0x[0-9a-f]+' "$out/$1.raw" | sort -u > "$out/$1.addrs"
+    xargs addr2line -f -e "$src/build/avra" < "$out/$1.addrs" | awk 'NR % 2 == 1' | paste -d' ' "$out/$1.addrs" - > "$out/$1.names"
+    awk 'NR == FNR { name[$1] = $2; next } { for (i = 1; i <= NF; i++) if ($i in name) $i = name[$i]; print }' \
+        "$out/$1.names" "$out/$1.raw" > "$out/$1.sites"
+    find "$out/$1.raw" "$out/$1.addrs" "$out/$1.names" -delete
+}
+
 bare() {
     find "$src" -path '*/.avra-cache*' -delete
     find "$src/packages" \( -path '*/src/main' -o -name '*.av.ll' \) -type f -delete
@@ -124,10 +144,14 @@ bare() {
     find "$cache" -mindepth 1 -delete
 }
 
-workloads | while read -r name store command; do
+workloads | while read -r name store census command; do
     bare
     # shellcheck disable=SC2086
     counted "$name" $command
+    [ "$census" = none ] || resolved "$name"
     [ "$name" != check-cli ] || warm_edits
 done
+# THE CANDIDATES: every cold run's sites classified to the zero-cost technique that would remove their
+# cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md)
+"$src/build/avra" census --candidates --root "$src" "$out"/*.sites > "$out/candidates.txt"
 find "$out/cache" "$src" "$out/edited.orig" -delete

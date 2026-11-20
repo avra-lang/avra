@@ -40,7 +40,7 @@ use @std.program.saved_query.{
 /// Where an impl stands: its file, its item there, which of the item's impls it is (its impls in
 /// order, then its components), and its target's type parameters as it names them.
 @derive(Saved)
-export type ImplAt = { file: SourceFileAddress, item: int, params: List<string>, nth: int = 0 }
+export type ImplAt = { file: SourceFileAddress, item: ItemId, params: List<string>, nth: int = 0 }
 
 /// The impl statement `at` names in `item`; absent for a component's.
 fn impl_stmt_at(item: ReadItem, at: ImplAt) -> StmtId? {
@@ -93,16 +93,15 @@ fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerP
     mut by_type: Map<string, List<FiledImpl>> = {}
     for path in package_sources(engine, package, "src") {
         let f = SourceFileAddress { package_name: package, path_in_package: path }
-        let first = if generated { item_count(engine, f) } else { 0 }
         let by_item = if generated { generated_impls(engine, f) } else { written_impls(engine, f) }
-        for at, held in by_item {
+        for k, held in by_item {
             for nth, i in held {
                 let d? = impl_target(engine, f, i) else { continue }
                 let tr = if i.implements == null { null } else { impl_named(engine, f, i.trait_in, i.implements!) }
                 let filed = FiledImpl {
                     at: ImplAt {
                         file: f,
-                        item: first + at,
+                        item: nth_item_id(engine, f, generated, k),
                         params: impl_params(engine, i, d),
                         nth: nth,
                     },
@@ -388,11 +387,11 @@ fn target_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?> {
 }
 
 /// The impls the item `at` of `file` holds: a written item's, else, past them, a generated one's.
-fn impls_of_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
-    let written = item_count(engine, file)
-    if at < written { return item_impls(engine, file, at) }
+fn impls_of_item(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ItemImpl> {
+    if item_held(engine, file, at) { return item_impls(engine, file, at) }
+    let k? = generated_rank(at) else { return [] }
     let made = generated_impls(engine, file)
-    if at - written < made.length { made[at - written] } else { [] }
+    if k < made.length { made[k] } else { [] }
 }
 
 /// The trait the impl at `at` implements, read where its file names it; absent for an impl of no

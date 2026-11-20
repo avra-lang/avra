@@ -337,7 +337,7 @@ int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
 int64_t g_list_pushes;
 static int64_t g_empty_made, g_empty_grown;
 static int64_t g_once_reads, g_once_steps;
-static int64_t g_copies, g_streqs;
+static int64_t g_copies, g_streqs, g_empty_opens;
 static int64_t g_boxes_made, g_bufs_made;
 static int64_t g_made_by_kind[8];
 
@@ -427,10 +427,30 @@ static void note_empty(Site* table, int64_t* slots, void* site, int64_t* total) 
     if (s) s->made++;
 }
 
+// A RETAIN AND THE RELEASE THAT CANCELS IT: a box retained, then released with no count moved
+// between, by the pair of sites (the move-at-last-use census). And A FREE AND THE ALLOC IT COULD
+// HAVE BEEN: a box freed, then the next box made of the same size class (the reuse census).
+typedef struct { void* made; void* dropped; int64_t n; int64_t bytes; } Pair;
+#define SITE_PAIRS (1 << 18)
+static Pair g_move_pairs[SITE_PAIRS];
+static int64_t g_move_slots = 0;
+static Pair g_reuse_pairs[SITE_PAIRS];
+static int64_t g_reuse_slots = 0;
+static void* g_retained_box = NULL;
+static void* g_retained_at = NULL;
+static void* g_freed_at = NULL;
+static int g_freed_row = 0;
+static void pair_in(Pair* table, int64_t size, int64_t* slots, void* made, void* dropped, int64_t bytes);
+static void report_pairs(const char* label, Pair* table, int64_t size, intptr_t slide);
+
 static void note_made(void* site, void* up, int64_t bytes) {
     g_last_box_bytes = bytes;
     g_last_made_site = site;
     note_block(bytes);
+    if (g_freed_at != NULL) {
+        if (size_row(bytes) == g_freed_row) pair_in(g_reuse_pairs, SITE_PAIRS, &g_reuse_slots, g_freed_at, site, bytes);
+        g_freed_at = NULL;
+    }
     if (!g_sites_census) return;
     Site* s = site_in(g_made_sites, &g_made_slots, site);
     if (s) { s->made++; s->count += bytes; }
@@ -451,6 +471,18 @@ static void note_copy(void* site) {
     if (s) s->made++;
 }
 
+// An open of the binary's own empty literal (`[]`, `{}`): no cell crosses, so it is no copy — it is
+// the allocation a first write into a fresh empty pays, by the Avra fn that wrote.
+static Site g_empty_open_sites[SITES];
+static int64_t g_empty_open_slots = 0;
+
+static void note_empty_open(void* site) {
+    g_empty_opens++;
+    if (!g_sites_census) return;
+    Site* s = site_in(g_empty_open_sites, &g_empty_open_slots, site);
+    if (s) s->made++;
+}
+
 // A RETAIN'S CALLER. The conditional ABI's prize is the retain
 // traffic at CALL SEATS, and `retained_args` reaches `.Call`/`.CallPtr`
 // alone — a managed list read (`avra_array_get_owned`) and a cell
@@ -462,11 +494,24 @@ static void note_copy(void* site) {
 static Site g_retain_sites[SITES];
 static int64_t g_retain_slots = 0;
 
-void note_retain(void* site) {
+
+void note_retain(void* box, void* site) {
     if (!g_sites_census) return;
+    g_retained_box = box;
+    g_retained_at = site;
     Site* s = site_in(g_retain_sites, &g_retain_slots, site);
     if (s) s->made++;
 }
+
+void note_release(void* box, void* site) {
+    if (!g_sites_census) return;
+    if (box == g_retained_box) pair_in(g_move_pairs, SITE_PAIRS, &g_move_slots, g_retained_at, site, 0);
+    g_retained_box = NULL;
+}
+
+// The strings `avra_streq` compares, by the Avra fn that asked.
+static Site g_streq_sites[SITES];
+static int64_t g_streq_slots = 0;
 
 // Boxes a row answered owned, by what they are: each label is a type
 // and the row (`List<int> by avra_array_sized`), counted where the
@@ -637,6 +682,7 @@ static void acc_report(void) {
     avra_say("alloc: %lld boxes, %lld list buffers\n",
             (long long)g_boxes_made, (long long)g_bufs_made);
     avra_say("rc: %lld copies, %lld string compares\n", (long long)g_copies, (long long)g_streqs);
+    avra_say("rc: %lld opens of an empty literal\n", (long long)g_empty_opens);
     for (int k = 0; k < ACC_KINDS; k++) {
         if (g_made_by_kind[k]) avra_say("alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
     }
@@ -656,10 +702,10 @@ static void acc_report(void) {
     intptr_t slide = image_slide();
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
-        report_made("copy", g_copy_sites, 12, slide);
+        const char* top = getenv("AVRA_CENSUS_TOP");
+        report_made("copy", g_copy_sites, top ? (int)avra_number(top, 10) : 12, slide);
         report_made("append", g_append_sites, 16, slide);
         report_made("push", g_push_sites, 16, slide);
-        const char* top = getenv("AVRA_CENSUS_TOP");
         report_made("made", g_made_sites, top ? (int)avra_number(top, 10) : 30, slide);
         report_made("made-up", g_made_up_sites, 30, slide);
         report_made("empty", g_empty_sites, top ? (int)avra_number(top, 10) : 30, slide);
@@ -669,6 +715,10 @@ static void acc_report(void) {
         report_labelled_sites("typed", g_type_at_sites, top ? (int)avra_number(top, 10) : 30, slide);
         const char* rows_top = getenv("AVRA_CENSUS_ROWS_TOP");
         report_labelled_sites("rowcall", g_row_sites, rows_top ? (int)avra_number(rows_top, 10) : 30, slide);
+        report_made("streq", g_streq_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_made("empty-open", g_empty_open_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_pairs("move", g_move_pairs, SITE_PAIRS, slide);
+        report_pairs("reuse", g_reuse_pairs, SITE_PAIRS, slide);
     }
     const char* types_top = getenv("AVRA_CENSUS_TYPES_TOP");
     report_types(types_top ? (int)avra_number(types_top, 10) : 40);
@@ -1234,7 +1284,6 @@ static void list_death_noted(AvraArray* a) {
     g_dead_len_cells[owned][row] += a->len;
     g_dead_laid[a->data == (int64_t*)(a + 1)]++;
 }
-typedef struct { void* made; void* dropped; int64_t n; int64_t bytes; } Pair;
 #define PAIRS (1 << 21)
 static Pair g_pairs[PAIRS];
 static int64_t g_pair_slots = 0;
@@ -1268,18 +1317,32 @@ static void death_born(Header* h) {
 #endif
 }
 
-__attribute__((unused)) static void pair_noted(void* made, void* dropped, int64_t bytes) {
+static void pair_in(Pair* table, int64_t size, int64_t* slots, void* made, void* dropped, int64_t bytes) {
     uint64_t k = ((uint64_t)(uintptr_t)made * 0x9E3779B97F4A7C15ull) ^ (uint64_t)(uintptr_t)dropped;
-    uint64_t i = (k >> 11) & (PAIRS - 1);
+    uint64_t i = (k >> 11) & (uint64_t)(size - 1);
     for (int step = 0; step < 64; step++) {
-        Pair* p = &g_pairs[i];
+        Pair* p = &table[i];
         if (p->n && p->made == made && p->dropped == dropped) { p->n++; p->bytes += bytes; return; }
         if (p->n == 0) {
-            if (g_pair_slots >= PAIRS / 2) return;
-            p->made = made; p->dropped = dropped; p->n = 1; p->bytes = bytes; g_pair_slots++;
+            if (*slots >= size / 2) return;
+            p->made = made; p->dropped = dropped; p->n = 1; p->bytes = bytes; (*slots)++;
             return;
         }
-        i = (i + 1) & (PAIRS - 1);
+        i = (i + 1) & (uint64_t)(size - 1);
+    }
+}
+
+__attribute__((unused)) static void pair_noted(void* made, void* dropped, int64_t bytes) {
+    pair_in(g_pairs, PAIRS, &g_pair_slots, made, dropped, bytes);
+}
+
+// Every pair a table holds, as `<label>: <first site> <second site> <count> <bytes>`, unslid.
+static void report_pairs(const char* label, Pair* table, int64_t size, intptr_t slide) {
+    for (int64_t i = 0; i < size; i++) {
+        Pair* p = &table[i];
+        if (p->n == 0) continue;
+        avra_say("%s: %p %p %lld %lld\n", label, p->made ? (void*)((char*)p->made - slide) : NULL,
+                p->dropped ? (void*)((char*)p->dropped - slide) : NULL, (long long)p->n, (long long)p->bytes);
     }
 }
 
@@ -1291,6 +1354,8 @@ static void death_noted(Header* h, int64_t block) {
     g_death_n[kind][row]++;
     g_death_b[kind][row] += block;
     g_cascade_boxes++;
+    g_freed_at = g_cascade_site;
+    g_freed_row = size_row(block);
 #if AVRA_SLABS
     if (!is_slab(h) || g_births == NULL) return;
     uint64_t* at = &g_births[((char*)h - g_slab_base) >> 4];
@@ -1894,6 +1959,12 @@ void avra_puts(const char* s) {
 // scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
     CENSUS(g_streqs++);
+#ifdef AVRA_CENSUS
+    if (g_sites_census) {
+        Site* s = site_in(g_streq_sites, &g_streq_slots, AVRA_CALLER());
+        if (s) s->made++;
+    }
+#endif
     // one box is one text: a literal compared at its own call site is
     // the same static box every time
     if (a == b) return 1;
@@ -2980,7 +3051,6 @@ void avra_cell_forget(void* slot) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
-    CENSUS(note_copy(AVRA_CALLER()));
     g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
@@ -3780,10 +3850,20 @@ static void* map_clone(AvraMap* m) {
     return c;
 }
 
-// The clone a place opens — by the box's kind.
+// Whether a box is the binary's own empty literal: laid out static, holding nothing.
+__attribute__((unused)) static int empty_literal(void* p, const Header* h) {
+    if (h == NULL || !box_is_static(h)) return 0;
+    if (KIND_SHAPE(avra_kind(h)) != KIND_MAP) return ((AvraArray*)p)->len == 0;
+    AvraArray* keys = ((AvraMap*)p)->keys;
+    return keys == NULL || keys->len == 0;
+}
+
+// The clone a place opens — by the box's kind, counted once under the Avra fn that opened it: an open
+// of an empty literal apart from a copy.
 static void* box_clone(void* p) {
-    CENSUS(note_copy(AVRA_CALLER()));
     Header* h = hdr(p);
+    CENSUS(void* site = g_clone_site ? g_clone_site : AVRA_CALLER());
+    CENSUS(if (empty_literal(p, h)) note_empty_open(site); else note_copy(site));
     return (h && KIND_SHAPE(avra_kind(h)) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 
@@ -4901,14 +4981,44 @@ void avra_ctx_back(void) {
 // runs later is made under.
 void* avra_ctx_frame(void) { return avra_ctx_now ? slot_retained(avra_ctx_now) : NULL; }
 
+// Whether the frame `f` holds a cell for `key`.
+static int ctx_holds(AvraArray* f, int64_t key) {
+    if (!f) return 0;
+    for (int64_t i = 1; i + 1 < f->len; i += 2) {
+        if (f->data[i] == key) return 1;
+    }
+    return 0;
+}
+
+// The frame `under` replaced by one holding the pairs of `over` laid over
+// its own: each key `over` sets holds `over`'s cell, every other key
+// `under`'s, and `under` is the frame its back puts back.
+static void* ctx_laid(void* under, AvraArray* over) {
+    AvraArray* u = (AvraArray*)under;
+    void* next = avra_array_sized((u ? u->len : 1) + (over ? over->len : 1));
+    if (under) avra_array_push_owned(next, under);
+    else avra_array_push(next, 0);
+    for (int64_t i = 1; u && i + 1 < u->len; i += 2) {
+        if (ctx_holds(over, u->data[i])) continue;
+        avra_array_push(next, u->data[i]);
+        avra_array_push_owned(next, (void*)(uintptr_t)u->data[i + 1]);
+    }
+    for (int64_t i = 1; over && i + 1 < over->len; i += 2) {
+        avra_array_push(next, over->data[i]);
+        avra_array_push_owned(next, (void*)(uintptr_t)over->data[i + 1]);
+    }
+    return next;
+}
+
 // A body made under `frame` entered: where `frame` is the one in force,
 // nothing changes and the answer is 0; else the frame made current holds
-// `frame`'s contexts over the one in force, so the end of the body takes
-// it back as a set's end does, and the answer is 1.
+// `frame`'s contexts laid over the ones in force, so a context `frame`
+// sets reads as it was made and any other as where the body runs, and the
+// end of the body takes it back as a set's end does; the answer is 1.
 int64_t avra_ctx_enter(void* frame) {
     if (frame == avra_ctx_now) return 0;
     void* old = avra_task_local->slot[AVRA_SLOT_CTX];
-    ctx_made(ctx_over(old, (AvraArray*)frame, 0, 0, NULL));
+    ctx_made(ctx_laid(old, (AvraArray*)frame));
     return 1;
 }
 
@@ -4950,6 +5060,132 @@ void* avra_ctx_reframed(void* box, int64_t at, void* frame) {
 static void ctx_restored(void* frame) {
     avra_rc_retain(frame);
     ctx_made(frame);
+}
+
+// WHAT A RUNNING QUERY HEARS OF CONTEXTS. A context read inside a query
+// body is one of the answer's reads, as a Db read is: the answer stands
+// while every context it read holds what it held. The running task's
+// slot holds a stack of recordings, one per query open on it, each a
+// list of triples — a context's key, how its value is told apart, and
+// the word that tells it — and `avra_ctx_heard_now` is that stack, NULL
+// where no query is open: the one word a context read tests. Every
+// other cost is the cold path's, out of line.
+void* avra_ctx_heard_now = NULL;
+
+// How a context's value is told apart: by its one word (a number, a
+// truth, a word enum), by its text, or not at all — an answer that read
+// one of those is kept by no cell. A default read is told apart from
+// every set, the default being the same value every time.
+enum { CTX_WORD = 0, CTX_TEXT = 1, CTX_UNTOLD = 2, CTX_DEFAULT = 3 };
+
+// What tells the value `cell` holds apart, as `kind` tells it.
+static int64_t ctx_word(int64_t kind, void* cell) {
+    if (!cell) return 0;
+    int64_t v = ((AvraArray*)cell)->data[0];
+    if (kind == CTX_TEXT) return v ? (int64_t)avra_text_hash((const char*)(uintptr_t)v) : 0;
+    return v;
+}
+
+// The stack of recordings the running task holds, made where `make`.
+static AvraArray* ctx_heard_stack(int make) {
+    AvraArray* st = (AvraArray*)avra_task_local->slot[AVRA_SLOT_HEARD];
+    if (st || !make) return st;
+    st = (AvraArray*)avra_array_sized(2);
+    avra_task_local->slot[AVRA_SLOT_HEARD] = st;
+    return st;
+}
+
+// The recording at `at` of the stack `st`, made where none was heard into yet.
+static AvraArray* ctx_recording(AvraArray* st, int64_t at) {
+    AvraArray* r = (AvraArray*)(uintptr_t)st->data[at];
+    if (r) return r;
+    r = (AvraArray*)avra_array_sized(6);
+    st->data[at] = (int64_t)(uintptr_t)r;
+    if (!avra_packed(st)) st->marks[at] |= MARK_OWNED;
+    return r;
+}
+
+// The word a task switched to reads: its stack where a query is open on it, else NULL.
+void* avra_ctx_heard_of(void** slots) {
+    AvraArray* st = (AvraArray*)slots[AVRA_SLOT_HEARD];
+    return st && st->len > 0 ? st : NULL;
+}
+
+// THE COLD PATH: a context read inside a query body, its key `key`, its
+// value told apart as `kind`, the cell a set gave it or NULL for its
+// default — filed on the innermost recording, made at its first read.
+__attribute__((noinline, cold))
+void avra_ctx_heard(int64_t key, int64_t kind, void* cell) {
+    AvraArray* st = ctx_heard_stack(0);
+    if (!st || st->len == 0) return;
+    AvraArray* top = ctx_recording(st, st->len - 1);
+    int64_t k = cell ? kind : CTX_DEFAULT;
+    avra_array_push(top, key);
+    avra_array_push(top, k);
+    avra_array_push(top, ctx_word(k, cell));
+}
+
+// A query body about to run: a recording opened over the ones open — an
+// empty place, made into a list only where the body reads a context.
+void avra_ctx_listen(void) {
+    AvraArray* st = ctx_heard_stack(1);
+    avra_array_push(st, 0);
+    avra_ctx_heard_now = st;
+}
+
+// The body ran: its recording closed and answered, the caller's own, NULL
+// where it heard nothing; what it heard is heard by the query open around
+// it too, which reads this one's answer.
+void* avra_ctx_listened(void) {
+    AvraArray* st = ctx_heard_stack(0);
+    if (!st || st->len == 0) return NULL;
+    st->len -= 1;
+    AvraArray* heard = (AvraArray*)(uintptr_t)st->data[st->len];
+    st->data[st->len] = 0;
+    if (!avra_packed(st)) st->marks[st->len] = 0;
+    if (st->len > 0) {
+        if (heard) {
+            AvraArray* outer = ctx_recording(st, st->len - 1);
+            for (int64_t i = 0; i < heard->len; i++) avra_array_push(outer, heard->data[i]);
+        }
+    } else {
+        // No query is open on the task: the word reads NULL, and the stack stays for the next.
+        avra_ctx_heard_now = NULL;
+    }
+    return heard;
+}
+
+// A recording no cell keeps any longer, let go.
+void avra_ctx_heard_drop(void* heard) { avra_rc_release(heard); }
+
+// An answer reused inside a query body: what it heard is heard again by
+// the query open, which stands on it as it stands on the answer.
+void avra_ctx_reheard(void* heard) {
+    AvraArray* h = (AvraArray*)heard;
+    AvraArray* st = ctx_heard_stack(0);
+    if (!h || !st || st->len == 0) return;
+    AvraArray* top = ctx_recording(st, st->len - 1);
+    for (int64_t i = 0; i < h->len; i++) avra_array_push(top, h->data[i]);
+}
+
+// Whether every context `heard` records holds now, in the frame in force,
+// what it held when it was heard: an answer that read one told apart by
+// nothing never does.
+int64_t avra_ctx_holds(void* heard) {
+    AvraArray* h = (AvraArray*)heard;
+    if (!h) return 1;
+    AvraArray* frame = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
+    for (int64_t i = 0; i + 2 < h->len; i += 3) {
+        int64_t key = h->data[i], kind = h->data[i + 1], word = h->data[i + 2];
+        if (kind == CTX_UNTOLD) return 0;
+        void* cell = NULL;
+        for (int64_t j = 1; frame && j + 1 < frame->len; j += 2) {
+            if (frame->data[j] == key) { cell = (void*)(uintptr_t)frame->data[j + 1]; break; }
+        }
+        if (kind == CTX_DEFAULT) { if (cell) return 0; continue; }
+        if (!cell || ctx_word(kind, cell) != word) return 0;
+    }
+    return 1;
 }
 
 int64_t avra_fd_read(int64_t fd, int64_t max) {

@@ -57,7 +57,7 @@ type TypeScope = {
 
 /// Every type name a statement of the written item `at` of `file` writes in its signature that names
 /// no type, statement by statement.
-fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
+fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnnamed {
     if !item_held(engine, file, at) { return unknown_types_made(engine, file, at) }
     unknown_types_seen(item_view(engine, file, at))
 }
@@ -73,7 +73,7 @@ fn unknown_types_seen(view: ItemView) -> ItemUnnamed {
 }
 
 /// What `item_unknown_types` answers, made.
-fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
+fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnnamed {
     if !item_held(engine, file, at) { return ItemUnnamed { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUnnamed { rows: [] } }
@@ -242,16 +242,18 @@ fn unread_named_found(engine: QueryEngine, file: SourceFileAddress, rows: List<U
 
 /// Every type name the written item `at` of `file` writes that names no type: a machine width off an
 /// `extern fn`'s seats where `widths`, any other where not.
-fn unnamed_found(engine: QueryEngine, file: SourceFileAddress, at: int, widths: bool) -> List<Found> {
+fn unnamed_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId, widths: bool) -> List<
+    Found,
+> {
     let rows = item_unknown_types(engine, file, at).rows.filter(it.width == widths)
     if widths { named_found(rows) } else { unread_named_found(engine, file, rows) }
 }
 
 /// Every type name the written item `at` of `file` writes that names no type.
-fn unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, false) }
+fn unknown_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unnamed_found(engine, file, at, false) }
 
 /// Every machine width the written item `at` of `file` writes off an `extern fn`'s seats.
-fn widths_off_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, true) }
+fn widths_off_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unnamed_found(engine, file, at, true) }
 
 /// Every bound the written item `view` shows writes that names no trait.
 fn bounds_unknown(view: ItemView) -> List<Found> {

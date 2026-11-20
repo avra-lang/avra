@@ -4,9 +4,25 @@
 //! sees a pack or none; a binary of another print never reads them, and every answer is held to the
 //! inputs it read wherever it was kept. A machine store that can't take them, or can't stand at
 //! all, is said once, and the build works without it.
-use @std.io.{IoError, drafted, exists, make_dirs, read_bytes}
+//! BESIDE THEM, THE INSTALL'S VERDICT: each std file its own check found nothing refusing, by its
+//! digest. A std file standing on the toolchain's std with that digest is asked no law; one edited,
+//! or one a path pins, is judged as any dependency is.
+use @std.avrac.compiler.{
+    ProgramFile,
+    avra_fact_definitions,
+    dependent_worked,
+    program_files,
+    spelled_file,
+}
+use @std.avrac.core.{digest_of}
+use @std.io.{IoError, append_bytes, drafted, env, exists, make_dirs, read_bytes, read_text}
 use @std.path.{dir_of, joined_path}
+use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{packs_answering}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.saved_query.{definitions_of}
+use @std.program.source_facts.{source_text}
 
 /// Where the toolchain beside this binary keeps its std answers: `<prefix>/lib/avra/answers`, a
 /// sibling of its std.
@@ -81,4 +97,68 @@ fn store_unusable(directory: string, e: IoError) -> string {
 
 fn answers_unlaid(directory: string, e: IoError) -> string {
     "the toolchain's std answers couldn't be laid in ${directory} (${e.describe().message}), so this build works std out itself"
+}
+
+/// Where the toolchain keeps its verdict on its std, for the binary printed `print`.
+fn verdict_at(dir: string, print: string) -> string { joined_path(dir, "verdict-${print}") }
+
+/// The std files of the program on `disk` the toolchain's verdict vouches for, each as `spelled_file`
+/// names it: those standing on the toolchain's std, unpinned, whose text is the text it judged.
+fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
+    let shipped? = shipped_answers() else { return [] }
+    let print? = own_print() else { return [] }
+    let verdict = read_text(verdict_at(shipped, print)) catch ""
+    [spelled_file(f!) for line in verdict.split("\n") for f in [vouched_line(engine, disk, line)] if f != null]
+}
+
+/// The file a verdict's line names, where it stands on the toolchain's std as the verdict judged it.
+fn vouched_line(engine: QueryEngine, disk: Disk, line: string) -> SourceFileAddress? {
+    let parts = line.split("\t")
+    if parts.length != 3 || !parts[0].starts_with("@std/") || disk.deps.has(parts[0]) { return null }
+    let file = SourceFileAddress { package_name: parts[0], path_in_package: parts[1] }
+    let text? = source_text(engine, file) else { return null }
+    if digest_of(text) == parts[2] { file } else { null }
+}
+
+/// THE INSTALL'S VERDICT, written where `AVRA_VERDICT_DIR` asks: each of `own`, the files of a std
+/// package its check found nothing refusing in, by its digest.
+fn verdict_kept(engine: QueryEngine, own: List<ProgramFile>) {
+    // LICENSED input.debug_flag: where an install keeps its verdict is the install's, never an input of what is found
+    let dir? = env("AVRA_VERDICT_DIR") else { return }
+    let print? = own_print() else { return }
+    let lines = [line! for h in own for line in [verdict_line(engine, h.file)] if line != null]
+    let _ = append_bytes(verdict_at(dir, print), lines.join("").bytes())
+}
+
+/// The verdict's line for `file`: its package, its path, its text's digest.
+fn verdict_line(engine: QueryEngine, file: SourceFileAddress) -> string? {
+    let text? = source_text(engine, file) else { return null }
+    "${file.package_name}\t${file.path_in_package}\t${digest_of(text)}\n"
+}
+
+/// `avra cache dependents <dir>`: WHAT A PROGRAM OVER THE PACKAGE AT `dir` READS OF IT, worked out and
+/// kept: every body of its own files lowered and every name they declare, its laws asked of none — so
+/// a store filled so holds what a dependent asks and nothing only the package's own check does.
+fn dependents_worked(dir: string) -> int {
+    let disk? = disk_at(dir, "") else { return std_unfound() }
+    disk.entered()
+    let store = program_store_at(joined_path(disk.root, ".avra-cache/tapes"))
+    let engine = query_engine(
+        store,
+        avra_fact_definitions().concat(definitions_of(listed_build_facts)),
+    )
+    let lowered = [dependent_worked(engine, f) for f in program_files(engine, disk.name) if f.package_name == disk.name]
+    engine.frontier_kept()
+    match store.saved() {
+        .Ok(_) -> {
+            println(
+                "avra cache dependents: ${lowered.length} files, ${lowered.fold(0, (sum, n) -> sum + n)} bodies lowered",
+            )
+            0
+        },
+        .Err(e) -> {
+            eprintln("avra cache dependents: not kept: ${e.describe().message}")
+            1
+        },
+    }
 }

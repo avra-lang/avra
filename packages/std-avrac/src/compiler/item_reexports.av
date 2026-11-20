@@ -12,7 +12,7 @@ use @std.program.query_engine.{QueryEngine}
 type Reexport = { at: Span?, line: UseLine }
 
 /// Every `use` line the written item `at` of `file` writes, re-exporting or not.
-fn uses_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Reexport> {
+fn uses_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Reexport> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
@@ -28,12 +28,12 @@ fn uses_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Reexpo
 }
 
 /// Every `export use` line the written item `at` of `file` writes.
-fn reexports_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Reexport> { uses_in(engine, file, at).filter(it.line.exported) }
+fn reexports_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Reexport> { uses_in(engine, file, at).filter(it.line.exported) }
 
 /// Every item a `use` of the written item `at` of `file` reads through a re-export that no
 /// declaration stands behind — its own `export use`, or a module's that re-exports it — beside the
 /// module it names; an `export use` of a name its module declares privately is the export law's.
-fn unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn unreached(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: r.at, args: [r.line.path.join("."), item] } for r in uses_in(engine, file, at) for m in some_list(imported_module(engine, file, r.line)) for item in r.line.items if (r.line.exported || reexports_name(engine, m, item)) &&
         surfaced(engine, m, item, []).is_empty() &&
         !(r.line.exported &&
@@ -59,7 +59,7 @@ fn dead_reexport(engine: QueryEngine, file: SourceFileAddress, u: UseLine, item:
 
 /// Every name an `export use` of the written item `at` of `file` re-exports that its module's
 /// surface already holds by an earlier declaration or re-export.
-fn taken_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn taken_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     let mine = reexports_in(engine, file, at)
     if mine.is_empty() { return [] }
     let surface = module_surface(

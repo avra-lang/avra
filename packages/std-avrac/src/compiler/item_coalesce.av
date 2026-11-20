@@ -39,7 +39,7 @@ fn coalesces_unfired(view: ItemView) -> List<Found> {
 
 /// Every `??` in the written item `at` of `file` whose left side is never absent, in node order, in
 /// its fns' bodies and in the statements the file runs: a read a test proved present aside.
-fn item_coalesces(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCoalesces {
+fn item_coalesces(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemCoalesces {
     if !item_held(engine, file, at) { return coalesces_made(engine, file, at) }
     coalesces_seen(item_view(engine, file, at))
 }
@@ -55,7 +55,7 @@ fn coalesces_seen(view: ItemView) -> ItemCoalesces {
 }
 
 /// What `item_coalesces` answers, made.
-fn coalesces_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCoalesces {
+fn coalesces_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemCoalesces {
     if !item_held(engine, file, at) { return ItemCoalesces { never: [] } }
     let item = read_item(engine, file, at)
     let asks = [e for i in 0..item.store.expr_count() for e in [ExprId { index: i }] if item.store.coalesced(e).length == 2]
@@ -68,7 +68,7 @@ fn coalesces_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> Item
 
 /// The `??` at `e` as one that never fires; absent where its left side may be absent, isn't typed,
 /// or is a read a test proved present.
-fn never_fires(engine: QueryEngine, file: SourceFileAddress, at: int, cx: Copies, e: ExprId) -> NeverFires? {
+fn never_fires(engine: QueryEngine, file: SourceFileAddress, at: ItemId, cx: Copies, e: ExprId) -> NeverFires? {
     let sides = cx.store.coalesced(e)
     let left = sides[0]
     let ty? = (cx.type_at)(left.index) else { return null }
@@ -81,7 +81,7 @@ fn never_fires(engine: QueryEngine, file: SourceFileAddress, at: int, cx: Copies
 /// Whether the left side `left` is a read whose own declaration may be absent, which only a test
 /// made present: a name no `let` binds to a value that's never absent — the item's own, else the
 /// file's top-level binding of it — or a field its record declares optional.
-fn narrowed(engine: QueryEngine, file: SourceFileAddress, at: int, cx: Copies, left: ExprId) -> bool {
+fn narrowed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, cx: Copies, left: ExprId) -> bool {
     let step? = cx.store.place_step(left) else { return false }
     match step {
         .Root(n) -> !let_never_absent(cx, n.of, left) && !entry_never_absent(engine, file, at, cx, n.of, left),
@@ -108,7 +108,7 @@ fn let_never_absent(cx: Copies, name: string, at: ExprId) -> bool {
 fn entry_never_absent(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     cx: Copies,
     name: string,
     left: ExprId,

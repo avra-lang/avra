@@ -46,7 +46,7 @@ fn waited(n: int) {
 /// An open dialog of two buttons, sent away into `open`.
 fn about(open: Cell<bool>) -> dialog {
     dialog "About" {
-        open: open.get()
+        shown: open.get()
         items: [button "Back" { on press {} }, button "Close" { on press {} }]
         on dismiss { open.set(false) }
     }
@@ -86,7 +86,7 @@ fn rows(b: Board) -> list {
         item {
             items: [
                 checkbox t.title {
-                    checked: t.done
+                    shown: t.done
                     on change { checked -> b.mark(t.id, checked) }
                 },
                 button "Remove" { on press { b.remove(t.id) } },
@@ -98,7 +98,7 @@ fn rows(b: Board) -> list {
 fn board(b: Board) -> column {
     column {
         field "New task" {
-            value: b.draft.get()
+            shown: b.draft.get()
             on input { typed -> b.draft.set(typed) }
         }
         button "Add" { on press { b.add() } }
@@ -202,7 +202,7 @@ spec "one control holds the focus" {
             let open: Cell<bool> = Cell.new(true)
             let on = terminal(
                 () -> dialog "About" {
-                    open: open.get()
+                    shown: open.get()
                     items: [button "Close" { on press {} }]
                     on dismiss { open.set(false) }
                 },
@@ -249,7 +249,7 @@ spec "one control holds the focus" {
             let held: Cell<string> = Cell.new("")
             let on = terminal(
                 () -> field "Name" {
-                    value: held.get()
+                    shown: held.get()
                     on input { typed -> held.set(typed) }
                 },
             )
@@ -262,6 +262,24 @@ spec "one control holds the focus" {
                 },
             )
             held.get() == "[A"
+        }
+    }
+    given "a field shown otherwise than it is typed" {
+        then "a typed key is heard, and the field shows what the program says" {
+            let held: Cell<string> = Cell.new("")
+            let on = terminal(
+                () -> field "Name" {
+                    shown: "${held.get()}!"
+                    on input { typed -> held.set(typed) }
+                },
+            )
+            on.feed("a")
+            held.get() == "!a" && on.screen().contains("!a!")
+        }
+        then "a field given none keeps what is typed" {
+            let on = terminal(() -> field "Name")
+            on.feed("ab")
+            on.screen().contains("ab")
         }
     }
     given "a screen with no control" {
@@ -314,7 +332,7 @@ spec "a key acts on the control that holds the focus" {
                 () -> form {
                     on submit { sent.set(held.get()) }
                     field "Name" {
-                        value: held.get()
+                        shown: held.get()
                         on input { typed -> held.set(typed) }
                     }
                 },

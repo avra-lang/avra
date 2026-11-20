@@ -43,7 +43,7 @@ fn entry_signed(read: EntryRead) -> SignedBody? {
 /// exit, which answers the process's status. The names they bind stand in a scope of their own inside
 /// the entry's seats, of which it has none. A file that runs none has an entry that only exits.
 export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
-    lowered_entry_under(engine, file, framed_lambdas(engine, file.package_name, entry_unit(file)))
+    lowered_entry_under(engine, file, framed_lambdas(engine, [file], entry_unit(file)))
 }
 
 /// The entry of `file` lowered with none of its lambdas framed: what the survey of what a program
@@ -125,9 +125,9 @@ type EntryRead = {
     body: ExprId?,
 }
 
-/// An item of the file, by its place, the index its first node has in the entry's store, and the
+/// An item of the file, by its id, the index its first node has in the entry's store, and the
 /// statements of it that run.
-type ItemBase = { at: int, base: int, stmts: List<StmtId> }
+type ItemBase = { at: ItemId, base: int, stmts: List<StmtId> }
 
 impl ItemBase {
     /// The node `e` of the entry's store as the item's own store numbers it.
@@ -148,6 +148,13 @@ impl ItemBase {
 }
 
 impl EntryRead {
+    /// Where the nodes of the item read after the written item `at` begin in the entry's store: its
+    /// end where none is read after it.
+    fn base_after(at: ItemId) -> int {
+        let k = self.items.find_index(it.at == at) ?? self.items.length
+        if k + 1 < self.items.length { self.items[k + 1].base } else { self.store.expr_count() }
+    }
+
     /// The name the literal at `e`, standing in `store`, is laid out under: the item's own, read where
     /// it stands alone, else the entry's for a literal no source wrote.
     fn literal_symbol(
@@ -220,12 +227,11 @@ fn entry_read_held(engine: QueryEngine, file: SourceFileAddress, placed: bool) -
 /// Every item of `file` that runs a statement, read back into one store, each query it stands on
 /// asked.
 fn entry_read_back(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryRead {
-    let declaring = [d.item for d in file_declares(engine, file).names]
     let store = new_node_store()
     mut items: List<ItemBase> = []
     mut stmts: List<StmtId> = []
-    for at in 0..item_count(engine, file) {
-        if declaring.contains(at) && !runs_in(engine, file, at) { continue }
+    for at in item_ids(engine, file) {
+        if item_said(engine, file, at).declares && !runs_in(engine, file, at) { continue }
         let base = store.exprs.count()
         let running = read_into(
             engine,
@@ -248,7 +254,7 @@ fn entry_read_back(engine: QueryEngine, file: SourceFileAddress, placed: bool) -
 
 /// Whether the item `at` of `file` holds a statement that runs, beside what it declares: a `let`
 /// whose value an expansion made declares what the expansion hoists, and still runs.
-fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
+fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool {
     if generated_at(engine, file, at) != null {
         let item = read_item(engine, file, at)
         return item.stmts.any(runs(item.store, it))

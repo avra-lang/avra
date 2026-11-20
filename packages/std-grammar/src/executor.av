@@ -70,7 +70,7 @@ export enum Captured<T, N> {
 export type RunOutcome<T, N> = { result: Captured<T, N>?, diagnostics: List<Diagnostic> }
 
 /// One capture binding in a branch's scope.
-type Binding<T, N> = { label: string, value: Captured<T, N> }
+type Binding<T, N> = { label: int, value: Captured<T, N> }
 
 /// The farthest point speculation reached: what would have matched
 /// there, inside which rule.
@@ -106,6 +106,8 @@ type MatchContext<T, N> = {
     tokens: List<T>,
     lex: Lexeme<T>,
     ordinals: Map<string, int>,
+    // every label the grammar binds, by name: an item's `label_slot` its place here
+    labels: Map<string, int>,
     // the caller's own terminal-class vocabulary — what `.Named`
     // atoms and a `sync_to` name may denote, disambiguating a
     // named class from a literal spelling at `sync_past`
@@ -182,6 +184,9 @@ impl Memo<T, N> {
 }
 
 impl MatchContext<T, N> {
+    /// The place of the label `name` among the grammar's, -1 for one no item binds.
+    fn label_of(name: string) -> int { self.labels.get(name) ?? 0 - 1 }
+
     /// What a miss at `cursor` would have taken — told only to a run that tracks.
     fn miss_story(cursor: int, in_rule: string, expected: Want) -> FarthestFailure? {
         if !self.tracking { return null }
@@ -300,14 +305,14 @@ impl Binding<T, N> {
     /// This binding, updated when its own label is `target`:
     /// accumulating `v` inside a repetition, replacing outright
     /// otherwise. Any other label passes through unchanged.
-    fn rebound(target: string, v: Captured<T, N>, acc: bool) -> Binding<T, N> {
+    fn rebound(target: int, v: Captured<T, N>, acc: bool) -> Binding<T, N> {
         if self.label != target { return self }
         self with { value: if acc { accumulate(self.value, v) } else { v } }
     }
 
     /// `rebound`'s whole-run twin: every value in `vs` folded in at
     /// once, for the label a repetition's own capture binds under.
-    fn rebound_all(target: string, vs: List<Captured<T, N>>) -> Binding<T, N> {
+    fn rebound_all(target: int, vs: List<Captured<T, N>>) -> Binding<T, N> {
         if self.label != target { return self }
         self with { value: accumulated_all(self.value, vs) }
     }
@@ -315,7 +320,7 @@ impl Binding<T, N> {
 
 /// A new scope with `label` bound: accumulating inside repetitions,
 /// last-wins otherwise.
-fn bind_label<T, N>(bindings: List<Binding<T, N>>, label: string, v: Captured<T, N>, acc: bool) -> List<
+fn bind_label<T, N>(bindings: List<Binding<T, N>>, label: int, v: Captured<T, N>, acc: bool) -> List<
     Binding<T, N>,
 > {
     if !bindings.any(it.label == label) {
@@ -336,7 +341,7 @@ fn bind_label<T, N>(bindings: List<Binding<T, N>>, label: string, v: Captured<T,
 /// holds the same values in order, so `accumulate` folded over them
 /// from whatever the label already held is exactly `accumulated_all`,
 /// computed with one copy instead of N.
-fn bind_label_all<T, N>(bindings: List<Binding<T, N>>, label: string, vs: List<Captured<T, N>>) -> List<
+fn bind_label_all<T, N>(bindings: List<Binding<T, N>>, label: int, vs: List<Captured<T, N>>) -> List<
     Binding<T, N>,
 > {
     if !bindings.any(it.label == label) {
@@ -364,7 +369,7 @@ export fn accumulated_all<T, N>(prev: Captured<T, N>, vs: List<Captured<T, N>>) 
     }
 }
 
-fn binding_for<T, N>(bindings: List<Binding<T, N>>, label: string) -> Captured<T, N>? {
+fn binding_for<T, N>(bindings: List<Binding<T, N>>, label: int) -> Captured<T, N>? {
     for b in bindings {
         if b.label == label { return b.value }
     }
@@ -602,7 +607,7 @@ fn match_seq<T, N>(
             s.fold != null && (member.rep == Rep.Star || member.rep == Rep.Opt) -> match_fold<T, N>(
                 cx,
                 rule_name,
-                s.fold!,
+                cx.label_of(s.fold!),
                 entry,
                 member,
                 cursor,
@@ -645,7 +650,7 @@ fn match_seq<T, N>(
                         in_rule: rule_name,
                     },
                 )
-            if member.label != null { bindings = bind_label<T, N>(bindings, member.label!, cx.absent, acc) }
+            if member.label != null { bindings = bind_label<T, N>(bindings, member.label_slot, cx.absent, acc) }
             vals.push(cx.absent)
             // what is left of a statement that did not end is its own
             if member.prim.answers_to("END") { cursor = sync_to_end<T, N>(cx, entry, cursor) }
@@ -719,8 +724,9 @@ fn built<T, N>(
         return .Ok(only)
     }
     match directive! {
-        .Var(name) -> .Ok(binding_for<T, N>(bindings, name) ?? cx.absent),
-        .Call(name, args) -> cx.build(name, [binding_for<T, N>(bindings, a) ?? cx.absent for a in args], branch),
+        .Var(name) -> .Ok(binding_for<T, N>(bindings, cx.label_of(name)) ?? cx.absent),
+        .Call(name, args) -> cx
+            .build(name, [binding_for<T, N>(bindings, cx.label_of(a)) ?? cx.absent for a in args], branch),
         .Node(owner, variant, _, slots) -> if slots == null {
             .Err(unresolved_node(owner, variant))
         } else {
@@ -747,7 +753,7 @@ fn slot_value<T, N>(cx: MatchContext<T, N>, bindings: List<Binding<T, N>>, sl: S
     string,
 > {
     match sl {
-        .Label(name) -> .Ok(binding_for<T, N>(bindings, name) ?? cx.absent),
+        .Label(name) -> .Ok(binding_for<T, N>(bindings, cx.label_of(name)) ?? cx.absent),
         .Fixed(text) -> .Ok(captured_terminal<T, N>(cx.lex.stated(text, branch))),
         .Nested(inner) -> built<T, N>(cx, inner, bindings, [], branch),
         .Items(items) -> .Ok(spliced<T, N>([slot_value<T, N>(cx, bindings, i, branch)? for i in items])),
@@ -790,7 +796,7 @@ fn opens(p: Prim) -> bool {
 /// The result with this item's label bound, when it carries one.
 fn with_label<T, N>(member: Item, r: MatchResult<T, N>, acc: bool) -> MatchResult<T, N> {
     if member.label == null { return r }
-    r with { bindings: bind_label<T, N>(r.bindings, member.label!, r.value, acc || member.listed) }
+    r with { bindings: bind_label<T, N>(r.bindings, member.label_slot, r.value, acc || member.listed) }
 }
 
 fn match_item<T, N>(
@@ -878,7 +884,7 @@ fn match_repetition<T, N>(
 
 /// The bindings with the fold's seed label holding the value so far,
 /// replacing whatever it held.
-fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: string, acc: Captured<T, N>) -> List<
+fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: int, acc: Captured<T, N>) -> List<
     Binding<T, N>,
 > {
     [b.rebound(field, acc, false) for b in bindings]
@@ -894,7 +900,7 @@ fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: string, acc: Captured<T
 fn match_fold<T, N>(
     mut cx: MatchContext<T, N>,
     rule_name: string,
-    field: string,
+    field: int,
     origin: int,
     member: Item,
     entry: int,
@@ -959,7 +965,7 @@ fn labeled_bindings<T, N>(
     collected: List<Captured<T, N>>,
 ) -> List<Binding<T, N>> {
     if member.label == null || collected.is_empty() { return bindings }
-    bind_label_all<T, N>(bindings, member.label!, collected)
+    bind_label_all<T, N>(bindings, member.label_slot, collected)
 }
 
 fn match_prim<T, N>(
@@ -1077,6 +1083,8 @@ export type Ready = {
     terms: List<string>,
     // every literal the grammar spells, by its text: a `.Lit` atom's slot
     lit_slots: Map<string, int>,
+    // every label the grammar binds, a pair's three first: an item's `label_slot` its place here
+    labels: Map<string, int>,
     defects: List<Diagnostic>,
     // what the rules say about a file's items, for reading one without parsing it
     items: ItemShape,
@@ -1091,33 +1099,59 @@ export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
     let terms = distinct([term for p in prims for term in some_list(p.class())])
     mut lit_slots: Map<string, int> = {}
     for j, text in distinct([text for p in prims for text in some_list(p.literal())]) { lit_slots.set(text, j) }
+    mut labels: Map<string, int> = {}
+    for j, name in distinct(PAIR_LABELS.concat(flatten([labels_of(r.body) for r in g.rules]))) { labels.set(name, j) }
     Ready {
-        g: listed_grammar(with_start_bits(with_branch_starts(slotted(g, terms, lit_slots)))),
+        g: listed_grammar(with_start_bits(with_branch_starts(slotted(g, terms, lit_slots, labels)))),
         ordinals: ordinals,
         known_terminals: known_terminals,
         terms: terms,
         lit_slots: lit_slots,
+        labels: labels,
         defects: g.defects(known_terminals),
         items: item_shape(g),
     }
 }
 
-/// Every terminal item slotted — a class by its place in `terms`, a literal by its
-/// place in `lit_slots` — groups opened.
-fn slotted(g: Grammar, terms: List<string>, lit_slots: Map<string, int>) -> Grammar {
-    g with { rules: [r with { body: slotted_alt(r.body, terms, lit_slots) } for r in g.rules] }
+/// Every terminal item slotted — a class by its place in `terms`, a literal by its place in
+/// `lit_slots` — and every labelled item by its label's place in `labels`, groups opened.
+fn slotted(g: Grammar, terms: List<string>, lit_slots: Map<string, int>, labels: Map<string, int>) -> Grammar {
+    g with { rules: [r with { body: slotted_alt(r.body, terms, lit_slots, labels) } for r in g.rules] }
 }
 
-fn slotted_alt(a: Alt, terms: List<string>, lit_slots: Map<string, int>) -> Alt {
-    a with { branches: [s with { items: [slotted_item(m, terms, lit_slots) for m in s.items] } for s in a.branches] }
+fn slotted_alt(a: Alt, terms: List<string>, lit_slots: Map<string, int>, labels: Map<string, int>) -> Alt {
+    a with { branches: [s with { items: [slotted_item(m, terms, lit_slots, labels) for m in s.items] } for s in a.branches] }
 }
 
-fn slotted_item(m: Item, terms: List<string>, lit_slots: Map<string, int>) -> Item {
+fn slotted_item(m: Item, terms: List<string>, lit_slots: Map<string, int>, labels: Map<string, int>) -> Item {
+    let labelled = m with { label_slot: if m.label == null { 0 - 1 } else { labels.get(m.label!) ?? 0 - 1 } }
     match m.prim {
-        .Named(term) -> m with { slot: terms.index_of(term) },
-        .Lit(text) -> m with { slot: lit_slots.get(text) ?? 0 - 1 },
-        .Group(inner) -> m with { prim: Prim.Group(slotted_alt(inner, terms, lit_slots)) },
-        .Ref(_) or .NotChar(_) -> m,
+        .Named(term) -> labelled with { slot: terms.index_of(term) },
+        .Lit(text) -> labelled with { slot: lit_slots.get(text) ?? 0 - 1 },
+        .Group(inner) -> labelled with { prim: Prim.Group(slotted_alt(inner, terms, lit_slots, labels)) },
+        .Ref(_) or .NotChar(_) -> labelled,
+    }
+}
+
+/// The labels a pair's build reads, at their places in `Ready.labels`.
+const PAIR_LEFT: int = 0
+const PAIR_OP: int = 1
+const PAIR_RIGHT: int = 2
+const PAIR_LABELS: List<string> = ["left", "op", "right"]
+
+/// Every label the branches of `a` bind, a fold's seed among them, groups opened, in order.
+fn labels_of(a: Alt) -> List<string> {
+    flatten(
+        [some_list(s.fold)
+            .concat(flatten([some_list(m.label).concat(group_labels(m.prim)) for m in s.items])) for s in a.branches],
+    )
+}
+
+/// The labels inside the group the prim `p` opens; none for any other prim.
+fn group_labels(p: Prim) -> List<string> {
+    match p {
+        .Group(inner) -> labels_of(inner),
+        .Ref(_) or .Named(_) or .Lit(_) or .NotChar(_) -> [],
     }
 }
 
@@ -1239,6 +1273,7 @@ fn run_as<T, N>(
         tokens: tokens,
         lex: lex,
         ordinals: rd.ordinals,
+        labels: rd.labels,
         known_terminals: rd.known_terminals,
         kinds: kinds,
         masks: [token_mask(lex, kinds, t) for t in tokens],
@@ -1498,9 +1533,9 @@ fn pair<T, N>(
     let branch = consumed_loc<T>(cx.lex, cx.tokens, start, t.cursor)
     let op = operator_capture<T, N>(cx, t, branch)
     let seen: List<Binding<T, N>> = [
-        Binding { label: "left", value: left },
-        Binding { label: "op", value: op },
-        Binding { label: "right", value: t.rhs },
+        Binding { label: PAIR_LEFT, value: left },
+        Binding { label: PAIR_OP, value: op },
+        Binding { label: PAIR_RIGHT, value: t.rhs },
     ]
     built<T, N>(cx, tier.build_at(t.suffix_at) ?? k.directive, seen, [left, op, t.rhs], branch)
 }
