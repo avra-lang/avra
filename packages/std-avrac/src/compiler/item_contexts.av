@@ -38,32 +38,30 @@ export fn context_key(d: DeclaredName) -> int {
     1 + high * 998244353 + low
 }
 
-/// Every read and set in the written item `at` of `file` of a name that declares no context: where it
+/// Every read and set in the written item `view` shows of a name that declares no context: where it
 /// stands, and the name.
-fn contexts_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let store = read_item(engine, file, at).store
+fn contexts_unknown(view: ItemView) -> List<Found> {
+    let store = view.item.store
     if !store.refusals().is_empty() { return [] }
-    let reads = [Found { at: store.expr_span(e), args: [n] } for e in store.expr_ids() for n in some_list(store.ctx_read(e)) if context_named(engine, file, n) == null]
-    let sets = [Found { at: store.stmt_span(s), args: [n] } for s in store.stmt_ids() for n in some_list(store.ctx_set(s)) if context_named(engine, file, n) == null]
+    let reads = [Found { at: store.expr_span(e), args: [n] } for e in store.expr_ids() for n in some_list(store.ctx_read(e)) if context_named(view.engine, view.file, n) == null]
+    let sets = [Found { at: store.stmt_span(s), args: [n] } for s in store.stmt_ids() for n in some_list(store.ctx_set(s)) if context_named(view.engine, view.file, n) == null]
     reads.concat(sets)
 }
 
 /// a `ctx` read or set names a context the file declares or imports
 export law context_undeclared {
     kind: "ctx.unknown"
-    reads: contexts_unknown
+    reads_view: contexts_unknown
     voice: unknown_words
     witness: "fn f() -> int {\n    ctx.depth\n}\n"
 }
 
 fn unknown_words(a: List<string>) -> Voice { context_unknown(a[0]) }
 
-/// Every context the written item `at` of `file` declares inside a body, and every one it sets at its
+/// Every context the written item `view` shows declares inside a body, and every one it sets at its
 /// top level: where it stands, the name, and "declared" or "set".
-fn contexts_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn contexts_misplaced(view: ItemView) -> List<Found> {
+    let item = view.item
     let store = item.store
     if !store.refusals().is_empty() { return [] }
     let tops = item.stmts
@@ -75,7 +73,7 @@ fn contexts_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
 /// a context is declared at a module's top level, and set inside a body
 export law context_misplaced_law {
     kind: "ctx.where"
-    reads: contexts_misplaced
+    reads_view: contexts_misplaced
     voice: misplaced_words
     witness: "ctx depth: int = 0\n\nctx depth = 1\n"
 }

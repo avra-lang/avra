@@ -1,0 +1,117 @@
+use @std.meta.{Type, Fn, Directive, Code, literal, as_code, code_nodes}
+fn shout(s: string) -> string { "${s}!" }
+/// A template naming this file's private helper.
+export trait Loud {
+    static fn derive(t: Type) -> List<Directive> {
+        let name = literal(t.name)
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl ${t} { fn loud() -> string { shout(${name}) } } },
+            },
+        ]
+    }
+}
+export fn wrapped(f: Fn, body: Code) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn ${f}_wrapped() -> int {
+            let tmp = 1
+            let picked = ${body}
+            picked() + tmp
+        }
+    },
+        },
+    ]
+}
+export fn runs(f: Fn) -> List<Directive> {
+    let parts: List<Code> = [quote { 1 }, quote { 2 }]
+    let sneaked: Code = as_code(code_nodes(parts))
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn ${f}_runs() -> int { [${sneaked}].length }
+    },
+        },
+    ]
+}
+export fn spliced_args(f: Fn) -> List<Directive> {
+    let parts: List<Code> = [quote { 1 }, quote { 2 }, quote { 3 }]
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn ${f}_spliced() -> int { [${..parts}].length }
+    },
+        },
+    ]
+}
+export fn spliced0(f: Fn) -> List<Directive> {
+    let parts: List<Code> = []
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn ${f}_spliced0() -> int {
+            let xs: List<int> = [${..parts}]
+            xs.length
+        }
+    },
+        },
+    ]
+}
+export fn spliced1(f: Fn) -> List<Directive> {
+    let parts: List<Code> = [quote { 9 }]
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn ${f}_spliced1() -> int { [${..parts}].length }
+    },
+        },
+    ]
+}
+export fn spliced_call(f: Fn) -> List<Directive> {
+    let parts: List<Code> = [quote { 1 }, quote { 2 }, quote { 3 }]
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn add3(a: int, b: int, c: int) -> int { a + b + c }
+        fn ${f}_call() -> int { add3(${..parts}) }
+    },
+        },
+    ]
+}
+export fn holed(f: Fn, x: string) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
+        fn ${f}_holed() -> int {
+            let ${x} = 1
+            x + 1
+        }
+    },
+        },
+    ]
+}

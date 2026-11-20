@@ -73,7 +73,9 @@ export fn meta_of_fn_decl(engine: QueryEngine, file: SourceFileAddress, name: st
         .names
         .find(it.name == name && it.kind == ItemKind.Fn) else { return null }
     let item = read_item(engine, file, d.item)
-    let s? = item.stmts.find((x) -> item.store.fn_parts(x)?.name == name) else { return null }
+    let s? = item
+        .stmts
+        .find((x) -> item.store.fn_parts(x)?.name == name || item.store.extern_parts(x)?.name == name) else { return null }
     let sig? = fn_signature(engine, file, name) else { return null }
     fn_meta(engine, file, item, s, sig)
 }
@@ -93,30 +95,38 @@ export fn meta_of_method(engine: QueryEngine, m: MethodSite, name: string) -> Me
 
 /// The trait `file` declares as `name`, as `@std/meta`'s `Trait`: each method it declares, as a fn
 /// is read, its `Self` the trait. Absent when it declares none, or a method's signature doesn't sign.
+/// What a trait member's `Self` crosses as: the type variable it is, never the trait.
+const SELF: string = "Self"
+
 export fn meta_of_trait_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaTrait? {
     let item? = declaring_item(engine, file, name, ItemKind.Trait) else { return null }
     let held = TraitAt { file: file, name: name }
-    let receiver = headed_type(TypeHead.Declared(file, name))
+    let receiver = headed_type(TypeHead.Parameter(0, SELF))
     let methods = [f for f in trait_fns(item) if !item.store.is_static(f) && item.store.fn_parts(f) != null]
     let fns = [fn_meta(engine, file, item, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
     if fns.length != methods.length { return null }
     MetaTrait { name: name, at: trait_place(engine, file, item, name), fns: fns }
 }
 
-/// Where the trait `name` stands, as `@std/meta` hands a place: its file spelled by package and path
-/// — never a path on disk — and its statement's span.
+/// Where the trait `name` stands, as `@std/meta` hands a place: counted from its item's start, as every
+/// crossed place is.
 fn trait_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> Loc? {
     let s? = item.stmts.find((x: StmtId) -> item.store.trait_parts(x)?.name == name) else { return null }
-    let written? = item.store.stmt_span(s) else { return null }
-    let span = span_in_file(engine, file, item, written)
-    Loc { file: spelled_file(file), lo: span.lo, hi: span.hi }
+    meta_place(engine, file, item, item.store.stmt_span(s))
 }
 
 /// A span of `file` as the place a meta value names: its file spelled by package and path.
 fn meta_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, span: Span?) -> Loc? {
     let held? = span else { return null }
-    let at = span_in_file(engine, file, item, held)
-    Loc { file: spelled_file(file), lo: at.lo, hi: at.hi }
+    let own? = item.at else { return counted_in_item(engine, file, held) }
+    Loc { file: item_spelled(file, own), lo: held.lo, hi: held.hi }
+}
+
+/// A place `file` counts from its start, as a crossed place counts it: from the start of the item
+/// that holds it, and spelled with that item; absent where no item holds it.
+fn counted_in_item(engine: QueryEngine, file: SourceFileAddress, span: Span) -> Loc? {
+    let p? = placed_in_item(engine, file, FindingAt { lo: span.lo, hi: span.hi }) else { return null }
+    Loc { file: item_spelled(file, p.item), lo: p.at.lo, hi: p.at.hi }
 }
 
 /// The doc the statement `s` wears in `store`, its lines joined; absent where it wears none.
@@ -131,11 +141,13 @@ fn fn_meta(
     sig: FnSignature,
 ) -> MetaFn {
     let store = item.store
-    let parts = store.fn_parts(s)!
+    let ext = store.extern_parts(s)
+    let parts = store.fn_parts(s)
+    let params = parts?.params ?? ext?.params ?? []
     MetaFn {
-        name: parts.name,
-        params: [param_meta(engine, file, item, p, sig.params[j].ty) for j, p in parts.params],
-        answer: spelled(parts.ret),
+        name: parts?.name ?? ext?.name ?? "",
+        params: [param_meta(engine, file, item, p, sig.params[j].ty) for j, p in params],
+        answer: spelled(parts?.ret ?? ext!.ret),
         at: meta_place(engine, file, item, store.stmt_span(s)),
         doc: doc_text(store, s),
         answers: signed_kind(sig.answer),

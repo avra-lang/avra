@@ -28,6 +28,9 @@ export type CheckedProgram = {
     value_named: fn(string, string?) -> SignedType?,
     /// A top-level value's type as the file that declares it names it: a binding's, never a name's.
     declared_value: fn(SourceFileAddress, string) -> SignedType?,
+    /// What the fn `file` declares as a name declares each of its type parameters is where nothing
+    /// pins it; absent for one with no default.
+    declared_defaults: fn(SourceFileAddress, string) -> List<SignedType?>,
     /// A written type, read where the template that wrote it stands (its home, as an origin spells
     /// it) before where the body stands.
     written: fn(TypeRef, string?) -> SignedType,
@@ -91,6 +94,12 @@ export type CheckedProgram = {
     /// The bounds the fn a name reads as declares for its type parameters, one for each, read where
     /// the template that wrote the name stands (its home) before where the body stands.
     bounds_named: fn(string, string?) -> List<SignedType?>,
+    /// What the fn a name reads as declares each of its type parameters is where nothing pins it,
+    /// read as `bounds_named` reads; absent for one with no default.
+    defaults_named: fn(string, string?) -> List<SignedType?>,
+    /// What the method a value of a type has under a name declares of each type parameter, its impl's
+    /// then its own.
+    method_params: fn(SignedType, string) -> ParamsDeclared,
     /// Whether the language itself gives a type the member of a name — a verb of a type it owns, a
     /// static where the flag says so, a grammar's reading and printing — where no impl the program
     /// writes does: a call of it names it as a fn's.
@@ -123,7 +132,7 @@ export type FilledByName = { f: SignedType, values: List<ExprId>, seats: List<in
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
 /// them.
-export type RecordShape = { params: int, fields: List<FieldSeat> }
+export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List<SignedType?> = [], names: List<string> = [] }
 
 /// A record's field: its name, its type when it's written, whether it's a `state` field, whose slot
 /// holds the cell its value lives in, whether that cell is the place its writer names — a
@@ -749,6 +758,9 @@ export enum Seating {
     Folded(fault: FoldFault)
     /// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
     Pinned(callee: string, want: int, found: int)
+    /// A literal of `record` writing the leading type arguments `args`, which leaves its parameter
+    /// `param` filled by nothing; `fields` are the unwritten fields whose type names it.
+    LiteralUnpinned(record: string, param: string, args: List<string>, fields: List<string>)
     /// A bare `null` handed seat `at` of `callee`, which names a type parameter nothing fills.
     NullPin(callee: string, at: int)
     /// A comprehension's range bound, the high one where `high`, that is no `int`.
@@ -836,6 +848,15 @@ export enum Meeting {
 }
 
 impl CheckedProgram {
+    /// The shapes the by-value law reads, as this program reads them.
+    fn shapes() -> Shapes {
+        Shapes {
+            record_of: self.record_of,
+            named_of: self.named_of,
+            enum_of: (ty: SignedType) -> self.enum_shape(ty),
+        }
+    }
+
     /// The enum `ty` is, `Result` among them, absent when it's none; the arguments it's applied to are
     /// its reader's to hold to the shape's parameters.
     fn enum_shape(ty: SignedType) -> EnumShape? {
@@ -1632,21 +1653,12 @@ impl Checking {
     }
 
     /// The subject `on` of an `is`, a value of `subject` known whole and no enum, refused: only an
-    /// enum is asked for its variant, and one whose pattern `binds` is the `match` it means, which
-    /// chooses over an enum.
-    mut fn asked_of_enum(on: ExprId, subject: SignedType?, binds: bool) {
+    /// enum is asked for its variant. An `is` whose pattern binds is refused as the `is` it is
+    /// written, never as the `match` it means.
+    mut fn asked_of_enum(on: ExprId, subject: SignedType?) {
         let s? = subject else { return }
         if s.generic() || s.inferred() || s.unknown() || s.dynamic || self.enum_of(s) != null { return }
-        self
-            .refused
-            .push(
-                Refused {
-                    at: on,
-                    want: s,
-                    found: s,
-                    seat: if binds { Seating.Unmatchable } else { Seating.Unasked },
-                },
-            )
+        self.refused.push(Refused { at: on, want: s, found: s, seat: Seating.Unasked })
     }
 
     /// What a body of arms standing under `expected` matches: the one seat of the fn seat it fills,
@@ -3292,7 +3304,7 @@ impl Checking {
         let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
         let handed = found
         mut from_seat: Map<string, SignedType> = {}
-        if answer != null && wanted != null && answer!.unifies(wanted!, from_seat) {
+        if answer != null && wanted != null && answer_pinned(answer!, wanted!, from_seat) {
             for k, v in from_seat { if !found.has(k) { found.set(k, v) } }
         }
         for at in wanting {
@@ -3646,9 +3658,10 @@ impl Checking {
     }
 
     /// Whether the call at `e` of `callee`, pinning `pins` type arguments where it declares `want`
-    /// type parameters, pins a count it doesn't take: refused, its arguments checked against nothing.
+    /// type parameters, pins more than it takes: refused, its arguments checked against nothing. Fewer
+    /// pin the leading parameters, the rest left to what the call infers.
     mut fn pins_refused(e: ExprId, callee: string, want: int, pins: int, args: List<ExprId>) -> bool {
-        if self.meanings || pins == 0 || pins == want { return false }
+        if self.meanings || pins <= want { return false }
         let none = owned_type("void")
         self
             .refused
@@ -3989,6 +4002,7 @@ impl Checking {
         self
             .seats_isolated(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         let found? = filled else { return null }
+        let found = defaulted(found, declared?.defaults ?? [])
         if !self.bounds_held(bounds, found) { return null }
         if self.refused.get().length == before &&
             self
@@ -4174,6 +4188,7 @@ impl Checking {
         args: List<ExprId>,
         expected: Expected,
         seat_of: fn(int) -> Seating,
+        declares: ParamsDeclared = ParamsDeclared {},
     ) -> SignedType? {
         mut pinned: Map<string, SignedType> = {}
         if self.spreads_records(method, args) {
@@ -4197,7 +4212,9 @@ impl Checking {
             .seats_settled(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         self
             .seats_isolated(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
-        let found? = filled else { return null }
+        let held? = filled else { return null }
+        let found = defaulted(held, declares.defaults)
+        if !self.bounds_held(declares.bounds, found) { return null }
         let answer? = method.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -4231,21 +4248,37 @@ export const NAMED_FIELD: string = "of"
 /// The package that holds the language's compile-time shapes.
 const META_PACKAGE: string = "@std.meta"
 
-/// A fn a call names, and the type parameters it declares.
-export type CalleeNamed = { name: string, type_params: List<string> }
-
-/// Whether two values of `ty` compare by value: a scalar, text or octets; an enum whose variants carry
-/// nothing; a record of one field that does; a nullable of one of those; a name over one.
-export fn compares_by_value(cx: Checking, t: SignedType) -> bool {
-    let ty = unnamed_shape(cx, t)
-    if ty.nullable() { return compares_by_value(cx, ty.unwrapped()) }
-    if ty.dynamic || !ty.args.is_empty() { return false }
-    match ty.head {
-        .Owned(word) -> COMPARED.contains(word),
-        .Declared(_, _) -> unit_enum(cx, ty) || one_field(cx, ty),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
-    }
+/// Whether a call answering `answer` pins its type parameters into `found` from the seat wanting
+/// `wanted`: the seat's type, or where the answer is never absent and the seat may be, the type the
+/// seat holds when present. The one derivation typing and lowering share.
+export fn answer_pinned(answer: SignedType, wanted: SignedType, mut found: Map<string, SignedType>) -> bool {
+    if answer.unifies(wanted, found) { return true }
+    if answer.nullable() || !wanted.nullable() { return false }
+    answer.unifies(wanted with { nulls: 0 }, found)
 }
+
+/// `found` with each type parameter it leaves open that declares a default filled by it: the
+/// arguments pin first, then the seat the call stands in, then the declaration's default.
+export fn defaulted(found: Map<string, SignedType>, defaults: List<SignedType?>) -> Map<
+    string,
+    SignedType,
+> {
+    mut filled = found
+    for j, d in defaults {
+        if d != null && !filled.has("${j}") { filled.set("${j}", d!) }
+    }
+    filled
+}
+
+/// What a fn declares of each of its type parameters: the bound each carries, and what each is where
+/// nothing pins it, absent for one with none.
+export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
+
+/// A fn a call names, the type parameters it declares and what each is where nothing pins it.
+export type CalleeNamed = { name: string, type_params: List<string>, defaults: List<SignedType?> = [] }
+
+/// Whether two values of `t` compare by value, as the program `cx` checks reads its shapes.
+export fn compares_by_value(cx: Checking, t: SignedType) -> bool { cx.program.shapes().compares_by_value(t) }
 
 /// Whether a value of `ty` makes a key (`@std/meta`'s `Key`): it compares by value, is never absent,
 /// and holds no fraction, no bytes and no address — a key outlives the run, and an address doesn't.
@@ -4261,18 +4294,47 @@ export fn makes_key(cx: Checking, ty: SignedType) -> bool {
 /// The types of the language's own that compare by value: a `ptr` by its address, which is its value.
 const COMPARED: List<string> = ["int", "float", "bool", "string", "Bytes", "ptr"]
 
-/// Whether `ty` names an enum whose variants carry nothing.
-fn unit_enum(cx: Checking, ty: SignedType) -> bool {
-    let shape? = cx.enum_of(ty) else { return false }
-    shape.variants.all(it.payloads.is_empty())
+/// The shapes the by-value law reads: a record's, the one a name stands over, an enum's. A checked
+/// program hands out its own; a reader with no body in hand builds them from the declarations.
+export type Shapes = {
+    record_of: fn(SignedType) -> RecordShape?,
+    named_of: fn(SignedType) -> SignedType?,
+    enum_of: fn(SignedType) -> EnumShape?,
 }
 
-/// Whether `ty` names a record of one field that compares by value.
-fn one_field(cx: Checking, ty: SignedType) -> bool {
-    let fields = cx.record_of(ty)?.fields ?? []
-    if fields.length != 1 { return false }
-    let field? = fields[0].ty else { return false }
-    compares_by_value(cx, field)
+impl Shapes {
+    /// Whether two values of `t` compare by value: a scalar, text or octets; an enum whose variants
+    /// carry nothing; a record of one field that does; a nullable of one of those; a name over one.
+    fn compares_by_value(t: SignedType) -> bool {
+        let ty = self.unnamed(t)
+        if ty.nullable() { return self.compares_by_value(ty.unwrapped()) }
+        if ty.dynamic || !ty.args.is_empty() { return false }
+        match ty.head {
+            .Owned(word) -> COMPARED.contains(word),
+            .Declared(_, _) -> self.unit_enum(ty) || self.one_field(ty),
+            .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+        }
+    }
+
+    /// The shape `ty` stands over, through every name it wears.
+    fn unnamed(ty: SignedType) -> SignedType {
+        let shape? = (self.named_of)(ty) else { return ty }
+        self.unnamed(shape)
+    }
+
+    /// Whether `ty` names an enum whose variants carry nothing.
+    fn unit_enum(ty: SignedType) -> bool {
+        let shape? = (self.enum_of)(ty) else { return false }
+        shape.variants.all(it.payloads.is_empty())
+    }
+
+    /// Whether `ty` names a record of one field that compares by value.
+    fn one_field(ty: SignedType) -> bool {
+        let fields = (self.record_of)(ty)?.fields ?? []
+        if fields.length != 1 { return false }
+        let field? = fields[0].ty else { return false }
+        self.compares_by_value(field)
+    }
 }
 
 /// What a value of `ty` offered where one that compares was wanted is.
@@ -4309,10 +4371,7 @@ fn owned_offered(word: string, ty: SignedType) -> Offered {
 }
 
 /// The shape `ty` stands over, through every name it wears.
-export fn unnamed_shape(cx: Checking, ty: SignedType) -> SignedType {
-    let shape? = cx.named_over(ty) else { return ty }
-    unnamed_shape(cx, shape)
-}
+export fn unnamed_shape(cx: Checking, ty: SignedType) -> SignedType { cx.program.shapes().unnamed(ty) }
 
 /// The static a grammar reads text with, and the one it reads octets with.
 export const GRAMMAR_PARSE: string = "parse"

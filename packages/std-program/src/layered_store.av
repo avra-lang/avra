@@ -10,6 +10,7 @@
 //! never for the queries a command asks, so `build`, `check`, `test` and `tapes` all read and keep
 //! the one segment, and a store another binary wrote is never read.
 use @std.io.{IoError}
+use @std.path.{normalized}
 use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question}
 use disk_store.{
     DiskStore,
@@ -211,10 +212,12 @@ once fn package_places_cell() -> Cell<List<PackagePlace>> {
 /// Every package store this process opens from now on knows its packages stand at `places`.
 export fn use_package_places(places: List<PackagePlace>) { package_places_cell().set(places) }
 
-/// The package store at `directory`, over the shared store this process uses, if any.
+/// The package store at `directory`, over the shared store this process uses, if any: a shared store
+/// standing in that one directory is no layer beneath it.
 export fn program_store_at(directory: string) -> LayeredStore {
     let own = disk_store_at(directory)
     let places = package_places_cell().get()
     let layer? = machine_layer_cell().get() else { return own_store(own, places) }
+    if normalized(layer.directory) == normalized(directory) { return own_store(own, places) }
     layered_store(own, disk_store_at(layer.directory), places, layer.print)
 }

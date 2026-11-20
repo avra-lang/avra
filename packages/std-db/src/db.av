@@ -93,13 +93,15 @@ export trait Model {
 /// `@unique(a, b, …)` on a `@model` type: no two rows hold the same values in those fields together —
 /// a key over several columns, declared on the model itself. Its fields are the type's own, named
 /// bare and checked where they're written; each must be a column the model stores, and named once.
-/// A key declared twice is `@model`'s to refuse, once.
+/// A key of one field is that field's own `@unique` mark, refused here. A key declared twice is `@model`'s to refuse, once.
 export fn unique(t: Type, ..fields: List<Field>) -> List<Diagnostic> {
     let key = [f.name for f in fields]
     let at = key_written(t, key)?.at
     if key.is_empty() { return [model_key_empty(t, at)] }
-    [model_key_unstored(t, n, at) for n in key if !stored(t).any(it.name == n)]
+    let problems = [model_key_unstored(t, n, at) for n in key if !stored(t).any(it.name == n)]
         .concat([model_key_repeats(t, n, at) for j, n in key if key.index_of(n) < j])
+    if problems.is_empty() && key.length == 1 { return [model_key_single(t, key[0], at)] }
+    problems
 }
 
 /// The `@unique` the type `t` wears over the fields `key`, in their order.
@@ -761,6 +763,15 @@ fn model_key_empty(t: Type, at: Loc?) -> Diagnostic {
     )
 }
 
+fn model_key_single(t: Type, n: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "unique_single",
+        at,
+        "a key on the model is several fields a row is unique by together, and this one on `${t.name}` names only `${n}`",
+        "use the field's own `@unique` mark — `@unique ${n}: …`",
+    )
+}
+
 fn unique_repeats(f: Field, n: string) -> Diagnostic {
     refuse_as_at(
         "unique_repeats",
@@ -917,7 +928,6 @@ fn model_key_code(t: Type, k: List<string>) -> Code {
     quote {
         UniqueField {
             name: ${literal(k.last() ?? "")},
-            at: ${loc_code(key_written(t, k)?.at)},
             columns: [..${[literal(column_named(t, n)) for n in k]}],
             among: [..${[literal(n) for n in k.take(k.length - 1)]}],
             whole: true,
@@ -929,17 +939,9 @@ fn unique_field_code(t: Type, f: Field, among: List<string>) -> Code {
     quote {
         UniqueField {
             name: ${literal(f.name)},
-            at: ${loc_code(f.at)},
             columns: [..${[literal(c) for c in key_columns(t, f, among)]}],
             among: [..${[literal(n) for n in among]}],
         }
-    }
-}
-
-fn loc_code(at: Loc?) -> Code {
-    match at {
-        loc? -> quote { Loc { file: ${loc_file_code(loc.file)}, lo: ${loc.lo}, hi: ${loc.hi} } }
-        null -> quote { null }
     }
 }
 

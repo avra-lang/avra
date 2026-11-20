@@ -37,9 +37,13 @@ type Owned = { key: string, name: string, generic: bool, stmt: StmtId }
 /// already took.
 fn item_methods_taken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
     if !item_held(engine, file, at) { return methods_taken_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    methods_taken_seen(item_view(engine, file, at))
+}
+
+/// What `item_methods_taken` answers through the item's `view`, made the first time it is asked.
+fn methods_taken_seen(view: ItemView) -> ItemTaken {
     let held? = view.methods_taken.get() else {
-        let made = methods_taken_made(engine, file, at)
+        let made = methods_taken_made(view.engine, view.file, view.at)
         view.methods_taken.set(made)
         return made
     }
@@ -113,21 +117,21 @@ export fn takes_method_names(engine: QueryEngine, file: SourceFileAddress) -> bo
     file_found_by(engine, file, ["method_declared_twice", "member_named_as_method"])
 }
 
-/// Every method of the written item `at` of `file` declared where its name is already taken.
-fn names_taken(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_methods_taken(engine, file, at).rows if !r.shared]
+/// Every method of the written item `view` shows declared where its name is already taken.
+fn names_taken(view: ItemView) -> List<Found> {
+    [r.found() for r in methods_taken_seen(view).rows if !r.shared]
 }
 
-/// Every method of the written item `at` of `file` sharing its name between a plain method and a
+/// Every method of the written item `view` shows sharing its name between a plain method and a
 /// generic trait's member.
-fn names_shared(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_methods_taken(engine, file, at).rows if r.shared]
+fn names_shared(view: ItemView) -> List<Found> {
+    [r.found() for r in methods_taken_seen(view).rows if r.shared]
 }
 
 /// one impl owns each method name on a type
 export law method_declared_twice {
     kind: "type.impl"
-    reads: names_taken
+    reads_view: names_taken
     voice: twice_words
     witness: "type M = { n: int }\n\nimpl M {\n    fn switched(k: int) -> int { self.n + k }\n}\n\nimpl M {\n    fn switched(k: int, j: int) -> int { k + j }\n}\n"
 }
@@ -135,7 +139,7 @@ export law method_declared_twice {
 /// a generic trait's members own their name on a type
 export law member_named_as_method {
     kind: "type.impl"
-    reads: names_shared
+    reads_view: names_shared
     voice: shared_words
     witness: "type M = { n: int }\n\ntrait Shows<T> {\n    fn show(t: T) -> int\n}\n\nimpl Shows<int> for M {\n    fn show(t: int) -> int { t }\n}\n\nimpl M {\n    fn show(t: int) -> int { t }\n}\n"
 }

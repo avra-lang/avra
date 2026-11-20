@@ -47,12 +47,13 @@ export fn structs() -> LanguageFeature {
     }
     LanguageFeature structs {
         gram: grammar {
-            stmt = "type" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END -> Stmt.NamedType
-            stmt = "type" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" "{" BREAK? ( ( fields:field | spread_fault | ".." spreads:type | bare_spread ) ( ( "," | BREAK ) BREAK? ( fields:field | spread_fault | ".." spreads:type | bare_spread ) )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> Stmt.StructDecl
+            stmt = "type" name:NAME ( "<" tparams:tdecl ( "," tparams:tdecl )* ","? ">" )? "=" of:type END -> Stmt.NamedType
+            stmt = "type" name:NAME ( "<" tparams:tdecl ( "," tparams:tdecl )* ","? ">" )? "=" "{" BREAK? ( ( fields:field | spread_fault | ".." spreads:type | bare_spread ) ( ( "," | BREAK ) BREAK? ( fields:field | spread_fault | ".." spreads:type | bare_spread ) )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> Stmt.StructDecl
             spread_fault = ".." "." type -> Refusal.spread_three_dots | "." type -> Refusal.spread_one_dot | ".." type "=" expression -> Refusal.spread_valued | ".." type ":" type -> Refusal.spread_typed
             bare_spread = ".." -> Refusal.spread_bare
+            tdecl = name:NAME ( "=" tdefault:type )? -> Record.ParamSyntax
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
-            stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
+            stmt = "alias" name:NAME ( "<" tparams:tdecl ( "," tparams:tdecl )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
             primary = name:NAME ( "<" targs:type ( "," targs:type )* ","? ">" )? "{" BREAK? ( ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) ( ( "," | BREAK ) BREAK? ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) )* ","? BREAK? )? "}" -> Expr.StructLit by struct_lit_written
             pattern = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             asked = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields

@@ -73,7 +73,15 @@ use compiler.lower.code_hash.{
 }
 use compiler.memory.{memory, memory_late}
 use compiler.static_symbols.{module_spelled}
-use compiler.backend.{Owned, WasmCall, body_lines, in_symbol_order, program_closed, program_opens}
+use compiler.backend.{
+    Owned,
+    WasmCall,
+    body_lines,
+    in_symbol_order,
+    program_closed,
+    program_opens,
+    symbol_bucket,
+}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{MovedRead, QueryDefinition, QueryEngine}
 use @std.program.saved_query.{
@@ -987,10 +995,7 @@ export fn file_refused(
             ) ?? -1,
         reached: faceted.first() ?? -1,
         law: reached &&
-            (misnames(engine, file) ||
-                takes_method_names(engine, file) ||
-                asks_ungiven(engine, file) ||
-                writes_generic_methods(engine, file)),
+            (misnames(engine, file) || takes_method_names(engine, file) || asks_ungiven(engine, file)),
     }
 }
 
@@ -1640,17 +1645,19 @@ export fn keyed_objects(
     dir: string,
 ) -> List<Made> {
     let entry = "${hash_text(engine.hash_of_answer_to(entry_lowered_question(engine, file)))} ${kept_text(shape.entry_kept())} ${shape.entry_sees()}"
-    let last = PROGRAM_BUCKETS - 1
-    let entry_home = home_bucket(ENTRY)
+    let last = CHUNKS - 1
+    let entry_home = symbol_chunk(ENTRY)
     let by_home = shape.homes()
     let keys = shape.unit_keys()
     let held = [shape.unit_keyed(engine, keys, i) for i in 0..by_home.length]
     let wrappers = shape.wrappers()
     let wrapped = [content_text(w.saved_bytes()) for w in wrappers]
-    let wrapped_in = [home_bucket(w.symbol) for w in wrappers]
+    let wrapped_in = [symbol_chunk(w.symbol) for w in wrappers]
     let program_wide = [content_text(h.saved_bytes()) for h in hashes]
         .concat([content_text(h.saved_bytes()) for h in shape.hashed()])
         .concat([content_text(s.saved_bytes()) for s in shape.stand_ins()])
+    mut occupied: Map<string, bool> = {}
+    for b in by_home.concat(wrapped_in).concat([0, entry_home, last]) { occupied.set("${b}", true) }
     [bucket_made(
         b,
         digest_of(
@@ -1663,7 +1670,7 @@ export fn keyed_objects(
                 .join("\n"),
         ),
         dir,
-    ) for b in 0..PROGRAM_BUCKETS]
+    ) for b in 0..CHUNKS if occupied.has("${b}")]
 }
 
 /// How many words a unit's key takes in `ReachedProgram.unit_keys`.
@@ -1679,8 +1686,8 @@ fn unit_key_words(engine: QueryEngine, u: ReachedUnit) -> List<int> {
     [1, lowering.known_as.high_word, lowering.known_as.low_word, held.high_word, held.low_word]
 }
 
-/// The bucket a body falls in: its file's.
-fn unit_home(u: ReachedUnit) -> int { home_bucket(spelled_file(u.called.file)) }
+/// The chunk a body falls in: its symbol's.
+fn unit_home(u: ReachedUnit) -> int { symbol_chunk(u.called.symbol) }
 
 /// A PROGRAM'S SHAPE READ WHERE ITS ANSWER LIES: each part decoded when it's asked for, and a body
 /// only where one is wanted, so a build that remakes one bucket decodes that bucket's bodies alone.
@@ -1718,6 +1725,9 @@ impl ShapeAt {
     }
 
     fn homes() -> List<int> { ReachedProgram.homes_in(self.source, self.shape) }
+
+    /// The symbols of the bodies chunk `b` is home to, in the shape's order.
+    fn symbols_in(b: int) -> List<string> { [self.unit(i).called.symbol for i, home in self.homes() if home == b] }
 
     fn unit_keys() -> List<int> { ReachedProgram.unit_keys_in(self.source, self.shape) }
 
@@ -1758,7 +1768,7 @@ impl ShapeAt {
 fn kept_text(k: TestsKept) -> string { content_text(k.saved_bytes()) }
 
 /// Bucket `b`'s object under `key`, kept in `dir`.
-fn bucket_made(b: int, key: string, dir: string) -> Made { Made { which: Owned.Bucket(b, PROGRAM_BUCKETS), key: key, obj: "${dir}/${key}.o", source: "" } }
+fn bucket_made(b: int, key: string, dir: string) -> Made { Made { which: Owned.Bucket(b, CHUNKS), key: key, obj: "${dir}/${key}.o", source: "" } }
 
 /// A body's code as the code graph reads it, its tests placed as `kept` says: its and its lambdas'
 /// nodes, its data's, and the fn addresses they take, as `code_facts_wire` writes them; empty where
@@ -2009,9 +2019,9 @@ fn entry_body(root: LoweredFn) -> Body { unit_body(ENTRY, [], root.answer, root.
 /// The rows `externs` answer by.
 fn extern_rows(engine: QueryEngine, externs: List<CalledFn>) -> List<RtSig> { flatten([some_list(declared_row(engine, c)) for c in externs]) }
 
-/// A reached body and its lambdas, each as a body of its file's.
+/// A reached body and its lambdas, each homed at its symbol: they fall in one chunk.
 fn unit_bodies(c: CalledFn, placed: LoweredFn) -> List<Body> {
-    let home = spelled_file(c.file)
+    let home = c.symbol
     [
         unit_body(c.symbol, placed.params, placed.answer, placed.ins, placed.layouts, home) with { boxed: placed.boxed, hosted: c.hosted, marks: consumed_marks(placed.consumed) },
     ]
@@ -2019,8 +2029,22 @@ fn unit_bodies(c: CalledFn, placed: LoweredFn) -> List<Body> {
 }
 
 /// WHAT BUCKET `b` OF THE PROGRAM IS MADE FROM, every ask of the engine answered: its own bodies,
-/// the entry, the rows its externs answer by, its data, and the bodies the shape declares.
-export type BucketAsked = { b: int, own: List<Body>, entry: Body, externs: List<RtSig>, statics: List<Static>, declared: List<BodySeen> }
+/// the entry, the rows its externs answer by, its data, and the bodies the shape declares, by name.
+export type BucketAsked = { b: int, own: List<Body>, entry: Body, externs: List<RtSig>, statics: List<Static>, declared: Map<string, BodySeen> }
+
+/// WHAT EVERY MODULE OF A PROGRAM READS OF THE BODIES THE OTHERS DEFINE: each body the shape
+/// declares, by its name, and the rows its externs answer by. Read once a build, before its modules
+/// are made, so a module costs what it holds and never the program's size.
+export type SeenBodies = { bodies: Map<string, BodySeen>, rows: List<RtSig> }
+
+/// The bodies and rows the shape `shape` declares, read once; the first body of a name stands.
+export fn seen_bodies(engine: QueryEngine, shape: ShapeAt) -> SeenBodies {
+    mut bodies: Map<string, BodySeen> = {}
+    for d in shape.declared() {
+        if !bodies.has(d.name) { bodies.set(d.name, d) }
+    }
+    SeenBodies { bodies: bodies, rows: extern_rows(engine, shape.externs()) }
+}
 
 /// BUCKET `b` OF THE PROGRAM `shape` NAMES, asked of `engine`: the last bucket from the code hashes
 /// `hashes` and the stand-ins, any other from its own bodies, wrappers and data and, for the entry's
@@ -2031,10 +2055,11 @@ export fn bucket_asked(
     shape: ShapeAt,
     hashes: List<HashAnswer>,
     b: int,
+    seen: SeenBodies,
 ) -> BucketAsked? {
     let root? = entry_lowered(engine, file)?.placed_keeping(shape.entry_kept()) else { return null }
-    let last = PROGRAM_BUCKETS - 1
-    let entry_home = home_bucket(ENTRY)
+    let last = CHUNKS - 1
+    let entry_home = symbol_chunk(ENTRY)
     let taken = if b == last { [] } else { [shaped_taken(engine, shape.unit(i)) for i, home in shape.homes() if home == b] }
     if taken.any(it == null) { return null }
     let held = [t! for t in taken]
@@ -2043,7 +2068,7 @@ export fn bucket_asked(
             .concat([stand_in_body(engine, file, s) for s in shape.stand_ins()])
     } else {
         flatten([unit_bodies(t.called, t.body) for t in held])
-            .concat([wrapper_body(w) for w in shape.wrappers() if home_bucket(w.symbol) == b])
+            .concat([wrapper_body(w) for w in shape.wrappers() if symbol_chunk(w.symbol) == b])
             .concat(if b == entry_home { lifted_bodies(root, ENTRY) } else { [] })
     }
     let entry_data = if b == 0 || b == entry_home { root.statics } else { [] }
@@ -2051,9 +2076,9 @@ export fn bucket_asked(
         b: b,
         own: own,
         entry: entry_body(root),
-        externs: extern_rows(engine, shape.externs()),
+        externs: seen.rows,
         statics: distinct_statics(flatten([t.body.statics for t in held]).concat(entry_data)),
-        declared: shape.declared(),
+        declared: seen.bodies,
     }
 }
 
@@ -2077,7 +2102,11 @@ export fn bucket_lowered(a: BucketAsked) -> Lowered {
     mut named = names_of(made.fns.concat(if a.b == 0 { [made.entry] } else { [] }), made.statics)
     for x in made.fns { named.remove(x.name) }
     in_symbol_order(
-        made with { fns: made.fns.concat([declared_stub(d, a.b) for d in a.declared if named.has(d.name)]) },
+        made with { fns: made
+            .fns
+            .concat(
+                [declared_stub(d, a.b) for n in sorted_names(named.keys()) for d in some_list(a.declared.get(n))],
+            ) },
     )
 }
 
@@ -2115,10 +2144,13 @@ fn names_of(bodies: List<Body>, statics: List<Static>) -> Map<string, bool> {
     out
 }
 
-/// A marks-only stand-in for each body that consumes a seat and that bucket `a` doesn't define, so
-/// the memory pass reads what each consumes; it answers no instructions and leaves with the pass.
+/// A marks-only stand-in for each body bucket `a` names that consumes a seat and that it doesn't
+/// define, so the memory pass reads what each consumes; it answers no instructions and leaves with
+/// the pass.
 fn marked_elsewhere(a: BucketAsked) -> List<Body> {
-    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: consumed_marks(d.consumed) } for d in a.declared if !d.consumed.is_empty() && !a.own.any(it.name == d.name)]
+    mut named = names_of(a.own.concat([a.entry]), a.statics)
+    for x in a.own { named.remove(x.name) }
+    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: consumed_marks(d.consumed) } for n in sorted_names(named.keys()) for d in some_list(a.declared.get(n)) if !d.consumed.is_empty()]
 }
 
 /// The seat marks of a body consuming the seats `consumed` says, by place: none where it consumes none.
@@ -2126,7 +2158,7 @@ fn consumed_marks(consumed: List<bool>) -> List<SeatMark> { [plain_mark with { c
 
 /// A body bucket `b` names and another bucket defines, declared and never defined here: it falls in
 /// a bucket other than `b`.
-fn declared_stub(d: BodySeen, b: int) -> Body { unit_body(d.name, d.seats, d.answer, [], []) with { program_wide: b != PROGRAM_BUCKETS - 1 } }
+fn declared_stub(d: BodySeen, b: int) -> Body { unit_body(d.name, d.seats, d.answer, [], []) with { program_wide: b != CHUNKS - 1 } }
 
 /// A body the shape holds, lowered and placed as the shape keeps it; absent where it isn't lowered.
 fn shaped_taken(engine: QueryEngine, u: ReachedUnit) -> Taken? {
@@ -2134,8 +2166,15 @@ fn shaped_taken(engine: QueryEngine, u: ReachedUnit) -> Taken? {
     Taken { called: u.called, body: f.placed_keeping(u.kept), kept: u.kept }
 }
 
-/// The bucket a body homed at `home` falls in.
-fn home_bucket(home: string) -> int { (fp_str(home) & 9223372036854775807) % (PROGRAM_BUCKETS - 1) }
+/// THE CHUNK A BODY FALLS IN, by its symbol alone: a body added or taken away moves no other body's
+/// chunk, so an edit remakes the chunks its moved bodies fall in and no others. The last chunk holds
+/// the program-wide bodies.
+fn symbol_chunk(symbol: string) -> int { symbol_bucket(symbol, CHUNKS) }
+
+/// HOW MANY CHUNKS A PROGRAM'S BODIES FALL IN: every chunk is a module of its own, so more cost a
+/// cold build a module's making each, and fewer cost an edit the chunk-mates of each body it moves.
+/// The last holds the code hashes, which an edit moves nearly all of at once.
+const CHUNKS: int = 1024
 
 collect listed_program_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 

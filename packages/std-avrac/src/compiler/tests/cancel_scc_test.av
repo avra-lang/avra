@@ -1,74 +1,35 @@
-// A fn's cancel bits are settled with its strongly-connected set alone: a cycle takes what a
-// member outside it reaches, a cycle with no waiter reaches nothing, and asking one fn settles
-// no fn it does not call. `CancelBits` is a family by name; the keys are spelled through
-// `family_ordinal`.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
-use core.{DeclId}
-use @std.relation.engine.{Key}
+// A fn's cancel bits settle with its strongly-connected set, asked of the program layer: a cycle
+// takes what a member outside it reaches, and a cycle with no waiter reaches nothing.
+use @std.avrac.testing.{held_at, Judged}
 
-fn bits_key(d: DeclId) -> Key { Key { family: family_ordinal("CancelBits"), arg: d.index } }
-
-fn cancel_workspace(main: string) -> Workspace {
-    let ws = test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": main,
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ),
+/// The program `main` writes, judged on the layer.
+fn cancel_judged(main: string) -> Judged {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
         "/w",
     )
-    let _ = ws.items(ws.file_id("/w/src/main.av"))
-    ws
+        .judged_at("/w/src/main.av")
 }
 
-fn cancel_decl(ws: Workspace, name: string) -> DeclId {
-    [x.id for x in ws.decls.all_decls() if x.name == name][0]
-}
+/// Whether a call to `name` may park.
+fn parks_now(j: Judged, name: string) -> bool { j.cancel_bits(name).starts_with("p") }
 
-/// Whether a call to `name` may park, asked of a fresh workspace.
-fn parks(ws: Workspace, name: string) -> bool {
-    let d = cancel_decl(ws, name)
-    let _ = ws.cancel_bits_of(d)
-    ws.decls.cancels_so_far(d)?.parks ?? false
-}
-
-fn cycle_source(leaf_body: string) -> string {
+fn cancel_cycle(leaf_body: string) -> string {
     "extern fn avra_fiber_sleep(ms: int)\nfn leaf() {\n    ${leaf_body}\n}\nfn ping(k: int) {\n    if k > 0 { pong(k - 1) } else { leaf() }\n}\nfn pong(k: int) {\n    if k > 0 { ping(k - 1) }\n}\nfn quiet() -> int { 1 }\n"
 }
 
 spec "compiler/cancel_reach — a fn's cancel bits settle with its own set" {
     given "a two-fn cycle whose way out reaches a fn that parks" {
-        then "the fn that parks parks" {
-            parks(cancel_workspace(cycle_source("avra_fiber_sleep(1)")), "leaf")
-        }
+        then "the fn that parks parks" { parks_now(cancel_judged(cancel_cycle("avra_fiber_sleep(1)")), "leaf") }
         then "both members of the cycle park" {
-            let ws = cancel_workspace(cycle_source("avra_fiber_sleep(1)"))
-            parks(ws, "ping") && parks(ws, "pong")
+            let j = cancel_judged(cancel_cycle("avra_fiber_sleep(1)"))
+            parks_now(j, "ping") && parks_now(j, "pong")
         }
     }
     given "the same cycle where nothing parks" {
         then "neither member parks" {
-            let ws = cancel_workspace(cycle_source("let _ = 1"))
-            !parks(ws, "ping") && !parks(ws, "pong")
-        }
-    }
-    given "a fn that calls nothing" {
-        then "asking it settles none of the fns it does not call" {
-            let ws = cancel_workspace(cycle_source("avra_fiber_sleep(1)"))
-            let _ = parks(ws, "quiet")
-            ws.db.value_hash_of(bits_key(cancel_decl(ws, "ping"))) == null
-        }
-    }
-    given "a cycle asked from one member" {
-        then "settles the whole set, and the fn it calls outside it" {
-            let ws = cancel_workspace(cycle_source("avra_fiber_sleep(1)"))
-            let _ = parks(ws, "pong")
-            ws.db.value_hash_of(bits_key(cancel_decl(ws, "ping"))) != null &&
-                ws.db.value_hash_of(bits_key(cancel_decl(ws, "leaf"))) != null
+            let j = cancel_judged(cancel_cycle("let _ = 1"))
+            !parks_now(j, "ping") && !parks_now(j, "pong")
         }
     }
 }

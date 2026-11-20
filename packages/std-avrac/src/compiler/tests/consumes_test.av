@@ -1,8 +1,6 @@
 // The consumes pass infers a seat CONSUMED only when every path to an
 // answer keeps it whole; a keep on some paths leaves it borrowed.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
+use @std.avrac.testing.{held_at, Judged}
 
 const shapes: string = "type P = { n: int, items: List<int> }\n" +
     "fn always(p: P) -> List<P> { [p] }\n" +
@@ -38,35 +36,24 @@ const shapes: string = "type P = { n: int, items: List<int> }\n" +
     "let _ = only_fails(1, q)\n" +
     "1"
 
-/// The shapes as a package, analyzed: the consumes pass is read off the
-/// workspace's own table, never off a one-shot analysis's lowering, whose
-/// workspace is disarmed before it lowers.
-fn shaped() -> Workspace {
-    let ws = test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": shapes,
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ),
+/// The shapes as a package, judged on the layer: what each fn consumes is read off its body as
+/// it lowers.
+fn shaped() -> Judged {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            "/w/src/main.av": shapes,
+        },
         "/w",
     )
-    let _ = ws.analyze_file("/w/src/main.av")
-    ws
+        .judged_at("/w/src/main.av")
 }
 
-/// Whether the one fn named `name` consumes its seat `j`.
-fn consumes(ws: Workspace, name: string, j: int) -> bool {
-    let fns = [x.id for x in ws.decls.all_decls() if x.name == name]
-    fns.length == 1 && ws.decls.consumed_seat(fns[0], j)
-}
+/// Whether the fn named `name` consumes its seat `j`.
+fn consumes(j: Judged, name: string, at: int) -> bool { j.consumes_seat("/w/src/main.av", name, at) }
 
-/// Whether the one fn named `name` exists and borrows its seat `j`.
-fn borrows(ws: Workspace, name: string, j: int) -> bool {
-    let fns = [x.id for x in ws.decls.all_decls() if x.name == name]
-    fns.length == 1 && !ws.decls.consumed_seat(fns[0], j)
-}
+/// Whether the fn named `name` borrows its seat `j`: it lowers, and keeps the seat on no path.
+fn borrows(j: Judged, name: string, at: int) -> bool { j.clean() && !j.consumes_seat("/w/src/main.av", name, at) }
 
 spec "compiler/consumes" {
     given "a seat kept on every path to an answer" {

@@ -1,0 +1,118 @@
+use @std.meta.{Named, Directive, Fn, Type, Code, Diagnostic}
+use @std.errors.{Loc}
+export type Decl = { twin: string, name: string, at: Loc? }
+export trait Show {
+    static fn derive(what: Named) -> List<Directive> { [Directive { twin: "gen_" + what.name, name: what.name, at: what.at }] }
+}
+export trait Empty {
+    fn mark() -> int
+}
+export trait Tagged {
+    static fn derive(t: Type) -> List<Directive> { [] }
+    static fn marks(t: Type) -> List<string> { ["frozen", "widened"] }
+}
+export trait Plainly {
+    static fn derive(t: Type) -> List<Directive> { [] }
+}
+export fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }
+export fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }
+export fn other_twin(f: Fn) -> List<Directive> { [Directive { twin: "already", name: f.name, at: f.at }] }
+export trait Keyed {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            type DeclKey = { module: string, x: int }
+            fn decl_probe() -> int { 41 }
+        },
+            },
+        ]
+    }
+}
+export trait MethodNamed {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            impl T {
+                fn ${method_hole_name()}() -> int { 7 }
+            }
+        },
+            },
+        ]
+    }
+}
+fn method_hole_name() -> string { "probed" }
+export trait Spanner {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { fn spanned_probe() -> int { 1 } },
+            },
+        ]
+    }
+}
+export fn wrap_missing(f: Fn) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            wraps: true,
+            source: quote { fn not_it() -> int { 0 } },
+        },
+    ]
+}
+export fn wrap_bodiless(f: Fn) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            wraps: true,
+            source: quote { fn ${f.name}() -> int { 0 } },
+        },
+    ]
+}
+export fn wrap_mismatch(f: Fn) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            wraps: true,
+            source: quote { fn ${f.name}(x: string) -> int { 0 } },
+        },
+    ]
+}
+export fn wrap_unstatic(f: Fn) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            wraps: true,
+            source: quote { fn ${f.name}(n: int) -> int { n } },
+        },
+    ]
+}
+export fn wrap_mutating(f: Fn) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            wraps: true,
+            source: quote { mut fn ${f.name}(n: int) -> int { n } },
+        },
+    ]
+}

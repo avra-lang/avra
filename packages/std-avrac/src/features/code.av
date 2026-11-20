@@ -82,8 +82,9 @@ export enum RuleFacts {
 /// What the program layer found about an item: each node's type by its index in the item's store,
 /// the package its file is in (as source spells it), each fn its declarations name in `@cycled_by` or
 /// `@scoped_by`, the language's built-in method rows, the default each `impl Trait for` method of
-/// the item overrides, and — for the statements a program file runs, typed as its entry — the names
-/// they read and bind outside any fn.
+/// the item overrides, each call the program makes of a fn the item declares (asked only when a rule
+/// asks), and — for the statements a program file runs, typed as its entry — the names they read and
+/// bind outside any fn.
 export type TypedFacts = {
     types: List<SignedType?>,
     package: string,
@@ -93,8 +94,12 @@ export type TypedFacts = {
     unused: List<UnusedImport>,
     brackets: List<Bracketed>,
     bodies: List<BodyNames>,
+    callers: fn(StmtId) -> List<CallSite>,
     entry: NamesRead? = null,
 }
+
+/// One call of a declaration: the file whose code makes it.
+export type CallSite = { file: string }
 
 /// The names one body of an item reads and the bindings it makes, as its typing resolved them, beside
 /// the statement declaring the fn whose body it is.
@@ -700,9 +705,17 @@ impl Code {
     /// Every CALL or METHOD CALL naming this declaration, across the
     /// program — THE REFERENCES RELATION's own door (compiler/
     /// references.av), read through `Decls`.
-    fn callers() -> List<Ref> {
-        let d? = self.declaring() else { return [] }
-        self.analysed().view.decls.callers(d)
+    fn callers() -> List<CallSite> {
+        match self.of.facts {
+            .Analysed(a) -> {
+                let d? = self.declaring() else { return [] }
+                [CallSite { file: a.view.decls.file_named(r.file) } for r in a.view.decls.callers(d)]
+            },
+            .Typed(t) -> match self.at {
+                .Stmt(id) -> (t.callers)(id),
+                .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+            },
+        }
     }
 
     /// Every bare READ of the LOCAL this node's own `let`/`mut`/param

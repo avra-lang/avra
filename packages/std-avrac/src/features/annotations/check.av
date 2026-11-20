@@ -267,7 +267,7 @@ export fn takes_nothing(name: string) -> Voice {
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
     let said = if counterfeit_meta(cx, seat) {
-        receiver_unfit("`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`")
+        counterfeit_receiver(a.name, took)
     } else {
         takes_another_kind(a.name, took, a_kind(kind))
     }
@@ -331,17 +331,24 @@ export fn seat_takes(name: string, want: string) -> Voice {
 /// A declaration-GENERATING annotation reaches only literals: its
 /// generated names must exist before the file's names are known, so
 /// its arguments run at the same moment, before any typed answer.
-fn computed_argument(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.seats",
-                at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` generates declarations, so its arguments come from the source alone",
-                "a computed argument needs typed answers that do not exist until the name it makes is known",
-            ),
-        )
+fn computed_argument(mut cx: TypeCx, a: Annotation) { let _ = cx.spoken(said_as("annotation.seats", at_annotation(cx, a), argument_computed(a.name))) }
+
+/// `@${name}`, which generates declarations, handed an argument the source doesn't spell.
+export fn argument_computed(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "`${name}` generates declarations, so its arguments come from the source alone",
+        help: "a computed argument needs typed answers that do not exist until the name it makes is known",
+    }
+}
+
+/// `@${ann}`, which generates declarations, handed the const `name`, whose value is no literal.
+export fn const_unspelled(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` generates declarations, so `${name}` must name a literal",
+        label: "names a value the source does not spell",
+        help: "a declaring annotation's argument is a literal, or a const whose value is one",
+    }
 }
 
 /// A declaration-generating annotation's fn must stand in another
@@ -349,15 +356,7 @@ fn computed_argument(mut cx: TypeCx, a: Annotation) {
 /// which are the very thing still being resolved.
 fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
     let _ = cx
-        .spoken(
-            refusal(
-                "annotation.seats",
-                at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` generates declarations and stands in this file",
-                "declare the annotation fn in another file — expanding it needs this file's names, which are still being made",
-            ),
-        )
+        .spoken(said_as("annotation.seats", at_annotation(cx, a), stands_in_this_file(a.name)))
 }
 
 /// THE `@derive` PROVIDER LAW, asked of every trait argument: its
@@ -442,15 +441,20 @@ fn derive_takes_another_kind(
 ) {
     let _ = cx
         .spoken(
-            refusal(
+            said_as(
                 "annotation.receiver",
                 cx.loc_of(e),
-                receiver_law,
-                "`${name}`'s `derive` takes `${cx.view.types.name_of(takes)}`, and this is ${a_kind(kind)}",
-                "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration",
+                derive_takes(name, cx.view.types.name_of(takes), a_kind(kind)),
             ),
         )
 }
+
+/// The trait `name`, whose `derive` takes `@std/meta`'s `took`, derived on a declaration of another
+/// kind, `found` in a refusal's words.
+export fn derive_takes(name: string, took: string, found: string) -> Voice { receiver_unfit("`${name}`'s `derive` takes `${took}`, and this is ${found}") }
+
+/// `@${name}`, whose first seat takes a type named `took` that `@std/meta` doesn't declare.
+export fn counterfeit_receiver(name: string, took: string) -> Voice { receiver_unfit("`${name}` takes `${took}` from another module, not `@std.meta.${took}`") }
 
 /// A declaration's kind in the words a refusal uses.
 fn a_kind(kind: DeclKind?) -> string {
@@ -644,5 +648,50 @@ export fn fields_without_type(name: string) -> Voice {
         message: seats_law,
         label: "a `Field` seat names fields of the declaration the annotation stands on, and `${name}`'s first seat takes no `Type`",
         help: "make `${name}`'s first seat `t: Type`",
+    }
+}
+
+/// `@${ann}` generates `name`, which its file already declares.
+export fn generated_name_taken(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` generates `${name}`, which this file already declares",
+        label: "asked here",
+        help: "rename the written declaration, or the generated one",
+    }
+}
+
+/// `@${name}`, which generates declarations, standing in the file its annotation is written in.
+export fn stands_in_this_file(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "`${name}` generates declarations and stands in this file",
+        help: "declare the annotation fn in another file — expanding it needs this file's names, which are still being made",
+    }
+}
+
+/// `@${ann}` asks to wrap `name`, and the source it writes declares no fn of that name.
+export fn wrap_source_unnamed(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` asks to wrap `${name}`, and its `source` declares no fn of that name",
+        label: "asked here",
+        help: "a WRAP directive's `source` writes the wrapper under the annotated fn's own name",
+    }
+}
+
+/// `@${ann}` asks to wrap `name`, which has no written body.
+export fn wrap_unbodied(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` asks to wrap `${name}`, which has no body to move",
+        label: "asked here",
+        help: "WRAP moves a written body behind its wrapper — an extern or a trait member has none",
+    }
+}
+
+/// `@${ann}`'s wrapper for `name` signed otherwise than `name` is written.
+export fn wrap_resigned(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}`'s wrapper for `${name}` does not redeclare its exact signature",
+        label: "asked here",
+        help: "match the `static`/`mut fn` word, the params (marks and defaults included) and the answer type, word for word",
     }
 }

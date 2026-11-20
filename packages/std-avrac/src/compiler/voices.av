@@ -45,6 +45,13 @@ use features.{
 }
 use core.{Instanced, ComponentWord, Instancing}
 use features.{no_kind}
+use features.annotations.{
+    const_unspelled,
+    generated_name_taken,
+    wrap_resigned,
+    wrap_source_unnamed,
+    wrap_unbodied,
+}
 use core.{default_mark}
 use @std.meta.{
     Node,
@@ -611,15 +618,7 @@ fn lift_failed(label: string, at: Loc?) -> Diag {
 
 /// A DECLARING annotation's argument is a literal or a const naming
 /// one: its generated names are made before any value is computed.
-fn unspelled_const(ann: string, name: string, at: Loc?) -> Diag {
-    refusal(
-        "annotation.seats",
-        at,
-        "`@${ann}` generates declarations, so `${name}` must name a literal",
-        "names a value the source does not spell",
-        "a declaring annotation's argument is a literal, or a const whose value is one",
-    )
-}
+fn unspelled_const(ann: string, name: string, at: Loc?) -> Diag { said_as("annotation.seats", at, const_unspelled(ann, name)) }
 
 /// THE PACKAGE'S OWN VOICE for a moved `@std/meta` — spoken whether
 /// or not any annotation was reached, because the cascade that
@@ -636,39 +635,15 @@ fn foreign_package(moved: string) -> Diag {
     )
 }
 
-fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
-    refusal(
-        "annotation.generated_taken",
-        at,
-        "`@${ann}` generates `${name}`, which this file already declares",
-        "asked here",
-        "rename the written declaration, or the generated one",
-    )
-}
+fn generated_taken(ann: string, name: string, at: Loc?) -> Diag { said_as("annotation.generated_taken", at, generated_name_taken(ann, name)) }
 
 /// A WRAP directive whose `source` names no fn matching the
 /// annotated one — nothing to move the written body behind.
-fn wrap_missing(ann: string, name: string, at: Loc?) -> Diag {
-    refusal(
-        "annotation.wrap_missing",
-        at,
-        "`@${ann}` asks to wrap `${name}`, and its `source` declares no fn of that name",
-        "asked here",
-        "a WRAP directive's `source` writes the wrapper under the annotated fn's own name",
-    )
-}
+fn wrap_missing(ann: string, name: string, at: Loc?) -> Diag { said_as("annotation.wrap_missing", at, wrap_source_unnamed(ann, name)) }
 
 /// A WRAP directive over a declaration with no body — an extern, a
 /// trait member — has no written code to move behind the wrapper.
-fn wrap_bodiless(ann: string, name: string, at: Loc?) -> Diag {
-    refusal(
-        "annotation.wrap_bodiless",
-        at,
-        "`@${ann}` asks to wrap `${name}`, which has no body to move",
-        "asked here",
-        "WRAP moves a written body behind its wrapper — an extern or a trait member has none",
-    )
-}
+fn wrap_bodiless(ann: string, name: string, at: Loc?) -> Diag { said_as("annotation.wrap_bodiless", at, wrap_unbodied(ann, name)) }
 
 /// A WRAP directive over a declaration no call reaches by name.
 fn wrap_kind(ann: string, name: string, at: Loc?) -> Diag {
@@ -684,15 +659,7 @@ fn wrap_kind(ann: string, name: string, at: Loc?) -> Diag {
 /// A WRAP directive's wrapper redeclares a DIFFERENT signature than
 /// the fn it wraps — params, marks, defaults and the answer type all
 /// carry the contract every caller already compiled against.
-fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag {
-    refusal(
-        "annotation.wrap_mismatch",
-        at,
-        "`@${ann}`'s wrapper for `${name}` does not redeclare its exact signature",
-        "asked here",
-        "match the `static`/`mut fn` word, the params (marks and defaults included) and the answer type, word for word",
-    )
-}
+fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag { said_as("annotation.wrap_mismatch", at, wrap_resigned(ann, name)) }
 
 /// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
 /// own table — a plain seat would copy the map, and a copy-on-write that runs once per

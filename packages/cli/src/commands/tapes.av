@@ -50,6 +50,8 @@ use @std.avrac.diagnostics.{Diag, SourceFile, loc_at, new_source_file, render, r
 use @std.avrac.compiler.hosts.{host_fn_owed_diag}
 use @std.avrac.core.{
     CalledFn,
+    qtrace,
+    traced,
     Span,
     counted,
     DeclId,
@@ -113,6 +115,8 @@ use @std.avrac.compiler.{
     keyed_objects,
     bucket_asked,
     bucket_lowered,
+    seen_bodies,
+    SeenBodies,
     program_code_hashes,
     HashAnswer,
     unhashed,
@@ -312,13 +316,16 @@ fn package_places(root: string, name: string, std: string, deps: Map<string, str
     own.concat(pinned).concat(std_places)
 }
 
-/// The machine's store of what every package this binary builds shares, under
-/// `AVRA_MACHINE_STORE=1` (`AVRA_MACHINE_STORE_DIR` places it).
+/// The machine's store of what every package this binary builds shares, the toolchain's std answers
+/// laid in it: on unless `AVRA_MACHINE_STORE=0` (`AVRA_MACHINE_STORE_DIR` places it), and none
+/// where it can't stand.
 fn machine_layer() -> MachineLayer? {
     // LICENSED input.debug_flag: whether answers are shared across packages decides where they're kept, never what they are
-    if env("AVRA_MACHINE_STORE") != "1" { return null }
+    if env("AVRA_MACHINE_STORE") == "0" { return null }
     let directory? = machine_store_dir() else { return null }
     let print? = own_print() else { return null }
+    if !machine_store_stands(directory) { return null }
+    std_answers_laid(directory, print)
     MachineLayer { directory: directory, print: print }
 }
 
@@ -585,7 +592,10 @@ fn disk_built(
 type TimeRow = { name: string, phases: List<string> }
 
 const TIME_ROWS: List<TimeRow> = [
-    TimeRow { name: "analyze", phases: ["the refusals", "the host fns", "the warnings"] },
+    TimeRow {
+        name: "analyze",
+        phases: ["the refusals", "the host fns", "the warnings", "the citations"],
+    },
     TimeRow {
         name: "lower",
         phases: ["the shape", "the code hashes", "the keys", "the buckets asked"],
@@ -3689,13 +3699,18 @@ fn bucket_kept(
     let kept = joined_path(asked.dir, "${digest_of(linking.join("\n"))}.bin")
     if exists_at(kept) { return BuiltBinary.Linked(kept, shape.unlowered()) }
     let owed = [o for o in made if !exists_at(o.obj)]
+    if traced() {
+        qtrace("Q\tobjects\t${owed.length}\t${made.length}\n")
+        for o in owed { qtrace("Q\towed\t${bucket_of(o)}\t${shape.symbols_in(bucket_of(o)).join(",")}\n") }
+    }
     if !owed.is_empty() {
         let _ = make_dirs(joined_path(asked.dir, "obj"))
+        let seen = seen_bodies(engine, shape)
         let emitted = timed_phase(
             engine,
             "emit",
             () -> written_across(
-                (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i]),
+                (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i], seen),
                 owed,
                 bucket_weights(shape, owed),
                 opt_level(asked.opt),
@@ -3704,7 +3719,9 @@ fn bucket_kept(
         )
         if emitted != null {
             if owed
-                .any((o) -> bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o)) == null) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
+                .any(
+                    (o) -> bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen) == null,
+                ) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
             return BuiltBinary.Unlinked(emitted!)
         }
     }
@@ -3819,8 +3836,9 @@ fn bucket_made_whole(
     shape: ShapeAt,
     hashes: List<HashAnswer>,
     o: Made,
+    seen: SeenBodies,
 ) -> Lowered {
-    bucket_lowered(bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o))!)
+    bucket_lowered(bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen)!)
 }
 
 /// How heavy each of `owed` is to emit, without reading a body: how many of the shape's bodies its

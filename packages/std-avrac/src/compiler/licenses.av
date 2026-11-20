@@ -12,7 +12,7 @@
 //! "is this citation stale" but "does a finding's own site carry
 //! one" — `rule_pass.av`'s door, before a finding is even reported.
 use @std.text.{chars}
-use core.{SyntaxArena, Remark, flatten, joined}
+use core.{SyntaxArena, Remark, joined}
 use diagnostics.{SourceFile}
 
 /// One keeper's family of licence ids, held at its site by the keeper
@@ -53,15 +53,16 @@ fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
     stale_lines_of(a.view.source, a.view.store.remarks.get(), known)
 }
 
-/// A source's stale citations among `remarks`.
+/// A source's stale citations among `remarks`, each as its file, line and id.
 fn stale_lines_of(src: SourceFile, remarks: List<Remark>, known: List<string>) -> List<string> {
-    flatten([remark_line(src, r, known) for r in remarks])
+    ["${src.file}\t${c.line}\t${c.id}" for c in citations_naming_nothing(src, remarks, known)]
 }
 
-fn remark_line(src: SourceFile, r: Remark, known: List<string>) -> List<string> {
-    let c? = claimed(r) else { return [] }
-    if !cites_nothing(c.id, known) { return [] }
-    ["${src.file}\t${src.linecol(r.at).line}\t${c.id}"]
+/// Each of `remarks` in `src` whose `// LICENSED` citation names nothing among `known`.
+export fn citations_naming_nothing(src: SourceFile, remarks: List<Remark>, known: List<string>) -> List<
+    StaleCitation,
+> {
+    [StaleCitation { line: src.linecol(r.at).line, id: c!.id } for r in remarks for c in [claimed(r)] if c != null && cites_nothing(c!.id, known)]
 }
 
 /// One `// LICENSED <id>: <reason>` comment, parsed — the id and

@@ -20,18 +20,22 @@ type Unwritten = { at: FindingAt?, name: string }
 @derive(Saved)
 type ItemUnwritten = { methods: List<Unwritten> }
 
-/// Every `mut fn` of the written item `at` of `file` that never writes, in the order it declares them.
-fn unwritten_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [Found { at: span_of(m.at), args: [m.name] } for m in item_unwritten(engine, file, at).methods]
+/// Every `mut fn` of the written item `view` shows that never writes, in the order it declares them.
+fn unwritten_methods(view: ItemView) -> List<Found> {
+    [Found { at: span_of(m.at), args: [m.name] } for m in unwritten_seen(view).methods]
 }
 
 /// Every method an inherent impl of the written item `at` of `file` marks `mut` whose receiver its
 /// body, and every method it reaches through it, is read never to write.
 fn item_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnwritten {
     if !item_held(engine, file, at) { return unwritten_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    unwritten_seen(item_view(engine, file, at))
+}
+
+/// What `item_unwritten` answers through the item's `view`, made the first time it is asked.
+fn unwritten_seen(view: ItemView) -> ItemUnwritten {
     let held? = view.unwritten.get() else {
-        let made = unwritten_made(engine, file, at)
+        let made = unwritten_made(view.engine, view.file, view.at)
         view.unwritten.set(made)
         return made
     }
@@ -84,7 +88,7 @@ fn reads_only(used: ReceiverUse?) -> bool {
 /// a `mut fn` that never writes through `self`
 export law mut_fn_unwritten {
     kind: "type.mut_fn_unused"
-    reads: unwritten_methods
+    reads_view: unwritten_methods
     voice: unwritten_words
     warns: true
     witness: "type Count = { n: int }\n\nimpl Count {\n    mut fn total() -> int { self.n }\n}\n"

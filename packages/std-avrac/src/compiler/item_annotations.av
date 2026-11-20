@@ -2,6 +2,9 @@
 //! and that fn takes the declaration as its first seat. Read off the item's annotations and what
 //! their names resolve to where they're written.
 use core.{
+    source_spelled,
+    spelled,
+    TypeRef,
     Annotation,
     example_marks,
     ExprId,
@@ -27,6 +30,11 @@ use features.annotations.{
     fields_without_type,
     no_such_field,
     takes_fields,
+    stands_in_this_file,
+    argument_computed,
+    const_unspelled,
+    counterfeit_receiver,
+    derive_takes,
 }
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -60,10 +68,17 @@ fn worn_where(engine: QueryEngine, file: SourceFileAddress, at: int, breaks: fn(
     [Found { at: w.at, args: [w.name] } for w in worn_in(engine, file, at) if breaks(w)]
 }
 
-/// Every annotation whose name names a declaration that is no fn; a name nothing declares is the
-/// naming law's.
+/// Every annotation whose name names a declaration that is no fn, or a run-time binding of the top
+/// level; a name nothing binds or declares is the naming law's.
 fn fnless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    worn_where(engine, file, at, (w: Worn) -> w.named != null && w.named?.kind != ItemKind.Fn)
+    let bound = top_level_defined(engine, file)
+    worn_where(
+        engine,
+        file,
+        at,
+        (w: Worn) -> w.named != null && w.named?.kind != ItemKind.Fn ||
+            w.named == null && bound.contains(w.name),
+    )
 }
 
 /// Every annotation naming a fn that takes no seat for the declaration.
@@ -225,14 +240,20 @@ fn effectless_words(a: List<string>) -> Voice { answers_no_effect(a[0], a[1]) }
 /// The fn `@std/meta` runs a trait's own `derive` through.
 const DERIVING: string = "derive"
 
-/// Every argument of a `@derive` the written item `at` of `file` wears that names a declaration no
+/// Every argument of a `@derive` the written item `view` shows wears that names a declaration no
 /// trait is, or a trait that writes no `derive`: the annotation's name, what it names, and whether
 /// it's a trait.
-fn derives_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn derives_refused(view: ItemView) -> List<Found> {
+    let item = view.item
     if !item.store.refusals().is_empty() { return [] }
-    [f! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) && derives_by_meta(engine, file, a.name) for e in a.args for f in [derive_arg(engine, file, item.store, a, e)] if f != null]
+    [f! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) && derives_by_meta(view.engine, view.file, a.name) for kind in some_list(stmt_kind(view.engine, view.file, view.at, item.store, s)) for e in a.args for f in [derive_arg(view.engine, view.file, item.store, a, kind, e)] if f != null]
+}
+
+/// The kind of the declaration the statement `s` of the item `at` of `file` makes; absent for one
+/// that declares nothing.
+fn stmt_kind(engine: QueryEngine, file: SourceFileAddress, at: int, store: SyntaxArena, s: StmtId) -> ItemKind? {
+    let name? = store.declared_name(s) else { return null }
+    file_declares_at(engine, file, at).names.find(it.item == at && it.name == name)?.kind
 }
 
 /// Whether the annotation `name` names `@std/meta`'s `derive`.
@@ -258,47 +279,80 @@ fn derives_by_meta(engine: QueryEngine, file: SourceFileAddress, name: string) -
     d.file.package_name == META && d.name == DERIVING && d.kind == ItemKind.Fn
 }
 
-/// The argument `e` of the `@derive` `a`, refused where it names no trait or a trait with no
-/// `derive`; absent where it names one that has one, or names nothing — another law's.
+/// The argument `e` of the `@derive` `a` on a declaration of `kind`, refused where it names no trait,
+/// a trait with no `derive`, or one whose `derive` takes another kind of declaration; absent where
+/// its `derive` takes this one, or it names nothing — another law's.
 fn derive_arg(
     engine: QueryEngine,
     file: SourceFileAddress,
     store: SyntaxArena,
     a: Annotation,
+    kind: ItemKind,
     e: ExprId,
 ) -> Found? {
     let n? = store.ident_name(e) else { return null }
     let d? = resolved(engine, file, Space.Type, n).named() else { return null }
     if d.kind != ItemKind.Trait { return Found { at: store.expr_span(e), args: [a.name, d.name, "decl"] } }
     let held? = declaring_item(engine, d.file, d.name, ItemKind.Trait) else { return null }
-    if trait_fns(held)
-        .any((f: StmtId) -> held.store.fn_parts(f)?.name == DERIVING && held.store.is_static(f)) { return null }
-    Found { at: store.expr_span(e), args: [a.name, d.name, "trait"] }
+    let derived? = trait_fns(held)
+        .find((f: StmtId) -> held.store.fn_parts(f)?.name == DERIVING && held.store.is_static(f)) else {
+        return Found { at: store.expr_span(e), args: [a.name, d.name, "trait"] }
+    }
+    let took? = meta_seat_named(held.store.fn_parts(derived)?.params?.first()?.ty) else { return null }
+    if took.takes(kind) { return null }
+    Found {
+        at: store.expr_span(e),
+        args: [d.name, took.spelled(), stood_on(kind)],
+        kind: "annotation.receiver",
+    }
+}
+
+/// The `@std/meta` seat a written type names by its name alone: `Fn`, `Type`, `Trait` or `Named`.
+fn meta_seat_named(ty: TypeRef?) -> DeclSeat? {
+    let t? = ty else { return null }
+    match spelled(t) {
+        "Fn" -> DeclSeat.Fn,
+        "Type" -> DeclSeat.Type,
+        "Trait" -> DeclSeat.Trait,
+        "Named" -> DeclSeat.Named,
+        rest -> null,
+    }
 }
 
 /// a `@derive` names traits that declare `derive`
 export law derive_names_a_deriving_trait {
     kind: "annotation.derive"
-    reads: derives_refused
+    reads_view: derives_refused
     voice: derive_words
     witness: "use @std.meta.{derive}\ntype X = { a: int }\n@derive(X)\ntype T = { x: int }\n0\n"
 }
 
-fn derive_words(a: List<string>) -> Voice { if a[2] == "decl" { derives_no_trait(a[0], a[1]) } else { derives_nothing(a[1]) } }
+fn derive_words(a: List<string>) -> Voice {
+    match a[2] {
+        "decl" -> derives_no_trait(a[0], a[1]),
+        "trait" -> derives_nothing(a[1]),
+        rest -> derive_takes(a[0], a[1], a[2]),
+    }
+}
 
 /// As many arguments as a rest seat takes: no count past which it refuses.
 const UNCOUNTED: int = 1000000
 
 /// An annotation a declaration of the written item `at` of `file` wears: the declaration's name and
 /// kind, the store it's written in, and the annotation.
-type WornOn = { decl: string, kind: ItemKind, store: SyntaxArena, a: Annotation }
+type WornOn = { decl: string, kind: ItemKind, store: SyntaxArena, a: Annotation, read: ReadItem }
+
+impl WornOn {
+    /// A finding at the annotation, naming it.
+    fn found() -> Found { Found { at: self.a.span, args: [self.a.name] } }
+}
 
 /// Every annotation a declaration of the written item `at` of `file` wears, written by its source.
 fn worn_on(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<WornOn> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
-    [WornOn { decl: d.name, kind: d.kind, store: item.store, a: a } for d in file_declares_at(engine, file, at).names if d.item == at for s in item.stmts if source_wrote_stmt(item.store, s) && item.store.declared_name(s) == d.name for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
+    [WornOn { decl: d.name, kind: d.kind, store: item.store, a: a, read: item } for d in file_declares_at(engine, file, at).names if d.item == at for s in item.stmts if source_wrote_stmt(item.store, s) && item.store.declared_name(s) == d.name for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
 }
 
 /// The words `w` writes into seats of its fn taking fields; none where it writes none.
@@ -341,12 +395,11 @@ fn fieldless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) 
     [Found { at: w.a.span, args: [w.a.name, stood_on(w.kind)] } for w in worn_on(engine, file, at) if !fielded(w.kind) && seats_take_fields(annotation_seats(engine, file, w.a.name))]
 }
 
-/// Every annotation's fn the written item `at` of `file` declares with a seat taking fields past a
+/// Every annotation's fn the written item `view` shows declares with a seat taking fields past a
 /// first seat taking a declaration other than its `Type`: at its declaration.
-fn fields_unanchored(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
-    [Found { at: item.store.stmt_span(s), args: [d.name] } for d in file_declares_at(engine, file, at).names if d.item == at && d.kind == ItemKind.Fn for sig in some_list(fn_signature(engine, file, d.name)) if seats_take_fields(sig.params.drop(1)) && untyped_annotation(sig) for s in item.stmts if item.store.declared_name(s) == d.name]
+fn fields_unanchored(view: ItemView) -> List<Found> {
+    let item = view.item
+    [Found { at: item.store.stmt_span(s), args: [d.name] } for d in file_declares_at(view.engine, view.file, view.at).names if d.item == view.at && d.kind == ItemKind.Fn for sig in some_list(fn_signature(view.engine, view.file, d.name)) if seats_take_fields(sig.params.drop(1)) && untyped_annotation(sig) for s in item.stmts if item.store.declared_name(s) == d.name]
 }
 
 /// Whether the fn signed `sig` is an annotation's whose first seat takes a declaration other than
@@ -383,7 +436,7 @@ export law annotation_fields_on_fields {
 /// a fn whose seat names fields takes the declaration's `Type` first
 export law field_seat_after_a_type {
     kind: "annotation.seats"
-    reads: fields_unanchored
+    reads_view: fields_unanchored
     voice: unanchored_words
     witness: "use @std.meta.{Named, Field, Diagnostic}\nfn keyed(n: Named, ..fields: List<Field>) -> List<Diagnostic> { [] }\n"
 }
@@ -395,3 +448,115 @@ fn unwritten_field_words(a: List<string>) -> Voice { field_not_bare(a[0]) }
 fn fieldless_words(a: List<string>) -> Voice { takes_fields(a[0], a[1]) }
 
 fn unanchored_words(a: List<string>) -> Voice { fields_without_type(a[0]) }
+
+/// Every annotation a declaration of the item `at` of `file` wears whose fn makes declarations and
+/// is written in that same file: expanding it would need the names the file is still making.
+fn same_file_generators(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [w.found() for w in worn_on(engine, file, at) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) if d.kind == ItemKind.Fn && same_file(d.file, file) && makes_declarations(engine, d)]
+}
+
+/// Whether the fn `d` is an annotation's that makes declarations: its first seat takes one, and it
+/// answers `Declared` or a list of directives.
+fn makes_declarations(engine: QueryEngine, d: DeclaredName) -> bool {
+    let g? = annotation_kind(engine, d.file, d.name) else { return false }
+    !validates(engine, GeneratorAt { file: d.file, name: d.name, kind: g })
+}
+
+/// an annotation that makes declarations is written in another file than the one it stands in
+export law generator_stands_elsewhere {
+    kind: "annotation.seats"
+    reads: same_file_generators
+    voice: same_file_words
+    witness: "use @std.meta.{Type, Declared}\nfn here(t: Type) -> Declared { Declared { made: [] } }\n\n@here\ntype R = { n: int }\n"
+}
+
+fn same_file_words(a: List<string>) -> Voice { stands_in_this_file(a[0]) }
+
+/// Every annotation whose fn makes declarations that is handed an argument the source doesn't spell:
+/// no literal, no hole-less quote, and no bare name of a declaration — a call, an aggregate.
+fn computed_arguments(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [w.found() for w in declaring_worn(engine, file, at) if w.a.args.any((e) -> computed(engine, file, w, e))]
+}
+
+/// Every argument of an annotation whose fn makes declarations that names a const whose value is no
+/// literal, followed through the consts it names: at the argument.
+fn consts_unspelled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let scope? = file_scope(engine, file) else { return [] }
+    [Found { at: w.store.expr_span(e), args: [w.a.name, w.store.ident_name(e) ?? ""] } for w in declaring_worn(engine, file, at) if !w.a.args.any((x) -> computed(engine, file, w, x)) for e in w.a.args if spelled_arg(engine, scope, file, w.read, w.store.unnamed(e), 0) is .Settled]
+}
+
+/// The annotations of the item `at` of `file` whose fn makes declarations.
+fn declaring_worn(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<WornOn> {
+    [w for w in worn_on(engine, file, at) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) if d.kind == ItemKind.Fn && makes_declarations(engine, d)]
+}
+
+/// Whether the argument `e` of `w` is computed: it spells no literal or hole-less quote, and is no
+/// bare name of a declaration.
+fn computed(engine: QueryEngine, file: SourceFileAddress, w: WornOn, e: ExprId) -> bool {
+    let v = w.store.unnamed(e)
+    if source_spelled(w.store.valued(v)) { return false }
+    let name? = w.store.ident_name(v) else { return true }
+    resolved(engine, file, Space.Value, name).named() == null &&
+        resolved(engine, file, Space.Type, name).named() == null
+}
+
+/// an annotation that makes declarations is handed only what the source spells
+export law declaring_arguments_spelled {
+    kind: "annotation.seats"
+    reads: computed_arguments
+    voice: computed_words
+    witness: "use gen.{traced}\n\nfn label() -> string { \"x\" }\n\n@traced(label())\nfn sum() -> int { 1 }\n"
+    witness_files: {
+        "src/gen.av": "use @std.meta.{Fn, Directive}\nexport fn traced(f: Fn, label: string) -> List<Directive> { [] }\n",
+    }
+}
+
+/// a const an annotation that makes declarations is handed names a literal
+export law declaring_const_literal {
+    kind: "annotation.seats"
+    reads: consts_unspelled
+    voice: unspelled_words
+    witness: "use gen.{labelled}\n\nconst Label = \"a\" + \"b\"\n\n@labelled(Label)\nfn sum() -> int { 1 }\n"
+    witness_files: {
+        "src/gen.av": "use @std.meta.{Fn, Directive}\nexport fn labelled(f: Fn, label: string) -> List<Directive> { [] }\n",
+    }
+}
+
+fn computed_words(a: List<string>) -> Voice { argument_computed(a[0]) }
+
+fn unspelled_words(a: List<string>) -> Voice { const_unspelled(a[0], a[1]) }
+
+/// Every annotation whose fn's first seat takes a type of its own program named as `@std/meta`'s
+/// declarations are — `Fn`, `Type`, `Named`, `Trait` — which crosses nothing.
+fn counterfeit_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unread = [u.at!.lo for u in item_refusals(engine, file, at).unread if u.at != null]
+    [Found { at: w.a.span, args: [w.a.name, took] } for w in worn_on(engine, file, at) if !w.a.args.any(unread_at(unread, w, it)) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) for took in counterfeit_seat(engine, d)]
+}
+
+/// Whether the argument `e` of `w` stands where a place in `unread` starts.
+fn unread_at(unread: List<int>, w: WornOn, e: ExprId) -> bool {
+    let span? = w.store.expr_span(e) else { return false }
+    unread.contains(span.lo)
+}
+
+/// The name the first seat of the fn `d` takes, as a list, where it is a type no `@std/meta` declares
+/// under one of its declarations' names; none for any other.
+fn counterfeit_seat(engine: QueryEngine, d: DeclaredName?) -> List<string> {
+    let named? = d else { return [] }
+    if named.kind != ItemKind.Fn { return [] }
+    let t? = fn_signature(engine, named.file, named.name)?.params?.first()?.ty else { return [] }
+    match t.head {
+        .Declared(home, n) -> if home.package_name != META && ["Fn", "Type", "Named", "Trait"].contains(n) { [n] } else { [] },
+        rest -> [],
+    }
+}
+
+/// an annotation's first seat takes `@std/meta`'s own declaration, not one named like it
+export law annotation_receiver_is_meta {
+    kind: "annotation.receiver"
+    reads: counterfeit_annotations
+    voice: counterfeit_words
+    witness: "type Fn = {}\nfn mark(f: Fn) { }\n\n@mark\nfn answer() -> int { 1 }\n"
+}
+
+fn counterfeit_words(a: List<string>) -> Voice { counterfeit_receiver(a[0], a[1]) }

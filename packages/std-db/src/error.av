@@ -3,17 +3,17 @@
 //! field a constraint violation broke, unenriched otherwise. Stands
 //! alone with `@std/errors`, `@std/sqlite`'s error module and
 //! `@std/validate`'s issue types, per `db.av`'s derive-isolation law.
-use @std.errors.{Error, ErrorInfo, Loc, info}
+use @std.errors.{Error, ErrorInfo, info}
 use @std.sqlite.{Db}
 use @std.sqlite.error.{Cause, SqlError, Violation}
 use @std.validate.{Issue, Issues, root}
 
-/// One `@unique` mark: the field it stands on and where that was
-/// declared, the fields it is unique `among` (none: unique alone), and
-/// the `columns` its key holds, in key order — enough to say which law a
-/// violation broke, never the whole `@std/meta` `Field` a model's derive
-/// already spent at compile time.
-export type UniqueField = { name: string, at: Loc?, columns: List<string>, among: List<string> = [], whole: bool = false }
+/// One `@unique` key: the field it stands on, the fields it is unique
+/// `among` (none: unique alone), the `columns` it holds, in key order, and
+/// whether the model declares it on itself, `whole` — enough to say which
+/// law a violation broke, by the declaration that states it: never a place
+/// in the source, which a running program has no use for.
+export type UniqueField = { name: string, columns: List<string>, among: List<string> = [], whole: bool = false }
 
 /// A `@model` operation's failure. `.cause()` always answers the
 /// original `SqlError` whole — the model-aware message is a richer
@@ -81,17 +81,17 @@ fn unique_message(f: UniqueField, model: string) -> string {
 }
 
 fn alone_voice(f: UniqueField, model: string) -> string {
-    "`${f.name}` must be unique — declared @unique on `${model}.${f.name}`${at_suffix(f.at)}"
+    "`${f.name}` must be unique — declared @unique on `${model}.${f.name}`"
 }
 
 /// A key the model declares on itself, `@unique(a, b, …)`: its fields are `among`, then `name`.
 fn whole_voice(f: UniqueField, model: string) -> string {
     let key = f.among.concat([f.name])
-    "${["`${n}`" for n in key].join(", ")} must be unique together — declared @unique(${key.join(", ")}) on `${model}`${at_suffix(f.at)}"
+    "${["`${n}`" for n in key].join(", ")} must be unique together — declared @unique(${key.join(", ")}) on `${model}`"
 }
 
 fn within_voice(f: UniqueField, model: string) -> string {
-    "`${f.name}` must be unique within ${["`${n}`" for n in f.among].join(", ")} — declared @unique(${f.among.join(", ")}) on `${model}.${f.name}`${at_suffix(f.at)}"
+    "`${f.name}` must be unique within ${["`${n}`" for n in f.among].join(", ")} — declared @unique(${f.among.join(", ")}) on `${model}.${f.name}`"
 }
 
 fn ambiguous_message(fs: List<UniqueField>, model: string) -> string {
@@ -99,14 +99,7 @@ fn ambiguous_message(fs: List<UniqueField>, model: string) -> string {
 }
 
 fn candidates(fs: List<UniqueField>, model: string) -> string {
-    ["`${model}.${f.name}`${at_suffix(f.at)}" for f in fs].join(", ")
-}
-
-fn at_suffix(at: Loc?) -> string {
-    match at {
-        loc? -> " at ${loc.file ?? "?"}:${loc.lo}"
-        null -> ""
-    }
+    ["`${model}.${f.name}`" for f in fs].join(", ")
 }
 
 fn held() -> Issue {

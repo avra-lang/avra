@@ -69,24 +69,27 @@ fn declared_formed(
     shape != null && parts(shape!.of)
 }
 
-/// Each computed const the written item `at` of `file` declares, and each one its bodies declare
+/// Each computed const the written item `view` shows declares, and each one its bodies declare
 /// that settles at compile time, whose type has no compile-time value form: at its value, its voice
 /// handed its name and its type.
-fn consts_unformed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn consts_unformed(view: ItemView) -> List<Found> {
+    let item = view.item
     let store = item.store
     mut found: List<Found> = []
     for s in item.stmts {
         let value? = store.const_value(s) else { continue }
         let name? = store.let_name(s) else { continue }
         if const_written(store.valued(value)) || store.is_component_inst(s) { continue }
-        let ty? = binding_type(engine, file, name) ?? const_value_type(engine, file, name) else { continue }
-        if !const_formed(engine, file, ty) { found.push(Found { at: store.expr_span(value), args: [name, ty.spelled()] }) }
+        let ty? = binding_type(view.engine, view.file, name) ?? const_value_type(
+            view.engine,
+            view.file,
+            name,
+        ) else { continue }
+        if !const_formed(view.engine, view.file, ty) { found.push(Found { at: store.expr_span(value), args: [name, ty.spelled()] }) }
     }
     found
         .concat(
-            [Found { at: span_of(c.at), args: [c.name, c.words] } for c in item_refusals(engine, file, at).broken if c.kind == FORM],
+            [Found { at: span_of(c.at), args: [c.name, c.words] } for c in item_refusals(view.engine, view.file, view.at).broken if c.kind == FORM],
         )
 }
 
@@ -95,7 +98,7 @@ fn unformed_said(a: List<string>) -> Voice { unformed_voice(a[0], a[1]) }
 /// a computed const whose type has no compile-time value form
 export law const_unformed {
     kind: "const.form"
-    reads: consts_unformed
+    reads_view: consts_unformed
     voice: unformed_said
     witness: "fn mk() -> fn(int) -> int { (x: int) -> x }\n\nconst f: fn(int) -> int = mk()\n"
 }

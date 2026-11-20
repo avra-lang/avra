@@ -1,6 +1,7 @@
 //! A FILE AS CANONICAL AVRA, FROM A PARSE ALONE: its text read whole under the words its items read
 //! under, printed, and held to the receipts a rewrite owes. Formatting moves no token that typing
 //! decides, so nothing here types: a file is asked for its text and its words' shapes, and no more.
+//! The same whole read says which of its `// LICENSED` citations name nothing.
 use core.{Expr, ExprId, StmtId, SyntaxArena, flatten, joined}
 use compiler.format.{lossless_defect, remarks_and_docs_defect, render_source_of}
 use diagnostics.{SourceFile, has_errors, new_source_file, render_among}
@@ -119,6 +120,23 @@ export fn file_canonical(engine: QueryEngine, file: SourceFileAddress) -> Canoni
         .Ok(text) -> if "${text}\n" == source_text(engine, file) ?? "" { Canonical.Stands } else { Canonical.Differs },
         .Err(report) -> Canonical.Refused(report.split("\n").first() ?? report),
     }
+}
+
+/// A `// LICENSED` citation naming nothing that reads it: the line it stands on, and its id.
+@derive(Saved)
+export type StaleCitation = { line: int, id: string }
+
+/// EACH `// LICENSED` CITATION OF A FILE THAT NAMES NOTHING: no rule `avra rules` lists, and no
+/// keeper's family — read off a lex of the file under its words, so a raw block's body is never
+/// read as a comment.
+@query
+export fn stale_citations(engine: QueryEngine, file: SourceFileAddress) -> List<StaleCitation> {
+    let src = whole_source(engine, file)
+    citations_naming_nothing(
+        src,
+        lexed_under(src.text, words_lexed(whole_words(engine, file)), avra().keywords).remarks,
+        known_rule_ids(),
+    )
 }
 
 collect listed_canonical_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

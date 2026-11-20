@@ -2,6 +2,7 @@
 //! annotation's own fn, lowered with every body it reaches into a program the evaluator runs over a
 //! declaration's meta value: a `Type` for a derive, a `Fn` for an annotation.
 use core.{
+    some_list,
     OwnType,
     Span,
     Annotation,
@@ -28,6 +29,7 @@ use features.{
     meta_of_type,
     new_meta_heap,
     unsettled_label,
+    unsettled_of,
 }
 use @std.meta.{Diagnostic, Directive, Node, derive}
 use @std.program.address.{SourceFileAddress}
@@ -119,6 +121,9 @@ export enum HandedArg {
     /// Fields of the declaration `decl` the site stands on in `file`, by their place among its
     /// fields: one, or a list of them where `listed`.
     Fields(file: SourceFileAddress, decl: string, picked: List<int>, listed: bool)
+    /// An argument the source computes — a call — written at node `at` of the written item `item` of
+    /// `file`: its value run at compile time under the seat type `seat`.
+    Computed(file: SourceFileAddress, item: int, at: int, seat: SignedType)
     /// An argument the program layer doesn't cross yet, and why.
     Uncrossed(why: string)
     /// An argument naming no declaration its seat takes: the program's fault, and why.
@@ -311,6 +316,15 @@ export fn generator_run(
     method: MethodSite? = null,
 ) -> GeneratorRun {
     let values = handed_values(engine, file, name, g.kind.first_seat(), handed, method)
+    if values.broken != null {
+        return GeneratorRun
+            .Trapped(
+                unsettled_label(
+                    annotation_named(g),
+                    unsettled_of(values.broken!.kind, values.broken!.words),
+                ),
+            )
+    }
     if !values.stopped.is_empty() { return GeneratorRun.Stopped(values.stopped, values.fault, values.said) }
     match run_lifted(
         l,
@@ -321,6 +335,7 @@ export fn generator_run(
         (n: string) -> named_lifted(engine, file, n),
         null,
         plan,
+        spelled: reader_spelled(file.package_name),
         late: late_door(task_survey(engine), TaskChecks.Tested),
     ) {
         .Ok(lifted) -> match answer_shape(engine, g) {
@@ -336,7 +351,7 @@ export fn generator_run(
 /// What a site hands its generator, crossed into one heap: the declaration it stands on, then each
 /// argument; none, and why, where one doesn't cross.
 @derive(Saved)
-export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string, fault: bool = false, said: bool = false }
+export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string, fault: bool = false, said: bool = false, broken: BrokenSettlement? = null }
 
 /// What the site over the declaration `file` writes as `name` — a method of the impl `method` where
 /// it's one — hands a generator whose first seat is `first`, past it `handed`. An answer of its own,
@@ -355,6 +370,8 @@ export fn handed_values(
     let arg? = (if method == null { meta_handed(engine, first, file, name, heap) } else { method_handed(engine, method!, name, heap) }) else { return unhanded(not_handed(first, name)) }
     let unfit = handed.find_map(match it { .Unfit(w) -> w, rest -> null })
     if unfit != null { return unhanded(unfit!) with { fault: true } }
+    let broken = handed.find_map((h) -> argument_broken(engine, h))
+    if broken != null { return unhanded(broken!.words) with { broken: broken } }
     let misnamed = handed.find_map(match it { .Misnamed(w) -> w, rest -> null })
     if misnamed != null { return unhanded(misnamed!) with { said: true } }
     let why = handed.find_map(match it { .Uncrossed(w) -> w, rest -> null })
@@ -424,6 +441,10 @@ fn meta_arg(engine: QueryEngine, h: HandedArg, mut heap: MetaHeap) -> MetaVal? {
         .Code(home, at, parts) -> meta_of_template(Node.Template(home, at, parts, []), heap),
         .Settled(file, name, item, _) -> settled_handed(engine, file, name, item, heap),
         .Fields(file, decl, picked, listed) -> fields_meta(engine, file, decl, picked, listed, heap),
+        .Computed(file, item, at, seat) -> match argument_lifted(engine, file, item, at, seat) {
+            .Ok(ran) -> heap.adopt(ran.heap, ran.answer),
+            .Err(_) -> null,
+        },
         .Uncrossed(_) or .Unfit(_) or .Misnamed(_) -> null,
     }
 }
@@ -705,15 +726,27 @@ fn annotation_sites(
     if named.kind != ItemKind.Fn { return [] }
     let made_as? = annotation_kind(engine, named.file, named.name) else { return [] }
     if !made_as.first_seat().takes(kind) { return [] }
+    let generator = GeneratorAt { file: named.file, name: named.name, kind: made_as }
     [
         GeneratorSite {
             name: name,
             item: item,
-            generator: GeneratorAt { file: named.file, name: named.name, kind: made_as },
-            handed: handed_args(engine, scope, file, read, a, named, name),
+            generator: generator,
+            handed: uncomputed(engine, generator, handed_args(engine, scope, file, read, a, named, name)),
         },
     ]
 }
+
+/// `handed` as the annotation fn `generator` takes it: one that makes declarations runs no computed
+/// argument, which its own law refuses.
+fn uncomputed(engine: QueryEngine, generator: GeneratorAt, handed: List<HandedArg>) -> List<
+    HandedArg,
+> {
+    if validates(engine, generator) { return handed }
+    [match h { .Computed(_, _, _, _) -> HandedArg.Misnamed(computed_declaring()), rest -> h } for h in handed]
+}
+
+fn computed_declaring() -> string { "an annotation that makes declarations is handed a computed argument" }
 
 /// What an annotation hands each seat of its fn `named` past the first, in order: the argument
 /// written there, or the seat's default where none is, each crossed where it's written.
@@ -727,7 +760,7 @@ fn handed_args(
     decl: string,
 ) -> List<HandedArg> {
     let store = read.store
-    let seats = (fn_signature(engine, named.file, named.name)?.params ?? []).drop(1)
+    let seats = (generator_signature(engine, named.file, named.name)?.params ?? []).drop(1)
     let args = [e for e in a.args if store.arg_label(e) == null]
     [seat_handed(engine, scope, file, read, named, decl, p, j, args) for j, p in seats]
 }
@@ -749,7 +782,56 @@ fn seat_handed(
     match field_take(p) {
         .Many -> fields_handed(engine, file, decl, read.store, args.drop(j), true),
         .One -> if j < args.length { fields_handed(engine, file, decl, read.store, [args[j]], false) } else { defaulted_arg(engine, named, j + 1) },
-        .Not -> if j < args.length { handed_arg(engine, scope, file, read, p.ty, args[j]) } else { defaulted_arg(engine, named, j + 1) },
+        .Not -> if j < args.length {
+            computed_or(
+                fitted(handed_arg(engine, scope, file, read, p.ty, args[j]), p.ty),
+                file,
+                read,
+                p.ty,
+                args[j],
+            )
+        } else {
+            defaulted_arg(engine, named, j + 1)
+        },
+    }
+}
+
+/// `h` as a seat of type `ty` takes it: a literal of another scalar than the seat's is the program's
+/// fault, which the seats' law says, so the generator isn't run on it.
+fn fitted(h: HandedArg, ty: SignedType?) -> HandedArg {
+    let t? = ty else { return h }
+    let want? = t.owned() else { return h }
+    if t.nulls > 0 { return h }
+    let found = match h {
+        .Value(l) -> match l { .Int(_) -> "int", .Float(_) -> "float", .Bool(_) -> "bool", .Text(_) -> "string" },
+        rest -> want,
+    }
+    if ["int", "float", "bool", "string"].contains(want) && found != want { HandedArg.Misnamed(unfit_literal(want)) } else { h }
+}
+
+fn unfit_literal(want: string) -> string { "an annotation's argument is no `${want}`, which its seat takes" }
+
+/// `h` where the argument `e` it was read from is computed — a call the source writes, no literal,
+/// quote or name — and its seat has a type: that argument run at compile time. An annotation that
+/// makes declarations is refused one, by its own law, and runs nothing.
+fn computed_or(h: HandedArg, file: SourceFileAddress, read: ReadItem, seat: SignedType?, e: ExprId) -> HandedArg {
+    if !(h is .Uncrossed) { return h }
+    let ty? = seat else { return h }
+    let item? = read.at else { return h }
+    let v = read.store.unnamed(e)
+    if read.store.ident_name(v) != null { return h }
+    HandedArg.Computed(file, item, v.index, ty)
+}
+
+/// Why the computed argument `h` didn't run, where it broke a law of a compile-time run; absent for
+/// any other argument, one that ran, or one the program layer can't run yet.
+fn argument_broken(engine: QueryEngine, h: HandedArg) -> BrokenSettlement? {
+    match h {
+        .Computed(file, item, at, seat) -> match argument_lifted(engine, file, item, at, seat) {
+            .Ok(_) -> null,
+            .Err(b) -> if b.kind.is_empty() { null } else { b },
+        },
+        rest -> null,
     }
 }
 
@@ -840,7 +922,7 @@ fn handed_arg(
 
 /// The value `e`, written in `file`, spells: its literal, a hole-less quote as the template it is,
 /// or the value of the const it names, however many consts deep, each read where it's written.
-fn spelled_arg(
+export fn spelled_arg(
     engine: QueryEngine,
     scope: FileScope,
     file: SourceFileAddress,
@@ -926,6 +1008,7 @@ fn settled_default(engine: QueryEngine, named: DeclaredName, seat: string) -> Ha
         [],
         new_meta_heap(),
         lifted_budgets(engine, named.file.package_name),
+        spelled: reader_spelled(named.file.package_name),
     ) {
         .Ok(lifted) -> match lifted.answer {
             .Int(n) -> HandedArg.Value(Literal.Int(n)),
@@ -956,7 +1039,7 @@ fn space_taking(seat: DeclSeat) -> Space {
 /// when its first seat takes `@std/meta`'s `Fn`, over a type when it takes its `Type`, answering
 /// `Declared`, a list of directives, a list of diagnostics, or nothing. Absent for any other fn.
 export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratorKind? {
-    let sig? = fn_signature(engine, file, name) else { return null }
+    let sig? = generator_signature(engine, file, name) else { return null }
     let first? = sig.params.first()?.ty else { return null }
     if !meta_named(sig.answer, DECLARED) &&
         !directives_listed(sig.answer) &&
@@ -975,7 +1058,7 @@ export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: st
 /// nothing, so it makes no item.
 export fn validates(engine: QueryEngine, g: GeneratorAt) -> bool {
     if g.kind is .Derive { return false }
-    let answer? = fn_signature(engine, g.file, g.name)?.answer else { return false }
+    let answer? = generator_signature(engine, g.file, g.name)?.answer else { return false }
     diagnostics_listed(answer) || answer.owns(OwnType.Void)
 }
 
@@ -983,7 +1066,7 @@ export fn validates(engine: QueryEngine, g: GeneratorAt) -> bool {
 /// the declaration, so a run that doesn't happen is a judgement not made.
 export fn judges(engine: QueryEngine, g: GeneratorAt) -> bool {
     if g.kind is .Derive { return false }
-    let answer? = fn_signature(engine, g.file, g.name)?.answer else { return false }
+    let answer? = generator_signature(engine, g.file, g.name)?.answer else { return false }
     diagnostics_listed(answer)
 }
 
@@ -1023,6 +1106,83 @@ fn meta_named(ty: SignedType, name: string) -> bool {
     if ty.nulls > 0 { return false }
     match ty.head { .Declared(file, n) -> file.package_name == META && n == name, _ -> false }
 }
+
+/// What the `@derive`s the statement `s` of `file` wears claim of the marks written on the
+/// declaration `name` it makes: the union of each derived trait's own `marks` run over it. Absent
+/// where that can't be known — it wears an annotation that is no `@derive`, a derived trait is
+/// written in this file or its `marks` doesn't run; a trait that declares no `marks` claims nothing.
+export fn derive_claims(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    name: string,
+) -> List<string>? {
+    let scope? = file_scope(engine, file) else { return null }
+    let worn = store.annotations_of(s)
+    if worn.is_empty() { return null }
+    mut claims: List<string> = []
+    for a in worn {
+        let d? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return null }
+        if d.file.package_name != META || d.name != DERIVE { return null }
+        for e in a.args {
+            let t? = trait_named(engine, scope, file, arg_lit(store, e).text) else { return null }
+            if same_file(t.file, file) { return null }
+            let held? = trait_claims(engine, t, file, name).claims else { return null }
+            claims = claims.concat(held)
+        }
+    }
+    claims
+}
+
+/// What one trait claims of the marks on a declaration: the names its `marks` answers, or absent
+/// where they can't be known.
+@derive(Saved)
+export type TraitClaims = { claims: List<string>? }
+
+/// The trait `t`'s own `static fn marks` run over the declaration `file` writes as `name`, as its
+/// `derive` is run: the marks it claims; none where it declares no `marks`, absent where it doesn't
+/// run.
+@query
+export fn trait_claims(engine: QueryEngine, t: TraitAt, file: SourceFileAddress, name: string) -> TraitClaims {
+    let unknown = TraitClaims { claims: null }
+    let body? = trait_static_body(engine, t, CLAIMS) else { return TraitClaims { claims: [] } }
+    let unit = "${t.name}.${CLAIMS}"
+    let root = lowered_signed(engine, t.file, body, unit, null)
+    if !root.whole() { return unknown }
+    let symbol = declared_symbol(t.file, unit)
+    let made = match made_reaching(
+        task_survey(engine),
+        root,
+        symbol,
+        root.params,
+        TaskChecks.Tested,
+        lazy: true,
+        unhashed_absent: true,
+    ) { .Made(l) -> l, .Unmade(_, _) or .Refused(_) -> { return unknown } }
+    mut heap = new_meta_heap()
+    let arg? = meta_handed(engine, DeclSeat.Type, file, name, heap) else { return unknown }
+    match run_lifted(
+        made,
+        symbol,
+        [arg],
+        heap,
+        lifted_budgets(engine, file.package_name),
+        (n: string) -> named_lifted(engine, file, n),
+        null,
+        null,
+        spelled: reader_spelled(file.package_name),
+        late: late_door(task_survey(engine), TaskChecks.Tested),
+    ) {
+        .Ok(ran) -> TraitClaims {
+            claims: [w for v in ran.heap.slots(ran.answer) for w in some_list(match v { .Text(x) -> x, rest -> null })],
+        },
+        .Err(_) -> unknown,
+    }
+}
+
+/// The static fn a trait claims the marks on a declaration through.
+const CLAIMS: string = "marks"
 
 /// The trait `name` names from `file`, absent for a name naming none.
 fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {

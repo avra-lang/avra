@@ -50,9 +50,13 @@ fn written_name(word: string, at: Span?, seat: bool = false) -> WrittenName { Wr
 /// node.
 fn item_misnamed(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisnamed {
     if !item_held(engine, file, at) { return misnamed_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    misnamed_seen(item_view(engine, file, at))
+}
+
+/// What `item_misnamed` answers through the item's `view`, made the first time it is asked.
+fn misnamed_seen(view: ItemView) -> ItemMisnamed {
     let held? = view.misnamed.get() else {
-        let made = misnamed_made(engine, file, at)
+        let made = misnamed_made(view.engine, view.file, view.at)
         view.misnamed.set(made)
         return made
     }
@@ -212,9 +216,9 @@ fn naming_of(n: WrittenName) -> Misnaming? {
     if reserved.contains(n.word) { Misnaming.Reserved } else { null }
 }
 
-/// Every keyword the written item `at` of `file` writes as a name.
-fn keywords_named(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_misnamed(engine, file, at).rows if r.naming is .Keyword]
+/// Every keyword the written item `view` shows writes as a name.
+fn keywords_named(view: ItemView) -> List<Found> {
+    [r.found() for r in misnamed_seen(view).rows if r.naming is .Keyword]
 }
 
 /// The remedy a keyword's row keeps, as its voice is handed it.
@@ -225,20 +229,20 @@ fn remedy_words(n: Misnaming) -> List<string> {
     }
 }
 
-/// Every `Self` the written item `at` of `file` writes as a name.
-fn implementors_named(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_misnamed(engine, file, at).rows if r.naming is .Implementor]
+/// Every `Self` the written item `view` shows writes as a name.
+fn implementors_named(view: ItemView) -> List<Found> {
+    [r.found() for r in misnamed_seen(view).rows if r.naming is .Implementor]
 }
 
-/// Every reserved word the written item `at` of `file` writes as a name.
-fn reserved_named_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_misnamed(engine, file, at).rows if r.naming is .Reserved]
+/// Every reserved word the written item `view` shows writes as a name.
+fn reserved_named_in(view: ItemView) -> List<Found> {
+    [r.found() for r in misnamed_seen(view).rows if r.naming is .Reserved]
 }
 
 /// a keyword cannot be a name
 export law keyword_as_name {
     kind: "resolve.reserved"
-    reads: keywords_named
+    reads_view: keywords_named
     voice: keyword_words
     witness: "fn inferred_args(component: int) -> int { 1 }\n"
 }
@@ -246,7 +250,7 @@ export law keyword_as_name {
 /// `Self` is a trait's name for its implementor, never a name of your own
 export law implementor_as_name {
     kind: "resolve.reserved"
-    reads: implementors_named
+    reads_view: implementors_named
     voice: implementor_words
     witness: "fn f(Self: int) -> int { 1 }\n"
 }
@@ -254,7 +258,7 @@ export law implementor_as_name {
 /// a word reserved for a future feature cannot be a name
 export law reserved_as_name {
     kind: "resolve.reserved"
-    reads: reserved_named_in
+    reads_view: reserved_named_in
     voice: reserved_words_said
     witness: "fn f(borrow: int) -> int { 1 }\n"
 }

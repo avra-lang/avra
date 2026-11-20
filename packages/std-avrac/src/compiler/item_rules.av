@@ -20,6 +20,7 @@ use core.{
 use features.{
     BodyNames,
     Bracketed,
+    CallSite,
     RuleFacts,
     RuleFile,
     SyntaxFile,
@@ -270,6 +271,7 @@ fn entry_item_facts(
                     unused: [],
                     brackets: [],
                     bodies: [],
+                    callers: (_s: StmtId) -> [],
                     entry: entry,
                 },
             ),
@@ -392,6 +394,7 @@ export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileA
                         stmt: b.stmt,
                         names: written_reads(engine, file, item.store, b.typed),
                     } for b in stated],
+                    callers: (s: StmtId) -> callers_of(engine, program, file, item.store.fn_parts(s)?.name),
                 },
             ),
     }
@@ -502,6 +505,37 @@ fn read_declaration(engine: QueryEngine, file: SourceFileAddress, r: ReadName) -
     let found = resolved(engine, at, r.space, r.name).named()
     if found != null || !(r.space is .Value) { return found }
     resolved(engine, at, Space.Type, r.name).named()
+}
+
+/// Each call the written items of `file` make by name of a fn the program declares, its callee's
+/// key once a call.
+@query
+export fn file_calls(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
+    let items = item_count(engine, file) + file_generated(engine, file).items.length
+    let calls = [r for at in 0..items for r in calls_written(read_item(engine, file, at).store)]
+    DeclKeys {
+        keys: [decl_key(d!) for r in calls for d in [read_declaration(engine, file, r)] if d != null],
+    }
+}
+
+/// Each callee the code of `store` names, one a call.
+fn calls_written(store: SyntaxArena) -> List<ReadName> {
+    [r! with { home: store.home_of(e) } for e in store.expr_ids() for r in [callee_read(store, e)] if r != null]
+}
+
+/// The name a call at `e` names its callee by; absent for any other node.
+fn callee_read(store: SyntaxArena, e: ExprId) -> ReadName? {
+    if !(store.expr(e).use_shape() is .Callee) { return null }
+    value_read(store.call_parts(e)?.callee)
+}
+
+/// Each call the program `program` makes of the fn `name` that `file` declares, by the file making it.
+fn callers_of(engine: QueryEngine, program: string, file: SourceFileAddress, name: string?) -> List<
+    CallSite,
+> {
+    let n? = name else { return [] }
+    let key = "${spelled_file(file)}#${n}"
+    [CallSite { file: spelled_file(f) } for f in program_files(engine, program) for k in file_calls(engine, f).keys if k == key]
 }
 
 /// Each declaration the files of the program `package` read by name.

@@ -2037,7 +2037,18 @@ impl TypeCx {
         if self.errored_ty(answer) && !self.facts.hungry_at(e) {
             for a in args { self.absorb_hunger(a) }
         }
+        for a in args { if self.hungry_alone(a) { self.fed_through(a) } }
         answer
+    }
+
+    /// Whether `e` is hungry while nothing beneath it is: what it was hungry for, a value it stands
+    /// over, its seat has since fed.
+    fn hungry_alone(e: ExprId) -> bool { self.facts.hungry_at(e) && !self.beneath(e).any((h) -> h != e && self.facts.hungry_at(h)) }
+
+    /// `e` typed again over what its seat fed beneath it.
+    mut fn fed_through(e: ExprId) {
+        self.absorb_hunger(e)
+        self.type_node(e)
     }
 
     /// A value its seat refused whole is settled unjudged: nothing

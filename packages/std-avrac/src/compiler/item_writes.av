@@ -8,6 +8,7 @@ use core.{
     FieldSeat,
     ExprId,
     NAMED_FIELD,
+    Param,
     SignedSeat,
     SignedType,
     StmtId,
@@ -465,7 +466,7 @@ impl Survey {
             if !self.hands_write(args) { return }
             let ty? = self.typed_at(subject) else { return self.unread(handed_unread(name)) }
             let marks? = self.called_marks(ty, name, args.length) else { return self.unread(handed_unread(name)) }
-            return self.fed(marks, args, name)
+            return self.fed(marks, args, name, self.called_names(ty, name))
         }
         let ty? = self.place_type(subject) else { return self.unread(untyped_place(self.path_words(subject))) }
         if ty.dynamic { return self.contract_evidence(ty, name, args) }
@@ -487,7 +488,7 @@ impl Survey {
         } else if seats.first()?.mutable ?? false {
             self.written = true
         }
-        self.fed([s.mutable for s in seats.drop(1)], args, name)
+        self.fed([s.mutable for s in seats.drop(1)], args, name, [s.name for s in seats.drop(1)])
     }
 
     /// Which seats of what a call of `name` on a value of `ty` reaches are `mut`, the arguments'
@@ -508,6 +509,15 @@ impl Survey {
         let one = method_type(self.engine, ty, name, self.file.package_name)
         if one != null { return one!.seats }
         impls_giving(self.engine, ty, name, false, self.file.package_name).first()?.ty?.seats
+    }
+
+    /// The names of the seats a call of `name` on a value of `ty` fills, in order: its method's past the
+    /// receiver, or a static's through the type; none where they aren't known.
+    fn called_names(ty: SignedType, name: string) -> List<string?> {
+        let described = ty.described()
+        if described != null { return [s.name for s in static_type(self.engine, described!, name)?.seats ?? []] }
+        if self.field_of(ty, name)?.ty?.callable() ?? false { return [] }
+        [s.name for s in (self.method_seats(ty, name) ?? []).drop(1)]
     }
 
     /// Which seats of a call of `name` through the type `ty` are `mut`: its static's, or none of a
@@ -538,7 +548,8 @@ impl Survey {
         let item? = trait_item(self.engine, t) else { return self.unread(no_method(ty, name)) }
         let s? = trait_fns(item).find((f) -> item.store.fn_parts(f)?.name == name) else { return self.unread(no_method(ty, name)) }
         if item.store.is_mutating(s) { self.written = true }
-        self.fed([p.promises.mutable for p in item.store.fn_parts(s)!.params], args, name)
+        let params = item.store.fn_parts(s)!.params
+        self.fed([p.promises.mutable for p in params], args, name, [p.name.of for p in params])
     }
 
     /// A call of the fn a field of `ty` holds: its arguments feed the fn type's seats.
@@ -562,18 +573,27 @@ impl Survey {
         }
         let d? = resolved(self.engine, self.file, Space.Value, callee).named() else { return }
         let marks? = written_seats(self.engine, d) else { return }
-        self.fed(marks, args, callee)
+        self.fed(marks, args, callee, seat_names(self.engine, d))
     }
 
-    /// Each argument rooted in the receiver handed to a `mut` seat writes it; one past the seats, or
-    /// named or spread, is unproved.
-    mut fn fed(marks: List<bool>, args: List<ExprId>, callee: string) {
-        if args.length > marks.length ||
-            args.any((a) -> self.store.arg_label(a) != null || self.store.spread_operand(a) != null) {
+    /// Each argument rooted in the receiver handed to a `mut` seat writes it, a named one at the seat
+    /// `names` places it in; one past the seats, spread, or named where the seats' names aren't known,
+    /// is unproved.
+    mut fn fed(marks: List<bool>, args: List<ExprId>, callee: string, names: List<string?> = []) {
+        let labelled = args.any((a) -> self.store.arg_label(a) != null)
+        let placed = labelled && names.length == marks.length && names.all(it != null)
+        if args.any((a) -> self.store.spread_operand(a) != null) ||
+            labelled && !placed ||
+            !labelled && args.length > marks.length {
             if self.hands_receiver(args) { self.unread(handed_unread(callee)) }
             return
         }
-        for j, a in args { if marks[j] && self.rooted(a) { self.written = true } }
+        if !placed {
+            for j, a in args { if marks[j] && self.rooted(a) { self.written = true } }
+            return
+        }
+        let plan = self.store.seat_plan(args, [n! for n in names])
+        for j, at in plan { if at >= 0 && marks[j] && self.rooted(self.store.unnamed(args[at])) { self.written = true } }
     }
 
     /// Which seats of the fn value `name` binds are `mut`: a seat's, read off its signed type; the one
@@ -698,33 +718,51 @@ fn written_seats(engine: QueryEngine, d: DeclaredName) -> List<bool>? { seats_wr
 /// which a new body for it leaves standing.
 @cut_query
 fn seats_written(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> List<bool>? {
-    let item = read_item(engine, file, at)
+    [p.promises.mutable for p in seats_declared(read_item(engine, file, at), name)?]
+}
+
+/// The seats of the fn `item` declares as `name`, as written: an extern's or a declared fn's; absent
+/// for a name that's neither.
+fn seats_declared(item: ReadItem, name: string) -> List<Param>? {
     let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == name]
         .first()
-    if external != null { return [p.promises.mutable for p in external!.params] }
-    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
-        .first() else { return null }
-    [p.promises.mutable for p in declared.params]
+    if external != null { return external!.params }
+    [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
+        .first()?.params
+}
+
+/// The names of the seats of the fn `d` names, in order, as `written_seats` reads them.
+fn seat_names(engine: QueryEngine, d: DeclaredName) -> List<string?> { [n for n in seats_named(engine, d.file, d.item, d.name) ?? []] }
+
+/// The names of the seats of the fn the item `at` of `file` declares as `name`, in order: one answer
+/// per name, which a new body for it leaves standing.
+@cut_query
+fn seats_named(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> List<string>? {
+    [p.name.of for p in seats_declared(read_item(engine, file, at), name)?]
 }
 
 /// The types the language owns whose values a seat copies.
 const SCALARS: List<string> = ["int", "float", "bool", "string", "Bytes", "ptr"]
 
-/// Every method an impl of a trait in the written item `at` of `file` gives that writes through
+/// Every method an impl of a trait in the written item `view` shows gives that writes through
 /// `self` — marked `mut`, or its body writing — where the trait declares it without `mut`; handed
 /// the method and the trait.
-fn contracts_overwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn contracts_overwritten(view: ItemView) -> List<Found> {
+    let item = view.item
     flatten(
         [overwritten_in(
-            engine,
+            view.engine,
             item,
-            ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth },
+            ImplAt {
+                file: view.file,
+                item: view.at,
+                params: impl_params(view.engine, i, d!),
+                nth: nth,
+            },
             i,
             d!,
             t!,
-        ) for nth, i in item_impls(engine, file, at) for d in [impl_target(engine, file, i)] if d != null && i.implements != null for t in [impl_named(engine, file, i.trait_in, i.implements!)] if t != null],
+        ) for nth, i in item_impls(view.engine, view.file, view.at) for d in [impl_target(view.engine, view.file, i)] if d != null && i.implements != null for t in [impl_named(view.engine, view.file, i.trait_in, i.implements!)] if t != null],
     )
 }
 
@@ -756,7 +794,7 @@ fn receiver_written(engine: QueryEngine, a: ImplAt, d: DeclaredAt, name: string)
 /// a trait method's impl that writes through `self` where the trait declares no `mut`
 export law contract_written_plain {
     kind: "type.contract_write"
-    reads: contracts_overwritten
+    reads_view: contracts_overwritten
     voice: overwritten_words
     witness: "trait T {\n    fn a() -> int\n}\n\ntype P = { x: int }\n\nimpl T for P {\n    mut fn a() -> int {\n        self.x = 1\n        1\n    }\n}\n"
 }

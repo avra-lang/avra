@@ -19,6 +19,8 @@ use @std.avrac.compiler.{
     counts_said,
     item_count,
     said_diag,
+    StaleCitation,
+    stale_citations,
 }
 use @std.avrac.core.{distinct}
 use @std.avrac.compiler.memory.{sound_checked}
@@ -68,6 +70,11 @@ fn disk_checked(
         "the warnings",
         () -> if erring.is_empty() { [file_found(engine, disk.name, h) for h in files] } else { [] },
     )
+    let stale = phased(
+        engine,
+        "the citations",
+        () -> if erring.is_empty() { [citation_said(h, c) for h in files for c in stale_citations(engine, h.file)] } else { [] },
+    )
     let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
     let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
     let proved = if erring.is_empty() && sound_checked() { phased(engine, "the proof", () -> program_proved(engine, disk)) } else { [] }
@@ -92,6 +99,7 @@ fn disk_checked(
     }
     let sites = [s for f in found for s in f.sites]
     if pruning { return program_pruned(root, baseline, files, sites) }
+    if !stale.is_empty() { return refused_licenses(stale) }
     if baseline != "" {
         let bad = loaded_baseline(baseline).news([s.finding for s in sites])
         if !bad.is_empty() { return refused_sites(bad) }
@@ -221,3 +229,5 @@ fn program_time_line(files: int, t0: int, stood: bool) -> string {
     "time: check · ${if stood { "cache hit" } else { "checked" }} — ${files} files in ${(now_ns() - t0) / 1000000} ms"
 }
 
+/// A citation of the file `h` that names nothing, as `check` says it.
+fn citation_said(h: ProgramFile, c: StaleCitation) -> string { stale_citation(h.full, "${c.line}", c.id) }

@@ -1,0 +1,84 @@
+//! THE TOOLCHAIN'S STD ANSWERS: an installed toolchain ships, beside its std, the packs its own
+//! binary kept over that std (`make install`), so a program's first build works out none of std.
+//! They are laid into the machine's store once per binary, each pack published whole, so a reader
+//! sees a pack or none; a binary of another print never reads them, and every answer is held to the
+//! inputs it read wherever it was kept. A machine store that can't take them, or can't stand at
+//! all, is said once, and the build works without it.
+use @std.io.{IoError, drafted, exists, make_dirs, read_bytes}
+use @std.path.{dir_of, joined_path}
+use @std.program.disk_store.{packs_answering}
+
+/// Where the toolchain beside this binary keeps its std answers: `<prefix>/lib/avra/answers`, a
+/// sibling of its std.
+fn shipped_answers() -> string? {
+    let bin? = own_binary() else { return null }
+    joined_path(dir_of(dir_of(bin)), "lib/avra/answers")
+}
+
+/// Whether the machine's store at `directory` stands for this process: made where it isn't, said
+/// once where it can't be.
+fn machine_store_stands(directory: string) -> bool {
+    match make_dirs(directory) {
+        .Ok(_) -> true,
+        .Err(e) -> {
+            said_once(store_unusable(directory, e))
+            false
+        },
+    }
+}
+
+/// The toolchain's std answers for the binary printed `print`, laid into the machine's store at
+/// `directory` once: each pack it ships that the store lacks, then the mark that they were.
+fn std_answers_laid(directory: string, print: string) {
+    let mark = joined_path(directory, "std-answers-${print}")
+    if exists(mark) { return }
+    let shipped? = shipped_answers() else { return }
+    let packs = packs_answering(shipped, print)
+    if packs.is_empty() { return }
+    for name in packs {
+        match pack_laid(joined_path(shipped, name), joined_path(directory, name)) {
+            .Ok(_) -> {},
+            .Err(e) -> {
+                said_once(answers_unlaid(directory, e))
+                return
+            },
+        }
+    }
+    let _ = file_laid(mark, "".bytes())
+}
+
+/// The pack at `from` laid at `to`, unless one stands there.
+fn pack_laid(from: string, to: string) -> Result<string, IoError> {
+    if exists(to) { return .Ok(to) }
+    file_laid(to, read_bytes(from)?)
+}
+
+/// `bytes` published whole at `to`: a reader sees the file or none.
+fn file_laid(to: string, bytes: Bytes) -> Result<string, IoError> {
+    let draft = drafted(to)?
+    match draft.write(bytes) {
+        .Ok(_) -> draft.published(to),
+        .Err(e) -> {
+            draft.dropped()
+            .Err(e)
+        },
+    }
+}
+
+/// Whether this process has said why it works without the machine's store.
+once fn said_store() -> Cell<bool> { Cell.new(false) }
+
+/// `words` on stderr, the first time this process says why the machine's store doesn't serve it.
+fn said_once(words: string) {
+    if said_store().get() { return }
+    said_store().set(true)
+    eprintln("avra: ${words}")
+}
+
+fn store_unusable(directory: string, e: IoError) -> string {
+    "the machine's store at ${directory} can't stand (${e.describe().message}), so this build shares nothing across packages"
+}
+
+fn answers_unlaid(directory: string, e: IoError) -> string {
+    "the toolchain's std answers couldn't be laid in ${directory} (${e.describe().message}), so this build works std out itself"
+}

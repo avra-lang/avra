@@ -114,12 +114,12 @@ fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Asi
     found.first() ?? Aside { label: "defined here", at: null }
 }
 
-/// Every `self` read in the written item `at` of `file` where no method's receiver stands, beside
+/// Every `self` read in the written item `view` shows where no method's receiver stands, beside
 /// where: a seat's default, else a `static fn`, else a fn that is no method.
-fn receivers_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let unread = [u for u in item_refusals(engine, file, at).unread if u.read is .Receiver]
+fn receivers_unread(view: ItemView) -> List<Found> {
+    let unread = [u for u in item_refusals(view.engine, view.file, view.at).unread if u.read is .Receiver]
     if unread.is_empty() { return [] }
-    let item = read_item(engine, file, at)
+    let item = view.item
     [Found { at: span_of(u.at), args: [receiverless_word(item, u.at)] } for u in unread]
 }
 
@@ -211,7 +211,9 @@ fn names_seen(engine: QueryEngine, file: SourceFileAddress, space: Space) -> Lis
     shared.concat(scope.own.names_in(space))
 }
 
-/// The names `file` binds at its top level, statement by statement.
+/// The names `file` binds at its top level, statement by statement: one answer a file, which every
+/// item's law reads and an edit that binds no top-level name leaves standing.
+@cut_query
 fn top_level_defined(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
     let items = [read_item(engine, file, i) for i in 0..item_count(engine, file)]
     [n! for item in items for s in item.stmts for n in [item.store.let_name(s)] if n != null]
@@ -301,7 +303,7 @@ export law pronoun_unresolved {
 /// `self` read where no method's receiver stands
 export law receiver_unresolved {
     kind: "resolve.receiver"
-    reads: receivers_unread
+    reads_view: receivers_unread
     voice: receiver_words
     witness: "fn f() -> int { self.n }\n"
 }

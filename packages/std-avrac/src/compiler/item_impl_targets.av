@@ -6,19 +6,18 @@ use diagnostics.{Voice}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// Every impl the written item `at` of `file` holds whose target names no type, where it stands.
-fn impls_serving_nothing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let lost = [i.target for i in item_impls(engine, file, at) if impl_target(engine, file, i) == null]
+/// Every impl the written item `view` shows holds whose target names no type, where it stands.
+fn impls_serving_nothing(view: ItemView) -> List<Found> {
+    let lost = [i.target for i in item_impls(view.engine, view.file, view.at) if impl_target(view.engine, view.file, i) == null]
     if lost.is_empty() { return [] }
-    let item = read_item(engine, file, at)
+    let item = view.item
     [Found { at: item.store.stmt_span(s), args: [p!.target] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && lost.contains(p!.target)]
 }
 
 /// an impl serves a declared type
 export law impl_serves_nothing {
     kind: "type.impl"
-    reads: impls_serving_nothing
+    reads_view: impls_serving_nothing
     voice: nothing_words
     witness: "impl Nope {\n    fn f() -> int { 1 }\n}\n"
 }

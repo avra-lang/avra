@@ -13,16 +13,15 @@ use @std.text.{parse_int}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// Every type the written item `at` of `file` writes, statement by statement, applied to what it
+/// Every type the written item `view` shows writes, statement by statement, applied to what it
 /// doesn't take: how, the type's name, then the counts or the key.
-fn applied_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn applied_refused(view: ItemView) -> List<Found> {
+    let item = view.item
     if !item.store.refusals().is_empty() { return [] }
     let stmts = flatten([stmts_under(item.store, At.Stmt(top)) for top in item.stmts])
     let params = flatten([item.store.tparams_in_scope(s) for s in stmts])
-        .concat(flatten([a.params for a in impls_at(engine, file, at)]))
-    let scope = AppliedScope { engine: engine, file: file, params: params }
+        .concat(flatten([a.params for a in impls_at(view.engine, view.file, view.at)]))
+    let scope = AppliedScope { engine: view.engine, file: view.file, params: params }
     flatten(
         [[Found { at: span_of(kept_at(item.store.stmt_span(s))), args: words } for words in flatten([scope.misapplied(t) for t in item.store.type_roots(s)])] for s in stmts],
     )
@@ -37,12 +36,19 @@ fn applied_signed(engine: QueryEngine, written: TypeRef, signed: SignedType) -> 
         .Declared(file, name) -> if name == written.name && !declared_gathered(engine, file, name) { AppliedScope { engine: engine, file: file, params: [] }.takes(name) } else { null },
         rest -> null,
     } else { return signed }
+    let spared = match signed.head {
+        .Declared(file, name) -> spared_count(type_params_written(engine, file, name)),
+        rest -> 0,
+    }
     let keyed = written.name != MAP ||
         takes != 2 ||
         signed.args.length != 2 ||
         keys_by_text(signed.args[0])
-    if takes == written.applied.length && keyed { signed } else { headed_type(TypeHead.Unnamed(written.name)) }
+    if fills(takes, spared, written.applied.length) && keyed { signed } else { headed_type(TypeHead.Unnamed(written.name)) }
 }
+
+/// Whether `found` type arguments fill a type taking `takes`, the last `spared` of them defaulted.
+fn fills(takes: int, spared: int, found: int) -> bool { found <= takes && found >= takes - spared }
 
 /// Whether `file` declares `name` as a gathered enum, whose type parameters are its members' to give:
 /// asking them while a member's own record is signed would ask that record of itself, so its count
@@ -80,10 +86,33 @@ impl AppliedScope {
         let takes? = self.takes(name) else { return [] }
         let found = t.applied.length
         if takes == 0 && found > 0 { return [["none", name]] }
-        if takes > 0 && found == 0 { return [["bare", name, "${takes}"]] }
-        if found != takes { return [["count", name, "${found}", "${takes}"]] }
-        if name == MAP && self.unkeyed(t.applied[0]) { return [["key", spelled(self.keyed_as(t.applied[0], []).key)]] }
+        if fills(takes, self.spared(name), found) { return self.keyed_words(t) }
+        if found == 0 { return [["bare", name, "${takes}"]] }
+        [["count", name, "${found}", "${takes}"]]
+    }
+
+    /// Whether `t`, or a type it holds, leaves out type arguments its type's defaults fill: what only the
+    /// program layer reads.
+    fn written_short(t: TypeRef) -> bool {
+        let takes = if t.arrow || self.params.contains(t.name) { null } else { self.takes(t.name) }
+        takes != null &&
+                t.applied.length < takes! &&
+                fills(takes!, self.spared(t.name), t.applied.length) ||
+            t.type_args().concat(t.alternatives).any((a) -> self.written_short(a))
+    }
+
+    /// Where the map `t` is keyed by what is no text, the words saying so; nothing for any other type.
+    fn keyed_words(t: TypeRef) -> List<List<string>> {
+        if t.name == MAP && self.unkeyed(t.applied[0]) { return [["key", spelled(self.keyed_as(t.applied[0], []).key)]] }
         []
+    }
+
+    /// How many of the type `name`'s type parameters, counted from the last, have a default: none for a
+    /// type the language owns or a name the file sees no declared type by.
+    fn spared(name: string) -> int {
+        if type_row(avra().rows.types, name) != null { return 0 }
+        let d? = resolved(self.engine, self.file, Space.Type, name).named() else { return 0 }
+        spared_count(type_params_written(self.engine, d.file, d.name))
     }
 
     /// How many type arguments the type `name` takes: a type the language owns, or a record, an
@@ -139,7 +168,7 @@ const STRING: string = "string"
 /// a type is applied to the type arguments it takes, and a map is keyed by text
 export law type_applied_as_declared {
     kind: "type.applied"
-    reads: applied_refused
+    reads_view: applied_refused
     voice: applied_words
     witness: "fn f(m: Map<int, int>) -> int { 1 }\n"
 }

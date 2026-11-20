@@ -40,16 +40,15 @@ fn entry_never_ends(engine: QueryEngine, file: SourceFileAddress) -> EntryNeverE
     }
 }
 
-/// Every spawn of the written item `at` of `file` whose task reads a channel its block closes none
+/// Every spawn of the written item `view` shows whose task reads a channel its block closes none
 /// of: in each fn the item declares, and among the statements of the entry it stands in.
-fn channels_left_open(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let store = read_item(engine, file, at).store
-    let bodies = [b for s in read_item(engine, file, at).stmts for b in some_list(store.fn_parts(s)?.body)]
+fn channels_left_open(view: ItemView) -> List<Found> {
+    let store = view.item.store
+    let bodies = [b for s in view.item.stmts for b in some_list(store.fn_parts(s)?.body)]
     let in_fns = flatten([never_ending(store, store.every_expr(b)) for b in bodies])
     [Found { at: store.expr_span(n.spawned), args: [n.name] } for n in in_fns]
         .concat(
-            [Found { at: span_of(r.at), args: [r.name] } for r in entry_never_ends(engine, file).rows if r.item == at],
+            [Found { at: span_of(r.at), args: [r.name] } for r in entry_never_ends(view.engine, view.file).rows if r.item == view.at],
         )
 }
 
@@ -123,7 +122,7 @@ fn reader_name(store: SyntaxArena, read: ExprId) -> string {
 /// a task a block spawns reading a bare channel is joined with the channel closed
 export law channel_closed_before_join {
     kind: "flow.never_ends"
-    reads: channels_left_open
+    reads_view: channels_left_open
     voice: never_ends_words
     witness: "use @std.task.{Source}\n\nfn drain(src: Source<int>) -> int { 1 }\n\nfn f() -> int {\n    let ch = channel<int>(2)\n    let t = spawn drain(ch.source)\n    t.await\n}\n"
 }

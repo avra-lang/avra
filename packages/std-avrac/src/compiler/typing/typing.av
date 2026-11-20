@@ -26,6 +26,7 @@ use core.{SeatMark, FileId, same_type, example_marks}
 use diagnostics.{refusal}
 use features.{
     TypeCx,
+    ParamScope,
     NarrowFrame,
     Gathering,
     OpenLoop,
@@ -504,7 +505,19 @@ impl TypeCx {
         self.facts.set_type(e, node.type_of(self, e))
         self.rewriting = null
         if self.any_hungry(self.view.store.walked(e).concat(self.view.store.heired(e))) { self.facts.go_hungry(e) }
-        if self.facts.hungry_at(e) { self.facts.remember_scope(e, self.scope) }
+        if self.facts.hungry_at(e) {
+            self
+                .facts
+                .remember_scope(
+                    e,
+                    ParamScope {
+                        params: self.scope,
+                        answers: self.fn_ret,
+                        bars: self.lam_bar,
+                        promises: self.lam_promise,
+                    },
+                )
+        }
     }
 
     fn any_hungry(ids: List<ExprId>) -> bool {
@@ -522,14 +535,22 @@ impl TypeCx {
     }
 
     /// Every expression still hungry when typing ends never met the
-    /// want it needed — its rule runs once more, STARVING, and
-    /// speaks in its own words.
+    /// want it needed — its rule runs once more, STARVING, where it was
+    /// typed (its seats, the fns and lambdas around it), and speaks in
+    /// its own words.
     mut fn speak_hungry() {
         self.starving = true
         for e in self.facts.hungry_ones() {
-            self.scope = self.facts.scope_at(e) ?? []
+            let frame = self.facts.frame_at(e) ?? ParamScope { params: [] }
+            self.scope = frame.params
+            self.fn_ret = frame.answers
+            self.lam_bar = frame.bars
+            self.lam_promise = frame.promises
             self.type_node(e)
         }
+        self.fn_ret = []
+        self.lam_bar = []
+        self.lam_promise = []
         self.starving = false
     }
 

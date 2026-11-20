@@ -24,9 +24,13 @@ type ItemUnmet = { rows: List<UnmetAt> }
 /// Every such call in the bodies the written item `at` of `file` declares.
 fn item_unmet(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnmet {
     if !item_held(engine, file, at) { return unmet_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    unmet_seen(item_view(engine, file, at))
+}
+
+/// What `item_unmet` answers through the item's `view`, made the first time it is asked.
+fn unmet_seen(view: ItemView) -> ItemUnmet {
     let held? = view.unmet.get() else {
-        let made = unmet_made(engine, file, at)
+        let made = unmet_made(view.engine, view.file, view.at)
         view.unmet.set(made)
         return made
     }
@@ -105,19 +109,19 @@ fn unmet_at(
     }
 }
 
-/// Each call the written item `at` of `file` makes that a `dyn` argument chooses a member of, where
+/// Each call the written item `view` shows makes that a `dyn` argument chooses a member of, where
 /// types implementing its trait have none: the type, the method, those types.
-fn members_unmet(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let rows = item_unmet(engine, file, at)
+fn members_unmet(view: ItemView) -> List<Found> {
+    let rows = unmet_seen(view)
         .rows
-        .concat([e.row for e in entry_unmet(engine, file).rows if e.item == at])
+        .concat([e.row for e in entry_unmet(view.engine, view.file).rows if e.item == view.at])
     [Found { at: span_of(r.at), args: [r.target, r.method].concat(r.unmet) } for r in rows]
 }
 
 /// a call a `dyn` argument's type chooses a member of, where a type implementing its trait has none
 export law members_incomplete {
     kind: "type.method"
-    reads: members_unmet
+    reads_view: members_unmet
     voice: incomplete_words
     witness: "trait View {\n    fn name() -> string\n}\n\ntype Text = { s: string }\n\ntype Button = { s: string }\n\ntype Image = { s: string }\n\nimpl View for Text {\n    fn name() -> string { \"t\" }\n}\n\nimpl View for Button {\n    fn name() -> string { \"b\" }\n}\n\nimpl View for Image {\n    fn name() -> string { \"i\" }\n}\n\ntrait Realize<T> {\n    fn draw(t: T) -> string\n}\n\ntype Html = { tag: string = \"\" }\n\nimpl Realize<Text> for Html {\n    fn draw(t: Text) -> string { t.s }\n}\n\nimpl Realize<Button> for Html {\n    fn draw(t: Button) -> string { t.s }\n}\n\nfn f(h: Html, v: dyn View) -> string { h.draw(v) }\n"
 }

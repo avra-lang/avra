@@ -22,19 +22,18 @@ use @std.program.source_facts.{source_text}
 /// What a `match`'s arms are judged against: its first arm's answer, or the seat's.
 type ArmsAnchor = { name: string, want: SignedType }
 
-/// Every arm of a `match` in the written item `at` of `file` that its anchor can't join: each the
+/// Every arm of a `match` in the written item `view` shows that its anchor can't join: each the
 /// body's typing refused as an arm, and each of a `match` a `void` fn ends on.
-fn arms_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn arms_disagreeing(view: ItemView) -> List<Found> {
+    let item = view.item
     if !item.store.refusals().is_empty() { return [] }
-    let void_tails = [b! for s in item.stmts for b in void_fn_bodies(engine, file, item, s) if b != null]
-        .concat(void_method_bodies(engine, file, at, item))
-    let text = item_under(engine, file, at).text
-    flatten([arm_refused(r, text) for r in refused_in(engine, file, at)])
+    let void_tails = [b! for s in item.stmts for b in void_fn_bodies(view.engine, view.file, item, s) if b != null]
+        .concat(void_method_bodies(view.engine, view.file, view.at, item))
+    let text = item_under(view.engine, view.file, view.at).text
+    flatten([arm_refused(r, text) for r in refused_in(view.engine, view.file, view.at)])
         .concat(
             flatten(
-                [void_disagreeing(t, void_tails, text) for t in item_typed_nodes(engine, file, at, item)],
+                [void_disagreeing(t, void_tails, text) for t in item_typed_nodes(view.engine, view.file, view.at, item)],
             ),
         )
 }
@@ -225,7 +224,7 @@ fn arm_span(t: TypedNodes, v: ExprId) -> Span? { t.store.expr_span(v) }
 /// a `match`'s arms meet at one type
 export law match_arms_agree {
     kind: "type.match"
-    reads: arms_disagreeing
+    reads_view: arms_disagreeing
     voice: disagreeing_words
     witness: "enum H {\n    A\n    B\n}\n\nfn note(n: int) { }\n\nfn f(h: H) -> int {\n    match h {\n        .A -> note(1),\n        rest -> {}\n    }\n    2\n}\n\nf(H.A)\n"
 }

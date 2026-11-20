@@ -54,9 +54,13 @@ type ItemUngiven = { rows: List<UngivenAt> }
 /// nothing.
 fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
     if !item_held(engine, file, at) { return ungiven_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    ungiven_seen(item_view(engine, file, at))
+}
+
+/// What `item_ungiven` answers through the item's `view`, made the first time it is asked.
+fn ungiven_seen(view: ItemView) -> ItemUngiven {
     let held? = view.ungiven.get() else {
-        let made = ungiven_made(engine, file, at)
+        let made = ungiven_made(view.engine, view.file, view.at)
         view.ungiven.set(made)
         return made
     }
@@ -75,15 +79,14 @@ fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUn
 }
 
 /// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
-/// fn's, then each method's and static's an impl there writes that declares no type parameters of
-/// its own.
+/// fn's, then each method's and static's an impl there writes.
 fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     CheckedBody,
 > {
     let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     fns
         .concat(
-            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls_at(engine, file, at) for s in impl_fns(item, a) if item.store.fn_parts(s)!.tparams.is_empty() for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
+            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
         )
 }
 
@@ -164,28 +167,28 @@ fn called_on(store: SyntaxArena, e: ExprId) -> MethodParts? {
 /// The type at `k` of `types`, absent past its end.
 fn typed_at(types: List<SignedType?>, k: int) -> SignedType? { if k >= 0 && k < types.length { types[k] } else { null } }
 
-/// Each method call the written item `at` of `file` makes on a bounded type parameter's value that
+/// Each method call the written item `view` shows makes on a bounded type parameter's value that
 /// the bound doesn't give: the bound, the method, the parameter.
-fn bounds_lacking(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found([r.bound!, r.method, r.param]) for r in item_ungiven(engine, file, at).rows if r.bound != null && !r.receiving]
+fn bounds_lacking(view: ItemView) -> List<Found> {
+    [r.found([r.bound!, r.method, r.param]) for r in ungiven_seen(view).rows if r.bound != null && !r.receiving]
 }
 
-/// Each static call the written item `at` of `file` makes through a bounded type parameter itself
+/// Each static call the written item `view` shows makes through a bounded type parameter itself
 /// of a method its bound gives a receiver: the bound, the method, the parameter.
-fn receivers_skipped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found([r.bound!, r.method, r.param]) for r in item_ungiven(engine, file, at).rows if r.receiving]
+fn receivers_skipped(view: ItemView) -> List<Found> {
+    [r.found([r.bound!, r.method, r.param]) for r in ungiven_seen(view).rows if r.receiving]
 }
 
-/// Each method call the written item `at` of `file` makes on an unbounded type parameter's value:
+/// Each method call the written item `view` shows makes on an unbounded type parameter's value:
 /// the parameter.
-fn unbounded_asked(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found([r.param, if r.typewide { TYPEWIDE } else { "" }]) for r in item_ungiven(engine, file, at).rows if r.bound == null]
+fn unbounded_asked(view: ItemView) -> List<Found> {
+    [r.found([r.param, if r.typewide { TYPEWIDE } else { "" }]) for r in ungiven_seen(view).rows if r.bound == null]
 }
 
 /// a method called on a type parameter's value that its bound doesn't declare
 export law bound_lacks {
     kind: "type.method"
-    reads: bounds_lacking
+    reads_view: bounds_lacking
     voice: lacking_words
     witness: "trait Marked {}\n\nfn f<T: Marked>(x: T) -> int { x.size() }\n"
 }
@@ -193,7 +196,7 @@ export law bound_lacks {
 /// a method its bound gives a receiver is called on a value of the type parameter, not through it
 export law bound_receiver_skipped {
     kind: "type.method"
-    reads: receivers_skipped
+    reads_view: receivers_skipped
     voice: skipped_words
     witness: "trait Sized {\n    fn size() -> int\n}\n\nfn f<T: Sized>(x: T) -> int { T.size() }\n"
 }
@@ -201,7 +204,7 @@ export law bound_receiver_skipped {
 /// a method called on a value of a type parameter with no bound
 export law unbounded_called {
     kind: "type.method"
-    reads: unbounded_asked
+    reads_view: unbounded_asked
     voice: unbounded_words
     witness: "fn f<T>(x: T) -> int { x.size() }\n"
 }

@@ -276,7 +276,12 @@ fn enum_shape(engine: QueryEngine, ty: SignedType) -> EnumShape? {
 fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
     let at? = declared_at(ty) else { return null }
     let record? = record_signature(engine, at.file, at.name) else { return null }
-    RecordShape { params: record.type_params.length, fields: record.fields }
+    RecordShape {
+        params: record.type_params.length,
+        fields: record.fields,
+        defaults: record.defaults,
+        names: record.type_params,
+    }
 }
 
 /// Whether `ty` is a record its package marks `@owns`.
@@ -342,6 +347,7 @@ fn program_answered(
             signed_said,
         ),
         declared_value: (f: SourceFileAddress, n: string) -> value_type(engine, f, n, true),
+        declared_defaults: (f: SourceFileAddress, n: string) -> fn_defaults(engine, f, n) ?? [],
         written: (written: TypeRef, home: string?) -> signed_from(signing, home, written),
         type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
         record_of: (ty: SignedType) -> kept_answer(
@@ -416,6 +422,14 @@ fn program_answered(
         ),
         bounds_named: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> fn_bounds(engine, f, n)) ?? [],
+        defaults_named: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> fn_defaults(engine, f, n)) ?? [],
+        method_params: (subject: SignedType, method: string) -> method_declares(
+            engine,
+            subject,
+            method,
+            file.package_name,
+        ),
         memos: memos,
     }
 }
@@ -466,6 +480,14 @@ fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string, answer
         .State -> binding_type(engine, d.file, d.name),
         .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .Ctx -> null,
     }
+}
+
+/// What the fn `file` reads as `name` declares each of its type parameters is where nothing pins it;
+/// absent where it reads no fn so.
+fn fn_defaults(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType?>? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    if d.kind != ItemKind.Fn { return null }
+    declared_signature_of(engine, d)?.defaults
 }
 
 /// The bounds the fn `file` reads as `name` declares for its type parameters, one for each; absent

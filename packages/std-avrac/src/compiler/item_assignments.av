@@ -301,14 +301,13 @@ fn said(at: Span?, why: Unplaced, n: string) -> Found {
     Found { at: at, args: [word, n], kind: if why is .NoPlace { "resolve.place" } else { null } }
 }
 
-/// Every assignment of the written item `at` of `file` through a member a type the language owns
+/// Every assignment of the written item `view` shows through a member a type the language owns
 /// measures and doesn't store, or rooted in a type's name.
-fn unslotted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn unslotted(view: ItemView) -> List<Found> {
+    let item = view.item
     if !item.store.refusals().is_empty() { return [] }
     flatten(
-        [slots_missed(b).concat(types_written(engine, file, b)) for b in bodies_of(engine, file, at, item)],
+        [slots_missed(b).concat(types_written(view.engine, view.file, b)) for b in bodies_of(view.engine, view.file, view.at, item)],
     )
 }
 
@@ -349,7 +348,7 @@ fn measured(b: AssignedBody, e: ExprId, subject: ExprId, name: string) -> Found?
 /// an assignment's path reads slots
 export law assignment_names_a_slot {
     kind: "type.place"
-    reads: unslotted
+    reads_view: unslotted
     voice: unslotted_words
     witness: "fn f() -> int {\n    mut xs = [1]\n    xs.length = 3\n    2\n}\n"
 }

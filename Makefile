@@ -602,6 +602,7 @@ install: avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
+	@sh tools/std_answers.sh $(PREFIX)/bin/avra $(PREFIX)/lib/avra/std $(PREFIX)/lib/avra/answers
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
 
 # A Sprite is a stock Ubuntu image; `make sprite` provisions the machine

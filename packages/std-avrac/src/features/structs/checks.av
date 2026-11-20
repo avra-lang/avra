@@ -17,6 +17,13 @@ use core.{
     Seating,
     Unhanded,
     SignedType,
+    RecordShape,
+    TypeHead,
+    TypeRef,
+    defaulted,
+    headed_type,
+    owned_type,
+    spelled,
     spread_entry,
 }
 use core.expr.{StructLit, With}
@@ -77,18 +84,26 @@ impl Checks for StructLit {
         let keyed = [at for at in seatable if meta_key(seats[at]!.unwrapped())]
         for at in keyed { seated(cx, self.values[at], seats[at]!, self.fields[at].of) }
         let rest = [at for at in seatable if !keyed.contains(at)]
+        let written = cx.store.struct_targs_of(e)
+        mut pins: Map<string, SignedType> = {}
+        for at, t in written { pins.set("${at}", cx.written(t)) }
+        let before = cx.refused.get().length
         let found? = cx
             .fills(
                 [seats[at]! for at in rest],
                 [self.values[at] for at in rest],
-                {},
-                null,
-                Expected.Free,
+                pins,
+                named with { args: [headed_type(TypeHead.Parameter(at, n)) for at, n in record.names] },
+                expected,
                 (j: int) -> field_seating(cx, self.values[rest[j]], self.fields[rest[j]].of),
             ) else { return null }
         places_handed(cx, e, self, record.fields, seats)
-        let args = [found.get("${at}") for at in 0..record.params]
-        if args.any(it == null) { null } else { named with { args: [a! for a in args] } }
+        let filled = defaulted(found, record.defaults)
+        let args = [filled.get("${at}") for at in 0..record.params]
+        let open = args.find_index(it == null)
+        if open == null { return named with { args: [a! for a in args] } }
+        if !written.is_empty() && cx.refused.get().length == before { unpinned_literal(cx, e, self, record, open!, written) }
+        null
     }
 }
 
@@ -167,6 +182,32 @@ fn spread_checked(mut cx: Checking, lit: StructLit, named: SignedType, params: i
         }
     }
     named
+}
+
+/// The literal `lit` at `e`, writing the leading type arguments `written`, refused where it leaves the
+/// parameter `open` of `record` pinned by nothing: named by the fields it leaves unwritten that could.
+fn unpinned_literal(
+    mut cx: Checking,
+    e: ExprId,
+    lit: StructLit,
+    record: RecordShape,
+    open: int,
+    written: List<TypeRef>,
+) {
+    let unwritten = [f.name for f in record.fields if !lit.fields.any(it.of == f.name) && (f.ty?.parameters() ?? []).contains(open)]
+    let param = if open < record.names.length { record.names[open] } else { "${open}" }
+    let none = owned_type("void")
+    cx
+        .refused
+        .push(
+            Refused {
+                at: e,
+                want: none,
+                found: none,
+                seat: Seating
+                    .LiteralUnpinned(lit.name.of, param, [spelled(t) for t in written], unwritten),
+            },
+        )
 }
 
 /// The record a literal names, applied to the type arguments it writes (`Box<int> { … }`), absent for

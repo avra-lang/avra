@@ -402,8 +402,7 @@ fn kept_miss(m: MissPlaced) -> MissAt { MissAt { at: kept_at(m.at), miss: m.miss
 /// asks for nothing, asks of a value whose type isn't known, or that typing typed: a member typing
 /// answered is had.
 fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> List<MissPlaced> {
-    let landed = generic_method_miss(engine, t, e)
-        .concat(shape_misses(engine, t, e, scope))
+    let landed = shape_misses(engine, t, e, scope)
         .concat(hash_miss(engine, t, e))
         .concat(call_spread_misses(engine, t, e))
         .concat(empty_map_miss(engine, t, e))
@@ -941,20 +940,6 @@ fn hash_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> 
     [MissPlaced { at: t.store.expr_span(arg), miss: Miss.HashedUnnamed }]
 }
 
-/// A method call `e` naming a generic method of a declared type — one with type parameters of its own
-/// beside its impl's — which no impl lands; nothing for any other node.
-fn generic_method_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
-    let m? = t.store.method_parts(e) else { return [] }
-    let s? = declared_value((t.type_at)(m.subject.index)) else { return [] }
-    let impls? = match s.head {
-        .Declared(file, declared) -> impls_given(engine, file, declared, m.name, false, t.reader),
-        rest -> null,
-    } else { return [] }
-    if impls.length != 1 { return [] }
-    let generic = (method_signature(engine, impls[0], m.name)?.type_params ?? []).length > impls[0].params.length
-    if generic { [MissPlaced { at: t.store.expr_span(e), miss: Miss.Method(s.word(), m.name) }] } else { [] }
-}
-
 /// A call of the fn `callee` whose arguments, each written by position, are a count its seats don't
 /// take: as a fn the file sees declares it, once.
 fn call_arity(engine: QueryEngine, t: TypedNodes, callee: string, args: List<ExprId>, at: Span?) -> List<
@@ -1253,7 +1238,7 @@ fn list_verb_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPla
     if SCANS.contains(m.name) &&
         plain_known(elem) &&
         !(elem.head is .Parameter) &&
-        !compares_by_value(engine, elem) {
+        !declared_shapes(engine).compares_by_value(elem) {
         return [
             MissPlaced {
                 at: t.store.expr_span(e),

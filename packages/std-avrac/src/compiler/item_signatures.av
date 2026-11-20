@@ -16,11 +16,12 @@ use core.{
     ExprId,
     flatten,
     NamedParts,
-    OwnType,
     INFERRED,
+    NEVER,
     headed_type,
     Param,
     SignedSeat,
+    Shapes,
     SignedType,
     StmtId,
     CollectKind,
@@ -57,7 +58,7 @@ export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settle
 /// crosses from C at, if it names one; and the trait each type parameter is bound by, absent for one
 /// bound by none.
 @derive(Saved)
-export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string?, bounds: List<SignedType?> = [] }
+export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string?, bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
 
 /// The signature of a body taking nothing and answering `ty`: a value's.
 export fn value_signature(ty: SignedType) -> FnSignature { FnSignature { type_params: [], params: [], answer: ty, answer_width: null } }
@@ -73,6 +74,15 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
     let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
     let written? = written_fn(item.store, item.stmts, name) else { return null }
     declared_signature(engine, file, written)
+}
+
+/// The signature of the fn `file` declares as `name` as a generator running it reads it: its types
+/// resolved among written names alone, since what generators make can't decide how one runs.
+@query
+export fn generator_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let written? = written_fn(item.store, item.stmts, name) else { return null }
+    declared_signature(engine, file, written, true)
 }
 
 /// The type a top-level binding — a `const`, a `collect` or a `state` — `file` declares as `name` is written
@@ -107,12 +117,18 @@ fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name
 
 /// The signature the fn `written` in `file` declares, signed where it's written: its answer's width
 /// apart.
-fn declared_signature(engine: QueryEngine, file: SourceFileAddress, written: WrittenFn) -> FnSignature {
+fn declared_signature(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    written: WrittenFn,
+    written_only: bool = false,
+) -> FnSignature {
     let signing = Signing {
         engine: engine,
         file: file,
         type_params: written.type_params,
         writer: written.writer,
+        written_only: written_only,
     }
     FnSignature {
         type_params: written.type_params,
@@ -120,6 +136,7 @@ fn declared_signature(engine: QueryEngine, file: SourceFileAddress, written: Wri
         answer: signing.signed(widthless(written.ret)!),
         answer_width: width_of(written.ret),
         bounds: signing.bounds(written),
+        defaults: [if d == null { null } else { signing.signed(d!) } for d in written.defaults],
     }
 }
 
@@ -232,7 +249,7 @@ fn shape_under(engine: QueryEngine, ty: SignedType, depth: int) -> SignedType? {
 /// A record's signature: its type parameters and its fields, in order, a spread's in its place; and
 /// each parameter's bound, where it writes them (a component does).
 @derive(Saved)
-export type RecordSignature = { type_params: List<string>, fields: List<FieldSeat>, bounds: List<SignedType?> = [] }
+export type RecordSignature = { type_params: List<string>, fields: List<FieldSeat>, bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
 
 /// The signature of the record (or component) `file` declares as `name`, absent when it declares
 /// none: a component holding a body carries what its composing trait names past its own fields.
@@ -247,7 +264,7 @@ export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: s
     let home = declared_place(file, name)
     let spread = (at: int) -> [g for x in parts.spreads if x.at == at && !spreads_home(engine, file, x.of.name, home) for g in spread_fields(engine, signing.signed(x.of))]
     let own = [f for at in 0..written.length + 1 for f in spread(at).concat(if at < written.length { [written[at]] } else { [] })]
-    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)) }
+    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
 }
 
 /// A component's signature as a record's: its type parameters with their bounds, and its fields — its head's, then each
@@ -258,7 +275,7 @@ fn component_signature(engine: QueryEngine, file: SourceFileAddress, item: ReadI
     let parts = item.store.component_parts(s)!
     let signing = signing_in(engine, file, parts.tparams)
     let own = [field_seat(engine, signing, p) for p in parts.head.concat(parts.holders)]
-    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)) }
+    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
 }
 
 /// The signature of `name` over `tparams`: its own fields `own`, then, where `item` declares it a
@@ -382,7 +399,7 @@ fn field_seat(engine: QueryEngine, signing: Signing, p: Param) -> FieldSeat {
     FieldSeat {
         name: p.name.of,
         ty: ty,
-        state: p.state || p.prop && ty != null && compares_by_value(engine, ty!),
+        state: p.state || p.prop && ty != null && declared_shapes(engine).compares_by_value(ty!),
     }
 }
 
@@ -395,25 +412,13 @@ fn holder_type(signing: Signing, p: Param) -> SignedType? {
     headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: signing.signed(s.ty!), mutable: false, settled: false } for s in says], answer: owned_type("void"), nulls: 1 }
 }
 
-/// Whether two values of `ty` compare by value: a number, a truth, text or bytes, an enum none of
-/// whose variants carries a payload, a record of one field that does, a name over one, or a nullable
-/// of one.
-export fn compares_by_value(engine: QueryEngine, ty: SignedType) -> bool {
-    if ty.nullable() { return compares_by_value(engine, ty.unwrapped()) }
-    if ty.dynamic { return false }
-    if ty.owned() != null {
-        return [OwnType.Int, OwnType.Float, OwnType.Bool, OwnType.Str, OwnType.Bytes, OwnType.Ptr]
-            .any((o) -> ty.owns(o))
+/// The shapes the by-value law reads, as the program declares them.
+export fn declared_shapes(engine: QueryEngine) -> Shapes {
+    Shapes {
+        record_of: (ty: SignedType) -> record_shape(engine, ty),
+        named_of: (ty: SignedType) -> named_over(engine, ty),
+        enum_of: (ty: SignedType) -> enum_shape(engine, ty),
     }
-    let over = named_over(engine, ty)
-    if over != null { return compares_by_value(engine, over!) }
-    let at? = declared_at(ty) else { return false }
-    let variants = enum_signature(engine, at.file, at.name)?.variants
-    if variants != null { return variants!.all(it.payloads.is_empty()) }
-    let fields? = record_signature(engine, at.file, at.name)?.fields else { return false }
-    fields.length == 1 &&
-        fields[0].ty != null &&
-        compares_by_value(engine, fields[0].ty!.bound(ty.args))
 }
 
 /// The fields a spread of `spread` brings, its record's own, bound to the arguments it's applied to.
@@ -720,6 +725,48 @@ fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, ki
     read_item(engine, file, declared.item)
 }
 
+/// The type parameters the type `file` declares as `name` writes, with their defaults: a record's, a
+/// component's, an enum's, an alias's or a named type's; none for any other name.
+fn type_params_written(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<Param> {
+    let item? = TYPE_KINDS.find_map((k) -> declaring_item(engine, file, name, k)) else { return [] }
+    [item.store.decl_tbounds(s) for s in item.stmts if item.store.type_decl_name(s) == name].first() ?? []
+}
+
+/// The kinds of declaration whose type parameters a written type fills.
+const TYPE_KINDS: List<ItemKind> = [
+    ItemKind.Record,
+    ItemKind.Component,
+    ItemKind.Enum,
+    ItemKind.Alias,
+    ItemKind.Named,
+]
+
+/// What each type parameter of the type `file` declares as `name` is where nothing is written for it,
+/// signed where it's declared; absent for one with no default.
+fn type_defaults(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType?> {
+    let written = type_params_written(engine, file, name)
+    signing_in(engine, file, [p.name.of for p in written]).defaults_written(written)
+}
+
+/// How many of the type parameters `written`, counted from the last, have a default: the ones a written
+/// type may leave out.
+fn spared_count(written: List<Param>) -> int { written.length - 1 - ([j for j, p in written if p.type_default == null].last() ?? -1) }
+
+/// The type `file` declares as `name` applied to `args` and then, for each parameter they leave out, its
+/// default; `args` themselves where one left out has none.
+fn defaulted_args(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    args: List<SignedType>,
+) -> List<SignedType> {
+    let defaults = type_defaults(engine, file, name)
+    if args.length >= defaults.length { return args }
+    let missing = defaults.drop(args.length)
+    if missing.any(it == null) { return args }
+    args.concat([d! for d in missing])
+}
+
 /// The item declaring the record `file` declares as `name`, or the component a record of its fields
 /// stands for.
 fn record_item(engine: QueryEngine, file: SourceFileAddress, name: string) -> ReadItem? {
@@ -739,7 +786,7 @@ fn width_of(written: TypeRef?) -> string? {
 
 /// What a fn writes of its signature: its type parameters and the bound each is written with, its
 /// parameters and its answer, and the file whose template wrote it where that isn't its own.
-type WrittenFn = { type_params: List<string>, bounds: List<TypeRef?> = [], params: List<Param>, ret: TypeRef, writer: SourceFileAddress? }
+type WrittenFn = { type_params: List<string>, bounds: List<TypeRef?> = [], defaults: List<TypeRef?> = [], params: List<Param>, ret: TypeRef, writer: SourceFileAddress? }
 
 /// What the fn `name` among `stmts` writes, a declared fn's or an extern's.
 fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenFn? {
@@ -763,6 +810,7 @@ fn written_at(store: SyntaxArena, s: StmtId, name: string) -> WrittenFn? {
     WrittenFn {
         type_params: [t.name.of for t in declared.tparams],
         bounds: [t.ty for t in declared.tparams],
+        defaults: [t.type_default for t in declared.tparams],
         params: declared.params,
         ret: declared.ret,
         writer: written_by(store, s),
@@ -782,12 +830,18 @@ type Signing = {
     /// The names over a nullable whose shapes are being signed, outermost first: one naming itself
     /// carries no absence.
     naming: List<string> = [],
+    /// Whether a name is read among written names alone, never what a generator makes.
+    written_only: bool = false,
 }
 
 impl Signing {
     /// The bound each of the type parameters `tparams` is written with, signed; absent for one written
     /// with none.
     fn bounds_written(tparams: List<Param>) -> List<SignedType?> { [if p.ty == null { null } else { self.signed(p.ty!) } for p in tparams] }
+
+    /// What each of a written declaration's type parameters is where nothing pins it, absent for one
+    /// with no default.
+    fn defaults_written(tparams: List<Param>) -> List<SignedType?> { [if p.type_default == null { null } else { self.signed(p.type_default!) } for p in tparams] }
 
     /// The trait each of a written fn's type parameters is bound by, absent for one bound by none.
     fn bounds(written: WrittenFn) -> List<SignedType?> { [if b == null { null } else { self.signed(b!) } for b in written.bounds] }
@@ -826,13 +880,14 @@ impl Signing {
         if written.name == "Self" && self.self_type != null && written.applied.is_empty() {
             return self.self_type! with { nulls: if written.optional { 1 } else { 0 }, dynamic: written.dynamic }
         }
+        let head = when {
+            written.arrow -> TypeHead.Function
+            !written.alternatives.is_empty() -> TypeHead.Union
+            _ -> self.head_of(written.name)
+        }
         let made = SignedType {
-            head: when {
-                written.arrow -> TypeHead.Function
-                !written.alternatives.is_empty() -> TypeHead.Union
-                _ -> self.head_of(written.name)
-            },
-            args: [self.signed(a) for a in written.applied],
+            head: head,
+            args: self.filled_args(head, [self.signed(a) for a in written.applied]),
             nulls: if written.optional { 1 } else { 0 },
             dynamic: written.dynamic,
             seats: [SignedSeat { ty: self.signed(s.ty), mutable: s.mutable, settled: s.settled } for s in written.seats],
@@ -847,6 +902,15 @@ impl Signing {
         target.of.bound(made.args) with { nulls: target.of.nulls + made.nulls, dynamic: target.of.dynamic || made.dynamic }
     }
 
+    /// The type arguments `args` a type headed `head` is written with, then the defaults of the
+    /// parameters they leave out.
+    fn filled_args(head: TypeHead, args: List<SignedType>) -> List<SignedType> {
+        match head {
+            .Declared(file, name) -> defaulted_args(self.engine, file, name, args),
+            rest -> args,
+        }
+    }
+
     /// `made` as absent as the shape it names: a name written over a nullable carries that shape, and
     /// its nulls beside those written after the name; an alias that stands for nothing, refused where
     /// it's declared, is whatever fills its seat; any other type is itself.
@@ -857,7 +921,7 @@ impl Signing {
         if self.naming.contains(key) { return made }
         let parts? = named_written(self.engine, at.file, at.name) else { return made }
         if !parts.of.optional || parts.tparams.length != made.args.length { return made }
-        let shape = (signing_in(self.engine, at.file, parts.tparams) with { naming: self.naming.concat([key]) })
+        let shape = (signing_in(self.engine, at.file, parts.tparams) with { naming: self.naming.concat([key]), written_only: self.written_only })
             .signed(parts.of)
             .bound(made.args)
         if !shape.nullable() { return made }
@@ -884,11 +948,18 @@ impl Signing {
     fn head_of(name: string) -> TypeHead {
         if name == INFERRED { return TypeHead.Inferred }
         let at = self.type_params.index_of(name)
+        if at < 0 && name == NEVER { return TypeHead.Never }
         if at >= 0 { return TypeHead.Parameter(at, name) }
         if builtin_type_name(avra().rows.types, name) || name == RANGE { return TypeHead.Owned(name) }
-        let homed = if self.writer == null { null } else { resolved(self.engine, self.writer!, Space.Type, name).named() }
-        let d? = homed ?? resolved(self.engine, self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
+        let homed = if self.writer == null { null } else { self.type_named(self.writer!, name) }
+        let d? = homed ?? self.type_named(self.file, name) else { return TypeHead.Unnamed(name) }
         TypeHead.Declared(d.file, d.name)
+    }
+
+    /// The declaration the type name `name` names from the top level of `at`.
+    fn type_named(at: SourceFileAddress, name: string) -> DeclaredName? {
+        if self.written_only { return written_resolution(self.engine, at, Space.Type, name).named() }
+        resolved(self.engine, at, Space.Type, name).named()
     }
 }
 

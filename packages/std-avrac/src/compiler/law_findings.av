@@ -11,12 +11,16 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.sorted.{sorted_by}
 use @std.path.{dir_of, joined_path, normalized}
+use @std.program.source_facts.{source_octets, source_text}
+
+extern fn avra_utf8_bad_at(b: Bytes) -> int
 
 /// A law as the compiler holds it.
 export type LawEntry = {
     name: string,
     kind: string,
     reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found>,
+    reads_view: fn(ItemView) -> List<Found>,
     on: List<NodeKind>,
     judge: fn(ItemView, At) -> List<Found>,
     reach: Reach,
@@ -30,7 +34,7 @@ export type LawEntry = {
 }
 
 /// EVERY LAW, by name — gathered, never listed by hand.
-export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, on: it.on, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
+export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, reads_view: it.reads_view, on: it.on, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
 
 /// Every law, gathered once a process.
 once fn held_laws() -> List<LawEntry> { laws }
@@ -118,10 +122,22 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) ->
 fn law_found(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemView?, l: LawEntry) -> List<
     Found,
 > {
-    if l.on.is_empty() { return (l.reads)(engine, file, at) }
+    if l.on.is_empty() { return read_whole(engine, file, at, view, l) }
     let v? = view else { return [] }
     if !(l.judged_if)(v) { return [] }
     flatten([(l.judge)(v, k) for k in v.nodes_on(l.on, l.reach, l.quotes)])
+}
+
+/// What the law `l`, which judges no kind of node, finds in the item `at` of `file` read whole: from
+/// the file, and through `view` where the file holds the item.
+fn read_whole(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemView?, l: LawEntry) -> List<
+    Found,
+> {
+    let read = (l.reads)(engine, file, at)
+    let v? = view else { return read }
+    let seen = (l.reads_view)(v)
+    if seen.is_empty() { return read }
+    if read.is_empty() { seen } else { read.concat(seen) }
 }
 
 /// Whether the finding `a` stands before `b` in its file: a placed one before an unplaced one.
@@ -136,12 +152,45 @@ fn stands_before(a: LawFinding, b: LawFinding) -> bool {
 export type FileErring = { errors: int }
 
 /// How many findings in the written items of `file` fail a build: each of a law that refuses rather
-/// than warns.
+/// than warns, and a source that holds no text.
 @query
 export fn file_erring(engine: QueryEngine, file: SourceFileAddress) -> FileErring {
+    let absent = if standing_of(engine, file) is .Text { 0 } else { 1 }
     FileErring {
-        errors: [f for at in 0..item_count(engine, file) for f in law_findings(engine, file, at).findings if fails_build(f)]
-            .length,
+        errors: absent +
+            [f for at in 0..item_count(engine, file) for f in law_findings(engine, file, at).findings if fails_build(f)]
+                .length,
+    }
+}
+
+/// What a source the program lists holds: its text, or why it holds none — no file there, octets
+/// that are no text (from the byte that isn't), a host that would not give them, or a link that
+/// leads nowhere.
+@derive(Saved)
+export enum SourceStanding {
+    Text
+    Missing
+    NotText(at: int)
+    Refused(why: string)
+    Dangling
+}
+
+/// What the source `file` holds, asked of its text only where it holds no item: a file that holds
+/// one holds text, and its text, which every edit moves, is read by nothing that asks this.
+export fn standing_of(engine: QueryEngine, file: SourceFileAddress) -> SourceStanding {
+    if item_count(engine, file) > 0 { return SourceStanding.Text }
+    source_standing(engine, file)
+}
+
+/// What the source `file` holds.
+@query
+export fn source_standing(engine: QueryEngine, file: SourceFileAddress) -> SourceStanding {
+    if source_text(engine, file) != null { return SourceStanding.Text }
+    match source_octets(engine, file) {
+        .Read(octets) -> SourceStanding.NotText(avra_utf8_bad_at(octets)),
+        .Missing -> SourceStanding.Missing,
+        .Linked -> SourceStanding.Dangling,
+        .Refused(why) -> SourceStanding.Refused(why),
     }
 }
 

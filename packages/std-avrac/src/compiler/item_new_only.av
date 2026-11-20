@@ -1,7 +1,19 @@
 //! WHAT ONLY THE PROGRAM LAYER BUILDS: the language forms the old path never learned. A program that
 //! uses one is the program layer's alone to judge, so the net steps aside for it, and a tool that
 //! holds the two paths side by side leaves it out and says so. Read off the parsed items.
-use core.{ExprId, SignedType, StmtId, SyntaxArena, default_mark, flatten, meta_key, some_list}
+use core.{
+    At,
+    ExprId,
+    NEVER,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    TypeRef,
+    default_mark,
+    flatten,
+    meta_key,
+    some_list,
+}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -26,8 +38,16 @@ export enum NewOnly {
     AnyKey
     /// A context: `ctx name: T` declared, `ctx name = v` set, or `ctx.name` read.
     Ctx
+    /// A type parameter declared with a default (`<T, E = never>`).
+    TypeDefault
+    /// The type no value is, written `never`.
+    Never
+    /// A call or a literal writing fewer type arguments than its fn or record takes, the rest inferred.
+    PrefixArgs
     /// An annotation naming fields of the record it stands on, by seats of `@std/meta`'s `Field`.
     FieldSeat
+    /// A method declaring type parameters of its own (`fn tagged<U>(x: U)` in an `impl`).
+    GenericMethod
 }
 
 impl NewOnly {
@@ -41,7 +61,11 @@ impl NewOnly {
             .DefaultSlot -> "a component's `List` field marked `@default`",
             .AnyKey -> "a field of `@std/meta`'s `Key` written in a literal",
             .Ctx -> "a context (`ctx`)",
+            .TypeDefault -> "a type parameter's default (`<E = never>`)",
+            .Never -> "the type `never`",
+            .PrefixArgs -> "type arguments written for only the leading parameters",
             .FieldSeat -> "an annotation naming fields of the record it stands on",
+            .GenericMethod -> "a method declaring type parameters of its own",
         }
     }
 }
@@ -66,8 +90,17 @@ fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     let member = if nodes.any(member_placed(engine, file, item.store, it)) { [NewOnly.PlacedMember] } else { [] }
     let writes = flatten([key_writes(engine, file, item.store, e) for e in nodes])
     let keyed = if writes.is_empty() || keys_all(item_typed(engine, file, at, item), writes) { [] } else { [NewOnly.AnyKey] }
+    let stmts = flatten([stmts_under(item.store, At.Stmt(top)) for top in item.stmts])
+    let scope = AppliedScope {
+        engine: engine,
+        file: file,
+        params: flatten([item.store.tparams_in_scope(s) for s in stmts]),
+    }
+    let prefix = if nodes.any(prefix_pinned(engine, file, item.store, it)) ||
+        stmts.any((s) -> item.store.type_roots(s).any((t) -> scope.written_short(t))) { [NewOnly.PrefixArgs] } else { [] }
     let fielded = if fields_named(engine, file, item.store, item.stmts) { [NewOnly.FieldSeat] } else { [] }
     declared_new_only(item.store, item.stmts)
+        .concat(prefix)
         .concat(wide)
         .concat(member)
         .concat(keyed)
@@ -103,6 +136,31 @@ fn field_seated(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena
         seats_take_fields(sig.params.drop(1))
 }
 
+/// Whether the statement `s` is an impl writing a method that declares type parameters of its own.
+fn writes_generic_method(store: SyntaxArena, s: StmtId) -> bool {
+    (store.impl_parts(s)?.fns ?? []).any((f) -> !(store.fn_parts(f)?.tparams?.is_empty() ?? true))
+}
+
+/// Whether the written type `t` names `never` anywhere in it.
+fn writes_never(t: TypeRef) -> bool {
+    t.name == NEVER || t.type_args().concat(t.alternatives).any(writes_never(it))
+}
+
+/// Whether `e` writes fewer type arguments than what it names takes: a call of a declared fn, or a
+/// record's literal. Counts are read off the declarations, so this only sets a judge aside.
+fn prefix_pinned(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Call(callee, pins, _) -> !pins.is_empty() && pins.length < fn_type_params(engine, file, callee.of)?.length ?? 0,
+        _ -> {
+            let written = store.struct_targs_of(e)
+            let parts? = store.struct_lit_parts(e) else { return false }
+            let d? = resolved(engine, file, Space.Type, parts.name).named() else { return false }
+            !written.is_empty() &&
+                written.length < record_signature(engine, d.file, d.name)?.type_params?.length ?? 0
+        },
+    }
+}
+
 /// The forms only the program layer builds that a file's parse alone shows, its store `store` and
 /// its statements `stmts`: what the statements declare, and a context's form. The old path reads it
 /// to set aside a test program only the layer builds (compiler/modules.av), as the net sets one aside.
@@ -111,7 +169,13 @@ export fn parsed_new_only(store: SyntaxArena, stmts: List<StmtId>) -> List<NewOn
 }
 
 /// The forms only the program layer builds that the statements `stmts` declare.
-fn declared_new_only(store: SyntaxArena, stmts: List<StmtId>) -> List<NewOnly> { flatten([stmt_new_only(store, s) for s in stmts]) }
+fn declared_new_only(store: SyntaxArena, stmts: List<StmtId>) -> List<NewOnly> {
+    let under = flatten([stmts_under(store, At.Stmt(top)) for top in stmts])
+    let defaults = if under.any((s) -> store.decl_tbounds(s).any(it.type_default != null)) { [NewOnly.TypeDefault] } else { [] }
+    let never = if under.any((s) -> store.type_roots(s).any(writes_never(it))) { [NewOnly.Never] } else { [] }
+    let methods = if stmts.any((s) -> writes_generic_method(store, s)) { [NewOnly.GenericMethod] } else { [] }
+    flatten([stmt_new_only(store, s) for s in stmts]).concat(defaults).concat(never).concat(methods)
+}
 
 /// A context's form, where the store `store` holds one.
 fn contexted_new_only(store: SyntaxArena) -> List<NewOnly> {

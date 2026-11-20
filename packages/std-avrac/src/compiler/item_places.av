@@ -17,10 +17,12 @@ use core.{
     StatesRead,
     StmtId,
     SyntaxArena,
+    distinct,
     flatten,
     kept_state,
     reached_union,
     some_list,
+    sorted_texts,
 }
 use features.{ReadFacts, StatePlace, site_places_in, structural_places_in}
 use @std.program.address.{SourceFileAddress}
@@ -176,8 +178,28 @@ export fn fn_reads(engine: QueryEngine, file: SourceFileAddress, name: string, s
         reach: (c: CalledFn) -> called(calls, c),
     }
     let places = roots_read(facts, [body.body], structural, (x) -> heads_answered(engine, body, x))
-    NodeReads { own: [place_said(p) for p in places], refs: calls.get() }
+    let here = declared_key(file, name)
+    NodeReads { own: [read_said(body.store, here, p) for p in places], refs: calls.get() }
 }
+
+/// A place as a body's own reads key it: a `state` statement of the body by the fn it stands in
+/// (`here`), its name and where it's written; any other as `place_said` keys it.
+fn read_said(store: SyntaxArena, here: string, p: StatePlace) -> string {
+    match p {
+        .Own(s) -> own_said(store, here, s),
+        .Kept(_, _) or .Local(_, _) or .Global(_) or .Unknown -> place_said(p),
+    }
+}
+
+/// The key of the `state` statement `s` of a body of the fn `here`: its name and where it's written.
+fn own_said(store: SyntaxArena, here: string, s: StmtId) -> string {
+    let name = store.let_name(s) ?? ""
+    let at = store.stmt_span(s)?.lo ?? -1
+    "${OWN_MARK}${here}\t${name}@${at}"
+}
+
+/// What a body's own `state` key begins with.
+const OWN_MARK: string = "&"
 
 /// `c` noted among the fns a body calls; it reaches nothing here.
 fn called(calls: Cell<List<string>>, c: CalledFn) -> List<StatePlace> {
@@ -186,12 +208,16 @@ fn called(calls: Cell<List<string>>, c: CalledFn) -> List<StatePlace> {
 }
 
 /// What the fn `file` declares as `name` reaches, by its own body and every fn it calls through any
-/// cycle, each place by its key.
+/// cycle, each place by its key; a body's own `state` is one no caller can name.
 @query
 export fn fn_reaches(engine: QueryEngine, file: SourceFileAddress, name: string, structural: bool) -> List<
     string,
 > {
-    reached_union(declared_key(file, name), (k) -> keyed_places(engine, k, structural))
+    let reached = reached_union(
+        declared_key(file, name),
+        (k) -> keyed_places(engine, k, structural),
+    )
+    sorted_texts(distinct([if k.starts_with(OWN_MARK) { UNNAMED } else { k } for k in reached]))
 }
 
 /// What a fn no body is read for reads: what nothing names.

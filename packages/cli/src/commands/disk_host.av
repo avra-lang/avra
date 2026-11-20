@@ -59,7 +59,7 @@ fn is_a_dir(path: string) -> bool {
 fn disk_beneath(root: string, rel: string, kind: EmbedKind) -> Beneath {
     let o = match open_beneath(root, rel) {
         .Ok(o) -> o,
-        .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
+        .Err(e) -> { return unopened(e, joined_path(root, rel)) },
     }
     defer o.close()
     match o.kind {
@@ -74,13 +74,20 @@ fn disk_beneath(root: string, rel: string, kind: EmbedKind) -> Beneath {
     }
 }
 
-/// Why a path beneath a root did not open.
-fn unopened(e: IoError, stands: bool) -> Beneath {
+/// Why the path `path` beneath a root did not open: a link stands there where something its
+/// directory names, or anything at all, stands behind the failure.
+fn unopened(e: IoError, path: string) -> Beneath {
     match e {
         .NotFound(_) -> Beneath.Missing,
         .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
-        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
+        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if exists(path) || named_in_dir(path) { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
     }
+}
+
+/// Whether the directory `path` stands in names it: a link to nothing is named where nothing
+/// stands.
+fn named_in_dir(path: string) -> bool {
+    match list_dir(dir_of(path)) { .Ok(names) -> names.contains(file_name(path)), .Err(_) -> false }
 }
 
 /// The disk host's refusal of a file it would not give: read again for

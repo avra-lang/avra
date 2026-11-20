@@ -95,5 +95,25 @@ run --files c.av >/dev/null 2>&1 && say "(e) --files refused file answered succe
 grep -q 'c\.av' "$log" || say "(e) --files never reached the compiler"
 [ "$(wc -l < "$gitlog")" -eq "$before" ] || say "(e) --files called git"
 
-[ "$fail" -eq 0 ] && echo "witness_fmt_changed: 5 proved — one instrument, branch compiler, refs named, main never watched"
+# (f) a fixture whose case expects a lex refusal is malformed on purpose:
+#     skipped with one line naming it, never handed to the compiler, success.
+mkdir -p "$tmp/cases/lexed/src"
+printf 'BROKEN @@m\n' > "$tmp/cases/lexed/src/main.av"
+printf 'error[lex.error]: expected a name after `@`\n' > "$tmp/cases/lexed/refuses.expected"
+: > "$log"
+out=$(run --files cases/lexed/src/main.av 2>&1) || say "(f) a fixture expecting lex.error answered failure"
+[ "$(printf '%s\n' "$out" | grep -c 'skipped cases/lexed/src/main\.av')" -eq 1 ] || say "(f) the skipped fixture was not named in one line"
+grep -q 'lexed' "$log" && say "(f) a fixture expecting lex.error reached the compiler"
+
+# (g) a broken file WITHOUT that expectation still fails — one whose case
+#     expects only a non-parse refusal, and beside a skipped fixture too.
+mkdir -p "$tmp/cases/laws/src"
+printf 'BROKEN\n' > "$tmp/cases/laws/src/main.av"
+printf 'error[annotation.unread_mark]: every mark is read by something that claims it\n' > "$tmp/cases/laws/refuses.expected"
+run --files cases/laws/src/main.av >/dev/null 2>&1 && say "(g) a broken file whose case expects no parse refusal answered success"
+: > "$log"
+run --files cases/lexed/src/main.av c.av >/dev/null 2>&1 && say "(g) a broken file beside a skipped fixture answered success"
+grep -q 'c\.av' "$log" || say "(g) the broken file beside a skipped fixture never reached the compiler"
+
+[ "$fail" -eq 0 ] && echo "witness_fmt_changed: 7 proved — one instrument, branch compiler, refs named, main never watched, parse fixtures skipped and nothing else"
 exit "$fail"

@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 56 more
+help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 57 more
 ```
 
 ## build.failed
@@ -1050,6 +1050,18 @@ error[type.component_row]: a repeated `tick` keeps state and wears no key, so it
 help: give each row its own key — `tick … { key: … }`, with what tells the row apart
 ```
 
+## type.component_default
+
+a member's default reads only its component's plain inputs
+
+No witness yet.
+
+## type.slot_shadows
+
+an instance's block names its component's slot before a component of that name
+
+No witness yet.
+
 ## flow.no_fate
 
 a handler that can fail must name a fate for its failure
@@ -1930,6 +1942,94 @@ error[resolve.package_form]: `@solo` names no package — a package is `@scope.n
   · ╰── in this use
 ──╯
 help: write the scope and the name, then the module: `@scope.name.a.{x}`
+```
+
+## source.missing
+
+a source the package lists stands there
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+// /w/src/other.av — missing
+```
+
+```
+error[source.missing]: `/w/src/other.av` does not exist
+  /w/src/other.av: listed here, and nothing stands here
+help: write the file, or take it out of the package
+```
+
+## source.not_text
+
+a source is UTF-8 text
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+// /w/src/other.av — not_text
+```
+
+```
+error[source.not_text]: `/w/src/other.av` is not UTF-8 — byte 0
+  /w/src/other.av: a source is text
+help: save the file as UTF-8, or move what isn't source out of `src/`
+```
+
+## source.refused
+
+a source is one the host gives to read
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+// /w/src/other.av — refused
+```
+
+```
+error[source.refused]: `/w/src/other.av` can't be read — permission denied
+  /w/src/other.av: the host refused it
+help: give the file a mode the build can read
+```
+
+## source.dangling
+
+a source's link leads to a file
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+// /w/src/other.av — dangling
+```
+
+```
+error[source.dangling]: `/w/src/other.av` is a link to nothing
+  /w/src/other.av: the link stands here
+help: point the link at a file, or take it away
 ```
 
 ## manifest.no_package
@@ -3326,6 +3426,36 @@ error[collect_enum.self]: `Rank.versus` takes `Self` and answers `int` — membe
 ──╯
 help: only a `bool` answer may take `Self`: differing variants answer `false`
 ```
+
+## ctx.unknown
+
+`ctx.name` reads a context, and no `ctx name` is declared
+
+No witness yet.
+
+## ctx.where
+
+a context is declared at a module's top level and set inside a body
+
+No witness yet.
+
+## ctx.required
+
+a required context is set before the program reads it
+
+No witness yet.
+
+## ctx.unread
+
+a context's set is read by something it is in force over
+
+No witness yet.
+
+## ctx.old_path
+
+`ctx` is built on the program layer
+
+No witness yet.
 
 ## type.binding
 

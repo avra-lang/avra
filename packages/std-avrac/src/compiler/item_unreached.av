@@ -21,21 +21,25 @@ type Unreached = { at: FindingAt?, binder: string }
 @derive(Saved)
 type ItemUnreached = { arms: List<Unreached> }
 
-fn after_binders(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [Found { at: span_of(u.at), args: [u.binder] } for u in item_unreached(engine, file, at).arms if !u.binder.is_empty()]
+fn after_binders(view: ItemView) -> List<Found> {
+    [Found { at: span_of(u.at), args: [u.binder] } for u in unreached_seen(view).arms if !u.binder.is_empty()]
 }
 
-fn after_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [Found { at: span_of(u.at), args: [] } for u in item_unreached(engine, file, at).arms if u.binder.is_empty()]
+fn after_holes(view: ItemView) -> List<Found> {
+    [Found { at: span_of(u.at), args: [] } for u in unreached_seen(view).arms if u.binder.is_empty()]
 }
 
 /// Every arm of the written item `at` of `file`'s `match`es that comes right after an unguarded
 /// arm taking every value, in node order; a `match` over a name nothing answers judged no further.
 fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnreached {
     if !item_held(engine, file, at) { return unreached_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    unreached_seen(item_view(engine, file, at))
+}
+
+/// What `item_unreached` answers through the item's `view`, made the first time it is asked.
+fn unreached_seen(view: ItemView) -> ItemUnreached {
     let held? = view.unreached.get() else {
-        let made = unreached_made(engine, file, at)
+        let made = unreached_made(view.engine, view.file, view.at)
         view.unreached.set(made)
         return made
     }
@@ -117,21 +121,20 @@ fn unreached_in(cover: Cover, e: ExprId) -> List<Unreached> {
 /// The name the catch-all `hole` binds, empty for one that binds none.
 fn binder_of(cover: Cover, hole: PatId) -> string { cover.store.bind_name(hole) ?? "" }
 
-/// The last arm of each `match` the written item `at` of `file` holds, none of whose arms takes
+/// The last arm of each `match` the written item `view` shows holds, none of whose arms takes
 /// every value, that is one unguarded bare name naming a const, which compares rather than binds:
 /// the name.
-fn last_arms_comparing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn last_arms_comparing(view: ItemView) -> List<Found> {
+    let item = view.item
     let store = item.store
-    let cover = reach_cover(engine, file, at, item)
-    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) if cover.catching(m.arms) == null for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && pattern_compares(engine, file, at, store, p, n!)]
+    let cover = reach_cover(view.engine, view.file, view.at, item)
+    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) if cover.catching(m.arms) == null for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && pattern_compares(view.engine, view.file, view.at, store, p, n!)]
 }
 
 /// the last arm of a `match` whose bare name is a const
 export law last_arm_compares {
     kind: "type.const_pattern"
-    reads: last_arms_comparing
+    reads_view: last_arms_comparing
     voice: comparing_words
     warns: true
     witness: "enum M {\n    A\n    B\n}\n\nconst a = M.A\n\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\n"
@@ -142,7 +145,7 @@ fn comparing_words(a: List<string>) -> Voice { last_arm_compares_said(a[0]) }
 /// an arm after a binder that takes every value
 export law arm_after_binder {
     kind: "type.unreachable_arm"
-    reads: after_binders
+    reads_view: after_binders
     voice: binder_words
     warns: true
     witness: "fn f(n: int) -> int {\n    match n {\n        other -> 1,\n        2 -> 2,\n    }\n}\n"
@@ -151,7 +154,7 @@ export law arm_after_binder {
 /// an arm after a hole that takes every value
 export law arm_after_hole {
     kind: "type.unreachable_arm"
-    reads: after_holes
+    reads_view: after_holes
     voice: hole_words
     warns: true
     witness: "fn f(n: int) -> int {\n    match n {\n        _ -> 1,\n        2 -> 2,\n    }\n}\n"

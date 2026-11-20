@@ -26,6 +26,7 @@ use grammar.{avra_known_terminals, parse_grammar}
 use @std.grammar.{ready}
 use @std.meta.{derive}
 use @std.path.{dir_of, under_dir}
+use @std.text.{parse_int}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.saved_derive.{Saved}
 use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
@@ -350,6 +351,22 @@ export fn placed_in_item(engine: QueryEngine, file: SourceFileAddress, place: Fi
 
 /// A place in a file as an item counts it: the item, and the place from its start.
 export type PlaceInItem = { item: int, at: FindingAt }
+
+/// A place crossed into a compile-time run, as its `Loc` spells its file: the file by package and
+/// path, then the item `at` whose start the place counts from. A run handed an item at a new place in
+/// its file is handed the same places, and is the same run.
+export fn item_spelled(file: SourceFileAddress, at: int) -> string { "${spelled_file(file)}${ITEM_MARK}${at}" }
+
+/// The item of `file` a place a run hands back names, by how `item_spelled` spells it; absent for a
+/// place of another file, or one spelled otherwise.
+export fn spelled_item(file: SourceFileAddress, spelled: string) -> int? {
+    let head = "${spelled_file(file)}${ITEM_MARK}"
+    if !spelled.starts_with(head) { return null }
+    parse_int(spelled.substring(head.length, spelled.length))
+}
+
+/// What parts a crossed place's file from the item it counts from.
+const ITEM_MARK: string = "#"
 
 /// Whether the text of the item `i` of `file` holds the offset `lo` of the file.
 fn holds(engine: QueryEngine, file: SourceFileAddress, i: int, lo: int) -> bool {

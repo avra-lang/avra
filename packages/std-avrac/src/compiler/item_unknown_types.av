@@ -8,6 +8,7 @@ use core.{
     seat_worn_twice,
     ExprId,
     INFERRED,
+    NEVER,
     StmtId,
     body_behavior,
     SyntaxArena,
@@ -58,9 +59,13 @@ type TypeScope = {
 /// no type, statement by statement.
 fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
     if !item_held(engine, file, at) { return unknown_types_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    unknown_types_seen(item_view(engine, file, at))
+}
+
+/// What `item_unknown_types` answers through the item's `view`, made the first time it is asked.
+fn unknown_types_seen(view: ItemView) -> ItemUnnamed {
     let held? = view.unknown_types.get() else {
-        let made = unknown_types_made(engine, file, at)
+        let made = unknown_types_made(view.engine, view.file, view.at)
         view.unknown_types.set(made)
         return made
     }
@@ -213,6 +218,7 @@ impl TypeScope {
     fn names_type(name: string) -> bool {
         if name.is_empty() ||
             name == INFERRED ||
+            name == NEVER ||
             name == self_word ||
             self.params.contains(name) ||
             self.refused.contains(name) { return true }
@@ -247,20 +253,20 @@ fn unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 /// Every machine width the written item `at` of `file` writes off an `extern fn`'s seats.
 fn widths_off_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, true) }
 
-/// Every bound the written item `at` of `file` writes that names no trait.
-fn bounds_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    unread_named_found(engine, file, item_unknown_types(engine, file, at).bounds)
+/// Every bound the written item `view` shows writes that names no trait.
+fn bounds_unknown(view: ItemView) -> List<Found> {
+    unread_named_found(view.engine, view.file, unknown_types_seen(view).bounds)
 }
 
-/// Every `dyn` the written item `at` of `file` writes over a name that names no trait.
-fn contracts_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    unread_named_found(engine, file, item_unknown_types(engine, file, at).contracts)
+/// Every `dyn` the written item `view` shows writes over a name that names no trait.
+fn contracts_unknown(view: ItemView) -> List<Found> {
+    unread_named_found(view.engine, view.file, unknown_types_seen(view).contracts)
 }
 
 /// a `dyn` stands over a trait
 export law dyn_names_a_trait {
     kind: "type.trait"
-    reads: contracts_unknown
+    reads_view: contracts_unknown
     voice: contract_words
     witness: "type P = { x: int }\n\nfn f(d: dyn P) -> int { 1 }\n"
 }
@@ -270,7 +276,7 @@ fn contract_words(a: List<string>) -> Voice { dyn_no_trait(a[0]) }
 /// a type parameter's bound names a trait
 export law bound_names_a_trait {
     kind: "type.trait"
-    reads: bounds_unknown
+    reads_view: bounds_unknown
     voice: bound_words
     witness: "type P = { x: int }\n\nfn g<T: P>(a: T) -> int { 1 }\n"
 }

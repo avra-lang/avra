@@ -10,25 +10,24 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.text.{parse_int}
 
-/// Every read of a generic fn as a value in the written item `at` of `file`.
-fn generic_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+/// Every read of a generic fn as a value in the written item `view` shows.
+fn generic_values(view: ItemView) -> List<Found> {
+    let item = view.item
     if !item.store.refusals().is_empty() { return [] }
     let own = flatten(
-        [generics_read(engine, file, item.store, b.reads) for b in item_bodies(engine, file, at, item)],
+        [generics_read(view.engine, view.file, item.store, b.reads) for b in item_bodies(view.engine, view.file, view.at, item)],
     )
-    if !runs_in(engine, file, at) { return own }
-    let read = entry_read(engine, file)
+    if !runs_in(view.engine, view.file, view.at) { return own }
+    let read = entry_read(view.engine, view.file)
     let signed? = entry_signed(read) else { return own }
-    let entry = kept_body(body_checked(engine, file, signed, false))
+    let entry = kept_body(body_checked(view.engine, view.file, signed, false))
     own
         .concat(
             generics_read(
-                engine,
-                file,
+                view.engine,
+                view.file,
                 read.store,
-                [r for r in entry.reads if item_holding(read, r.at) == at],
+                [r for r in entry.reads if item_holding(read, r.at) == view.at],
             ),
         )
 }
@@ -63,7 +62,7 @@ fn generic_declared(engine: QueryEngine, file: SourceFileAddress, name: string, 
 /// a generic fn is called, never read as a value
 export law generic_fn_is_no_value {
     kind: "type.lambda"
-    reads: generic_values
+    reads_view: generic_values
     voice: generic_words
     witness: "fn ident<T>(x: T) -> T { x }\nfn f() -> int {\n    let g: fn(int) -> int = ident\n    g(1)\n}\n"
 }

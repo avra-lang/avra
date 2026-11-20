@@ -49,14 +49,14 @@ impl Hole {
     fn found() -> Found { Found { at: span_of(self.at), args: self.hidden } }
 }
 
-/// Every hole in the item `at` of `file` that takes the rest of a registry without binding it.
-fn taking_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [h.found() for h in registry_holes(engine, file, at).holes if !h.binds]
+/// Every hole in the item `view` shows that takes the rest of a registry without binding it.
+fn taking_holes(view: ItemView) -> List<Found> {
+    [h.found() for h in registry_holes_seen(view).holes if !h.binds]
 }
 
-/// Every hole in the item `at` of `file` that binds the rest of a registry.
-fn binding_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [h.found() for h in registry_holes(engine, file, at).holes if h.binds]
+/// Every hole in the item `view` shows that binds the rest of a registry.
+fn binding_holes(view: ItemView) -> List<Found> {
+    [h.found() for h in registry_holes_seen(view).holes if h.binds]
 }
 
 /// Every hole the written item `at` of `file`'s `match`es leave in a registry, in node order, both its
@@ -64,9 +64,13 @@ fn binding_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 /// an item with no `match` typing nothing.
 fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemHoles {
     if !item_held(engine, file, at) { return holes_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    registry_holes_seen(item_view(engine, file, at))
+}
+
+/// What `registry_holes` answers through the item's `view`, made the first time it is asked.
+fn registry_holes_seen(view: ItemView) -> ItemHoles {
     let held? = view.holes.get() else {
-        let made = holes_made(engine, file, at)
+        let made = holes_made(view.engine, view.file, view.at)
         view.holes.set(made)
         return made
     }
@@ -321,7 +325,7 @@ fn held(p: PatId) -> PatId? { p }
 /// arms answer for several variants and this hole takes the rest
 export law registry_hole {
     kind: "type.registry_hole"
-    reads: taking_holes
+    reads_view: taking_holes
     voice: hole_taking
     warns: true
     witness: "enum Q { A B C D }\n\nfn f(q: Q) -> int {\n    match q {\n        .A -> 1\n        .B -> 2\n        _ -> 0\n    }\n}\n"
@@ -330,7 +334,7 @@ export law registry_hole {
 /// arms answer for several variants and this hole binds the rest
 export law registry_hole_bound {
     kind: "type.registry_hole"
-    reads: binding_holes
+    reads_view: binding_holes
     voice: hole_binding
     warns: true
     witness: "enum Q { A B C D }\n\nfn f(q: Q) -> int {\n    match q {\n        .A -> 1\n        .C -> 3\n        other -> 0\n    }\n}\n"

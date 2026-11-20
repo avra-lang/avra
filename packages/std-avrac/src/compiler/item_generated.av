@@ -8,6 +8,7 @@
 //! the generator's made program, so it runs once per change of either. A generator the program
 //! layer doesn't make says why instead.
 use core.{
+    distinct,
     template_file,
     template_home,
     INFERRED,
@@ -64,6 +65,10 @@ export type KeptProblem = {
     unplaced: bool = false,
     /// A validator the program layer didn't run, for what it doesn't cross yet: counted, never said.
     unrun: bool = false,
+    /// A name the generator made that the file already declares, `message` holding the name.
+    taken: bool = false,
+    /// A wrap that doesn't stand, how: `missing`, `bodiless` or `mismatch`; `message` holds the fn.
+    wrapped: string = "",
 }
 
 /// What a site hands its generator past the declaration it stands on: each argument, and what the
@@ -244,7 +249,36 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Gen
         handed,
         site.method,
     )
-    made_here with { problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file.package_name } for p in made_here.problems] }
+    let taken = taken_names(engine, file, made_here.items)
+    let kept = if taken.is_empty() { made_here } else { GeneratedItems { items: [], said: [], problems: [name_taken(n) for n in taken] } }
+    kept with { problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file.package_name } for p in kept.problems] }
+}
+
+/// The names the items a generator made over `file` declare that the file already declares in
+/// writing, or imports: a generated one would lose to it in silence. A wrap's own name aside, which
+/// the wrap means to take.
+fn taken_names(engine: QueryEngine, file: SourceFileAddress, items: List<GeneratedItem>) -> List<
+    string,
+> {
+    if items.is_empty() { return [] }
+    let scope? = file_scope(engine, file) else { return [] }
+    distinct(
+        [n.name for g in items if !g.wraps for n in g.tape.declares if resolved_in(engine, scope, file, Space.Value, n.name).named() != null ||
+            resolved_in(engine, scope, file, Space.Type, n.name).named() != null],
+    )
+}
+
+/// A name a generator made that its file already declares, kept as the problem its site says.
+fn name_taken(name: string) -> KeptProblem {
+    KeptProblem {
+        message: name,
+        help: null,
+        kind: null,
+        warning: false,
+        at: null,
+        home: null,
+        taken: true,
+    }
 }
 
 /// The declaration an argument hands, where it hands one.
@@ -277,18 +311,18 @@ fn items_spliced(
     let wraps = made.any(it.wraps)
     if wraps && method != null { return method_wrap(engine, method!, name, spliced) }
     let moved: StmtId? = if wraps { moved_body(engine, file, name, spliced.store) } else { null }
-    let unwrapped = if wraps { wrap_said(spliced.store, spliced.stmts, name, moved) } else { [] }
+    let fault = if wraps { wrap_fault(spliced.store, spliced.stmts, name, moved) } else { null }
+    if fault != null { return wrap_refused(fault!, name) }
     let twins = [twin_of(engine, file, name, d.twin, spliced.store) for d in made if d.source == null && !d.twin.is_empty()]
     let stmts = spliced
         .stmts
         .concat(some_list(moved))
         .concat(flatten([some_list(t) for t in twins]))
     GeneratedItems {
-        items: if stmts.is_empty() || !unwrapped.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, stmts), wraps: wraps }] },
+        items: if stmts.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, stmts), wraps: wraps }] },
         said: spliced
             .refused
             .concat(if twins.any(it == null) { [twin_unmade(name)] } else { [] })
-            .concat(unwrapped)
             .concat(
                 if stmts.is_empty() && made.all(it.twin.is_empty()) { some_list(unplaced(made)) } else { [] },
             ),
@@ -310,9 +344,10 @@ fn items_spliced(
 fn method_wrap(engine: QueryEngine, m: MethodSite, name: string, spliced: SplicedDecls) -> GeneratedItems {
     let store = spliced.store
     let moved = moved_method(engine, m, name, store)
-    let unwrapped = wrap_said(store, spliced.stmts, name, moved?.moved)
+    let fault = wrap_fault(store, spliced.stmts, name, moved?.moved)
+    if fault != null { return wrap_refused(fault!, name) }
     let wrapper = spliced.stmts.find((s) -> store.fn_parts(s)?.name == name)
-    if !unwrapped.is_empty() || moved == null || wrapper == null { return said_only(spliced.refused.concat(unwrapped)) }
+    if moved == null || wrapper == null { return said_only(spliced.refused) }
     let beside = [s for s in spliced.stmts if s != wrapper!]
     GeneratedItems {
         items: [
@@ -360,14 +395,38 @@ fn moved_method(engine: QueryEngine, m: MethodSite, name: string, store: SyntaxA
     MovedMethod { moved: moved, held: store.alloc_stmt(alone, store.stmt_span(held)) }
 }
 
-/// What a wrap of `name` among `stmts` says instead of standing: that it makes no fn of the name
-/// beside the written one `moved`, or one whose signature isn't the written fn's; nothing for one
-/// that stands.
-fn wrap_said(store: SyntaxArena, stmts: List<StmtId>, name: string, moved: StmtId?) -> List<string> {
-    let wrapper = stmts.find((s) -> store.fn_parts(s)?.name == name)
-    if moved == null || wrapper == null { return [wrap_unmade(name)] }
-    if signature_spelled(store, wrapper!) != signature_spelled(store, moved!) { return [wrap_unsigned(name)] }
-    []
+/// How a wrap of `name` among `stmts` doesn't stand, beside the written fn moved to `moved`: the fn
+/// has no written body to move, `bodiless`; the directives make no fn of its name, `missing`; or the
+/// one they make is signed otherwise — its seats, its answer, its `static` or `mut fn` word —
+/// `mismatch`. Absent for one that stands.
+fn wrap_fault(store: SyntaxArena, stmts: List<StmtId>, name: string, moved: StmtId?) -> string? {
+    let written? = moved else { return WRAP_BODILESS }
+    let wrapper? = stmts.find((s) -> store.fn_parts(s)?.name == name) else { return WRAP_MISSING }
+    if signature_spelled(store, wrapper) != signature_spelled(store, written) ||
+        store.is_static(wrapper) != store.is_static(written) ||
+        store.is_mutating(wrapper) != store.is_mutating(written) { WRAP_MISMATCH } else { null }
+}
+
+const WRAP_BODILESS: string = "bodiless"
+
+const WRAP_MISSING: string = "missing"
+
+const WRAP_MISMATCH: string = "mismatch"
+
+/// A wrap of `name` that doesn't stand, how `fault` says: nothing made, and the problem its site
+/// says.
+fn wrap_refused(fault: string, name: string) -> GeneratedItems {
+    said_only([wrap_unmade(name)]) with { problems: [
+        KeptProblem {
+            message: name,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            wrapped: fault,
+        },
+    ] }
 }
 
 /// A fn's signature as written: its type parameters, each seat's promises and type, and its answer.
@@ -390,12 +449,15 @@ fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store:
     let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
         .find((x) -> store.fn_parts(x)?.name == name) else { return null }
     let parts = store.fn_parts(s)!
-    store
+    let moved = store
         .alloc_stmt(
             Stmt
                 .FnDecl(Scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
             store.stmt_span(s),
         )
+    let marks = store.marks_at(s)
+    store.update_marks(moved, (_m) -> marks)
+    moved
 }
 
 /// The twin a directive asks for beside the fn `file` writes as `name`, read into `store`: a fn
@@ -521,4 +583,3 @@ fn twin_unmade(name: string) -> string { "a twin of `${name}` stands beside no f
 
 fn wrap_unmade(name: string) -> string { "a wrap of `${name}` makes no fn of its name beside its written one" }
 
-fn wrap_unsigned(name: string) -> string { "a wrap of `${name}` makes a fn of its name whose signature isn't the written one's" }

@@ -3700,6 +3700,19 @@ filed. Both carry an `Example:` and a `Callsite:`.
   that would rather choose than branch. To be filed as its own ask
   when the tasks server returns.
 
+The ask the kids walk raised stands in the same way:
+
+- **A bulk push onto a list held in place.** A walk that keeps its own
+  stack pushes a node's kids with a `for` whose whole body is one `push`
+  (loops.push_loop), and has no other way to write it: `concat` copies
+  the stack, and a comprehension mints the list the stack exists to avoid.
+  `Example: onto.push_each(ids, (e) -> At.Expr(e))`, which appends in
+  place and mints no list.
+  `Callsite:` the kids walk withdrawn in this lane (core/shape.av's
+  `places_under`; the Matchable derive's per-variant pushes,
+  core/shape_derive.av). It cut 0.32% of a cli check's boxes, too little to
+  carry six licences.
+
 The ask the mmap slice raised (db-05a, `store/mapped.av`) stands in the
 same way:
 

@@ -1,5 +1,5 @@
 //! The lowering rule of `==` and `!=` past the values the language owns: a nullable against `null`
-//! is its presence, only the nullable side read; an enum compares by its tag, and a record of one
+//! is its presence, only the nullable side read, and two sides that hold only null are equal; an enum compares by its tag, and a record of one
 //! field by that field, all the way down.
 use core.{ExprId, Lowering, Reg, SignedType}
 
@@ -8,6 +8,7 @@ use core.{ExprId, Lowering, Reg, SignedType}
 fn compared_beyond(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? {
     let lt? = cx.type_at(l) else { return null }
     let rt? = cx.type_at(r) else { return null }
+    if lt.absence() && rt.absence() { return absences_compared(cx, negated, l, r) }
     let asked = absence_asked(lt, rt, l, r)
     if asked != null {
         let present = cx.present(cx.lower(asked!), cx.type_at(asked!)!)
@@ -18,6 +19,13 @@ fn compared_beyond(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg
     let b = cx.lower(r)
     let same = cx.same_value(a, b, lt)
     if negated { cx.not(same) } else { same }
+}
+
+/// `l == r` where neither side can hold anything but null: each side run, and the answer fixed.
+fn absences_compared(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg {
+    let _ = cx.lower(l)
+    let _ = cx.lower(r)
+    cx.const_bool(!negated)
 }
 
 /// The side whose presence `l == r` asks, of types `lt` and `rt`: a nullable against `null`.

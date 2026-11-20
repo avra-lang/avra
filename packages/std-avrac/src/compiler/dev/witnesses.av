@@ -19,7 +19,9 @@ use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
 use compiler.{avra, new_workspace, one_shot_let_go, Want}
 use compiler.host.{memory_host}
+use @std.program.source_facts.{FileOctets}
 use testing.{
+    held_at,
     vendored_meta,
     vendored_meta_as,
     real_meta_source,
@@ -41,6 +43,10 @@ export enum Witness {
     /// A package built as far as lowering and linking say: what only a
     /// whole program refuses (a statement in a module, a host fn's symbol).
     Built(files: Map<string, string>)
+    /// A package at `/w` whose files under `unread` hold no text, each by its cause — `missing`,
+    /// `not_text`, `refused` or `dangling` — judged on the program layer, the only reader that
+    /// reaches a source no text stands for.
+    Unread(files: Map<string, string>, unread: Map<string, string>)
     Beyond(why: string)
 }
 
@@ -51,7 +57,7 @@ impl Witness {
     /// added after it, which is a hole in different clothes.
     fn runs() -> bool {
         match self {
-            .Source(_) or .Package(_) or .Built(_) -> true,
+            .Source(_) or .Package(_) or .Built(_) or .Unread(_, _) -> true,
             .Absent or .Beyond(_) -> false,
         }
     }
@@ -61,7 +67,7 @@ impl Witness {
     fn owed() -> bool {
         match self {
             .Absent -> true,
-            .Source(_) or .Package(_) or .Built(_) or .Beyond(_) -> false,
+            .Source(_) or .Package(_) or .Built(_) or .Unread(_, _) or .Beyond(_) -> false,
         }
     }
 }
@@ -89,6 +95,7 @@ impl Shown {
         match self.witness {
             .Source(text) -> text,
             .Package(files) or .Built(files) -> package_text(files),
+            .Unread(files, unread) -> unread_text(files, unread),
             .Absent or .Beyond(_) -> "",
         }
     }
@@ -113,7 +120,39 @@ export fn rendered_over(w: Witness) -> string {
         .Source(text) -> avra().check(new_source_file("witness.av", text)),
         .Package(files) -> package_report(files),
         .Built(files) -> built_report(files),
+        .Unread(files, unread) -> unread_report(files, unread),
         .Absent or .Beyond(_) -> "",
+    }
+}
+
+/// A package witness whose `unread` files hold no text: its files, then each unread one by its cause.
+fn unread_text(files: Map<string, string>, unread: Map<string, string>) -> string {
+    joined(
+        [package_text(files)].concat(["// ${path} — ${cause}" for path, cause in unread]),
+        "\n",
+    )
+}
+
+/// What the program layer says of a package whose `unread` files hold no text, judged at its entry.
+fn unread_report(files: Map<string, string>, unread: Map<string, string>) -> string {
+    let held = held_at(files, "/w") with { unread: unread_octets(unread) }
+    held.judged_at("/w/src/main.av").report()
+}
+
+/// What a read of each unread file's octets finds, by its cause.
+fn unread_octets(unread: Map<string, string>) -> Map<string, FileOctets> {
+    mut found: Map<string, FileOctets> = {}
+    for path, cause in unread { found.set(path, octets_of(cause)) }
+    found
+}
+
+/// What a read of a file's octets finds for its cause.
+fn octets_of(cause: string) -> FileOctets {
+    match cause {
+        "not_text" -> FileOctets.Read([255, 254].bytes()!),
+        "refused" -> FileOctets.Refused("permission denied"),
+        "dangling" -> FileOctets.Linked,
+        _ -> FileOctets.Missing,
     }
 }
 
@@ -148,8 +187,16 @@ fn package_report(files: Map<string, string>) -> string {
 export fn witness_files() -> List<WitnessFiles> { [files_of(w) for w in witnesses()] }
 
 /// One code's witness as files: the code, how it is witnessed — `source`, `package`, `built`,
-/// `beyond` or `absent` — each file at its path, and why no source reaches it where none does.
-export type WitnessFiles = { code: string, shape: string, files: Map<string, string>, why: string = "" }
+/// `unread`, `beyond` or `absent` — each file at its path, and why no source reaches it where none
+/// does.
+export type WitnessFiles = {
+    code: string,
+    shape: string,
+    files: Map<string, string>,
+    why: string = "",
+    /// The files that hold no text, each by its cause, for an `unread` witness.
+    unread: Map<string, string> = {},
+}
 
 fn files_of(w: CodeWitness) -> WitnessFiles {
     match w.witness {
@@ -160,6 +207,7 @@ fn files_of(w: CodeWitness) -> WitnessFiles {
         },
         .Package(files) -> WitnessFiles { code: w.code, shape: "package", files: files },
         .Built(files) -> WitnessFiles { code: w.code, shape: "built", files: files },
+        .Unread(files, unread) -> WitnessFiles { code: w.code, shape: "unread", files: files, unread: unread },
         .Beyond(why) -> WitnessFiles { code: w.code, shape: "beyond", files: {}, why: why },
         .Absent -> WitnessFiles { code: w.code, shape: "absent", files: {} },
     }
@@ -237,6 +285,7 @@ fn body(s: Shown) -> List<string> {
     match s.witness {
         .Source(text) -> ["```avra", text, "```", "", "```", s.rendered, "```"],
         .Package(files) or .Built(files) -> ["```", package_text(files), "```", "", "```", s.rendered, "```"],
+        .Unread(files, unread) -> ["```", unread_text(files, unread), "```", "", "```", s.rendered, "```"],
         .Beyond(why) -> ["No witness here: ${why}."],
         .Absent -> ["No witness yet."],
     }
@@ -757,6 +806,10 @@ fn witnesses() -> List<CodeWitness> {
                     "it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for",
                 ),
         },
+        CodeWitness { code: "source.missing", witness: unread_beside("missing") },
+        CodeWitness { code: "source.not_text", witness: unread_beside("not_text") },
+        CodeWitness { code: "source.refused", witness: unread_beside("refused") },
+        CodeWitness { code: "source.dangling", witness: unread_beside("dangling") },
         CodeWitness {
             code: "manifest.no_package",
             witness: manifest("[bin]\npath = \"src/main.av\"\n"),
@@ -1683,6 +1736,12 @@ fn borrowed_raw() -> Witness {
 
 /// A package witness over files laid out as the program at `/w`, beside a
 /// lawful manifest.
+/// A program whose entry stands beside `src/other.av`, which holds no text for `cause`.
+fn unread_beside(cause: string) -> Witness {
+    Witness
+        .Unread({"/w/avra.toml": app_manifest, "/w/src/main.av": "1\n"}, {"/w/src/other.av": cause})
+}
+
 fn program(files: Map<string, string>) -> Witness {
     mut all = files
     all.set("/w/avra.toml", app_manifest)

@@ -1,6 +1,11 @@
 //! A PROGRAM HELD IN MEMORY, asked of the program layer: its files, where each package it names
 //! stands, and what a build of it says, runs and lowers to.
 use compiler.{
+    InferringFn,
+    lowered_fn,
+    raised,
+    fn_reaches,
+    fn_reads,
     item_count,
     item_rule_file,
     file_law_diags,
@@ -87,6 +92,8 @@ export type Held = {
     on_disk: bool = false,
     /// The print of the reader its files are read under: one language's.
     language: string = HELD_LANGUAGE,
+    /// The files it lists that hold no text, each by what a read of its octets finds.
+    unread: Map<string, FileOctets> = {},
 }
 
 /// The print of the reader a held program is read under.
@@ -106,6 +113,7 @@ impl Held {
     fn read(file: SourceFileAddress) -> string? {
         let path = self.standing(file.package_name, file.path_in_package)
         self.asked.put(path, (self.asked.get().get(path) ?? 0) + 1)
+        if self.unread.has(path) { return null }
         self.files.get(path)
     }
 
@@ -123,6 +131,8 @@ impl Held {
 
     /// A file's octets, for a build that reads it as data.
     fn octets(file: SourceFileAddress) -> FileOctets {
+        let unread = self.unread.get(self.standing(file.package_name, file.path_in_package))
+        if unread != null { return unread! }
         let text? = self.read(file) else { return FileOctets.Missing }
         FileOctets.Read(text.bytes())
     }
@@ -130,7 +140,7 @@ impl Held {
     /// The names directly in a directory; absent when nothing it holds lies under it.
     fn listed(dir: DirectoryAddress) -> List<string>? {
         let at = self.standing(dir.package_name, dir.path_in_package)
-        let under = [path.substring(at.length + 1, path.length) for path in self.files.keys() if path.starts_with("${at}/")]
+        let under = [path.substring(at.length + 1, path.length) for path in self.files.keys().concat(self.unread.keys()) if path.starts_with("${at}/")]
         if under.is_empty() { return null }
         distinct(
             [if rest.contains("/") { rest.substring(0, rest.index_of("/")) } else { rest } for rest in under],
@@ -306,6 +316,14 @@ impl Held {
 
     /// What a build of the program the file at `path` runs says.
     fn judged_at(path: string) -> Judged { self.judged(self.file_at(path)) }
+
+    /// What a build of the program the file at `path` runs says, asked by one process over `store`,
+    /// which it leaves as a process that ended leaves it.
+    fn judged_over(path: string, store: StoreInMemory) -> Judged {
+        let j = self.judged_with(self.file_at(path), query_engine(store, avra_fact_definitions()))
+        j.engine.frontier_kept()
+        j
+    }
 
     /// What a build of the program `entry` runs says, asked of an engine of its own: what its
     /// manifests and its package graph say and, where none of those refuses, each refusal and
@@ -758,6 +776,38 @@ impl Judged {
                 },
             },
         )
+    }
+
+    /// Whether the fn `name` the file at `path` declares consumes its seat `j`: keeps it whole on every
+    /// path to its answer, as its body lowers.
+    fn consumes_seat(path: string, name: string, j: int) -> bool {
+        self.held.entered()
+        let consumed = lowered_fn(self.engine, self.held.file_at(path), name)?.consumed ?? []
+        j < consumed.length && consumed[j]
+    }
+
+    /// What the `_` fn `name` the file at `path` declares raises, each error type spelled, in the
+    /// order the union holds them, then `?` where a site it reaches raises what nothing names.
+    fn raised_of(path: string, name: string) -> List<string> {
+        self.held.entered()
+        let r = raised(self.engine, InferringFn { file: self.held.file_at(path), name: name })
+        [t.spelled() for t in r.members].concat(if r.unnamed { ["?"] } else { [] })
+    }
+
+    /// What the fn `name` the file at `path` declares reads of the program's state by its own body,
+    /// each place by its key: a module `state`'s, or its own `state` statement's; what it reads at
+    /// paint time that no reading answers for where `structural`.
+    fn state_reads_of(path: string, name: string, structural: bool = false) -> List<string> {
+        self.held.entered()
+        fn_reads(self.engine, self.held.file_at(path), name, structural).own
+    }
+
+    /// What the fn `name` the file at `path` declares reaches of the program's state, by its own
+    /// body and every fn it calls through any cycle, each place by its key; what it reaches at paint
+    /// time that no reading answers for where `structural`.
+    fn state_reaches_of(path: string, name: string, structural: bool = false) -> List<string> {
+        self.held.entered()
+        fn_reaches(self.engine, self.held.file_at(path), name, structural)
     }
 
     /// What a fact rule reads of each item of the file at `path` whose parse stands, in the order

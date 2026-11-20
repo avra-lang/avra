@@ -269,9 +269,10 @@ export type Asked = { subject: ExprId, on_present: bool }
 /// escape from the per-declaration door. A `TypeFacts` VALUE's own
 /// field reads (`.type_at(e)`, `.widened_at(e)`) are plain local
 /// methods once a caller holds it, never a second Kernel ask.
-/// The enclosing fn's parameter types — a hungry node's typing scope.
+/// Where a hungry node was typed: the enclosing fn's parameter types, the answers of the fns around
+/// it, innermost last, and the lambda barriers standing between, each with its promise.
 @derive(Fingerprint)
-export type ParamScope = { params: List<TypeId> }
+export type ParamScope = { params: List<TypeId>, answers: List<TypeId> = [], bars: List<int> = [], promises: List<List<TypeId>> = [] }
 
 /// A dot-call whose member is chosen at RUN: argument `seat` is a
 /// `dyn` value, and its type's tag picks among `members`.
@@ -473,9 +474,12 @@ impl TypeFacts {
         self.set_flag(e, hungry_bit)
     }
 
-    fn remember_scope(e: ExprId, params: List<TypeId>) {
-        self.scopes.set(e.index, ParamScope { params: params })
+    fn remember_scope(e: ExprId, frame: ParamScope) {
+        self.scopes.set(e.index, frame)
     }
+
+    /// Where the hungry node `e` was typed, absent for one that never went hungry.
+    fn frame_at(e: ExprId) -> ParamScope? { self.scopes.get(e.index) }
 
     fn scope_at(e: ExprId) -> List<TypeId>? { self.scopes.get(e.index)?.params }
 

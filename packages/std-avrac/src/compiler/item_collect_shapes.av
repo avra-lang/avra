@@ -364,12 +364,11 @@ fn closure_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 
 fn ties_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_tied) }
 
-/// Every value the written item `at` of `file` declares that a collection it reads gathers, by the
+/// Every value the written item `view` shows declares that a collection it reads gathers, by the
 /// component it instantiates or a mark it wears; handed the value and the collection.
-fn own_collections_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
-    [Found { at: item.store.expr_span(v!), args: [n!, c!] } for s in item.stmts for v in [item.store.stmt_value(s)] if v != null for n in [item.store.let_name(s)] if n != null for words in [some_list(item.store.instance_of(s)).concat([a.name for a in item.store.annotations_of(s)])] if !words.is_empty() for c in [gathering_read(engine, file, item.store, v!, words)] if c != null]
+fn own_collections_read(view: ItemView) -> List<Found> {
+    let item = view.item
+    [Found { at: item.store.expr_span(v!), args: [n!, c!] } for s in item.stmts for v in [item.store.stmt_value(s)] if v != null for n in [item.store.let_name(s)] if n != null for words in [some_list(item.store.instance_of(s)).concat([a.name for a in item.store.annotations_of(s)])] if !words.is_empty() for c in [gathering_read(view.engine, view.file, item.store, v!, words)] if c != null]
 }
 
 /// The first collection the value `v` of `store` reads that gathers by one of `words`.
@@ -409,7 +408,7 @@ impl GatherWord {
 /// a member reads its own collection only once compiled
 export law collect_self_read {
     kind: "collect.self_read"
-    reads: own_collections_read
+    reads_view: own_collections_read
     voice: self_read_words
     witness: "export component widget {\n    run: fn(int) -> int?\n}\n\ntype Entry = { name: string }\n\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n"
 }

@@ -324,15 +324,15 @@ fn first_running(engine: QueryEngine, file: SourceFileAddress, at: int) -> StmtI
     item.stmts.find((s) -> !item.store.is_declaration(s))
 }
 
-/// Each required context the program `file` starts reaches with nothing setting it, said where it
+/// Each required context the program the file `view` shows starts reaches with nothing setting it, said where it
 /// starts: the context, how it is reached, and the `dyn` call it crosses, where one does.
-fn requireds_unset(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let start? = first_running(engine, file, at) else { return [] }
-    let declared = program_contexts(engine, file.package_name)
+fn requireds_unset(view: ItemView) -> List<Found> {
+    let start? = first_running(view.engine, view.file, view.at) else { return [] }
+    let declared = program_contexts(view.engine, view.file.package_name)
     if !declared.any(it.required) { return [] }
-    let entry? = entry_lowered(engine, file) else { return [] }
-    let walked = read_survey(engine, file.package_name).settled(entry)
-    let store = read_item(engine, file, at).store
+    let entry? = entry_lowered(view.engine, view.file) else { return [] }
+    let walked = read_survey(view.engine, view.file.package_name).settled(entry)
+    let store = view.item.store
     [Found {
         at: store.stmt_span(start),
         args: [d.name, chain_said(r.chain), r.through?.subject ?? "", r.through?.held ?? ""],
@@ -348,22 +348,21 @@ fn chain_said(chain: List<string>) -> string {
 /// a required context is set before the program reads it
 export law context_set_before_read {
     kind: "ctx.required"
-    reads: requireds_unset
+    reads_view: requireds_unset
     voice: required_words
     witness: "ctx depth: int\n\nfn deep() -> int { ctx.depth }\n\ndeep()\n"
 }
 
 fn required_words(a: List<string>) -> Voice { context_required(a[0], a[1], a[2], a[3]) }
 
-/// Each `ctx` set the fns the written item `at` of `file` declares make that nothing under it reads:
+/// Each `ctx` set the fns the written item `view` shows declares make that nothing under it reads:
 /// where it stands, and the context.
-fn sets_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+fn sets_unread(view: ItemView) -> List<Found> {
+    let item = view.item
     let store = item.store
     if !store.refusals().is_empty() || !store.stmt_ids().any((s) -> store.ctx_set(s) != null) { return [] }
-    let bodies = [f for s in item.stmts for p in some_list(store.fn_parts(s)) for f in some_list(lowered_fn(engine, file, p.name))]
-    flatten([unread_in(engine, file, store, f) for f in bodies])
+    let bodies = [f for s in item.stmts for p in some_list(store.fn_parts(s)) for f in some_list(lowered_fn(view.engine, view.file, p.name))]
+    flatten([unread_in(view.engine, view.file, store, f) for f in bodies])
 }
 
 /// The sets `f` and the lambdas it lifts make that nothing under them reads, each at its statement in
@@ -379,7 +378,7 @@ fn unread_in(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, f
 /// a `ctx` set is read by something it is in force over
 export law context_set_read {
     kind: "ctx.unread"
-    reads: sets_unread
+    reads_view: sets_unread
     voice: unread_words
     warns: true
     witness: "ctx depth: int = 0\n\nfn f() -> int {\n    ctx depth = 1\n    2\n}\n\nf()\n"

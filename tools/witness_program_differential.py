@@ -115,7 +115,7 @@ def judged(avra, scratch, w):
     """One witness's row: its code, its verdict, its owner, and both first lines."""
     code = w["code"]
     row = {"code": code, "owner": owner(code), "old": "", "new": ""}
-    if w["shape"] in ("beyond", "absent"):
+    if w["shape"] in ("beyond", "absent", "unread"):
         return dict(row, verdict=w["shape"].upper(), old=w["why"])
     if any(p.startswith("/std/") for p in w["files"]):
         return dict(row, verdict="STD-ROOT")
@@ -175,7 +175,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         rows = list(pool.map(lambda w: judged(avra, scratch, w), witnesses))
     order = ["COMPILER-DEFECT", "ACCEPTED", "OTHER-ERROR", "DIFFERENT", "UNBUILT", "WARN-MISSING",
-             "OLD-SILENT", "STD-ROOT", "NEW-ONLY", "BEYOND", "ABSENT", "WARNED", "SAME"]
+             "OLD-SILENT", "STD-ROOT", "NEW-ONLY", "BEYOND", "ABSENT", "UNREAD", "WARNED", "SAME"]
     print("| code | verdict | owner (guess) | old first line | program layer first line |")
     print("|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (order.index(r["verdict"]), r["owner"], r["code"])):

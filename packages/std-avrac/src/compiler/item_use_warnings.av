@@ -12,28 +12,27 @@ use @std.program.query_engine.{QueryEngine}
 /// The kind a warning with none of its own is said under.
 const USE_WARNING: string = "annotation.warning"
 
-/// Every use, in the written item `at` of `file`, of a declaration an annotation warns of.
-fn uses_warned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+/// Every use, in the written item `view` shows, of a declaration an annotation warns of.
+fn uses_warned(view: ItemView) -> List<Found> {
+    let item = view.item
     if !item.store.refusals().is_empty() { return [] }
     let built = flatten(
-        [literals_warned(engine, t) for t in item_typed_nodes(engine, file, at, item)],
+        [literals_warned(view.engine, t) for t in item_typed_nodes(view.engine, view.file, view.at, item)],
     )
     let own = flatten(
-        [reads_warned(engine, file, item.store, b.reads) for b in item_bodies(engine, file, at, item)],
+        [reads_warned(view.engine, view.file, item.store, b.reads) for b in item_bodies(view.engine, view.file, view.at, item)],
     )
-    if !runs_in(engine, file, at) { return own.concat(built) }
-    let read = entry_read(engine, file)
+    if !runs_in(view.engine, view.file, view.at) { return own.concat(built) }
+    let read = entry_read(view.engine, view.file)
     let signed? = entry_signed(read) else { return own.concat(built) }
-    let entry = kept_body(body_checked(engine, file, signed, false))
+    let entry = kept_body(body_checked(view.engine, view.file, signed, false))
     own
         .concat(
             reads_warned(
-                engine,
-                file,
+                view.engine,
+                view.file,
                 read.store,
-                [r for r in entry.reads if item_holding(read, r.at) == at],
+                [r for r in entry.reads if item_holding(read, r.at) == view.at],
             ),
         )
         .concat(built)
@@ -80,7 +79,7 @@ fn warnings_worn(engine: QueryEngine, file: SourceFileAddress, space: Space, nam
 /// a declaration's warning is said at each use of it
 export law declaration_warning_at_use {
     kind: "annotation.warning"
-    reads: uses_warned
+    reads_view: uses_warned
     voice: use_words
     warns: true
     witness: "use @std.meta.{Fn, Diagnostic, warn}\nfn waning(f: Fn) -> List<Diagnostic> { [warn(\"on its way out\")] }\n@waning\nfn work() -> int { 1 }\nlet n = work()\n"

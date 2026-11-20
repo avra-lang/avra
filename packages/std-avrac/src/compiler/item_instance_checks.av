@@ -28,19 +28,10 @@ type ItemChecked = { rows: List<InstanceSaid> }
 /// every body the item holds — its fns', its defaults' and consts', a declared instance's own, and the statements it runs where
 /// it runs where its file is an entry (the entry read only by an item that runs one). An instance is judged only where it settles alone (`settles_alone`); an item
 /// that writes no instance reads nothing more.
+/// A query of its own: a check runs a program, so whether it runs again is the engine's to judge,
+/// apart from the laws that read what it says.
+@query
 fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
-    if !item_held(engine, file, at) { return instances_checked_made(engine, file, at) }
-    let view = item_view(engine, file, at)
-    let held? = view.instances_checked.get() else {
-        let made = instances_checked_made(engine, file, at)
-        view.instances_checked.set(made)
-        return made
-    }
-    held
-}
-
-/// What `item_instances_checked` answers, made.
-fn instances_checked_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
     if !item_held(engine, file, at) { return ItemChecked { rows: [] } }
     let item = read_item(engine, file, at)
     if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
@@ -52,6 +43,16 @@ fn instances_checked_made(engine: QueryEngine, file: SourceFileAddress, at: int)
     let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
     let judged = [judged_in(engine, file, b, -1) for b in bodies].concat(ran)
     ItemChecked { rows: flatten([instances_said(engine, file, entry, j) for j in judged]) }
+}
+
+/// What `item_instances_checked` answers for the item `view` shows, asked once a view.
+fn instances_checked_seen(view: ItemView) -> ItemChecked {
+    let held? = view.instances_checked.get() else {
+        let asked = item_instances_checked(view.engine, view.file, view.at)
+        view.instances_checked.set(asked)
+        return asked
+    }
+    held
 }
 
 /// A typed body an item holds, over the store its nodes stand in: the statement it's lowered as
@@ -161,20 +162,20 @@ fn did_not_run(at: FindingAt?, why: Unsettled) -> List<InstanceSaid> {
 
 // ── Laws ────────────────────────────────────────────────────────────
 
-/// Every refusal the checks of the instances the written item `at` declares said, each with its
+/// Every refusal the checks of the instances the item `view` shows declares said, each with its
 /// words and remedy.
-fn checks_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_instances_checked(engine, file, at).rows if r.ran && !r.warning]
+fn checks_refused(view: ItemView) -> List<Found> {
+    [r.found() for r in instances_checked_seen(view).rows if r.ran && !r.warning]
 }
 
-/// Every warning the checks of the instances the written item `at` declares said.
-fn checks_warned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_instances_checked(engine, file, at).rows if r.ran && r.warning]
+/// Every warning the checks of the instances the item `view` shows declares said.
+fn checks_warned(view: ItemView) -> List<Found> {
+    [r.found() for r in instances_checked_seen(view).rows if r.ran && r.warning]
 }
 
-/// Every check of an instance the written item `at` declares that did not run, with why.
-fn checks_unrun(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [r.found() for r in item_instances_checked(engine, file, at).rows if !r.ran]
+/// Every check of an instance the item `view` shows declares that did not run, with why.
+fn checks_unrun(view: ItemView) -> List<Found> {
+    [r.found() for r in instances_checked_seen(view).rows if !r.ran]
 }
 
 impl InstanceSaid {
@@ -186,7 +187,7 @@ impl InstanceSaid {
 /// a component's `check` refused this instance
 export law instance_check_refused {
     kind: "lower.component_checked"
-    reads: checks_refused
+    reads_view: checks_refused
     voice: refused_words
     witness: "use @std.meta.{Diagnostic, refuse}\n\ncomponent tray {\n    capacity: int = 1\n    fn check() -> List<Diagnostic> { if self.capacity < 1 { [refuse(\"a tray holds at least one\")] } else { [] } }\n}\n\ntray t { capacity: 0 }\n\"\${t.capacity}\"\n"
 }
@@ -194,7 +195,7 @@ export law instance_check_refused {
 /// a component's `check` warned of this instance
 export law instance_check_warned {
     kind: "lower.component_checked"
-    reads: checks_warned
+    reads_view: checks_warned
     voice: warned_words
     warns: true
     witness: "use @std.meta.{Diagnostic}\n\ncomponent tray {\n    capacity: int = 1\n    fn check() -> List<Diagnostic> { if self.capacity > 9 { [Diagnostic { message: \"a large tray\", help: null, at: null, warning: true }] } else { [] } }\n}\n\ntray t { capacity: 10 }\n\"\${t.capacity}\"\n"
@@ -203,7 +204,7 @@ export law instance_check_warned {
 /// a component's `check` did not run over this instance
 export law instance_check_unrun {
     kind: "lower.component_checked"
-    reads: checks_unrun
+    reads_view: checks_unrun
     voice: unrun_words
     witness: "use @std.meta.{Diagnostic}\n\ncomponent tray {\n    capacity: int = 1\n    fn check() -> List<Diagnostic> {\n        let said: List<List<Diagnostic>> = []\n        said[self.capacity]\n    }\n}\n\ntray t { capacity: 5 }\n\"\${t.capacity}\"\n"
 }

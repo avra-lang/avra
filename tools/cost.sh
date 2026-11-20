@@ -28,12 +28,16 @@ git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
     echo "cost: snapshot $snapshot is not in this clone and could not be fetched"; exit 1; }
 command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to one core"; exit 1; }
 
-# The cold workloads: a name, then the command the census compiler runs in the snapshot.
+# The cold workloads: a name, the machine's store it runs over, then the command the census compiler
+# runs in the snapshot. A STORE IS NOT THE COMPILER: every run but one has the machine's store off, so
+# its rows are what the compiler does, whatever a store holds; `cold-with-store-fill` is the cli's
+# cold check over an empty store, which it fills — the store's own price, ratcheted apart.
 workloads() {
     cat << 'EOF'
-check-cli check --counts packages/cli
-build-cli build packages/cli
-check-program check --counts packages/std-program
+check-cli off check --counts packages/cli
+build-cli off build packages/cli
+check-program off check --counts packages/std-program
+cold-with-store-fill filled check --counts packages/cli
 EOF
 }
 
@@ -75,13 +79,16 @@ printf '%s\n' "$snapshot" > "$out/snapshot"
 cache=$root/$out/cache
 
 # One run of the census compiler in the snapshot, once what it reads is older than the stamp window:
-# its census to <name>.out, what it printed to <name>.stdout.
+# its census to <name>.out, what it printed to <name>.stdout. The machine's store is off unless the
+# workload's `store` is `filled`: then on, in the run's own cache, which every cold run starts bare.
 counted() {
     name=$1; shift
+    machine=0
+    [ "${store:-off}" != filled ] || machine=1
     sleep 3
     started=$(date +%s)
     # the census reports at exit only where the run accounts (AVRA_MEM_STATS)
-    (cd "$src" && AVRA_MEM_STATS=1 AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
+    (cd "$src" && unset AVRA_MACHINE_STORE_DIR && AVRA_MACHINE_STORE=$machine AVRA_MEM_STATS=1 AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
         sh "$root/tools/memcap.sh" "${COST_CAP_MB:-8000}" taskset -c 0 build/avra "$@" \
         > "$root/$out/$name.stdout" 2> "$root/$out/$name.out") || {
         tail -20 "$out/$name.out"; echo "cost: $name failed ($*)"; exit 1; }
@@ -117,7 +124,7 @@ bare() {
     find "$cache" -mindepth 1 -delete
 }
 
-workloads | while read -r name command; do
+workloads | while read -r name store command; do
     bare
     # shellcheck disable=SC2086
     counted "$name" $command
