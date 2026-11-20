@@ -1,0 +1,387 @@
+//! WHAT A PROGRAM READS OF ITS CONTEXTS, read off its lowered code: a body reads a context where it
+//! reads its key with no set of that key in force, itself or through what it calls — a call, a lambda
+//! or a fn taken as a value where it is made, which runs under the frame in force there, and a call
+//! through a `dyn` box, which may be any type the program boxes there, so it reads what each of their
+//! methods of that name reads. A set is in force from its instruction to its back; a branch's or a
+//! loop's sets end with it. A recursion settles by asking again until no body reads more.
+//!
+//! Two laws read it: a required context (one declared with no default) the program reaches with
+//! nothing setting it is refused where the program starts, naming how it is reached; and a set
+//! nothing in force under it reads is said, since it changes nothing.
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use core.{
+    STATIC_FN,
+    BoxMark,
+    ContextMarks,
+    CalledFn,
+    DynMark,
+    Ins,
+    Reg,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    some_list,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.ctxs.{context_required, context_set_unread}
+
+/// A context a body reads with nothing in it setting it first: its key, the bodies the read is reached
+/// through from the body asked, outermost first, and the `dyn` call it crosses, where one does.
+type CtxRead = { key: int, chain: List<string>, through: Through? = null }
+
+/// A `dyn` call a read crosses: the box's type, and the type a box there may hold whose method reads.
+type Through = { subject: string, held: string }
+
+/// A set in force while a body is walked: its key, and the statement that wrote it.
+type InForce = { key: int, stmt: int }
+
+/// A survey of the program `package` that has walked every entry of it: every fn value and `dyn`
+/// box the program makes is known to it before it walks one body alone.
+fn program_survey(engine: QueryEngine, package: string) -> ReadSurvey {
+    let survey = read_survey(engine, package)
+    for f in program_files(engine, package) {
+        if f.package_name != package { continue }
+        let e? = entry_plain(engine, f) else { continue }
+        let _ = survey.settled(e)
+    }
+    survey
+}
+
+/// What one walk of a body found: the reads it owes its caller, and the statements of the sets it
+/// makes that something under them read.
+type Walked = { reads: List<CtxRead>, used: List<int> }
+
+/// The most rounds a survey asks again before it stands on what it has.
+const ROUNDS: int = 8
+
+/// One survey's working set over the program `package`: each body's reads by its symbol, the bodies
+/// being walked, the `dyn` boxes the program makes as far as the walk has met them, and whether a
+/// round met a body it was still walking or a box it hadn't met. Nothing in it is saved.
+type ReadSurvey = {
+    engine: QueryEngine,
+    package: string,
+    memo: Cell<Map<string, List<CtxRead>>>,
+    before: Cell<Map<string, List<CtxRead>>>,
+    open: Cell<List<string>>,
+    met_calls: Cell<List<CalledFn>>,
+    values: Cell<List<CalledFn>>,
+    boxes: Cell<List<BoxMark>>,
+    unsettled: Cell<bool>,
+}
+
+fn read_survey(engine: QueryEngine, package: string) -> ReadSurvey {
+    let none: Map<string, List<CtxRead>> = {}
+    let names: List<string> = []
+    let made: List<BoxMark> = []
+    let called: List<CalledFn> = []
+    let valued: List<CalledFn> = []
+    ReadSurvey {
+        engine: engine,
+        package: package,
+        memo: Cell.new(none),
+        before: Cell.new(none),
+        open: Cell.new(names),
+        met_calls: Cell.new(called),
+        values: Cell.new(valued),
+        boxes: Cell.new(made),
+        unsettled: Cell.new(false),
+    }
+}
+
+impl ReadSurvey {
+    /// What `f` reads, walked until no round meets more: each round asks every body afresh, a body
+    /// still being walked answering what the round before found.
+    fn settled(f: LoweredFn) -> Walked {
+        self.met(made_in(f))
+        mut walked = self.walk(f.ins, f, f.marks)
+        mut round = 1
+        while self.unsettled.get() && round < ROUNDS {
+            self.before.set(self.memo.get())
+            self.memo.set({})
+            self.unsettled.set(false)
+            walked = self.walk(f.ins, f, f.marks)
+            round = round + 1
+        }
+        walked
+    }
+
+    /// What a call of `c` reads; a body still being walked answers what is known of it.
+    fn reads_of(c: CalledFn) -> List<CtxRead> {
+        let kept = self.memo.get().get(c.symbol)
+        if kept != null { return kept! }
+        if self.open.get().contains(c.symbol) {
+            self.unsettled.set(true)
+            return self.before.get().get(c.symbol) ?? []
+        }
+        let body? = reached_body(self.engine, c) else { return [] }
+        if !self.met_calls.get().any(it.symbol == c.symbol) { self.met_calls.push(c) }
+        self.open.set(self.open.get().concat([c.symbol]))
+        self.met(made_in(body))
+        let reads = self.walk(body.ins, body, body.marks).reads
+        self.open.set(self.open.get().filter(it != c.symbol))
+        self.memo.put(c.symbol, reads)
+        reads
+    }
+
+    /// `boxes` among the `dyn` boxes the program makes; a round that meets one it hadn't is
+    /// unsettled, since a `dyn` call walked before may hold one of them.
+    fn met(boxes: List<BoxMark>) {
+        let known = self.boxes.get()
+        let new = [b for b in boxes if !known.any((k) -> same_box(k, b))]
+        if new.is_empty() { return }
+        self.boxes.set(known.concat(new))
+        self.unsettled.set(true)
+    }
+
+    /// `c` among the declared fns the program takes as values; a round that meets one it hadn't is
+    /// unsettled, since a call through a fn value walked before may be it.
+    fn valued(c: CalledFn) {
+        if self.values.get().any(it.symbol == c.symbol) { return }
+        self.values.push(c)
+        self.unsettled.set(true)
+    }
+
+    /// What a value the code `code` names, made where `owner`'s instruction makes it, owes there: a
+    /// lambda `owner` lifts reads what its body reads where it is made, whose frame it runs under; a
+    /// declared fn taken as a value runs under the frame of whoever calls it, so it owes nothing here
+    /// and is kept among the program's fn values.
+    fn made_value(owner: LoweredFn, code: string) -> Walked {
+        let lift = owner.lifts.find(it.symbol == code)
+        if lift != null { return self.walk(lift!.ins, owner, lift!.marks) }
+        let target = owner.wrappers.find(it.symbol == code)?.target ?? code
+        let c = callee_named(owner, target)
+        if c != null { self.valued(c!) }
+        Walked { reads: [], used: [] }
+    }
+
+    /// What a call through a fn value may read: what any declared fn the program takes as a value
+    /// reads, each reached through itself — a lambda's own reads were owed where it was made.
+    fn value_reads() -> List<CtxRead> {
+        [r with { chain: [v.name].concat(r.chain) } for v in self.values.get() for r in self.reads_of(v)]
+    }
+
+    /// What the call through a `dyn` box `d` may read: what the method in its slot of each box of its
+    /// trait the program makes reads (rule (i)), reached through the type that holds it.
+    fn dyn_reads(d: DynMark) -> List<CtxRead> {
+        [r with { chain: [m.callee.name].concat(r.chain), through: r.through ?? Through { subject: d.subject.spelled(), held: m.held } } for m in self.held_methods(d.subject, d.slot) for r in self.reads_of(m.callee)]
+    }
+
+    /// The method each `dyn` box of `subject` the program makes holds in the trait's slot `slot`, with
+    /// the type of the value it holds: what a call through such a box at that slot may run.
+    fn held_methods(subject: SignedType, slot: int) -> List<HeldMethod> {
+        [HeldMethod { callee: b.methods[slot], held: b.held.spelled() } for b in self.boxes.get() if b.into.same_type(subject) && slot < b.methods.length]
+    }
+
+    /// One walk of the instructions `ins` of the body `owner`, its marks `marks`, from no set in force.
+    fn walk(ins: List<Ins>, owner: LoweredFn, marks: ContextMarks) -> Walked {
+        let consts = ints_of(ins)
+        mut force: List<InForce> = []
+        mut saved: List<List<InForce>> = []
+        mut reads: List<CtxRead> = []
+        mut used: List<int> = []
+        for i, x in ins {
+            mut heard: List<CtxRead> = []
+            match x {
+                .CallRtVoid(row, args) -> {
+                    if row == SET_ROW && args.length > 0 {
+                        force = force
+                            .concat(
+                                [
+                                    InForce {
+                                        key: int_at(consts, args[0]),
+                                        stmt: set_stmt(marks, i),
+                                    },
+                                ],
+                            )
+                    } else if row == BACK_ROW && !force.is_empty() {
+                        force = force.take(force.length - 1)
+                    }
+                },
+                .CallRt(_, row, args) -> {
+                    if row == READ_ROW && args.length > 0 { heard = [CtxRead { key: int_at(consts, args[0]), chain: [] }] }
+                },
+                .Call(_, callee, _) -> {
+                    let c? = callee_named(owner, callee) else { continue }
+                    heard = [r with { chain: [c.name].concat(r.chain) } for r in self.reads_of(c)]
+                },
+                .FnAddr(_, sym) -> {
+                    let inner = self.made_value(owner, sym)
+                    used = used.concat(inner.used)
+                    heard = inner.reads
+                },
+                .StaticAddr(_, sym) -> {
+                    if !sym.starts_with(STATIC_FN) { continue }
+                    let inner = self.made_value(owner, sym.substring(STATIC_FN.length, sym.length))
+                    used = used.concat(inner.used)
+                    heard = inner.reads
+                },
+                .CallPtr(dst, _, _) -> {
+                    let d = marks.dyns.find(it.dst == dst.index)
+                    heard = if d == null { self.value_reads() } else { self.dyn_reads(d!) }
+                },
+                .IfStart(_) or .SwitchStart(_, _) or .LoopStart -> { saved = saved.concat([force]) },
+                .ArmEnd(_) -> { force = saved.last() ?? [] },
+                .RegionEnd(_, _) or .LoopEnd -> {
+                    force = saved.last() ?? []
+                    saved = saved.take(max(saved.length - 1, 0))
+                },
+                rest -> nothing_heard(),
+            }
+            for r in heard {
+                let held = force.filter(it.key == r.key).last()
+                if held != null {
+                    used = used.concat([held!.stmt])
+                } else if !reads.any(it.key == r.key) {
+                    reads = reads.concat([r])
+                }
+            }
+        }
+        Walked { reads: reads, used: used }
+    }
+}
+
+/// What an instruction that says nothing of contexts does to a walk.
+fn nothing_heard() {}
+
+/// The `dyn` boxes `f` and the lambdas it lifts make.
+fn made_in(f: LoweredFn) -> List<BoxMark> { f.marks.boxes.concat(flatten([l.marks.boxes for l in f.lifts])) }
+
+/// Whether two boxes are one: of one type, over values of one type.
+fn same_box(a: BoxMark, b: BoxMark) -> bool { a.into.same_type(b.into) && a.held.same_type(b.held) }
+
+/// A method a `dyn` call may run: its callee, and the type whose method it is.
+type HeldMethod = { callee: CalledFn, held: string }
+
+/// The rows a set, its end and a read call.
+const SET_ROW: string = "avra_ctx_set"
+
+const BACK_ROW: string = "avra_ctx_back"
+
+const READ_ROW: string = "avra_ctx_read"
+
+/// Each register `ins` writes a whole number into, by its index spelled, with the number.
+fn ints_of(ins: List<Ins>) -> Map<string, int> {
+    mut found: Map<string, int> = {}
+    for x in ins {
+        let c? = int_written(x) else { continue }
+        found.set("${c.reg}", c.value)
+    }
+    found
+}
+
+/// A register and the whole number written into it.
+type IntWritten = { reg: int, value: int }
+
+/// The whole number `x` writes into a register, where it writes one.
+fn int_written(x: Ins) -> IntWritten? {
+    match x { .ConstInt(dst, v) -> IntWritten { reg: dst.index, value: v }, rest -> null }
+}
+
+/// The number `consts` says the register `r` holds; 0 where it holds none known.
+fn int_at(consts: Map<string, int>, r: Reg) -> int { consts.get("${r.index}") ?? 0 }
+
+/// The statement that wrote the set the instruction `at` makes, as `marks` holds it; -1 where none
+/// does.
+fn set_stmt(marks: ContextMarks, at: int) -> int { marks.sets.find(it.at == at)?.stmt ?? -1 }
+
+/// The callee of `owner` or of a lambda it lifts known by `symbol`.
+fn callee_named(owner: LoweredFn, symbol: string) -> CalledFn? {
+    owner.callees.find(it.symbol == symbol) ?? flatten([l.callees for l in owner.lifts])
+        .find(it.symbol == symbol)
+}
+
+fn max(a: int, b: int) -> int { if a > b { a } else { b } }
+
+/// A context the program `package` declares, as its reads are judged: its key, its name, and whether
+/// it is required: declared with no default.
+type Declared = { key: int, name: string, required: bool }
+
+/// Each context the files of the program `package` reads declare.
+fn program_contexts(engine: QueryEngine, package: string) -> List<Declared> {
+    [Declared { key: c.key, name: c.name, required: c.required } for c in contexts_declared(engine, package).contexts]
+}
+
+/// Each context the files of the program `package` reads declare, worked out from every file's
+/// declarations.
+fn contexts_of(engine: QueryEngine, package: string) -> List<ContextDeclared> {
+    [ContextDeclared { key: context_key(d), name: d.name, required: context_required_of(engine, d) } for f in program_files(engine, package) for d in file_declares(engine, f).names if d.kind == ItemKind.Ctx]
+}
+
+/// Whether the context `d` is declared with no default.
+fn context_required_of(engine: QueryEngine, d: DeclaredName) -> bool {
+    let item = read_item(engine, d.file, d.item)
+    item.stmts.any((s) -> item.store.ctx_declared(s) == d.name && item.store.stmt_value(s) == null)
+}
+
+/// The first statement `file` runs, where the written item `at` holds it.
+fn first_running(engine: QueryEngine, file: SourceFileAddress, at: int) -> StmtId? {
+    if !item_held(engine, file, at) { return null }
+    if (0..at).any(item_said(engine, file, it).runs) { return null }
+    let item = read_item(engine, file, at)
+    item.stmts.find((s) -> !item.store.is_declaration(s))
+}
+
+/// Each required context the program the file `view` shows starts reaches with nothing setting it, said where it
+/// starts: the context, how it is reached, and the `dyn` call it crosses, where one does.
+fn requireds_unset(view: ItemView) -> List<Found> {
+    let start? = first_running(view.engine, view.file, view.at) else { return [] }
+    let declared = program_contexts(view.engine, view.file.package_name)
+    if !declared.any(it.required) { return [] }
+    let entry? = entry_lowered(view.engine, view.file) else { return [] }
+    let walked = read_survey(view.engine, view.file.package_name).settled(entry)
+    let store = view.item.store
+    [Found {
+        at: store.stmt_span(start),
+        args: [d.name, chain_said(r.chain), r.through?.subject ?? "", r.through?.held ?? ""],
+    } for r in walked.reads for d in declared if d.key == r.key && d.required]
+}
+
+/// How a read is reached, as a reader follows it.
+fn chain_said(chain: List<string>) -> string {
+    if chain.is_empty() { return "where it starts" }
+    ["`${n}`" for n in chain].join(" → ")
+}
+
+/// a required context is set before the program reads it
+export law context_set_before_read {
+    kind: "ctx.required"
+    reads_view: requireds_unset
+    voice: required_words
+    witness: "ctx depth: int\n\nfn deep() -> int { ctx.depth }\n\ndeep()\n"
+}
+
+fn required_words(a: List<string>) -> Voice { context_required(a[0], a[1], a[2], a[3]) }
+
+/// Each `ctx` set the fns the written item `view` shows declares make that nothing under it reads:
+/// where it stands, and the context.
+fn sets_unread(view: ItemView) -> List<Found> {
+    let item = view.item
+    let store = item.store
+    if !store.refusals().is_empty() || !store.stmt_ids().any((s) -> store.ctx_set(s) != null) { return [] }
+    let bodies = [f for s in item.stmts for p in some_list(store.fn_parts(s)) for f in some_list(lowered_fn(view.engine, view.file, p.name))]
+    flatten([unread_in(view.engine, view.file, store, f) for f in bodies])
+}
+
+/// The sets `f` and the lambdas it lifts make that nothing under them reads, each at its statement in
+/// `store`.
+fn unread_in(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, f: LoweredFn) -> List<
+    Found,
+> {
+    let walked = program_survey(engine, file.package_name).settled(f)
+    let marked = f.marks.sets.concat(flatten([l.marks.sets for l in f.lifts]))
+    [Found { at: store.stmt_span(s), args: [n] } for m in marked if m.stmt >= 0 && !walked.used.contains(m.stmt) for s in [StmtId { index: m.stmt }] for n in some_list(store.ctx_set(s))]
+}
+
+/// a `ctx` set is read by something it is in force over
+export law context_set_read {
+    kind: "ctx.unread"
+    reads_view: sets_unread
+    voice: unread_words
+    warns: true
+    witness: "ctx depth: int = 0\n\nfn f() -> int {\n    ctx depth = 1\n    2\n}\n\nf()\n"
+}
+
+fn unread_words(a: List<string>) -> Voice { context_set_unread(a[0]) }

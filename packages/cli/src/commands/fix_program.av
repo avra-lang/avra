@@ -1,0 +1,69 @@
+//! `avra fix` on the program layer: the same applications the old path makes, read off the layer's
+//! answers. Every suggestion a diagnostic of the file carries — a law's, a rule's — is one
+//! application; it is PROVED where the program's code is the same with its edits spliced in (each
+//! fn's, method's and the statements' lowering, read by a second engine over the edited text), and
+//! a rule's rewrite the proof doesn't hold is ACCEPTED by the law its rule declares where the
+//! edited program is refused nothing. Under `--repair`, each error's certain suggestion is tried
+//! instead, accepted where it leaves fewer errors and none new.
+use @std.cli.{CliResult}
+use @std.avrac.compiler.{avra_fact_definitions, fixing, program_erring}
+use @std.path.{joined_path}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+
+/// `avra fix` of the file, or a package's entry, the arguments name, on the program layer: a program
+/// its laws refuse is said and left as it stands, exit 1, unless `--repair` asks for its errors'
+/// certain remedies.
+fn program_fixed(args: CliResult) -> int {
+    let path? = argued_path(args) else { return 2 }
+    let aimed = match program_aimed(path) { .Ok(a) -> a, .Err(code) -> { return code } }
+    let disk = aimed.disk
+    disk.entered()
+    let engine = query_engine(
+        program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
+        avra_fact_definitions(),
+    )
+    let h = program_file(disk, disk.file_at(aimed.bin))
+    let repair = args.has_flag("repair")
+    let erring = program_erring(engine, disk.name)
+    if !erring.is_empty() && !repair {
+        println([erring_said(engine, program_file(disk, f)) for f in erring].join("\n"))
+        return 1
+    }
+    let text = text_at(h.full) ?? ""
+    let named = args.option("only")
+    let only = if named == "" { null } else { named }
+    let at = fixing(
+        engine,
+        h,
+        disk.name,
+        text,
+        (edited) -> disk.laid_over(h.full, edited),
+        () -> disk.entered(),
+    )
+    let diags = [d for d in at.diags() if only == null || d.kind == only!]
+    let apps = if repair { at.repairs(diags) } else { at.proved(diags) }
+    disk.entered()
+    match fixes_written(h.full, text, apps, args) {
+        .Ok(code) -> code,
+        .Err(report) -> {
+            println(report)
+            1
+        },
+    }
+}
+
+impl Disk {
+    /// An engine over the program with `text` laid over the file at `full`, its world entered. It
+    /// keeps nothing: the store is read, never saved.
+    fn laid_over(full: string, text: string) -> QueryEngine {
+        mut over: Map<string, string> = {}
+        over.set(full, text)
+        let disk = self with { over: over }
+        disk.entered()
+        query_engine(
+            program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
+            avra_fact_definitions(),
+        )
+    }
+}

@@ -1,0 +1,37 @@
+//! proves a handler that traps ends: each trap leaves its start
+//! counted, and once the starts reach the terms the next drain buries
+//! the item unanswered and starts no handler.
+use @std.meta.{contained}
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
+use @std.time.{ms}
+
+fn trapping(starts: Cell<int>, d: Delivery<int>) -> Result<int, string> {
+    starts.set(starts.get() + 1)
+    let none: List<int> = []
+    none[d.item]
+}
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn said(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "trapped" }
+}
+
+let starts: Cell<int> = Cell.new(0)
+queue<Dead<int, string>> letters {}
+queue<int> jobs {
+    lease: ms(0)
+    retries: 2
+}
+worker settle {
+    reads: jobs
+    each: (d: Delivery<int>) -> trapping(starts, d)
+    dead: letters
+}
+use tests.support.letters.{first_letter}
+let _ = jobs.home().send(7, key("k"))
+let runs = [said(contained(() -> drain(settle) catch 0 - 1)) for _i in 0..3]
+let gone = first_letter(letters)
+"${runs.join(", ")} | starts ${starts.get()} | ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

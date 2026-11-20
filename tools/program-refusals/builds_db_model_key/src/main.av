@@ -1,0 +1,25 @@
+use @std.db.{model, unique, ModelError}
+use @std.sqlite.{Db}
+
+@model
+@unique(entity, property, value)
+type Fact = { id: int = 0, entity: string, property: string, value: string }
+
+fn tried(db: Db) -> Result<string, ModelError> {
+    match Fact.create_table(db) { .Err(e) -> { return .Err(ModelError.Other(e)) }, .Ok(_) -> {} }
+    let _ = Fact { entity: "e", property: "p", value: "v" }.insert(db)?
+    let _ = Fact { entity: "e", property: "p", value: "w" }.insert(db)?
+    match Fact { entity: "e", property: "p", value: "v" }.insert(db) {
+        .Err(e) -> .Ok(e.describe().message),
+        .Ok(_) -> .Ok("the same key twice was let in"),
+    }
+}
+
+fn shown() -> string {
+    match Db.memory() {
+        .Ok(db) -> match tried(db) { .Ok(s) -> s, .Err(e) -> "failed: ${e.describe().message}" },
+        .Err(_) -> "no db",
+    }
+}
+
+println(shown())

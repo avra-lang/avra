@@ -1,0 +1,463 @@
+//! THE COMPILER — the driver above the language's features: features assembled
+//! into one grammar, a program derived over what the store can stand in for,
+//! and every command a projection of that derivation.
+//!
+//!   mod.av        assemble features; THE language (`avra()`)
+//!   program.av    parse: text -> Parsed; the semantics maps; the Program view
+//!   analysis.av   every fact of one file in ONE artifact (Analysis)
+//!   workspace*.av the query families over the memo kernel (`@std/relation`'s engine);
+//!                 expand.av derives and marks, modules.av/packages.av where
+//!                 source lives, whole.av the whole program, voices.av its words
+//!   derive.av     THE DERIVATION every command asks: hold, load, analyse,
+//!                 lower, keep (docs/2026_09_21_COMPILER.md)
+//!   record.av, interface.av, settlement_wire.av   what stands in for a file
+//!   build.av, link.av         the build: objects, the program's module, the link
+//!   suite.av, suite_entry.av  the suite: a build with another entry
+//!   receivers.av  the receiver seal, whole-program
+//!   codes.av      the built-in diagnostic registry
+//!
+//!   resolve/   names -> bindings, one file (NameFacts)
+//!   typing/    one declaration's body -> types; signatures; traits and impls
+//!   lower/     one body -> IR (a unit); the program its entry's closure —
+//!              THE semantics. Owns `Lowered` and `Body`.
+//!   memory/    the memory strategy, per scope level; escapes
+//!   backend/   what consumes the IR: llvm (llvm_api.av the C surface), the
+//!              evaluator (interp*.av), the IR's human projection (ir_text.av)
+//!   store/     every artifact a build keeps, on disk, by content
+//!   host/      the filesystem seam and the manifest
+//!   format/    the AST's source projection (`avra fmt`)
+//!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
+use @std.program.token_columns.{TokenRoles, token_roles}
+use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor, engine_parse}
+use @std.meta.{Field}
+use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
+use grammar.{avra_known_terminals, avra_lexeme, token_classes_worn}
+use compiler.format.{rule_scale, worded_nodes}
+use features.{
+    Wording,
+    node_wordings,
+    wording_defects,
+    LanguageFeature,
+    BuilderRow,
+    compose_grammar,
+    builder_defects,
+    reserved_words,
+    soft_word_defects,
+    builder_index,
+    code_defects,
+    LanguageRows,
+    Dispatch,
+    bind_nodes,
+    node_builders,
+    computes,
+    computed_extras,
+    BlockWords,
+    payloads_of,
+}
+use diagnostics.{Diag, DiagCode, new_source_file}
+use features.type_expr.{type_expr}
+use features.stmt_spine.{stmt_spine}
+use features.block.{block}
+use features.let_stmt.{let_stmt}
+use features.consts.{consts}
+use features.mutation.{mutation}
+use features.loops.{loops}
+use features.fns.{fns}
+use features.expr_stmt.{expr_stmt}
+use features.bool_lit.{bool_lit}
+use features.quote.{quote_lit}
+use features.sublang.{sublang}
+use features.if_expr.{if_expr}
+use features.when_expr.{when_expr}
+use features.structs.{structs}
+use features.enums.{enums}
+use features.formats.{formats}
+use features.narrows.{narrows}
+use features.nullable.{nullable}
+use features.results.{results}
+use features.ctxs.{contexts}
+use features.defers.{defers}
+use features.asset.{asset_files}
+use features.impls.{impls}
+use features.closures.{closures}
+use features.tasks.{tasks}
+use features.select_expr.{select_expr}
+use features.expr_spine.{expr_spine}
+use features.ranges.{ranges}
+use features.lists.{lists}
+use features.maps.{maps}
+use features.cells.{cells}
+use features.tables.{tables}
+use features.grammar_lit.{grammar_lit}
+use features.components.{components}
+use features.annotations.{annotations}
+use features.modules.{modules}
+use features.specs.{specs}
+use features.str_lit.{str_lit}
+use features.bytes.{bytes}
+use features.floats.{floats}
+use features.ints.{ints}
+use features.collects.{collects}
+
+/// A feature set assembled once: composed, parsed, merged, and gated
+/// on grammar + builder coherence. `grammar` is null when assembly
+/// found defects — they are the diagnostics. `keywords` derive from
+/// the grammar's own literals — the features' fragments ARE the
+/// keyword list.
+export type Language = {
+    features: List<LanguageFeature>,
+    // every builder under its name — the parse dispatches a node's
+    // build through one lookup, where it walked every feature's rows
+    builders: Map<string, BuilderRow>,
+    syntax: Ready?,
+    // what the printer reads of a node's rule, by `Owner.Variant`
+    wordings: Map<string, Wording>,
+    keywords: List<string>,
+    // what the grammar's rules say its tokens do: which open and close a
+    // pair, and which end an item
+    roles: TokenRoles,
+    rows: LanguageRows,
+    dispatch: Dispatch,
+    diagnostics: List<Diag>,
+    // the generated parser's tables, present only where the grammar is the one it was made from
+    untold: UntoldParse? = null,
+}
+
+export fn assemble(features: List<LanguageFeature>) -> Language {
+    // NOTHING IS PARSED HERE. Each feature read its own
+    // `grammar { … }` when the compiler ran; assembly is a merge.
+    let g = compose_grammar(features).built.merged()
+    // BOUND ONCE: every `-> Expr.Variant` resolved against the node
+    // model into the call the engine runs, its arguments in payload
+    // order. The AUTHORED grammar is what the feature registry is
+    // judged against — a node build names no feature's builder.
+    let rows = node_payload_rows().concat(refusal_rows(features))
+    let bound = bind_nodes(g, rows)
+    let wordings = node_wordings(g, rows, rule_scale)
+    // PREPARED ONCE: validated and indexed here, so a parse pays for
+    // neither — and the defects the assembly gates on ARE that
+    // validation, asked a single time.
+    let rd = ready(bound.g, avra_known_terminals())
+    let codes = code_registry(features)
+    let defects = flatten(
+        [
+            rd.defects,
+            bound.defects,
+            template_defects(bound.g, rows),
+            builder_defects(features, g),
+            computed_defects(g, rows),
+            code_defects(codes),
+            wording_defects(wordings, worded_nodes),
+            soft_word_defects(features),
+        ],
+    )
+    if !defects.is_empty() { return unassembled(features, defects) }
+    Language {
+        features: features,
+        builders: with_nodes(builder_index(features), rows, refusal_builders(features), g),
+        syntax: rd,
+        wordings: wordings.found,
+        keywords: reserved_words(features, g),
+        roles: token_roles(rd),
+        rows: rows_of(features, codes),
+        dispatch: new_dispatch(),
+        diagnostics: [],
+    }
+}
+
+/// The payloads and the ANCHOR the model declares for every node
+/// builder a rule may name — a node builder's name is the variant's
+/// own, which no feature can spell, and a hand builder for the same
+/// variant wears them too, so the mark holds wherever a node is made.
+fn with_nodes(
+    index: Map<string, BuilderRow>,
+    rows: List<PayloadRow>,
+    refusals: List<BuilderRow>,
+    g: Grammar,
+) -> Map<string, BuilderRow> {
+    mut out = index
+    for row in node_builders().concat(refusals) { out.set(row.name, row) }
+    for row in rows {
+        let name = node_builder_name(row.owner, row.variant)
+        let held? = out.get(name) else { continue }
+        out
+            .set(
+                name,
+                held with { payloads: payloads_of(row.payloads), anchor: anchorage(row.payloads) },
+            )
+    }
+    // a computed node's fn reads its node's labels, then the branch's own
+    for c in computed_builds(g, rows) {
+        let row? = row_for(rows, c.owner, c.variant) else { continue }
+        let held? = out.get(c.by) else { continue }
+        let extras = [Field { name: x, ty: "", at: null } for x in c.extras]
+        out
+            .set(
+                c.by,
+                held with { payloads: payloads_of(row.payloads.concat(extras)), anchor: anchorage(row.payloads) },
+            )
+    }
+    out
+}
+
+/// One `-> Owner.Variant by fn` a rule writes, and the labels it writes
+/// beyond the node's payloads.
+type ComputedBuild = { rule: string, owner: string, variant: string, by: string, extras: List<string> }
+
+/// Every computed build the grammar's branches write.
+fn computed_builds(g: Grammar, rows: List<PayloadRow>) -> List<ComputedBuild> {
+    flatten([some_list(computed_of(r.name, s, rows)) for r in g.rules for s in r.body.seqs()])
+}
+
+fn computed_of(rule: string, s: Seq, rows: List<PayloadRow>) -> ComputedBuild? {
+    let held? = s.build else { return null }
+    match held {
+        .Computed(owner, variant, by, _) -> ComputedBuild {
+            rule: rule,
+            owner: owner,
+            variant: variant,
+            by: by,
+            extras: computed_extras(
+                s,
+                row_for(rows, owner, variant) ?? PayloadRow {
+                    owner: owner,
+                    variant: variant,
+                    payloads: [],
+                },
+            ),
+        },
+        _ -> null,
+    }
+}
+
+/// A computed build names a `@computed` fn, and each fn computes one node
+/// from one set of labels.
+fn computed_defects(g: Grammar, rows: List<PayloadRow>) -> List<Diagnostic> {
+    let builds = computed_builds(g, rows)
+    let unknown = [defect(c.rule, no_computed_fn(c.by)) for c in builds if computes.find(it.name == c.by) == null]
+    let split = [defect(c.rule, computes_two_nodes(c.by)) for c in builds if builds
+        .any(
+            it.by == c.by &&
+                (it.owner != c.owner ||
+                    it.variant != c.variant ||
+                    it.extras.join(",") != c.extras.join(",")),
+        )]
+    unknown.concat(split)
+}
+
+/// Each grammar refusal as the payload row its `Refusal.<name>` binds: it
+/// carries nothing.
+fn refusal_rows(features: List<LanguageFeature>) -> List<PayloadRow> {
+    [PayloadRow { owner: "Refusal", variant: r.name, payloads: [] } for f in features for r in f.refusals]
+}
+
+/// Each grammar refusal's builder, under the name its rule's build names.
+fn refusal_builders(features: List<LanguageFeature>) -> List<BuilderRow> {
+    [BuilderRow {
+        name: node_builder_name("Refusal", r.name),
+        build: (b) -> b.refused(r.kind, (r.voice)()),
+    } for f in features for r in f.refusals]
+}
+
+/// The slot of the payload a node is anchored at — the first payload of its name — absent when none
+/// is marked.
+fn anchorage(payloads: List<Field>) -> int? {
+    let name? = payloads.find(has_anchor(it))?.name else { return null }
+    payloads.find_index(it.name == name)
+}
+
+/// The language's registries, gathered once from its features.
+fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRows {
+    LanguageRows {
+        methods: flatten([f.methods for f in features]),
+        types: flatten([f.types for f in features]),
+        properties: flatten([f.properties for f in features]),
+        codes: codes,
+        remedies: flatten([f.remedies for f in features]),
+    }
+}
+
+/// Assembly refused: the defects, projected, are the language's
+/// diagnostics.
+fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
+    Language {
+        features: features,
+        builders: {},
+        syntax: null,
+        wordings: {},
+        keywords: [],
+        roles: TokenRoles { literals: {}, attached_classes: [] },
+        rows: rows_of(features, []),
+        dispatch: new_dispatch(),
+        diagnostics: as_defects(defects),
+    }
+}
+
+/// Built-in codes plus every feature's registered codes, in feature
+/// order — the registry `avra docs` walks.
+fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
+    flatten([builtin_codes].concat([f.diags for f in features]))
+}
+
+/// The Avra language: its features, in the order that defines it —
+/// feature order is branch order is the language.
+export fn language_features() -> List<LanguageFeature> {
+    [
+        stmt_spine(),
+        // a program IS statements — and the START rule
+        closures(),
+        // `fn(int) -> bool` types and `(x: int) -> e`
+        tasks(),
+        // `spawn e` and `Task<T>` — keyword-anchored
+        select_expr(),
+        // `select { arm -> body }` — its marked statement ahead of the annotations
+        components(),
+        // `component N(h) { … }` declares; an imported component's
+        // word opens its instance — anchored on the word's own token
+        // kind, so it merges before every NAME-headed branch
+        // lambdas — BOTH keyword/paren-anchored, so they
+        // merge before type_expr's bare NAME and before
+        // the paren group in the primary ladder
+        type_expr(),
+        // `int`, `int?` — the surface annotations share
+        block(),
+        // { statements… value } — braces, defined once
+        annotations(),
+        // `@name(args)` above a declaration: the compiler's call over it
+        modules(),
+        // `use a.b.{x}` and the `export` prefix
+        specs(),
+        // `spec "…" { given "…" { then "…" { … } } }` — keyword-anchored
+        collects(),
+        // `collect name: List<T> = kind in scope as Ty { … } by …` —
+        // keyword-anchored; shares the "collect" word with the
+        // list feature's `collect { … }` expression, disambiguated
+        // by the NAME that must follow (never recovers, so a miss
+        // falls through to that floor)
+        contexts(),
+        // `ctx name: T = v` declares, `ctx name = v` sets, `ctx.name` reads — anchored on the
+        // word's own token kind
+        let_stmt(),
+        consts(),
+        // `const NAME = v` — settled by the compiler,
+        // so a use is the value and never a load     // `let` names a value
+        impls(),
+        // `impl Target { … }`, `trait`, `mut fn`, and the
+        // `self` primary — keyword-anchored; BEFORE
+        // mutation, whose recovering `mut` statement
+        // would otherwise swallow `mut fn`
+        mutation(),
+        // `mut` declares; `name = e` reassigns
+        loops(),
+        // `while c { statements }`
+        bool_lit(),
+        // `true` and `false`
+        quote_lit(),
+        // `quote { … }` — generated source as a `Code` value
+        sublang(),
+        // `syntax w { … }` declares a sublanguage; `w { … }` is its block
+        if_expr(),
+        // `if c { a } else { b }`, an expression
+        when_expr(),
+        // `when { c -> a, ..., _ -> d }`, total
+        lists(),
+        // [e, e, e] — the first aggregate; `collect { … }` is a
+        // keyword anchor, before a struct literal's NAME `{`
+        structs(),
+        // `type N = { f: t = d }`; literals BEFORE the bare NAME
+        nullable(),
+        // `null`, `a ?? b`, `v!`, and `match v { b? -> }`
+        // — its `match` arms are MORE SPECIFIC than an
+        // enum's, and enums' branch @expects its `}`, so
+        // this one must be tried first
+        formats(),
+        // a STRING in pattern position: `"{m} {p}"` binds
+        // its holes — it owns that parse, so it merges
+        // BEFORE enums, whose pattern ladder is otherwise
+        // unchanged
+        narrows(),
+        // `c: Code` in pattern position tests a `dyn`'s type —
+        // BEFORE enums, whose bare-name bind would take its
+        // NAME and leave the `:` unparsed
+        enums(),
+        // `enum N { A B }`; `match v { .A -> x }`, total
+        results(),
+        // `fail` raises on the Result channel; keyword-
+        // anchored, so it merges with the statements
+        defers(),
+        // `asset` is sugar for a const over a file's octets —
+        // keyword-anchored
+        asset_files(),
+        // `defer e` runs e when the scope ends, `errdefer e`
+        // when the fn fails — keyword-anchored statements
+        fns(),
+        // `fn` declares a body; a call applies it — the
+        // call branch is NAME-HEADED, so it lands AFTER
+        // every keyword anchor: `if (c)` would otherwise
+        // parse as a call to a fn named `if`
+        tables(),
+        // table<Row> { … } — a keyword anchor, before NAME
+        grammar_lit(),
+        // grammar """ … """ — a keyword anchor, before NAME
+        ranges(),
+        // `(lo..hi)` as a value — its `(` branch must be tried
+        // BEFORE the spine's `(e)` group, so the range parses
+        expr_spine(),
+        // literals, names, the operator ladder, postfix
+        maps(),
+        // { "k": v } — string-keyed, insertion-ordered
+        bytes(),
+        // octets: `s.bytes()`, `b.text()`, the exact word between
+        // float to int: `f.floor()`, `f.ceil()`, `f.round()`, `f.trunc()`
+        floats(),
+        // int arithmetic by name: `a.wrapping_add(b)`, `a.checked_mul(b)`
+        ints(),
+        cells(),
+        // Cell.new(v) — explicit shared interior mutation
+        str_lit(),
+        // "text"
+        expr_stmt(),
+        // the stmt FLOOR: a bare expression line, and it
+        // RECOVERS — every keyword statement merges first
+    ]
+}
+
+/// THE language, assembled — one word to hold Avra. ONCE per
+/// process: the features are the same features every time, so the
+/// merge, the validation and the first sets are one value the
+/// whole run shares.
+export once fn avra() -> Language {
+    let lang = assemble(language_features())
+    lang with { untold: generated_parse(lang) }
+}
+
+/// The generated parser's tables for `lang`, absent where its grammar is not the one the parser
+/// was made from, or the engine is asked to run every parse.
+fn generated_parse(lang: Language) -> UntoldParse? {
+    let rd? = lang.syntax else { return null }
+    if engine_parse() || grammar_print(rd) != avra_print { return null }
+    UntoldParse {
+        rows: [lang.builders.get(name) for name in avra_builders],
+        kinds: [avra_lexeme().kind_of(term) for term in avra_terms],
+        worn: token_classes_worn(),
+    }
+}
+
+/// The canonical language over one nameless source — a lone source
+/// stands in no package, so it names no import: no block words.
+export fn parse_source(text: string) -> Parsed {
+    parse_program(avra(), new_source_file("<source>", text), BlockWords {})
+}
+
+/// The canonical language's whole pipeline over one nameless source.
+export fn analyze_source(text: string) -> Analysis {
+    avra().analyze(new_source_file("<source>", text))
+}
+
+fn no_computed_fn(by: string) -> string {
+    "`by ${by}` names no `@computed` fn — a computed build names the fn that computes its node"
+}
+
+fn computes_two_nodes(by: string) -> string {
+    "`${by}` computes two different nodes, or one from two sets of labels — a `@computed` fn computes the one node its rules name, from one set"
+}

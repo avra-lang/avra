@@ -1,0 +1,47 @@
+use @std.meta.{Type, Fn, Field, Variant, Param, Annotation, Mark, Directive, literal}
+use @std.errors.{Loc}
+
+fn place_of(at: Loc?) -> string {
+    let l? = at else { return "-" }
+    "${(l.file ?? "?").split("/").last() ?? "?"}:${l.lo}-${l.hi}"
+}
+
+fn anns_of(worn: List<Annotation>) -> string { ["${a.name}(${a.args.join("|")})@${place_of(a.at)}" for a in worn].join(",") }
+
+fn marks_of(worn: List<Mark>) -> string { ["${m.name}(${m.args.join("|")})@${place_of(m.at)}" for m in worn].join(",") }
+
+fn param_of(p: Param) -> string { "${p.name}:${p.ty}:${p.kind.spelled()}:m=${p.mutable}:s=${p.settled}@${place_of(p.at)}" }
+
+fn field_of(f: Field) -> string {
+    "${f.name}:${f.ty}:${f.kind.spelled()}@${place_of(f.at)} doc=${f.doc ?? "-"} dflt=${f.defaulted} state=${f.state} prop=${f.prop} marks=[${marks_of(f.marks)}] ann=[${anns_of(f.annotations)}]"
+}
+
+fn variant_of(v: Variant) -> string {
+    "${v.name}(${v.payload.join("|")})@${place_of(v.at)} doc=${v.doc ?? "-"} marks=[${marks_of(v.marks)}] ann=[${anns_of(v.annotations)}] fields=[${[field_of(f) for f in v.fields].join(";")}]"
+}
+
+export fn dump_type(t: Type) -> List<Directive> {
+    let n = "dump_${t.name}"
+    let text = "type ${t.name} @${place_of(t.at)} doc=${t.doc ?? "-"} module=${t.module} over=${t.over.spelled()} spreads=${t.spreads.join("|")} impls=${t.impls.join("|")} ann=[${anns_of(t.annotations)}]\n  fields=[${[field_of(f) for f in t.fields].join("\n    ")}]\n  variants=[${[variant_of(v) for v in t.variants].join("\n    ")}]"
+    [
+        Directive {
+            twin: "",
+            name: n,
+            at: t.at,
+            source: quote { export const ${n}: string = ${literal(text)} },
+        },
+    ]
+}
+
+export fn dump_fn(f: Fn) -> List<Directive> {
+    let n = "dump_${f.name}"
+    let text = "fn ${f.name} @${place_of(f.at)} doc=${f.doc ?? "-"} owner=${f.owner ?? "-"} answer=${f.answer}/${f.answers.spelled()} ann=[${anns_of(f.annotations)}]\n  params=[${[param_of(p) for p in f.params].join("\n    ")}]"
+    [
+        Directive {
+            twin: "",
+            name: n,
+            at: f.at,
+            source: quote { export const ${n}: string = ${literal(text)} },
+        },
+    ]
+}

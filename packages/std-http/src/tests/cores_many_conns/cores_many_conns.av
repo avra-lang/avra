@@ -1,0 +1,36 @@
+// proves: twenty-five connections to one file, one holding a transaction, refuse the fork; once it commits every one is parked and reads on after.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use @std.sqlite.{Db, sql}
+use tests.support.{count, cycle, dir, opened, refused}
+
+fn shown() -> Result<string, NetError> {
+    let path = "${dir()}/rows.db"
+    let first = opened(path)?
+    let rest = [opened(path) for i in 0..24]
+    let all = [first].concat([d for r in rest for d in ok_of(r)])
+    let _ = first.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    let _ = all[7].exec("BEGIN")
+    let _ = all[7].run(sql("INSERT INTO rows (who) VALUES (2)"))
+    server app {
+        port: 0
+        get "/" { _req -> text(200, count(first)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let held = match up.run(3) { .Ok(_) -> "served", .Err(e) -> "refused ${e.errno}" }
+    let _ = all[7].exec("COMMIT")
+    let one = cycle(up)?
+    let counts = [count(d) for d in all]
+    .Ok("${all.length} | ${held} | ${one} | ${counts.all(it == "2")} ${counts[0]}")
+}
+
+fn ok_of(r: Result<Db, NetError>) -> List<Db> {
+    match r { .Ok(d) -> [d], .Err(_) -> [] }
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

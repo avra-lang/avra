@@ -1,0 +1,223 @@
+//! A STORE LAYERED OVER A SHARED ONE: a package's own store over the machine's, where the answers
+//! every package built by this binary can share are kept once. A question is read in its own store,
+//! then in the shared one; a SHARED question — one whose every input lies in a package the shared
+//! store serves, and whose every read is shared — is kept in the shared store, every other in its
+//! own. Where each package's sources stand is the store's to say: a path lies in the package whose
+//! root holds it most nearly. Nothing is reused that its record doesn't still hold, wherever the record lies, so a question
+//! kept in the wrong layer costs room, never an answer. The frontier and the stamps are the own
+//! store's. Without a shared store it is its own store alone.
+//! ONE BINARY, ONE MACHINE SEGMENT: the shared store answers for the compiler binary's own print,
+//! never for the queries a command asks, so `build`, `check`, `test` and `tapes` all read and keep
+//! the one segment, and a store another binary wrote is never read.
+use @std.io.{IoError}
+use @std.path.{normalized}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question}
+use disk_store.{
+    DiskStore,
+    KeyShare,
+    disk_store_at,
+    wave_answer,
+    wave_awaited,
+    wave_claimed,
+    wave_gathered_by,
+    wave_let_go,
+    wave_question,
+    wave_records,
+}
+use frontier.{Frontier, FrontierLearned}
+use input_stamps.{InputStamp}
+use query_engine.{AnswerStore}
+use saved_layout.{SavedBytes}
+use sorted.{sorted_by}
+
+/// Where a package's sources stand, and whether the shared store serves it.
+export type PackagePlace = { name: string, root: string, shared: bool }
+
+/// A package's own store, and the shared store beneath it, with where each package's sources
+/// stand. The shared store answers for the compiler binary printed `shared_print`, whatever queries
+/// a command asks of it.
+export type LayeredStore = { own: DiskStore, shared: DiskStore?, places: List<PackagePlace>, shared_print: string }
+
+/// `own` alone, sharing nothing, its packages standing at `places`.
+export fn own_store(own: DiskStore, places: List<PackagePlace>) -> LayeredStore { LayeredStore { own: own, shared: null, places: places, shared_print: "" } }
+
+/// `own` over `shared`, which serves the packages `places` marks shared, for the binary printed
+/// `print`.
+export fn layered_store(
+    own: DiskStore,
+    shared: DiskStore,
+    places: List<PackagePlace>,
+    print: string,
+) -> LayeredStore {
+    LayeredStore { own: own, shared: shared, places: places, shared_print: print }
+}
+
+impl LayeredStore {
+    /// What this process learned published, the shared store's first, so an own record never names
+    /// a shared answer that was never published: the own store's count, or why it failed. A shared
+    /// store that can't be written only loses what it would have shared.
+    fn saved() -> Result<int, IoError> {
+        let _ = self.shared?.saved()
+        self.own.saved()
+    }
+
+    /// What a process working alone learned published, as `saved` publishes it.
+    fn saved_alone() -> Result<int, IoError> {
+        let _ = self.shared?.saved_alone()
+        self.own.saved_alone()
+    }
+
+    /// The packs many processes published, merged in each layer.
+    fn merged() -> Result<int, IoError> {
+        let _ = self.shared?.merged()
+        self.own.merged()
+    }
+
+    /// The directory of each layer a save writes.
+    fn directories() -> List<string> { [self.own.directory].concat(if self.shared == null { [] } else { [self.shared!.directory] }) }
+
+    /// How many answers and questions the packs of both layers hold.
+    fn entries_published() -> int { self.own.entries_published() + (self.shared?.entries_published() ?? 0) }
+
+    /// One share of each layer's packs published as a pack of its own: whether each was.
+    fn share_merged(share: KeyShare) -> bool {
+        let shared = if self.shared == null { true } else { published(self.shared!.share_merged(share)) }
+        shared && published(self.own.share_merged(share))
+    }
+
+    /// Every share of each layer's packs stands published: the packs they were merged from go.
+    fn shares_taken() {
+        self.shared?.shares_taken()
+        self.own.shares_taken()
+    }
+
+    /// Each layer reads the packs its directory holds now.
+    fn packs_read_again() {
+        self.shared?.packs_read_again()
+        self.own.packs_read_again()
+    }
+
+    /// Whether saving now compacts the own store.
+    fn compacts_on_saving() -> bool { self.own.compacts_on_saving() }
+
+    /// Whether this process learned anything it hasn't published, in either layer.
+    fn has_news() -> bool { self.own.has_news() || self.shared?.has_news() ?? false }
+}
+
+/// Whether a publishing answered that it published.
+fn published(wrote: Result<int, IoError>) -> bool {
+    match wrote { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// Whether `path` lies under `root`.
+fn lies_under(path: string, root: string) -> bool { path == root || path.starts_with("${root}/") }
+
+impl AnswerStore for LayeredStore {
+    fn answering_for(print: string) {
+        self.own.answering_for(print)
+        self.shared?.answering_for(self.shared_print)
+    }
+
+    fn records_of(question: ContentHash) -> List<KeptRecord> {
+        self
+            .own
+            .records_of(question)
+            .concat(self.shared?.records_of(question) ?? [])
+            .concat(wave_records(question))
+    }
+
+    fn keep_record(asked: Question, record: AnswerRecord) { self.own.keep_record(asked, record) }
+
+    fn question_known_as(question: ContentHash) -> Question? {
+        self.own.question_known_as(question) ?? self.shared?.question_known_as(question) ?? wave_question(
+            question,
+        )
+    }
+
+    fn answer_bytes(answer: ContentHash) -> SavedBytes? { self.own.answer_bytes(answer) ?? self.shared?.answer_bytes(answer) ?? wave_answer(answer) }
+
+    fn claimed(question: ContentHash) -> int { wave_claimed(question) }
+
+    fn works_beside(query_name: string) -> bool { wave_gathered_by(query_name) }
+
+    fn claim_awaited(question: ContentHash, holder: int) { wave_awaited(question, holder) }
+
+    fn claim_let_go(question: ContentHash) { wave_let_go(question) }
+
+    /// A record of `asked` that stands, found in the wave's table alone, kept as this process's
+    /// own with its answer: the process that kept it there may end before it publishes either.
+    fn adopted(asked: Question, record: KeptRecord) {
+        if self.own.answer_bytes(record.answer) != null ||
+            self.shared?.answer_bytes(record.answer) != null { return }
+        let bytes? = wave_answer(record.answer) else { return }
+        self.own.keep_answer_bytes(record.answer, bytes.copied())
+        self.own.keep_record(asked, record.held())
+    }
+
+    fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) { self.own.keep_answer_bytes(answer, bytes) }
+
+    fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.own.hold_answer_bytes(answer, bytes) }
+
+    fn frontier_of(print: string) -> Frontier? { self.own.frontier_of(print) }
+
+    fn keep_frontier(print: string, learned: FrontierLearned) { self.own.keep_frontier(print, learned) }
+
+    fn input_stamps() -> List<InputStamp> { self.own.input_stamps() }
+
+    fn keep_input_stamps(stamps: List<InputStamp>) { self.own.keep_input_stamps(stamps) }
+
+    fn package_at(path: string) -> string? {
+        let holding = self.places.filter((p) -> lies_under(path, p.root))
+        let nearest? = sorted_by(holding, (a, b) -> a.root.length > b.root.length).first() else { return null }
+        nearest.name
+    }
+
+    fn shares_package(name: string) -> bool { self.shared != null && self.places.any(it.name == name && it.shared) }
+
+    fn shares_any() -> bool { self.shared != null && self.places.any(it.shared) }
+
+    fn keep_shared_record(asked: Question, record: AnswerRecord) {
+        let shared? = self.shared else { return self.own.keep_record(asked, record) }
+        shared.keep_record(asked, record)
+    }
+
+    fn shared_answer_kept(answer: ContentHash) -> bool {
+        let shared? = self.shared else { return self.own.answer_bytes(answer) != null }
+        shared.answer_bytes(answer) != null
+    }
+
+    fn keep_shared_answer_bytes(answer: ContentHash, bytes: Bytes) {
+        let shared? = self.shared else { return self.own.keep_answer_bytes(answer, bytes) }
+        shared.keep_answer_bytes(answer, bytes)
+    }
+}
+
+/// The shared store a process's package stores lie over: its directory, and the print of the binary
+/// it answers for.
+export type MachineLayer = { directory: string, print: string }
+
+once fn machine_layer_cell() -> Cell<MachineLayer?> {
+    let layer: Cell<MachineLayer?> = Cell.new(null)
+    layer
+}
+
+/// Every package store this process opens from now on lies over `layer`; none, without one.
+export fn use_machine_store(layer: MachineLayer?) { machine_layer_cell().set(layer) }
+
+once fn package_places_cell() -> Cell<List<PackagePlace>> {
+    let places: Cell<List<PackagePlace>> = Cell.new([])
+    places
+}
+
+/// Every package store this process opens from now on knows its packages stand at `places`.
+export fn use_package_places(places: List<PackagePlace>) { package_places_cell().set(places) }
+
+/// The package store at `directory`, over the shared store this process uses, if any: a shared store
+/// standing in that one directory is no layer beneath it.
+export fn program_store_at(directory: string) -> LayeredStore {
+    let own = disk_store_at(directory)
+    let places = package_places_cell().get()
+    let layer? = machine_layer_cell().get() else { return own_store(own, places) }
+    if normalized(layer.directory) == normalized(directory) { return own_store(own, places) }
+    layered_store(own, disk_store_at(layer.directory), places, layer.print)
+}

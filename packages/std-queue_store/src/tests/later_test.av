@@ -1,0 +1,124 @@
+// A delayed send in the store home: what a restart keeps of it, what
+// the home's clock decides, a name sent twice, and a delay past the
+// range of instants. A file case runs under `restart_test.av`'s
+// `scratched`.
+use @std.queue.{HomeError, Order, Terms, key, queue}
+use @std.queue.tests.support.laws.{terms}
+use @std.sqlite.{Db}
+use @std.time.{Time, hours, mins, ms}
+use durable.{db, stored_with}
+use fault.{homed}
+use queue_store.{Store, store_home_with}
+use tests.support.wires.{int_wire}
+
+/// The queue `jobs` of `db`, read on the clock `at` holds.
+fn clocked(db: Db, t: Terms, at: Cell<int>) -> Result<Store<int>, HomeError> {
+    store_home_with<int>(db, "jobs", t, int_wire())? with { clock: () -> Time { ns: at.get() } }
+}
+
+fn fresh(at: Cell<int>) -> Result<Store<int>, HomeError> {
+    clocked(homed(Db.memory())?, terms(60000, Order.fifo), at)
+}
+
+const start: int = 1700000000000000000
+
+fn survives_restart(path: string) -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(start)
+    let t = terms(60000, Order.fifo)
+    let first = clocked(homed(Db.open(path))?, t, at)?
+    let sent = first.send_after(1, key("a"), hours(48))?
+    let _ = first.db.close()
+    let again = clocked(homed(Db.open(path))?, t, at)?
+    let owed = again.depth()?
+    let early = again.take()?
+    at.set(start + hours(48).ns - 1)
+    let still = again.take()?
+    at.set(start + hours(48).ns)
+    let due? = again.take()? else { return false }
+    sent != null && owed == 1 && early == null && still == null && due.item == 1 && sent == due.id
+}
+
+fn stepped_back() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(start)
+    let q = fresh(at)?
+    let _ = q.send_after(1, key("a"), ms(100))?
+    at.set(start - hours(1).ns)
+    let back = q.take()?
+    at.set(start + ms(99).ns)
+    let short = q.take()?
+    at.set(start + ms(100).ns)
+    back == null && short == null && (q.take()?)?.item == 1
+}
+
+fn past_the_range() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(8000000000000000000)
+    let q = fresh(at)?
+    let sent = q.send_after(1, key("a"), hours(2000000))?
+    let early = q.take()?
+    at.set(9223372036854775807 - hours(1).ns)
+    sent != null && early == null && q.depth()? == 1 && q.take()? == null
+}
+
+fn named_twice() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(start)
+    let q = fresh(at)?
+    let first = q.send_as_after(1, key("a"), "remind-7", hours(48))?
+    let second = q.send_as_after(2, key("a"), "remind-7", ms(1))?
+    let plain = q.send_as(3, key("a"), "remind-7")?
+    let owed = q.depth()?
+    at.set(start + ms(1).ns)
+    let early = q.take()?
+    at.set(start + hours(48).ns)
+    first != null &&
+        second == first &&
+        plain == first &&
+        owed == 1 &&
+        early == null &&
+        (q.take()?)?.item == 1
+}
+
+/// The durable declaration: `after:` beside `id:`, sent twice.
+fn declared(at: Cell<int>) -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> reminders {
+        name: "reminders"
+        durable: stored_with(int_wire(), clock: () -> Time { ns: at.get() })
+        dedupe: hours(72)
+    }
+    let first = reminders.send(1, id: "remind-u7", after: hours(48))?
+    let again = reminders.send(1, id: "remind-u7", after: hours(48))?
+    let other = reminders.send(2, after: mins(1))?
+    let q = reminders.home()
+    let early = q.take()?
+    at.set(start + mins(1).ns)
+    let m? = q.take()? else { return "nothing due at a minute" }
+    let _ = q.ack(m)?
+    at.set(start + hours(48).ns)
+    let later = (q.take()?)?.item ?? 0
+    "one id ${first == again} | another ${other != first} | early ${early == null} | then ${m.item} ${later}"
+}
+
+spec "std/queue_store — a delayed send" {
+    given "a file" {
+        then "a delayed item survives a restart, owed, and is due at its instant and not before" {
+            scratched(survives_restart)
+        }
+    }
+    given "the home's clock" {
+        then "a clock that steps back holds a delayed item longer and never hands it early" {
+            stepped_back() catch false
+        }
+        then "a delay past the range of instants is held to the last instant, owed and never a trap" {
+            past_the_range() catch false
+        }
+    }
+    given "a name" {
+        then "a name sent delayed twice, or plainly after, is one item due at the first send's instant" {
+            named_twice() catch false
+        }
+        then "the durable declaration's `after:` beside `id:` is one item, held back" {
+            let at: Cell<int> = Cell.new(start)
+            (declared(at) catch "failed") == "one id true | another true | early true | then 2 1"
+        }
+    }
+}

@@ -1,0 +1,257 @@
+//! WHAT AN ENGINE REMEMBERS PER TYPE. A body's typing and lowering ask the same few thousand types
+//! millions of times, so each type is interned once per engine as a dense id and an answer that
+//! depends on the type alone is kept by that id. An answer that also reads the asking file, the
+//! body's type parameters or its package is never kept under the type alone. Engines never share a
+//! table: a process may run several over different sources. A kept answer keeps the engine reads its
+//! working-out made, and each answer from it makes them again for whoever asks. Under
+//! `AVRA_TYPE_MEMO_CHECK=1` every kept answer is worked out again and a difference stops the
+//! process, naming the ask and the type.
+use @std.io.{env}
+use @std.program.address.{SourceFileAddress}
+use @std.meta.{identity, plain_field}
+use @std.program.defect.{defect}
+use @std.program.hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use @std.program.interned.{InternId, Interned, hash_text, interned}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.read_memo.{ReadMemo, read_memo}
+use @std.text.{hex}
+
+/// The types one engine has met and the answers it keeps by them. An identity: every holder reads
+/// and writes the one set of tables. Its engine is shared by every copy: an engine's state is its
+/// own tables.
+@identity
+@plain_field("engine")
+export type TypeMemos = {
+    /// The engine whose reads each kept answer's working-out made, and whose asker makes them again.
+    engine: QueryEngine,
+    /// Every type asked about, each a dense id.
+    types: Interned<SignedType>,
+    /// What a value of each type with no type parameter in it is to the machine.
+    layouts: ReadMemo<Layout>,
+    /// The record each type is, as its declaration has it.
+    records: ReadMemo<RecordShape>,
+    /// The enum each type is, as its declaration has it.
+    enums: ReadMemo<EnumShape>,
+    /// The fields of each record type, typed under its arguments.
+    fields: ReadMemo<List<FieldSeat>>,
+    /// The variants of each enum type, typed under its arguments.
+    variants: ReadMemo<List<VariantSeat>>,
+    /// Whether each kept answer is worked out again and compared.
+    checking: Cell<bool>,
+    /// Under the check, each type met by its content key: two types sharing one is a collision.
+    content_keys: HashKeyedTable<SignedType>,
+    /// The text of every ask keyed by more than a type — a name, the asking file or package — each a
+    /// dense id.
+    asked: Interned<string>,
+    /// What a top-level name is from a file, as code reads it, by the file, the read's home and the
+    /// name.
+    named: ReadMemo<NamedValue>,
+    /// The type of a top-level value's name from a file, by the file, the read's home and the name.
+    valued: ReadMemo<SignedType>,
+    /// The declared method a type has by a name, as a call reaches it, by the asking package.
+    methods: ReadMemo<CalledFn>,
+    /// The type of the declared method a type has by a name, by the asking package.
+    method_types: ReadMemo<SignedType>,
+}
+
+/// Memos holding nothing yet, kept beside `engine`.
+export fn fresh_type_memos(engine: QueryEngine) -> TypeMemos {
+    TypeMemos {
+        engine: engine,
+        types: interned(type_hash, same_types),
+        layouts: read_memo(),
+        records: read_memo(),
+        enums: read_memo(),
+        fields: read_memo(),
+        variants: read_memo(),
+        checking: Cell.new(memo_checked()),
+        content_keys: hash_keyed_table(),
+        asked: interned(text_hash, same_text),
+        named: read_memo(),
+        valued: read_memo(),
+        methods: read_memo(),
+        method_types: read_memo(),
+    }
+}
+
+fn type_hash(ty: SignedType) -> int { ty.quick_hash() }
+
+fn same_types(a: SignedType, b: SignedType) -> bool { a.same_type(b) }
+
+fn text_hash(text: string) -> int { hash_text(0, text) }
+
+fn same_text(a: string, b: string) -> bool { a == b }
+
+impl TypeMemos {
+    /// The id `ty` is known by here. Under the check, the id's type must spell as `ty` does, and no
+    /// other type may share its content key.
+    fn id_of(ty: SignedType) -> InternId {
+        let id = self.types.id_of(ty)
+        if self.checking.get() { self.checked_id(ty, id) }
+        id
+    }
+
+    /// The text a read of `name` from `file` is kept under, its home (`home`) apart from none.
+    fn read_key(file: SourceFileAddress, home: string?, name: string) -> string {
+        "${file.package_name}/${file.path_in_package}\n${if home == null { "" } else { "+${home!}" }}\n${name}"
+    }
+
+    /// The text an ask of `ty`'s member `name` from `package` is kept under.
+    fn member_key(package: string, ty: SignedType, name: string) -> string { "${package}\n${self.id_of(ty).index}\n${name}" }
+
+    /// `id`, interned for `ty`, held to the spelling and the content key.
+    fn checked_id(ty: SignedType, id: InternId) {
+        let standing = self.types.value_of(id)
+        if exact_said(standing) != exact_said(ty) { defect(one_id_two_types(ty, standing)) }
+        let key = ty.content_key()
+        let keyed? = self.content_keys.get(key) else { return self.content_keys.put(key, ty) }
+        if exact_said(keyed) != exact_said(ty) { defect(two_types_one_key(ty, keyed)) }
+    }
+}
+
+/// The answer `memo` keeps for `ty`, worked out by `compute` the first time; under the check, a kept
+/// answer is worked out again and compared, a difference stopping the process.
+export fn kept_answer<V>(
+    memos: TypeMemos,
+    memo: ReadMemo<V>,
+    ask: string,
+    ty: SignedType,
+    compute: fn() -> V?,
+    said: fn(V?) -> string,
+) -> V? {
+    kept_at(memos, memo, memos.id_of(ty), compute, said, ask, ty, "")
+}
+
+/// The answer `memo` keeps under the ask's text `key`, as `kept_answer` keeps one under a type.
+export fn kept_by_key<V>(
+    memos: TypeMemos,
+    memo: ReadMemo<V>,
+    ask: string,
+    key: string,
+    compute: fn() -> V?,
+    said: fn(V?) -> string,
+) -> V? {
+    kept_at(memos, memo, memos.asked.id_of(key), compute, said, ask, null, key)
+}
+
+/// The answer `memo` keeps for `id`, the ask's type `ty` or its text `key` named should the check
+/// find the kept answer differs.
+fn kept_at<V>(
+    memos: TypeMemos,
+    memo: ReadMemo<V>,
+    id: InternId,
+    compute: fn() -> V?,
+    said: fn(V?) -> string,
+    ask: string,
+    ty: SignedType?,
+    key: string,
+) -> V? {
+    if !memo.known(id) { return memo.worked_out(memos.engine, id, compute) }
+    let kept = memo.held(memos.engine, id)
+    if memos.checking.get() && said(kept) != said(compute()) {
+        defect(
+            memo_disagrees(
+                ask,
+                if ty == null { key } else { exact_said(ty!) },
+                said(kept),
+                said(compute()),
+            ),
+        )
+    }
+    kept
+}
+
+/// What a name is, as the check compares it.
+export fn named_said(v: NamedValue?) -> string {
+    let present? = v else { return "absent" }
+    match present {
+        .Fn(c) -> "fn ${hex(c.saved_bytes())}",
+        .Literal(l) -> "literal ${hex(l.saved_bytes())}",
+        .Settled(words, data) -> "settled ${[word_said(w) for w in words].join(" ")} ${hex(data.saved_bytes())}",
+        .Unsettled(why) -> "unsettled ${why}",
+        .Built(c) -> "built ${hex(c.saved_bytes())}",
+        .Kept(c, held) -> "kept ${hex(c.saved_bytes())} ${hex(held.saved_bytes())}",
+    }
+}
+
+fn word_said(w: SettledWord) -> string { "${hex(w.slot.saved_bytes())} ${w.layout.spelled()}" }
+
+/// A callee, as the check compares it.
+export fn callee_said(c: CalledFn?) -> string { bytes_said(c?.saved_bytes()) }
+
+/// A type, as the check compares it by its saved octets.
+export fn signed_said(t: SignedType?) -> string { bytes_said(t?.saved_bytes()) }
+
+/// Saved octets, as the check compares them.
+fn bytes_said(octets: Bytes?) -> string {
+    let present? = octets else { return "absent" }
+    hex(present)
+}
+
+/// A type as the check compares it: its spelling and every file a part of it is declared in.
+fn exact_said(ty: SignedType) -> string { "${ty.spelled()} ${declared_files(ty).join(" ")}" }
+
+/// The files the declared types in `ty` are declared in, outermost first.
+fn declared_files(ty: SignedType) -> List<string> {
+    let own = match ty.head {
+        .Declared(file, _) -> ["${file.package_name}/${file.path_in_package}"],
+        .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> [],
+    }
+    let parts = ty
+        .args
+        .concat([s.ty for s in ty.seats])
+        .concat(some_type(ty.answer))
+        .concat(ty.alternatives)
+    own.concat(flatten([declared_files(p) for p in parts]))
+}
+
+/// `ty` as a list of itself, or none.
+fn some_type(ty: SignedType?) -> List<SignedType> { if ty == null { [] } else { [ty!] } }
+
+/// A layout as the check compares it.
+export fn layout_said(l: Layout?) -> string { l?.spelled() ?? "absent" }
+
+/// A record as the check compares it.
+export fn record_said(r: RecordShape?) -> string {
+    let shape? = r else { return "absent" }
+    "${shape.params} ${fields_said(shape.fields)}"
+}
+
+/// An enum as the check compares it.
+export fn enum_said(e: EnumShape?) -> string {
+    let shape? = e else { return "absent" }
+    "${shape.params} ${variants_said(shape.variants)}"
+}
+
+/// Fields as the check compares them.
+export fn fields_said(fields: List<FieldSeat>?) -> string {
+    let all? = fields else { return "absent" }
+    [field_said(f) for f in all].join(", ")
+}
+
+/// Variants as the check compares them.
+export fn variants_said(variants: List<VariantSeat>?) -> string {
+    let all? = variants else { return "absent" }
+    ["${v.name}(${fields_said(v.payloads)}) ${type_said(v.member)}" for v in all].join(", ")
+}
+
+fn field_said(f: FieldSeat) -> string { "${f.name}: ${type_said(f.ty)}${if f.state { " state" } else { "" }}" }
+
+/// A type that may be absent, as the check compares it.
+fn type_said(ty: SignedType?) -> string { if ty == null { "absent" } else { exact_said(ty!) } }
+
+fn memo_disagrees(ask: string, asked: string, kept: string, worked: string) -> string {
+    "type memo `${ask}` of `${asked}` kept `${kept}`, worked out again as `${worked}`"
+}
+
+fn one_id_two_types(ty: SignedType, standing: SignedType) -> string {
+    "type `${exact_said(ty)}` was given the id of `${exact_said(standing)}`"
+}
+
+fn two_types_one_key(ty: SignedType, standing: SignedType) -> string {
+    "types `${exact_said(ty)}` and `${exact_said(standing)}` share one content key"
+}
+
+/// Whether each memo's answer is checked against working it out again (`AVRA_TYPE_MEMO_CHECK=1`).
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+fn memo_checked() -> bool { env("AVRA_TYPE_MEMO_CHECK") == "1" }

@@ -1,0 +1,11 @@
+# avra-lane-package-sweep (package-sweep-2) — hand-over
+Branch `avra-lane-package-sweep-2-law2`, head = this commit, base trunk cf1b3e2c (merged; next-base cd4738e6 NOT merged). Rebuilt from e2bce925: carries NO extern-seats-5b.
+DONE, landed: hand-backs 1–5b (R5 state fields, R9 shorthand lists, R14 consts, closure collects, collected Types as data, const seats, generic defaults + written type args, component fns as methods).
+IN THIS BUNDLE (not landed): (A) the lazy door + the instance-check law, one commit 7d264516 + idiom fix + merges.
+- Door: lazy made programs defer fns held only as values (item_program.av walked/held_of/made_late/late_door; Lowered.deferred in lower/lower.av; interp.av Machine.late/awaited/grown/placed; llvm.av program_opens counts deferred; memory.av memory_late). Taken by const settling (item_consts.av), generator runs (item_generators.av), instance checks.
+- Law: compiler/item_instance_checks.av; core/settled_alone.av settles_alone shared with the old path (features/components/lower.av settleable); core/checking.av meaning_checked.
+Receipts on cf1b3e2c, cold: make try 0; AVRA_PROGRAM=1 build packages/cli EXIT 0; cli --built 48614/48614; std-avrac --ran 643/630, only failing wrap_method; std-queue 8/10, db 9/9, validate 6/6, crud 7/7; refusal suite 258/274 hold, 15 known, 1 failing (seat_u1); idioms cli 0 NEW, std-avrac 0 NEW; sound 0 (old-path form).
+Full edit witness on cf1b3e2c: STOPPED by the owner order mid-run (it had passed all edits up to std-time); on 15c4576b it passed whole, incl. the two check edits (WITNESS_ONLY=check). Next: `sh tools/witness_program_edit.sh build/avra-try` then old-path `make try`.
+Cost (15c4576b, 5 interleaved cold pairs vs a 15c4576b-built compiler): user +1.5% mean / +0.2% median, wall 0.0%; warm no-op unchanged (0.04–0.10 s).
+Findings not yet acted on: generator runs re-make a held fn each run (type_named$w 53x per build) — memo per base program; scoreboard row lower.component_checked (UNBUILT on cd4738e6) is refused in the old words with this branch; const_fn_escapes known to differ (const.form not on the program layer); std-queue's last 2: untyped CallValue in queue.av drain.
+Files others must not touch without me: compiler/item_instance_checks.av, core/settled_alone.av, interp.av Machine.{late,awaited,grown,placed}, item_program.av made_late/walked.

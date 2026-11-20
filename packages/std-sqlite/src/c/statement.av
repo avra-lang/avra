@@ -1,0 +1,84 @@
+//! THE WALL, statement family: preparing's answer, stepping it, and
+//! asking a prepared statement about itself.
+//!
+//! `sqlite3_prepare_v3` TAKES TWO `mut` SEATS, which is what the extern
+//! wall's out-parameter bought: the statement comes back through a
+//! `sqlite3_stmt**` and the unused tail of the SQL through a
+//! `const char**`. Both are `ptr?`, because SQLite leaves NULL in the
+//! statement seat for text that holds no statement — a comment, or
+//! nothing — with `SQLITE_OK` beside it.
+//!
+//! A BORROWED C POINTER IS DECLARED `ptr`, NEVER `string` — the wall's
+//! rule, stated in `connection.av`.
+
+/// A statement compiled from the first statement in `sql`. The handle
+/// arrives through the fifth seat and the UNUSED TAIL through the
+/// sixth; `n` is the SQL's length in bytes, or -1 to read to the first
+/// NUL.
+///
+/// A NULL statement with rc = SQLITE_OK means the text held no
+/// statement — it was empty or a comment. That is not an error to
+/// SQLite and it is the caller's to interpret.
+export extern fn sqlite3_prepare_v3(
+    db: ptr?,
+    sql: Bytes,
+    n: i32,
+    flags: u32,
+    mut stmt: ptr?,
+    mut tail: ptr?,
+) -> i32
+
+/// The statement advanced one step: 100 a row is standing, 101 done,
+/// anything else a result code. Since 3.6.23.1 it AUTO-RESETS rather
+/// than answering SQLITE_MISUSE, so the code is the real error.
+// the clock: held by `held_sleep` — every sleep sqlite takes goes through the file system `avra_sqlite_sleeps_held` installs
+export extern fn sqlite3_step(stmt: ptr?) -> i32
+
+/// The statement destroyed. Answers the code of the most recent step,
+/// so a failing statement reports its failure HERE as well.
+export extern fn sqlite3_finalize(stmt: ptr?) -> i32
+
+/// The statement rewound, bindings kept. Answers the code of the most
+/// recent step, not of the reset.
+export extern fn sqlite3_reset(stmt: ptr?) -> i32
+
+/// Every bound parameter set back to NULL.
+export extern fn sqlite3_clear_bindings(stmt: ptr) -> i32
+
+/// Whether the statement is mid-run — stepped at least once and not
+/// yet done or reset.
+export extern fn sqlite3_stmt_busy(stmt: ptr) -> i32
+
+/// Whether the statement writes nothing. A BEGIN or a ROLLBACK answers
+/// true here, which is not the question a caller usually means.
+export extern fn sqlite3_stmt_readonly(stmt: ptr) -> i32
+
+/// 1 for EXPLAIN, 2 for EXPLAIN QUERY PLAN, 0 for an ordinary
+/// statement.
+export extern fn sqlite3_stmt_isexplain(stmt: ptr) -> i32
+
+/// A prepared statement turned into its own EXPLAIN, or back.
+export extern fn sqlite3_stmt_explain(stmt: ptr, mode: i32) -> i32
+
+/// The SQL this statement was prepared from. Borrowed until the
+/// statement is finalized.
+export extern fn sqlite3_sql(stmt: ptr) -> ptr?
+
+/// The SQL with its bound parameters written in. OWNED by the caller —
+/// it must go back through `sqlite3_free` — and NULL under memory
+/// pressure or when SQLITE_OMIT_TRACE was set.
+export extern fn sqlite3_expanded_sql(stmt: ptr) -> ptr?
+
+/// The statement's shape without its literals, which is the key a
+/// statement cache and a slow-query log both want. Borrowed.
+export extern fn sqlite3_normalized_sql(stmt: ptr) -> ptr?
+
+/// The connection this statement belongs to. Never NULL.
+export extern fn sqlite3_db_handle(stmt: ptr) -> ptr
+
+/// The next statement on a connection, or NULL past the last — the
+/// walk that finds what an unclosed connection is still holding.
+export extern fn sqlite3_next_stmt(db: ptr, stmt: ptr?) -> ptr?
+
+/// One of the statement's counters, optionally reset.
+export extern fn sqlite3_stmt_status(stmt: ptr, op: i32, reset: i32) -> i32

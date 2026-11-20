@@ -1,0 +1,22 @@
+//! The typing rules of `ctx`: a read is of the type its declaration writes, and a set's value is
+//! checked against that type. A name that declares no context reads as nothing known, and the law
+//! that names it speaks (compiler/item_contexts.av). A declaration's default is its own body, checked
+//! and built as a module `state`'s start is.
+use core.{Checking, Checks, StmtChecks, ExprId, StmtId, Expected, SignedType, Seating}
+use core.stmt.{CtxDecl, CtxSet}
+use core.expr.{CtxRead}
+
+impl Checks for CtxRead {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.context_typed(self.name.of, e) }
+}
+
+impl StmtChecks for CtxSet {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        let _ = cx
+            .check_seated(self.value, cx.context_typed(self.name.of, self.value), Seating.Binding(self.name.of))
+    }
+}
+
+impl StmtChecks for CtxDecl {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {}
+}

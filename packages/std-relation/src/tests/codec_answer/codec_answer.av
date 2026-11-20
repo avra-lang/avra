@@ -1,0 +1,74 @@
+// proves: a payload enum answers a `@query` and its codec is the type's own — `@codec`
+// gives `LiftResult` the write, read and hash the query calls by name — and the record it
+// saves is read back by a later process: one body run across two, the payload whole on
+// both sides, and both variants of the one enum
+use @std.relation.{codec, query}
+use @std.relation.db.{Db, Durable, durable_db}
+
+@codec
+enum LiftResult {
+    Crossed(Lifted)
+    Refused(Unsettled)
+}
+
+/// The heap a crossed answer carries: no part of the enum's own declaration.
+type Lifted = { answer: string, heap: List<string> }
+
+type Unsettled = { why: string }
+
+/// The owner's disk: each kept record under the key it was kept at.
+once fn disk() -> Cell<Map<string, Bytes>> { Cell.new({}) }
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+fn counted() {
+    let c = computes()
+    c.set(c.get() + 1)
+}
+
+fn at(query: string, args: int) -> string { "${query}\t${args}" }
+
+fn read_record(query: string, args: int) -> Bytes? { disk().get().get(at(query, args)) }
+
+fn keep_record(query: string, args: int, record: Bytes) {
+    disk().put(at(query, args), record)
+}
+
+/// A Db standing for a later process over the same disk.
+fn process() -> Db { durable_db(Durable { answer: read_record, keep: keep_record }) }
+
+@query
+fn lift(_db: Db, name: string) -> LiftResult {
+    counted()
+    LiftResult.Crossed(Lifted { answer: name, heap: ["h0", "h1"] })
+}
+
+@query
+fn lost(_db: Db, why: string) -> LiftResult {
+    counted()
+    LiftResult.Refused(Unsettled { why: why })
+}
+
+fn word(r: LiftResult) -> string {
+    match r { .Crossed(l) -> l.answer + ":" + l.heap.join("+"), .Refused(u) -> "refused " + u.why }
+}
+
+fn since(before: int) -> int { computes().get() - before }
+
+/// A first process runs the body, a second reads its record back whole.
+fn crossed() -> string {
+    let before = computes().get()
+    let first = lift(process(), "k")
+    let second = lift(process(), "k")
+    "${word(first)} ${word(second)} ${since(before)}"
+}
+
+/// The same for the other variant, whose payload is another record.
+fn refused() -> string {
+    let before = computes().get()
+    let first = lost(process(), "gone")
+    let second = lost(process(), "gone")
+    "${word(first)} ${word(second)} ${since(before)}"
+}
+
+"${crossed()} | ${refused()}"

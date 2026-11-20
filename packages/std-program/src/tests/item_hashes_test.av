@@ -1,0 +1,74 @@
+// Which hash an edit moves: bodies, signatures, comments, moved items and members.
+use item_hashes.{HashedItem, hashed_items}
+use source_items.{source_items}
+use tests.support.spelled_tokens.{spelled_columns}
+
+fn hashed(text: string) -> List<HashedItem> {
+    let columns = spelled_columns(text)
+    hashed_items(columns, source_items(columns))
+}
+
+fn same_body(left: HashedItem, right: HashedItem) -> bool {
+    if left.body == null || right.body == null { return left.body == null && right.body == null }
+    left.body!.same_as(right.body!)
+}
+
+spec "item_hashes — what an edit moves" {
+    given "an empty file" {
+        then "there are no hashes" { hashed("").is_empty() }
+    }
+    given "an item with no body" {
+        then "it has none" { hashed("w").all(it.body == null) }
+    }
+    given "an edit inside a body" {
+        then "only the body's hash moves" {
+            let before = hashed("fw{w}")[0]
+            let after = hashed("fw{ww}")[0]
+            before.signature.same_as(after.signature) &&
+                !same_body(before, after) &&
+                before.above.same_as(after.above)
+        }
+    }
+    given "whitespace inside a body" {
+        then "the body's hash moves, since bytes decide" {
+            !same_body(hashed("fw{w}")[0], hashed("fw{ w}")[0])
+        }
+    }
+    given "an edit in a signature" {
+        then "only the signature's hash moves" {
+            let before = hashed("fw{w}")[0]
+            let after = hashed("fww{w}")[0]
+            !before.signature.same_as(after.signature) && same_body(before, after)
+        }
+    }
+    given "a comment above an item" {
+        then "only the text above moves" {
+            let before = hashed("w;fw{w}")[1]
+            let after = hashed("w;~~fw{w}")[1]
+            before.signature.same_as(after.signature) &&
+                same_body(before, after) &&
+                !before.above.same_as(after.above)
+        }
+    }
+    given "an item moved down the file" {
+        then "its signature and body stay" {
+            let before = hashed("fw{w}")[0]
+            let after = hashed("w;w;fw{w}")[2]
+            before.signature.same_as(after.signature) && same_body(before, after)
+        }
+    }
+    given "a member edited" {
+        then "its holder's signature and the other member stay" {
+            let before = hashed("h{;fw{w};fw{ww};}")[0]
+            let after = hashed("h{;fw{wwww};fw{ww};}")[0]
+            before.signature.same_as(after.signature) &&
+                !same_body(before.members[0], after.members[0]) &&
+                same_body(before.members[1], after.members[1])
+        }
+    }
+    given "a member added" {
+        then "its holder's signature stays" {
+            hashed("h{;fw{w};}")[0].signature.same_as(hashed("h{;fw{w};fw{w};}")[0].signature)
+        }
+    }
+}

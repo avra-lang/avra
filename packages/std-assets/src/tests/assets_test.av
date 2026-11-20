@@ -1,0 +1,188 @@
+// What a file's leading octets say: sizes from headers, kinds claimed or not.
+use @std.url.{Url, parse}
+use @std.hash.{blake3_hex}
+use @std.assets.{
+    remote,
+    Blob,
+    png_size,
+    jpeg_size,
+    svg_size,
+    size_of,
+    picture_of,
+    blob_of,
+    is_picture,
+    served_name,
+    Picture,
+}
+
+/// A picture whose name is its content's, as a caller names one.
+fn named_picture(octets: Bytes) -> Picture? { picture_of(octets, blake3_hex(octets)) }
+
+/// A blob whose name is its content's.
+fn named_blob(octets: Bytes) -> Blob { blob_of(octets, blake3_hex(octets)) }
+
+/// A PNG's signature and `IHDR` for a `w` by `h` image, no pixels.
+fn png(w: int, h: int) -> Bytes {
+    [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        w / 16777216,
+        w / 65536 % 256,
+        w / 256 % 256,
+        w % 256,
+        h / 16777216,
+        h / 65536 % 256,
+        h / 256 % 256,
+        h % 256,
+    ]
+        .bytes()!
+}
+
+/// A JPEG: start of image, one comment segment, then a baseline frame.
+fn jpeg(w: int, h: int) -> Bytes {
+    [
+        255,
+        216,
+        255,
+        254,
+        0,
+        4,
+        65,
+        66,
+        255,
+        192,
+        0,
+        17,
+        8,
+        h / 256,
+        h % 256,
+        w / 256,
+        w % 256,
+        3,
+        1,
+        34,
+        0,
+        2,
+        17,
+        1,
+        3,
+        17,
+        1,
+    ]
+        .bytes()!
+}
+
+/// A digest the compiler would hand a provider: 64 hex characters.
+const digest: string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+spec "std/assets" {
+    given "a PNG header" {
+        then "its size is the IHDR width and height" {
+            let s = png_size(png(300, 120))
+            s != null && s!.width == 300 && s!.height == 120
+        }
+        then "a truncated header is no PNG" { png_size(png(1, 1).slice(0, 20)) == null }
+        then "a wide image does not wrap" { png_size(png(70000, 3))!.width == 70000 }
+    }
+    given "a JPEG" {
+        then "its size is the first frame's, past a comment segment" {
+            let s = jpeg_size(jpeg(640, 480))
+            s != null && s!.width == 640 && s!.height == 480
+        }
+        then "a cut frame is no JPEG" { jpeg_size(jpeg(1, 1).slice(0, 12)) == null }
+    }
+    given "an SVG" {
+        then "width and height attributes state its size" {
+            let s = svg_size(
+                "<?xml version=\"1.0\"?><svg xmlns=\"x\" width=\"24\" height=\"12\"></svg>".bytes(),
+            )
+            s != null && s!.width == 24 && s!.height == 12
+        }
+        then "a viewBox states it when the attributes do not" {
+            svg_size("<svg viewBox=\"0 0 16 8\"></svg>".bytes())!.height == 8
+        }
+        then "text without an svg tag is not one" { svg_size("hello".bytes()) == null }
+    }
+    given "the kinds" {
+        then "a PNG is a picture named by its content, with its media type and its octets" {
+            let p? = named_picture(png(2, 3)) else { return false }
+            match p {
+                .Bundled(name, w, h, _, media, octets) -> name.ends_with(".png") &&
+                    name.length == 36 &&
+                    w == 2 &&
+                    h == 3 &&
+                    media == "image/png" &&
+                    octets.length == 24,
+                .Remote(_, _, _) -> false,
+            }
+        }
+        then "a JPEG and an SVG name their own media types" {
+            let j? = named_picture(jpeg(4, 5)) else { return false }
+            let v? = named_picture("<svg viewBox=\"0 0 16 8\"></svg>".bytes()) else { return false }
+            served_name(j).ends_with(".jpg") && served_name(v).ends_with(".svg")
+        }
+        then "arbitrary octets are no picture but are a blob" {
+            let junk = [1, 2, 3].bytes()!
+            !is_picture(junk) &&
+                named_picture(junk) == null &&
+                named_blob(junk).octets.length == 3 &&
+                named_blob(junk).media == "application/octet-stream"
+        }
+        then "a name is the content's: same octets one name, other octets another" {
+            let a? = named_picture(png(2, 3)) else { return false }
+            let b? = named_picture(png(2, 3)) else { return false }
+            let c? = named_picture(png(3, 3)) else { return false }
+            served_name(a) == served_name(b) && served_name(a) != served_name(c)
+        }
+    }
+}
+
+spec "std/assets — providers" {
+    given "a file's octets" {
+        then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3), digest) != null }
+        then "a provided file is named by the digest it is handed, not one it computes" {
+            match Picture.provide("a.png", png(2, 3), digest)! {
+                .Bundled(name, _, _, _, _, _) -> name == "${digest.substring(0, 32)}.png",
+                .Remote(_, _, _) -> false,
+            }
+        }
+        then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!, digest) == null }
+        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!, digest)!.octets.length == 3 }
+    }
+}
+
+/// A parsed address, absent when the text is no URL.
+fn address(text: string) -> Url? {
+    match parse(text) { .Ok(u) -> u, .Err(_) -> null }
+}
+
+spec "std/assets — remote pictures" {
+    given "an address someone else serves" {
+        then "an https address with a size is a picture" {
+            let u? = address("https://cdn.acme.dev/u/42.jpg") else { return false }
+            remote(u, 96, 96) != null
+        }
+        then "another scheme is refused" {
+            let u? = address("ftp://host/x.png") else { return false }
+            remote(u, 96, 96) == null
+        }
+        then "a size that is not positive is refused" {
+            let u? = address("https://cdn.acme.dev/u/42.jpg") else { return false }
+            remote(u, 0, 96) == null && remote(u, 96, 0 - 1) == null
+        }
+    }
+}

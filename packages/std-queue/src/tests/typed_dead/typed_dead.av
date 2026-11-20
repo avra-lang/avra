@@ -1,0 +1,39 @@
+//! proves a handler fails in a type of its own: the worker's events and
+//! the buried letter carry the handler's variant, never its words.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
+use @std.time.{ms}
+
+type Job = { n: int }
+enum Fault { Declined(code: int), Offline }
+
+fn pay(d: Delivery<Job>) -> Result<int, Fault> {
+    if d.item.n == 7 { .Err(Fault.Declined(d.item.n * 10 + d.attempt)) } else { .Err(Fault.Offline) }
+}
+
+fn word(f: Fault) -> string {
+    match f { .Declined(code) -> "declined ${code}", .Offline -> "offline" }
+}
+
+fn why(f: Fate<Fault>) -> string {
+    match f { .Failed(e) -> word(e), .Unanswered -> "unanswered" }
+}
+
+let seen: Cell<List<string>> = Cell.new([])
+queue<Dead<Job, Fault>> letters {}
+queue<Job> jobs {
+    name: "jobs"
+    lease: ms(60000)
+    retries: 2
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters
+    failed: (d: Delivery<Job>, e: Fault) -> seen.push("failed ${word(e)}")
+    buried: (gone: Dead<Job, Fault>) -> seen.push("buried ${why(gone.fate)}")
+}
+use tests.support.letters.{first_letter}
+let _ = jobs.home().send(Job { n: 7 }, key("k"))
+let settled = drain(settle) catch 0 - 1
+let letter = first_letter(letters)
+"${settled} ${why(letter!.fate)} ${letter!.path[1]} | ${seen.get().join(", ")}"

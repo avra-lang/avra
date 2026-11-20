@@ -1,0 +1,192 @@
+//! A terminal written in place, on a fake one: the bytes it writes and the
+//! bytes it asks the process to leave behind are kept and asserted whole.
+use @std.ui.terminal.tests.support.{at, esc}
+use @std.text.{from_codepoint}
+use @std.ui.components.{button, column, item, key, text}
+use @std.ui.terminal.{Terminal, terminal_in_place}
+use @std.ui.terminal.keys.{modes_on}
+use @std.ui.terminal.screen.{parted, parting, screen}
+use @std.ui.tree.view.{View}
+
+/// A terminal in place and what it has written and registered.
+type Rig = {
+    on: Terminal,
+    wrote: Cell<List<string>>,
+    exits: Cell<List<string>>,
+    stops: Cell<int>,
+    modes: Cell<List<int>>,
+}
+
+fn rig<V: View>(view: fn() -> V, width: int, height: int) -> Rig {
+    let wrote: Cell<List<string>> = Cell.new([])
+    let exits: Cell<List<string>> = Cell.new([])
+    let stops: Cell<int> = Cell.new(0)
+    let modes: Cell<List<int>> = Cell.new([])
+    let on = terminal_in_place(
+        view,
+        width,
+        height,
+        screen((bytes: string) -> wrote.push(bytes)),
+        (bytes: string) -> exits.push(bytes),
+        () -> stops.set(stops.get() + 1),
+        (mode: int) -> modes.push(mode),
+    )
+    Rig { on: on, wrote: wrote, exits: exits, stops: stops, modes: modes }
+}
+
+/// Everything written since `before` writes had been.
+fn since(r: Rig, before: int) -> string { r.wrote.get().drop(before).join("") }
+
+/// A counter: its words, and a button that adds one.
+fn counting(n: Cell<int>) -> Rig {
+    rig(
+        () -> column {
+            text "n=${n.get()}"
+            button "Add" { on press { n.set(n.get() + 1) } }
+        },
+        20,
+        5,
+    )
+}
+
+spec "a terminal written in place" {
+    given "the first paint" {
+        then "asks the process to leave the terminal as it found it before it writes a byte" {
+            let r = counting(Cell.new(0))
+            r.exits.get().first() == parting()
+        }
+        then "enters the alternate screen with the input modes on, and draws the view" {
+            let r = counting(Cell.new(0))
+            let all = since(r, 0)
+            all.starts_with("${esc()}[?1049h${esc()}[?25l${esc()}[2J${modes_on()}") &&
+                all.contains("n=0") &&
+                all.contains("[ Add ]")
+        }
+        then "is in place" {
+            counting(Cell.new(0)).on.live()
+        }
+    }
+    given "a turn" {
+        then "writes only the cell that changed, and puts the caret back" {
+            let n = Cell.new(0)
+            let r = counting(n)
+            let before = r.wrote.get().length
+            r.on.feed("\n")
+            r.on.printed()
+            n.get() == 1 && since(r, before) == at(2, 0) + "1" + at(2, 1)
+        }
+        then "writes nothing for a turn that changes nothing" {
+            let r = counting(Cell.new(0))
+            let before = r.wrote.get().length
+            r.on.feed("${esc()}[I")
+            since(r, before) == ""
+        }
+    }
+    given "a resize" {
+        then "clears the screen and writes it in full at the new size" {
+            let r = counting(Cell.new(0))
+            let before = r.wrote.get().length
+            r.on.resized(30, 6)
+            let all = since(r, before)
+            all.starts_with("${esc()}[2J") &&
+                all.contains("n=0") &&
+                all.contains("[ Add ]") &&
+                r.on.width() == 30
+        }
+    }
+    given "the kitty keyboard" {
+        then "is pushed once when the terminal answers the query, and popped as the process leaves" {
+            let r = counting(Cell.new(0))
+            let before = r.wrote.get().length
+            r.on.feed("${esc()}[?1u")
+            let pushed = since(r, before) == "${esc()}[>5u"
+            r.on.feed("${esc()}[?1u")
+            pushed && since(r, before) == "${esc()}[>5u" && r.exits.get().last() == parted(true)
+        }
+        then "is not pushed for a terminal that never answers" {
+            let r = counting(Cell.new(0))
+            r.exits.get().length == 1
+        }
+    }
+    given "leaving" {
+        then "writes what the process leaves behind, once, and clears the registration" {
+            let r = counting(Cell.new(0))
+            let before = r.wrote.get().length
+            r.on.leave()
+            r.on.leave()
+            since(r, before) == parting() && r.exits.get().last() == ""
+        }
+    }
+    given "key bindings" {
+        then "a chord with a live binding runs it, and the nearest one wins" {
+            let hits: Cell<List<string>> = Cell.new([])
+            let r = rig(
+                () -> column {
+                    key "ctrl+s" { on press { hits.push("root") } }
+                    item {
+                        button "Save" { on press {} }
+                        key "ctrl+s" { on press { hits.push("button") } }
+                    }
+                },
+                20,
+                5,
+            )
+            r.on.feed("${esc()}[115;5u")
+            hits.get().join(",") == "button"
+        }
+        then "Ctrl-C with no binding raises the interrupt, and the input stays in cbreak" {
+            let r = counting(Cell.new(0))
+            r.on.feed("${esc()}[99;5u")
+            r.stops.get() == 1 && r.modes.get().is_empty()
+        }
+        then "Ctrl-C with a binding is the app's: the input goes to full raw, and the chord reaches it from either encoding" {
+            let hits: Cell<int> = Cell.new(0)
+            let r = rig(
+                () -> column {
+                    key "ctrl+c" { on press { hits.set(hits.get() + 1) } }
+                    button "Add" { on press {} }
+                },
+                20,
+                5,
+            )
+            r.on.feed("${esc()}[99;5u${from_codepoint(3)}")
+            hits.get() == 2 && r.stops.get() == 0 && r.modes.get().map("${it}").join(",") == "2"
+        }
+        then "Enter is a control's first, and a binding's when no control heard it" {
+            let hits: Cell<List<string>> = Cell.new([])
+            let pressed: Cell<int> = Cell.new(0)
+            let with_control = rig(
+                () -> column {
+                    key "Enter" { on press { hits.push("enter") } }
+                    button "Add" { on press { pressed.set(pressed.get() + 1) } }
+                },
+                20,
+                5,
+            )
+            with_control.on.feed("\n")
+            let alone = rig(
+                () -> column {
+                    key "Enter" { on press { hits.push("enter") } }
+                    text "nothing"
+                },
+                20,
+                5,
+            )
+            alone.on.feed("\n")
+            pressed.get() == 1 && hits.get().join(",") == "enter"
+        }
+        then "a binding on a key the terminal uses takes it first" {
+            let hits: Cell<int> = Cell.new(0)
+            let r = rig(
+                () -> column {
+                    key "PageDown" { on press { hits.set(hits.get() + 1) } }
+                    text "x"
+                },
+                20,
+                5,
+            )
+            r.on.feed("${esc()}[6~${esc()}[6~")
+            hits.get() == 2
+        }
+    }
+}

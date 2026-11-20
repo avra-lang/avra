@@ -1,0 +1,55 @@
+//! THE PIPE: `x |> f(a)` IS `f(x, a)` — application, and nothing
+//! else. The node means the call it names (`Pipe`'s `minted`), so
+//! typing, both engines and every idiom rule read an ordinary call,
+//! and only the printer reads the node that spells it back. A stage
+//! that is no call means nothing, and says why (`Pipe`'s `minted`).
+//!
+//! A STAGE IS A CALL, and the value becomes its FIRST argument:
+//!
+//!     x |> f              f(x)
+//!     x |> f(a, k: v)     f(x, a, k: v)
+//!     x |> f<T>(a)        f<T>(x, a)
+//!     x |> f { … }        f(x) { … }
+//!     x |> a.m            a.m(x)
+//!     x |> a.m(b)         a.m(x, b)
+//!     x |> (g)(b)         (g)(x, b)
+//!     x |> ((v) -> …)     ((v) -> …)(x)
+//!     x |> f(a)?          f(x, a)?            `!` alike
+//!
+//! Anything else is no stage and is refused; a method on the value
+//! itself stays `x.m()`. The value is SEATED AS A WRITTEN ARGUMENT
+//! IS — a `mut` first seat is written through, and a named argument
+//! or a default fills the seats after it.
+//!
+//! A STAGE BINDS THE PRONOUN AS A METHOD CALL DOES: `it` in a stage's
+//! own arguments is that stage's — `users |> filter(it.age >= 18) |>
+//! map(it.name)` reads as `users.filter(…).map(…)` would. The nearest
+//! call still wins: a stage inside a method's argument takes its own
+//! `it`, and a plain call inside a stage's argument (`xs |> map(g(it))`)
+//! leaves it to the stage. The piped VALUE is not an argument of the
+//! stage: `it |> f` reads the pronoun of the call around it.
+//!
+//! PRECEDENCE, loosest to tightest — the pipe sits between `??` and
+//! the bitwise band, and folds LEFT (`x |> f |> g` is `g(f(x))`):
+//!
+//!     catch  ||  &&  == != < <= > >= is  ??  |>  | ^ & << >>  + -  * / %
+//!
+//!     a + b |> f          f(a + b)
+//!     x |> f ?? d         f(x) ?? d
+//!     x |> n > 3          n(x) > 3
+//!     a ?? b |> f         a ?? f(b)
+//!     x |> f + 1          refused — `(x |> f) + 1`
+//!
+//! LINES: a line may END in `|>`. One that begins with it starts a
+//! statement, as every continuing operator does, and is refused.
+use features.{RefusalWords}
+
+// ── voices ──
+
+/// A line that begins with `|>`.
+fn leading_pipe() -> RefusalWords {
+    RefusalWords {
+        message: "a line never begins with `|>`",
+        help: "a continuing operator ends the line it continues — end the previous line with `|>`",
+    }
+}

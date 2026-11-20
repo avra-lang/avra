@@ -1,0 +1,76 @@
+// A sorted list searched: the first place a test stops holding, from any place, empty first.
+use sorted.{first_not_before, order_by_words, sorted_by}
+
+/// The first place from `from` whose number isn't below `wanted`, walked to.
+fn walked_to(numbers: List<int>, from: int, wanted: int) -> int {
+    (from..numbers.length).find(numbers[it] >= wanted) ?? numbers.length
+}
+
+/// Whether searching `numbers` from every place, for every number and its neighbours, agrees with a
+/// walk.
+fn search_agrees(numbers: List<int>) -> bool {
+    let wanted = [w for n in numbers for w in [n - 1, n, n + 1]].concat([-1000, 1000])
+    (0..numbers.length + 1)
+        .all(
+            (from) -> wanted
+                .all(
+                    (w) -> first_not_before(numbers, from, (n) -> n < w) == walked_to(numbers, from, w),
+                ),
+        )
+}
+
+/// Whether ordering `highs` and `lows` by words agrees with sorting the pairs by a comparison.
+fn order_agrees(highs: List<int>, lows: List<int>) -> bool {
+    let order = order_by_words(highs, lows)
+    let expected = sorted_by(
+        [at for at in 0..highs.length],
+        (a, b) -> highs[a] < highs[b] || highs[a] == highs[b] && lows[a] < lows[b],
+    )
+    same_places(order, expected)
+}
+
+/// Whether two lists of places hold the same places in the same order.
+fn same_places(a: List<int>, b: List<int>) -> bool { a.length == b.length && (0..a.length).all(a[it] == b[it]) }
+
+spec "program/sorted — sorting, and searching what's sorted" {
+    given "a sorted list searched" {
+        then "an empty one answers its length" {
+            let empty: List<int> = []
+            first_not_before(empty, 0, (n) -> n < 5) == 0
+        }
+        then "the answer agrees with a walk, from every place, through repeats" {
+            search_agrees([7]) &&
+                search_agrees([1, 3, 3, 3, 8, 20]) &&
+                search_agrees([-5, -5, 0, 0, 9])
+        }
+    }
+    given "a list sorted" {
+        then "items it can't tell apart keep their order" {
+            let sorted = sorted_by([31, 12, 22, 11, 32], (a, b) -> a / 10 < b / 10)
+            let expected = [12, 11, 22, 31, 32]
+            sorted.length == expected.length &&
+                (0..expected.length).all((at) -> sorted[at] == expected[at])
+        }
+    }
+    given "places ordered by two columns of words" {
+        then "none and one are their own order" {
+            let none: List<int> = []
+            order_by_words(none, none).is_empty() && same_places(order_by_words([5], [9]), [0])
+        }
+        then "the high word decides first, the low word second, both signed" {
+            same_places(order_by_words([3, -1, 3, 0], [1, 7, -2, 4]), [1, 3, 2, 0])
+        }
+        then "places it can't tell apart keep their order" {
+            same_places(order_by_words([2, 1, 2, 1, 2], [0, 0, 0, 0, 0]), [1, 3, 0, 2, 4])
+        }
+        then "it agrees with a sort by comparison, over every length to a few runs past a power of two" {
+            (0..20)
+                .all(
+                    (n) -> order_agrees(
+                        [at * 7919 % 5 - 2 for at in 0..n],
+                        [at * 104729 % 11 - 5 for at in 0..n],
+                    ),
+                )
+        }
+    }
+}

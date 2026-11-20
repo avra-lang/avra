@@ -1,0 +1,136 @@
+// THE WORLD IS READ AFRESH BY EVERY PROCESS. A build is a fresh engine reading the disk through
+// its stamps, over the store the last one left: a file added or deleted, a directory that appears,
+// a manifest's row added or removed, a dependency's manifest that comes to stand — each is what
+// the next process reads, never what a saved answer remembered. A variable a link word names is
+// the one the process that links is given.
+use @std.avrac.testing.held.{Pass, held_at, held_on_disk}
+use @std.io.{make_dirs, remove, write_text}
+use @std.path.{dir_of}
+use @std.time.{stamp}
+
+const APP: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// A scratch package nothing has ever written to.
+fn world_root(name: string) -> string {
+    let root = "/tmp/avra-world-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    root
+}
+
+/// `text` written at `path` under `root`.
+fn put(root: string, path: string, text: string) {
+    let at = "${root}/${path}"
+    let _ = make_dirs(dir_of(at))
+    let _ = write_text(at, text)
+}
+
+/// The file at `path` under `root` deleted.
+fn gone(root: string, path: string) { let _ = remove("${root}/${path}") }
+
+/// One process over the package at `root`, its store beside it.
+fn pass(root: string) -> Pass { held_on_disk(root).passed_on_disk("${root}/src/main.av", "${root}.store") }
+
+/// A package whose entry calls `n()` from the module `x`, with the manifest `manifest`.
+fn importing(name: string, manifest: string) -> string {
+    let root = world_root(name)
+    put(root, "avra.toml", manifest)
+    put(root, "src/main.av", "use x.{n}\nn()\n")
+    root
+}
+
+/// A package whose entry calls `d()` from the path dependency `@app/dep` in `dep/`.
+fn depending(name: string) -> string {
+    let root = world_root(name)
+    put(root, "avra.toml", APP)
+    put(root, "src/main.av", "use @app.dep.{d}\nd()\n")
+    put(root, "dep/src/dep.av", "export fn d() -> int { 9 }\n")
+    root
+}
+
+const WITH_DEP: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@app/dep\" = { path = \"dep\" }\n"
+
+const DEP_MANIFEST: string = "[package]\nname = \"@app/dep\"\nversion = \"0.1.0\"\n"
+
+/// A manifest whose link words name the variable `AVRA_WORLD_LIB`.
+const LINKED: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"\${AVRA_WORLD_LIB}\"]\nlibs = [\"w\"]\n"
+
+spec "compiler/world" {
+    given "the set of files moved between two processes" {
+        then "a directory that appears where none was listed is read by the next" {
+            let root = importing("dir-appears", APP)
+            let before = pass(root)
+            put(root, "src/x/a.av", "export fn n() -> int { 7 }\n")
+            !before.report.is_empty() && pass(root).ran == "7"
+        }
+        then "a file added to a listed directory is read by the next" {
+            let root = importing("file-added", APP)
+            put(root, "src/x/a.av", "export fn other() -> int { 1 }\n")
+            let before = pass(root)
+            put(root, "src/x/b.av", "export fn n() -> int { 8 }\n")
+            !before.report.is_empty() && pass(root).ran == "8"
+        }
+        then "a file that now stands where nothing did is a module of its own" {
+            let root = importing("file-stands", APP)
+            let before = pass(root)
+            put(root, "src/x.av", "export fn n() -> int { 6 }\n")
+            !before.report.is_empty() && pass(root).ran == "6"
+        }
+        then "a file another file imports, deleted, is gone from the next: the import is refused" {
+            let root = importing("file-deleted", APP)
+            put(root, "src/x/a.av", "export fn other() -> int { 1 }\n")
+            put(root, "src/x/b.av", "export fn n() -> int { 8 }\n")
+            let before = pass(root)
+            gone(root, "src/x/b.av")
+            before.ran == "8" && !pass(root).report.is_empty()
+        }
+    }
+    given "a manifest moved between two processes" {
+        then "a dependency row added is read by the next" {
+            let root = depending("row-added")
+            put(root, "dep/avra.toml", DEP_MANIFEST)
+            let before = pass(root)
+            put(root, "avra.toml", WITH_DEP)
+            !before.report.is_empty() && pass(root).ran == "9"
+        }
+        then "a dependency row removed is gone from the next" {
+            let root = depending("row-removed")
+            put(root, "dep/avra.toml", DEP_MANIFEST)
+            put(root, "avra.toml", WITH_DEP)
+            let before = pass(root)
+            put(root, "avra.toml", APP)
+            before.ran == "9" && !pass(root).report.is_empty()
+        }
+        then "a dependency's manifest that comes to stand where its directory held none is read by the next" {
+            let root = depending("dep-manifest")
+            put(root, "avra.toml", WITH_DEP)
+            let before = pass(root)
+            put(root, "dep/avra.toml", DEP_MANIFEST)
+            !before.report.is_empty() && pass(root).ran == "9"
+        }
+        then "a manifest read again, unchanged, answers alike and works nothing out" {
+            let root = depending("unchanged")
+            put(root, "dep/avra.toml", DEP_MANIFEST)
+            put(root, "avra.toml", WITH_DEP)
+            let _ = pass(root)
+            let again = pass(root)
+            again.ran == "9" && again.worked.is_empty()
+        }
+    }
+    given "a variable a link word names" {
+        then "each process links with the value it is given" {
+            let held = held_at({"/w/avra.toml": LINKED, "/w/src/main.av": "1\n"}, "/w")
+            let one = held.judged_at("/w/src/main.av").link_words({"AVRA_WORLD_LIB": "/opt/one"})
+            let two = held.judged_at("/w/src/main.av").link_words({"AVRA_WORLD_LIB": "/opt/two"})
+            one.join(" ").contains("/opt/one") &&
+                two.join(" ").contains("/opt/two") &&
+                !two.join(" ").contains("/opt/one")
+        }
+        then "an unset variable asks for no word at all" {
+            let held = held_at({"/w/avra.toml": LINKED, "/w/src/main.av": "1\n"}, "/w")
+            !held
+                .judged_at("/w/src/main.av")
+                .link_words()
+                .any(it.contains("AVRA_WORLD_LIB") || it == "-L")
+        }
+    }
+}

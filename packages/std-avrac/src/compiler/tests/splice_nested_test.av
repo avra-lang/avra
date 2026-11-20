@@ -1,0 +1,51 @@
+// A REWRITE'S HOLE MAY HOLD A TEMPLATE A HELPER BUILT, copied in its turn, and every node a copy
+// makes reads its names where its own template was written, so a meaning names what its package
+// declares from a file that never imports it.
+use @std.avrac.diagnostics.{new_source_file}
+use @std.meta.{Node, Rewrite}
+use compiler.{avra, parse_program, rewritten_beside}
+use features.{BlockWords}
+use core.{ExprId, SyntaxArena}
+
+/// A store holding one read of `a`, the node the rewrites below stand beside.
+type Beside = { store: SyntaxArena, read: ExprId }
+
+fn beside() -> Beside {
+    let p = parse_program(avra(), new_source_file("/w/src/main.av", "let x = a\n"), BlockWords {})
+    Beside { store: p.store, read: p.store.stmt_value(p.stmts[0])! }
+}
+
+/// `${inner} + 1`, written in `/w/outer.av`, its hole holding `f(${a})`, written in `/w/inner.av`.
+fn nested(read: ExprId) -> Rewrite {
+    let held = Node.Many([Node.Name("expr"), Node.Int(read.index)])
+    let inner = Node.Template("/w/inner.av", 0, ["f(", ")"], [held])
+    Rewrite { node: Node.Template("/w/outer.av", 0, ["", " + 1"], [inner]) }
+}
+
+/// The root a rewrite made and the call its left side holds, when it made one.
+fn called(b: Beside) -> ExprId? {
+    let root? = rewritten_beside(avra(), b.store, b.read, nested(b.read)).last() else { return null }
+    let left? = match b.store.expr(root) { .Binary(_, l, _) -> l, rest -> null } else { return null }
+    if b.store.call_parts(left)?.callee != "f" { return null }
+    left
+}
+
+spec "splice — a rewrite's hole holds a template a helper built" {
+    given "a template of one hole plus one, its hole holding a call of `f` on `a`" {
+        then "the inner template is copied where its hole stands" {
+            called(beside()) != null
+        }
+        then "the call reads its names where its template was written" {
+            let b = beside()
+            let left = called(b)
+            left != null && b.store.home_of(left!) == "/w/inner.av"
+        }
+        then "the held node keeps its own place" {
+            let b = beside()
+            let left = called(b)
+            left != null &&
+                b.store.call_parts(left!)!.args[0].index == b.read.index &&
+                b.store.home_of(b.read) == null
+        }
+    }
+}

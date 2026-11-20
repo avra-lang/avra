@@ -1,0 +1,165 @@
+//! The typing rules of lists. A literal: each element checks against the element type its seat
+//! wants (a spread, the list it names), and the literal is the list that seat names; with none, the
+//! list of its elements' join, a spread bringing its own elements.
+//! `[]` is its own type wherever it stands. A comprehension binds each head's names in a scope of its
+//! own and is the list of its element. A list pattern binds its ends' elements and its middle's list.
+use core.{
+    At,
+    Checking,
+    Checks,
+    CompClause,
+    ExprId,
+    Expected,
+    PatChecks,
+    PatId,
+    SignedType,
+    flatten,
+    never_type,
+    owned_type,
+    types_joined,
+    walk_binds,
+    Decision,
+    Seating,
+}
+use core.expr.{Collect, Comp, ListLit}
+use core.pat.{Seq}
+
+impl Checks for ListLit {
+    /// A list a seat wants as `List<T>` checks each element as a `T`. Any other joins its elements'
+    /// types — an element whose type isn't known checked again as what the others join to — and a
+    /// variant written by its name alone takes that join.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
+        let element = wanted?.listed()
+        if element != null {
+            for v in self.elems {
+                let _ = if cx.store.spread_operand(v) != null {
+                    cx.spread_checked(v, element!)
+                } else {
+                    cx.check_seated(v, element, Seating.Element)
+                }
+            }
+            return if self.elems.is_empty() { owned_type("List") with { args: [never_type()] } } else { wanted }
+        }
+        let free = if expected is .Unknown { Expected.Unknown } else { Expected.Free }
+        let plain = [v for v in self.elems if !cx.store.variant_literal(v)]
+        let read = [contributed(cx, v, cx.check(v, free)) for v in plain]
+        let again = cx.pinning(read, expected)
+        let own = [if t != null || again == null || cx.store.spread_operand(plain[at]) != null { t } else { cx.check(plain[at], Expected.Exactly(again!)) } for at, t in read]
+        let joined = types_joined(own)
+        let seated = if own.is_empty() || joined == null { free } else { Expected.Exactly(joined!) }
+        let held = types_joined(
+            own.concat([cx.check(v, seated) for v in self.elems if cx.store.variant_literal(v)]),
+        )
+        if held != null { return owned_type("List") with { args: [held!] } }
+        cx.literal_apart("list", plain, [cx.store.spread_operand(v) != null for v in plain])
+        null
+    }
+}
+
+/// What an element of type `read` brings to a list's elements: a spread its own elements, any other
+/// itself.
+fn contributed(cx: Checking, v: ExprId, read: SignedType?) -> SignedType? {
+    if cx.store.spread_operand(v) == null { read } else { read?.listed() }
+}
+
+impl Checks for Comp {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        cx.opened()
+        for c in self.clauses { clause_checked(cx, c) }
+        let wanted = match expected {
+            .Exactly(ty) -> (ty with { nulls: 0 }).listed(),
+            rest -> null,
+        }
+        let before = cx.refused.get().length
+        let element = cx
+            .check(self.elem, if wanted == null { Expected.Free } else { Expected.Exactly(wanted!) })
+        if wanted != null { cx.element_heard_whole(e, self.elem, before, wanted!) }
+        cx.closed()
+        let held = wanted ?? element
+        if element == null || held == null || held!.absence() { null } else { owned_type("List") with { args: [held!] } }
+    }
+}
+
+/// One clause of a comprehension's head: a walk binding its names, or a filter that is a `bool`.
+fn clause_checked(mut cx: Checking, c: CompClause) {
+    match c {
+        .Head(index, name, source, hi) -> {
+            let from = if hi == null { cx.check(source, Expected.Free) } else { cx.check_seated(source, owned_type("int"), Seating.CompBound(false)) }
+            if hi != null { let _ = cx.check_seated(hi!, owned_type("int"), Seating.CompBound(true)) }
+            if hi == null && index == null { cx.comp_unpaired(source, from) }
+            let walk = if hi != null { walk_binds(owned_type("Range")) } else { walk_binds(cx.seen(from)) }
+            if hi == null && walk.element == null { cx.comp_unwalked(source, from) }
+            if index != null { cx.bind(index!.of, walk.index) }
+            cx.bind(name.of, walk.element)
+        },
+        .Filter(cond) -> { let _ = cx.check_seated(cond, owned_type("bool"), Seating.Condition(Decision.Filter)) },
+    }
+}
+
+impl Checks for Collect {
+    /// A collection's statements check in a scope of their own, each value standing as one (or a list of them) against
+    /// the element its seat wants; it is the list its seat wants, else the list of the first value
+    /// they keep that is no list, else of a kept list's elements; a value no seat typed is checked
+    /// again as one of what the collection then holds. Where no seat says the element, the single
+    /// values its statements keep share one type, as a list literal's elements do.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let wanted = match expected {
+            .Exactly(ty) -> (ty with { nulls: 0 }).listed(),
+            rest -> null,
+        }
+        cx.opened()
+        for s in self.stmts {
+            let value = cx.store.answer_of(s)
+            if value == null { cx.check_stmt(s) } else { let _ = cx.kept_checked(value!, wanted) }
+        }
+        let values = [v! for s in self.stmts for v in [cx.store.answer_of(s)] if v != null]
+        if wanted == null {
+            let singles = [v for v in values if cx.type_of(v)?.listed() == null]
+            cx.literal_apart("list", singles, [false for v in singles])
+        }
+        let typed = flatten([kept_types(cx, At.Stmt(s)) for s in self.stmts])
+        let kept = if typed.is_empty() && wanted == null { read_alone(cx, values) } else { typed }
+        let held = wanted ?? kept.find(it.listed() == null) ?? kept.first()?.listed()
+        if wanted == null && held != null { for v in values { if cx.type_of(v) == null { let _ = cx.kept_checked(v, held) } } }
+        cx.closed()
+        if held == null { null } else { owned_type("List") with { args: [held!] } }
+    }
+}
+
+/// The types `values` have read under no seat, each that holds a value: what a collection none of
+/// whose statements a seat typed holds.
+fn read_alone(mut cx: Checking, values: List<ExprId>) -> List<SignedType> {
+    [t! for v in values for t in [cx.check(v, Expected.Free)] if t != null && t!.holds_value()]
+}
+
+/// The types of the values the statements at `at` keep: a statement's value that is one, else what
+/// the statements it holds keep, behind no lambda — read in the core where the body is.
+fn kept_types(cx: Checking, at: At) -> List<SignedType> {
+    match at {
+        .Stmt(s) -> {
+            let meant = if cx.meanings { cx.store.stmt_meant(s) } else { null }
+            if meant != null { return flatten([kept_types(cx, At.Stmt(m)) for m in meant!]) }
+            let v = cx.store.left_by(s)
+            let ty = if v == null { null } else { cx.type_of(v!) }
+            if ty != null && ty!.holds_value() { return [ty!] }
+            flatten([kept_types(cx, k) for k in cx.store.kids_at(at)])
+        },
+        .Expr(e) -> {
+            if cx.store.lambda_parts(e) != null { return [] }
+            let meant = if cx.meanings { cx.store.meant(e) } else { null }
+            let kids = if meant == null { cx.store.kids_at(at) } else { [At.Expr(meant!)] }
+            flatten([kept_types(cx, k) for k in kids])
+        },
+        .Pat(_) or .Field(_, _) or .Param(_, _) -> flatten([kept_types(cx, k) for k in cx.store.kids_at(at)]),
+    }
+}
+
+impl PatChecks for Seq {
+    /// The patterns before and after a `..` bind elements; the middle binds the list.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let element = subject?.listed()
+        for b in self.before.concat(self.after) { cx.check_pat(b, element) }
+        for r in self.rest { cx.check_pat(r, subject) }
+    }
+}

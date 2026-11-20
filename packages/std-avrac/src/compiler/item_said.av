@@ -1,0 +1,89 @@
+//! WHAT A BUILD SAYS OF A FILE, as diagnostics: each refusal its laws or its manifest find, and
+//! what only the program's entry may hold.
+use core.{some_list}
+use diagnostics.{Diag, Voice, has_errors, said_as}
+use compiler.lower.{entry_only_refused, no_projection_refused}
+use @std.errors.{Loc}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.source_facts.{source_text}
+
+/// A file the program reads, and the path its diagnostics name it by.
+export type ProgramFile = { file: SourceFileAddress, full: string }
+
+/// What fails a build in the file `h` of the program whose entry is `entry`: each refusal its laws,
+/// or its manifest's, find, then each statement it runs where it isn't the entry, or where it is, an
+/// answer no text spells — said only of a file its laws refuse nothing in, as lowering is reached.
+export fn file_refusals(engine: QueryEngine, h: ProgramFile, entry: ProgramFile) -> List<Diag> {
+    let found = if is_manifest(h.file) { manifest_diags(engine, h) } else { file_law_diags(engine, h) }
+    let own = !is_manifest(h.file) && h.full == entry.full
+    let strays = if is_manifest(h.file) || own { [] } else { strays_of(engine, h.file) }
+    let unspelled = if own && !has_errors(found) { entry_lowered(engine, h.file)?.unprojected } else { null }
+    [d for d in found if !(d.severity is .Warning)]
+        .concat([entry_only_refused(Loc { file: h.full, lo: s.lo, hi: s.hi }, entry.full) for s in strays])
+        .concat(
+            [no_projection_refused(Loc { file: h.full, lo: u.lo, hi: u.hi }, u.name) for u in some_list(unspelled)],
+        )
+}
+
+/// The diagnostics every law finds in the file `h`, item by item, after what a source that holds no
+/// text says of itself.
+export fn file_law_diags(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
+    some_list(standing_said(standing_of(engine, h.file), h.full))
+        .concat(
+            [d! for at in 0..item_count(engine, h.file) for f in findings_in_file(engine, h.file, at) for d in [finding_diag(f, h.full)] if d != null],
+        )
+}
+
+/// What a source the program lists says of itself where it holds no text, in its cause's words.
+export fn standing_said(standing: SourceStanding, path: string) -> Diag? {
+    let at = Loc { file: path, lo: 0, hi: 0 }
+    match standing {
+        .Text -> null,
+        .Missing -> said_as("source.missing", at, missing_voice(path)),
+        .NotText(byte) -> said_as("source.not_text", at, not_text_voice(path, byte)),
+        .Refused(why) -> said_as("source.refused", at, refused_voice(path, why)),
+        .Dangling -> said_as("source.dangling", at, dangling_voice(path)),
+    }
+}
+
+/// A source the package lists that no file stands at.
+fn missing_voice(path: string) -> Voice {
+    Voice {
+        message: "`${path}` does not exist",
+        label: "listed here, and nothing stands here",
+        help: "write the file, or take it out of the package",
+    }
+}
+
+/// A source whose octets are no text, from the byte `at`.
+fn not_text_voice(path: string, at: int) -> Voice {
+    Voice {
+        message: "`${path}` is not UTF-8 — byte ${at}",
+        label: "a source is text",
+        help: "save the file as UTF-8, or move what isn't source out of `src/`",
+    }
+}
+
+/// A source the host would not give, in its own words.
+fn refused_voice(path: string, why: string) -> Voice {
+    Voice {
+        message: "`${path}` can't be read — ${why}",
+        label: "the host refused it",
+        help: "give the file a mode the build can read",
+    }
+}
+
+/// A source that is a link leading nowhere.
+fn dangling_voice(path: string) -> Voice {
+    Voice {
+        message: "`${path}` is a link to nothing",
+        label: "the link stands here",
+        help: "point the link at a file, or take it away",
+    }
+}
+
+/// What the manifest `h` says of itself.
+fn manifest_diags(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
+    manifest_voices(h.full, source_text(engine, h.file) ?? "")
+}

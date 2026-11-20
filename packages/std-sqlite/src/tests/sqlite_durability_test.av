@@ -1,0 +1,173 @@
+// A connection commits at the durability it was opened with, on every journal and after every use, and a level
+// that cannot hold is refused where it is asked.
+use @std.io.{list_dir, make_dirs, remove}
+use @std.sqlite.open.{Db, Durability, Journal, OpenConfig}
+use @std.sqlite.sql.{sql}
+use @std.time.{now_ns}
+
+const root: string = "/tmp/avra-sqlite-durability-test"
+
+once fn durability_base() -> string {
+    let d = "${root}/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+/// A connection to `name` under the base, with the journal and durability asked for.
+fn opened_as(name: string, journal: Journal, durability: Durability) -> Result<Db, string> {
+    match Db
+        .open_with(
+            OpenConfig.config_at("${durability_base()}/${name}.db") with { journal: journal, durability: durability },
+        ) { .Ok(db) -> .Ok(db), .Err(e) -> .Err(e.cause.kind()) }
+}
+
+/// One pragma's number on a connection, or -1 where it could not be read.
+fn pragma(db: Db, name: string) -> int {
+    match db.scalar(sql("PRAGMA ${name}")) { .Ok(v) -> v.int() catch -1, .Err(_) -> -1 }
+}
+
+/// A connection's sync level and drive flush before any write, and after one: `2/0 2/0`.
+fn through_a_write(db: Db) -> string {
+    let before = "${pragma(db, "synchronous")}/${pragma(db, "fullfsync")}"
+    let _ = db.exec("create table if not exists t (v); insert into t values (1)")
+    "${before} ${pragma(db, "synchronous")}/${pragma(db, "fullfsync")}"
+}
+
+/// `through_a_write` of an open, or the kind it was refused with.
+fn levels_of(r: Result<Db, string>) -> string {
+    match r {
+        .Ok(db) -> {
+            let seen = through_a_write(db)
+            let _ = db.close()
+            seen
+        },
+        .Err(kind) -> kind,
+    }
+}
+
+/// A second connection's levels while the first, opened as `first`, stays open on the same WAL file.
+fn beside(name: string, first: Durability, second: Durability) -> string {
+    match opened_as(name, .Wal, first) {
+        .Ok(holder) -> {
+            let _ = through_a_write(holder)
+            let seen = levels_of(opened_as(name, .Keep, second))
+            let stayed = pragma(holder, "synchronous")
+            let _ = holder.close()
+            "${seen} holder ${stayed}"
+        },
+        .Err(kind) -> kind,
+    }
+}
+
+/// The levels a connection reads as it is moved through `steps`, each followed by a write.
+fn moved(name: string, steps: List<Durability>) -> string {
+    match opened_as(name, .Wal, .Synced) {
+        .Ok(db) -> {
+            let seen = [stepped(db, d) for d in steps].join(" ")
+            let _ = db.close()
+            seen
+        },
+        .Err(kind) -> kind,
+    }
+}
+
+fn stepped(db: Db, d: Durability) -> string {
+    match db.commit_as(d) {
+        .Ok(_) -> {
+            let _ = db.exec("create table if not exists t (v); insert into t values (1)")
+            "${pragma(db, "synchronous")}/${pragma(db, "fullfsync")}"
+        },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// What `commit_as(asked)` answers inside a transaction begun on a connection opened as `had`.
+fn mid_transaction(name: string, had: Durability, asked: Durability) -> string {
+    match opened_as(name, .Wal, had) {
+        .Ok(db) -> {
+            let _ = db.exec("create table if not exists t (v)")
+            let _ = db.begin()
+            let seen = match db.commit_as(asked) { .Ok(_) -> "kept", .Err(e) -> e.cause.kind() }
+            let _ = db.rollback()
+            let stood = pragma(db, "synchronous")
+            let _ = db.close()
+            "${seen} ${stood}"
+        },
+        .Err(kind) -> kind,
+    }
+}
+
+fn memory_levels() -> string {
+    match Db.memory() {
+        .Ok(db) -> {
+            let seen = through_a_write(db)
+            let eased = stepped(db, .Eased)
+            let _ = db.close()
+            "${seen} ${eased}"
+        },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// Whether the base is gone, its files removed.
+fn tidied() -> bool {
+    for name in list_dir(durability_base()) catch [] { let _ = remove("${durability_base()}/${name}") }
+    let _ = remove(durability_base())
+    let _ = remove(root)
+    (list_dir(durability_base()) catch []).is_empty()
+}
+
+spec "std/sqlite durability" {
+    given "a write-ahead log opened without naming a durability" {
+        then "commits synced before and after its first write" { levels_of(opened_as("wal", .Wal, .Synced)) == "2/0 2/0" }
+        then "a plain open of the same file is synced too" {
+            match Db.open("${durability_base()}/wal.db") {
+                .Ok(db) -> through_a_write(db) == "2/0 2/0" && db.close() == 0,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "each durability asked of a write-ahead log" {
+        then "Synced reads back as full" { levels_of(opened_as("each_synced", .Wal, .Synced)) == "2/0 2/0" }
+        then "Eased reads back as normal" { levels_of(opened_as("each_eased", .Wal, .Eased)) == "1/0 1/0" }
+        then "Flushed reads back as full with the drive's flush on" {
+            levels_of(opened_as("each_flushed", .Wal, .Flushed)) == "2/1 2/1"
+        }
+    }
+    given "a second connection to a file another holds" {
+        then "takes its own level, synced by default, and the holder keeps its own" {
+            beside("second_default", .Eased, .Synced) == "2/0 2/0 holder 1"
+        }
+        then "takes the eased level it asked for beside a synced holder" {
+            beside("second_eased", .Synced, .Eased) == "1/0 1/0 holder 2"
+        }
+    }
+    given "a rollback journal" {
+        then "commits synced" { levels_of(opened_as("rollback", .Rollback, .Synced)) == "2/0 2/0" }
+        then "takes Flushed" { levels_of(opened_as("rollback_flushed", .Rollback, .Flushed)) == "2/1 2/1" }
+        then "refuses Eased at the open" { levels_of(opened_as("rollback_eased", .Rollback, .Eased)) == "sqlite.unlogged" }
+        then "refuses Eased on a new file whose journal was never asked" {
+            levels_of(opened_as("kept_eased", .Keep, .Eased)) == "sqlite.unlogged"
+        }
+    }
+    given "a private in-memory database" {
+        then "reads back synced, and takes any level: it has no file to lose" { memory_levels() == "2/0 2/0 1/0" }
+    }
+    given "a connection moved between levels" {
+        then "each reads back as itself after a write, the drive's flush following" {
+            moved("moved", [.Eased, .Flushed, .Eased, .Synced]) == "1/0 2/1 1/0 2/0"
+        }
+    }
+    given "a level asked inside a transaction" {
+        then "the level already in force is kept" { mid_transaction("mid_same", .Synced, .Synced) == "kept 2" }
+        then "another is refused and the connection keeps its own" {
+            mid_transaction("mid_other", .Synced, .Eased) == "sqlite.transaction_open 2"
+        }
+        then "the drive's flush is a level of its own" {
+            mid_transaction("mid_flush", .Synced, .Flushed) == "sqlite.transaction_open 2"
+        }
+    }
+    given "the files these cases made" {
+        then "are removed" { tidied() }
+    }
+}

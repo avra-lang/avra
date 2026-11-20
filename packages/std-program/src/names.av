@@ -1,0 +1,47 @@
+//! NAMES, INTERNED: a name's text is minted a dense id the first time it arrives in a process, so two
+//! names are one exactly when their ids are, one compare. AN ID IS THE PROCESS'S OWN: another process
+//! mints its own, in its own order, so nothing an id stands for may leave the process as the id. A
+//! name is saved as its TEXT and interned again where it is read back, and every fold of a name is a
+//! fold of its text: a saved answer, a content key and a print are the same in every process.
+use interned.{InternId, Interned, KeyLane, hash_text, interned}
+use saved_layout.{SavedLayoutWriter, SavedRecord, SavedSource}
+use saved_derive.{Saved}
+use @std.meta.{derive, sealed}
+
+/// A name: its text's place among the names this process has minted. Sealed: only `name_of` makes one.
+@sealed
+export type Name = { id: int }
+
+/// What a name is saved and folded as: its text.
+@derive(Saved)
+type NameText = { text: string }
+
+/// The names this process has minted, by text.
+once fn names() -> Interned<string> { interned(name_hash, same_text) }
+
+fn name_hash(text: string) -> int { hash_text(0, text) }
+
+fn same_text(a: string, b: string) -> bool { a == b }
+
+/// The name `text` spells, minted the first time it arrives.
+export fn name_of(text: string) -> Name { Name { id: names().id_of(text).index } }
+
+impl Name {
+    /// The text this name spells.
+    fn text() -> string { names().value_of(InternId { index: self.id }) }
+
+    /// The name as saved bytes: its text.
+    fn saved_bytes() -> Bytes { NameText { text: self.text() }.saved_bytes() }
+
+    /// The name saved bytes spell, interned here.
+    static fn from_saved_bytes(bytes: Bytes) -> Name { name_of(NameText.from_saved_bytes(bytes).text) }
+
+    /// The name written into a bigger answer: its text.
+    fn written_into(writer: SavedLayoutWriter) -> int { NameText { text: self.text() }.written_into(writer) }
+
+    /// The name folded into a content key: its text, never its id.
+    fn folded_into(lane: KeyLane, key_fold: int) -> int { NameText { text: self.text() }.folded_into(lane, key_fold) }
+
+    /// The name read back from a bigger answer, interned here.
+    static fn read_from(source: SavedSource, record: SavedRecord) -> Name { name_of(NameText.read_from(source, record).text) }
+}

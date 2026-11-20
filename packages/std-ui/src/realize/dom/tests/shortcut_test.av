@@ -1,0 +1,36 @@
+//! A shortcut on the page a host holds: the key stands hidden, says its chord
+//! in the spelling a keydown is read by, and hears `keydown` — what the web
+//! host's chord match (runtime/dom/bootstrap_test.js) is held to.
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.tests.support.{host, told, whole}
+use @std.ui.realize.dom.wire.{frame}
+use @std.ui.realize.tests.support.{holding, leaf}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.tree.node.{Action, Handler, Node}
+use @std.ui.tree.seats.{seat_named}
+
+fn nothing() {}
+
+/// A key of `chord` whose press does nothing.
+fn shortcut(chord: string) -> Node {
+    leaf(.Key, [.Label(chord)]) with { events: [Action { seat: seat_named("key", "press"), handler: Handler.Nothing(nothing) }] }
+}
+
+/// The page a host holds after being shown a row holding a key of `chord`.
+fn held(chord: string) -> string {
+    mut at = host()
+    at.take(frame(live().patches(holding(.Row, [shortcut(chord)]), default_theme)))
+    told(at.page(), whole)
+}
+
+spec "std/ui dom — a shortcut on the page" {
+    given "a key of a chord" {
+        then "stands hidden, saying its chord and hearing keydown" {
+            let page = held("ctrl+s")
+            page.contains(" data-avra-chord=\"c/KeyS/s\"") &&
+                page.contains(" hidden=\"\"") &&
+                page.contains(":keydown")
+        }
+        then "says nothing of a chord that is none" { !held("ctrl+").contains("data-avra-chord") }
+    }
+}

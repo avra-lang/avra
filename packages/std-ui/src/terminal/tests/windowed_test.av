@@ -1,0 +1,126 @@
+//! A windowed list in a terminal: it builds the rows its height holds, the
+//! keys scroll it, and the focus rests on a control of what it shows.
+use @std.ui.terminal.tests.support.{esc}
+use @std.ui.components.{button, column, list, row, text}
+use @std.ui.terminal.{Terminal, terminal}
+use @std.ui.tree.rows.{windowed}
+
+component tapper(n: int) {
+    row {
+        text "row ${self.n}"
+        button "Tap ${self.n}" { on press {} }
+    }
+}
+
+fn keyed(i: int) -> string { "k${i}" }
+
+fn rows_of(count: int) -> List<int> { [i for i in 0..count] }
+
+/// A terminal `height` lines tall on a list of `count` rows, a title above.
+fn listing(count: int, height: int) -> Terminal {
+    terminal(
+        () -> column {
+            text "Rows"
+            list {
+                windowed(
+                    rows_of(count),
+                    (i: int) -> keyed(i),
+                    (i: int) -> tapper i { key: keyed(i) },
+                )
+            }
+        },
+        width: 40,
+        height: height,
+    )
+}
+
+/// How many lines the screen has.
+fn lines(on: Terminal) -> int { on.screen().split("\n").length }
+
+spec "a windowed list in a terminal" {
+    given "ten thousand rows in a screen ten lines tall" {
+        then "builds the rows the height holds, not ten thousand" {
+            let on = listing(10000, 10)
+            on.shown.app.stands.built() <= 10 && lines(on) <= 10
+        }
+        then "says how many rows are not built" {
+            let on = listing(10000, 10)
+            on.screen().contains("more")
+        }
+    }
+    given "the keys that scroll it" {
+        then "Page Down moves a screenful, and the focus rests on a control of it" {
+            let on = listing(10000, 10)
+            let before = on.shown.app.stands.built()
+            on.feed("${esc()}[6~")
+            let shown = on.screen()
+            before > 0 && !shown.contains("row 0") && shown.contains("> ") && shown.contains("Tap ")
+        }
+        then "End shows the last rows, and Home the first again" {
+            let on = listing(10000, 10)
+            on.feed("${esc()}[F")
+            let last = on.screen().contains("row 9999")
+            on.feed("${esc()}[H")
+            last && on.screen().contains("row 0")
+        }
+        then "Tab past the last row built slides the window a row, and Back past the first slides it back" {
+            let on = listing(10000, 10)
+            let first = on.screen().contains("row 0")
+            on.feed("\t\t\t\t\t\t\t\t\t\t\t\t")
+            let slid = !on.screen().contains("row 0") && on.screen().contains("> ")
+            on
+                .feed(
+                    "${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z${esc()}[Z",
+                )
+            first && slid && on.screen().contains("row 0")
+        }
+    }
+    given "the wheel" {
+        then "scrolls the window three rows a notch, and stops at the ends" {
+            let on = listing(10000, 10)
+            on.feed("${esc()}[<65;1;1M")
+            let down = on.screen().contains("row 3") && !on.screen().contains("row 0 ")
+            on.feed("${esc()}[<64;1;1M${esc()}[<64;1;1M")
+            down && on.screen().contains("row 0")
+        }
+        then "past the last row keeps the last window" {
+            let on = listing(10000, 10)
+            on.feed("${esc()}[F${esc()}[<65;1;1M${esc()}[<65;1;1M")
+            on.screen().contains("row 9999")
+        }
+    }
+    given "two lists on one screen" {
+        then "the wheel moves the list under the pointer, not the focused one" {
+            let on = terminal(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(100),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                        )
+                    }
+                    text "between"
+                    list {
+                        windowed(
+                            rows_of(100),
+                            (i: int) -> keyed(i + 1000),
+                            (i: int) -> tapper i + 1000 { key: keyed(i + 1000) },
+                        )
+                    }
+                },
+                width: 40,
+                height: 60,
+            )
+            let lines = on.screen().split("\n")
+            let low = [y for y, l in lines if l.contains("row 1000")].first() ?? 0
+            let over = on.list_under(0, low)
+            on.feed("${esc()}[<65;1;${low + 1}M")
+            let seen = on.screen()
+            over == 1 &&
+                seen.contains("row 1003") &&
+                !seen.contains("row 1000") &&
+                seen.contains("row 0")
+        }
+    }
+}

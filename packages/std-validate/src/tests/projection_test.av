@@ -1,0 +1,65 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, Value, Issues, length, one_of, matches, from_json}
+use tests.projection_support.{Fields}
+
+fn tidied(v: string) -> Result<string, string> { v.trim() }
+
+fn coherent(form: Form) -> Result<Form, string> {
+    if form.name == "forbidden" { fail "the complete record is forbidden" }
+    form
+}
+
+@derive(Decode)
+@derive(Fields)
+@coherent
+type Form = {
+    @tidied @length(min: 1) name: string,
+    @one_of(["open", "done"]) mode: string = "open",
+    @secret @length(min: 3) pin: string?,
+    @matches(name) repeated: string?,
+}
+
+fn projected(text: string) -> Result<Value, Issues> {
+    Form.decode_fields(from_json(text) catch Value.Null)
+}
+
+fn shown(text: string) -> string {
+    match projected(text) {
+        .Ok(v) -> v.shown(),
+        .Err(e) -> [i.path.text() + ":" + i.rule for i in e.all].join(","),
+    }
+}
+
+spec "std/validate supplied field projections" {
+    given "a record with defaults, field rules, and a whole-record rule" {
+        then "missing fields produce no values or defaults" { shown("{}") == "{}" }
+        then "normalization uses the declared field chain" { shown("{\"name\":\" Ada \"}") == "{\"name\": \"Ada\"}" }
+        then "field rules still reject invalid supplied values" { shown("{\"name\":\"  \"}") == "name:length" }
+        then "required explicit null is not missing" { shown("{\"name\":null}") == "name:required" }
+        then "defaulted nonnullable null does not apply a default" { shown("{\"mode\":null}") == "mode:required" }
+        then "nullable null remains an explicit value" { shown("{\"pin\":null}") == "{\"pin\": null}" }
+        then "defaulted fields retain their rules" { shown("{\"mode\":\"other\"}") == "mode:one_of" }
+        then "all supplied field errors are collected" { shown("{\"name\":1,\"mode\":false}") == "name:type,mode:type" }
+        then "unknown fields are refused" { shown("{\"other\":1}") == "other:unknown" }
+        then "duplicate fields are refused" { shown("{\"name\":\"Ada\",\"name\":\"Grace\"}") == "name:repeated" }
+        then "sibling rules inspect supplied nullable context" { shown("{\"name\":\"Ada\",\"repeated\":\"Grace\"}") == "repeated:matches" }
+        then "missing sibling context is not invented" { shown("{\"repeated\":\"Ada\"}") == "{\"repeated\": \"Ada\"}" }
+        then "record rules are deferred until full decode" {
+            projected("{\"name\":\"forbidden\"}") is .Ok &&
+                Form.from_json("{\"name\":\"forbidden\"}") is .Err
+        }
+        then "secret field errors redact the received value" {
+            match projected("{\"pin\":\"xy\"}") {
+                .Ok(_) -> false,
+                .Err(e) -> e.all.length == 1 && e.all[0].received == null && e.all[0].path.text() == "pin",
+            }
+        }
+        then "ordinary complete decode still requires missing fields" { Form.from_json("{}") is .Err }
+        then "ordinary complete decode still supplies defaults" {
+            match Form.from_json("{\"name\":\"Ada\"}") {
+                .Ok(f) -> f.mode == "open",
+                .Err(_) -> false,
+            }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+//! proves a channel is FIFO under a detached producer: a producer
+//! spawned where the reader stands feeds a bound-2 channel, a full send
+//! parks, and the reader reads 1,2,3,4,5 in order.
+use @std.task.{open_channel, Channel}
+
+fn feed(ch: Channel<int>) {
+    for i in 1..6 { let _ = ch.sink.send(i) }
+    ch.sink.close()
+}
+
+let ch = open_channel<int>(2)
+let _ = spawn feed(ch)
+mut v = ch.source.next()
+while v != null {
+    println("${v!}")
+    v = ch.source.next()
+}

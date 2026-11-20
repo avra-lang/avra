@@ -1,0 +1,151 @@
+//! `avra fmt <file>` with no flag: canonical text on stdout, nothing on
+//! disk, and one stderr line saying so — real subprocesses over real
+//! files, so the streams are the ones a shell sees. `avra_bin` and
+//! `scratch_dir` are hang_test.av's own: this module shares one namespace.
+use @std.io.{make_dirs, write_text, read_text}
+use @std.process.{tool, cmd, Exit, Outcome, ProcessError}
+
+fn note_line() -> string {
+    "avra fmt: printed the canonical text and wrote nothing — --write updates the file, --check compares it\n"
+}
+
+fn messy() -> string { "fn   main( )   ->   int {   0   }\n" }
+
+fn broken() -> string { "fn main( -> int {\n    1\n}\n" }
+
+fn fmt_fixture(name: string, text: string) -> string {
+    let _ = make_dirs(scratch_dir())
+    let path = "${scratch_dir()}/${name}.av"
+    let _ = write_text(path, text)
+    path
+}
+
+fn fmt_ran(args: List<string>) -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, args) with { timeout: hang_bound() }).outcome()
+}
+
+fn on_disk(path: string) -> string { read_text(path) catch "" }
+
+fn exit_is_zero(e: Exit) -> bool {
+    match e { .Clean or .Code(0) -> true, .Code(_) or .Signal(_, _) -> false }
+}
+
+spec "avra fmt — a bare run says it only printed" {
+    given "a file that is not canonical" {
+        then "stdout carries the canonical text, stderr carries the one-line note, the file is untouched" {
+            let path = fmt_fixture("fmt_bare_messy", messy())
+            match fmt_ran(["fmt", path]) {
+                .Ok(o) -> exit_is_zero(o.exit) &&
+                    o.out.stderr == note_line() &&
+                    !o.out.stdout.is_empty() &&
+                    !o.out.stdout.contains("wrote nothing") &&
+                    on_disk(path) == messy(),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a file that is already canonical, so the output looks like a run that changed nothing" {
+        then "the note is what tells the two apart — it prints all the same, and the file is untouched" {
+            let path = fmt_fixture("fmt_bare_canonical", messy())
+            let _ = fmt_ran(["fmt", "--write", path])
+            let canonical = on_disk(path)
+            match fmt_ran(["fmt", path]) {
+                .Ok(o) -> exit_is_zero(o.exit) && o.out.stderr == note_line() && on_disk(path) == canonical,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "--write" {
+        then "the note is not printed — the run does write" {
+            let path = fmt_fixture("fmt_bare_write", messy())
+            match fmt_ran(["fmt", "--write", path]) {
+                .Ok(o) -> !o.out.stderr.contains("wrote nothing"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "--check" {
+        then "the note is not printed — the run compares" {
+            let path = fmt_fixture("fmt_bare_check", messy())
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> !o.out.stderr.contains("wrote nothing"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a file the formatter refuses to read" {
+        then "no canonical text was printed, so the note is not either" {
+            let path = fmt_fixture("fmt_bare_broken", broken())
+            match fmt_ran(["fmt", path]) {
+                .Ok(o) -> !o.out.stderr.contains("wrote nothing") && !exit_is_zero(o.exit),
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
+spec "avra fmt --check — a refused file is never certified canonical" {
+    given "a file the formatter cannot parse" {
+        then "--check fails and reports the refusal" {
+            let path = fmt_fixture("fmt_refuse_check", broken())
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> !exit_is_zero(o.exit) && o.out.stdout.contains("refused"),
+                .Err(_) -> false,
+            }
+        }
+        then "--write refuses and leaves the file exactly as it stood" {
+            let path = fmt_fixture("fmt_refuse_write", broken())
+            match fmt_ran(["fmt", "--write", path]) {
+                .Ok(o) -> !exit_is_zero(o.exit) && on_disk(path) == broken(),
+                .Err(_) -> false,
+            }
+        }
+        then "a second --check still refuses — the refusal was never remembered as canonical" {
+            let path = fmt_fixture("fmt_refuse_twice", broken())
+            let _ = fmt_ran(["fmt", "--check", path])
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> !exit_is_zero(o.exit) && o.out.stdout.contains("refused"),
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
+/// A fn seat that writes no answer, in a parameter and in a field.
+fn answerless_seat() -> string {
+    "fn run(act: fn()) {\n    act()\n}\n\ntype T = { on: fn(), g: fn(int) }\n\nfn h(k: fn() -> int) -> int { k() }\n"
+}
+
+/// A call written as a name, and as a field read, with a trailing block and no parentheses.
+fn bare_headed_block() -> string {
+    "type B = { n: int }\n\nimpl B {\n    fn each(f: fn(int) -> int) -> int { f(self.n) }\n}\n\nfn handle(f: fn(int) -> int) -> int { f(1) }\n\nlet a = handle { x -> x + 1 }\nlet b = B { n: 1 }.each { it + 1 }\nlet c = handle() { x -> x }\n\"\${a} \${b} \${c}\"\n"
+}
+
+/// Whether `--write` accepts the canonical `text` and leaves it byte for byte: `fmt(x) == x`.
+fn stands_written(name: string, text: string) -> bool {
+    let path = fmt_fixture(name, text)
+    match fmt_ran(["fmt", "--write", path]) {
+        .Ok(o) -> exit_is_zero(o.exit) &&
+            o.out.stdout.contains("1 examined, 0 written, 0 refused") &&
+            on_disk(path) == text,
+        .Err(_) -> false,
+    }
+}
+
+/// A pipe stage that takes a trailing block: its head bare, called with nothing, and called with a seat.
+fn piped_block() -> string {
+    "fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }\n\nfn each_by(xs: List<int>, k: int, f: fn(int) -> int) -> List<int> { [f(x) + k for x in xs] }\n\nlet xs = [1, 2]\nlet a = xs |>\n    each {\n        it + 1\n    }\nlet b = xs |>\n    each() {\n        it + 1\n    }\nlet c = xs |>\n    each_by(2) { v ->\n        v + 1\n    }\n\"\${a.length} \${b.length} \${c.length}\"\n"
+}
+
+spec "avra fmt — what is written is what is printed" {
+    given "a fn seat that writes no answer" {
+        then "no arrow is printed for it: the file stands, byte for byte" { stands_written("fmt_answerless_seat", answerless_seat()) }
+    }
+    given "a call whose only argument is its trailing block, written with no parentheses" {
+        then "no parentheses are printed for it, and the ones written stay" { stands_written("fmt_bare_headed_block", bare_headed_block()) }
+    }
+    given "a pipe stage that takes a trailing block" {
+        then "its head prints as written: bare, called with nothing, called with a seat" { stands_written("fmt_piped_block", piped_block()) }
+    }
+}

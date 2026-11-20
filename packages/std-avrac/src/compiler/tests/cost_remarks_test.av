@@ -1,0 +1,89 @@
+// THE COST REMARKS: each site of a body where a representation technique it is a candidate for
+// declined, and the typed reason — one case a decline point, and a body that declines nothing.
+use @std.avrac.compiler.{cost_remarks}
+use @std.avrac.core.{CostRemark}
+use @std.avrac.testing.{judged}
+
+/// The remarks of the fn `name` the source declares, each as `technique: words`, in the order noted.
+fn remarked(source: string, name: string) -> List<string> {
+    let j = judged(source)
+    [said(r) for r in cost_remarks(j.engine, j.entry, name).remarks]
+}
+
+fn said(r: CostRemark) -> string { "${r.declined.technique()}: ${r.declined.words()}" }
+
+/// Whether the one remark of `name` in `source` is the technique `technique`'s, and names `phrase`.
+fn declines(source: string, name: string, technique: string, phrase: string) -> bool {
+    let rs = remarked(source, name)
+    rs.length == 1 && rs[0].starts_with("${technique}: ") && rs[0].contains(phrase)
+}
+
+spec "the cost remarks of a body" {
+    given "a body each technique is a candidate for, and declines" {
+        then "a deferred call whose operand holds a counted reference is not run in place" {
+            declines(
+                "fn note(s: string) {}\nfn work(n: int) -> int {\n    let label = \"x\${n}\"\n    defer note(label)\n    n\n}\nwork(1)",
+                "work",
+                "deferred call in place",
+                "counted reference",
+            )
+        }
+        then "a deferred call of a fn that writes a seat is not run in place" {
+            declines(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nfn work(n: int) -> int {\n    mut xs = [n]\n    defer grow(xs)\n    n\n}\nwork(1)",
+                "work",
+                "deferred call in place",
+                "writes",
+            )
+        }
+        then "a map write whose value names the key again takes no probe" {
+            declines(
+                "fn work(m: Map<string, int>, k: string) -> int {\n    mut mm = m\n    mm.set(k, (mm.get(k) ?? 0) + k.length)\n    mm.length\n}\nwork({}, \"k\")",
+                "work",
+                "map write at its read's probe",
+                "names the key again",
+            )
+        }
+        then "a list of flat records is a box a slot" {
+            declines(
+                "type Pt = { a: int, b: int }\nfn work(n: int) -> int {\n    let pts = [Pt { a: 1, b: 2 }, Pt { a: n, b: 3 }]\n    pts.length\n}\nwork(1)",
+                "work",
+                "packed lists",
+                "flat record",
+            )
+        }
+        then "a list of nullable scalars is a box a slot" {
+            declines(
+                "fn work(n: int) -> int {\n    let maybe: List<int?> = [n, null]\n    maybe.length\n}\nwork(1)",
+                "work",
+                "packed lists",
+                "nullable scalar",
+            )
+        }
+        then "a `const` seat handed no literal reaches no unit of its own" {
+            declines(
+                "const JOINED: string = \"a\" + \"b\"\nfn pick(const p: string, s: string) -> int { p.length + s.length }\nfn work(n: int) -> int { pick(JOINED, \"s\") + n }\nwork(1)",
+                "work",
+                "a unit per settled value",
+                "no literal",
+            )
+        }
+        then "a call through a `dyn` box reads its code from the table" {
+            declines(
+                "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nfn work(d: dyn Show) -> int { d.show() }\nwork(P { x: 2 })",
+                "work",
+                "devirtualization",
+                "table",
+            )
+        }
+    }
+    given "a body that declines nothing" {
+        then "it has no remarks" {
+            remarked(
+                "fn work(n: int) -> int {\n    let parts = [n, 2]\n    parts.length + n\n}\nwork(1)",
+                "work",
+            )
+                .is_empty()
+        }
+    }
+}

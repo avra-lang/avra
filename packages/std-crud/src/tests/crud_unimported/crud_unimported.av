@@ -1,0 +1,20 @@
+// proves: the doors a `@crud` model generates name their own types in the file that wrote the derive, so a program that imports no `Json` still declares and mounts a model
+use @std.crud.{crud}
+use @std.http.route.{group}
+use @std.http.server.{server}
+use @std.sqlite.{Db}
+
+@crud
+type Note = { id: int = 0, text: string }
+
+fn shown() -> string {
+    let db = match Db.memory() { .Ok(d) -> d, .Err(e) -> { return "no db: ${e.message}" } }
+    let _ = Note.create_table(db)
+    server app {
+        port: 0
+        group "/notes" { Note.routes(db) }
+    }
+    "mounted"
+}
+
+shown()

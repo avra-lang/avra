@@ -1,0 +1,96 @@
+// proves: the cache says what it holds, why an entry stopped being fresh, and how many asks it sent, skipped,
+// joined and answered by a held version; a snapshot is built only where a sink is installed — eval == native.
+use @std.ui.app.{Async, Fetch, Heard, Overlay, fetch, fetched, running}
+use @std.ui.components.{column}
+use @std.ui.headless.{Screen, headless}
+use @std.http_message.message.{Body, Header, Reply, Request}
+use @std.time.{ms}
+
+state table_one: int = 1
+state clock: int = 1
+
+fn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+/// One table behind `/first`, announced on `/feed`; a write answers its stand.
+fn serve(r: Request) -> Result<Reply, string> {
+    let held = r.headers.find(it.name == "If-None-Match")
+    let tag = "\"v${table_one}\""
+    let said = [
+        Header { name: "etag", value: tag },
+        Header { name: "avra-reads", value: "One" },
+        Header { name: "avra-stand", value: "${clock}" },
+        Header { name: "avra-feed", value: "/feed" },
+    ]
+    if !(r.method is .Get) {
+        return .Ok(
+            Reply {
+                status: 200,
+                headers: [Header { name: "avra-stand", value: "${clock}" }],
+                body: "ok".bytes(),
+            },
+        )
+    }
+    if held != null && held!.value == tag { return .Ok(Reply { status: 304, headers: said, body: "".bytes() }) }
+    .Ok(Reply { status: 200, headers: said, body: "x".bytes() })
+}
+
+fn lines_of(held: Cell<List<string>>) -> string { held.get().join("\n") }
+
+fn show(label: string, held: Cell<List<string>>) { println("${label}:\n${lines_of(held)}") }
+
+/// The screen's cache, watched: each step prints the snapshot it was handed.
+fn watched(screen: Screen, seen: Cell<List<string>>) {
+    let on? = running() else { return }
+    on.observed.watching((s) -> seen.set(s.lines()))
+    let a: Fetch<int> = fetch()
+    let b: Fetch<int> = fetch()
+    let _ = fetched(a, Request.get("/first"), parsed)
+    let _ = fetched(b, Request.get("/first"), parsed)
+    screen.advance(ms(10))
+    show("two views ask one key, answered, its stream not yet synced", seen)
+    screen.heard("/feed", Heard.Opened)
+    screen.heard("/feed", Heard.Notice(1, "notice", ""))
+    let _ = fetched(a, Request.get("/first"), parsed)
+    show("synced, and asked again", seen)
+    clock = 2
+    table_one = 2
+    screen.heard("/feed", Heard.Notice(2, "notice", "One"))
+    show("a notice for what it read", seen)
+    screen.advance(ms(10))
+    show("answered again", seen)
+    clock = 3
+    screen.heard("/feed", Heard.Notice(3, "notice", "One"))
+    screen.advance(ms(10))
+    show("a notice for a write that left it unchanged, answered by the version it holds", seen)
+    screen.heard("/feed", Heard.Closed)
+    show("its stream dropped", seen)
+    let _ = fetched(
+        fetch<int>(),
+        Request.delete("/first/1"),
+        parsed,
+        foresee: Overlay.Hide("id", "1"),
+    )
+    show("a write awaiting its answer", seen)
+    screen.advance(ms(10))
+    show("answered", seen)
+    println("snapshots built while watched: ${on.observed.counts.built.get() > 0}")
+}
+
+/// A cache nobody watches: it counts, and builds nothing.
+fn unwatched(screen: Screen) {
+    let on? = running() else { return }
+    let v: Fetch<int> = fetch()
+    let _ = fetched(v, Request.get("/first"), parsed)
+    screen.advance(ms(10))
+    println(
+        "a cache nobody watches built ${on.observed.counts.built.get()} snapshots after ${on.observed.asks.get()} asks",
+    )
+}
+
+let seen: Cell<List<string>> = Cell.new([])
+let screen = headless(() -> column {})
+screen.wired(serve)
+screen.running(() -> watched(screen, seen))
+let idle = headless(() -> column {})
+idle.wired(serve)
+idle.running(() -> unwatched(idle))

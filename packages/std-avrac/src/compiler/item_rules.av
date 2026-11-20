@@ -1,0 +1,680 @@
+//! THE RULES THAT READ SYNTAX ALONE, over a file as the program layer reads it back. A rule that
+//! reads its item alone runs over that item's tree and text by themselves, wherever the item stands,
+//! so what it finds is kept per item and an edit walks only the items it changed; a rule that reads
+//! the file (`reads_the_file`: `fingerprint_siblings`, `file_callees`) runs over every written item's
+//! tree in one store, beside the whole file's text.
+use core.{
+    Annotation,
+    NamesRead,
+    ExprId,
+    StmtId,
+    SyntaxArena,
+    TypeRef,
+    UseParts,
+    distinct,
+    flatten,
+    key_spelled,
+    some_list,
+    sorted_by,
+}
+use features.{
+    BodyNames,
+    Bracketed,
+    CallSite,
+    RuleFacts,
+    RuleFile,
+    SyntaxFile,
+    SyntaxView,
+    TraitDefault,
+    TypedFacts,
+    UnusedImport,
+    arg_lit,
+    seat_fns_of,
+}
+use diagnostics.{Diag, Severity, SourceFile, new_source_file}
+use @std.errors.{Confidence, Edit, Frame, Loc, Suggestion}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
+use @std.program.source_facts.{PlacedTape, source_text}
+use @std.program.syntax_tape.{SyntaxTape}
+
+/// What every rule that reads syntax alone finds in the written items of `file`, whose text is
+/// `source`, as `check` says it.
+export fn file_rule_findings(engine: QueryEngine, file: SourceFileAddress, source: SourceFile) -> List<
+    Diag,
+> {
+    [p.diag for p in walked(file_syntax_findings(engine, file, source), [])]
+}
+
+/// One rule's finding in a file: the rule, the line it stands on, and that line's own text, trimmed.
+@derive(Saved)
+export type RuleRow = { rule: string, line: int, text: string }
+
+/// What every rule the program layer holds finds in one file: a row each, and each finding as
+/// `check` says it, in the order a walk of the file finds them.
+@derive(Saved)
+export type FileRuleRows = { rows: List<RuleRow>, said: List<KeptDiag> }
+
+/// How a finding weighs, as a saved answer keeps it.
+@derive(Saved)
+export enum KeptSeverity { Error, Warning, Note }
+
+/// How sure a fix is, as a saved answer keeps it.
+@derive(Saved)
+export enum KeptConfidence { High, Medium, Low }
+
+/// A span of the one file a finding stands in.
+@derive(Saved)
+export type KeptPlace = { lo: int, hi: int }
+
+/// A frame of a finding: what it says, where in its file.
+@derive(Saved)
+export type KeptFrame = { label: string?, place: KeptPlace? }
+
+/// One text replacement in a finding's file.
+@derive(Saved)
+export type KeptEdit = { place: KeptPlace, replacement: string }
+
+/// A fix a finding offers.
+@derive(Saved)
+export type KeptFix = { confidence: KeptConfidence, description: string, edits: List<KeptEdit> }
+
+/// A finding as a saved answer keeps it: a `Diag` whose every place is a span of its one file.
+@derive(Saved)
+export type KeptDiag = {
+    kind: string,
+    severity: KeptSeverity,
+    message: string,
+    help: string?,
+    primary: KeptFrame,
+    secondary: List<KeptFrame>,
+    causes: List<string>,
+    fixes: List<KeptFix>,
+}
+
+/// What every rule the program layer runs finds in `file`: those that read syntax alone over the
+/// whole file and each item's fact rules over the item, in the order one walk of the file finds
+/// them — each node after the nodes under it.
+@query
+export fn file_rule_rows(engine: QueryEngine, program: string, file: SourceFileAddress) -> FileRuleRows {
+    let src = rule_source(engine, file)
+    let facts = flatten(
+        [item_fact_findings(engine, program, file, at, src) for at in 0..item_count(engine, file)],
+    )
+        .concat(
+            [found_placed(found_in_file(engine, file, i.at, f), src) for i in entry_fact_found(engine, file).items for f in i.found],
+        )
+    let found = [p.diag for p in walked(file_syntax_findings(engine, file, src), facts)]
+    FileRuleRows { rows: rule_rows(src, found), said: [kept_diag(d) for d in found] }
+}
+
+/// What every rule that reads syntax alone finds in the written items of `file`, whose text is
+/// `source`, each beside the node it fired at: those that read the file over all of it, and each
+/// item's own read back from what was kept of it.
+fn file_syntax_findings(engine: QueryEngine, file: SourceFileAddress, source: SourceFile) -> List<
+    PlacedDiag,
+> {
+    let back = read_back(
+        source.file,
+        [placed_item(engine, file, item_under(engine, file, at), item_start(engine, file, at)) for at in 0..item_count(engine, file)],
+    )
+    placed_syntax_findings(
+        SyntaxFile { view: SyntaxView { store: back.store, source: source } },
+        back.stmts,
+        reads_the_file,
+    )
+        .concat(
+            flatten(
+                [item_syntax_findings(engine, file, at, source) for at in 0..item_count(engine, file)],
+            ),
+        )
+}
+
+/// Whether a rule reads the item its node stands in alone.
+fn reads_its_item(r: RuleEntry) -> bool { !reads_the_file(r) }
+
+/// What the rules that read their item alone find in the item `at` of `file`, placed where the item
+/// stands in the file `src`.
+fn item_syntax_findings(engine: QueryEngine, file: SourceFileAddress, at: int, src: SourceFile) -> List<
+    PlacedDiag,
+> {
+    [found_placed(found_in_file(engine, file, at, f), src) for f in item_syntax_found(engine, file, at).found]
+}
+
+/// One written item as a rule that reads it alone sees it, wherever it stands in its file: its text
+/// and its meant tree. An item an edit only moved answers the same.
+@derive(Saved)
+type ItemAlone = { text: string, tape: SyntaxTape }
+
+/// The item `at` of `file` as the rules that read it alone see it.
+@cut_query
+fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemAlone {
+    let item = item_under(engine, file, at)
+    ItemAlone { text: item.text, tape: placed_item(engine, file, item, 0).tape }
+}
+
+/// What every rule that reads its item alone finds in the item `at` of `file`, each beside the node
+/// it fired at — every place counted from the item's own start.
+@query
+export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFound {
+    let alone = item_alone(engine, file, at)
+    let source = new_source_file(rule_named(file), alone.text)
+    let back = read_back(source.file, [PlacedTape { start: 0, tape: alone.tape }])
+    found_kept(
+        placed_syntax_findings(
+            SyntaxFile { view: SyntaxView { store: back.store, source: source, whole: false } },
+            back.stmts,
+            reads_its_item,
+        ),
+    )
+}
+
+/// A finding the item `at` of `file` kept, each of its places counted from the item's start, with
+/// each counted from the file's instead (`file_placed`).
+fn found_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: KeptFound) -> KeptFound {
+    let placed = (p: KeptPlace) -> kept_place_in_file(engine, file, at, p)
+    KeptFound {
+        node: placed(f.node),
+        diag: f.diag with { primary: f.diag.primary with { place: if f.diag.primary.place == null { null } else { placed(f.diag.primary.place!) } }, secondary: [x with { place: if x.place == null { null } else { placed(x.place!) } } for x in f.diag.secondary], fixes: [x with { edits: [e with { place: placed(e.place) } for e in x.edits] } for x in f.diag.fixes] },
+    }
+}
+
+/// A kept place of the item `at` of `file`, counted from the file's start.
+fn kept_place_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, p: KeptPlace) -> KeptPlace {
+    let placed = file_placed(engine, file, at, FindingAt { lo: p.lo, hi: p.hi })
+    KeptPlace { lo: placed.lo, hi: placed.hi }
+}
+
+/// Two walks' findings over one file as one walk finds them: a node after the nodes under it, and
+/// of two at one span, the syntax rule's first.
+fn walked(syntax: List<PlacedDiag>, facts: List<PlacedDiag>) -> List<PlacedDiag> {
+    sorted_by(
+        syntax.concat(facts),
+        (a: PlacedDiag, b: PlacedDiag) -> a.hi < b.hi || a.hi == b.hi && a.lo > b.lo,
+    )
+}
+
+/// What every fact rule the program layer runs finds in the item `at` of `file`, each beside the
+/// node it fired at, read back from its saved answer.
+fn item_fact_findings(
+    engine: QueryEngine,
+    program: string,
+    file: SourceFileAddress,
+    at: int,
+    src: SourceFile,
+) -> List<PlacedDiag> {
+    [found_placed(found_in_file(engine, file, at, f), src) for f in item_fact_found(engine, program, file, at).found]
+}
+
+/// A finding read back from its saved answer, beside the node it fired at, in the file `src`.
+fn found_placed(f: KeptFound, src: SourceFile) -> PlacedDiag { PlacedDiag { lo: f.node.lo, hi: f.node.hi, diag: said_diag(f.diag, src.file) } }
+
+/// What every fact rule finds in the statements one item of a file runs as its entry: the item, and
+/// each finding beside the node it fired at, counted from the item's start.
+@derive(Saved)
+export type ItemRanFound = { at: int, found: List<KeptFound> }
+
+/// What every fact rule finds in the statements a file runs, item by item.
+@derive(Saved)
+export type EntryRanFound = { items: List<ItemRanFound> }
+
+/// What every fact rule finds in the statements `file` runs, typed as one body — its entry — once for
+/// all of its items: each local such a statement binds read through the entry's own reads; each
+/// item's statements walked over that item's own text.
+@query
+export fn entry_fact_found(engine: QueryEngine, file: SourceFileAddress) -> EntryRanFound {
+    let read = entry_read(engine, file)
+    let signed? = entry_signed(read) else { return EntryRanFound { items: [] } }
+    if !read.store.refusals().is_empty() { return EntryRanFound { items: [] } }
+    let typed = kept_body(body_checked(engine, file, signed, false))
+    let entry = written_reads(engine, file, read.store, typed)
+    EntryRanFound {
+        items: [ItemRanFound {
+            at: b.at,
+            found: found_kept(
+                placed_fact_findings(
+                    entry_item_facts(engine, file, read, typed, entry, b.at),
+                    b.stmts,
+                ),
+            )
+                .found,
+        } for b in read.items],
+    }
+}
+
+/// The facts the rules read over the item `at` of the entry `read` of `file`: the entry's store and
+/// types beside the item's own text.
+fn entry_item_facts(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    read: EntryRead,
+    typed: TypedBody,
+    entry: NamesRead,
+    at: int,
+) -> RuleFile {
+    RuleFile {
+        view: SyntaxView {
+            store: read.store,
+            source: new_source_file(rule_named(file), item_under(engine, file, at).text),
+        },
+        facts: RuleFacts
+            .Typed(
+                TypedFacts {
+                    types: typed.types,
+                    package: key_spelled(file.package_name),
+                    seat_fns: file_seat_fns(engine, file).names,
+                    methods: avra().rows.methods,
+                    defaults: [],
+                    unused: [],
+                    brackets: [],
+                    bodies: [],
+                    callers: (_s: StmtId) -> [],
+                    entry: entry,
+                },
+            ),
+    }
+}
+
+/// Findings as a saved answer keeps them, each beside the node it fired at.
+fn found_kept(placed: List<PlacedDiag>) -> ItemFound {
+    ItemFound {
+        found: [KeptFound { node: KeptPlace { lo: p.lo, hi: p.hi }, diag: kept_diag(p.diag) } for p in placed],
+    }
+}
+
+/// A finding as a saved answer keeps it, beside the span of the node its rule fired at.
+@derive(Saved)
+export type KeptFound = { node: KeptPlace, diag: KeptDiag }
+
+/// What every fact rule finds in one item, each beside the node it fired at.
+@derive(Saved)
+export type ItemFound = { found: List<KeptFound> }
+
+/// A finding as a saved answer keeps it, each place a span of its file.
+fn kept_diag(d: Diag) -> KeptDiag {
+    KeptDiag {
+        kind: d.kind,
+        severity: match d.severity {
+            .Error -> KeptSeverity.Error,
+            .Warning -> KeptSeverity.Warning,
+            .Note -> KeptSeverity.Note,
+        },
+        message: d.message,
+        help: d.help,
+        primary: kept_frame(d.primary),
+        secondary: [kept_frame(f) for f in d.secondary],
+        causes: d.cause_lines,
+        fixes: [KeptFix {
+            confidence: match s.confidence {
+                .High -> KeptConfidence.High,
+                .Medium -> KeptConfidence.Medium,
+                .Low -> KeptConfidence.Low,
+            },
+            description: s.description,
+            edits: [KeptEdit { place: place_kept(e.loc), replacement: e.replacement } for e in s.edits],
+        } for s in d.suggestions],
+    }
+}
+
+fn kept_frame(f: Frame) -> KeptFrame { KeptFrame { label: f.label, place: if f.loc == null { null } else { place_kept(f.loc!) } } }
+
+fn place_kept(l: Loc) -> KeptPlace { KeptPlace { lo: l.lo, hi: l.hi } }
+
+/// A kept finding as a `Diag` in the file `path` names.
+export fn said_diag(k: KeptDiag, path: string) -> Diag {
+    Diag {
+        kind: k.kind,
+        severity: match k.severity {
+            .Error -> Severity.Error,
+            .Warning -> Severity.Warning,
+            .Note -> Severity.Note,
+        },
+        primary: said_frame(k.primary, path),
+        secondary: [said_frame(f, path) for f in k.secondary],
+        cause_lines: k.causes,
+        message: k.message,
+        help: k.help,
+        suggestions: [Suggestion {
+            confidence: match x.confidence {
+                .High -> Confidence.High,
+                .Medium -> Confidence.Medium,
+                .Low -> Confidence.Low,
+            },
+            description: x.description,
+            edits: [Edit { loc: kept_loc(e.place, path), replacement: e.replacement } for e in x.edits],
+        } for x in k.fixes],
+    }
+}
+
+fn said_frame(f: KeptFrame, path: string) -> Frame {
+    Frame { label: f.label, loc: if f.place == null { null } else { kept_loc(f.place!, path) } }
+}
+
+fn kept_loc(p: KeptPlace, path: string) -> Loc { Loc { file: path, lo: p.lo, hi: p.hi } }
+
+/// What every fact rule the program layer runs finds in the item `at` of `file`, over its bodies as
+/// typing found them; an item whose parse refused holds no finding.
+@query
+export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFileAddress, at: int) -> ItemFound {
+    let facts? = item_rule_file(engine, program, file, at) else { return ItemFound { found: [] } }
+    let store = facts.view.store
+    found_kept(
+        placed_fact_findings(
+            facts,
+            [s for s in read_item(engine, file, at).stmts if store.is_declaration(s)],
+        ),
+    )
+}
+
+/// What a fact rule reads of the item `at` of `file`: its tree, and its bodies as typing found them;
+/// absent for an item whose parse refused.
+export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileAddress, at: int) -> RuleFile? {
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return null }
+    let stated = item_stated_bodies(engine, file, at, item)
+    let bodies = [b.typed.types for b in stated]
+    let reach = bodies.map(it.length).fold(0, (a, b) -> if a > b { a } else { b })
+    let src = new_source_file(rule_named(file), item_under(engine, file, at).text)
+    RuleFile {
+        view: SyntaxView { store: item.store, source: src },
+        facts: RuleFacts
+            .Typed(
+                TypedFacts {
+                    types: [first_typed(bodies, k) for k in 0..reach],
+                    package: key_spelled(file.package_name),
+                    seat_fns: file_seat_fns(engine, file).names,
+                    methods: avra().rows.methods,
+                    defaults: trait_defaults(engine, file, at, item),
+                    unused: unused_imports(engine, program, file, item),
+                    brackets: item_brackets(engine, file, item),
+                    bodies: [BodyNames {
+                        stmt: b.stmt,
+                        names: written_reads(engine, file, item.store, b.typed),
+                    } for b in stated],
+                    callers: (s: StmtId) -> callers_of(engine, program, file, item.store.fn_parts(s)?.name),
+                },
+            ),
+    }
+}
+
+/// Each fn a declaration of a file names in `@cycled_by` or `@scoped_by`.
+@derive(Saved)
+export type SeatFns = { names: List<string> }
+
+/// Each fn the declarations of `file` name in `@cycled_by` or `@scoped_by`, over every item it
+/// writes.
+@query
+export fn file_seat_fns(engine: QueryEngine, file: SourceFileAddress) -> SeatFns {
+    SeatFns {
+        names: flatten(
+            [seat_fns_of(item.store, item.stmts) for at in 0..item_count(engine, file) for item in [read_item(engine, file, at)]],
+        ),
+    }
+}
+
+/// The body each `impl Trait for` method of the item `at` of `file` overrides, where its trait gives
+/// the member one.
+fn trait_defaults(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    TraitDefault,
+> {
+    let impls = [s for s in item.stmts if item.store.impl_parts(s) != null]
+    flatten(
+        [impl_defaults(engine, file, item, impls, nth, i) for nth, i in item_impls(engine, file, at)],
+    )
+}
+
+/// The defaults the `nth` impl of `item` overrides, where it implements a trait.
+fn impl_defaults(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    impls: List<StmtId>,
+    nth: int,
+    i: ItemImpl,
+) -> List<TraitDefault> {
+    let named? = i.implements else { return [] }
+    let declared? = impl_named(engine, file, i.trait_in, named) else { return [] }
+    if nth >= impls.length { return [] }
+    let t = TraitAt { file: declared.file, name: declared.name }
+    [TraitDefault { method: m, store: g.item.store, body: g.item.store.fn_parts(g.stmt)!.body } for m in item.store.impl_parts(impls[nth])!.fns for g in some_list(given_body(engine, t, item.store.fn_parts(m)?.name ?? "")) if !item.store.is_static(m)]
+}
+
+/// The names each `use` line of `item` imports that nothing the program `program` reads names —
+/// a re-export's and a component instance's aside: the one is part of its module's surface, the
+/// other used by being imported.
+fn unused_imports(engine: QueryEngine, program: string, file: SourceFileAddress, item: ReadItem) -> List<
+    UnusedImport,
+> {
+    let lines = [s for s in item.stmts if item.store.use_parts(s) != null && !item.store.is_exported(s)]
+    if lines.is_empty() { return [] }
+    let used = read_set(engine, program)
+    [UnusedImport { stmt: s, names: names } for s in lines for names in [unread_names(engine, file, item.store.use_parts(s)!, used)] if !names.is_empty()]
+}
+
+/// The names one `use` line imports whose declarations `used` holds none of.
+fn unread_names(engine: QueryEngine, file: SourceFileAddress, u: UseParts, used: Map<string, bool>) -> List<
+    string,
+> {
+    [name for j, name in u.items if !import_read(engine, file, local_name(u, j), used)]
+}
+
+/// The name the `j`th item of a `use` line binds here: its alias, else its own.
+fn local_name(u: UseParts, j: int) -> string { if j < u.aliases.length && u.aliases[j] != "" { u.aliases[j] } else { u.items[j] } }
+
+/// Whether the declaration a file binds `name` to by import is read in the program `used` says, or
+/// is a component instance, which is used by being imported. A name bound to nothing counts as read.
+fn import_read(engine: QueryEngine, file: SourceFileAddress, name: string, used: Map<string, bool>) -> bool {
+    let bound = [d! for space in [Space.Value, Space.Type, Space.Syntax] for d in [resolved(engine, file, space, name).named()] if d != null]
+    bound.is_empty() ||
+        bound
+            .any(
+                (d) -> used.has(decl_key(d)) ||
+                    file_instances(engine, d.file).any(it.name == d.name),
+            )
+}
+
+/// A declaration as the program's reads are keyed: its file and its name.
+fn decl_key(d: DeclaredName) -> string { "${spelled_file(d.file)}#${d.name}" }
+
+/// Each declaration a file's written items read by name.
+@derive(Saved)
+export type DeclKeys = { keys: List<string> }
+
+/// Each declaration the written items of `file` read by name, resolved from its top level: a name
+/// read or called, a record's or a type's name, a written type, an impl's trait and target, and a
+/// field's mark. A `use` line's own names are no read.
+@query
+export fn file_reads(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
+    let items = item_count(engine, file) + file_generated(engine, file).items.length
+    let read = [r for at in 0..items for r in names_read(read_item(engine, file, at).store)]
+    DeclKeys {
+        keys: distinct(
+            [decl_key(d!) for r in read for d in [read_declaration(engine, file, r)] if d != null],
+        ),
+    }
+}
+
+/// The declaration a name read in `file` names: read where the template that wrote it stands, where
+/// one did, else in `file`; a name read as a value that names a type there (`@derive(Saved)`,
+/// `Json.Obj`) names the type.
+fn read_declaration(engine: QueryEngine, file: SourceFileAddress, r: ReadName) -> DeclaredName? {
+    let at = home_file(engine, r.home) ?? file
+    let found = resolved(engine, at, r.space, r.name).named()
+    if found != null || !(r.space is .Value) { return found }
+    resolved(engine, at, Space.Type, r.name).named()
+}
+
+/// Each call the written items of `file` make by name of a fn the program declares, its callee's
+/// key once a call.
+@query
+export fn file_calls(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
+    let items = item_count(engine, file) + file_generated(engine, file).items.length
+    let calls = [r for at in 0..items for r in calls_written(read_item(engine, file, at).store)]
+    DeclKeys {
+        keys: [decl_key(d!) for r in calls for d in [read_declaration(engine, file, r)] if d != null],
+    }
+}
+
+/// Each callee the code of `store` names, one a call.
+fn calls_written(store: SyntaxArena) -> List<ReadName> {
+    [r! with { home: store.home_of(e) } for e in store.expr_ids() for r in [callee_read(store, e)] if r != null]
+}
+
+/// The name a call at `e` names its callee by; absent for any other node.
+fn callee_read(store: SyntaxArena, e: ExprId) -> ReadName? {
+    if !(store.expr(e).use_shape() is .Callee) { return null }
+    value_read(store.call_parts(e)?.callee)
+}
+
+/// Each call the program `program` makes of the fn `name` that `file` declares, by the file making it.
+fn callers_of(engine: QueryEngine, program: string, file: SourceFileAddress, name: string?) -> List<
+    CallSite,
+> {
+    let n? = name else { return [] }
+    let key = "${spelled_file(file)}#${n}"
+    [CallSite { file: spelled_file(f) } for f in program_files(engine, program) for k in file_calls(engine, f).keys if k == key]
+}
+
+/// Each declaration the files of the program `package` read by name.
+@query
+export fn program_reads(engine: QueryEngine, package: string) -> DeclKeys {
+    DeclKeys {
+        keys: distinct(flatten([file_reads(engine, f).keys for f in program_files(engine, package)])),
+    }
+}
+
+/// What the program `package` reads, as a set, made once a process for each program its reads say.
+fn read_set(engine: QueryEngine, package: string) -> Map<string, bool> {
+    let keys = program_reads(engine, package).keys
+    let said = keys.join("\n")
+    let held = read_sets().get().get(package)
+    if held?.said == said { return held!.set }
+    mut set: Map<string, bool> = {}
+    for k in keys { set.set(k, true) }
+    read_sets().put(package, KeptReads { said: said, set: set })
+    set
+}
+
+/// A program's reads, spelled one a line, and the same as a set.
+type KeptReads = { said: string, set: Map<string, bool> }
+
+/// Each program's reads as a set, by its package, once a process: a package another program of
+/// that name reads otherwise is made again.
+once fn read_sets() -> Cell<Map<string, KeptReads>> {
+    let none: Map<string, KeptReads> = {}
+    Cell.new(none)
+}
+
+/// A name a store's code reads, the space it reads it in, and where the template that wrote it
+/// stands, where one did.
+type ReadName = { space: Space, name: string, home: string? = null }
+
+/// Every name the code of `store` reads by name: each expression's own use, each written type and
+/// impl head, and each field's mark — the type parameters a statement binds aside.
+fn names_read(store: SyntaxArena) -> List<ReadName> {
+    let used = [r! with { home: store.home_of(e) } for e in store.expr_ids() for r in [expr_name(store, e)] if r != null]
+    let typed = [type_read(n) for s in store.stmt_ids() for t in store.type_roots(s) for n in type_names(t, store.decl_tparams(s))]
+    let heads = [type_read(n) for s in store.stmt_ids() for p in some_list(store.impl_parts(s)) for n in some_list(p.of).concat([p.target])]
+    let marks = [ReadName { space: Space.Value, name: m.name } for s in store.stmt_ids() for m in store.marks_written(s)]
+    let read = [value_named(n) with { home: store.home_of(e) } for e in store.expr_ids() for n in some_list(store.ctx_read(e))]
+    let set = [value_named(n) for s in store.stmt_ids() for n in some_list(store.ctx_set(s))]
+    used.concat(typed).concat(heads).concat(marks).concat(read).concat(set)
+}
+
+/// The name the expression `e` reads, by the shape of its use; absent for one that reads none.
+fn expr_name(store: SyntaxArena, e: ExprId) -> ReadName? {
+    match store.expr(e).use_shape() {
+        .Read -> value_read(store.ident_name(e)),
+        .Callee -> value_read(store.call_parts(e)?.callee),
+        .Method(_, _) -> null,
+        .Record(name) -> type_read(name.of),
+        .Component(word) -> type_read(word),
+        .TypeName(name) -> type_read(name),
+    }
+}
+
+/// A type's name read.
+fn type_read(name: string) -> ReadName { ReadName { space: Space.Type, name: name } }
+
+fn value_read(name: string?) -> ReadName? {
+    let n? = name else { return null }
+    value_named(n)
+}
+
+/// A value's name read.
+fn value_named(name: string) -> ReadName { ReadName { space: Space.Value, name: name } }
+
+/// Every name a written type names, its arguments and alternatives included, but those of `bound`.
+fn type_names(t: TypeRef, bound: List<string>) -> List<string> {
+    let here = if t.name.is_empty() || bound.contains(t.name) { [] } else { [t.name] }
+    here
+        .concat(flatten([type_names(a, bound) for a in t.type_args()]))
+        .concat(flatten([type_names(a, bound) for a in t.alternatives]))
+}
+
+/// Each fn of `item` wearing `@std/meta`'s `@bracket(...)`, its callee read where the annotation was
+/// written, with the brackets it names.
+fn item_brackets(engine: QueryEngine, file: SourceFileAddress, item: ReadItem) -> List<Bracketed> {
+    let store = item.store
+    [Bracketed { fn_stmt: s, names: names } for s in store.stmt_ids() if store.fn_parts(s) != null for names in [bracket_names(engine, file, store, s)] if !names.is_empty()]
+}
+
+/// The brackets the annotations of the statement `s` name, each that resolves to `@std/meta`'s
+/// `bracket` and takes one argument.
+fn bracket_names(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> List<
+    string,
+> {
+    [arg_lit(store, a.args[0]).text for a in store.annotations_of(s) if a.args.length == 1 && names_meta_bracket(engine, file, store, a)]
+}
+
+/// Whether the annotation `a` resolves to `@std/meta`'s `bracket`, read where it was written.
+fn names_meta_bracket(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    a: Annotation,
+) -> bool {
+    let d? = resolved(
+        engine,
+        home_file(engine, store.home_of(a.callee)) ?? file,
+        Space.Value,
+        a.name,
+    )
+        .named() else { return false }
+    d.name == "bracket" && d.file.package_name == "@std/meta"
+}
+
+/// The text of `file`, under the name the program gives it.
+fn rule_source(engine: QueryEngine, file: SourceFileAddress) -> SourceFile {
+    new_source_file(rule_named(file), source_text(engine, file) ?? "")
+}
+
+/// The name the program gives `file`, which its findings stand in.
+fn rule_named(file: SourceFileAddress) -> string { "${file.package_name}/${file.path_in_package}" }
+
+/// Each finding as a row, its line read from `src`.
+fn rule_rows(src: SourceFile, found: List<Diag>) -> List<RuleRow> {
+    [row! for d in found for row in [rule_row(src, d)] if row != null]
+}
+
+/// A finding as a row, its line read from `src`; absent where it stands nowhere.
+fn rule_row(src: SourceFile, d: Diag) -> RuleRow? {
+    let loc? = d.primary.loc else { return null }
+    let line = src.linecol(loc.lo).line
+    RuleRow { rule: d.kind, line: line, text: src.line_text(line).trim() }
+}
+
+/// Every kind the program layer finds: each law's, then each rule's it runs.
+export fn held_kinds() -> List<string> {
+    distinct([l.kind for l in laws].concat([rule_id(r) for r in rule_entries()]))
+}
+
+/// The queries the rules are read through, for a process to hand its engine.
+
+collect listed_rule_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the rules are read through, for a process to hand its engine.
+export fn rule_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_rule_facts) }

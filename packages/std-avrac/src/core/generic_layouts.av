@@ -1,0 +1,206 @@
+//! A GENERIC BODY BY LAYOUT: a type parameter is what the machine needs of the type filling it —
+//! its own layout, its nullable's, and what it makes of a `Result` side's word — so a generic body
+//! lowers once per descriptor list, never once per type. A call names that unit by the list spelled.
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+
+/// What a type filling a type parameter is to the machine: its layout, its nullable's layout, and
+/// its word as a `Result` side (0 uncounted, 1 counted), absent where it isn't one word there. A
+/// parameter carrying a bound is keyed by its `fill`, the type itself, too: its body asks it what
+/// the bound promises, which only that type answers, so the body lowers as that type's and two
+/// fills of one layout never share a unit. Any other parameter is its layout alone.
+@derive(Saved)
+export type ParameterLayout = { layout: Layout, nullable: Layout, side: int?, fill: SignedType? = null }
+
+impl ParameterLayout {
+    fn spelled() -> string {
+        let base = "${self.layout.spelled()}/${self.nullable.spelled()}/${self.side ?? -1}"
+        if self.fill == null { base } else { "${base}/${self.fill!.spelled()}" }
+    }
+}
+
+/// A unit's descriptors as its symbol spells them.
+export fn parameters_spelled(ps: List<ParameterLayout>) -> string { [p.spelled() for p in ps].join(";") }
+
+/// The symbol of the unit a generic body lowers to under `ps`.
+export fn instance_symbol(symbol: string, ps: List<ParameterLayout>) -> string { "${symbol}\$${parameters_spelled(ps)}" }
+
+impl CheckedProgram {
+    /// What `t`, filling a type parameter, is to the machine; absent when its layout isn't known.
+    fn parameter_layout(t: SignedType) -> ParameterLayout? {
+        let own? = self.layout(t) else { return null }
+        let nullable? = self.layout(t with { nulls: t.nulls + 1 }) else { return null }
+        ParameterLayout { layout: own, nullable: nullable, side: self.side_word(t, []) }
+    }
+
+    /// What each of `fills` is to the machine as it fills a type parameter, the parameters `bounded`
+    /// marks keyed by the fill too; absent where a fill's layout isn't known.
+    fn parameters_laid(fills: List<SignedType>, bounded: List<bool>) -> List<ParameterLayout>? {
+        let ps = [self.parameter_layout(f) for f in fills]
+        if ps.any(it == null) { return null }
+        [p! with { fill: if bounded.length > j && bounded[j] { fills[j] } else { null } } for j, p in ps]
+    }
+
+    /// The descriptor of the type parameter `t` names, held directly: absent for any other type, a
+    /// nullable or `dyn` one, and a parameter the body isn't lowered under.
+    fn parameter_of(t: SignedType) -> ParameterLayout? {
+        if t.nullable() || t.dynamic { return null }
+        let at? = match t.head { .Parameter(index, _) -> index, rest -> null } else { return null }
+        if at < self.parameters.length { self.parameters[at] } else { null }
+    }
+}
+
+impl Lowering {
+    /// `callee`, the method `name` of `subject`'s type, as the unit a call of it at `e` handing it
+    /// `args` reaches: the impl's type parameters filled by `subject`'s type arguments, the method's
+    /// own by unifying each seat naming one with its argument's type and its answer with the call's,
+    /// each laid out, its seats past the receiver filled by them; of a type applied to nothing whose
+    /// method declares none of its own, itself. Absent where a parameter stays unfilled or its
+    /// layout isn't known.
+    fn instantiated_on(
+        callee: CalledFn,
+        subject: SignedType,
+        name: string,
+        args: List<ExprId> = [],
+        e: ExprId? = null,
+    ) -> CalledFn? {
+        if subject.args.is_empty() && callee.type_params == 0 { return callee }
+        let signed? = (self.program.checked.method_of)(subject, name) else { return null }
+        mut found: Map<string, SignedType> = {}
+        if signed.seats.is_empty() || !signed.seats[0].ty.unifies(subject, found) { return null }
+        if callee.type_params > subject.args.length &&
+            !self.own_pinned(signed, callee, args, e, found) { return null }
+        let filled = defaulted(found, (self.program.checked.method_params)(subject, name).defaults)
+        let fills = [filled.get("${i}") for i in 0..callee.type_params]
+        if fills.any(it == null) { return null }
+        self
+            .laid_unit(callee, [f! for f in fills], [s.ty.filled(filled) for s in signed.seats.drop(1)])
+    }
+
+    /// Whether a call at `e` of the method `callee`, of the fn type `signed`, handing it `args` pins
+    /// the type parameters it declares of its own into `found`: each seat past the receiver naming one
+    /// unified with its argument's type, the answer with the call's.
+    fn own_pinned(
+        signed: SignedType,
+        callee: CalledFn,
+        args: List<ExprId>,
+        e: ExprId?,
+        mut found: Map<string, SignedType>,
+    ) -> bool {
+        for pair in self.seat_pairs(signed with { seats: signed.seats.drop(1) }, callee, args) {
+            if !pair.seat.generic() { continue }
+            let actual? = pair.actual else { return false }
+            if !pair.seat.unifies(actual, found) { return false }
+        }
+        let at? = e else { return true }
+        let made = self.type_at(at) ?? self.seat_at(at)
+        signed.answer == null || made == null || answer_pinned(signed.answer!, made!, found)
+    }
+
+    /// `callee`, a generic fn, as the unit a call of it at `e` pinning `pins` and handing it `args`
+    /// reaches: its type parameters filled by the pins, else by unifying each seat naming one with its
+    /// argument's type and its answer with the call's, each laid out, and its seats filled by them.
+    /// Absent where a parameter stays unfilled or its layout isn't known.
+    fn instantiated(callee: CalledFn, pins: List<TypeRef>, args: List<ExprId>, e: ExprId) -> CalledFn? {
+        let signed? = (self.program.checked.declared_value)(callee.file, callee.name) else { return null }
+        self.instantiated_as(callee, signed, pins, args, e)
+    }
+
+    /// `callee`, a generic fn of the fn type `signed`, as the unit a call of it at `e` pinning `pins`
+    /// and handing it `args` reaches, as `instantiated` says.
+    fn instantiated_as(
+        callee: CalledFn,
+        signed: SignedType,
+        pins: List<TypeRef>,
+        args: List<ExprId>,
+        e: ExprId,
+    ) -> CalledFn? {
+        mut found: Map<string, SignedType> = {}
+        for i, p in pins { found.set("${i}", self.written(p)) }
+        for pair in self.seat_pairs(signed, callee, args) {
+            if !pair.seat.generic() { continue }
+            let actual? = pair.actual else { return null }
+            if !pair.seat.unifies(actual, found) { return null }
+        }
+        let made = self.type_at(e) ?? self.seat_at(e)
+        if signed.answer != null && made != null && !answer_pinned(signed.answer!, made!, found) { return null }
+        let filled = defaulted(
+            found,
+            (self.program.checked.declared_defaults)(callee.file, callee.name),
+        )
+        let fills = [filled.get("${i}") for i in 0..callee.type_params]
+        if fills.any(it == null) { return null }
+        self.laid_unit(callee, [f! for f in fills], [s.ty.filled(filled) for s in signed.seats])
+    }
+
+    /// Each argument a call of `callee`, of the fn type `signed`, hands it beside the type of the seat
+    /// it fills: by name or in order, and past a rest seat each as an element of its list, a spread one's
+    /// operand as the list; none where the arguments name seats it doesn't lay out one to one.
+    fn seat_pairs(signed: SignedType, callee: CalledFn, args: List<ExprId>) -> List<SeatPair> {
+        let rest = signed.seats.find_index(it.rest)
+        if rest != null {
+            let k = rest!
+            let elem = signed.seats[k].ty.listed() ?? signed.seats[k].ty
+            return [self.pair(signed.seats[at].ty, a) for at, a in args.take(k)]
+                .concat(
+                    [self.rest_pair(self.store.spread_operand(a), a, signed.seats[k].ty, elem) for a in args.drop(k)],
+                )
+        }
+        if args.any((a) -> self.store.spread_operand(a) != null) { return self.spread_pairs(signed, callee, args) }
+        let plan = self.store.seat_plan(args, [p.name for p in callee.params])
+        if signed.seats.length != plan.length { return [] }
+        [self.pair(s.ty, self.store.unnamed(args[plan[j]])) for j, s in signed.seats if plan[j] >= 0]
+    }
+
+    /// The seat `seat` beside the type of the argument `a` that fills it.
+    fn pair(seat: SignedType, a: ExprId) -> SeatPair { SeatPair { seat: seat, actual: self.type_at(self.meaning_of(a)) } }
+
+    /// An argument past a rest seat of the list type `list`: a spread one's operand fills the list, any
+    /// other an element of it.
+    fn rest_pair(spread: ExprId?, a: ExprId, list: SignedType, elem: SignedType) -> SeatPair {
+        let operand? = spread else { return self.pair(elem, a) }
+        self.pair(list, operand)
+    }
+
+    /// Each seat of `signed` a call handing it `args` that spread records gives, beside the type its
+    /// giver hands it: an argument's own, or the field of the record it spreads.
+    fn spread_pairs(signed: SignedType, callee: CalledFn, args: List<ExprId>) -> List<SeatPair> {
+        let records = [self.spread_record(a) for a in args]
+        let givers = spread_givers(
+            [p.name for p in callee.params],
+            [self.store.arg_label(a) for a in args],
+            [r?.fields?.map(it.name) for r in records],
+        )
+        if signed.seats.length != givers.length { return [] }
+        [self.given_pair(s.ty, givers[j]!, records, args) for j, s in signed.seats if givers[j] != null]
+    }
+
+    /// The seat `seat` beside what `g` gives it: an argument's type, or the field of the record it
+    /// spreads.
+    fn given_pair(seat: SignedType, g: Giver, records: List<SpreadRecord?>, args: List<ExprId>) -> SeatPair {
+        let field? = g.field else { return self.pair(seat, self.store.unnamed(args[g.arg])) }
+        SeatPair { seat: seat, actual: records[g.arg]?.fields?.find(it.name == field)?.ty }
+    }
+
+    /// `callee`'s unit with its type parameters filled by `fills`, each laid out, and its seats
+    /// `seats`; absent where a fill's layout isn't known.
+    fn laid_unit(callee: CalledFn, fills: List<SignedType>, seats: List<SignedType>) -> CalledFn? {
+        let laid? = self.program.checked.parameters_laid(fills, callee.bounded) else { return null }
+        callee with { symbol: instance_symbol(callee.symbol, laid), parameters: laid, seats: seats, fills: fills }
+    }
+
+    /// Each of `args` lowered into its seat of `callee`: a generic unit's as its type arguments fill
+    /// it, any other's as typing kept it; absent where they outnumber a generic unit's seats.
+    mut fn seated_args(callee: CalledFn, args: List<ExprId>) -> List<Reg>? {
+        if callee.parameters.is_empty() { return [self.lower(a) for a in args] }
+        if args.length > callee.seats.length { return null }
+        [self.lowered_into(a, callee.seats[at]) for at, a in args]
+    }
+}
+
+/// What a body asks of a type parameter that carries no bound: only a bound lets a body ask a
+/// parameter's type anything past its layout.
+export fn unbounded_asked(what: string) -> string { "${what} carrying no bound, which only a bound lets a body ask" }
+
+/// A seat's type, and the type of what fills it where that's known.
+type SeatPair = { seat: SignedType, actual: SignedType? }

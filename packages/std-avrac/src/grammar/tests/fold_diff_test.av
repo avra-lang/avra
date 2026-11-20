@@ -1,0 +1,223 @@
+// A fold against the hand fold it replaces: the same postfix language
+// spelled once as turns under `@fold` and once as a rule of links
+// folded by a builder, run over the same inputs, must answer the same
+// tree and the same diagnostics — message, place, expected words and
+// rule. A grammar that misreads one link is the control: the
+// comparison must name it.
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Captured, Ready, run_grammar, ready}
+use @std.avrac.grammar.{Token, lex_source, avra_known_terminals, avra_lexeme, parse_grammar}
+use @std.avrac.core.{joined}
+
+fn text_of(v: Captured<Token, string>) -> string {
+    match v {
+        .Terminal(t) -> t.text,
+        .Node(n) -> n,
+        .Many(items) -> joined([text_of(x) for x in items], ","),
+        .Absent -> "_",
+    }
+}
+
+fn parts(v: Captured<Token, string>) -> List<Captured<Token, string>> {
+    match v { .Many(items) -> items, .Absent -> [], .Terminal(_) or .Node(_) -> [v] }
+}
+
+fn made(s: string) -> Result<Captured<Token, string>, string> {
+    let n: Captured<Token, string> = Captured.Node(s)
+    Result.Ok(n)
+}
+
+const hole: string = "§"
+
+/// Each link names its kind and leaves the value so far as `§`; the
+/// fold-by-builder puts it there. The turns of the `@fold` spelling are
+/// handed the value itself and say the same words.
+fn build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
+    match name {
+        "hand" -> {
+            mut acc = text_of(args[0])
+            for l in parts(args[1]) { acc = text_of(l).replace(hole, acc) }
+            made(acc)
+        },
+        "method" -> made("(method ${hole} ${text_of(args[0])} ${text_of(args[1])})"),
+        "prop" -> made("(prop ${hole} ${text_of(args[0])})"),
+        "chain" -> made("(chain ${hole} ${text_of(args[0])})"),
+        "index" -> made("(index ${hole} ${text_of(args[0])})"),
+        "apply" -> made("(apply ${hole} ${text_of(args[0])})"),
+        "force" -> made("(force ${hole})"),
+        "propagate" -> made("(propagate ${hole})"),
+        "trail" -> made("(trail ${hole} ${text_of(args[0])} ${text_of(args[1])})"),
+        "method_f" -> made("(method ${text_of(args[0])} ${text_of(args[1])} ${text_of(args[2])})"),
+        "prop_f" -> made("(prop ${text_of(args[0])} ${text_of(args[1])})"),
+        "chain_f" -> made("(chain ${text_of(args[0])} ${text_of(args[1])})"),
+        "index_f" -> made("(index ${text_of(args[0])} ${text_of(args[1])})"),
+        "apply_f" -> made("(apply ${text_of(args[0])} ${text_of(args[1])})"),
+        "force_f" -> made("(force ${text_of(args[0])})"),
+        "propagate_f" -> made("(propagate ${text_of(args[0])})"),
+        "trail_f" -> made("(trail ${text_of(args[0])} ${text_of(args[1])} ${text_of(args[2])})"),
+        "args" -> made("[${joined([text_of(a) for a in parts(args[0])], " ")}]"),
+        "block" -> made("{${text_of(args[0])}}"),
+        "lit" or "id" or "pass" -> made(text_of(args[0])),
+        _ -> Result.Err("unknown builder `${name}`"),
+    }
+}
+
+const operand_text: string = "args = ( a:operand ( \",\" a:operand )* \",\"? )? -> args(a)\nblock = \"{\" v:NAME \"}\" -> block(v)\noperand = v:NUMBER -> lit(v) | n:NAME -> id(n) | \"(\" e:expr \")\" @expect(\")\", \"expected `)` to close the group\") -> pass(e)\n"
+
+/// The links as a repeated rule, folded by the builder.
+fn hand() -> Grammar {
+    parse_grammar(
+        "expr = s:chain -> pass(s)\nchain = s:operand ( l:link )* -> hand(s, l)\nlink = \".\" n:NAME \"(\" a:args \")\" @expect(\")\", \"expected `)` to close the call\") -> method(n, a) | \".\" n:NAME -> prop(n) | \"?.\" n:NAME -> chain(n) | \"[\" i:operand \"]\" @expect(\"]\", \"expected `]` to close the index\") -> index(i) | \"(\" a:args \")\" @expect(\")\", \"expected `)` to close the call\") -> apply(a) | \"!\" -> force() | \"?\" -> propagate() | tb:block ( \"else\" te:block )? -> trail(tb, te) @trailer(tb)\n${operand_text}",
+    )
+        .built!
+}
+
+/// The same links as the turns of a fold.
+fn folded() -> Grammar {
+    parse_grammar(
+        "expr = s:chain -> pass(s)\nchain = s:operand ( \".\" n:NAME \"(\" a:args \")\" @expect(\")\", \"expected `)` to close the call\") -> method_f(s, n, a) | \".\" n:NAME -> prop_f(s, n) | \"?.\" n:NAME -> chain_f(s, n) | \"[\" i:operand \"]\" @expect(\"]\", \"expected `]` to close the index\") -> index_f(s, i) | \"(\" a:args \")\" @expect(\")\", \"expected `)` to close the call\") -> apply_f(s, a) | \"!\" -> force_f(s) | \"?\" -> propagate_f(s) | tb:block ( \"else\" te:block )? -> trail_f(s, tb, te) @trailer(tb) )* @fold(s) -> s\n${operand_text}",
+    )
+        .built!
+}
+
+/// A fold that reads `?.` as `.`: the control.
+fn misread() -> Grammar {
+    parse_grammar(
+        "expr = s:chain -> pass(s)\nchain = s:operand ( \".\" n:NAME -> prop_f(s, n) | \"?.\" n:NAME -> prop_f(s, n) )* @fold(s) -> s\n${operand_text}",
+    )
+        .built!
+}
+
+/// A rule's name as the fold spells it: the hand grammar's `link` is
+/// the fold's own `chain`.
+fn rule_kind(name: string) -> string {
+    if name == "link" { "chain" } else { name }
+}
+
+fn answer(rd: Ready, src: string) -> string {
+    let o = run_grammar<Token, string>(rd, lex_source(src).tokens, avra_lexeme(), build)
+    let tree = if o.result == null { "<none>" } else { text_of(o.result!) }
+    let said = ["${d.message} @${d.loc?.lo ?? 0 - 1}..${d.loc?.hi ?? 0 - 1} [${joined(d.expected, "|")}] in ${rule_kind(d.in_rule)}" for d in o.diagnostics]
+    "${tree} ;; ${joined(said, " ;; ")}"
+}
+
+/// Every input whose answer differs between two spellings, as
+/// `input => left <> right`.
+fn differing(a: Grammar, b: Grammar, inputs: List<string>) -> List<string> {
+    let ra = ready(a, avra_known_terminals())
+    let rb = ready(b, avra_known_terminals())
+    ["${src} => ${answer(ra, src)} <> ${answer(rb, src)}" for src in inputs if answer(ra, src) != answer(rb, src)]
+}
+
+const pool: List<string> = [
+    "a",
+    "b",
+    "1",
+    ".",
+    "?.",
+    "[",
+    "]",
+    "(",
+    ")",
+    "!",
+    "?",
+    ",",
+    "{",
+    "}",
+    "else",
+    "x",
+]
+
+/// `n` pseudo-random token strings of 1 to 9 tokens, the same every run.
+fn generated(n: int) -> List<string> {
+    mut state = 20261016
+    mut out: List<string> = []
+    for _i in 0..n {
+        state = (state * 1664525 + 1013904223) % 4294967296
+        let len = 1 + state / 65536 % 9
+        mut words: List<string> = []
+        for _j in 0..len {
+            state = (state * 1664525 + 1013904223) % 4294967296
+            words.push(pool[state / 65536 % pool.length])
+        }
+        out.push(joined(words, " "))
+    }
+    out
+}
+
+/// Each token-prefix of each input, the places a half-written line stops.
+fn truncations(inputs: List<string>) -> List<string> {
+    flatten_texts(
+        [[joined(words.slice(0, k), " ") for k in 1..words.length + 1] for words in [i.split(" ") for i in inputs]],
+    )
+}
+
+fn flatten_texts(xss: List<List<string>>) -> List<string> {
+    mut out: List<string> = []
+    for xs in xss { out = out.concat(xs) }
+    out
+}
+
+const written: List<string> = [
+    "a",
+    "a . b",
+    "a . b . c",
+    "a . b ( )",
+    "a . b ( x , 1 )",
+    "a . b ( x , )",
+    "a ?. b",
+    "a ?. b . c ?. d",
+    "a [ b ]",
+    "a [ b ] [ 1 ]",
+    "a ( )",
+    "a ( b ) ( x )",
+    "a !",
+    "a ! !",
+    "a ?",
+    "a . b ! ?",
+    "a { x }",
+    "a { x } else { b }",
+    "a { x } { b }",
+    "a . b ( x ) { y } else { z } . w",
+    "a ( b . c ( d [ 1 ] ) ) [ x ] !",
+    "( a . b ) . c",
+    "( a . b",
+    "a .",
+    "a . (",
+    "a ?.",
+    "a [",
+    "a [ b",
+    "a [ ]",
+    "a ( ",
+    "a ( b",
+    "a . b (",
+    "a . b ( x",
+    "a { x",
+    "a { }",
+    "a else",
+    "a { x } else",
+    "a { x } else { }",
+    "a . 1",
+    "1 . a",
+    "a . b ?. c ( x ) [ y ] ! ? { z }",
+]
+
+fn inputs() -> List<string> {
+    written.concat(truncations(written)).concat(generated(1500))
+}
+
+spec "grammar/fold — the turns answer as the hand fold does" {
+    given "a fold that misreads one link" {
+        then "the comparison names the input that tells them apart" {
+            differing(hand(), misread(), inputs()).any(it.starts_with("a ?. b =>"))
+        }
+    }
+    given "the written inputs, their prefixes and 1500 generated ones" {
+        then "the hand fold and the turns answer alike on every one" {
+            joined(differing(hand(), folded(), inputs()).take(4), "\n") == ""
+        }
+    }
+}

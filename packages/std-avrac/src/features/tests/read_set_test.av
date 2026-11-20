@@ -1,0 +1,157 @@
+// The read set: which `state` places a body reads and a fn reaches,
+// asked of the program layer. A closure is a boundary (its captures
+// are the read, never its body), a call is a boundary (the callee's
+// reads are another body's, folded in through any cycle), and a body
+// reading nothing reads nothing. A place is a module `state`'s key, or
+// a body's own `state` statement by its fn, name and place — one no
+// caller can name, so what a fn reaches through it is `?`.
+use @std.avrac.testing.{held_at, Judged}
+
+const READ_PATH: string = "/w/src/main.av"
+
+/// The program `source` writes, judged on the layer.
+fn read_judged(source: string) -> Judged {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", READ_PATH: source},
+        "/w",
+    )
+        .judged_at(READ_PATH)
+}
+
+/// What the fn `name` reads of the program's state by its own body.
+fn body_reads(source: string, name: string) -> List<string> { read_judged(source).state_reads_of(READ_PATH, name) }
+
+/// What the fn `name` reaches, by its body and every fn it calls.
+fn fn_reached(source: string, name: string) -> List<string> { read_judged(source).state_reaches_of(READ_PATH, name) }
+
+/// Whether `place` is the body's own `state` statement named `name`.
+fn own_state(place: string, name: string) -> bool { place.starts_with("&") && place.contains("\t${name}@") }
+
+/// Whether `places` is the one module `state` named `name`.
+fn only_state(places: List<string>, name: string) -> bool { places.length == 1 && places[0].ends_with("\t${name}") }
+
+spec "features/read_set" {
+    given "a body reading one state directly" {
+        then "the read set holds exactly that place" {
+            let set = body_reads("fn f() -> int {\n    state n: int = 0\n    n + 1\n}", "f")
+            set.length == 1 && own_state(set[0], "n")
+        }
+    }
+    given "a body reading no state" {
+        then "the read set is empty" { body_reads("fn f() -> int { 1 + 2 }", "f").is_empty() }
+    }
+    given "a subtree reading a parameter" {
+        then "it reads no state" { body_reads("fn f(x: int) -> int { x + 1 }", "f").is_empty() }
+    }
+    given "a subtree reading an outer local" {
+        then "the local is no state" { body_reads("fn f(x: int) -> int {\n    let y = x\n    y + 1\n}", "f").is_empty() }
+    }
+    given "a leaf reading a state place and a parameter" {
+        then "the read set holds the one place" {
+            let set = body_reads("fn f(x: int) -> int {\n    state n: int = 0\n    n + x\n}", "f")
+            set.length == 1 && own_state(set[0], "n")
+        }
+    }
+    given "a closure capturing a state place" {
+        then "the capture is the read" {
+            let set = body_reads(
+                "fn f() -> fn() -> int {\n    state n: int = 0\n    () -> n + 1\n}",
+                "f",
+            )
+            set.length == 1 && own_state(set[0], "n")
+        }
+        then "a state the closure BINDS itself is not the body's read" {
+            body_reads(
+                "fn f() -> fn() -> int {\n    () -> {\n        state m: int = 0\n        m + 1\n    }\n}",
+                "f",
+            )
+                .is_empty()
+        }
+    }
+    given "a body calling a fn whose body reads no state" {
+        then "the callee reaches nothing" { fn_reached("fn g() -> int { 1 }\nfn f() -> int { g() + 1 }", "g").is_empty() }
+    }
+    given "a body calling a fn that reads state" {
+        then "the callee reaches it" {
+            !fn_reached(
+                "fn g() -> int {\n    state n: int = 0\n    n\n}\nfn f() -> int { g() + 1 }",
+                "g",
+            )
+                .is_empty()
+        }
+    }
+    given "a call that chains two declarations deep to a state read" {
+        then "the answer is TRANSITIVE" {
+            let source = "fn h() -> int {\n    state n: int = 0\n    n\n}\nfn g() -> int { h() }\nfn f() -> int { g() }"
+            !fn_reached(source, "h").is_empty() && !fn_reached(source, "g").is_empty()
+        }
+    }
+    given "mutual recursion with no state read" {
+        then "the fixpoint settles: the cycle is pure" { fn_reached("fn a() -> int { b() }\nfn b() -> int { a() }", "a").is_empty() }
+    }
+    given "mutual recursion that reaches a state read" {
+        then "the cycle is impure" {
+            !fn_reached(
+                "fn a() -> int { b() }\nfn b() -> int {\n    state n: int = 0\n    a() + n\n}",
+                "a",
+            )
+                .is_empty()
+        }
+    }
+    given "a body reading two state places" {
+        then "the read set holds both" {
+            let set = body_reads(
+                "fn f() -> int {\n    state x: int = 1\n    state y: int = 2\n    x + y\n}",
+                "f",
+            )
+            set.length == 2 && set.any(own_state(it, "x")) && set.any(own_state(it, "y"))
+        }
+    }
+    given "a top-level state place" {
+        then "a body reading it reads that declaration" { only_state(fn_reached("state n: int = 0\nfn f() -> int { n + 1 }", "f"), "n") }
+        then "a body reading two of them reads both" {
+            fn_reached("state x: int = 1\nstate y: int = 2\nfn f() -> int { x + y }", "f").length == 2
+        }
+        then "a call to a fn reading exactly one reaches that place, through the callee" {
+            let source = "state n: int = 0\nfn g() -> int { n }\nfn f() -> int { g() + 1 }"
+            only_state(fn_reached(source, "f"), "n") && !fn_reached(source, "g").is_empty()
+        }
+        then "a call chain two deep carries the place all the way" {
+            only_state(
+                fn_reached(
+                    "state n: int = 0\nfn h() -> int { n }\nfn g() -> int { h() }\nfn f() -> int { g() }",
+                    "f",
+                ),
+                "n",
+            )
+        }
+        then "calls to fns reading two different ones reach both" {
+            fn_reached(
+                "state x: int = 1\nstate y: int = 2\nfn gx() -> int { x }\nfn gy() -> int { y }\nfn f() -> int { gx() + gy() }",
+                "f",
+            )
+                .length == 2
+        }
+        then "a cycle reaching a place carries it through every member" {
+            let source = "state n: int = 0\nfn a() -> int { b() }\nfn b() -> int { a() + n }"
+            let pa = fn_reached(source, "a")
+            let pb = fn_reached(source, "b")
+            only_state(pa, "n") && only_state(pb, "n")
+        }
+    }
+    given "a callee's own local state" {
+        then "is a place a caller cannot name" {
+            let reached = fn_reached(
+                "fn g() -> int {\n    state m: int = 0\n    m\n}\nfn f() -> int { g() + 1 }",
+                "g",
+            )
+            reached.length == 1 && reached[0] == "?"
+        }
+    }
+    given "a declaration's places" {
+        then "are none for a pure fn, and once each for a reader" {
+            let source = "state x: int = 1\nstate y: int = 2\nfn p() -> int { 1 }\nfn r() -> int { y + x + y }"
+            fn_reached(source, "p").is_empty() && fn_reached(source, "r").length == 2
+        }
+    }
+}

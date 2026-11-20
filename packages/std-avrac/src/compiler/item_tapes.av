@@ -1,0 +1,181 @@
+//! Avra's items on tapes, for the program layer: Avra's source world, an item's tape read from its
+//! own text, its refusals among what it keeps, and a file's tree put back together from its items'
+//! tapes.
+use core.{ForeignOrigin, ParseRefusal, SyntaxArena, Stmt, StmtId, new_node_store}
+use diagnostics.{new_source_file}
+use grammar.{avra_lexeme, lex_source}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.answer_record.{content_hash}
+use @std.program.query_engine.{QueryDefinition}
+use @std.program.source_facts.{
+    FileOctets,
+    PlacedTape,
+    SourceWorld,
+    WorldPlaces,
+    source_fact_definitions,
+}
+use @std.program.syntax_tape.{SyntaxTape, tape_reader, tape_writer}
+use @std.program.token_columns.{TokenColumns, token_columns}
+
+/// Avra as the program layer reads it: files from `read_file`, directories from `list_directory`,
+/// under the reader `language_print`.
+export fn avra_source_world(
+    read_file: fn(SourceFileAddress) -> string?,
+    list_directory: fn(DirectoryAddress) -> List<string>?,
+    language_print: string,
+    read_octets: fn(SourceFileAddress) -> FileOctets = no_octets,
+    places: WorldPlaces? = null,
+) -> SourceWorld {
+    SourceWorld {
+        read_file: read_file,
+        read_octets: read_octets,
+        list_directory: list_directory,
+        language_print: language_print,
+        columns_in: avra_columns,
+        context_of: avra_context,
+        item_tape: avra_item_tape,
+        places: places,
+    }
+}
+
+/// A world that holds no file a build reads as data.
+fn no_octets(_file: SourceFileAddress) -> FileOctets { FileOctets.Missing }
+
+/// The queries Avra's world reads through, for a process to hand its engine.
+export fn avra_fact_definitions() -> List<QueryDefinition> {
+    source_fact_definitions()
+        .concat(context_fact_definitions())
+        .concat(expansion_fact_definitions())
+        .concat(name_fact_definitions())
+        .concat(scope_fact_definitions())
+        .concat(package_fact_definitions())
+        .concat(signature_fact_definitions())
+        .concat(typed_fact_definitions())
+        .concat(inferred_fact_definitions())
+        .concat(method_fact_definitions())
+        .concat(write_fact_definitions())
+        .concat(generated_fact_definitions())
+        .concat(generator_fact_definitions())
+        .concat(lowered_fact_definitions())
+        .concat(const_fact_definitions())
+        .concat(method_lowered_fact_definitions())
+        .concat(meta_fact_definitions())
+        .concat(program_fact_definitions())
+        .concat(case_fact_definitions())
+        .concat(default_lowered_fact_definitions())
+        .concat(law_fact_definitions().concat(rule_fact_definitions()))
+        .concat(refusal_fact_definitions())
+        .concat(body_law_fact_definitions())
+        .concat(misnamed_fact_definitions())
+        .concat(bound_call_fact_definitions())
+        .concat(run_choice_fact_definitions())
+        .concat(taken_fact_definitions())
+        .concat(unwritten_fact_definitions())
+        .concat(copy_fact_definitions())
+        .concat(receiver_fact_definitions())
+        .concat(seat_fact_definitions())
+        .concat(coalesce_fact_definitions())
+        .concat(unreached_fact_definitions())
+        .concat(never_ends_fact_definitions())
+        .concat(unbroken_fact_definitions())
+        .concat(unnamed_fact_definitions())
+        .concat(unresolved_fact_definitions())
+        .concat(miss_fact_definitions())
+        .concat(hole_fact_definitions())
+        .concat(extern_fact_definitions())
+        .concat(host_fact_definitions())
+        .concat(place_fact_definitions())
+        .concat(check_fact_definitions())
+        .concat(manifest_fact_definitions())
+        .concat(canonical_fact_definitions())
+        .concat(doc_fact_definitions())
+        .concat(new_only_fact_definitions())
+        .concat(framing_fact_definitions())
+}
+
+/// A text's tokens, as Avra's grammar says they work.
+export fn avra_columns(text: string) -> TokenColumns { token_columns(text, lex_source(text).tokens, avra().roles, avra_lexeme()) }
+
+/// One item's tree on a tape, read from its text under its file's words: its statements, then
+/// what its file keeps of it, its refusals among them.
+export fn avra_item_tape(item_text: string, context: Bytes) -> SyntaxTape {
+    let parsed = parse_program(avra(), new_source_file("<item>", item_text), context_words(context))
+    tape_of_item(parsed.store, [s for s in parsed.stmts if !parsed.store.is_hoisted(s)])
+}
+
+/// An item's tape: its statements, what its file keeps of it, and every name it declares, what it
+/// hoisted among them, each with its face.
+export fn tape_of_item(store: SyntaxArena, stmts: List<StmtId>) -> SyntaxTape {
+    mut tape = tape_writer()
+    tape.count(stmts.length)
+    for s in stmts { Stmt.taped_id(store, tape, s) }
+    SyntaxArena.tape_item_tables(store, tape)
+    for s in stmts.concat(store.hoisted_decls()) { declare_on(store, tape, s) }
+    tape.said_about(item_about(store, stmts))
+    tape.finished()
+}
+
+/// A file's tree read back from its items' tapes.
+export type ReadBack = { store: SyntaxArena, stmts: List<StmtId> }
+
+export fn read_back(file: string, placed: List<PlacedTape>) -> ReadBack {
+    let store = new_node_store(file)
+    let stmts = [s for p in placed for s in item_read_back(store, p)]
+    ReadBack { store: store, stmts: stmts.concat(store.hoisted_decls()) }
+}
+
+/// How statement `a` of `left` differs from `b` of `right`, absent when they're one statement: the
+/// same tape, every node where it was, meaning the same, and the same to the compiler.
+export fn statement_difference(left: SyntaxArena, a: StmtId, right: SyntaxArena, b: StmtId) -> string? {
+    let one = statement_tape(left, a)
+    let other = statement_tape(right, b)
+    if !one.meaning_hash.same_as(other.meaning_hash) { return "its meaning" }
+    if !content_hash(one.places.places).same_as(content_hash(other.places.places)) { return "where its nodes stand" }
+    if left.stmt_fingerprint(a) != right.stmt_fingerprint(b) { return "its fingerprint" }
+    null
+}
+
+/// A store with each foreign node's file named by `spelled`, as a workspace naming files by where
+/// they stand on disk is held to a program naming them by address.
+export fn respelled_origins(store: SyntaxArena, spelled: fn(string) -> string) {
+    store.expr_origins.remade((o) -> respelled_origin(o, spelled))
+    store.stmt_origins.remade((o) -> respelled_origin(o, spelled))
+    store.pat_origins.remade((o) -> respelled_origin(o, spelled))
+}
+
+fn respelled_origin(o: ForeignOrigin?, spelled: fn(string) -> string) -> ForeignOrigin? {
+    let held? = o else { return null }
+    if held.path.is_empty() { held } else { held with { path: spelled(held.path) } }
+}
+
+/// What `left` refuses that `right` doesn't, or the reverse, by words and place; absent when they
+/// refuse alike.
+export fn refusal_difference(left: SyntaxArena, right: SyntaxArena) -> string? {
+    let one = [refusal_key(r) for r in left.refusals()]
+    let other = [refusal_key(r) for r in right.refusals()]
+    let missing = [k for k in one if !other.contains(k)]
+        .concat([k for k in other if !one.contains(k)])
+    if missing.is_empty() && one.length == other.length { null } else { "its refusals: ${missing.first() ?? "a count"}" }
+}
+
+fn refusal_key(r: ParseRefusal) -> string {
+    match r {
+        .Grammar(_, message, span, _, _) or .Builder(_, message, _, span) -> "${message} at ${span?.lo ?? -1}",
+    }
+}
+
+fn statement_tape(store: SyntaxArena, s: StmtId) -> SyntaxTape {
+    mut tape = tape_writer()
+    Stmt.taped_id(store, tape, s)
+    tape.finished()
+}
+
+/// One item's statements read back into `store`, settled as a parse leaves them.
+export fn item_read_back(store: SyntaxArena, p: PlacedTape) -> List<StmtId> {
+    let since = store.marks()
+    let reader = tape_reader(p.tape, p.start)
+    let stmts = [Stmt.untaped_id(store, reader) for _s in 0..reader.count()]
+    SyntaxArena.untape_item_tables(store, reader)
+    store.settled_since(since)
+    stmts
+}

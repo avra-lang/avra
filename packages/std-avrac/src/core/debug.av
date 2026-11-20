@@ -1,0 +1,106 @@
+//! A debug line for the compiler's own instrumentation, and the
+//! compiler's own WRECK.
+use @std.io.{env}
+use @std.relation.engine.{Kernel, new_kernel}
+
+extern fn avra_debug(s: string)
+extern fn avra_qtrace(s: string)
+extern fn avra_trap(s: string)
+
+/// Write `s` to stderr when `AVRA_DEBUG` is set, and NOTHING
+/// otherwise. The compiler's own instrument: usable from any module
+/// (core is the root) and inert under the self-compile, so a probe can
+/// stand in a pass without breaking `make avra`.
+export fn debug(s: string) {
+    avra_debug(s)
+}
+
+/// `AVRA_QTRACE`'s presence, read once: a trace line is never built
+/// when nobody reads it.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn qtrace_flag() -> string? { env("AVRA_QTRACE") }
+
+/// Whether a query-kernel trace line is worth building at all.
+export fn traced() -> bool { qtrace_flag() != null }
+
+/// `AVRA_DB_GRAPH`'s presence, read once.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn graph_flag() -> string? { env("AVRA_DB_GRAPH") }
+
+/// Whether the kernel's graph is written out.
+fn graphed() -> bool { graph_flag() != null }
+
+/// `AVRA_DB_FAST`'s presence, read once.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn fast_flag() -> string? { env("AVRA_DB_FAST") }
+
+/// Whether an unsuspected file stands without its parts derived.
+export fn db_fast() -> bool { fast_flag() != null }
+
+/// `AVRA_LEAVES`'s presence, read once.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn leaves_flag() -> string? { env("AVRA_LEAVES") }
+
+/// Whether a saved-answer report is written.
+export fn leaves_traced() -> bool { leaves_flag() != null }
+
+/// `AVRA_DB_VERIFY`'s presence, read once.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn verify_flag() -> string? { env("AVRA_DB_VERIFY") }
+
+/// Whether `AVRA_DB_VERIFY` names `judgement` (a comma list of `filesaid`, `typed`, `lowered`, `producers`, `items`, `decl`), or `all`.
+fn verifying(judgement: string) -> bool {
+    let v? = verify_flag() else { return false }
+    v == "all" || v == "1" || v.split(",").contains(judgement)
+}
+
+/// Whether any saved answer is judged this run: it then reads every file and stands on no kept
+/// verdict, so every judgement meets a fresh answer.
+export fn db_judging() -> bool { verify_flag() != null }
+
+/// Whether the typed and lowered saved-answer rules are judged beside what the compiler decides.
+export fn db_verified() -> bool { verifying("typed") || verifying("lowered") }
+
+/// Whether a module's kept producer row is judged against the record it was written from.
+export fn db_verified_producers() -> bool { verifying("producers") }
+
+/// Whether each declaration's kept shape is judged against the one made now.
+export fn db_verified_decl() -> bool { verifying("decl") }
+
+/// Whether the suspect set's verdicts are judged against the file-row rule's.
+export fn db_verified_files() -> bool { verifying("filesaid") }
+
+/// Whether a file's kept Items row is judged against what its read admits now.
+export fn db_verified_items() -> bool { verifying("items") }
+
+/// A kernel that traces and writes its graph when the flags ask.
+export fn watched_kernel() -> Kernel {
+    let kernel = new_kernel()
+    if graphed() { kernel.graph_on() }
+    if traced() { kernel.trace_on() }
+    kernel
+}
+
+/// A query-kernel trace line, under `AVRA_QTRACE` alone — a gen-N vs
+/// gen-N+1 differential names the first query whose answer diverges
+/// (CLAUDE.md, Working discipline). Inert otherwise, same as `debug`.
+export fn qtrace(s: string) {
+    avra_qtrace(s)
+}
+
+/// THE COMPILER'S OWN WRECK — words for a defect that must not ship
+/// a value. Exits 2, so a wreck can never be read as a
+/// disagreement, and never a program's error: the program is
+/// innocent wherever this fires. THE ONE DOOR, so no module
+/// declares the trap again.
+export fn wreck(s: string) {
+    avra_trap(s)
+}
+
+/// `AVRA_ENGINE_PARSE`'s presence, read once.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn engine_parse_flag() -> string? { env("AVRA_ENGINE_PARSE") }
+
+/// Whether every parse runs on the grammar engine, the generated parser set aside — the two
+/// answer alike, so this is a measurement's switch and a differential's.
+export fn engine_parse() -> bool { engine_parse_flag() != null }

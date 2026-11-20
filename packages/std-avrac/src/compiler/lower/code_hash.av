@@ -1,0 +1,988 @@
+//! A FN'S CODE HASH (`@std/meta`'s `code_hash`): what its lowered code
+//! does, and everything it can reach, as one key — never a comment or a
+//! span. It sums a digest of each node the fn reaches (`summed_hash`), so
+//! an edit moves exactly the hashes reaching it, by its node's digest
+//! alone. A name is part of a node, so a rename moves the hashes that
+//! reach it. A call THROUGH a fn value reaches every fn
+//! whose address the program takes WITH THAT FN TYPE, so the callee it
+//! cannot name is covered by TYPE, never by the whole program's values.
+//! EVERY REFERENCE LIST IS POSITIONAL — a body's in the order its
+//! instructions name them, a static's in slot order —
+//! but the fn values', a set, since a value dispatches by address.
+//!
+//! A TYPE IS ITS SHAPE, so a renamed type or field moves nothing — sound
+//! only while no name reaches output except through the IR: a record has
+//! no text projection, and a codec or derive spells a name as a literal
+//! (`ConstStr`, or a static's text). A projection that prints names must
+//! print them so.
+use @std.text.{parse_int}
+use @std.hash.{blake3}
+use @std.program.saved_layout.{word_in}
+use features.{Decls}
+use compiler.{mark_word}
+use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.{codec}
+use core.{
+    code_hash_symbol,
+    Ins,
+    Reg,
+    Level,
+    sorted_texts,
+    Static,
+    StaticBox,
+    Slot,
+    TypeId,
+    TypeRegistry,
+    Digest,
+    new_digest,
+    digest_int,
+    digest_text,
+    digest_bytes,
+    digest_key,
+    digest_ins,
+    resymbolled,
+    symbols_of,
+    static_code_syms,
+    vtable_named,
+    same_reg,
+    flatten,
+    qtrace,
+    VALUE_SEATS,
+    OPEN_VALUE,
+    digest_of,
+    fp_str,
+    Ids,
+    REACH_BITS,
+    reach_words,
+    reached_by,
+    strong_sets,
+    StrongSets,
+}
+
+/// The code hashes a program answers: a body for each, and each as
+/// `target=hash`, or the target alone where it has none.
+export type CodeHashes = { bodies: List<Body>, keys: List<string> }
+
+/// Each asked target's code hash, over the program's bodies and statics.
+export fn code_hashes(
+    decls: Decls,
+    bodies: List<Body>,
+    statics: List<Static>,
+    targets: List<string>,
+    known: List<string>,
+) -> CodeHashes {
+    let asked = distinct_targets(targets)
+    if asked.is_empty() { return CodeHashes { bodies: [], keys: [] } }
+    let g = code_graph([code_facts(decls, bodies, statics, targets)], known, asked)
+    mut out: List<Body> = []
+    mut keys: List<string> = []
+    for t in asked {
+        let h = g.hash(t)
+        out.push(hash_body(decls.types, t, h))
+        keys.push(if h == null { t } else { "${t}=${h!}" })
+    }
+    CodeHashes { bodies: out, keys: keys }
+}
+
+/// One asked target's code hash; absent where its code reaches a symbol nothing answers for.
+export type TargetHash = { target: string, hash: string? }
+
+/// Each asked target's code hash over these bodies and statics, each type read by `r`; `known` are
+/// the symbols answered outside them (runtime rows, externs).
+export fn hashes_read(
+    bodies: List<Body>,
+    statics: List<Static>,
+    targets: List<string>,
+    known: List<string>,
+    r: CodeReading,
+) -> List<TargetHash> {
+    let asked = distinct_targets(targets)
+    if asked.is_empty() { return [] }
+    let lowered = [b for b in bodies if !b.ins.is_empty()]
+    let g = code_graph([read_code_facts(lowered, statics, asked, r)], known, asked)
+    mut out: List<TargetHash> = []
+    // LICENSED loops.push_loop: each hash is asked of the graph, which keeps what it worked out for the next
+    for t in asked { out.push(TargetHash { target: t, hash: g.hash(t) }) }
+    out
+}
+
+/// The body answering one target's hash: its text, or absence when it
+/// reaches a symbol nothing answers for.
+fn hash_body(types: TypeRegistry, target: string, hash: string?) -> Body {
+    let r0 = Reg { index: 0 }
+    let answer = types.type(string?)
+    let made = if hash == null { Ins.ConstInt(r0, 0) } else { Ins.ConstStr(r0, hash!) }
+    Body {
+        name: code_hash_symbol(target),
+        params: [],
+        ret: answer,
+        gives: r0,
+        ins: [Ins.ScopeEnter(Level.Application), made, Ins.ScopeExit(r0), Ins.RetVal(r0)],
+        reg_types: [answer],
+        weak: true,
+        program_wide: true,
+    }
+}
+
+/// The bodies answering each target absent: what a run that cannot
+/// compute a code hash keeps, so the query keyed by it keys nothing.
+export fn absent_hashes(types: TypeRegistry, targets: List<string>) -> List<Body> {
+    [hash_body(types, t, null) for t in distinct_targets(targets)]
+}
+
+fn distinct_targets(targets: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<string> = []
+    for t in targets {
+        if seen.get(t) == null {
+            seen.set(t, true)
+            out.push(t)
+        }
+    }
+    out
+}
+
+/// One node of the code graph: what it is made of with the names it
+/// reaches left out (`own`), and the names it reaches — in the order it
+/// reaches them, or as a SET when the node is the program's fn values.
+type CodeNode = { own: string, refs: List<string>, set: bool = false }
+
+/// THE PROGRAM'S FN VALUES, BY TYPE: one node per fn type, holding every
+/// address the program takes WITH that type. A body that calls through a
+/// value reaches ITS callee's type node, so its hash depends on the fns
+/// of that type — never on unrelated code elsewhere. The bare name is the
+/// fallback a site with no known type folds. No symbol holds a space, so
+/// these names are no body's.
+export const values_node: string = "fn values"
+
+/// Where a fn taken into a box of no known type stands: in every value node. No symbol holds a space,
+/// so it is no body's.
+export const any_value_node: string = "any fn values"
+
+/// The per-type node a value dispatch reaches: the callee type's node, or
+/// the whole-program node when the type is unknown (the loud fallback).
+fn values_node_name(shapes: Map<string, string>, t: TypeId) -> string {
+    let shape? = shapes.get("${t.index}") else { return values_node }
+    value_node_of(shape)
+}
+
+/// WHERE A CODE HASH STOPS: at another asked target and at the body answering its hash. A target is
+/// a memo's own key — its answers are kept under its hash, and reach whoever asks them only as
+/// answers the memo records it read — so its code is covered by its own hash, never by the
+/// asker's. Without the stop, every query reaches every other through the one fn type its engine
+/// calls a query's door by, and an edit anywhere moves every hash.
+export fn guards_of(asked: List<string>) -> Map<string, bool> {
+    mut guarded: Map<string, bool> = {}
+    for t in asked {
+        guarded.set(t, true)
+        guarded.set(code_hash_symbol(t), true)
+    }
+    guarded
+}
+
+/// A reference as the graph walks it: a guarded symbol's stands for its name alone.
+fn guarded_ref(guarded: Map<string, bool>, r: string) -> string { if guarded.has(r) { guarded_node(r) } else { r } }
+
+/// `refs` as the code graph guarded by `guarded` walks them.
+export fn graph_refs(guarded: Map<string, bool>, refs: List<string>) -> List<string> { [guarded_ref(guarded, r) for r in refs] }
+
+/// The leaf a guarded symbol stands as. No symbol holds a space, so it is no body's.
+fn guarded_node(sym: string) -> string { "guarded ${sym}" }
+
+/// WHAT A CALL THROUGH A VALUE NODE MAY REACH: a fn taken into a box of no known type, always; else
+/// one taken under the same type; and where either side's type is known by its seat count alone (it
+/// names a type parameter), any of that seat count. Each group a node shares stands as a node of its
+/// own that each refers to once, so no node holds a copy of every fn of its seat count.
+type ValueReach = {
+    anywhere: List<string>,
+    by_node: Map<string, List<string>>,
+    typed_by_seats: Map<string, List<string>>,
+    open_by_seats: Map<string, List<string>>,
+}
+
+/// The taken fns `taken`, filed for value nodes' reach.
+fn value_reach(taken: List<Addressed>, guarded: Map<string, bool>) -> ValueReach {
+    mut r = ValueReach { anywhere: [], by_node: {}, typed_by_seats: {}, open_by_seats: {} }
+    // LICENSED loops.push_loop: one walk files each fn into several tables at once
+    for e in taken {
+        let sym = guarded_ref(guarded, e.sym)
+        if e.node == any_value_node {
+            r.anywhere.push(sym)
+            continue
+        }
+        let seats = seats_part(e.node)
+        if seats != "" && open_key(e.node) {
+            r.open_by_seats.set(seats, (r.open_by_seats.get(seats) ?? []).concat([sym]))
+            continue
+        }
+        if !r.by_node.has(e.node) && seats != "" { r.typed_by_seats.set(seats, (r.typed_by_seats.get(seats) ?? []).concat([e.node])) }
+        r.by_node.set(e.node, (r.by_node.get(e.node) ?? []).concat([sym]))
+    }
+    r
+}
+
+impl ValueReach {
+    /// What a call through `node` may reach: its own fns, then the shared groups by name.
+    fn of(node: string) -> List<string> {
+        let seats = seats_part(node)
+        let shared = if seats != "" && self.open_by_seats.has(seats) { [opened_node(seats)] } else { [] }
+            .concat(if self.anywhere.is_empty() { [] } else { [any_value_node] })
+        let own = if seats != "" && open_key(node) { self.typed_by_seats.get(seats) ?? [] } else { self.by_node.get(node) ?? [] }
+        distinct_targets(own.concat(shared))
+    }
+
+    /// The shared groups as nodes: the fns taken under a type known by its seat count alone, a node
+    /// per seat count, and those taken into a box of no known type.
+    fn groups() -> Map<string, List<string>> {
+        mut out: Map<string, List<string>> = {}
+        for seats, syms in self.open_by_seats { out.set(opened_node(seats), distinct_targets(syms)) }
+        if !self.anywhere.is_empty() { out.set(any_value_node, distinct_targets(self.anywhere)) }
+        out
+    }
+}
+
+/// The node holding the fns taken under a type known by its seat count `seats` alone.
+fn opened_node(seats: string) -> string { "${seats}${VALUE_SEATS}${OPEN_VALUE} taken" }
+
+/// Whether a value node's type is known by its seat count alone.
+fn open_key(node: string) -> bool { node.ends_with("${VALUE_SEATS}${OPEN_VALUE}") }
+
+/// A value node's seat count, as its key spells it; empty for a node no seat count keys (a `dyn`
+/// box's, a workspace's).
+fn seats_part(node: string) -> string {
+    let at = node.index_of(VALUE_SEATS)
+    if at < 0 { "" } else { node.substring(0, at) }
+}
+
+/// The program's code as a graph, by number, its strong sets summed, and what its asked targets reach.
+type CodeGraph = {
+    nodes: Map<string, CodeNode>,
+    asked: List<string>,
+    known: Map<string, bool>,
+    numbered: NumberedGraph,
+    sets: SetSums,
+    answered: TargetsReached,
+}
+
+/// A code graph's strongly connected sets: each set's digests summed once, `SUM_WORDS` words a set,
+/// and whether a node of it refers to a name nothing answers.
+type SetSums = { sets: StrongSets, sums: List<int>, open: List<bool> }
+
+/// A code graph's nodes by number: each node's name and place, its references by number, whether it
+/// refers to a name no node and no known name answers, and its digest, `SUM_WORDS` words a node.
+type NumberedGraph = {
+    names: List<string>,
+    places: Map<string, int>,
+    refs: List<List<int>>,
+    open: List<bool>,
+    digests: List<int>,
+}
+
+/// `nodes` by number, `known` the names answered outside them.
+fn numbered(nodes: Map<string, CodeNode>, known: Map<string, bool>) -> NumberedGraph {
+    let names = nodes.keys()
+    mut places: Map<string, int> = {}
+    for i, n in names { places.set(n, i) }
+    let nodes_in = [nodes.get(n)! for n in names]
+    NumberedGraph {
+        names: names,
+        places: places,
+        refs: [[places.get(r)! for r in node.refs if places.has(r)] for node in nodes_in],
+        open: [[r for r in node.refs if !places.has(r) && !known.has(r)].length > 0 for node in nodes_in],
+        digests: flatten([node_digest(names[i], node.own, node.refs, node.set) for i, node in nodes_in]),
+    }
+}
+
+impl NumberedGraph {
+    /// The digest of the node numbered `n`.
+    fn digest_at(n: int) -> List<int> { self.digests.slice(n * SUM_WORDS, n * SUM_WORDS + SUM_WORDS) }
+
+    /// The graph's strongly connected sets, each set's digests summed once.
+    fn set_sums() -> SetSums {
+        let sets = strong_sets(self.refs)
+        let sums = Cell.new([0 for _k in 0..sets.count() * SUM_WORDS])
+        let open = Cell.new([false for _c in 0..sets.count()])
+        for v, c in sets.of {
+            add_words(sums, c * SUM_WORDS, self.digests, v * SUM_WORDS)
+            if self.open[v] { open.set_at(c, true) }
+        }
+        SetSums { sets: sets, sums: sums.get(), open: open.get() }
+    }
+
+    /// WHAT EACH OF `targets` REACHES, worked out once over the graph's strongly connected sets: which
+    /// targets reach each set (`reached_by`), then each target's sum over the sets it reaches. A target
+    /// reaching a set that refers to a name nothing answers has no hash; a target no node is its known
+    /// name's digest, or nothing.
+    fn reached_from(targets: List<string>, known: Map<string, bool>, s: SetSums) -> TargetsReached {
+        let sets = s.sets
+        let rows = reached_by(self.refs, sets, [self.places.get(t) ?? -1 for t in targets])
+        let w = reach_words(targets.length)
+        let sums = Cell.new([0 for _k in 0..targets.length * SUM_WORDS])
+        let open = Cell.new([false for _t in targets])
+        for c in 0..sets.count() {
+            for j in 0..w {
+                let word = rows[c * w + j]
+                if word == 0 { continue }
+                for b in 0..REACH_BITS {
+                    if (word >> b) & 1 == 0 { continue }
+                    let t = j * REACH_BITS + b
+                    add_words(sums, t * SUM_WORDS, s.sums, c * SUM_WORDS)
+                    if s.open[c] { open.set_at(t, true) }
+                }
+            }
+        }
+        let hashed = [self.places.has(t) && !open.get()[i] for i, t in targets]
+        let sum_of = (i: int) -> if hashed[i] { sums.get().slice(i * SUM_WORDS, i * SUM_WORDS + SUM_WORDS) } else { empty_sum() }
+        let mask = [mask_word(hashed, j) for j in 0..w]
+        TargetsReached {
+            hashes: [self.target_hash(t, hashed[i], sum_of(i), known) for i, t in targets],
+            sums: flatten([sum_of(i) for i in 0..targets.length]),
+            rows: flatten([[x & mask[j] for j, x in rows.slice(c * w, c * w + w)] for c in sets.of]),
+            words: w,
+        }
+    }
+
+    /// A target's hash: a node's summed over `sum` where `hashed`; none for a node reaching a name
+    /// nothing answers; its name's digest where no node is it and a row answers it; else none.
+    fn target_hash(target: string, hashed: bool, sum: List<int>, known: Map<string, bool>) -> string? {
+        let at? = self.places.get(target) else { return if known.has(target) { digest_of_name(target) } else { null } }
+        if hashed { summed_hash(target, self.digest_at(at), sum) } else { null }
+    }
+}
+
+/// What the targets of a code graph reach: each one's hash, in order; each one's sum, `SUM_WORDS`
+/// words a target, nothing for a target with no hash or no node; and which hashed targets reach each
+/// node, `words` words a node, bit `t % REACH_BITS` of word `t / REACH_BITS` for target `t`.
+export type TargetsReached = { hashes: List<string?>, sums: List<int>, rows: List<int>, words: int }
+
+/// `into` with the `SUM_WORDS` words of `from` from `at` added, word by word mod 2^64, at `to`.
+fn add_words(into: Cell<List<int>>, to: int, from: List<int>, at: int) {
+    for k in 0..SUM_WORDS { into.set_at(to + k, into.get()[to + k].wrapping_add(from[at + k])) }
+}
+
+/// The bits of word `j` of a reach row standing for the targets `hashed` says are hashed.
+fn mask_word(hashed: List<bool>, j: int) -> int {
+    [1 << b for b in 0..REACH_BITS if j * REACH_BITS + b < hashed.length && hashed[j * REACH_BITS + b]]
+        .fold(0, (m, x) -> m | x)
+}
+
+export fn code_graph(facts: List<CodeFacts>, known: List<string>, asked: List<string>) -> CodeGraph {
+    mut nodes: Map<string, CodeNode> = {}
+    let guarded = guards_of(asked)
+    // PER-TYPE VALUE NODES: a `CallPtr` folds the fns taken with its
+    // callee's type; the bare node is the fallback, holding every one.
+    let taken = flatten([[entry_at(a) for a in f.addressed] for f in facts])
+    nodes
+        .set(
+            values_node,
+            CodeNode {
+                own: digest_of_name(values_node),
+                refs: distinct_targets([guarded_ref(guarded, e.sym) for e in taken]),
+                set: true,
+            },
+        )
+    for f in facts {
+        for n in f.nodes {
+            nodes
+                .set(n.name, CodeNode { own: n.own, refs: [guarded_ref(guarded, r) for r in n.refs] })
+        }
+    }
+    // The synthetic body that answers an asked target's hash refers to that target, so
+    // a cycle through it is one the walk already closes.
+    for t in asked {
+        nodes
+            .set(code_hash_symbol(t), CodeNode { own: digest_of_name(code_hash_symbol(t)), refs: [t] })
+    }
+    for g, _held in guarded { nodes.set(guarded_node(g), CodeNode { own: digest_of_name(guarded_node(g)), refs: [] }) }
+    // A DISPATCH THROUGH A TYPE NO ADDRESS OF WAS TAKEN REACHES NO BODY of its own: its value node
+    // stands all the same, so the reach hashes rather than poisoning a cycle on a name no entry made.
+    let dispatched = flatten(
+        [[r for r in n.refs if r.starts_with("${values_node} ")] for n in nodes.values()],
+    )
+    let reach = value_reach(taken, guarded)
+    for node in distinct_targets([e.node for e in taken].concat(dispatched)) {
+        if node != values_node && node != any_value_node {
+            nodes.set(node, CodeNode { own: digest_of_name(node), refs: reach.of(node), set: true })
+        }
+    }
+    for name, syms in reach.groups() {
+        nodes.set(name, CodeNode { own: digest_of_name(name), refs: syms, set: true })
+    }
+    mut known_names: Map<string, bool> = {}
+    for k in known { known_names.set(k, true) }
+    let by_number = numbered(nodes, known_names)
+    let sets = by_number.set_sums()
+    CodeGraph {
+        nodes: nodes,
+        asked: asked,
+        known: known_names,
+        numbered: by_number,
+        sets: sets,
+        answered: by_number.reached_from(asked, known_names, sets),
+    }
+}
+
+/// WHAT A FILE'S CODE IS, as the code graph reads it: each body and
+/// static as a node, the fn addresses they take, and the hashes they ask
+/// — kept beside the file's object, so a build that holds the file
+/// hashes through it all the same.
+@codec
+export type CodeFacts = { nodes: List<FactNode>, addressed: List<string>, asked: List<string> }
+
+/// A NAME AS A CODE HASH BINDS IT: `sym` with the build's root package `root` left unnamed, so one
+/// package's code hashes alike whatever its build calls it — the root's name is the build's, never its
+/// code's, as the old path names the root's symbols by none. Another package's name is its own words.
+export fn rooted_name(root: string, sym: string) -> string {
+    let parts = sym.split("${root}/")
+    parts
+        .slice(1, parts.length)
+        .fold(parts[0], (out, p) -> out + if names_on(out) { "${root}/" } else { "/" } + p)
+}
+
+/// Whether `text` ends inside a name a package could carry, so a package name written next is part of it.
+fn names_on(text: string) -> bool { !text.is_empty() && PACKAGE_NAME_CHARS.contains(text.substring(text.length - 1, text.length)) }
+
+/// What a package's name may be spelled with.
+const PACKAGE_NAME_CHARS: string = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_@/"
+
+/// `facts` with every name as a code hash binds it (`rooted_name`).
+export fn facts_rooted(root: string, facts: CodeFacts) -> CodeFacts {
+    let spelled = (sym: string) -> rooted_name(root, sym)
+    CodeFacts {
+        nodes: [FactNode { name: spelled(n.name), own: n.own, refs: [spelled(r) for r in n.refs] } for n in facts.nodes],
+        addressed: [spelled(a) for a in facts.addressed],
+        asked: [spelled(a) for a in facts.asked],
+    }
+}
+
+/// One node of a file's code: its name, what it is made of, what it
+/// reaches.
+@codec
+export type FactNode = { name: string, own: string, refs: List<string> }
+
+/// The code of these bodies and statics, and the hashes they ask. Each
+/// type is read by its shape, once.
+export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, asked: List<string>) -> CodeFacts {
+    let lowered = [b for b in bodies if !b.ins.is_empty()]
+    mut shapes: Map<string, string> = {}
+    for b in lowered {
+        for t in typed_by(b) {
+            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape_key(decls, t)) }
+        }
+    }
+    read_code_facts(lowered, statics, asked, typed_reading(shapes))
+}
+
+/// HOW A CODE HASH READS THE TYPES CODE IS MADE OF: the keys a body is typed by, the value node a
+/// call through a fn value in a body reaches, and the value node a code address a body takes or
+/// reads joins. What a hash covers is the graph's, one definition; only how a body names its types
+/// differs, since a workspace's body is typed by `TypeId`s and a program layer's by its layouts.
+export type CodeReading = {
+    typed: fn(Body) -> List<string>,
+    dispatched: fn(Body, Ins) -> string,
+    joined: fn(Body, Reg, string) -> string,
+}
+
+/// The code of these lowered bodies and statics, and the hashes they ask, each type read by `r`.
+export fn read_code_facts(
+    lowered: List<Body>,
+    statics: List<Static>,
+    asked: List<string>,
+    r: CodeReading,
+) -> CodeFacts {
+    CodeFacts {
+        nodes: [fact_node(b.name, body_node(r, b)) for b in lowered]
+            .concat([fact_node(s.name, static_node(s)) for s in statics]),
+        addressed: addressed(lowered, statics, r),
+        asked: distinct_targets(asked),
+    }
+}
+
+/// A workspace's reading: each type by its shape, a value node by the fn type of the box a call or
+/// an address rides.
+fn typed_reading(shapes: Map<string, string>) -> CodeReading {
+    CodeReading {
+        // every type was shaped by `code_facts` before a body is read
+        typed: (b: Body) -> [shapes.get("${t.index}")! for t in typed_by(b)],
+        dispatched: (b: Body, i: Ins) -> callptr_node(shapes, b, i),
+        joined: (b: Body, at: Reg, _sym: string) -> values_node_name(shapes, b.reg_types[at.index]),
+    }
+}
+
+/// The value node a fn type spelled by `key` names.
+export fn value_node_of(key: string) -> string { "${values_node} ${key}" }
+
+fn fact_node(name: string, n: CodeNode) -> FactNode { FactNode { name: name, own: n.own, refs: n.refs } }
+
+/// A file's code as text: every field behind its length, every list
+/// behind its count, so no field's text can move a boundary.
+/// A file's code facts fold as their wire: the text already names every part.
+impl CodeFacts {
+    fn fingerprint() -> int { fp_str(code_facts_wire(self)) }
+
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+}
+
+export fn code_facts_wire(f: CodeFacts) -> string {
+    let nodes = [field(n.name) + field(n.own) + fields(n.refs) for n in f.nodes]
+    field("${nodes.length}") + nodes.join("") + fields(f.addressed) + fields(f.asked)
+}
+
+fn field(s: string) -> string { "${s.length}:${s}" }
+
+fn fields(xs: List<string>) -> string { field("${xs.length}") + [field(x) for x in xs].join("") }
+
+/// A file's code read back from its text — none for text no
+/// `code_facts_wire` wrote.
+export fn code_facts_from_wire(text: string) -> CodeFacts? {
+    mut r = WireRead { text: text, at: 0, ok: true }
+    let count = r.count()
+    mut nodes: List<FactNode> = []
+    while r.ok && nodes.length < count {
+        let name = r.field()
+        let own = r.field()
+        nodes.push(FactNode { name: name, own: own, refs: r.list() })
+    }
+    let addressed = r.list()
+    let asked = r.list()
+    if !r.ok || r.at != text.length { return null }
+    CodeFacts { nodes: nodes, addressed: addressed, asked: asked }
+}
+
+/// A cursor over a wire's text; `ok` falls the first time a field does
+/// not read.
+type WireRead = { text: string, at: int, ok: bool }
+
+const colon: int = 58
+const zero: int = 48
+
+impl WireRead {
+    /// One field's text, or "" once the wire has failed — its length's
+    /// digits read in place, so a read copies the field and nothing more.
+    mut fn field() -> string {
+        if !self.ok { return "" }
+        mut n = 0
+        mut i = self.at
+        while i < self.text.length && self.text.char_code(i) != colon {
+            let d = self.text.char_code(i) - zero
+            if d < 0 || d > 9 || i - self.at > 18 {
+                self.ok = false
+                return ""
+            }
+            n = n * 10 + d
+            i = i + 1
+        }
+        let from = i + 1
+        if i == self.at || from + n > self.text.length {
+            self.ok = false
+            return ""
+        }
+        self.at = from + n
+        self.text.substring(from, from + n)
+    }
+
+    /// A count field.
+    mut fn count() -> int {
+        let n? = parse_int(self.field()) else {
+            self.ok = false
+            return 0
+        }
+        n
+    }
+
+    /// A list: its count, then each field.
+    mut fn list() -> List<string> {
+        let n = self.count()
+        mut out: List<string> = []
+        while self.ok && out.length < n { out.push(self.field()) }
+        out
+    }
+}
+
+/// Every fn address the program takes, in a body or a static's slot.
+fn addressed(bodies: List<Body>, statics: List<Static>, r: CodeReading) -> List<string> {
+    let codes = static_codes(statics)
+    distinct_targets(
+        flatten([addressed_in(b, r, codes) for b in bodies])
+            .concat(flatten([addressed_static(s) for s in statics])),
+    )
+}
+
+fn addressed_in(b: Body, r: CodeReading, codes: Map<string, List<string>>) -> List<string> {
+    flatten([addressed_at(i, b, r, codes) for i in b.ins])
+}
+
+/// A taken address as `node\tsymbol`: the value node of the fn TYPE it is
+/// taken with, and the symbol. An `FnAddr` rides the box it is pushed
+/// into; a `StaticAddr` of a box of code rides the read's own type; a site
+/// whose box is unknown rides the fallback.
+fn addressed_at(i: Ins, b: Body, r: CodeReading, codes: Map<string, List<string>>) -> List<string> {
+    match i {
+        .FnAddr(dst, sym) -> ["${addr_node(b, r, dst, sym)}\t${sym}"],
+        .StaticAddr(dst, name) -> static_addr_entries(b, r, codes, dst, name),
+        rest -> [],
+    }
+}
+
+/// The node a code address belongs to: the type of the box it is pushed
+/// into, never the `int` it is minted at — the box is what a `CallPtr`
+/// sees. A code address no box takes rides the fallback.
+fn addr_node(b: Body, r: CodeReading, ad: Reg, sym: string) -> string {
+    let box? = addr_box(b, ad) else { return values_node }
+    (r.joined)(b, box, sym)
+}
+
+/// The box a pushed code address rides: the first call taking it as its
+/// value seat — slot 0 of the box, the captures after.
+fn addr_box(b: Body, ad: Reg) -> Reg? { flatten([boxes_holding(i, ad) for i in b.ins]).first() }
+
+fn boxes_holding(i: Ins, ad: Reg) -> List<Reg> {
+    match i {
+        .CallRtVoid(_, args) or .CallRt(_, _, args) -> if pushed_as_value(args, ad) { [args[0]] } else { [] },
+        rest -> [],
+    }
+}
+
+fn pushed_as_value(args: List<Reg>, ad: Reg) -> bool { args.length > 1 && same_reg(args[1], ad) }
+
+/// The entries a `StaticAddr` of a box of code contributes: the read's own
+/// type, which is the fn type a `CallPtr` through the box will see.
+fn static_addr_entries(
+    b: Body,
+    r: CodeReading,
+    codes: Map<string, List<string>>,
+    dst: Reg,
+    name: string,
+) -> List<string> {
+    ["${(r.joined)(b, dst, sym)}\t${sym}" for sym in codes.get(name) ?? []]
+}
+
+/// Every code address a static's boxes name, by the static's own name.
+fn static_codes(statics: List<Static>) -> Map<string, List<string>> {
+    mut by_name: Map<string, List<string>> = {}
+    for s in statics { by_name.set(s.name, static_code_syms(s.boxes)) }
+    by_name
+}
+
+/// A static's fn addresses still ride the fallback too: a `Slot.Code` no
+/// `StaticAddr` in a lowered body names is reachable only there. A type's
+/// table for a trait rides only the `dyn` box that holds it, which its
+/// `StaticAddr` names.
+fn addressed_static(s: Static) -> List<string> {
+    if vtable_named(s.name) { return [] }
+    ["${values_node}\t${sym}" for sym in static_code_syms(s.boxes)]
+}
+
+/// A taken address read back from `addressed`'s `node\tsymbol` text.
+type Addressed = { node: string, sym: string }
+
+fn entry_at(s: string) -> Addressed {
+    let at = s.index_of("\t")
+    if at < 0 { return Addressed { node: values_node, sym: s } }
+    Addressed { node: s.substring(0, at), sym: s.substring(at + 1, s.length) }
+}
+
+/// A body as a node: its instructions with each symbol replaced by its
+/// place among the body's references, its seat and register types, and —
+/// when it calls through a fn value — the value nodes of the fn types it
+/// dispatches through.
+fn body_node(r: CodeReading, b: Body) -> CodeNode {
+    let refs = distinct_targets(flatten([symbols_of(i) for i in b.ins]))
+    let placed = (sym: string) -> "#${refs.index_of(sym)}"
+    let typed = (r.typed)(b)
+    mut d = digest_int(new_digest(), typed.length)
+    for t in typed { d = digest_text(d, t) }
+    d = digest_int(d, b.ins.length)
+    for i in b.ins { d = digest_ins(d, resymbolled(i, placed)) }
+    CodeNode {
+        own: digest_key(d),
+        refs: refs.concat(distinct_targets([(r.dispatched)(b, i) for i in b.ins if i is .CallPtr])),
+    }
+}
+
+/// The per-type value node a `CallPtr` site calls through. The box rides
+/// seat 0, so that seat's type is the callee's — the slot-0 code read mints
+/// in the code lane's `int`, which names no fn and would lose every callee.
+fn callptr_node(shapes: Map<string, string>, b: Body, i: Ins) -> string {
+    match i {
+        .CallPtr(_, f, args) -> {
+            let seat = args.first() ?? f
+            values_node_name(shapes, b.reg_types[seat.index])
+        },
+        rest -> values_node,
+    }
+}
+
+/// The types a body names: its seats, its answer, its registers.
+fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_types) }
+
+/// A TYPE BY ITS SHAPE, as a KEY: what its values are made of, never its
+/// name. The key is built from the KEYS of the parts, each a short digest,
+/// so a type that reaches a big record twice holds its key twice and no text
+/// of the unfolding exists. A CYCLE'S MEMBERS are keyed together, by what
+/// each is made of and what the others make of it (`cycle_keys`), so a key
+/// is a function of the type alone — never of which member was asked first.
+/// Filed build-wide.
+export fn type_shape_key(decls: Decls, t: TypeId) -> string {
+    let seen = decls.types.seen_through(t)
+    let kept? = decls.shape_keys.at(seen.index) else {
+        let walk = Walk {
+            index: map_cell(),
+            low: map_cell(),
+            stack: list_cell(),
+            next: Cell.new(0),
+        }
+        walk.visit(decls, seen)
+        return decls.shape_keys.at(seen.index) ?? "unkeyed"
+    }
+    kept
+}
+
+/// A shape's own word and the types it is made of, in order.
+type Parts = { tag: string, kids: List<TypeId> }
+
+fn leaf(word: string) -> Parts { Parts { tag: word, kids: [] } }
+
+fn made_of(tag: string, kids: List<TypeId>) -> Parts { Parts { tag: tag, kids: kids } }
+
+fn shape_parts(decls: Decls, seen: TypeId) -> Parts {
+    match decls.types.shape_of(seen) {
+        .Int -> leaf("int"),
+        .Float -> leaf("float"),
+        .Bool -> leaf("bool"),
+        .Str -> leaf("string"),
+        .Bytes -> leaf("Bytes"),
+        .Ptr -> leaf("ptr"),
+        .Struct(_, _) or .App(_, _, _) or .Enum(_, _) -> declared_parts(decls, seen),
+        .Dyn(_, trait_name) -> leaf("dyn ${trait_name}"),
+        .List(e) -> made_of("List", [e]),
+        .Cell(c) -> made_of("Cell", [c]),
+        .Task(a) -> made_of("Task", [a]),
+        .Tasks -> leaf("Tasks"),
+        .Map(k, v) -> made_of("Map", [k, v]),
+        .Res(ok, err) -> made_of("Result", [ok, err]),
+        .Fn(params, marks, ret) -> made_of(
+            "fn ${params.length} ${[mark_word(m) for m in marks].join(",")}",
+            params.concat([ret]),
+        ),
+        .Void -> leaf("void"),
+        .Opt(o) -> made_of("Opt", [o]),
+        .Null -> leaf("null"),
+        .EmptyList -> leaf("[]"),
+        .EmptyMap -> leaf("{}"),
+        .TypeName(_, _) -> leaf(decls.types.name_of(seen)),
+        .Var(_, ordinal, _) -> leaf("var ${ordinal}"),
+        .Union(members) -> made_of("Union ${members.length}", members),
+        .Error -> leaf("error"),
+        .Range -> leaf("Range"),
+    }
+}
+
+/// A declared box by its parts: a record's field types, or an enum's payloads, each list
+/// behind its count.
+fn declared_parts(decls: Decls, t: TypeId) -> Parts {
+    let fields? = decls.fields_of_type(t) else {
+        let variants? = decls.variants_of_type(t) else { return leaf(decls.types.name_of(t)) }
+        let widths = [v.length for v in variants.payloads]
+        return made_of("enum ${widths.map("${it}").join(",")}", flatten(variants.payloads))
+    }
+    made_of("record ${fields.types.length}", fields.types)
+}
+
+/// The shape DFS (Tarjan's): a type's key is settled when the walk leaves its component, so a
+/// type's parts are always keyed before it is.
+type Walk = { index: Cell<Map<string, int>>, low: Cell<Map<string, int>>, stack: Cell<List<TypeId>>, next: Cell<int> }
+
+impl Walk {
+    fn visit(decls: Decls, t: TypeId) {
+        let at = self.next.get()
+        let name = "${t.index}"
+        self.next.set(at + 1)
+        self.index.put(name, at)
+        self.low.put(name, at)
+        self.stack.push(t)
+        for kid in shape_parts(decls, t).kids {
+            let seen = decls.types.seen_through(kid)
+            let other = "${seen.index}"
+            if decls.shape_keys.at(seen.index) != null { continue }
+            let met = self.index.get().get(other)
+            if met == null { self.visit(decls, seen) }
+            let reach = met ?? self.low.get().get(other) ?? at
+            if reach < self.low.get().get(name) ?? at { self.low.put(name, reach) }
+        }
+        if self.low.get().get(name) != at { return }
+        let from = self.stack.get().index_of(t)
+        let members = self.stack.get().slice(from, self.stack.get().length)
+        self.stack.set(self.stack.get().slice(0, from))
+        for m in members { self.index.put("${m.index}", 1000000000) }
+        settle(decls, members)
+    }
+}
+
+/// Files the keys of a finished component: a lone type by its parts, a cycle's members together.
+fn settle(decls: Decls, members: List<TypeId>) {
+    let lone = members.length == 1 &&
+        !shape_parts(decls, members[0]).kids.any((k) -> decls.types.seen_through(k) == members[0])
+    if lone {
+        let p = shape_parts(decls, members[0])
+        decls
+            .shape_keys
+            .keep(
+                members[0].index,
+                if p.kids.is_empty() { p.tag } else { digest_of("${p.tag}(${[type_shape_key(decls, k) for k in p.kids].join(",")})") },
+            )
+        return
+    }
+    let keys = cycle_keys(decls, members)
+    for i, m in members { decls.shape_keys.keep(m.index, keys[i]) }
+}
+
+/// A CYCLE'S KEYS: each member starts as its own word, then is repeatedly rewritten from the
+/// words of the members it is made of (a part outside the cycle contributes its own key), until
+/// no two members part ways any further; a member's key is then its word beside every member's,
+/// sorted. Nothing in it names the entry the walk came in by.
+fn cycle_keys(decls: Decls, members: List<TypeId>) -> List<string> {
+    let at: Map<string, int> = {}
+    let place: Cell<Map<string, int>> = Cell.new(at)
+    for i, m in members { place.put("${m.index}", i) }
+    let parts = [shape_parts(decls, m) for m in members]
+    mut words = [digest_of(p.tag) for p in parts]
+    mut classes = distinct_count(words)
+    for _round in 0..members.length {
+        let was = words
+        words = [digest_of(
+            "${was[i]}(${[member_word(decls, place.get(), was, k) for k in parts[i].kids].join(",")})",
+        ) for i in 0..members.length]
+        let now = distinct_count(words)
+        if now == classes { break }
+        classes = now
+    }
+    let all = sorted_texts(words).join(",")
+    [digest_of("${w}|${all}") for w in words]
+}
+
+/// What a part contributes to a cycle member's word: its word inside the cycle, its key outside.
+fn member_word(decls: Decls, place: Map<string, int>, words: List<string>, kid: TypeId) -> string {
+    let seen = decls.types.seen_through(kid)
+    let i = place.get("${seen.index}")
+    if i == null { type_shape_key(decls, seen) } else { "~${words[i!]}" }
+}
+
+/// A static as a node: its boxes, each code slot replaced by its place. A DEBUG
+/// static — a body's frame, a label and a declaration's span — is data the
+/// program reads and no part of what its code does, so a line written above
+/// the body moves its offsets without moving the hash: the node stands, made
+/// of nothing, so the body's reference to it resolves rather than leaving the
+/// hash uncomputable.
+fn static_node(s: Static) -> CodeNode {
+    let refs = distinct_targets(static_code_syms(s.boxes))
+    if s.debug { return CodeNode { own: debug_node_own(), refs: refs } }
+    mut d = digest_int(new_digest(), s.boxes.length)
+    for b in s.boxes { d = box_digest(d, b, refs) }
+    CodeNode { own: digest_key(d), refs: refs }
+}
+
+/// What a debug static is made of: nothing.
+fn debug_node_own() -> string { digest_of_name("debug static") }
+
+fn box_digest(d: Digest, b: StaticBox, refs: List<string>) -> Digest {
+    match b {
+        .Slots(cells) -> slots_digest(digest_int(d, 1), cells, refs),
+        .Table(keys, values) -> slots_digest(
+            keys.fold(digest_int(digest_int(d, 2), keys.length), (acc, k) -> digest_text(acc, k)),
+            values,
+            refs,
+        ),
+        .Octets(o) -> digest_bytes(digest_int(d, 3), o),
+    }
+}
+
+fn slots_digest(d: Digest, cells: List<Slot>, refs: List<string>) -> Digest {
+    cells.fold(digest_int(d, cells.length), (acc, c) -> slot_digest(acc, c, refs))
+}
+
+fn slot_digest(d: Digest, c: Slot, refs: List<string>) -> Digest {
+    match c {
+        .Int(v) -> digest_int(digest_int(d, 1), v),
+        .Float(bits) -> digest_int(digest_int(d, 2), bits),
+        .Bool(v) -> digest_int(digest_int(d, 3), if v { 1 } else { 0 }),
+        .Text(s) -> digest_text(digest_int(d, 4), s),
+        .Box(at) -> digest_int(digest_int(d, 5), at),
+        .Null -> digest_int(d, 6),
+        .Absent -> digest_int(d, 7),
+        .Code(sym) -> digest_int(digest_int(d, 8), refs.index_of(sym)),
+    }
+}
+
+impl CodeGraph {
+    /// A symbol's code hash: a node's, by what it reaches (`summed_hash`); none for one whose reach
+    /// has none; the name of a runtime row or an extern; none for any other symbol, which nothing
+    /// kept answers for. An asked target's was worked out with the graph; any other symbol's is
+    /// worked out by the same law when asked here.
+    fn hash(sym: string) -> string? {
+        let t = self.asked.index_of(sym)
+        if t >= 0 { return self.answered.hashes[t] }
+        self.numbered.reached_from([sym], self.known, self.sets).hashes[0]
+    }
+
+    /// Which hashed targets reach the node `n`, as a reach row.
+    fn reaching_of(n: string) -> List<int> {
+        let w = self.answered.words
+        let at = self.numbered.places.get(n)!
+        self.answered.rows.slice(at * w, at * w + w)
+    }
+
+    /// A node's digest: its name, what it is made of and its references, as `node_digest` binds them.
+    fn digest_of(n: string) -> List<int> { self.numbered.digest_at(self.numbered.places.get(n)!) }
+
+    /// Every node's name.
+    fn node_names() -> List<string> { self.nodes.keys() }
+}
+
+/// THE CODE HASH'S SHAPE, part of every hash: a store keyed by another shape's hashes is never read
+/// as keyed by these.
+const HASH_SHAPE: string = "code hash: its own digest and the sum over its reached set, 2"
+
+/// The words a sum of digests runs over, each summed apart mod 2^64.
+const SUM_WORDS: int = 4
+
+/// THE CODE HASH, THE LAW: a target's hash binds `HASH_SHAPE`, its name, its own node's digest, and
+/// the SUM, word by word mod 2^64, of the digests of the SET of nodes it reaches, itself among them —
+/// each once, however many paths reach it. A node's digest (`node_digest`) binds its name, what it is
+/// made of and the names it refers to, so the reached set determines the graph a target reaches, and
+/// two different graphs share a hash only by a collision of BLAKE3 or of the sum. A sum, not an XOR:
+/// two equal digests add, never cancel. Four words suit a cache key; they are not collision-resistant
+/// against a chosen input. An edit to one node moves the sum of exactly the targets reaching it, by
+/// the node's new digest less its old (`with_digest`), with no walk; a rename moves every hash
+/// reaching the renamed node.
+export fn summed_hash(target: string, own: List<int>, sum: List<int>) -> string {
+    digest_key(texts_digest([HASH_SHAPE, target].concat(["${w}" for w in own.concat(sum)])))
+}
+
+/// A node's digest: BLAKE3 over its name, what it is made of, and its references in order — a set
+/// node's sorted, since a value dispatches by address — each behind its length, as `SUM_WORDS` words.
+export fn node_digest(name: string, own: string, refs: List<string>, set: bool) -> List<int> {
+    let digest = blake3(
+        (field(name) + field(own) + fields(if set { sorted_texts(refs) } else { refs })).bytes(),
+    )
+    [word_in(digest, 8 * k) for k in 0..SUM_WORDS]
+}
+
+/// The sum of no digests.
+export fn empty_sum() -> List<int> { [0 for _k in 0..SUM_WORDS] }
+
+/// `sum` with `digest` added.
+export fn summed(sum: List<int>, digest: List<int>) -> List<int> { [w.wrapping_add(digest[k]) for k, w in sum] }
+
+/// `sum` with the digest `was` taken out and `now` put in.
+export fn with_digest(sum: List<int>, was: List<int>, now: List<int>) -> List<int> { [w.wrapping_sub(was[k]).wrapping_add(now[k]) for k, w in sum] }
+
+/// How many different texts a list holds.
+fn distinct_count(xs: List<string>) -> int { distinct_targets(xs).length }
+
+/// THE CODE HASH STAYS ON THE IN-PROCESS FOLD (D6): it is a KEY, and its durability belongs to D10/DB06 — "a query's code is one of its reads" — never to the store's content hashes (05c).
+/// Texts folded in order, each behind its length, the count first.
+fn texts_digest(parts: List<string>) -> Digest { parts.fold(digest_int(new_digest(), parts.length), (d, t) -> digest_text(d, t)) }
+
+fn digest_of_name(sym: string) -> string { digest_key(digest_text(digest_int(new_digest(), 0), sym)) }
+

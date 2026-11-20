@@ -1,0 +1,19 @@
+//! proves `order: .by_key` lets a different key through while the next
+//! item of a held key waits its turn.
+use @std.queue.{queue, key, Order}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+queue<Job> jobs {
+    capacity: 4
+    lease: ms(60000)
+    order: Order.by_key
+}
+let _ = jobs.home().send(Job { n: 1 }, key("a"))
+let _ = jobs.home().send(Job { n: 2 }, key("b"))
+let _ = jobs.home().send(Job { n: 3 }, key("a"))
+let a1 = jobs.home().take() catch null
+let b1 = jobs.home().take() catch null
+let blocked = jobs.home().take() catch null
+"${b1!.item.n} ${blocked == null}"

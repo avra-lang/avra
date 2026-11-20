@@ -1,0 +1,48 @@
+//! What a refusal of a `ctx` form says.
+use diagnostics.{Voice}
+
+/// `ctx.name` read, or `ctx name = v` set, where `name` declares no context.
+export fn context_unknown(name: string) -> Voice {
+    Voice {
+        message: "`ctx.${name}` reads a context, and no `ctx ${name}` is declared or imported here",
+        label: "names no context",
+        help: "declare it at a module's top level (`ctx ${name}: T = …`), or import it by name",
+    }
+}
+
+/// A context declared inside a body, or set at a module's top level, as `declared` says.
+export fn context_misplaced(name: string, declared: bool) -> Voice {
+    if declared {
+        Voice {
+            message: "`ctx ${name}: …` declares a context, and a context is declared at a module's top level",
+            label: "declared inside a body",
+            help: "move the declaration to the top level; inside a body, `ctx ${name} = v` sets it",
+        }
+    } else {
+        Voice {
+            message: "`ctx ${name} = …` sets a context for the rest of its block, and a module's top level is no block",
+            label: "set at the top level",
+            help: "give the default where it's declared (`ctx ${name}: T = v`), or set it inside a body",
+        }
+    }
+}
+
+/// The required context `name` the program reaches with nothing setting it, by the bodies `chain`
+/// says; through a `dyn` call of `subject` that may hold `held`, where `subject` isn't empty.
+export fn context_required(name: string, chain: string, subject: string, held: string) -> Voice {
+    let how = if subject.is_empty() { "(${chain})" } else { "(${chain}): `${held}` reads it, and a `${subject}` called there may be it" }
+    Voice {
+        message: "`${name}` is required, and this program reaches `ctx.${name}` with nothing setting it ${how}",
+        label: "the program starts here",
+        help: "set it before it is read (`ctx ${name} = …`), or give it a default where it is declared (`ctx ${name}: T = …`)",
+    }
+}
+
+/// A `ctx name = v` that nothing in force under it reads.
+export fn context_set_unread(name: string) -> Voice {
+    Voice {
+        message: "`ctx ${name} = …` changes nothing: nothing it is in force over reads `ctx.${name}`",
+        label: "set here",
+        help: "drop the set, or read the context where the set is in force",
+    }
+}

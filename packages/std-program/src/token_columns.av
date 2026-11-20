@@ -1,0 +1,150 @@
+//! A FILE'S TOKENS AS COLUMNS, beside the text they came from, for any language with a grammar. A
+//! token's role comes from its grammar's rules through the grammar's own token seam, so nothing
+//! here or in any language names a word. Each fact sits in a list of its own, so a walk over roles
+//! never touches offsets. Every bracket knows its partner, so jumping over a body costs one read.
+use @std.grammar.{DELIMITERS, ItemShape, Lexeme, Ready}
+
+/// A token's roles, one bit each, so a token can hold several: `fn` both declares and defers.
+export const ENDS_ITEM: int = 1
+export const ATTACHES: int = 2
+export const HOLDS_MEMBERS: int = 4
+export const DEFERS_BODY: int = 8
+export const OPENS_BODY: int = 16
+export const DECLARES: int = 32
+
+export type TokenColumns = {
+    text: string,
+    /// One octet per token: its role bits.
+    roles: Bytes,
+    starts: List<int>,
+    ends: List<int>,
+    /// Each bracket holds one more than its partner's position, zero when it has none.
+    partners: List<int>,
+    /// Every bracket has a partner, so a jump can be trusted.
+    balanced: bool,
+}
+
+impl TokenColumns {
+    fn length() -> int { self.roles.length }
+
+    /// Whether the token at `position` holds `role`.
+    fn has_role(position: int, role: int) -> bool { self.roles.at(position) & role != 0 }
+
+    /// The position of the bracket at `position`'s partner, absent when there's none.
+    fn partner_of(position: int) -> int? {
+        if self.partners[position] == 0 { null } else { self.partners[position] - 1 }
+    }
+
+    /// The position after the token at `position`, and after its partner if it opens a pair.
+    fn past_token(position: int) -> int {
+        let partner = self.partner_of(position) ?? position
+        if partner > position { partner + 1 } else { position + 1 }
+    }
+
+    /// The token at `position`, as written.
+    fn text_of(position: int) -> string { self.text.substring(self.starts[position], self.ends[position]) }
+}
+
+/// What a literal does: its role bits, and the bracket pair it opens or closes, numbered from one.
+type LiteralRole = { roles: int = 0, opens: int = 0, closes: int = 0 }
+
+/// What one grammar's literals do, by their text, and which token classes attach.
+export type TokenRoles = { literals: Map<string, LiteralRole>, attached_classes: List<string> }
+
+/// What a grammar's rules say its tokens do.
+export fn token_roles(prepared: Ready) -> TokenRoles {
+    let shape = prepared.items
+    mut literals: Map<string, LiteralRole> = {}
+    for pair, delimiter in DELIMITERS {
+        literals.set(delimiter.opener, LiteralRole { opens: pair + 1 })
+        literals.set(delimiter.closer, LiteralRole { closes: pair + 1 })
+    }
+    for word_roles in roled_words(shape) {
+        for word in word_roles.words {
+            let known = literals.get(word) ?? LiteralRole {}
+            literals.set(word, known with { roles: known.roles | word_roles.role })
+        }
+    }
+    TokenRoles { literals: literals, attached_classes: shape.attached_classes }
+}
+
+type RoledWords = { words: List<string>, role: int }
+
+fn roled_words(shape: ItemShape) -> List<RoledWords> {
+    [
+        RoledWords { words: shape.declaring_words, role: DECLARES },
+        RoledWords { words: shape.holder_words, role: HOLDS_MEMBERS },
+        RoledWords { words: shape.deferred_words, role: DEFERS_BODY },
+        RoledWords { words: shape.body_openers, role: OPENS_BODY },
+        RoledWords { words: shape.attached_words, role: ATTACHES },
+    ]
+}
+
+/// The columns of `tokens`, which a language's lexer made from `text`.
+export fn token_columns<T>(text: string, tokens: List<T>, roles: TokenRoles, lexeme: Lexeme<T>) -> TokenColumns {
+    let attached_kinds = [(lexeme.kind_of)(term) for term in roles.attached_classes]
+    mut writer = ColumnWriter {}
+    for token in tokens {
+        let at = (lexeme.loc)(token)
+        let spelled = (lexeme.text)(token)
+        let known = roles.literals.get(spelled)
+        let literal = if known != null && (lexeme.lit_matches)(token, spelled) { known } else { null }
+        mut bits = literal?.roles ?? 0
+        if (lexeme.ends_statement)(token) || (lexeme.is_eof)(token) { bits = bits | ENDS_ITEM }
+        for kind in attached_kinds {
+            if (lexeme.wears_kind)(token, kind) { bits = bits | ATTACHES }
+        }
+        writer.add(bits, at.lo, at.hi, literal?.opens ?? 0, literal?.closes ?? 0)
+    }
+    writer.finished(text)
+}
+
+/// Columns being written, in the order the tokens are written.
+type ColumnWriter = {
+    roles: List<int> = [],
+    starts: List<int> = [],
+    ends: List<int> = [],
+    partners: List<int> = [],
+    open_positions: List<int> = [],
+    open_pairs: List<int> = [],
+    unmatched: bool = false,
+}
+
+impl ColumnWriter {
+    /// A token, which opens the pair `opens` and closes the pair `closes` where those aren't zero.
+    fn add(roles: int, start: int, end: int, opens: int, closes: int) {
+        let position = self.roles.length
+        self.roles.push(roles)
+        self.starts.push(start)
+        self.ends.push(end)
+        self.partners.push(0)
+        if opens != 0 {
+            self.open_positions.push(position)
+            self.open_pairs.push(opens)
+        }
+        if closes != 0 { self.closed(position, closes) }
+    }
+
+    /// Partners the token at `position` with the innermost open bracket when that's of its pair.
+    fn closed(position: int, pair: int) {
+        if self.open_pairs.last() != pair {
+            self.unmatched = true
+            return
+        }
+        let opener = self.open_positions.pop()
+        let _ = self.open_pairs.pop()
+        self.partners[position] = opener + 1
+        self.partners[opener] = position + 1
+    }
+
+    fn finished(text: string) -> TokenColumns {
+        TokenColumns {
+            text: text,
+            roles: self.roles.bytes() ?? "".bytes(),
+            starts: self.starts,
+            ends: self.ends,
+            partners: self.partners,
+            balanced: !self.unmatched && self.open_positions.is_empty(),
+        }
+    }
+}
