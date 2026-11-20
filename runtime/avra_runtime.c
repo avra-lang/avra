@@ -337,7 +337,7 @@ int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
 int64_t g_list_pushes;
 static int64_t g_empty_made, g_empty_grown;
 static int64_t g_once_reads, g_once_steps;
-static int64_t g_copies, g_streqs;
+static int64_t g_copies, g_streqs, g_empty_opens;
 static int64_t g_boxes_made, g_bufs_made;
 static int64_t g_made_by_kind[8];
 
@@ -427,10 +427,30 @@ static void note_empty(Site* table, int64_t* slots, void* site, int64_t* total) 
     if (s) s->made++;
 }
 
+// A RETAIN AND THE RELEASE THAT CANCELS IT: a box retained, then released with no count moved
+// between, by the pair of sites (the move-at-last-use census). And A FREE AND THE ALLOC IT COULD
+// HAVE BEEN: a box freed, then the next box made of the same size class (the reuse census).
+typedef struct { void* made; void* dropped; int64_t n; int64_t bytes; } Pair;
+#define SITE_PAIRS (1 << 18)
+static Pair g_move_pairs[SITE_PAIRS];
+static int64_t g_move_slots = 0;
+static Pair g_reuse_pairs[SITE_PAIRS];
+static int64_t g_reuse_slots = 0;
+static void* g_retained_box = NULL;
+static void* g_retained_at = NULL;
+static void* g_freed_at = NULL;
+static int g_freed_row = 0;
+static void pair_in(Pair* table, int64_t size, int64_t* slots, void* made, void* dropped, int64_t bytes);
+static void report_pairs(const char* label, Pair* table, int64_t size, intptr_t slide);
+
 static void note_made(void* site, void* up, int64_t bytes) {
     g_last_box_bytes = bytes;
     g_last_made_site = site;
     note_block(bytes);
+    if (g_freed_at != NULL) {
+        if (size_row(bytes) == g_freed_row) pair_in(g_reuse_pairs, SITE_PAIRS, &g_reuse_slots, g_freed_at, site, bytes);
+        g_freed_at = NULL;
+    }
     if (!g_sites_census) return;
     Site* s = site_in(g_made_sites, &g_made_slots, site);
     if (s) { s->made++; s->count += bytes; }
@@ -451,6 +471,18 @@ static void note_copy(void* site) {
     if (s) s->made++;
 }
 
+// An open of the binary's own empty literal (`[]`, `{}`): no cell crosses, so it is no copy — it is
+// the allocation a first write into a fresh empty pays, by the Avra fn that wrote.
+static Site g_empty_open_sites[SITES];
+static int64_t g_empty_open_slots = 0;
+
+static void note_empty_open(void* site) {
+    g_empty_opens++;
+    if (!g_sites_census) return;
+    Site* s = site_in(g_empty_open_sites, &g_empty_open_slots, site);
+    if (s) s->made++;
+}
+
 // A RETAIN'S CALLER. The conditional ABI's prize is the retain
 // traffic at CALL SEATS, and `retained_args` reaches `.Call`/`.CallPtr`
 // alone — a managed list read (`avra_array_get_owned`) and a cell
@@ -462,11 +494,24 @@ static void note_copy(void* site) {
 static Site g_retain_sites[SITES];
 static int64_t g_retain_slots = 0;
 
-void note_retain(void* site) {
+
+void note_retain(void* box, void* site) {
     if (!g_sites_census) return;
+    g_retained_box = box;
+    g_retained_at = site;
     Site* s = site_in(g_retain_sites, &g_retain_slots, site);
     if (s) s->made++;
 }
+
+void note_release(void* box, void* site) {
+    if (!g_sites_census) return;
+    if (box == g_retained_box) pair_in(g_move_pairs, SITE_PAIRS, &g_move_slots, g_retained_at, site, 0);
+    g_retained_box = NULL;
+}
+
+// The strings `avra_streq` compares, by the Avra fn that asked.
+static Site g_streq_sites[SITES];
+static int64_t g_streq_slots = 0;
 
 // Boxes a row answered owned, by what they are: each label is a type
 // and the row (`List<int> by avra_array_sized`), counted where the
@@ -637,6 +682,7 @@ static void acc_report(void) {
     avra_say("alloc: %lld boxes, %lld list buffers\n",
             (long long)g_boxes_made, (long long)g_bufs_made);
     avra_say("rc: %lld copies, %lld string compares\n", (long long)g_copies, (long long)g_streqs);
+    avra_say("rc: %lld opens of an empty literal\n", (long long)g_empty_opens);
     for (int k = 0; k < ACC_KINDS; k++) {
         if (g_made_by_kind[k]) avra_say("alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
     }
@@ -656,10 +702,10 @@ static void acc_report(void) {
     intptr_t slide = image_slide();
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
-        report_made("copy", g_copy_sites, 12, slide);
+        const char* top = getenv("AVRA_CENSUS_TOP");
+        report_made("copy", g_copy_sites, top ? (int)avra_number(top, 10) : 12, slide);
         report_made("append", g_append_sites, 16, slide);
         report_made("push", g_push_sites, 16, slide);
-        const char* top = getenv("AVRA_CENSUS_TOP");
         report_made("made", g_made_sites, top ? (int)avra_number(top, 10) : 30, slide);
         report_made("made-up", g_made_up_sites, 30, slide);
         report_made("empty", g_empty_sites, top ? (int)avra_number(top, 10) : 30, slide);
@@ -669,6 +715,10 @@ static void acc_report(void) {
         report_labelled_sites("typed", g_type_at_sites, top ? (int)avra_number(top, 10) : 30, slide);
         const char* rows_top = getenv("AVRA_CENSUS_ROWS_TOP");
         report_labelled_sites("rowcall", g_row_sites, rows_top ? (int)avra_number(rows_top, 10) : 30, slide);
+        report_made("streq", g_streq_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_made("empty-open", g_empty_open_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_pairs("move", g_move_pairs, SITE_PAIRS, slide);
+        report_pairs("reuse", g_reuse_pairs, SITE_PAIRS, slide);
     }
     const char* types_top = getenv("AVRA_CENSUS_TYPES_TOP");
     report_types(types_top ? (int)avra_number(types_top, 10) : 40);
@@ -1234,7 +1284,6 @@ static void list_death_noted(AvraArray* a) {
     g_dead_len_cells[owned][row] += a->len;
     g_dead_laid[a->data == (int64_t*)(a + 1)]++;
 }
-typedef struct { void* made; void* dropped; int64_t n; int64_t bytes; } Pair;
 #define PAIRS (1 << 21)
 static Pair g_pairs[PAIRS];
 static int64_t g_pair_slots = 0;
@@ -1268,18 +1317,32 @@ static void death_born(Header* h) {
 #endif
 }
 
-__attribute__((unused)) static void pair_noted(void* made, void* dropped, int64_t bytes) {
+static void pair_in(Pair* table, int64_t size, int64_t* slots, void* made, void* dropped, int64_t bytes) {
     uint64_t k = ((uint64_t)(uintptr_t)made * 0x9E3779B97F4A7C15ull) ^ (uint64_t)(uintptr_t)dropped;
-    uint64_t i = (k >> 11) & (PAIRS - 1);
+    uint64_t i = (k >> 11) & (uint64_t)(size - 1);
     for (int step = 0; step < 64; step++) {
-        Pair* p = &g_pairs[i];
+        Pair* p = &table[i];
         if (p->n && p->made == made && p->dropped == dropped) { p->n++; p->bytes += bytes; return; }
         if (p->n == 0) {
-            if (g_pair_slots >= PAIRS / 2) return;
-            p->made = made; p->dropped = dropped; p->n = 1; p->bytes = bytes; g_pair_slots++;
+            if (*slots >= size / 2) return;
+            p->made = made; p->dropped = dropped; p->n = 1; p->bytes = bytes; (*slots)++;
             return;
         }
-        i = (i + 1) & (PAIRS - 1);
+        i = (i + 1) & (uint64_t)(size - 1);
+    }
+}
+
+__attribute__((unused)) static void pair_noted(void* made, void* dropped, int64_t bytes) {
+    pair_in(g_pairs, PAIRS, &g_pair_slots, made, dropped, bytes);
+}
+
+// Every pair a table holds, as `<label>: <first site> <second site> <count> <bytes>`, unslid.
+static void report_pairs(const char* label, Pair* table, int64_t size, intptr_t slide) {
+    for (int64_t i = 0; i < size; i++) {
+        Pair* p = &table[i];
+        if (p->n == 0) continue;
+        avra_say("%s: %p %p %lld %lld\n", label, p->made ? (void*)((char*)p->made - slide) : NULL,
+                p->dropped ? (void*)((char*)p->dropped - slide) : NULL, (long long)p->n, (long long)p->bytes);
     }
 }
 
@@ -1291,6 +1354,8 @@ static void death_noted(Header* h, int64_t block) {
     g_death_n[kind][row]++;
     g_death_b[kind][row] += block;
     g_cascade_boxes++;
+    g_freed_at = g_cascade_site;
+    g_freed_row = size_row(block);
 #if AVRA_SLABS
     if (!is_slab(h) || g_births == NULL) return;
     uint64_t* at = &g_births[((char*)h - g_slab_base) >> 4];
@@ -1894,6 +1959,12 @@ void avra_puts(const char* s) {
 // scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
     CENSUS(g_streqs++);
+#ifdef AVRA_CENSUS
+    if (g_sites_census) {
+        Site* s = site_in(g_streq_sites, &g_streq_slots, AVRA_CALLER());
+        if (s) s->made++;
+    }
+#endif
     // one box is one text: a literal compared at its own call site is
     // the same static box every time
     if (a == b) return 1;
@@ -2980,7 +3051,6 @@ void avra_cell_forget(void* slot) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
-    CENSUS(note_copy(AVRA_CALLER()));
     g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
@@ -3780,10 +3850,20 @@ static void* map_clone(AvraMap* m) {
     return c;
 }
 
-// The clone a place opens — by the box's kind.
+// Whether a box is the binary's own empty literal: laid out static, holding nothing.
+__attribute__((unused)) static int empty_literal(void* p, const Header* h) {
+    if (h == NULL || !box_is_static(h)) return 0;
+    if (KIND_SHAPE(avra_kind(h)) != KIND_MAP) return ((AvraArray*)p)->len == 0;
+    AvraArray* keys = ((AvraMap*)p)->keys;
+    return keys == NULL || keys->len == 0;
+}
+
+// The clone a place opens — by the box's kind, counted once under the Avra fn that opened it: an open
+// of an empty literal apart from a copy.
 static void* box_clone(void* p) {
-    CENSUS(note_copy(AVRA_CALLER()));
     Header* h = hdr(p);
+    CENSUS(void* site = g_clone_site ? g_clone_site : AVRA_CALLER());
+    CENSUS(if (empty_literal(p, h)) note_empty_open(site); else note_copy(site));
     return (h && KIND_SHAPE(avra_kind(h)) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 

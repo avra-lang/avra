@@ -36,13 +36,15 @@ enum DeclaredBody {
 /// The store at `directory` a program rooted at `package` is made from, and the engine over
 /// `definitions` to make it with, worked ahead across `process_count` processes, or by none with
 /// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
-/// `timed`, each process and each phase says where its time went.
+/// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
+/// first engine, stands on the verdict that vouches for it: no law is asked of it.
 export fn program_worked(
     directory: string,
     package: string,
     definitions: List<QueryDefinition>,
     process_count: int,
     timed: bool,
+    vouched: fn(QueryEngine) -> List<string>,
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
@@ -53,6 +55,7 @@ export fn program_worked(
     wave_gathers(GATHERED)
     let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
     if process_count < 2 || few_moved(alone.engine) { return alone }
+    let stands = vouched(alone.engine)
     let _ = alone.store.saved()
     let clock = query_times()
     clock.opened("files parsed", TimedSide.Outside)
@@ -75,8 +78,8 @@ export fn program_worked(
     let lowered = ahead(
         at,
         (_engine: QueryEngine) -> parsed.program,
-        file_worked_is_known,
-        file_worked,
+        (e, f) -> file_worked_is_known(e, f, stands.contains(spelled_file(f))),
+        (e, f) -> file_worked(e, f, stands.contains(spelled_file(f))),
     )
     clock.closed()
     if at.timed { eprintln(phases_said(clock, filed)) }
@@ -311,21 +314,30 @@ fn bodies_known(engine: QueryEngine, file: SourceFileAddress) -> bool { declared
 /// Every body `file` declares lowered: how many lowered.
 fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declared_bodies(engine, file).filter((b) -> body_lowered(engine, b)).length }
 
-/// Whether anything is kept about the lowering of every body `file` declares and about what its laws
-/// find, asking only what its declarations are.
-fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress) -> bool { file_erring_is_known(engine, file) && bodies_known(engine, file) }
+/// Whether anything is kept about the lowering of every body `file` declares and, unless a verdict
+/// vouches for it, about what its laws find, asking only what its declarations are.
+fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress, vouched: bool) -> bool {
+    (vouched || file_erring_is_known(engine, file)) && bodies_known(engine, file)
+}
 
-/// Every body `file` declares lowered, then what every law finds in its written items, in one process
-/// so the laws read the typing the lowering held, then what a program's whole shape reads of the
-/// file alone: the host fns it declares, the fns its hosts are judged against, and whether it
-/// runs a statement at its top. How many lowered.
-fn file_worked(engine: QueryEngine, file: SourceFileAddress) -> int {
+/// Every body `file` declares lowered, then, unless a verdict vouches for it, what every law finds in
+/// its written items, in one process so the laws read the typing the lowering held, then what a
+/// program's whole shape reads of the file alone: the host fns it declares, the fns its hosts are
+/// judged against, and whether it runs a statement at its top. How many lowered.
+fn file_worked(engine: QueryEngine, file: SourceFileAddress, vouched: bool) -> int {
     let lowered = bodies_lowered(engine, file)
-    let _ = file_erring(engine, file)
+    if !vouched { let _ = file_erring(engine, file) }
     let _ = file_host_fns(engine, file)
     let _ = file_bound_fns(engine, file)
     let _ = strays_in(engine, file)
     lowered
+}
+
+/// WHAT A PROGRAM OVER `file` READS OF IT, the file's laws aside: every body it declares lowered,
+/// what a program's shape reads of it alone, and the names it declares. How many lowered.
+export fn dependent_worked(engine: QueryEngine, file: SourceFileAddress) -> int {
+    let _ = file_declares(engine, file)
+    file_worked(engine, file, true)
 }
 
 /// Every body `file` declares, written or generated, that the walk asks for with no layouts.

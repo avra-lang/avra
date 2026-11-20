@@ -820,18 +820,29 @@ fn distinct_files(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
 /// declares, in the order the shape reaches each first such body; then each file it reaches that
 /// writes a word as a name it cannot be or declares a method whose name its type already took. Each
 /// file is answered on its own (`file_refused`) over the shape's bodies by file (`refusal_shape`), so
-/// an edit to one body re-asks its file alone, and this stands wherever every file's answer does.
+/// an edit to one body re-asks its file alone, and this stands wherever every file's answer does. A
+/// file `vouched` names stands on the verdict that vouches for it: no law is asked of it.
 @query
-export fn program_refused(engine: QueryEngine, file: SourceFileAddress, package: string) -> List<
-    SourceFileAddress,
-> {
-    let erring = entry_erring(engine, file, package)
+export fn program_refused(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    package: string,
+    vouched: List<string>,
+) -> List<SourceFileAddress> {
+    let erring = entry_erring(engine, file, package, vouched)
     if erring.any(is_manifest) { return erring }
     let shape? = refusal_shape(engine, file) else { return erring }
     let entry? = entry_lowered(engine, file) else { return erring }
     let own = if body_refuses(engine, file, entry.refused, entry.unread) ||
         entry.unprojected != null { [file] } else { [] }
-    let answers = [file_refused(engine, f.file, f.entry, f.units, f.unlowered) for f in shape.files]
+    let answers = [file_refused(
+        engine,
+        f.file,
+        f.entry,
+        f.units,
+        f.unlowered,
+        vouched.contains(spelled_file(f.file)),
+    ) for f in shape.files]
     let bodies = sorted_by(
         [FileAt { file: f.file, at: f.unit_at[answers[i].body] } for i, f in shape.files if answers[i].body >= 0],
         (a: FileAt, b: FileAt) -> a.at < b.at,
@@ -970,7 +981,8 @@ export type FileRefusal = { body: int, missed: int, reached: int, law: bool }
 
 /// HOW THE FILE `file` REFUSES A BUILD, over the bodies of it a shape reaches, `units` lowered and
 /// `unlowered` not yet, and whether it is the entry's: a file is reached where it is the entry's, a
-/// body of it with facts is reached, or one is not lowered yet.
+/// body of it with facts is reached, or one is not lowered yet. A file a verdict vouches for (`vouched`)
+/// is asked no law over the whole file.
 @query
 export fn file_refused(
     engine: QueryEngine,
@@ -978,6 +990,7 @@ export fn file_refused(
     entry: bool,
     units: List<CalledFn>,
     unlowered: List<Missed>,
+    vouched: bool,
 ) -> FileRefusal {
     let facts = [unit_facts_lying(engine, c) for c in units]
     let faceted = [i for i, f in facts if f != null]
@@ -995,6 +1008,7 @@ export fn file_refused(
             ) ?? -1,
         reached: faceted.first() ?? -1,
         law: reached &&
+            !vouched &&
             (misnames(engine, file) || takes_method_names(engine, file) || asks_ungiven(engine, file)),
     }
 }

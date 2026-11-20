@@ -476,6 +476,7 @@ fn disk_built(
         avra_fact_definitions().concat(definitions_of(listed_build_facts)),
         ahead_count(),
         asks_timed,
+        (e: QueryEngine) -> vouched_files(e, disk),
     )
     let store = worked.store
     let engine = worked.engine
@@ -504,7 +505,7 @@ fn disk_built(
             let refusing = phased(
                 engine,
                 "the refusals",
-                () -> program_refused(engine, asked.entry, disk.name),
+                () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
             )
             found.set(refusing)
             refusing.is_empty()
@@ -513,7 +514,7 @@ fn disk_built(
     let refusing = found.get() ?? phased(
         engine,
         "the refusals",
-        () -> program_refused(engine, asked.entry, disk.name),
+        () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
     )
     if !refusing.is_empty() {
         let said = refusals_said(
@@ -1167,6 +1168,8 @@ fn times_said(engine: QueryEngine) {
     eprintln("phases: ${times.phases_spoken()}")
     eprintln("split: ${times.split()}")
     eprintln("cutoff: ${engine.cutoff_said()}")
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if env("AVRA_QUERY_FAMILIES") == "1" { eprintln("families:\n${times.every_family()}") }
 }
 
 /// Each form only the program layer builds that the program of the package on `disk` uses, said one a
@@ -3354,7 +3357,7 @@ fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool
         program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
         avra_fact_definitions(),
     )
-    let refusing = program_refused(engine, entry, disk.name)
+    let refusing = program_refused(engine, entry, disk.name, vouched_files(engine, disk))
     if !refusing.is_empty() {
         let _ = refusals_said(engine, disk, refusing, entry)
         return 3

@@ -25,7 +25,7 @@ use @std.avrac.compiler.{
 use @std.avrac.core.{distinct}
 use @std.avrac.compiler.memory.{sound_checked}
 use @std.avrac.diagnostics.{Diag, SourceFile, defect_kind, new_source_file, render, rendered_among}
-use @std.io.{write_text}
+use @std.io.{env, write_text}
 use @std.path.{joined_path, relative_path, under_dir}
 use @std.program.layered_store.{program_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
@@ -36,9 +36,10 @@ use @std.time.{now_ns}
 /// One rule site the program layer found: the finding a baseline reads, and the line it stands on.
 type SiteAt = { finding: Finding, line: int }
 
-/// `check` of the program `disk` reads on the program layer, as the old path says it: what its laws
-/// refuse, exit 1; else — held to the file `baseline` where one is named — a rule site it doesn't
-/// list refuses it, and a clean program's warnings are said, exit 0. `pruning`, the baseline is
+/// `check` of the program `disk` reads on the program layer: what its laws refuse in any file it
+/// reads, exit 1; else — held to the file `baseline` where one is named — a rule site of the package's
+/// own files it doesn't list refuses it, and the package's own warnings are said, exit 0. A
+/// dependency's warnings, rule sites and stale citations are its own check's, and said to be. `pruning`, the baseline is
 /// pruned to the sites still found instead, as `accepted` prunes it. Where the net accepted the
 /// program (`net`), a refusal is said as the program layer's defect.
 fn disk_checked(
@@ -55,7 +56,8 @@ fn disk_checked(
     let root = disk.root
     let store = program_store_at(joined_path(root, checks_kept_at()))
     let engine = query_engine(store, avra_fact_definitions())
-    if timed { engine.time_queries() }
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return refused! }
     let stopped = net_stops(net, () -> program_new_only(engine, disk.name))
@@ -64,16 +66,19 @@ fn disk_checked(
         [program_file(disk, f) for f in program_files(engine, disk.name)],
         (a, b) -> said_before(disk, a, b),
     )
-    let erring = phased(engine, "the refusals", () -> program_erring(engine, disk.name))
+    let own = [h for h in files if h.file.package_name == disk.name]
+    let apart = distinct([h.file.package_name for h in files if disk.deps.has(h.file.package_name)])
+    let vouched = vouched_files(engine, disk)
+    let erring = phased(engine, "the refusals", () -> program_erring(engine, disk.name, vouched))
     let found = phased(
         engine,
         "the warnings",
-        () -> if erring.is_empty() { [file_found(engine, disk.name, h) for h in files] } else { [] },
+        () -> if erring.is_empty() { [file_found(engine, disk.name, h) for h in own] } else { [] },
     )
     let stale = phased(
         engine,
         "the citations",
-        () -> if erring.is_empty() { [citation_said(h, c) for h in files for c in stale_citations(engine, h.file)] } else { [] },
+        () -> if erring.is_empty() { [citation_said(h, c) for h in own for c in stale_citations(engine, h.file)] } else { [] },
     )
     let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
     let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
@@ -81,6 +86,7 @@ fn disk_checked(
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
     let saved = phased(engine, "the store saved", () -> store.saved())
     let unsaved = unsaved_said(store, saved)
+    times_said(engine)
     if unsaved != null { eprintln("avra: ${unsaved!}") }
     if timed {
         eprintln(program_time_line(files.length, t0, engine.worked_count() == 0))
@@ -98,14 +104,21 @@ fn disk_checked(
         return 1
     }
     let sites = [s for f in found for s in f.sites]
-    if pruning { return program_pruned(root, baseline, files, sites) }
+    if pruning { return program_pruned(root, baseline, own, sites) }
     if !stale.is_empty() { return refused_licenses(stale) }
     if baseline != "" {
         let bad = loaded_baseline(baseline).news([s.finding for s in sites])
         if !bad.is_empty() { return refused_sites(bad) }
     }
     if warned != "" { println(warned) }
+    if !apart.is_empty() { eprintln(warnings_apart(apart)) }
+    verdict_kept(engine, own)
     0
+}
+
+/// Why a check says nothing of what its path dependencies warn of: each is its own check's.
+fn warnings_apart(packages: List<string>) -> string {
+    "avra: dependencies' warnings are theirs: `avra check <dep>` (${packages.join(", ")})"
 }
 
 /// Where a check keeps what it worked out: under the sound check, a store of its own, since its memory

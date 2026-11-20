@@ -538,9 +538,6 @@ export fn type_named(name: string) -> Type? {
     avra_type_named(name)
 }
 
-/// The one scalar a named record stores as, or null for any other kind. A record of
-/// exactly one scalar field and no `@model` is flat at runtime, so its field travels
-/// alone; the structure decides it, not the name.
 /// Whether a kind is one scalar a flat record can store as.
 export fn scalar_kind(k: Kind) -> bool {
     match k {
@@ -563,13 +560,29 @@ export fn implements(name: string, tr: string) -> bool {
     t.impls.contains(tr)
 }
 
+/// The field a flat value's one value is read through: a record's one
+/// field, a named type's `of`.
 export fn flat_field(name: string) -> string {
     let t? = type_named(name) else { return "" }
+    if t.shape_over() != null { return "of" }
     t.fields[0].name
 }
 
+/// A flat value of the type `named`, made from its one value `v`: a
+/// record's literal, a named type's conversion.
+export fn flat_made(named: string, v: Code) -> Code {
+    let t? = type_named(named) else { return v }
+    if t.shape_over() != null { return quote { ${named}(${v}) } }
+    quote { ${named} { ${flat_field(named)}: ${v} } }
+}
+
+/// The one kind a named type is held as alone, or null for any other: a
+/// record of exactly one field and no `@model`, which is flat at runtime so
+/// its field travels alone, or a named type, which is its shape. The
+/// structure decides it, not the name.
 export fn stored_scalar(name: string) -> Kind? {
     let t? = type_named(name) else { return null }
+    if t.shape_over() != null { return t.shape_over() }
     if t.annotations.any(it.name == "model") || t.fields.length != 1 { return null }
     t.fields[0].kind
 }
