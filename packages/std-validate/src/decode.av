@@ -25,7 +25,7 @@
 use validate.{Refusal, nearest}
 use issue.{Issue, Issues, root}
 use value.{Value, Entry}
-use @std.text.{parse_int}
+use @std.text.{parse_float, parse_int}
 use @std.json.typed.{Path, Reader, no_reader}
 
 /// How a value may be read as another kind.
@@ -284,8 +284,13 @@ fn as_text(_c: Coercion, v: Value) -> string? {
     match v { .Text(t) -> t, rest -> null }
 }
 
-fn as_float(_c: Coercion, v: Value) -> float? {
-    match v { .Float(x) -> x, rest -> null }
+/// Itself, or under `Lax` the text that spells one.
+fn as_float(c: Coercion, v: Value) -> float? {
+    match v {
+        .Float(x) -> x,
+        .Text(t) -> if c is .Lax { parse_float(t.trim()) } else { null },
+        rest -> null,
+    }
 }
 
 /// Itself, or under `Lax` the text that spells one.
