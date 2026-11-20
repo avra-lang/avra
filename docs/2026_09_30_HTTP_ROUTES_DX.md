@@ -55,7 +55,7 @@ fn list(page: int = 1, tag: string? = null) -> List<Idea> { ideas.page(page, tag
 | part | rule |
 |---|---|
 | path `{id}` | must name a parameter; the parameter's type parses it |
-| a record parameter | is the body, decoded and validated by `@std/validate`; a refusal is a 400 listing every issue |
+| a record parameter | is the body, decoded and validated by `@std/validate`; a refusal is a 422 problem+json listing every issue (built as `req.body_as()`, std-http `typed.av`) |
 | a defaulted scalar | is a query parameter |
 | a `Session<User>`, `Bearer`, `Header<"x">` | is extracted by a trait; a route nothing can extract for does not compile |
 | `T` | 200 with `T` encoded by the negotiated codec |
