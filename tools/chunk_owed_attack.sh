@@ -1,9 +1,9 @@
 #!/bin/sh
 # AN EDIT OWES THE CHUNKS ITS MOVED BODIES FALL IN, AND NO OTHERS. A program's bodies fall in chunks by
-# their symbols' hashes, each chunk an object kept under the keys of what it holds, so one edit of each
-# kind, made to a built program, owes exactly the chunks pinned here — counted from the build's
-# `Q objects` line and named by the symbols each owed chunk is home to — and the binary prints what the
-# source says. A count that grows is the cache missing where it held; one that falls is a key that
+# their symbols' hashes, each chunk an object kept under the keys of what it holds, and each file's
+# frames an object of their own, so one edit of each kind, made to a built program, owes exactly the
+# objects pinned here — counted from the build's `Q objects` line and named by the symbols each owed
+# chunk is home to, or the file whose frames are owed — and the binary prints what the source says. A count that grows is the cache missing where it held; one that falls is a key that
 # stopped seeing what codegen reads.
 set -u
 . "$(dirname "$0")/lib/attack.sh"
@@ -36,21 +36,21 @@ owed() {
     [ "$got" = "$2" ] || { fail "$1: printed '$got', the source says '$2'"; return; }
     n=$(grep '^Q	objects	' $R/err | cut -f3 | head -1)
     syms=$(grep '^Q	owed	' $R/err | cut -f4 | tr ',' '\n' | grep . | sed 's|^owed/src/||' | sort | tr '\n' ' ')
-    [ "${n:-0}" = "$3" ] || { fail "$1: owed ${n:-0} chunks ($syms), wanted $3"; return; }
-    [ "$syms" = "$4" ] || { fail "$1: the owed chunks are home to '$syms', wanted '$4'"; return; }
-    say "$1: owed $3 chunks, home to '$syms', printed '$got'"
+    [ "${n:-0}" = "$3" ] || { fail "$1: owed ${n:-0} objects ($syms), wanted $3"; return; }
+    [ "$syms" = "$4" ] || { fail "$1: the owed objects are home to '$syms', wanted '$4'"; return; }
+    say "$1: owed $3 objects, home to '$syms', printed '$got'"
 }
 # kept: the sources as the caller just wrote them, kept as the edit `owed` makes
 kept() { cp $R/src/lib.av $R/edit.lib; cp $R/src/main.av $R/edit.main; }
 main
 lib '{ a: int }' '(x: int) -> int { x + 2 }' '(x: int) -> int { x }'; kept
-owed "a callee's body edited" "6 5 7 5" 1 "lib.av.callee "
+owed "a callee's body edited" "6 5 7 5" 2 "lib.av lib.av.callee "
 lib '{ a: int }' '(x: int) -> int { x + 1 }' '(x: int) -> string { "s${x}" }'; kept
-owed "a callee's answer retyped, its caller unedited" "4 5 s7 5" 2 "lib.av.shown main.av.said "
+owed "a callee's answer retyped, its caller unedited" "4 5 s7 5" 4 "lib.av lib.av.shown main.av main.av.said "
 lib '{ a: int }' '(x: int, by: int = 1) -> int { x + by }' '(x: int) -> int { x }'; kept
-owed "a callee given a defaulted seat, its caller unedited" "4 5 7 5" 3 'lib.av.callee lib.av.callee.by$default main.av.twice '
+owed "a callee given a defaulted seat, its caller unedited" "4 5 7 5" 5 'lib.av lib.av.callee lib.av.callee.by$default main.av main.av.twice '
 lib '{ b: int = 9, a: int }' '(x: int) -> int { x + 1 }' '(x: int) -> int { x }'; kept
-owed "a record laid out anew, its readers unedited" "4 5 7 5" 5 'lib.av.P.b$default lib.av.make main.av.get '
+owed "a record laid out anew, its readers unedited" "4 5 7 5" 7 'lib.av lib.av.P.b$default lib.av.make main.av main.av.get '
 plain_lib
 lib '{ a: int }' '(x: int) -> int { x + 1 }' '(x: int) -> int { x }' 'export fn extra() -> int { 42 }
 '
@@ -58,5 +58,5 @@ main ' ${extra()}' 'use lib.{extra}
 '
 kept
 main
-owed "a fn added at a file's end, called from the entry" "4 5 7 5 42" 3 "lib.av.extra "
+owed "a fn added at a file's end, called from the entry" "4 5 7 5 42" 5 "lib.av lib.av.extra main.av "
 verdict

@@ -8,27 +8,41 @@ use @std.program.saved_derive.{Saved}
 /// What a body's code holds of contexts that its instructions alone don't say: each set, at the
 /// instruction that makes it, of the key it sets, written by the statement `stmt` of the body's store;
 /// each call through a `dyn` box, by the register it answers into, of the box's type and the trait
-/// method's slot; and each `dyn` box it makes, with the method it holds in each slot.
+/// method's slot; each `dyn` box it makes, with the method it holds in each slot; each value joining a
+/// list of a placed trait's boxes; and each fn value made to run under the frame in force.
 @derive(Saved)
 export type ContextMarks = {
     sets: List<SetMark> = [],
     dyns: List<DynMark> = [],
     boxes: List<BoxMark> = [],
+    placings: List<PlaceMark> = [],
+    rehomes: List<int> = [],
 }
 
 /// A `ctx` set: the instruction that makes it, the context's key, and the statement that writes it.
 @derive(Saved)
 export type SetMark = { at: int, key: int, stmt: int }
 
-/// A call through a `dyn` box: the register it answers into, the box's type, and the slot among the
-/// trait's methods of the one called.
+/// A call through a `dyn` box: the register it answers into, the box's type, the slot among the
+/// trait's methods of the one called, and whether the trait is placed, so the call runs under the
+/// frame the box was placed under.
 @derive(Saved)
-export type DynMark = { dst: int, subject: SignedType, slot: int }
+export type DynMark = { dst: int, subject: SignedType, slot: int, placed: bool = false }
 
-/// A `dyn` box made: the type of the value it holds, the box's type, and the method of that value the
-/// box holds in each of the trait's slots, in slot order.
+/// A `dyn` box made: the type of the value it holds, the box's type, the method of that value the box
+/// holds in each of the trait's slots, in slot order, the instruction it is made at, and whether the
+/// trait is placed, so the box holds the frame it is made under.
 @derive(Saved)
-export type BoxMark = { held: SignedType, into: SignedType, methods: List<CalledFn> }
+export type BoxMark = { held: SignedType, into: SignedType, methods: List<CalledFn>, at: int = -1, placed: bool = false }
+
+/// A value joining a list of a placed trait's boxes: the instruction it joins at, and the boxes'
+/// type. The box joins under the frame in force there.
+@derive(Saved)
+export type PlaceMark = { at: int, subject: SignedType }
+
+/// The entry among a body's framed ones that says its placed traits' boxes carry their frame: a
+/// program with contexts lowers a body that boxes, calls through or places one of them with it.
+export const PLACED_FRAMES: string = "placed\$"
 
 impl Lowering {
     /// `m` among what the body's code holds of contexts.
@@ -45,9 +59,24 @@ impl Lowering {
         let maybe = held with { nulls: 1 }
         let set = self
             .call_row(self.laid_out(maybe), rt_sig_of("avra_ctx_read")!, [self.const_int(c.key)])
+        self.context_heard(c, set)
         let cell = self
             .region(self.present(set, maybe), l) { cx -> cx.carried(set, maybe) } else { cx -> cx.context_started(c, name, l) }
         self.proven_read(self.laid_out(c.held), cell, 0)
+    }
+
+    /// A read of the context `c`, which `set` answered (a cell, or none for its default), heard by the
+    /// query running on the task where one is: one load of the runtime's word tested, and the filing
+    /// on the cold path, out of line. A query's answer is kept only while what it heard holds.
+    mut fn context_heard(c: HeldContext, set: Reg) {
+        let heard = self.flag_read(RtFlag.Heard)
+        let open = self.bin(Layout.Truth, BinOp.Ne, heard, self.const_int(0))
+        let kind = heard_kind(c.held, self.laid_out(c.held))
+        self
+            .void_region(open) { cx ->
+                cx
+                    .run_row(rt_sig_of("avra_ctx_heard")!, [cx.const_int(c.key), cx.const_int(kind), set])
+            }
     }
 
     /// The box the default of the context `c` is kept in, of layout `l`; a required one traps.
@@ -78,7 +107,7 @@ impl Lowering {
     /// force — one load of each, compared — nothing is called; else it is entered, and the body's
     /// scope takes it back as it ends, by every way out.
     mut fn frame_entered() {
-        let carried = self.slot_read(Layout.Word, Reg { index: 0 }, 1)
+        let carried = self.slot_read(Layout.Word, Reg { index: 0 }, FN_FRAME)
         let now = self.flag_read(RtFlag.Frame)
         let same = self.bin(Layout.Truth, BinOp.Eq, carried, now)
         let entered = self
@@ -87,7 +116,7 @@ impl Lowering {
                     .call_row(
                         Layout.Word,
                         rt_sig_of("avra_ctx_enter")!,
-                        [cx.slot_read(Layout.Boxed(BoxKind.List), Reg { index: 0 }, 1)],
+                        [cx.slot_read(Layout.Boxed(BoxKind.List), Reg { index: 0 }, FN_FRAME)],
                     )
             }
         self.ends_with(Ending.Entered(entered))
@@ -97,21 +126,116 @@ impl Lowering {
     /// slot `slot`, marked.
     fn dyn_marked(dst: Reg, subject: SignedType, slot: int) {
         let m = self.marks.get()
-        self
-            .context_marked(
-                m with { dyns: m.dyns.concat([DynMark { dst: dst.index, subject: subject, slot: slot }]) },
-            )
+        let d = DynMark {
+            dst: dst.index,
+            subject: subject,
+            slot: slot,
+            placed: self.placed(subject),
+        }
+        self.context_marked(m with { dyns: m.dyns.concat([d]) })
     }
 
-    /// A `dyn` box of `into` made over a value of `held`, its slots holding `methods`, marked.
+    /// A `dyn` box of `into` made over a value of `held`, its slots holding `methods`, marked at the
+    /// instruction that makes it.
     fn box_marked(held: SignedType, into: SignedType, methods: List<CalledFn>) {
+        let m = self.marks.get()
+        let b = BoxMark {
+            held: held,
+            into: into,
+            methods: methods,
+            at: self.ins.get().length,
+            placed: self.placed(into),
+        }
+        self.context_marked(m with { boxes: m.boxes.concat([b]) })
+    }
+
+    /// Whether `ty` is a `dyn` box of a placed trait: one whose box is drawn under the frame it is
+    /// placed under.
+    fn placed(ty: SignedType) -> bool { ty.dynamic && !ty.nullable() && (self.program.placed)(ty) }
+
+    /// Whether this body's placed boxes carry their frame: the program sets contexts, and the body
+    /// boxes, calls through or places one.
+    fn placing() -> bool { self.program.framed.contains(PLACED_FRAMES) }
+
+    /// `r`, a box of the placed trait `subject`, joining a list where it is placed: marked, and where
+    /// the body's placed boxes carry their frame, the box holding the frame in force here, a copy only
+    /// where it held another.
+    mut fn placed_joined(subject: SignedType, r: Reg) -> Reg {
         let m = self.marks.get()
         self
             .context_marked(
-                m with { boxes: m.boxes.concat([BoxMark { held: held, into: into, methods: methods }]) },
+                m with { placings: m.placings.concat([PlaceMark { at: self.ins.get().length, subject: subject }]) },
             )
+        if !self.placing() { return r }
+        self.reframed_here(r, DYN_FRAME)
+    }
+
+    /// The fn value `f` made to run under the frame in force here, as a placed node's handler is:
+    /// marked, and where the body's placed boxes carry their frame, its box holding this frame, a copy
+    /// only where it held another; else `f` itself.
+    mut fn rehomed(f: Reg) -> Reg {
+        let m = self.marks.get()
+        self.context_marked(m with { rehomes: m.rehomes.concat([self.ins.get().length]) })
+        if !self.placing() { return f }
+        self.reframed_here(f, FN_FRAME)
+    }
+
+    /// The box `r`, whose frame is its slot `slot`, holding the frame in force: the same box where it
+    /// does, or has no such slot.
+    mut fn reframed_here(r: Reg, slot: int) -> Reg {
+        let frame = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_ctx_frame")!, [])
+        self
+            .call_row(self.layout_of(r), rt_sig_of("avra_ctx_reframed")!, [r, self.const_int(slot), frame])
+    }
+
+    /// A call through the placed box `box`, its frame entered where the box holds one other than the
+    /// one in force: whether it was, for `placed_left`. A box made with no frame's slot runs under the
+    /// caller's.
+    mut fn placed_entered(box: Reg) -> Reg {
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [box])
+        let slotted = self.bin(Layout.Truth, BinOp.Gt, len, self.const_int(DYN_FRAME))
+        self
+            .region(slotted, Layout.Word) { cx ->
+                let carried = cx.slot_read(Layout.Word, box, DYN_FRAME)
+                let same = cx.bin(Layout.Truth, BinOp.Eq, carried, cx.flag_read(RtFlag.Frame))
+                cx
+                    .region(same, Layout.Word) { inner -> inner.const_int(0) } else { inner ->
+                        inner
+                            .call_row(
+                                Layout.Word,
+                                rt_sig_of("avra_ctx_enter")!,
+                                [inner.slot_read(Layout.Boxed(BoxKind.List), box, DYN_FRAME)],
+                            )
+                    }
+            } else { cx -> cx.const_int(0) }
+    }
+
+    /// The frame `entered` entered for a call through a placed box, taken back after it.
+    mut fn placed_left(entered: Reg) {
+        let back = self.bin(Layout.Truth, BinOp.Eq, entered, self.const_int(1))
+        let _ = self
+            .region(back, Layout.Word) { cx ->
+                cx.run_row(rt_sig_of("avra_ctx_back")!, [])
+                cx.const_int(0)
+            } else { cx -> cx.const_int(0) }
     }
 }
 
 /// What a read of the required context `name` that nothing set says as it traps.
 fn unset_words(name: string) -> string { "the context `${name}` is required, and nothing set it before it was read" }
+
+/// How a running query tells a context's value apart (runtime/avra_runtime.c): by its one word — a
+/// number, a truth, a float's bits, a payload-free enum's tag — by its text, or by nothing, which
+/// keeps no answer that read it. A nullable is told by nothing: its absence is a mark, not a word.
+fn heard_kind(ty: SignedType, l: Layout) -> int {
+    if ty.nullable() { return HEARD_UNTOLD }
+    match l {
+        .Word or .Truth or .Real -> HEARD_WORD,
+        .Boxed(.Text) -> HEARD_TEXT,
+        rest -> HEARD_UNTOLD,
+    }
+}
+
+const HEARD_WORD: int = 0
+const HEARD_TEXT: int = 1
+const HEARD_UNTOLD: int = 2

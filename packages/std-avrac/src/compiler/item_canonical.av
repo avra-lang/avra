@@ -127,16 +127,15 @@ export fn file_canonical(engine: QueryEngine, file: SourceFileAddress) -> Canoni
 export type StaleCitation = { line: int, id: string }
 
 /// EACH `// LICENSED` CITATION OF A FILE THAT NAMES NOTHING: no rule `avra rules` lists, and no
-/// keeper's family — read off a lex of the file under its words, so a raw block's body is never
-/// read as a comment.
+/// keeper's family — read off the remarks each item's tape keeps, so a string is never a comment and
+/// nothing is lexed again; the file's text is read for a line only where a citation is stale.
 @query
 export fn stale_citations(engine: QueryEngine, file: SourceFileAddress) -> List<StaleCitation> {
+    let known = known_rule_ids()
+    let unbacked = [u with { at: item_start(engine, file, i) + u.at } for i in 0..item_count(engine, file) for u in claims_naming_nothing(read_item(engine, file, i).store.remarks.get(), known)]
+    if unbacked.is_empty() { return [] }
     let src = whole_source(engine, file)
-    citations_naming_nothing(
-        src,
-        lexed_under(src.text, words_lexed(whole_words(engine, file)), avra().keywords).remarks,
-        known_rule_ids(),
-    )
+    [StaleCitation { line: src.linecol(u.at).line, id: u.id } for u in unbacked]
 }
 
 collect listed_canonical_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

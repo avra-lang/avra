@@ -25,7 +25,23 @@ fn own_opened(src: string) -> string {
         .join(",")
 }
 
+/// The texts lexed as `state`, joined, each with the word after it.
+fn states_opened(src: string) -> string {
+    let ts = lex_blocks(src, [], [], [], []).tokens
+    ["${t.text} ${ts[i + 1].text}" for i, t in ts if t.kind == TokenKind.State].join(",")
+}
+
 spec "grammar/lexer" {
+    given "`state` after a member's marks" {
+        then "a marked member's `state` opens it, as an unmarked one's does" {
+            states_opened(
+                "component f {\n    @attr(.Value) state value: string = \"\"\n    state n: int = 0\n    @frozen state k: int = 0\n}\n",
+            ) == "state value,state n,state k"
+        }
+        then "a `state` that follows no mark and starts no member stays a name" {
+            states_opened("let x = f(a) state y: int = 0\n") == ""
+        }
+    }
     given "a one-line rule" {
         then "kinds, texts, and spans are exact" {
             let r = lex_grammar("term = NUMBER")

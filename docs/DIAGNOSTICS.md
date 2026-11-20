@@ -1054,13 +1054,13 @@ help: give each row its own key — `tick … { key: … }`, with what tells the
 
 a member's default reads only its component's plain inputs
 
-No witness yet.
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/state_member_default_reads_state.
 
 ## type.slot_shadows
 
 an instance's block names its component's slot before a component of that name
 
-No witness yet.
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/builds_slot_shadows.
 
 ## flow.no_fate
 
@@ -3431,31 +3431,48 @@ help: only a `bool` answer may take `Self`: differing variants answer `false`
 
 `ctx.name` reads a context, and no `ctx name` is declared
 
-No witness yet.
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/ctx_unknown.
 
 ## ctx.where
 
 a context is declared at a module's top level and set inside a body
 
-No witness yet.
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/ctx_set_at_top.
 
 ## ctx.required
 
 a required context is set before the program reads it
 
-No witness yet.
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/ctx_required_unset.
 
 ## ctx.unread
 
 a context's set is read by something it is in force over
 
-No witness yet.
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/builds_ctx_set_unread.
 
 ## ctx.old_path
 
 `ctx` is built on the program layer
 
-No witness yet.
+```avra
+ctx depth: int = 0
+
+fn deep() -> int { ctx.depth }
+
+deep()
+
+```
+
+```
+error[ctx.old_path]: `ctx` is checked and built by the program layer
+  ╭─[witness.av:3:20]
+3 │ fn deep() -> int { ctx.depth }
+  ·                    ┬
+  ·                    ╰── a context's form
+──╯
+help: every command takes the program layer unless `AVRA_PROGRAM` is 0 in the environment — unset it
+```
 
 ## type.binding
 

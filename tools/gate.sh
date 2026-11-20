@@ -69,7 +69,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack; tools/queue-witness run native
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, frame_place_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack, carried_store_attack; tools/queue-witness run native
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -396,6 +396,7 @@ slice_witness_b() {
     row docs-cache-attack sh tools/docs_cache_attack.sh
     row obj-gone-attack sh tools/obj_gone_attack.sh
     row chunk-owed-attack sh tools/chunk_owed_attack.sh
+    row frame-place-attack sh tools/frame_place_attack.sh
     row moved-tree-attack sh tools/moved_tree_attack.sh
     row layer-sites-attack sh tools/layer_sites_attack.sh
     row closure-gather-attack sh tools/closure_gather_attack.sh
@@ -408,6 +409,7 @@ slice_witness_b() {
     row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
     row queue-witness build/avra run tools/queue-witness
     row std-answers-attack sh tools/std_answers_attack.sh build/avra
+    row carried-store-attack env CARRIED_ATTACK_AVRA="$root/build/avra" sh tools/carried_store_attack.sh
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

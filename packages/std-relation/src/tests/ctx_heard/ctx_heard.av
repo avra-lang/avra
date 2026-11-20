@@ -1,0 +1,80 @@
+// proves: a `@query` body's `ctx` read is one of its answer's reads, as a Db read is — the answer
+// kept under one value of the context is never handed back under another, and is reused under a
+// later set of the same value; a context of text is told by its text; a query reused inside another
+// is heard by it, so the outer answer moves with the inner one's context; and a context its value
+// cannot be told apart by (a nullable set) keeps no answer, while its default, the same every time,
+// is reused — in both engines
+use @std.relation.{query}
+use @std.relation.db.{Db, new_db}
+
+ctx scale: int = 1
+ctx unit: string = "m"
+ctx maybe: int? = null
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+fn ran() {
+    let r = runs()
+    r.set(r.get() + 1)
+}
+
+@query
+fn scaled(_db: Db, n: int) -> int {
+    ran()
+    n * ctx.scale
+}
+
+@query
+fn labelled(_db: Db, n: int) -> string {
+    ran()
+    "${n}${ctx.unit}"
+}
+
+@query
+fn outer(db: Db, n: int) -> int { scaled(db, n) + 1 }
+
+@query
+fn maybe_scaled(_db: Db, n: int) -> int {
+    ran()
+    n * (ctx.maybe ?? 1)
+}
+
+fn maybe_set(db: Db) -> int {
+    ctx maybe = 5
+    maybe_scaled(db, 2)
+}
+
+fn under_ten(db: Db) -> int {
+    ctx scale = 10
+    scaled(db, 2)
+}
+
+fn label_in(db: Db, u: string) -> string {
+    ctx unit = u
+    labelled(db, 3)
+}
+
+fn outer_under(db: Db, s: int) -> int {
+    ctx scale = s
+    outer(db, 2)
+}
+
+let db = new_db()
+println("plain ${scaled(db, 2)} runs ${runs().get()}")
+println("under 10 ${under_ten(db)} runs ${runs().get()}")
+println("under 10 again, a later set of the same value ${under_ten(db)} runs ${runs().get()}")
+println("plain again ${scaled(db, 2)} runs ${runs().get()}")
+println(
+    "labelled ${label_in(db, "km")} ${label_in(db, "km")} ${label_in(db, "cm")} runs ${runs().get()}",
+)
+println("outer ${outer_under(db, 3)} ${outer_under(db, 3)} ${outer_under(db, 4)}")
+let at_default = runs().get()
+let d1 = maybe_scaled(db, 2)
+let d2 = maybe_scaled(db, 2)
+println(
+    "a nullable's default, the same every time, is reused: ${d1} ${d2} ran ${runs().get() - at_default}",
+)
+let at_set = runs().get()
+let s1 = maybe_set(db)
+let s2 = maybe_set(db)
+println("a nullable set keeps nothing: ${s1} ${s2} ran ${runs().get() - at_set}")

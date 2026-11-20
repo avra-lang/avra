@@ -7,7 +7,7 @@ use @std.http.http.{Request, Unrouted}
 use @std.http.route.{Route, compiled, dispatch, get}
 use @std.queue.{queue, worker, drain, Dead, Delivery, HomeError}
 use @std.relation.{codec}
-use @std.sqlite.{Db}
+use @std.sqlite.{Db, sql}
 use @std.time.{Time, now_ns, secs}
 use admin.{queue_admin}
 use durable.{db, stored}
@@ -71,6 +71,25 @@ fn stocked() -> Result<List<Route>, HomeError> {
     queue_admin(ctx.db, operator, ticking).found
 }
 
+/// A database with one order whose kept descriptor no build wrote,
+/// paged through the routes.
+fn undescribed() -> string {
+    let routes = undescribed_routes() catch []
+    if routes.is_empty() { return "no routes" }
+    answered(routes, "GET /orders/items HTTP/1.1")
+}
+
+fn undescribed_routes() -> Result<List<Route>, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Order> orders {
+        name: "orders"
+        durable: stored<Order>(clock: ticking)
+    }
+    let _ = orders.send(Order { sku: "a1", qty: 2 })?
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowShape\" SET \"descriptor\" = 'x'")))?
+    queue_admin(ctx.db, operator, ticking).found
+}
+
 /// What each line answers, one per line, with the database's mark cut
 /// from every id so the answer does not depend on it.
 /// A line heading `GUEST ` is asked with a token the guard refuses.
@@ -119,8 +138,18 @@ spec "std/queue_store — the operating routes" {
             lines(["GET /orders/items?limit=1 HTTP/1.1"])
                     .contains("\"stage\":\"held\",\"attempt\":0") &&
                 lines(["GET /orders/items?limit=1 HTTP/1.1"])
-                    .contains("\"item\":{\"sku\":\"a1\",\"qty\":2},\"read\":true}]") &&
+                    .contains("\"item\":{\"sku\":\"a1\",\"qty\":2},\"read\":true,\"unread\":null}]") &&
                 !lines(["GET /orders/items?limit=1 HTTP/1.1"]).contains("b2")
+        }
+        then "a readable item's `unread` is null" {
+            lines(["GET /orders/items HTTP/1.1"]).split("\"unread\":null").length == 3 &&
+                !lines(["GET /orders/items HTTP/1.1"]).contains("\"unread\":\"")
+        }
+        then "an item its descriptor cannot read answers no item and the reason" {
+            undescribed()
+                .ends_with(
+                    "\"item\":null,\"read\":false,\"unread\":\"the descriptor kept for its shape spells no shape this build reads\"}]",
+                )
         }
         then "reads a letter's item, fate and path" {
             lines(["GET /orders%2Fdead/items HTTP/1.1"])
