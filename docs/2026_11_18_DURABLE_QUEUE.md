@@ -148,7 +148,7 @@ Where it still differs from §1, and what closes each gap:
 | `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email>>()` serves |
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
-| `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
+| `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate, with or without an import cycle) |
 
 Delayed and recurring work (Q5):
 
@@ -448,20 +448,29 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 | a SQL function registered from Avra (`flow_json`) | not possible: no C callback trampoline. That projection waits; `peek` and the admin router do not |
 | `ctx db = …` when the read is through a fn value | a false `ctx.unread` warning; reported |
 
-### 8b. Re-probed on the batch-55 binary (2026-11-19)
+### 8b. The short forms, re-probed (batch-57 binary, 2026-11-19)
+
+Each row a probe package run with `./avra run` or `./avra test`; the queue's sources use every form that lands.
 
 | Asked | Answer |
 |---|---|
-| `fn f<T, E = never>()`, `component c<T, E = never>` | not in this compiler ("expected `(`", "expected `{`") |
-| a partial type argument (`pair<int>(3)` for `pair<A, B>`) | not in this compiler: "takes 2 type arguments, found 1" |
-| a call pinned by a nullable seat (`b: made()` into `Box<int>?`, a record or component field) | not in this compiler: "`T` is not pinned by the arguments"; a non-null seat pins it |
-| `==` on `ptr` | not in this compiler: "`==` compares by value" |
-| `dead:` on the queue (`queue<T, E>`) | `q emails { dead: undeliverable }` compiles with NO type argument written, both read from the field; writing one (`q<Email>`) is `type.struct_targs`, and a queue with no letter cannot name `E` |
+| a default type parameter, `fn f<T, E = string>`, `component c<T, E = string>`, `type D<T, E = string>`, `enum F<E = string>` | lands; a fully defaulted enum is written bare (`Fate`). `Dead<T, E = string>` and `Fate<E = string>` are the library's, so a text-failing letter is `Dead<Email>` |
+| `E = never` as a default | refused at run: "a body not lowered yet was reached: … a method of the generic `qd<int, never>`"; written, `never` is `type.unknown` "`never` names no type" |
+| a partial type argument (`pair<int>(3, "x")` for `pair<A, B>`) | lands |
+| a call pinned by a nullable seat (`stored()` into `durable: Durable<T>?`; `made()` into a `Box<int>?` argument, `let`, record or component field) | still refused: "`T` is not pinned by the arguments"; a non-null seat pins it. `stored<Email>()` stays |
+| `==` on `ptr` | lands |
+| a generic method (`impl Tx { fn send<T>(q: queue<T>, item: T, …) }`) | lands: `tx.send(emails, item, id: …)` |
+| a component method handing `self`'s field beside a named argument, under `avra test` | lands: the schedule names its `id:` |
+| `export use schedule.{schedule}` from the package root | still refused, with no cycle needed: `resolve.duplicate_type` "`schedule` is declared more than once" (a program-layer false refusal). `use @std.queue.schedule.{schedule}` stays |
+| a ctx read in a spawned task under `avra test` | still traps "the context `n` is required, and nothing set it before it was read"; `avra run` reads it. The suites' warm-ups before a spawn stay |
+| a type-level annotation's named word (`@index(lane, absent: done_at)`) | still `resolve.unresolved` "`done_at` is not defined"; the field marks (`@index(present: in_line) queue`) stay |
+| `dead:` on the queue, `queue<T, E = …>` | `q<Email> emails { dead: undeliverable }` lands (`E` read from the field beside a written `T`); a queue with no letter needs a default `E`, and `never` cannot run a method (above). A method answering the inferred `E` is not checked at typing (`let s: int? = q.wrong()` where `E = string` passes `check` and traps at run) |
 | `dead:` as a job's letter field | `flow.no_fate` refuses any instance that leaves a field named `dead` unset, so `buries_in:` stays |
-| a ctx read in a spawned task under `avra test` | still traps `the context … is required`; `avra run` reads it. The suites' warm-ups before a spawn stay |
+| a job instance with no type arguments (`job twice { each: doubled }`) | lands; `each:` pins `T`, `R` and `E` |
 | a component `check` that builds another instance | still skipped at build; a plain one refuses |
 | a schedule's `check` (no name, weekday 8) | still not run at build |
 | a foreign generic record literal as a generic fn's tail | works (`letters.read`) |
+
 
 Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect contracts (§7.2), Postgres.
 
@@ -471,7 +480,7 @@ Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect cont
 - The tables are `@model` types, so std-db owns their migrations, where CHANNELS wrote SQL.
 - `ready_at` is new: one column serves `after:`, backoff and schedules.
 - `job` and `schedule` are new surface; the laws they keep are CHANNELS'.
-- `dead:` is the worker's, where CHANNELS put it on the queue. The worker's handler decides the error type, so the worker owns everything typed in it: the letter and the `failed` and `buried` events. A queue names no letter. (A component cannot infer one type parameter from a field while another is written; if it learns to, `dead:` may return.)
+- `dead:` is the worker's, where CHANNELS put it on the queue. The worker's handler decides the error type, so the worker owns everything typed in it: the letter and the `failed` and `buried` events. A queue names no letter. (A component now infers one type parameter from a field while another is written, so `dead:` may return to the queue: `queue<T, E = …>`, where a queue with no letter needs a default `E` that can run a method, which `never` cannot (§8b). The owner chooses.)
 - The store is `ctx db`, where CHANNELS wrote `@store type Main` and `Tx<Main>`. One database needs no type to tell it apart; the dual-write check (`flow.dual_write`) reads the transaction value.
 
 ## 10. Decisions (owner, 2026-11-18)
