@@ -4,13 +4,13 @@
 //!     let tx = transaction(ctx.db)?
 //!     errdefer tx.rollback()
 //!     let saved = user.insert(tx.db)?
-//!     emails.send(welcome(saved), id: "welcome-${saved.id}", tx: tx)?
+//!     tx.send(emails, welcome(saved), id: "welcome-${saved.id}")?
 //!     tx.commit()?
 //!
 //! A transaction is the connection's, so a send names it to be held to
 //! it: one that was committed, rolled back, or is open on another
 //! connection is refused rather than written on its own.
-use @std.queue.{HomeError, Transaction}
+use @std.queue.{HomeError, Key, Transaction, key, queue}
 use @std.sqlite.{Db, sql}
 use @std.time.{Duration, ms, secs, sleep}
 use fault.{ask_again, home_error, homed}
@@ -76,6 +76,15 @@ impl Tx {
         if !self.stands() { return 0 }
         self.done.set(true)
         self.db.finish()
+    }
+
+    /// Send one item into `q` as part of the transaction, as `q`'s own
+    /// `send` does with `tx:` naming it.
+    fn send<T>(q: queue<T>, item: T, id: string = "", under: Key = key(""), after: Duration = ms(0)) -> Result<
+        string?,
+        HomeError,
+    > {
+        q.send(item, id: id, under: under, after: after, tx: self)
     }
 }
 
