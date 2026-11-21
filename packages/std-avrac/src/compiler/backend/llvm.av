@@ -82,7 +82,7 @@ type Emit = {
     rt: Map<string, RtSig>,
     // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
     census: bool,
-    // under the census, the frame-eligible boxes the body mints, by register (frame_census.av)
+    // under the census, the tags of the boxes the body mints, by register (frame_census.av, strided_census.av)
     frame_tags: Map<string, string>,
 }
 
@@ -203,9 +203,10 @@ impl EmitIndex {
 /// WHICH BODIES A MODULE DEFINES: every one; one file's; the PROGRAM's — what
 /// no file owns (an instantiation, a wrapper several files ask for) and the
 /// entry — or one BUCKET of that: the program's bodies whose name falls in bucket
-/// `i` of `of` (a power of two), bucket 0 carrying the entry. Exactly one module
-/// of a program defines the entry.
-export enum Owned { Whole, File(f: FileId), Program, Bucket(i: int, of: int) }
+/// `i` of `of` (a power of two), bucket 0 carrying the entry; or none, laying out
+/// the frames of the file at `at` of the program's. Exactly one module of a
+/// program defines the entry.
+export enum Owned { Whole, File(f: FileId), Program, Bucket(i: int, of: int), Frames(at: int) }
 
 impl Owned {
     /// Where in `l.fns` the bodies this module defines stand, in program order: the index's answer
@@ -216,12 +217,21 @@ impl Owned {
             .File(f) -> ix.homed.get("${f.index}") ?? [],
             .Program -> ix.homeless,
             .Bucket(i, of) -> ix.bucket_positions(l, i, of),
+            .Frames(_) -> [],
         }
     }
 
     fn carries_entry() -> bool {
-        match self { .Whole or .Program -> true, .File(_) -> false, .Bucket(i, _) -> i == 0 }
+        match self {
+            .Whole or .Program -> true,
+            .File(_) or .Frames(_) -> false,
+            .Bucket(i, _) -> i == 0,
+        }
     }
+
+    /// Whether the module lays out every static it's handed, each for the other modules to read: a
+    /// file's frames, read by the modules of the bodies they frame.
+    fn shares_statics() -> bool { self is .Frames }
 }
 
 /// The bucket of `of` a program body falls in: its home's, else its name's — except a body whose
@@ -462,7 +472,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
     let wasm = is_wasm(target)
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics, ix) }
+    let refs: Refs = if which is .Whole || which.shares_statics() { every_name() } else { refs_of(scanned, l.statics, ix) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
@@ -470,7 +480,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
     let named_at = if refs.whole { [i for i in 0..l.fns.length] } else { ix.body_positions(refs.bodies.keys()) }
     for p in named_at { declare_user(lc, m, l.fns[p]) }
     let carried = if refs.whole { l.statics } else { [l.statics[p] for p in ix.static_positions(refs.statics.keys())] }
-    for st in in_read_order(carried, scanned, refs, ix) { emit_static(lc, m, st) }
+    for st in in_read_order(carried, scanned, refs, ix) { emit_static(lc, m, st, which.shares_statics()) }
     let rt = rt_index()
     let defined_at = if which is .Whole { [i for i in 0..l.fns.length] } else { ix.body_positions(mine.keys()) }
     for p in defined_at {
@@ -514,9 +524,16 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
 /// One static as its globals: every box under its own name, the
 /// root under the static's, so a read finds it by that name alone.
 /// Boxes are laid out child-first, as the fold pushed them, so each
-/// slot's box already stands when the slot names it.
-fn emit_static(lc: ptr, m: ptr, st: Static) {
+/// slot's box already stands when the slot names it. One another module
+/// defines is its root declared alone; a `shared` one's root is the
+/// other modules' to read.
+fn emit_static(lc: ptr, m: ptr, st: Static, shared: bool) {
+    if st.elsewhere {
+        avra_llvm_static_declared(m, mangled(st.name))
+        return
+    }
     for j, b in st.boxes { emit_box(lc, m, box_name(st, j), st, b) }
+    if shared { avra_llvm_static_shared(m, mangled(st.name)) }
 }
 
 fn box_name(st: Static, j: int) -> string {
@@ -825,7 +842,7 @@ fn emit_body(
         externs: externs,
         rt: rt,
         census: avra_llvm_census_types() != 0,
-        frame_tags: if avra_llvm_census_types() != 0 { frame_tags(bd.ins, bd.layouts, rt) } else { {} },
+        frame_tags: if avra_llvm_census_types() != 0 { census_tags(bd.ins, bd.layouts, rt) } else { {} },
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for at, i in bd.ins {

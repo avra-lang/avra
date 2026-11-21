@@ -4,7 +4,7 @@
 //! the kind's facts are what every law of it finds, gathered per item by `law_findings`, whose answer
 //! is saved and cut off early, while the voices are applied as a finding is said.
 use core.{At, NodeKind, Span}
-use compiler.{ItemView}
+use compiler.{ItemId, ItemView}
 use diagnostics.{Voice}
 use @std.meta.{Diagnostic, refuse}
 use @std.program.address.{SourceFileAddress}
@@ -18,7 +18,7 @@ use @std.program.query_engine.{QueryEngine}
 ///
 /// Its places are counted from its own item's start, or from the start of the item `item` of the same
 /// file where it stands in another.
-export type Found = { at: Span?, args: List<string>, aside: Aside? = null, kind: string? = null, named: Span? = null, fixes: List<FoundFix> = [], local: List<int> = [], item: int? = null, unread: Unread? = null }
+export type Found = { at: Span?, args: List<string>, aside: Aside? = null, kind: string? = null, named: Span? = null, fixes: List<FoundFix> = [], local: List<int> = [], item: ItemId? = null, unread: Unread? = null }
 
 /// A parse refusal in a file the name a finding refuses may be declared in, said beside the finding
 /// in place of its remedy: what holds that file (`subject`), the name, the file as a path from the
@@ -29,16 +29,16 @@ export type Unread = { subject: string, name: string, path: string, at: Span?, m
 /// sure, short of which it is offered as likely, or where it's a `guess` only as possible; where it
 /// writes in another item of the same file than the finding's, that item, its place counted from
 /// that item's start.
-export type FoundFix = { description: string, at: Span?, replacement: string, sure: bool = false, item: int? = null, guess: bool = false }
+export type FoundFix = { description: string, at: Span?, replacement: string, sure: bool = false, item: ItemId? = null, guess: bool = false }
 
 /// A sentence said beside a finding, at the place it names: in the finding's own item, or in the
 /// item `item` of the same file, its place counted from that item's start.
-export type Aside = { label: string, at: Span?, item: int? = null }
+export type Aside = { label: string, at: Span?, item: ItemId? = null }
 
 export component law {
     kind: string
     /// What it finds in an item read whole; a law that judges kinds of node reads nothing so.
-    reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found> = reads_no_item
+    reads: fn(QueryEngine, SourceFileAddress, ItemId) -> List<Found> = reads_no_item
     /// What it finds in an item read whole through the item's view, where the file holds the item.
     reads_view: fn(ItemView) -> List<Found> = sees_no_item
     /// The kinds of node it judges: where any is named, each node of them its item holds is handed to
@@ -66,7 +66,7 @@ export component law {
 }
 
 /// What a law that judges kinds of node finds in an item read whole: nothing.
-export fn reads_no_item(_engine: QueryEngine, _file: SourceFileAddress, _at: int) -> List<Found> { [] }
+export fn reads_no_item(_engine: QueryEngine, _file: SourceFileAddress, _at: ItemId) -> List<Found> { [] }
 
 /// No finding: a law's answer that finds nothing through the view, laid out once.
 const NO_FINDINGS: List<Found> = []

@@ -106,7 +106,7 @@ type OwnNames = { owner: string, names: List<string> }
 fn taken_again(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     own: fn(SyntaxArena, StmtId) -> OwnNames?,
 ) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
@@ -159,11 +159,11 @@ fn fields_again(view: ItemView) -> List<Found> {
     )
 }
 
-fn seats_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { taken_again(engine, file, at, fn_seats) }
+fn seats_again(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { taken_again(engine, file, at, fn_seats) }
 
-fn tparams_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { taken_again(engine, file, at, own_type_params) }
+fn tparams_again(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { taken_again(engine, file, at, own_type_params) }
 
-fn variants_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn variants_again(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     taken_again(engine, file, at, enum_variants)
 }
 
@@ -184,7 +184,7 @@ fn enums_empty(view: ItemView) -> List<Found> {
 type Seated = { stmt: StmtId, name: string, params: List<Param> }
 
 /// The fns the written item `at` of `file` declares at its top level, each with its seats.
-fn seated_fns(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Seated> {
+fn seated_fns(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Seated> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Seated { stmt: s, name: f!.name, params: f!.params } for s in item.stmts for f in [item.store.fn_parts(s)] if f != null]
@@ -270,7 +270,7 @@ fn fn_defaults_unlowered(store: SyntaxArena, f: Seated, sign: FnSignature?) -> L
 fn marked_fns(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     mark: fn(SyntaxArena, StmtId) -> bool,
 ) -> List<Found> {
     let store = read_item(engine, file, at).store
@@ -281,15 +281,15 @@ fn mutating(store: SyntaxArena, s: StmtId) -> bool { store.is_mutating(s) }
 
 fn static_marked(store: SyntaxArena, s: StmtId) -> bool { store.is_static(s) }
 
-fn stray_muts(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { marked_fns(engine, file, at, mutating) }
+fn stray_muts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { marked_fns(engine, file, at, mutating) }
 
-fn stray_statics(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { marked_fns(engine, file, at, static_marked) }
+fn stray_statics(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { marked_fns(engine, file, at, static_marked) }
 
 /// Whether `s` is a `once fn` that takes arguments.
 fn once_seated(store: SyntaxArena, s: StmtId) -> bool { store.is_once(s) && !(store.fn_parts(s)?.params?.is_empty() ?? true) }
 
 /// Every top-level `once fn` of the written item `at` of `file` that takes arguments.
-fn onces_with_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { marked_fns(engine, file, at, once_seated) }
+fn onces_with_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { marked_fns(engine, file, at, once_seated) }
 
 /// Every top-level `once fn` of the written item `view` shows, taking nothing, whose answer is a
 /// scalar the language owns, which no box holds; handed its name and its answer.
@@ -370,7 +370,7 @@ fn once_methods(view: ItemView) -> List<Found> {
 }
 
 /// Every named type the written item `at` of `file` declares with type parameters.
-fn named_generic(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn named_generic(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     named_found(engine, file, at, (n) -> !n.tparams.is_empty())
 }
 
@@ -382,9 +382,12 @@ fn named_over_nothing(view: ItemView) -> List<Found> {
 }
 
 /// Every named type the written item `at` of `file` declares that `keep` holds of, handed its name.
-fn named_found(engine: QueryEngine, file: SourceFileAddress, at: int, keep: fn(NamedParts) -> bool) -> List<
-    Found,
-> {
+fn named_found(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    keep: fn(NamedParts) -> bool,
+) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n!.name] } for s in item.stmts for n in [item.store.named_parts(s)] if n != null && keep(n!)]
@@ -393,7 +396,7 @@ fn named_found(engine: QueryEngine, file: SourceFileAddress, at: int, keep: fn(N
 /// Every named type the written item `at` of `file` declares whose shape, named type by named
 /// type, comes back to it, where it's the first of that loop declared: the loop's later names stand
 /// over it, which is refused already.
-fn named_circular(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn named_circular(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     named_found(
         engine,
         file,
@@ -404,7 +407,7 @@ fn named_circular(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
 
 /// Whether the named type `name` the written item `at` of `file` declares stands over itself, and
 /// every other name its loop passes through is declared after it.
-fn first_of_loop(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
+fn first_of_loop(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
     let others? = loop_back(engine, file, name, file, name, 0) else { return false }
     others.all((o) -> declared_after(engine, o, ItemKind.Named, file, at))
 }
@@ -429,23 +432,26 @@ fn loop_back(
 }
 
 /// Whether `d`, a declaration of `kind`, is declared after the written item `at` of `file`: in a
-/// file whose path comes later, or later in the same file.
+/// file whose path comes later, or later in the same file — by where each item stands among the
+/// file's items (`item_order`), never by its id, which says nothing of where it stands. Every
+/// declaration stands after no item at all; one the file doesn't declare stands after none.
 fn declared_after(
     engine: QueryEngine,
     d: DeclaredAt,
     kind: ItemKind,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId?,
 ) -> bool {
     if !same_file(d.file, file) { return text_before(file.path_in_package, d.file.path_in_package) }
-    let item = file_declares_named(engine, d.file, d.name)
+    let item? = file_declares_named(engine, d.file, d.name)
         .names
-        .find(it.name == d.name && it.kind == kind)?.item ?? -1
-    item > at
+        .find(it.name == d.name && it.kind == kind)?.item else { return false }
+    let here? = at else { return true }
+    item_order(engine, file, item) > item_order(engine, file, here)
 }
 
 /// Every record the written item `at` of `file` declares that spreads itself; handed its name.
-fn records_spreading_themselves(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
+fn records_spreading_themselves(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
     Found,
 > {
     if !item_held(engine, file, at) { return [] }
@@ -508,7 +514,7 @@ fn first_spread(engine: QueryEngine, t: DeclaredAt, file: SourceFileAddress, nam
     let chain? = spread_chain(engine, t, home, []) else { return false }
     let t_at = file_declares_named(engine, t.file, t.name)
         .names
-        .find(it.name == t.name && it.kind == ItemKind.Record)?.item ?? -1
+        .find(it.name == t.name && it.kind == ItemKind.Record)?.item
     chain
         .concat([home])
         .all((d) -> same_declared(d, t) || declared_after(engine, d, ItemKind.Record, t.file, t_at))
@@ -629,7 +635,7 @@ fn grammar_words(a: List<string>) -> Voice {
 
 /// Every impl the written item `at` of `file` writes on a type another package declares, of no
 /// trait its own package declares; handed its heading, its type and the type's package.
-fn orphans(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn orphans(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found {
@@ -719,7 +725,7 @@ fn first_alias(engine: QueryEngine, h: DeclaredAt, closing: DeclaredAt) -> bool 
     let between? = alias_path(engine, h, closing, []) else { return false }
     let h_at = file_declares_named(engine, h.file, h.name)
         .names
-        .find(it.name == h.name && it.kind == ItemKind.Alias)?.item ?? -1
+        .find(it.name == h.name && it.kind == ItemKind.Alias)?.item
     between
         .concat(if same_declared(h, closing) { [] } else { [closing] })
         .all((d) -> declared_after(engine, d, ItemKind.Alias, h.file, h_at))
@@ -917,7 +923,9 @@ export law spreads_in_a_loop {
 
 /// Every const the written item `at` of `file` declares with no type whose value reads back to it;
 /// handed its name.
-fn consts_reading_themselves(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn consts_reading_themselves(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
+    Found,
+> {
     declared_found(engine, file, at, const_named, (n) -> first_const_of_loop(engine, file, at, n))
 }
 
@@ -929,7 +937,7 @@ fn const_named(store: SyntaxArena, s: StmtId) -> string? { if store.const_value(
 fn declared_found(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     name_of: fn(SyntaxArena, StmtId) -> string?,
     keep: fn(string) -> bool,
 ) -> List<Found> {
@@ -940,7 +948,7 @@ fn declared_found(
 
 /// Whether the const `name` the written item `at` of `file` declares reads back to itself, and
 /// every other const that loop passes through is declared after it.
-fn first_const_of_loop(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
+fn first_const_of_loop(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
     let loop? = const_loop(engine, file, name) else { return false }
     loop.drop(1).all((d) -> declared_after(engine, d, ItemKind.Const, file, at))
 }
@@ -979,7 +987,7 @@ export law impl_beyond_trait {
 }
 
 /// Every type the written item `at` of `file` declares under a name the language owns for a type.
-fn builtins_declared(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn builtins_declared(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     declared_found(engine, file, at, type_named, (n) -> builtin_type_name(avra().rows.types, n))
 }
 
