@@ -78,12 +78,12 @@ type FileNewOnly = { forms: List<NewOnly> }
 fn file_new_only(engine: QueryEngine, file: SourceFileAddress) -> FileNewOnly {
     if is_manifest(file) { return FileNewOnly { forms: [] } }
     FileNewOnly {
-        forms: forms_once(flatten([item_new_only(engine, file, at) for at in 0..item_count(engine, file)])),
+        forms: forms_once(flatten([item_new_only(engine, file, at) for at in item_ids(engine, file)])),
     }
 }
 
 /// The forms only the program layer builds that the item `at` of `file` uses.
-fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<NewOnly> {
+fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<NewOnly> {
     let item = read_item(engine, file, at)
     let nodes = [ExprId { index: i } for i in 0..item.store.expr_count()]
     let wide = if nodes.any(widely_placed(engine, file, item.store, it)) { [NewOnly.WidePlace] } else { [] }
@@ -147,10 +147,11 @@ fn writes_never(t: TypeRef) -> bool {
 }
 
 /// Whether `e` writes fewer type arguments than what it names takes: a call of a declared fn, or a
-/// record's literal. Counts are read off the declarations, so this only sets a judge aside.
+/// record's literal; or writes any after a method's name. Counts are read off the declarations, so this only sets a judge aside.
 fn prefix_pinned(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) {
         .Call(callee, pins, _) -> !pins.is_empty() && pins.length < fn_type_params(engine, file, callee.of)?.length ?? 0,
+        .MethodCall(_, _, _) -> !store.struct_targs_of(e).is_empty(),
         _ -> {
             let written = store.struct_targs_of(e)
             let parts? = store.struct_lit_parts(e) else { return false }
@@ -236,7 +237,7 @@ fn keyed_value(typed: List<List<SignedType?>>, v: ExprId) -> bool {
 }
 
 /// The types each fn and each impl's method the item `at` of `file` declares give its nodes, by node.
-fn item_typed(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn item_typed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     List<SignedType?>,
 > {
     let fns = [b.types for s in item.stmts for p in some_list(item.store.fn_parts(s)) for b in some_list(typed_fn(engine, file, p.name))]

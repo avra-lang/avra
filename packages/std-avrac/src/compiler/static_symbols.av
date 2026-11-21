@@ -28,7 +28,7 @@ fn literal_symbol(
     unit: string,
     e: ExprId,
     ty: SignedType,
-    frame: int?,
+    frame: ItemId?,
 ) -> string {
     let sourced = if frame == null { null } else { sourced_symbol(engine, file, store, e, ty, frame!) }
     sourced ?? made_symbol(file, store, unit, e, ty)
@@ -57,14 +57,15 @@ fn sourced_symbol(
     store: SyntaxArena,
     e: ExprId,
     ty: SignedType,
-    frame: int,
+    frame: ItemId,
 ) -> string? {
     let span? = store.expr_span(e) else { return null }
     let sites = written_sites(engine, file, store.tag_expr(store.expr(e)))
     let home? = sites
         .find(it.item == frame && it.expr() == e && it.lo == span.lo && it.hi == span.hi) else { return null }
     let turn = [1 for s in sites if s.print == home.print &&
-        (s.item < home.item || s.item == home.item && stands_before(s.lo, s.index < e.index, span.lo))]
+        (item_order(engine, file, s.item) < item_order(engine, file, home.item) ||
+            s.item == home.item && stands_before(s.lo, s.index < e.index, span.lo))]
         .length
     site_symbol(
         file,
@@ -87,7 +88,7 @@ fn literal_site(
     file: SourceFileAddress,
     store: SyntaxArena,
     e: ExprId,
-    frame: int?,
+    frame: ItemId?,
 ) -> int {
     let print = store.site_fingerprint(e)
     mix_final(
@@ -111,7 +112,7 @@ fn literal_turn(
     store: SyntaxArena,
     e: ExprId,
     print: int,
-    frame: int?,
+    frame: ItemId?,
 ) -> int {
     let written? = store.expr_span(e) else { return 0 }
     let at = in_file(engine, file, frame, written).lo

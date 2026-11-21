@@ -2,6 +2,7 @@
 //! they came in, so a question's set is one number and the union of two sets is looked up once. Id
 //! zero is the empty set. An identity: every holder sees one table.
 use @std.meta.{identity}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use sorted.{sorted_by}
 use @std.text.{text_before}
 
@@ -11,8 +12,8 @@ export type NameSets = {
     members: Cell<List<List<string>>>,
     /// Each set's id, by its members spelled.
     ids: Cell<Map<string, int>>,
-    /// Each union asked, by the two ids.
-    unions: Cell<Map<string, int>>,
+    /// Each union asked, by its two ids.
+    unions: HashKeyedTable<int>,
 }
 
 /// A table holding only the empty set.
@@ -20,8 +21,7 @@ export fn name_sets() -> NameSets {
     let empty: List<string> = []
     let members: Cell<List<List<string>>> = Cell.new([empty])
     let ids: Cell<Map<string, int>> = Cell.new({"": 0})
-    let unions: Cell<Map<string, int>> = Cell.new({})
-    NameSets { members: members, ids: ids, unions: unions }
+    NameSets { members: members, ids: ids, unions: hash_keyed_table() }
 }
 
 /// The id of the empty set.
@@ -44,17 +44,22 @@ impl NameSets {
     fn union(a: int, b: int) -> int {
         if a == b || b == NO_NAMES { return a }
         if a == NO_NAMES { return b }
-        let key = if a < b { "${a},${b}" } else { "${b},${a}" }
-        let known = self.unions.get().get(key)
+        let low = if a < b { a } else { b }
+        let spread = joined_word(low, if a < b { b } else { a })
+        let known = self.unions.get_at(low, spread)
         if known != null { return known! }
         let id = self.of(self.members_of(a).concat(self.members_of(b)))
-        self.unions.put(key, id)
+        self.unions.put_at(low, spread, id)
         id
     }
 
     /// The members of the set `id`, sorted.
     fn members_of(id: int) -> List<string> { self.members.get()[id] }
 }
+
+/// The second word a union of `low` and `high` is kept under: one for each `high` beside the same
+/// `low`, spread so the table's slots stay apart.
+fn joined_word(low: int, high: int) -> int { high ^ low.wrapping_mul(0 - 7046029254386353131) }
 
 /// `names` with each kept once, in text order.
 fn distinct_sorted(names: List<string>) -> List<string> {

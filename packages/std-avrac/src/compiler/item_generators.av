@@ -103,7 +103,7 @@ impl DeclSeat {
 /// A declaration a site hands its generator past the one it stands on: where it's written and the
 /// seat it crosses into.
 @derive(Saved)
-export type HandedDecl = { file: SourceFileAddress, name: string, item: int, seat: DeclSeat }
+export type HandedDecl = { file: SourceFileAddress, name: string, item: ItemId, seat: DeclSeat }
 
 /// What a site hands one seat of its generator past the declaration it stands on: a declaration the
 /// argument names, the literal it spells, or the quote it writes; or why it crosses as none of them.
@@ -117,13 +117,13 @@ export enum HandedArg {
     Code(home: string, at: int, parts: List<string>)
     /// A const the argument names whose value is no literal: its settled value, run where it's
     /// declared, and the print of its settlement — what a site that hands it runs again on.
-    Settled(file: SourceFileAddress, name: string, item: int, value: ContentHash)
+    Settled(file: SourceFileAddress, name: string, item: ItemId, value: ContentHash)
     /// Fields of the declaration `decl` the site stands on in `file`, by their place among its
     /// fields: one, or a list of them where `listed`.
     Fields(file: SourceFileAddress, decl: string, picked: List<int>, listed: bool)
     /// An argument the source computes — a call — written at node `at` of the written item `item` of
     /// `file`: its value run at compile time under the seat type `seat`.
-    Computed(file: SourceFileAddress, item: int, at: int, seat: SignedType)
+    Computed(file: SourceFileAddress, item: ItemId, at: int, seat: SignedType)
     /// An argument the program layer doesn't cross yet, and why.
     Uncrossed(why: string)
     /// An argument naming no declaration its seat takes: the program's fault, and why.
@@ -508,7 +508,7 @@ fn fn_slots(engine: QueryEngine) -> int {
 
 /// A declaration a generator runs over: the name its file declares it as, the item declaring it, the
 /// generator, each argument the site hands it past this one, and, for a method, the impl writing it.
-export type GeneratorSite = { name: string, item: int, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
+export type GeneratorSite = { name: string, item: ItemId, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
 
 /// A method an annotation stands on: the impl writing it, and whether it's a static.
 @derive(Saved)
@@ -535,16 +535,16 @@ fn method_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress) 
     GeneratorSite,
 > {
     flatten(
-        [impl_method_sites(engine, scope, a) for k in 0..item_count(engine, file) for a in written_impls_at(engine, scope, file, k)],
+        [impl_method_sites(engine, scope, a) for k in item_ids(engine, file) for a in written_impls_at(engine, scope, file, k)],
     )
 }
 
 /// The impls the written item `at` of `file` holds whose targets its written names resolve, as
 /// `impls_at` places them.
-fn written_impls_at(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, at: int) -> List<
+fn written_impls_at(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, at: ItemId) -> List<
     ImplAt,
 > {
-    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in item_impls(engine, file, at) for d in [
+    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in filed_impls(engine, file, at) for d in [
         declared_of(resolved_in(engine, scope, file, Space.Type, i.target).named()) ?? own_declared(
             i.target,
         ),
@@ -662,7 +662,7 @@ fn member_sites(engine: QueryEngine, d: DeclaredName, annotated: List<GeneratorS
 }
 
 /// The trait `t`'s own `derive` over the declaration `d`, as `@derive(T)` written on it runs.
-fn derive_site(name: string, item: int, t: TraitAt) -> GeneratorSite {
+fn derive_site(name: string, item: ItemId, t: TraitAt) -> GeneratorSite {
     GeneratorSite {
         name: name,
         item: item,
@@ -713,7 +713,7 @@ fn annotation_sites(
     scope: FileScope,
     file: SourceFileAddress,
     name: string,
-    item: int,
+    item: ItemId,
     kind: ItemKind,
     read: ReadItem,
     a: Annotation,
@@ -962,7 +962,7 @@ fn settled_handed(
     engine: QueryEngine,
     file: SourceFileAddress,
     name: string,
-    item: int,
+    item: ItemId,
     mut heap: MetaHeap,
 ) -> MetaVal? {
     let ran? = const_lifted(engine, file, name, item) else { return null }

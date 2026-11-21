@@ -71,7 +71,7 @@ type AssignedBody = {
 }
 
 /// Every assignment of the written item `at` of `file` that lands on no place.
-fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
@@ -80,7 +80,7 @@ fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found
 
 /// The bodies the written item `at` of `file` writes: each fn's, each method's of its impls, and its
 /// share of its file's entry, each typed as its query keeps it.
-fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     AssignedBody,
 > {
     let fns = [whole(sb! with { typed: typed_fn(engine, file, p!.name) }) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
@@ -104,14 +104,14 @@ fn whole(signed: SignedBody) -> AssignedBody {
 
 /// The entry's statements the written item `at` of `file` writes, under the typing the entry's query
 /// keeps; none where it runs none.
-fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<AssignedBody> {
+fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<AssignedBody> {
     if file_declares_at(engine, file, at).names.any(it.item == at) && !runs_in(engine, file, at) { return [] }
     let types = entry_types(engine, file)
     if types.bases.is_empty() { return [] }
     let read = entry_read(engine, file)
     let mine? = read.items.find(it.at == at) else { return [] }
     let signed? = entry_signed(read) else { return [] }
-    let hi = read.items.find(it.at > at)?.base ?? read.store.expr_count()
+    let hi = read.base_after(at)
     [
         AssignedBody {
             store: signed.item.store,

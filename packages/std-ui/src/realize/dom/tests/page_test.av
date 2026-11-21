@@ -227,3 +227,44 @@ spec "what a host is told of a seat" {
         }
     }
 }
+
+spec "a control on a live page is held to what the program shows" {
+    given "a field shown otherwise than it was typed" {
+        then "the page is sent what the program shows, after the handler heard what was typed" {
+            let held: Cell<string> = Cell.new("")
+            let host = Host {}
+            let on = paged(
+                () -> field "Name" {
+                    shown: "${held.get()}!"
+                    on input { typed -> held.set(typed) }
+                },
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            on.app.paint()
+            let who = named(on.page, "Name")[0].n
+            let said = on.heard(who, seat_for(.Input).number(), Says.Text.code(), 0, "Ada")
+            let frames = host.frames.get()
+            said &&
+                held.get() == "Ada" &&
+                frames.length == 2 &&
+                records(frames[1]).any(it.starts_with("prop ") && it.ends_with("value=3:\"Ada!\""))
+        }
+    }
+    given "a field that keeps what was typed" {
+        then "the page is sent nothing: it already holds it" {
+            let host = Host {}
+            let on = paged(
+                () -> field "Name",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            on.app.paint()
+            let who = named(on.page, "Name")[0].n
+            on.heard(who, seat_for(.Input).number(), Says.Text.code(), 0, "Ada") &&
+                host.frames.get().length == 1
+        }
+    }
+}

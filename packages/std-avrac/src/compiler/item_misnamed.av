@@ -48,7 +48,7 @@ fn written_name(word: string, at: Span?, seat: bool = false) -> WrittenName { Wr
 
 /// Every word in the written item `at` of `file` that cannot be the name it's written as, node by
 /// node.
-fn item_misnamed(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisnamed {
+fn item_misnamed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemMisnamed {
     if !item_held(engine, file, at) { return misnamed_made(engine, file, at) }
     misnamed_seen(item_view(engine, file, at))
 }
@@ -64,7 +64,7 @@ fn misnamed_seen(view: ItemView) -> ItemMisnamed {
 }
 
 /// What `item_misnamed` answers, made.
-fn misnamed_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisnamed {
+fn misnamed_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemMisnamed {
     if !item_held(engine, file, at) { return ItemMisnamed { rows: [] } }
     let item = read_item(engine, file, at)
     let declared = flatten([declared_names(item.store, s) for s in item.stmts])
@@ -200,6 +200,13 @@ fn misnamed(n: WrittenName) -> MisnamedAt? {
 fn cannot_name(word: string) -> bool { naming_of(written_name(word, null)) != null }
 
 /// The language's keywords, as a set, made once a process.
+/// Every reserved word, as a set made once a process.
+once fn reserved_set() -> Map<string, bool> {
+    mut words: Map<string, bool> = {}
+    for r in reserved { words.set(r, true) }
+    words
+}
+
 once fn keyword_set() -> Map<string, bool> {
     mut words: Map<string, bool> = {}
     for k in avra().keywords { words.set(k, true) }
@@ -213,7 +220,7 @@ fn naming_of(n: WrittenName) -> Misnaming? {
             .Keyword(n.remedy ?? if n.seat { remedy_for(avra().rows, n.word) } else { null })
     }
     if n.word == self_word { return Misnaming.Implementor }
-    if reserved.contains(n.word) { Misnaming.Reserved } else { null }
+    if reserved_set().has(n.word) { Misnaming.Reserved } else { null }
 }
 
 /// Every keyword the written item `view` shows writes as a name.

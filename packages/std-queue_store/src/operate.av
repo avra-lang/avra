@@ -17,7 +17,7 @@
 use @std.json.{Json}
 use @std.queue.{HomeError, Terms}
 use @std.sqlite.{Db, Row, sql}
-use @std.time.{Duration, Time, ms, now}
+use @std.time.{Duration, Time, nanos, now}
 use fault.{homed}
 use letters.{dead_parts}
 use readout.{read_out}
@@ -214,14 +214,11 @@ fn kept_terms(name: string, row: Row) -> Result<Terms?, HomeError> {
     )
 }
 
-/// A span a row keeps in milliseconds; absent past the range a span
-/// holds.
+/// A span a row keeps in nanoseconds; absent when it is less than
+/// nothing.
 fn span_of(n: int) -> Duration? {
-    if n < 0 || n > longest_ms { null } else { ms(n) }
+    if n < 0 { null } else { nanos(n) }
 }
-
-/// The longest span, in milliseconds.
-const longest_ms: int = 9223372036854
 
 fn counted(db: Db, text: string, name: string, t: Time) -> Result<int, HomeError> {
     homed((homed(db.scalar(sql(text, [.Text(name), .Int(t.ns)])))?).int())
@@ -378,7 +375,9 @@ const terms_of: string = "SELECT \"capacity\", \"lease\", \"retries\", \"overflo
 
 const held_count: string = "SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" > ?2"
 
-const delayed_count: string = "SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" IS NULL AND \"epoch\" = 0 AND \"ready_at\" > ?2"
+/// The items no take reached that are due after `?2`: those that wait,
+/// and those in line before a clock stepped back.
+const delayed_count: string = "SELECT (SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" IS NULL AND \"in_line\" IS NULL AND \"epoch\" = 0 AND \"ready_at\" > ?2) + (SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"in_line\" IS NOT NULL AND \"epoch\" = 0 AND \"ready_at\" > ?2)"
 
 const page: string = "SELECT \"id\", \"key\", \"shape\", CAST(\"body\" AS BLOB), \"sent_at\", \"ready_at\", \"attempt\", \"epoch\", \"leased_until\", \"reader\" FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"id\" > ?2 ORDER BY \"id\" LIMIT ?3"
 
@@ -387,7 +386,8 @@ const find_item: string = "SELECT \"shape\", CAST(\"body\" AS BLOB), \"key\", \"
 /// A live item due now, its lease and backoff gone, its attempts kept.
 const due_now: string = "UPDATE \"FlowItem\" SET \"ready_at\" = ?2, \"leased_until\" = NULL, \"reader\" = NULL WHERE \"id\" = ?1"
 
-const refiled: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)"
+/// An item sent again, in line from its send.
+const refiled: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"in_line\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, 0, 0)"
 
 const drop_item: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = ?1"
 

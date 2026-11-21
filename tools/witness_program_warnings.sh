@@ -45,9 +45,14 @@ held() {
     built env AVRA_PROGRAM=1 AVRA_CACHE_DIR="$tmp/machine"
     warnings "$tmp/err" > "$tmp/$1.new"
 }
+# A BUILD OR CHECK JUDGES THE WARNINGS OF ITS OWN PACKAGE ALONE: a dependency's are its own check's,
+# and the program layer says none of them, so the old path's warnings are held to the cli's own files
+# (a warning framed nowhere stays).
+own_only() { awk -v own="╭─[$root/packages/cli/" '!index($0, "╭─[") || index($0, own)' "$1"; }
 old() {
     built env AVRA_PROGRAM=0 AVRA_CACHE_DIR="$tmp/machine-old"
-    warnings "$tmp/err" > "$tmp/$1.old"
+    warnings "$tmp/err" > "$tmp/$1.all"
+    own_only "$tmp/$1.all" > "$tmp/$1.old"
 }
 # The old path's warnings of the kinds `$1.new` says, against `$1.new` itself.
 alike() {
@@ -106,7 +111,8 @@ checked() {
     if ! env $1 AVRA_CACHE_DIR="$tmp/$2-store" "$avra" check packages/cli >"$tmp/out" 2>"$tmp/err"; then
         echo "witness_program_warnings: check failed on the $2 path:" >&2; tail -5 "$tmp/err" >&2; exit 1
     fi
-    warnings "$tmp/out" > "$tmp/check.$2"
+    warnings "$tmp/out" > "$tmp/check.$2.all"
+    if [ "$2" = old ]; then own_only "$tmp/check.$2.all" > "$tmp/check.$2"; else cp "$tmp/check.$2.all" "$tmp/check.$2"; fi
 }
 cp "$tmp/orig.av" "$file"
 if wanted check; then

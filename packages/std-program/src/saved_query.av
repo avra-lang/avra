@@ -182,14 +182,17 @@ fn argument_keys(f: Fn) -> List<Code>? {
 }
 
 /// How one argument of `shape`, read as `value`, is spelled in a question's key; absent for a shape
-/// no key spells.
+/// no key spells. A named type is spelled as the shape it names, read through its `.of`: a name is
+/// free at runtime, so a question over an `ItemId` is the question over its number, and is labelled
+/// as one.
 fn argument_key(shape: ValueShape, value: Code) -> Code? {
     match shape {
         .Text -> quote { held_text(${value}) },
         .Int -> quote { held_int(${value}) },
         .Bool -> quote { held_bool(${value}) },
         .Declared(type_name, _) -> if type_name == FILE_TYPE { quote { held_file(${value}) } } else { null },
-        .Offset or .Float or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> null,
+        .Renamed(_, over) -> argument_key(over, quote { ${value}.of }),
+        .Offset or .Float or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> null,
     }
 }
 
@@ -438,12 +441,14 @@ fn asked_in_source(f: Fn, p: Param, reads: List<Code>, skipped: int, seat: int) 
     }
 }
 
-/// How the next key of `shape` reads back, for a shape a key spells.
+/// How the next key of `shape` reads back, for a shape a key spells: a named type as the shape it
+/// names, crossing back into the name.
 fn key_read(shape: ValueShape) -> Code {
     match shape {
         .Text -> quote { keys.text() },
         .Int -> quote { keys.int() },
         .Bool -> quote { keys.truth() },
+        .Renamed(type_name, over) -> quote { ${type_name}(${key_read(over)}) },
         rest -> quote { keys.file() },
     }
 }
@@ -522,12 +527,24 @@ fn in_place_door(f: Fn) -> List<Directive> {
     }
 }
 
-/// `<name>_part(engine, …, part_name)`: one part of the answer.
+/// `<name>_part(engine, …, part_name)`: one part of the answer, asked as the question its arguments
+/// are held under, and found in the answer itself where this process made or read it whole, as its
+/// wrapper holds answers; only an answer from the store is read part by part from its bytes.
 fn part_door(f: Fn) -> List<Directive> {
     let door = "${f.name}_part"
     let source = quote {
         export fn ${door}(..${seats_of(f).concat([seat("part_name", "string")])}) -> Bytes? {
-            ${engine_of(f)}.part_of_answer_to(${question_of(f)}, ${name("part_name")})
+            let held = ${asked_of(f)}
+            let answer = ${engine_of(f)}.held_answer_now(held)
+            let kept = ${held_door(f)}().get(answer)
+            if kept != null { return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, kept!.value) }
+            let fresh = ${fresh_door(f)}().get().first()
+            if fresh != null && fresh!.arguments == held.question.arguments {
+                ${fresh_door(f)}().set([])
+                ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
+                return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, fresh!.value)
+            }
+            ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, null)
         }
     }
     [declares(door, f.at, source)]
