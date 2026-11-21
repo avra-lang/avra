@@ -12,7 +12,7 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
-use @std.program.source_facts.{item_tape_saved, source_text}
+use @std.program.source_facts.{item_tape_saved}
 use @std.program.syntax_tape.{SyntaxTape, tape_declares}
 use @std.program.saved_query.{
     cut_query,
@@ -118,10 +118,9 @@ fn minted_twice(engine: QueryEngine, a: DeclaredName, b: DeclaredName) -> bool {
 
 /// Whether `d` is written in its item as it stands, before anything expands it.
 fn written_in(engine: QueryEngine, d: DeclaredName) -> bool {
-    let items = items_under(engine, d.file)
-    if d.item >= items.length { return false }
-    tape_declares(item_tape_saved(engine, items[d.item].text, items[d.item].context))
-        .any(it.name == d.name)
+    if !item_held(engine, d.file, d.item) { return false }
+    let item = item_under(engine, d.file, d.item)
+    tape_declares(item_tape_saved(engine, item.text, item.context)).any(it.name == d.name)
 }
 
 /// Whether two declarations of one name are each their own file's: both private, in different files.
@@ -170,7 +169,7 @@ export type FileScope = { own: Bound, siblings: List<DeclaredName>, clashes: Lis
 /// What is `file`'s own at its top level; absent for a file that isn't there.
 @cut_query
 export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
-    if source_text(engine, file) == null { return null }
+    if !file_present(engine, file) { return null }
     let module = module_kept(engine, file.package_name, module_segments(file), true)
     mut own = nothing_bound()
     for d in module.apart { if same_file(d.file, file) { own.bind(space_of(d.kind), d.name, d) } }
@@ -370,6 +369,13 @@ impl FileScope {
     fn kept_apart(space: Space, name: string) -> List<DeclaredName> {
         [d for d in self.siblings if d.name == name && space_of(d.kind) == space]
     }
+
+    /// The name of every declaration in `space` the file's siblings keep apart, as a set.
+    fn apart_in(space: Space) -> Map<string, bool> {
+        mut names: Map<string, bool> = {}
+        for d in self.siblings { if space_of(d.kind) == space { names.set(d.name, true) } }
+        names
+    }
 }
 
 /// Every name the top level of `file`, whose scope is `scope`, names a declaration by in `space`,
@@ -380,14 +386,13 @@ export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddr
 > {
     let shared = module_bindings(engine, file.package_name, module_segments(file), true).shared
     let prelude = if file.package_name == PRELUDE { [] } else { module_names(engine, module_files(engine, PRELUDE, [], false)) }
+    let apart = scope.apart_in(space)
     distinct(
         scope
             .own
             .names_in(space)
             .concat(shared.names_in(space))
-            .concat(
-                [d.name for d in prelude if lends(d, space) && scope.kept_apart(space, d.name).is_empty()],
-            ),
+            .concat([d.name for d in prelude if lends(d, space) && !apart.has(d.name)]),
     )
 }
 

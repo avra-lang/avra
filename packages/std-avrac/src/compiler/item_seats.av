@@ -24,13 +24,13 @@ type UnwrittenSeat = { at: FindingAt?, seat: string, fn_name: string }
 type ItemSeats = { seats: List<UnwrittenSeat> }
 
 /// Each `mut` seat of the item `at` of `file` its fn never writes through.
-fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [Found { at: span_of(s.at), args: [s.seat, s.fn_name] } for s in item_seats(engine, file, at).seats]
 }
 
 /// Every `mut` seat a free fn or an inherent method of the written item `at` of `file` declares
 /// that its body never writes through, in the order they're declared.
-fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
+fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemSeats {
     if !item_held(engine, file, at) { return seats_made(engine, file, at) }
     let view = item_view(engine, file, at)
     let held? = view.seats.get() else {
@@ -42,7 +42,7 @@ fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeat
 }
 
 /// What `item_seats` answers, made.
-fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
+fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemSeats {
     if !item_held(engine, file, at) { return ItemSeats { seats: [] } }
     let item = read_item(engine, file, at)
     let judged = [s for s in item.stmts if judged_fn(item, s)]
@@ -56,7 +56,7 @@ fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeat
 fn judged_fn(item: ReadItem, s: StmtId) -> bool { item.store.fn_parts(s) != null }
 
 /// The methods and statics the inherent impls of the written item `at` of `file` declare.
-fn inherent_fns(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn inherent_fns(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     StmtId,
 > {
     flatten(
@@ -81,7 +81,7 @@ fn unwritten_seats(engine: QueryEngine, cx: Copies, file: SourceFileAddress, s: 
 
 /// A seat of a declared fn: the fn, by its file, its item and its name, and the seat's place.
 @derive(Saved)
-type SeatOf = { file: SourceFileAddress, item: int, fn_name: string, at: int }
+type SeatOf = { file: SourceFileAddress, item: ItemId, fn_name: string, at: int }
 
 /// What a fn's body does with one seat: whether it writes through it itself or may, and the `mut`
 /// seats of declared fns it hands it to, which write it where they write theirs.

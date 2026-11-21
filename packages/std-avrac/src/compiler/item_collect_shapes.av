@@ -7,6 +7,7 @@
 //! takes type parameters or spreads another's, `in closure`, or two members its order ties. Read
 //! off the declaration's syntax and, for its columns, the members the program layer gathers.
 use core.{
+    new_node_store,
     CollectKind,
     ExprId,
     some_list,
@@ -60,8 +61,8 @@ type CollectShape = { stmt: StmtId, name: string, kind: CollectKind, scope: Coll
 /// Every gathering the written item `at` of `file` declares, in the store it's read from.
 type CollectShapes = { store: SyntaxArena, all: List<CollectShape> }
 
-fn collect_shapes(engine: QueryEngine, file: SourceFileAddress, at: int) -> CollectShapes {
-    if !item_held(engine, file, at) { return CollectShapes { store: read_item(engine, file, 0).store, all: [] } }
+fn collect_shapes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> CollectShapes {
+    if !item_held(engine, file, at) { return CollectShapes { store: new_node_store(), all: [] } }
     let item = read_item(engine, file, at)
     CollectShapes {
         store: item.store,
@@ -101,7 +102,7 @@ fn collect_enum_shape_at(store: SyntaxArena, s: StmtId) -> CollectShape? {
 fn shape_found(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     pick: fn(QueryEngine, SourceFileAddress, CollectShape) -> List<List<string>>,
 ) -> List<Found> {
     let g = collect_shapes(engine, file, at)
@@ -332,37 +333,37 @@ fn literal_key(l: Literal) -> string {
     match l { .Int(n) -> "i${n}", .Float(b) -> "f${b}", .Bool(b) -> "b${b}", .Text(t) -> "t${t}" }
 }
 
-fn kinds_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, kinds_unknown) }
+fn kinds_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, kinds_unknown) }
 
-fn scopes_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, scopes_unknown) }
+fn scopes_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, scopes_unknown) }
 
-fn orders_missing_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, orders_missing) }
+fn orders_missing_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, orders_missing) }
 
-fn keys_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_unknown) }
+fn keys_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, keys_unknown) }
 
-fn not_lists_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, not_lists) }
+fn not_lists_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, not_lists) }
 
-fn mistyped_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_mistyped) }
+fn mistyped_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, projections_mistyped) }
 
-fn fieldless_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_fieldless) }
+fn fieldless_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, projections_fieldless) }
 
-fn misfilled_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_misfilled) }
+fn misfilled_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, projections_misfilled) }
 
-fn paths_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, paths_unknown) }
+fn paths_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, paths_unknown) }
 
-fn uncomparable_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_uncomparable) }
+fn uncomparable_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, keys_uncomparable) }
 
-fn mixed_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_mixed) }
+fn mixed_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, keys_mixed) }
 
-fn dense_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, dense_faults) }
+fn dense_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, dense_faults) }
 
-fn variants_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, variants_twice) }
+fn variants_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, variants_twice) }
 
-fn members_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, members_unfit) }
+fn members_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, members_unfit) }
 
-fn closure_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_in_closure) }
+fn closure_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, enums_in_closure) }
 
-fn ties_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_tied) }
+fn ties_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { shape_found(engine, file, at, enums_tied) }
 
 /// Every value the written item `view` shows declares that a collection it reads gathers, by the
 /// component it instantiates or a mark it wears; handed the value and the collection.

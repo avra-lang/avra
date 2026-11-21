@@ -38,11 +38,11 @@ use core.{
 use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
-use @std.program.answer_record.{content_hash}
+use @std.program.answer_record.{ContentHash, content_hash}
 use @std.program.bounded_cache.{BoundedCache, bounded_cache}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 use @std.io.{env}
 use @std.text.{parse_int}
 use @std.program.source_facts.{PlacedTape}
@@ -68,10 +68,31 @@ export fn value_signature(ty: SignedType) -> FnSignature { FnSignature { type_pa
 @derive(Saved)
 export type NameOver = { type_params: List<string>, of: SignedType }
 
-/// The signature of the fn `file` declares as `name`, absent when it declares none.
-@query
+/// The signature of the fn `file` declares as `name`, absent when it declares none: the answer its
+/// declaration's face gives, kept under the name it's asked by, so `avra explain @name` shows it and
+/// an edit inside its body asks nothing again.
+@cut_query
 export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
-    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let declared? = declaration_of(engine, file, name, ItemKind.Fn) else { return null }
+    faced_signature(engine, file, declared.item, name, declared.face)
+}
+
+/// The signature of the fn `name` the item `at` of `file` declares with the face `_face`, which the
+/// question is keyed by and the body never reads. The face is the declaration written with every
+/// body left out, so it says all reading the item back can
+/// tell a signature: that read is none of this answer's reads, and only what the signature's types
+/// resolve through is. A body edited leaves the face, and so this question, standing.
+@query
+fn faced_signature(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    name: string,
+    _face: ContentHash,
+) -> FnSignature? {
+    engine.unrecorded_begun()
+    let item = read_item(engine, file, at)
+    engine.recorded_again()
     let written? = written_fn(item.store, item.stmts, name) else { return null }
     declared_signature(engine, file, written)
 }
@@ -109,7 +130,7 @@ export fn fn_signatures(engine: QueryEngine, file: SourceFileAddress, name: stri
 }
 
 /// The signature of the fn `name` the item at `at` in `file` declares.
-fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> FnSignature? {
+fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> FnSignature? {
     let item = read_item(engine, file, at)
     let written? = written_fn(item.store, item.stmts, name) else { return null }
     declared_signature(engine, file, written)
@@ -400,8 +421,16 @@ fn field_seat(engine: QueryEngine, signing: Signing, p: Param) -> FieldSeat {
         name: p.name.of,
         ty: ty,
         state: p.state || p.prop && ty != null && declared_shapes(engine).compares_by_value(ty!),
+        over: shown_over(p),
     }
 }
+
+/// The place a member is shown over, as the mark `@over(x)` written before it names it: a mark the
+/// language reads on any component, whatever reader claims it.
+fn shown_over(p: Param) -> string? { p.marks.find(it.name == over_mark)?.args?.first() }
+
+/// The mark that shows a member over one of its component's places.
+const over_mark = "over"
 
 /// The type the field holding the handler of the event `p` declares has: the fn its handler is,
 /// handed the seats the event says and answering nothing, absent until one is set. Absent for a
@@ -593,7 +622,7 @@ fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string
 /// The item at `at` in `file`, read back: its statements, then each declaration it hoists.
 /// Whether `file` writes a `spec`: a suite's spec cases, which a program's own run never reaches.
 export fn writes_specs(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    (0..item_count(engine, file))
+    item_ids(engine, file)
         .any(
             (at) -> {
                 let item = read_item(engine, file, at)
@@ -604,7 +633,7 @@ export fn writes_specs(engine: QueryEngine, file: SourceFileAddress) -> bool {
 
 /// `read`, the item at `at` in `file` as another reader read it back, for whoever is asking now: each
 /// query a held item stands on asked, and nothing read back.
-fn item_asked(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadItem) -> ReadItem {
+fn item_asked(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: ReadItem) -> ReadItem {
     let made = generated_at(engine, file, at)
     if made != null {
         let _ = generated_expanded(engine, file, made!.tape)
@@ -616,7 +645,7 @@ fn item_asked(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadI
 
 /// The item at `at` in `file`, read back where its own text starts — each place it holds counted
 /// from there (`file_placed`) — each query it stands on asked.
-fn item_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {
+fn item_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadItem {
     let made = generated_at(engine, file, at)
     if made != null {
         let tape = generated_expanded(engine, file, made!.tape)
@@ -631,14 +660,14 @@ fn item_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem 
 }
 
 /// What a written item read back is held under: its file, its place, and its text's print.
-export fn written_key(file: SourceFileAddress, at: int, start: int, text: string) -> string { printed_key(file, at, start, fp_str(text)) }
+export fn written_key(file: SourceFileAddress, at: ItemId, start: int, text: string) -> string { printed_key(file, at, start, fp_str(text)) }
 
 /// What a written item whose text prints as `print` read back is held under.
-fn printed_key(file: SourceFileAddress, at: int, start: int, print: int) -> string { "${spelled_file(file)}#${at}#${start}#${print}" }
+fn printed_key(file: SourceFileAddress, at: ItemId, start: int, print: int) -> string { "${spelled_file(file)}#${at}#${start}#${print}" }
 
 /// What a made item read back is held under: its file, its place, and its whole tape's print —
 /// places included, so a template that moves makes another key.
-export fn made_key(file: SourceFileAddress, at: int, tape: SyntaxTape) -> string {
+export fn made_key(file: SourceFileAddress, at: ItemId, tape: SyntaxTape) -> string {
     let print = content_hash(tape.saved_bytes())
     "${spelled_file(file)}#${at}#made#${print.high_word}:${print.low_word}"
 }
@@ -646,7 +675,7 @@ export fn made_key(file: SourceFileAddress, at: int, tape: SyntaxTape) -> string
 /// The item `key` names, read back from the tape `placed` answers: the one held under the key, else
 /// read and held. `key` names its content — a written item's text, a made one's whole tape — so two
 /// items share an entry only where they read back alike.
-fn held_read(key: string, placed: fn() -> PlacedTape, at: int?) -> ReadItem {
+fn held_read(key: string, placed: fn() -> PlacedTape, at: ItemId?) -> ReadItem {
     if !items_held() { return item_whole(placed(), at) }
     let kept = held_items().get(key)
     if kept != null { return kept! }
@@ -658,7 +687,7 @@ fn held_read(key: string, placed: fn() -> PlacedTape, at: int?) -> ReadItem {
 
 /// An item's tape read back into a store of its own: its statements, then each declaration it
 /// hoists, which a read by name finds as it finds the written ones.
-fn item_whole(placed: PlacedTape, at: int?) -> ReadItem {
+fn item_whole(placed: PlacedTape, at: ItemId?) -> ReadItem {
     let store = new_node_store()
     let stmts = item_read_back(store, placed)
     ReadItem {
@@ -697,7 +726,7 @@ fn read_into(
     engine: QueryEngine,
     file: SourceFileAddress,
     store: SyntaxArena,
-    at: int,
+    at: ItemId,
     start: int = 0,
 ) -> List<StmtId> {
     item_read_back(store, placed_item(engine, file, item_under(engine, file, at), start))
@@ -716,13 +745,19 @@ fn placed_item(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder, st
 ///
 /// `at` is the item its places are counted from the start of (`file_placed`); absent where they're
 /// counted from its file's, or, for an entry read item by item, from each item's (`ItemBase`).
-type ReadItem = { store: SyntaxArena, stmts: List<StmtId>, written: int, at: int? = null }
+type ReadItem = { store: SyntaxArena, stmts: List<StmtId>, written: int, at: ItemId? = null }
 
 fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ReadItem? {
+    let declared? = declaration_of(engine, file, name, kind) else { return null }
+    read_item(engine, file, declared.item)
+}
+
+/// The declaration of `name` as `kind` in `file`, absent when there's none: a written one, and only
+/// where the file writes nothing of that name, one a generator made.
+fn declaration_of(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> DeclaredName? {
     let written = file_declares_named(engine, file, name).names.filter(it.name == name)
     let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
-    let declared? = made.find(it.kind == kind) else { return null }
-    read_item(engine, file, declared.item)
+    made.find(it.kind == kind)
 }
 
 /// The type parameters the type `file` declares as `name` writes, with their defaults: a record's, a
@@ -990,7 +1025,7 @@ impl SignedParam {
 /// Where an expression its source wrote stands: its item, its index among that item's nodes, its
 /// fingerprint and its span.
 @derive(Saved)
-export type WrittenSite = { item: int, index: int, print: int, lo: int, hi: int }
+export type WrittenSite = { item: ItemId, index: int, print: int, lo: int, hi: int }
 
 impl WrittenSite {
     /// The expression the site is, in its item's own store.
@@ -1003,13 +1038,11 @@ impl WrittenSite {
 export fn written_sites(engine: QueryEngine, file: SourceFileAddress, kind: int) -> List<
     WrittenSite,
 > {
-    flatten(
-        [item_sites(read_item(engine, file, at), at, kind) for at in 0..item_count(engine, file)],
-    )
+    flatten([item_sites(read_item(engine, file, at), at, kind) for at in item_ids(engine, file)])
 }
 
 /// Where each expression of the kind `kind` that the item `at`, read as `item`, writes stands.
-fn item_sites(item: ReadItem, at: int, kind: int) -> List<WrittenSite> {
+fn item_sites(item: ReadItem, at: ItemId, kind: int) -> List<WrittenSite> {
     let store = item.store
     [WrittenSite {
         item: at,
@@ -1023,19 +1056,17 @@ fn item_sites(item: ReadItem, at: int, kind: int) -> List<WrittenSite> {
 /// Where a record literal an item of a file holds stands, counted from its item's start, and the
 /// shape its site folds.
 @derive(Saved)
-export type LiteralPrint = { print: int, item: int, lo: int }
+export type LiteralPrint = { print: int, item: ItemId, lo: int }
 
 /// Where each record literal the items of `file` hold stands, with the shape its site folds: each
 /// literal that stands somewhere, item by item.
 @query
 export fn literal_prints(engine: QueryEngine, file: SourceFileAddress) -> List<LiteralPrint> {
-    flatten(
-        [item_literal_prints(read_item(engine, file, at), at) for at in 0..item_count(engine, file)],
-    )
+    flatten([item_literal_prints(read_item(engine, file, at), at) for at in item_ids(engine, file)])
 }
 
 /// Where each record literal `item` writes stands, with its site's shape.
-fn item_literal_prints(item: ReadItem, at: int) -> List<LiteralPrint> {
+fn item_literal_prints(item: ReadItem, at: ItemId) -> List<LiteralPrint> {
     let store = item.store
     [LiteralPrint { print: store.site_fingerprint(x), item: at, lo: span.lo } for x in store.exprs_by_kind(0, item.written, store.tag_expr(Expr.StructLit("", [], []))) for span in some_list(store.expr_span(x))]
 }

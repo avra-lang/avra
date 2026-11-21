@@ -15,10 +15,12 @@ use package_sets.{NO_NAMES, NameSets, name_sets}
 use input_stamps.{InputStamp, places_held}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
+use interned.{HIGH_LANE, LOW_LANE}
 use query_times.{QueryTimes, TimedSide, query_times}
 use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
 use answer_record.{
     AnswerRecord,
+    scoped_print,
     ContentHash,
     KeptRecord,
     PartSeen,
@@ -144,6 +146,18 @@ export trait AnswerStore {
     /// process working beside it holds the only copy.
     fn adopted(_asked: Question, _record: KeptRecord) {}
 
+    /// `entry`, settled by this process as it learned it, kept where every process of its build
+    /// finds it.
+    fn entry_shared(_entry: HeldEntry) {}
+
+    /// The entry another process of this build learned of `question`, as it kept it; absent where
+    /// none did.
+    fn shared_entry(_question: ContentHash) -> HeldEntry? { null }
+
+    /// Every entry the processes of this build kept, or with `inputs` only those of inputs, in
+    /// question order.
+    fn shared_entries(_inputs: bool) -> List<HeldEntry> { [] }
+
     /// Whether any package is one this store shares: where none is, every answer is kept in the one
     /// store, whatever it read, and what packages an answer read decides nothing.
     fn shares_any() -> bool { false }
@@ -240,6 +254,9 @@ export type QueryEngine = {
     open_questions: Cell<List<OpenQuestion>>,
     /// The reads being gathered now, innermost last.
     gathering: Cell<List<ReadsGathered>>,
+    /// How many questions were open where each read left unrecorded began, innermost last: a read
+    /// made with just that many open is no read of the asker's (`unrecorded_begun`).
+    unrecorded_at: Cell<List<int>>,
     /// How many readers, questions opened or gatherings begun, this engine has made.
     readers: Cell<int>,
     /// The query each question this process computed belongs to, in the order they ran: what a
@@ -251,11 +268,9 @@ export type QueryEngine = {
     records_checked: Cell<int>,
     /// What this process knows of its binary's frontier.
     frontier: Cell<FrontierState>,
-    /// Answers other processes of this build learned, lent where they lie: each is settled here the
-    /// first time it is asked for.
-    lent: Cell<List<LentAnswers>>,
-    /// Where each lent answer lies, every lent table's keys in one order.
-    lent_places: Cell<LentPlaces>,
+    /// Whether the answers the other processes of this build learned are this process's, found
+    /// where they stand in the build's table and settled here the first time each is asked for.
+    adopted: Cell<bool>,
     /// The questions asked with nobody asking: the roots, which keep what they read in the frontier.
     asked_alone: HashKeyedTable<bool>,
     /// Where this process's asks spend their time, absent while they aren't timed.
@@ -277,10 +292,15 @@ export type QueryEngine = {
     reads_checked: Cell<int>,
     sets: NameSets,
     /// Whether each set's every package is one the store shares, by the set's id.
-    sets_shared: Cell<Map<string, bool>>,
+    sets_shared: HashKeyedTable<bool>,
     /// Which engine of this process it is: no two engines a process makes share one. What a table
     /// a caller keeps per engine, outside it, is keyed by.
     serial: int,
+    /// THE PROGRAM THIS ENGINE ASKS FOR, its frontier's scope: one store may hold many programs'
+    /// answers, and each program reads and writes only its own frontier, so reading one costs what
+    /// that program asks, whatever else the store holds. Empty for an engine asking for no one
+    /// program.
+    program: string,
 }
 
 /// How many engines this process has made.
@@ -293,15 +313,19 @@ fn next_serial() -> int {
     made.get()
 }
 
-export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition>) -> QueryEngine {
+export fn query_engine(
+    store: dyn AnswerStore,
+    definitions: List<QueryDefinition>,
+    program: string = "",
+) -> QueryEngine {
     let by_name: Map<string, QueryDefinition> = {}
     let settled_answers: HashKeyedTable<SettledAnswer> = hash_keyed_table()
     let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
     let gathering: Cell<List<ReadsGathered>> = Cell.new([])
+    let unrecorded_at: Cell<List<int>> = Cell.new([])
     let computed: Cell<List<string>> = Cell.new([])
     let folded: Cell<List<string>> = Cell.new([])
     let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
-    let lent: Cell<List<LentAnswers>> = Cell.new([])
     let times: Cell<QueryTimes?> = Cell.new(null)
     let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
     let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
@@ -310,15 +334,14 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
     let held: Cell<int> = Cell.new(0)
     let proved: Cell<int> = Cell.new(0)
     let reads_checked: Cell<int> = Cell.new(0)
-    let sets_shared: Cell<Map<string, bool>> = Cell.new({})
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
         settled_answers: settled_answers,
-        lent: lent,
-        lent_places: Cell.new(no_lent_places()),
+        adopted: Cell.new(false),
         open_questions: open_questions,
         gathering: gathering,
+        unrecorded_at: unrecorded_at,
         readers: Cell.new(0),
         computed: computed,
         folded: folded,
@@ -334,8 +357,9 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         proved: proved,
         reads_checked: reads_checked,
         sets: name_sets(),
-        sets_shared: sets_shared,
+        sets_shared: hash_keyed_table(),
         serial: next_serial(),
+        program: program,
     }
     for definition in definitions {
         if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
@@ -529,7 +553,7 @@ impl QueryEngine {
     fn frontier_opened() {
         self.frontier.set(FrontierState.Opening)
         if self.unhashed() { return self.frontier.set(FrontierState.Missing) }
-        let f? = self.store.frontier_of(self.print()) else { return self.frontier.set(FrontierState.Missing) }
+        let f? = self.store.frontier_of(self.frontier_print()) else { return self.frontier.set(FrontierState.Missing) }
         let inputs = f.standing_inputs()
         let holds = [self.input_holds(f, at) for at in inputs]
         let changed = [at for i, at in inputs if !holds[i]]
@@ -632,6 +656,12 @@ impl QueryEngine {
         "${h.high_word}_${h.low_word}"
     }
 
+    /// What this binary's frontier for its program is known by: its print, and the program it asks
+    /// for as a hash, so no path reaches a file's name (`scoped_print`).
+    fn frontier_print() -> string {
+        if self.program.is_empty() { self.print() } else { scoped_print(self.print(), self.program) }
+    }
+
     /// Leaves what this process learned beside the frontier it read, for its store to write as this
     /// binary's frontier. Leaves nothing when it asked nothing.
     fn frontier_kept() {
@@ -653,7 +683,10 @@ impl QueryEngine {
         if entries.is_empty() && stale.is_empty() { return }
         self
             .store
-            .keep_frontier(self.print(), FrontierLearned { on: open?.frontier, entries: entries, stale: stale })
+            .keep_frontier(
+                self.frontier_print(),
+                FrontierLearned { on: open?.frontier, entries: entries, stale: stale },
+            )
     }
 
     /// The places of `open`'s suspects that stand and this process never settled: no longer known to
@@ -905,10 +938,10 @@ impl QueryEngine {
 
     /// Whether every package of the set `id` is one the store shares.
     fn set_shared(id: int) -> bool {
-        let known = self.sets_shared.get().get("${id}")
+        let known = self.sets_shared.get_at(id, id)
         if known != null { return known! }
         let shared = self.sets.members_of(id).all((name) -> self.store.shares_package(name))
-        self.sets_shared.put("${id}", shared)
+        self.sets_shared.put_at(id, id, shared)
         shared
     }
 
@@ -1019,20 +1052,39 @@ impl QueryEngine {
         full
     }
 
-    /// One part of the answer, recorded as a read of that part alone, absent when there's none.
-    fn part_of_answer_to(asked: Question, part_name: string) -> Bytes? {
-        let name_hash = content_hash(part_name.bytes())
-        let answer = self.settled_answer(asked)
-        let part = part_in_saved_parts(self.answer_bytes_of(asked, answer), name_hash)
-        let seen = PartSeen { part_name: name_hash, part_hash: part_hash_seen(part) }
-        self
-            .record_read(RecordedRead { question: asked.known_as, whole_answer: answer, part: seen })
-        part?.value
+    /// One part of the answer to `held`'s question, recorded as a read of that part alone, absent
+    /// when there's none: settled once in this engine, as `hash_of_answer_held` settles it, and each
+    /// part found kept on `held` beside the answer it was found in, under its name folded to two
+    /// words, so a second read of it looks nothing up, hashes nothing and makes no box.
+    fn part_of_answer_held(held: HeldQuestion, part_name: string) -> Bytes? {
+        let answer = if held.settled_in.get() == self.serial { held.answer.get() } else { self.held_settled(held) }
+        let high = HIGH_LANE.finished(HIGH_LANE.text(HIGH_LANE.seed, part_name))
+        let low = LOW_LANE.finished(LOW_LANE.text(LOW_LANE.seed, part_name))
+        let found = held.part_found(answer, high, low, part_name) ?? held
+            .part_kept(answer, high, low, self.part_looked_up(held.question, answer, part_name))
+        self.record_read(found.read)
+        found.value
+    }
+
+    /// The part named by the hash `name` in `answer`, the answer to `asked`, looked up in its bytes.
+    fn part_looked_up(asked: Question, answer: ContentHash, part_name: string) -> PartFound {
+        let name = content_hash(part_name.bytes())
+        let part = part_in_saved_parts(self.answer_bytes_of(asked, answer), name)
+        PartFound {
+            name: part_name,
+            read: RecordedRead {
+                question: asked.known_as,
+                whole_answer: answer,
+                part: PartSeen { part_name: name, part_hash: part_hash_seen(part) },
+            },
+            value: part?.value,
+        }
     }
 
     /// Whoever is asking now has made this read; with nobody asking, the question is a root, which
     /// the frontier keeps with what it reads.
     fn record_read(read: RecordedRead) {
+        if !self.recording() { return }
         self.gathered(read)
         let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
         asker.reads.put(read)
@@ -1041,6 +1093,7 @@ impl QueryEngine {
     /// A read of the whole answer `answer` to the question known as `question`, recorded as
     /// `record_read` records it: a table that holds this read already is left as it stands.
     fn whole_read(question: ContentHash, answer: ContentHash) {
+        if !self.recording() { return }
         let gathering = self.gathering.get()
         if !gathering.is_empty() {
             let depth = self.open_questions.get().length
@@ -1050,6 +1103,26 @@ impl QueryEngine {
         }
         let asker? = self.open_questions.get().last() else { return self.asked_alone.put(question, true) }
         asker.reads.whole(question, answer)
+    }
+
+    /// Reads made from here on by whoever is asking now are none of its reads, until
+    /// `recorded_again`: for an answer whose question's arguments say all those reads could tell it,
+    /// as a face says all a declaration's reading back can. A question those reads ask records what
+    /// it reads as ever.
+    fn unrecorded_begun() { self.unrecorded_at.set(self.unrecorded_at.get().concat([self.open_questions.get().length])) }
+
+    /// Reads made by whoever is asking now are its reads again, as before the innermost
+    /// `unrecorded_begun`.
+    fn recorded_again() {
+        let at = self.unrecorded_at.get()
+        self.unrecorded_at.set(at.take(at.length - 1))
+    }
+
+    /// Whether a read made now is the asker's: false between `unrecorded_begun` and
+    /// `recorded_again`, with just the questions open that were open there.
+    fn recording() -> bool {
+        let at? = self.unrecorded_at.get().last() else { return true }
+        at != self.open_questions.get().length
     }
 
     /// `read`, made with the questions open now, gathered by each gathering begun with just those open.
@@ -1117,19 +1190,8 @@ impl QueryEngine {
             root: false,
         }
         self.settled_answers.put(asked.known_as, SettledAnswer.Learned(entry))
+        self.store.entry_shared(entry)
         answer
-    }
-
-    /// Every answer this process learned, as the frontier keeps it.
-    fn learned_entries() -> List<HeldEntry> {
-        self.lent_settled()
-        [e! for s in self.settled_answers.values() for e in [learned_of(s)] if e != null]
-    }
-
-    /// Every answer that stood in this process as its frontier held it, with no reads: what an
-    /// answer it learned may have read beside its inputs.
-    fn stood_answers() -> List<HeldEntry> {
-        [e! for s in self.settled_answers.values() for e in [stood_of(s)] if e != null]
     }
 
     /// What this process holds settled of `question`, an answer lent to it settled now where it
@@ -1137,93 +1199,51 @@ impl QueryEngine {
     fn settled_held(question: ContentHash) -> SettledAnswer? {
         let held = self.settled_answers.get(question)
         if held != null { return held }
-        let found = self.lent_places.get()
-        mut at = first_at_or_after(found.high_words, question.high_word)
-        while at < found.high_words.length && found.high_words[at] == question.high_word {
-            let l = self.lent.get()[found.tables[at]]
-            if (l.low_word_at)(found.places[at]) == question.low_word {
-                let entry? = (l.entry_at)(found.places[at]) else { return null }
-                let settled = SettledAnswer.Learned(entry with { root: false })
-                self.settled_answers.put(question, settled)
-                return settled
-            }
-            at = at + 1
-        }
-        null
+        if !self.adopted.get() { return null }
+        let entry? = self.store.shared_entry(question) else { return null }
+        let settled = SettledAnswer.Learned(entry with { root: false })
+        self.settled_answers.put(question, settled)
+        settled
     }
 
-    /// Every answer lent to this process settled, each where it holds none of its own: what a
-    /// reader of all it knows needs, which a build asks once, when it keeps its frontier.
+    /// Every answer the build's other processes learned settled, each where this process holds none
+    /// of its own: what a reader of all it knows needs, which a build asks once, when it keeps its
+    /// frontier.
     fn lent_settled() {
-        for l in self.lent.get() {
-            for at in 0..l.high_words.length {
-                let entry? = (l.entry_at)(at) else { continue }
-                if self.settled_answers.get(entry.question) == null {
-                    self
-                        .settled_answers
-                        .put(entry.question, SettledAnswer.Learned(entry with { root: false }))
-                }
+        if !self.adopted.get() { return }
+        for entry in self.store.shared_entries(false) {
+            if self.settled_answers.get(entry.question) == null {
+                self
+                    .settled_answers
+                    .put(entry.question, SettledAnswer.Learned(entry with { root: false }))
             }
         }
-        self.lent.set([])
-        self.lent_places.set(no_lent_places())
     }
 
-    /// THE ANSWERS ANOTHER PROCESS OF THIS BUILD LEARNED, LENT: proved as `took_learned` proves
-    /// them, over the `inputs` it settled and the answers that `stood` in its frontier, then held
-    /// where they lie, none read until it is asked for. Absent where they were lent, else why not.
-    fn took_lent(inputs: List<HeldEntry>, stood: List<HeldEntry>, lent: LentAnswers, proved: bool) -> string? {
-        let why = self.took_learned(inputs, stood, proved)
-        if why != null { return why }
-        self
-            .lent_places
-            .set(
-                self
-                    .lent_places
-                    .get()
-                    .with_table(self.lent.get().length, lent.source, lent.high_words),
-            )
-        self.lent.push(lent)
+    /// THE ANSWERS THE BUILD'S OTHER PROCESSES LEARNED, TAKEN WHERE THEY STAND in the build's table:
+    /// each input one of them settled is settled here and its answer compared, with nothing of
+    /// theirs taken meanwhile; then each answer they keep there is this process's, read the first
+    /// time it is asked for. Absent where taken, else why not: where an input moved, none is taken,
+    /// and each answer is checked read by read as a kept one is. `proved` false takes them unproven,
+    /// for a witness that the proof is what catches an input that moved.
+    /// The answers in the build's table no longer this process's: each read there from now on is
+    /// checked read by read as a kept one is.
+    fn shared_let_go() { self.adopted.set(false) }
+
+    fn took_shared(proved: bool) -> string? {
+        self.adopted.set(false)
+        if proved {
+            for e in self.store.shared_entries(true) {
+                let here? = self.settled_now(e.question) else { return "an input it read is not one this process can read" }
+                if !here.answer().same_as(e.answer) { return "an input it read moved" }
+            }
+        }
+        self.adopted.set(true)
         null
     }
 
     /// How many answers this process has settled: a mark, for what it settles after.
     fn settled_count() -> int { self.settled_answers.values().length }
-
-    /// Every answer this process learned after it had settled `mark`, as the frontier keeps it.
-    fn learned_entries_since(mark: int) -> List<HeldEntry> {
-        [e! for s in self.settled_answers.values().drop(mark) for e in [learned_of(s)] if e != null]
-    }
-
-    /// Every answer that stood in this process, settled after it had settled `mark`.
-    fn stood_answers_since(mark: int) -> List<HeldEntry> {
-        [e! for s in self.settled_answers.values().drop(mark) for e in [stood_of(s)] if e != null]
-    }
-
-    /// THE ANSWERS ANOTHER PROCESS OF THIS BUILD LEARNED, taken as this one's where everything
-    /// they read beside each other is what this process reads: each input the other process
-    /// settled, settled here once and its answer compared, and each answer that stood in its
-    /// frontier compared with what this process says; then every entry settled as it stands, none
-    /// of its reads walked. Absent where they were taken, else why not: none is taken where one
-    /// differs. `proved` false takes them unproven, for a witness that the proof is what catches an
-    /// input that moved.
-    fn took_learned(entries: List<HeldEntry>, stood: List<HeldEntry>, proved: bool) -> string? {
-        if proved {
-            for e in entries {
-                if !e.input { continue }
-                let here? = self.settled_now(e.question) else { return "an input it read is not one this process can read" }
-                if !here.answer().same_as(e.answer) { return "an input it read moved" }
-            }
-            for e in stood {
-                let here? = self.settled_now(e.question) else { return "an answer that stood in its frontier is not one this process knows" }
-                if !here.answer().same_as(e.answer) { return "an answer that stood in its frontier answers otherwise here" }
-            }
-        }
-        for e in entries {
-            if self.settled_held(e.question) == null { self.settled_answers.put(e.question, SettledAnswer.Learned(e with { root: false })) }
-        }
-        null
-    }
 
     /// How a question's query runs. Asking a query nobody defined is the caller's defect.
     fn definition_of(asked: Question) -> QueryDefinition { self.definitions.get().get(asked.query_name)! }
@@ -1256,54 +1276,6 @@ fn standing_at(path: string) -> string {
     at
 }
 
-/// WHERE EVERY LENT ANSWER LIES: the high word of each lent table's every key, in order, beside
-/// the table that holds the key and its place there, so a question is looked for once however
-/// many tables are lent.
-type LentPlaces = { high_words: List<int>, tables: List<int>, places: List<int> }
-
-/// No table lent, and so no place looked up in one.
-fn no_lent_places() -> LentPlaces { LentPlaces { high_words: [], tables: [], places: [] } }
-
-impl LentPlaces {
-    /// These places and those of the table numbered `lender`, whose keys' high words are `added`
-    /// in order, lying in `source`: the two merged, a table's own keys keeping their order.
-    fn with_table(lender: int, source: SavedSource, added: SavedList) -> LentPlaces {
-        mut high_words: List<int> = []
-        mut tables: List<int> = []
-        mut places: List<int> = []
-        mut mine = 0
-        mut theirs = 0
-        while mine < self.high_words.length || theirs < added.length {
-            let takes_mine = theirs >= added.length ||
-                mine < self.high_words.length &&
-                    self.high_words[mine] <= added.number_at(source, theirs)
-            if takes_mine {
-                high_words.push(self.high_words[mine])
-                tables.push(self.tables[mine])
-                places.push(self.places[mine])
-                mine = mine + 1
-            } else {
-                high_words.push(added.number_at(source, theirs))
-                tables.push(lender)
-                places.push(theirs)
-                theirs = theirs + 1
-            }
-        }
-        LentPlaces { high_words: high_words, tables: tables, places: places }
-    }
-}
-
-/// Where the first number at or after `wanted` sits in `numbers`, sorted ascending.
-fn first_at_or_after(numbers: List<int>, wanted: int) -> int {
-    mut low = 0
-    mut high = numbers.length
-    while low < high {
-        let middle = (low + high) / 2
-        if numbers[middle] < wanted { low = middle + 1 } else { high = middle }
-    }
-    low
-}
-
 /// How long this process waited for another working beside it, in milliseconds, by the query it
 /// waited on: kept while asks are timed.
 once fn waits() -> Cell<Map<string, int>> {
@@ -1321,11 +1293,6 @@ export fn waits_said() -> string {
     let total = [ms for _w, ms in waits().get()].sum()
     "waited ${total}ms: ${["${q} ${waits().get().get(q)!}ms" for q in by_query.take(6)].join(", ")}"
 }
-
-/// ANSWERS LENT WHERE THEY LIE: a table sorted by question, its keys' high words in `high_words`;
-/// `low_word_at` reads the low word of the key at a place and `entry_at` the entry there, each
-/// absent where it can't be read.
-export type LentAnswers = { source: SavedSource, high_words: SavedList, low_word_at: fn(int) -> int?, entry_at: fn(int) -> HeldEntry? }
 
 /// The entry a settled answer is as this process learned it; absent for one that stood in the
 /// frontier.
@@ -1388,11 +1355,55 @@ fn two_queries_named(definition: QueryDefinition) -> string {
 /// settled to in the engine whose serial `settled_in` holds: a question settles once in an engine,
 /// so a later ask of it in that engine reads the answer here and looks nothing up. A wrapper's
 /// table outlives an engine, and an answer settled in one is never another's.
-export type HeldQuestion = { question: Question, settled_in: Cell<int>, answer: Cell<ContentHash> }
+/// The parts read of its answer are kept beside the answer they were found in (`PartsFound`).
+export type HeldQuestion = { question: Question, settled_in: Cell<int>, answer: Cell<ContentHash>, parts: Cell<PartsFound?> }
+
+/// The parts of one answer read so far, by their names folded to a key's two words (`KeyLane`,
+/// which makes no box): kept for the answer they were found in alone, so an answer that moves finds
+/// every part afresh.
+type PartsFound = { answer: ContentHash, by_name: HashKeyedTable<PartFound> }
+
+/// A part found in an answer: what a read of it sees, and what it holds, absent for no such part.
+/// It's found under the name it's read by, which `AVRA_HELD_QUESTIONS_CHECK` compares at each read
+/// as it compares a held question's, and a read of it records `read`, the same at every read of it
+/// in this answer, so a read of a part found before makes nothing.
+type PartFound = { name: string, read: RecordedRead, value: Bytes? }
 
 /// `question`, held, settled in no engine yet.
 fn held_question(question: Question) -> HeldQuestion {
-    HeldQuestion { question: question, settled_in: Cell.new(-1), answer: Cell.new(unanswered()) }
+    let parts: Cell<PartsFound?> = Cell.new(null)
+    HeldQuestion {
+        question: question,
+        settled_in: Cell.new(-1),
+        answer: Cell.new(unanswered()),
+        parts: parts,
+    }
+}
+
+impl HeldQuestion {
+    /// The part named by the hash `name` found in `answer` before, absent when none was.
+    fn part_found(answer: ContentHash, high: int, low: int, name: string) -> PartFound? {
+        let found? = self.parts.get() else { return null }
+        if !found.answer.same_as(answer) { return null }
+        let part? = found.by_name.get_at(high, low) else { return null }
+        if held_questions_checked() != null && part.name != name { defect(part_folded_twice(name, part.name)) }
+        part
+    }
+
+    /// `part`, found in `answer`, kept for the reads of it after; the parts found in an answer
+    /// before it are let go.
+    fn part_kept(answer: ContentHash, high: int, low: int, part: PartFound) -> PartFound {
+        let was = self.parts.get()
+        let found = if was != null && was!.answer.same_as(answer) {
+            was!
+        } else {
+            let fresh = PartsFound { answer: answer, by_name: hash_keyed_table() }
+            self.parts.set(fresh)
+            fresh
+        }
+        found.by_name.put_at(high, low, part)
+        part
+    }
 }
 
 /// The question a query's wrapper holds under the key its arguments fold to, the key's two words;
@@ -1415,6 +1426,8 @@ export fn question_kept(held: HashKeyedTable<HeldQuestion>, high: int, low: int,
     if !was.question.known_as.same_as(made.known_as) { defect(key_folded_twice(made.query_name)) }
     was
 }
+
+fn part_folded_twice(name: string, was: string) -> string { "the parts `${name}` and `${was}` of one answer fold to one key: a part's key is its name folded on two lanes" }
 
 fn key_folded_twice(query: string) -> string { "two questions of `${query}` fold to one key: a held question's key is folded from every argument, each after a tag of its kind" }
 

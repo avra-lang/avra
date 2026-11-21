@@ -1,0 +1,48 @@
+// proves: a view is drawn under the contexts in force where it is PLACED,
+// not where it was built: a set between two placements reaches the second
+// and not the first, and a handler a caller builds runs under the frame of
+// the body that places it, so a form's button reads the form's context.
+use @std.ui.components.{button, column, text}
+use @std.ui.headless.{headless}
+use @std.ui.tree.view.{View, tree_of}
+use @std.ui.tree.node.{Node, Action}
+
+ctx theme: string = "plain"
+ctx form: string = "none"
+
+state sent: string = ""
+
+component themed(t: string) {
+    text "${ctx.theme}:${self.t}"
+}
+
+component form_box(name: string) {
+    @default body: List<dyn View> = []
+    ctx form = self.name
+    column { self.body }
+}
+
+fn between() -> column {
+    column {
+        themed "a"
+        ctx theme = "dark"
+        themed "b"
+    }
+}
+
+fn saving() -> form_box {
+    form_box "signup" {
+        button "Save" { on press { sent = ctx.form } }
+    }
+}
+
+/// The first action anywhere under `n`.
+fn first_action(n: Node) -> Action? {
+    let own? = n.events.first() else { return [a! for c in n.children for a in [first_action(c)] if a != null].first() }
+    own
+}
+
+println(headless(between).text().trim())
+let pressed = first_action(tree_of(saving()))
+if pressed != null { let _ = pressed!.fire(null) }
+println("sent=${sent}")

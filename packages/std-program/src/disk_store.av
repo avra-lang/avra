@@ -33,6 +33,7 @@ use @std.path.{is_absolute, joined_path, normalized, relative_path}
 use @std.text.{parse_int, text_before}
 use answer_record.{
     AnswerRecord,
+    binary_of,
     ContentHash,
     KeptRecord,
     Question,
@@ -86,6 +87,10 @@ extern fn avra_shared_view(shared: ptr) -> ptr
 extern fn avra_shared_kept(shared: ptr, kind: int, high: int, low: int, octets: Bytes, count: int) -> int
 extern fn avra_shared_start(shared: ptr, kind: int, high: int, low: int) -> int
 extern fn avra_shared_end(shared: ptr, kind: int, high: int, low: int) -> int
+extern fn avra_shared_apart_view(shared: ptr) -> ptr
+extern fn avra_shared_logged(shared: ptr, kind: int) -> int
+extern fn avra_shared_logged_start(shared: ptr, kind: int, at: int) -> int
+extern fn avra_shared_logged_end(shared: ptr, kind: int, at: int) -> int
 extern fn avra_shared_claimed(shared: ptr, high: int, low: int) -> int
 extern fn avra_shared_let_go(shared: ptr, high: int, low: int) -> int
 extern fn avra_shared_awaited(shared: ptr, high: int, low: int, holder: int) -> int
@@ -442,9 +447,12 @@ fn oldest_reaching(views: List<DraftView>, end: int) -> DraftView? {
 const WAVE_SLOTS: int = 2097152
 const WAVE_OCTETS: int = 4294967296
 
-/// The kinds a wave's table keeps: a question's records, and an answer's octets.
+/// The kinds a wave's table keeps: a question's records, an answer's octets, each answer a process
+/// learned as it settled it, and those of inputs again.
 const WAVE_RECORDS: int = 0
 const WAVE_ANSWERS: int = 1
+const WAVE_ENTRIES: int = 3
+const WAVE_INPUTS: int = 4
 
 /// The table the processes of the wave this process is of share, while there is one.
 once fn wave_table() -> Cell<List<ptr>> {
@@ -452,18 +460,28 @@ once fn wave_table() -> Cell<List<ptr>> {
     held
 }
 
-/// WHAT A WAVE'S PROCESSES LEARN IS SHARED AS THEY LEARN IT, from here until `wave_sharing_ended`:
-/// asked before a wave forks, so every process of it maps one table. Each keeps there the records
+/// WHAT A BUILD'S PROCESSES LEARN IS SHARED AS THEY LEARN IT, from here until `wave_sharing_ended`:
+/// asked before each wave forks, the first making the table of the store at `directory`, so every
+/// process of every wave of that build maps one table; whether a table was made anew. Each keeps there the records
 /// and the answers it keeps in its own draft, finds there what another kept, and claims there the
 /// question it is working out, so another that needs the answer waits for it and no two work one
 /// out. A record found there is checked like any kept record, read by read, by the process that
 /// takes it. Whether there is a table; with none, each process works alone, as before.
-export fn wave_sharing_begun() -> bool {
-    if wave_alone() != null || !wave_table().get().is_empty() { return false }
+export fn wave_sharing_begun(directory: string) -> bool {
+    if wave_alone() != null { return false }
+    if !wave_table().get().is_empty() {
+        if wave_table_of().get() == directory { return false }
+        wave_sharing_ended(true)
+    }
     let shared? = avra_shared_made(WAVE_SLOTS, WAVE_OCTETS) else { return false }
     wave_table().set([shared])
+    wave_table_of().set(directory)
     true
 }
+
+/// The store directory the build's table is of: a process that builds another store after it
+/// makes that build a table of its own.
+once fn wave_table_of() -> Cell<string> { Cell.new("") }
 
 /// The table forgotten by this process; with `gone`, unmapped as well, which the process that made
 /// it asks once its wave has ended.
@@ -477,22 +495,105 @@ export fn wave_sharing_ended(gone: bool) {
 // LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn wave_alone() -> string? { env("AVRA_WAVE_ALONE") }
 
+/// WHETHER THIS PROCESS KEEPS WHAT IT LEARNS IN THE BUILD'S TABLE: a wave's processes do, and the
+/// asking process only while a wave it waits on runs. What it learns between waves reaches the next
+/// wave's processes in what it publishes before it forks them, so the table never holds it twice.
+once fn wave_writing() -> Cell<bool> { Cell.new(false) }
+
+/// This process keeping what it learns in the build's table, or no longer.
+export fn wave_writes(on: bool) { wave_writing().set(on) }
+
 /// `bytes` kept under `key` in the wave's table, for every process of the wave to find.
 fn wave_kept(kind: int, key: ContentHash, bytes: Bytes) {
+    if !wave_writing().get() { return }
     let shared? = wave_table().get().first() else { return }
     let _ = avra_shared_kept(shared, kind, key.high_word, key.low_word, bytes, bytes.length)
 }
 
-/// What the wave's table keeps under `key`, read where it lies; absent where it keeps nothing.
+/// What the wave's table keeps under `key`, read where it lies; absent where it keeps nothing. Only
+/// a process within a wave reads it there but for the entries the asking process takes: between
+/// waves what the table holds stands in the packs its processes published, read where they lie.
 fn wave_found(kind: int, key: ContentHash) -> SavedBytes? {
+    if kind != WAVE_ENTRIES && !wave_writing().get() { return null }
     let shared? = wave_table().get().first() else { return null }
     let from = avra_shared_start(shared, kind, key.high_word, key.low_word)
     if from < 0 { return null }
     SavedBytes {
-        source: SavedSource.Mapped(avra_shared_view(shared)),
+        source: SavedSource.Mapped(octets_of(shared, kind)),
         from: from,
         to: avra_shared_end(shared, kind, key.high_word, key.low_word),
     }
+}
+
+/// The octets `kind` keeps its octets in: the entries and the inputs apart from the records and the
+/// answers, so a process reading only those reads no page of the rest.
+fn octets_of(shared: ptr, kind: int) -> ptr { if kind == WAVE_ENTRIES || kind == WAVE_INPUTS { avra_shared_apart_view(shared) } else { avra_shared_view(shared) } }
+
+/// ONE ANSWER A PROCESS OF THE BUILD LEARNED, as the table keeps it for the asking process to take:
+/// the question, its answer, the questions it read, and whether it is an input.
+@derive(Saved)
+type SharedEntry = { question: ContentHash, answer: ContentHash, reads: List<int>, input: bool }
+
+fn held_of(e: SharedEntry) -> HeldEntry {
+    HeldEntry {
+        question: e.question,
+        answer: e.answer,
+        reads: e.reads,
+        input: e.input,
+        root: false,
+    }
+}
+
+/// `entry`, settled by this process, kept in the build's table, and an input's kept again apart, so
+/// the asking process proves the inputs reading only them.
+export fn wave_entry_kept(entry: HeldEntry) {
+    if !wave_writing().get() { return }
+    let shared? = wave_table().get().first() else { return }
+    let bytes = SharedEntry {
+        question: entry.question,
+        answer: entry.answer,
+        reads: entry.reads,
+        input: entry.input,
+    }
+        .saved_bytes()
+    let _ = avra_shared_kept(
+        shared,
+        WAVE_ENTRIES,
+        entry.question.high_word,
+        entry.question.low_word,
+        bytes,
+        bytes.length,
+    )
+    if entry.input {
+        let _ = avra_shared_kept(
+            shared,
+            WAVE_INPUTS,
+            entry.question.high_word,
+            entry.question.low_word,
+            bytes,
+            bytes.length,
+        )
+    }
+}
+
+/// The entry a process of the build kept of `question`, read where it lies.
+export fn wave_entry_of(question: ContentHash) -> HeldEntry? {
+    let found? = wave_found(WAVE_ENTRIES, question) else { return null }
+    let at = found.root_at()
+    held_of(SharedEntry.read_from(at.source, at.node))
+}
+
+/// Every entry the build's table keeps, or with `inputs` every input's, in question order: the
+/// table's own order is the order its processes happened to keep them in.
+export fn wave_entries(inputs: bool) -> List<HeldEntry> {
+    let shared? = wave_table().get().first() else { return [] }
+    let kind = if inputs { WAVE_INPUTS } else { WAVE_ENTRIES }
+    let source = SavedSource.Mapped(octets_of(shared, kind))
+    let found = [held_of(SharedEntry.read_from(at.source, at.node)) for logged in 0..avra_shared_logged(shared, kind) for from in [avra_shared_logged_start(shared, kind, logged)] if from >= 0 for at in [
+        SavedBytes { source: source, from: from, to: avra_shared_logged_end(shared, kind, logged) }
+            .root_at(),
+    ]]
+    sorted_by_hash(found, (e: HeldEntry) -> e.question)
 }
 
 /// The records another process of the wave kept of `question`.
@@ -530,18 +631,21 @@ export fn wave_gathered_by(query_name: string) -> bool { wave_gathered().get().h
 /// `question` claimed by this process to work out: zero where it holds the claim now, else the
 /// living process that does.
 export fn wave_claimed(question: ContentHash) -> int {
+    if !wave_writing().get() { return 0 }
     let shared? = wave_table().get().first() else { return 0 }
     avra_shared_claimed(shared, question.high_word, question.low_word)
 }
 
 /// Waits while the process `holder` holds the claim of `question` and lives.
 export fn wave_awaited(question: ContentHash, holder: int) {
+    if !wave_writing().get() { return }
     let shared? = wave_table().get().first() else { return }
     let _ = avra_shared_awaited(shared, question.high_word, question.low_word, holder)
 }
 
 /// This process's claim of `question` let go.
 export fn wave_let_go(question: ContentHash) {
+    if !wave_writing().get() { return }
     let shared? = wave_table().get().first() else { return }
     let _ = avra_shared_let_go(shared, question.high_word, question.low_word)
 }
@@ -748,6 +852,88 @@ export fn pack_questions(directory: string, name: string) -> List<Question>? {
     [q! for span in pack.question_spans(null) for q in [pack.question_known_as(span.key)] if q != null]
 }
 
+/// What one query's questions weigh in a pack: how many it keeps, the octets of their records, and
+/// the octets of the answers they name, each answer weighed once, under the first query naming it.
+export type FamilyWeight = { query_name: string, questions: int, question_octets: int, answer_octets: int }
+
+/// What each query's questions weigh in the pack `name` of `directory`, the heaviest first; absent
+/// for a pack that doesn't stand whole.
+export fn pack_families(directory: string, name: string) -> List<FamilyWeight>? {
+    let pack? = mapped_pack("${directory}/${name}") else { return null }
+    mut answers: Map<string, int> = {}
+    for span in pack.answer_spans(null) { answers.set(span.key.held_key(), span.length) }
+    mut weighed: Map<string, bool> = {}
+    mut weights: Map<string, FamilyWeight> = {}
+    for span in pack.question_spans(null) {
+        let q? = pack.question_known_as(span.key) else { continue }
+        mut w = weights.get(q.query_name) ?? FamilyWeight {
+            query_name: q.query_name,
+            questions: 0,
+            question_octets: 0,
+            answer_octets: 0,
+        }
+        w = w with { questions: w.questions + 1, question_octets: w.question_octets + span.length }
+        for r in pack.records_of(span.key) {
+            let key = r.answer.held_key()
+            if weighed.has(key) { continue }
+            weighed.set(key, true)
+            w = w with { answer_octets: w.answer_octets + (answers.get(key) ?? 0) }
+        }
+        weights.set(q.query_name, w)
+    }
+    sorted_by([w for _name, w in weights], heavier)
+}
+
+/// How often a pack's records repeat what they read: every read, and every distinct read — a whole
+/// read a question and the answer it saw, a part read those and the part it looked at.
+export type ReadsRepeated = { whole: int, whole_distinct: int, part: int, part_distinct: int }
+
+/// How often the records of the pack `name` of `directory` repeat what they read; absent for a pack
+/// that doesn't stand whole.
+export fn pack_reads_repeated(directory: string, name: string) -> ReadsRepeated? {
+    let pack? = mapped_pack("${directory}/${name}") else { return null }
+    let wholes: HashKeyedTable<bool> = hash_keyed_table()
+    let parts: HashKeyedTable<bool> = hash_keyed_table()
+    let whole = Cell.new(0)
+    let part = Cell.new(0)
+    for span in pack.question_spans(null) {
+        for r in pack.records_of(span.key) {
+            let _ = r
+                .every_read(
+                    (q, seen) -> {
+                        whole.set(whole.get() + 1)
+                        wholes
+                            .put_at(
+                                q.high_word ^ seen.high_word.wrapping_mul(31),
+                                q.low_word ^ seen.low_word,
+                                true,
+                            )
+                        true
+                    },
+                    (q, seen, name, hash) -> {
+                        part.set(part.get() + 1)
+                        parts
+                            .put_at(
+                                q.high_word ^ name.high_word.wrapping_mul(31),
+                                q.low_word ^ seen.low_word ^ hash.low_word,
+                                true,
+                            )
+                        true
+                    },
+                )
+        }
+    }
+    ReadsRepeated {
+        whole: whole.get(),
+        whole_distinct: wholes.values().length,
+        part: part.get(),
+        part_distinct: parts.values().length,
+    }
+}
+
+/// Whether `a` weighs more than `b`.
+export fn heavier(a: FamilyWeight, b: FamilyWeight) -> bool { a.question_octets + a.answer_octets > b.question_octets + b.answer_octets }
+
 /// How many binaries' frontiers a store keeps.
 const KEPT_FRONTIERS: int = 2
 
@@ -781,6 +967,14 @@ fn frontier_names_in(directory: string) -> List<FrontierName> {
     } for name in names if name.starts_with(FRONTIER_PREFIX) &&
         (name.ends_with(suffix_of(FrontierKind.Base)) ||
             name.ends_with(suffix_of(FrontierKind.Delta)))]
+}
+
+/// Every question a frontier of the binary printed `binary` in `directory` holds, whatever program
+/// it's scoped to.
+fn questions_of_binary(directory: string, binary: string) -> List<ContentHash> {
+    mut prints: Map<string, bool> = {}
+    for f in frontier_names_in(directory) { if binary_of(f.print) == binary { prints.set(f.print, true) } }
+    [q for print, _p in prints for q in frontier_over([f.file for f in frontiers_of(directory, print)])?.questions() ?? []]
 }
 
 /// Every frontier file of the binary printed `print` in `directory` that can be mapped.
@@ -939,11 +1133,11 @@ fn named_from(dir: string, path: string) -> string {
 const STAMPS_FILE: string = "inputs.stamps"
 
 impl DiskStore {
-    /// What a compaction keeps alive: every question its binary's frontier holds, and what this
-    /// process learned for it.
+    /// What a compaction keeps alive: every question each frontier of its binary holds, one for each
+    /// program it's scoped to, and what this process learned for it.
     fn frontier_seeds() -> List<ContentHash> {
         let own = self.pending_frontier.get()?.print ?? self.print.get()
-        let held = if own == null { [] } else { self.frontier_of(own!)?.questions() ?? [] }
+        let held = if own == null { [] } else { questions_of_binary(self.directory, binary_of(own!)) }
         let pending? = self.pending_frontier.get() else { return held }
         let read = pending.learned.on?.questions() ?? []
         held.concat(read).concat([h.question for h in pending.learned.entries])
@@ -954,7 +1148,7 @@ impl DiskStore {
     fn prints_kept(own: string?) -> List<string> {
         mut newest: Map<string, int> = {}
         for p in pack_names_in(self.directory) { newest.set(p.print, max_of(newest.get(p.print) ?? 0, p.generation)) }
-        for f in frontier_names_in(self.directory) { if newest.get(f.print) == null { newest.set(f.print, 0) } }
+        for f in frontier_names_in(self.directory) { if newest.get(binary_of(f.print)) == null { newest.set(binary_of(f.print), 0) } }
         let others = sorted_by(
             [print for print, _g in newest if print != own],
             (a, b) -> newest.get(a)! > newest.get(b)!,
@@ -973,7 +1167,7 @@ impl DiskStore {
         }
         for name in unnamed_packs_in(self.directory) { let _ = remove("${self.directory}/${name}") }
         for f in frontier_names_in(self.directory) {
-            if !kept.contains(f.print) { let _ = remove(f.path) }
+            if !kept.contains(binary_of(f.print)) { let _ = remove(f.path) }
         }
     }
 
