@@ -1,0 +1,73 @@
+//! THE STRIDED CENSUS: a record box a body mints, fills with scalars alone and pushes into a list —
+//! a census build's label (`flat-pushed`), never a rule: what a strided list would hold in place of
+//! a box per element. Read beside the frame census, whose tags a label carries with it.
+use core.{Ins, Reg, Layout, RtSig}
+
+/// The census label tags of the boxes minted in `ins`, by register: the frame census's, and
+/// `flat-pushed` where a record of scalars is pushed into a list.
+export fn census_tags(ins: List<Ins>, layouts: List<Layout>, rt: Map<string, RtSig>) -> Map<
+    string,
+    string,
+> {
+    mut tags = frame_tags(ins, layouts, rt)
+    for key in flat_pushed(ins, layouts) {
+        let frame = tags.get(key)
+        tags.set(key, if frame == null { FLAT_PUSHED } else { "${frame!} ${FLAT_PUSHED}" })
+    }
+    tags
+}
+
+/// The tag of a record of scalars pushed into a list.
+const FLAT_PUSHED: string = "flat-pushed"
+
+/// Each record box `ins` mints whose every push into it is a scalar and that a push hands to a list,
+/// by its register's index.
+fn flat_pushed(ins: List<Ins>, layouts: List<Layout>) -> List<string> {
+    let records = [dst.index for i in ins for dst in minted_record(i, layouts)]
+    let pushes = [p for i in ins for p in pushed(i)]
+    ["${r}" for r in records if pushes.any(it.into == r) &&
+        pushes.all(it.into != r || scalar(layouts, it.value)) &&
+        pushes.any(it.value.index == r)]
+}
+
+/// One push: the list or record it writes into, and the value.
+type Push = { into: int, value: Reg }
+
+/// The push `i` makes, if it is one.
+fn pushed(i: Ins) -> List<Push> {
+    let call? = match i {
+        .CallRtVoid(callee, args) or .CallRt(_, callee, args) -> RowCall { callee: callee, args: args },
+        rest -> null,
+    } else { return [] }
+    if !call.callee.starts_with("avra_array_push") || call.args.length != 2 { return [] }
+    [Push { into: call.args[0].index, value: call.args[1] }]
+}
+
+/// A runtime row's call: its name and what it is handed.
+type RowCall = { callee: string, args: List<Reg> }
+
+/// The record box `i` mints, if it mints one.
+fn minted_record(i: Ins, layouts: List<Layout>) -> List<Reg> {
+    match i {
+        .CallRt(dst, callee, _) -> if callee == "avra_array_sized" && record(layouts, dst) { [dst] } else { [] },
+        _ -> [],
+    }
+}
+
+/// Whether `r` holds a scalar: a word, a float or a truth.
+fn scalar(layouts: List<Layout>, r: Reg) -> bool {
+    let l? = laid(layouts, r) else { return false }
+    match l {
+        .Word or .Real or .Truth -> true,
+        .Void or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+    }
+}
+
+/// Whether `r` holds a record box.
+fn record(layouts: List<Layout>, r: Reg) -> bool {
+    let l? = laid(layouts, r) else { return false }
+    match l { .Boxed(.Record) -> true, _ -> false }
+}
+
+/// How `r` is laid; absent where no layout stands for it.
+fn laid(layouts: List<Layout>, r: Reg) -> Layout? { if r.index < layouts.length { layouts[r.index] } else { null } }

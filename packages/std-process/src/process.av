@@ -46,6 +46,8 @@ extern fn avra_errno_text(err: int) -> string
 extern fn avra_host_env(name: string) -> string
 extern fn avra_process_exit(code: int)
 extern fn avra_puts(s: string)
+extern fn avra_self_dir() -> string
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 
 // The substrate's spawn flags — one bit each, summed — and the events
 // read back from a finished handle. Fns, because a module file holds
@@ -323,6 +325,13 @@ fn not_ours(pid: int) -> string { "process ${pid} is not this user's to signal" 
 /// and the word's own row names the terminator. No lookup, no PATH.
 export fn tool_at(name: string, path: string) -> Tool {
     Tool { name: name, path: path, terminator: terminator_of(name) }
+}
+
+/// This program's own binary as a tool: the directory it runs from and
+/// the name it was started under.
+export fn this_program() -> Tool {
+    let name = avra_selfhost_get_arg_cstr(0).split("/").last() ?? ""
+    tool_at(name, "${avra_self_dir()}/${name}")
 }
 
 /// The one widening from a name to a tool: resolved on the invoker's

@@ -54,8 +54,10 @@ export fn query_times() -> QueryTimes {
     QueryTimes { began: 0, open: open, families: families }
 }
 
-/// The family of what a process spent before its clock was made: starting, opening its store.
-export const START_UP: string = "the start-up"
+/// The family of what a process spent before its clock was made, since the process began: its
+/// start, its store opened, and every earlier clock's span. A clock made mid-run counts all of that,
+/// never its own span alone.
+export const START_UP: string = "the process before this clock"
 
 impl QueryTimes {
     /// Opens an ask of `family`.
@@ -119,6 +121,12 @@ impl QueryTimes {
     fn phases_spoken() -> string {
         ["${t.family} ${seconds(t.own)} / ${seconds(t.whole)} (${t.asks})" for t in self.by_own_time() if outside_side(t.side)]
             .join(", ")
+    }
+
+    /// Every family asked, one a line, the most asked first: its family as spoken, then its asks.
+    fn every_family() -> string {
+        ["${t.family}\t${t.asks}" for t in sorted_by(self.families.get().values(), (a, b) -> a.asks > b.asks)]
+            .join("\n")
     }
 
     fn spoken(most: int) -> string {

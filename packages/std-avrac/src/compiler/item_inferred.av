@@ -287,7 +287,7 @@ fn fn_key(f: InferringFn) -> string {
 type InferringDecl = { f: InferringFn, at: Span? }
 
 /// Each `_` fn the written item `at` of `file` declares: its fns, and the methods its impls give.
-fn inferring_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<InferringDecl> {
+fn inferring_decls(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<InferringDecl> {
     let item = read_item(engine, file, at)
     let own = [InferringDecl { f: InferringFn { file: file, name: p!.name }, at: item.store.stmt_span(s) } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && infers(fn_signature(engine, file, p!.name)?.answer ?? headed_type(TypeHead.Never))]
     own.concat(flatten([methods_inferring(engine, a) for a in impls_at(engine, file, at)]))
@@ -306,12 +306,12 @@ fn methods_inferring(engine: QueryEngine, a: ImplAt) -> List<InferringDecl> {
 }
 
 /// Each `_` fn the item declares that reaches a site raising what nothing names.
-fn unnamed_raised(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn unnamed_raised(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [found_at(d) for d in inferring_decls(engine, file, at) if raised(engine, d.f).unnamed]
 }
 
 /// Each `_` fn the item declares that raises nothing.
-fn nothing_raised(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn nothing_raised(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [found_at(d) for d in inferring_decls(engine, file, at) for r in [raised(engine, d.f)] if !r.unnamed && r.members.is_empty()]
 }
 

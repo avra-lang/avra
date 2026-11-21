@@ -52,7 +52,7 @@ type ItemUngiven = { rows: List<UngivenAt> }
 /// value of a type parameter that the parameter's bound doesn't give; a generic method is no
 /// method an impl lands, and asks nothing. A body that didn't parse asks
 /// nothing.
-fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
+fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
     if !item_held(engine, file, at) { return ungiven_made(engine, file, at) }
     ungiven_seen(item_view(engine, file, at))
 }
@@ -68,7 +68,7 @@ fn ungiven_seen(view: ItemView) -> ItemUngiven {
 }
 
 /// What `item_ungiven` answers, made.
-fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
+fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
     if !item_held(engine, file, at) { return ItemUngiven { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
@@ -80,7 +80,7 @@ fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUn
 
 /// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
 /// fn's, then each method's and static's an impl there writes.
-fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     CheckedBody,
 > {
     let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]

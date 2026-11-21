@@ -46,9 +46,9 @@ fn answered(routes: List<Route>, line: string, token: string = "Bearer op") -> s
     "${r.status} ${r.body.text() ?? ""}"
 }
 
-/// A database with three orders, one of them buried in a letter.
+/// The database's operating routes, three orders sent and one of them
+/// buried in a letter.
 fn stocked() -> Result<List<Route>, HomeError> {
-    ctx db = homed(Db.memory())?
     queue<Order> orders {
         name: "orders"
         durable: stored<Order>(clock: ticking)
@@ -75,8 +75,14 @@ fn stocked() -> Result<List<Route>, HomeError> {
 /// from every id so the answer does not depend on it.
 /// A line heading `GUEST ` is asked with a token the guard refuses.
 fn lines(asks: List<string>) -> string {
-    let routes = stocked() catch []
-    if routes.is_empty() { return "no routes" }
+    asked_under(asks) catch "no routes"
+}
+
+/// The lines asked with the database standing as `ctx db`, as a server
+/// holds it for its handlers.
+fn asked_under(asks: List<string>) -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let routes = stocked()?
     let mark = mark_in(answered(routes, "GET /orders/items HTTP/1.1"))
     [answered_as(routes, a.replace("MARK", mark)).replace(mark, "") for a in asks].join("\n")
 }

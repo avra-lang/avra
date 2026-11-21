@@ -4,10 +4,23 @@
 //! compacts them — every pack as one for each compiler the store keeps,
 //! holding only what that compiler's frontier still reaches, the packs of a
 //! compiler past the ones kept let go; `log` lists the packs, oldest first;
-//! `show <n>` names the questions one pack answers.
+//! `show <n>` names the questions one pack answers; `families [<store>]` weighs
+//! what each query keeps there, this package's store or the one named;
+//! `dependents <package>` works out and keeps what a program over that package
+//! reads of it.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.path.{joined_path}
-use @std.program.disk_store.{PackListed, disk_store_at, pack_questions, packs_listed}
+use @std.program.disk_store.{
+    FamilyWeight,
+    PackListed,
+    disk_store_at,
+    heavier,
+    pack_families,
+    pack_questions,
+    pack_reads_repeated,
+    packs_listed,
+}
+use @std.program.sorted.{sorted_by}
 use @std.avrac.core.{distinct}
 use @std.text.{parse_int}
 
@@ -20,19 +33,23 @@ impl Runnable for CacheCmd {
         if action == "clean" { return cache_clean(dir) }
         if action == "log" { return cache_log(dir) }
         if action == "show" { return cache_show(dir, args.arg("rev")) }
-        eprintln("avra cache: `clean`, `log` or `show <n>`")
+        if action == "dependents" { return dependents_worked(rooted(args.arg("rev"))) }
+        if action == "families" { return cache_families(if args.arg("rev") == "" { dir } else { rooted(args.arg("rev")) }) }
+        eprintln(
+            "avra cache: `clean`, `log`, `show <n>`, `families [<store>]` or `dependents <store>`",
+        )
         2
     }
 }
 
 export command cache {
-    description: "The program layer's store of this package: compact it (`clean`), list its packs (`log`), name the questions one answers (`show <n>`)"
+    description: "The program layer's store of this package: compact it (`clean`), list its packs (`log`), name the questions one answers (`show <n>`), weigh what each query keeps (`families [<store>]`)"
     arg action {
-        description: "`clean`, `log` or `show`"
+        description: "`clean`, `log`, `show`, `families` or `dependents`"
         required: true
     }
     arg rev {
-        description: "the pack `show` reads, by the number `log` lists it under"
+        description: "the pack `show` reads, by the number `log` lists it under; the store `families` weighs, or the package `dependents` works out, by its directory"
     }
     run: CacheCmd {}
 }
@@ -94,5 +111,37 @@ fn cache_show(dir: string, raw: string) -> int {
         return 1
     }
     for q in questions { println("${q.query_name}\t${q.known_as.high_word}_${q.known_as.low_word}") }
+    0
+}
+
+/// `families` weighs what each query keeps in the store at `dir`, every pack summed, the heaviest
+/// first: its questions, the kilobytes of their records and of the answers they name.
+fn cache_families(dir: string) -> int {
+    let packs = packs_listed(dir)
+    mut summed: Map<string, FamilyWeight> = {}
+    for p in packs {
+        for w in pack_families(dir, p.name) ?? [] {
+            let had? = summed.get(w.query_name) else {
+                summed.set(w.query_name, w)
+                continue
+            }
+            summed
+                .set(
+                    w.query_name,
+                    had with { questions: had.questions + w.questions, question_octets: had.question_octets + w.question_octets, answer_octets: had.answer_octets + w.answer_octets },
+                )
+        }
+    }
+    let rows = sorted_by([w for _q, w in summed], heavier)
+    println("query\tquestions\trecords KB\tanswers KB\ttotal KB")
+    for w in rows {
+        println(
+            "${w.query_name}\t${w.questions}\t${w.question_octets / 1024}\t${w.answer_octets / 1024}\t${(w.question_octets + w.answer_octets) / 1024}",
+        )
+    }
+    let reads = [r! for p in packs for r in [pack_reads_repeated(dir, p.name)] if r != null]
+    println(
+        "reads: ${reads.fold(0, (sum, r) -> sum + r.whole)} whole, ${reads.fold(0, (sum, r) -> sum + r.whole_distinct)} of them distinct; ${reads.fold(0, (sum, r) -> sum + r.part)} part, ${reads.fold(0, (sum, r) -> sum + r.part_distinct)} distinct",
+    )
     0
 }
