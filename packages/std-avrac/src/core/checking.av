@@ -143,7 +143,7 @@ export type FilledByName = { f: SignedType, values: List<ExprId>, seats: List<in
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
 /// them.
-export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List<SignedType?> = [], names: List<string> = [] }
+export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List<SignedType?> = [], names: List<string> = [], bounds: List<SignedType?> = [] }
 
 /// A record's field: its name, its type when it's written, whether it's a `state` field, whose slot
 /// holds the cell its value lives in, whether that cell is the place its writer names — a
@@ -790,6 +790,8 @@ export enum Seating {
     Literal(fault: LiteralFault)
     /// A call filling a type parameter with a type that doesn't implement the trait it's bound by.
     Unimplemented
+    /// A literal filling its record's type parameter with a type that doesn't implement its bound.
+    LiteralUnimplemented
     /// A call of the static `callee` whose answer names its type parameter `parameter`, which
     /// neither its arguments nor a wanted answer fill.
     StaticUnpinned(callee: string, parameter: string)
@@ -3821,7 +3823,11 @@ impl Checking {
     /// Each type parameter `found` fills held to the bound `bounds` declares for it, the bound
     /// applied as the call fills it: whether each holds, the call refused at the first whose type
     /// the program's impls say doesn't implement it.
-    mut fn bounds_held(bounds: List<SignedType?>, found: Map<string, SignedType>) -> bool {
+    mut fn bounds_held(
+        bounds: List<SignedType?>,
+        found: Map<string, SignedType>,
+        seat: Seating = Seating.Unimplemented,
+    ) -> bool {
         if self.meanings || bounds.is_empty() { return true }
         let at? = self.site_node() else { return true }
         for j, b in bounds {
@@ -3830,9 +3836,7 @@ impl Checking {
             let asked = bound.filled(found)
             let met = (self.program.implements)(ty, asked)
             if met != null && !met! {
-                self
-                    .refused
-                    .push(Refused { at: at, want: asked, found: ty, seat: Seating.Unimplemented })
+                self.refused.push(Refused { at: at, want: asked, found: ty, seat: seat })
                 return false
             }
         }
@@ -4453,7 +4457,7 @@ impl Checking {
             .seats_isolated(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         let held? = filled else { return null }
         let found = defaulted(held, declares.defaults)
-        if !self.bounds_held(declares.bounds, found) { return null }
+        if !self.bounds_held(declares.bounds, found) || !self.bounds_held(declares.also, found) { return null }
         let answer? = method.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -4510,8 +4514,9 @@ export fn defaulted(found: Map<string, SignedType>, defaults: List<SignedType?>)
 }
 
 /// What a fn declares of each of its type parameters: the bound each carries, and what each is where
-/// nothing pins it, absent for one with none.
-export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
+/// nothing pins it, absent for one with none; for a method, the bound its type declares beside each
+/// one its impl writes (`impl Tr for G<T: B>` over `G<T: A>`), which holds as well.
+export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [], also: List<SignedType?> = [] }
 
 /// A fn a call names, the type parameters it declares and what each is where nothing pins it.
 export type CalleeNamed = { name: string, type_params: List<string>, defaults: List<SignedType?> = [] }

@@ -79,7 +79,7 @@ impl Checks for StructLit {
         if applied != null {
             for at in seatable { seated(cx, self.values[at], seats[at]!.bound(applied!.args), self.fields[at].of) }
             places_handed(cx, e, self, record.fields, seats)
-            return applied
+            return bounds_held(cx, record, applied!)
         }
         let keyed = [at for at in seatable if meta_key(seats[at]!.unwrapped())]
         for at in keyed { seated(cx, self.values[at], seats[at]!, self.fields[at].of) }
@@ -101,10 +101,19 @@ impl Checks for StructLit {
         let filled = defaulted(found, record.defaults)
         let args = [filled.get("${at}") for at in 0..record.params]
         let open = args.find_index(it == null)
-        if open == null { return named with { args: [a! for a in args] } }
+        if open == null { return bounds_held(cx, record, named with { args: [a! for a in args] }) }
         if (!written.is_empty() || phantom(record, open!)) && cx.refused.get().length == before { unpinned_literal(cx, e, self, record, open!, written) }
         null
     }
+}
+
+/// The literal's type, `built`, where its arguments meet the bounds its record declares on its
+/// parameters (a component's `<T: A>`), each refused as a call's are; absent where one is unmet.
+fn bounds_held(mut cx: Checking, record: RecordShape, built: SignedType) -> SignedType? {
+    if record.bounds.all(it == null) { return built }
+    mut found: Map<string, SignedType> = {}
+    for at, a in built.args { found.set("${at}", a) }
+    if cx.bounds_held(record.bounds, found, Seating.LiteralUnimplemented) { built } else { null }
 }
 
 /// Whether no field of `record` names its type parameter `at`: nothing a literal writes can pin it.

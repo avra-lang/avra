@@ -40,6 +40,7 @@ once fn unmarked_stmt() -> StmtMarks { no_stmt_marks() }
 once fn no_expr_ids() -> List<ExprId> { [] }
 
 once fn no_type_refs() -> List<TypeRef> { [] }
+once fn no_bounds() -> List<TypeRef?> { [] }
 
 once fn no_annotations() -> List<Annotation> { [] }
 
@@ -325,6 +326,10 @@ export type SyntaxArena = {
     // struct literal they pin — the record's parameters, seated from
     // the WRITTEN types rather than inferred from the fields
     @copied_by_hand("minted_expr: its TypeRefs are rebuilt through tref") @taped(expr, struct_targs_read) struct_targs: SideColumn<List<TypeRef>>,
+    // the bound each argument of an impl's target writes after a colon
+    // (`impl Tr for G<T: B>`), by the impl, in its arguments' order —
+    // absent for an argument that writes none
+    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") @taped(stmt, impl_bounds_read) impl_bounds: SideColumn<List<TypeRef?>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
     @copied_by_hand("minted_expr: a quote is named by its new offset") @remade("remade_expr: a quote is named where it stands") quotes_at: DenseWindow,
@@ -386,6 +391,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         provided: side_column<Provided?>(null),
         expansions: side_column<Expansion?>(null),
         struct_targs: side_column(no_type_refs()),
+        impl_bounds: side_column(no_bounds()),
         quotes_at: dense_window(),
         sublangs: list_cell(),
         body_starts: side_column<int?>(null),
@@ -439,6 +445,7 @@ impl SyntaxArena {
             provided: self.provided.forked(),
             expansions: self.expansions.forked(),
             struct_targs: self.struct_targs.forked(),
+            impl_bounds: self.impl_bounds.forked(),
             quotes_at: DenseWindow {
                 lowest: Cell.new(self.quotes_at.lowest.get()),
                 slots: Cell.new(self.quotes_at.slots.get()),
@@ -896,6 +903,19 @@ impl SyntaxArena {
 
     /// The written type arguments a literal or a method call carries, in written order.
     fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.at(e.index) }
+
+    /// The bounds an impl's target arguments write — part of the impl's identity, as what its
+    /// methods accept.
+    fn mark_impl_bounds(s: StmtId, bounds: List<TypeRef?>) {
+        self.impl_bounds.set_at(s.index, bounds)
+        if bounds.any(it != null) {
+            self.stamp(s, 200, fp_list([if b == null { 0 } else { type_fp(b!) } for b in bounds]))
+        }
+    }
+
+    /// The bound each of an impl's target arguments writes, in written order; empty for an impl
+    /// that writes none.
+    fn impl_bounds_of(s: StmtId) -> List<TypeRef?> { self.impl_bounds.at(s.index) }
 
     /// The type arguments a literal OR instance writes. An instance's are its
     /// payload's alone: its expansion's literal is marked from them when it is
@@ -2261,7 +2281,12 @@ impl SyntaxArena {
         let p? = self.impl_parts(s) else { return self.stmt_fingerprint(s) }
         fp(
             199,
-            [fp_str(p.of ?? ""), fp_str(p.target), fp_list([self.signature_fp(m) for m in p.fns])],
+            [
+                fp_str(p.of ?? ""),
+                fp_str(p.target),
+                fp_list([self.signature_fp(m) for m in p.fns]),
+                fp_list([if b == null { 0 } else { type_fp(b!) } for b in self.impl_bounds_of(s)]),
+            ],
         )
     }
 
