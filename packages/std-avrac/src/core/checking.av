@@ -1143,7 +1143,7 @@ impl Checking {
 
     mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
         let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
-        if self.seat_wanting(want) is .Propagated { return self.carried_out(e, found) }
+        if self.propagated_want(want) { return self.carried_out(e, found) }
         if found.generic() && (want.generic() || found.head is .Function) ||
             want.inferred() ||
             found.inferred() { return }
@@ -1244,6 +1244,13 @@ impl Checking {
         if !self.store.is_hole(e) { return null }
         let name? = self.store.ident_name(e) else { return null }
         Seating.TypeHole(name)
+    }
+
+    /// Whether `want` is what the `?` standing over this node seated its subject under: the seat
+    /// asked first, so a node under any other seat spells nothing.
+    fn propagated_want(want: SignedType) -> bool {
+        let top? = self.seated.get().last() else { return false }
+        top.seat is .Propagated && top.want == want.spelled()
     }
 
     /// The innermost seat being checked in where it wants `want`; one no refusal names otherwise.
@@ -1466,7 +1473,7 @@ impl Checking {
     fn seat_kept(e: ExprId, expected: Expected) {
         let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
         // a `?`'s subject carries out what the fn's answer promises; it is never lifted into the want
-        if self.seat_wanting(wanted) is .Propagated { return }
+        if self.propagated_want(wanted) { return }
         self.seats.set_at(e.index, wanted)
     }
 
@@ -3516,12 +3523,10 @@ impl Checking {
                 self.unmet(values[at], seat, read, seat_of(at), before)
             }
         }
-        mut opened: List<int> = []
         for at, v in values {
             let seat = seats[at]
             if !(seat.head is .Function) { continue }
             let open = !seat.fills_all(found)
-            if open && self.store.closure_parts(v) != null { opened.push(at) }
             let lambda = self.store.closure_parts(v) != null
             let before = self.refused.get().length
             let read = if open && !lambda { self.check(v, Expected.Partly(seat.filled_or_never(found))) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
@@ -3540,8 +3545,9 @@ impl Checking {
                 self.unanswered(v, seat, read!, found, seat_of(at), before)
             }
         }
-        for at in opened {
-            if self.seat_unheard(values[at], seats[at], found) { agreed = false }
+        for at, v in values {
+            let seat = seats[at]
+            if seat.head is .Function && !seat.fills_all(found) && self.seat_unheard(v, seat, found) { agreed = false }
         }
         if agreed { found } else { null }
     }
@@ -4485,7 +4491,9 @@ impl Checking {
             .seats_isolated(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         let held? = filled else { return null }
         let found = defaulted(held, declares.defaults)
-        if !self.bounds_held(declares.bounds, found) || !self.bounds_held(declares.also, found) { return null }
+        if !self.bounds_held(declares.bounds, found) { return null }
+        let also = declares.also
+        if also != null && !self.bounds_held(also!, found) { return null }
         let answer? = method.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -4544,7 +4552,7 @@ export fn defaulted(found: Map<string, SignedType>, defaults: List<SignedType?>)
 /// What a fn declares of each of its type parameters: the bound each carries, and what each is where
 /// nothing pins it, absent for one with none; for a method, the bound its type declares beside each
 /// one its impl writes (`impl Tr for G<T: B>` over `G<T: A>`), which holds as well.
-export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [], also: List<SignedType?> = [] }
+export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [], also: List<SignedType?>? = null }
 
 /// A fn a call names, the type parameters it declares and what each is where nothing pins it.
 export type CalleeNamed = { name: string, type_params: List<string>, defaults: List<SignedType?> = [] }

@@ -41,7 +41,7 @@ use @std.program.saved_query.{
 /// Where an impl stands: its file, its item there, which of the item's impls it is (its impls in
 /// order, then its components), and its target's type parameters as it names them.
 @derive(Saved)
-export type ImplAt = { file: SourceFileAddress, item: ItemId, params: List<string>, nth: int = 0 }
+export type ImplAt = { file: SourceFileAddress, item: ItemId, params: List<string>, nth: int = 0, bounded: bool = false }
 
 /// The impl statement `at` names in `item`; absent for a component's.
 fn impl_stmt_at(item: ReadItem, at: ImplAt) -> StmtId? {
@@ -170,7 +170,13 @@ fn filed_impl(
 ) -> FiledImpl {
     let tr = if i.implements == null { null } else { impl_named(engine, f, i.trait_in, i.implements!, written) }
     FiledImpl {
-        at: ImplAt { file: f, item: item, params: impl_params(engine, i, d), nth: nth },
+        at: ImplAt {
+            file: f,
+            item: item,
+            params: impl_params(engine, i, d),
+            nth: nth,
+            bounded: i.bounded,
+        },
         of: d.file,
         methods: i.methods,
         statics: i.statics,
@@ -482,10 +488,11 @@ fn impl_bounds(engine: QueryEngine, at: ImplAt, signing: Signing) -> List<Signed
 
 /// The type's own bound at each parameter the impl at `at` writes one on, its parameter in the same
 /// place: what holds beside the impl's, which narrows what its methods accept and never loosens its
-/// type's law. None elsewhere.
-fn also_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?> {
+/// type's law; none at a parameter it writes none on, and absent for an impl that writes none.
+fn also_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?>? {
+    if !at.bounded { return null }
     let written = written_bounds(engine, at)
-    if written.all(it == null) { return [] }
+    if written.all(it == null) { return null }
     let declared = placed_bounds(engine, at)
     [if written[j] == null { null } else { declared[j] } for j in 0..at.params.length]
 }
@@ -493,6 +500,7 @@ fn also_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?> {
 /// The bound the impl at `at` writes on each of its target's arguments, as written; none for an
 /// argument that writes none, or a component's own `fn`s.
 fn written_bounds(engine: QueryEngine, at: ImplAt) -> List<TypeRef?> {
+    if !at.bounded { return [null for _j in 0..at.params.length] }
     let item = read_item(engine, at.file, at.item)
     let s? = impl_stmt_at(item, at) else { return [null for _j in 0..at.params.length] }
     let bounds = item.store.impl_bounds_of(s)
