@@ -171,6 +171,9 @@ if [ -z "${GATE_IN_BUDGET:-}" ] && [ "$slice" != pack ]; then
             mkdir -p "$root/build/gate/$slice"
             echo "row $slice OVER ${SLICE_SECS}s" >> "$root/build/gate/$slice/rows"
             echo "gate: $slice ran past its ${SLICE_SECS} s wall budget — stopped"
+            # what it finished, and the row it was in when stopped: the row an OVER is planned by
+            sed 's/^/gate: /' "$root/build/gate/$slice/rows"
+            [ ! -s "$root/build/gate/$slice/.running" ] || echo "gate: row $(cat "$root/build/gate/$slice/.running") was running"
             echo "GATE $slice $sha8 OVER rows=$(grep -c '^row ' "$root/build/gate/$slice/rows") failed=1 $(( $(date +%s) - started ))s"
             exit 1
             ;;
@@ -180,6 +183,11 @@ fi
 out="$root/build/gate/$slice"
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
+# A SLICE WRITES NO CORE: the rows crash children on purpose (a fault, an overflow, a trap), and a
+# process of this runtime reserves its address space up front (~128 GB), which a core then holds
+# whole; a runner's host reads each through its core handler for minutes, a verdict the wait status
+# already says
+ulimit -c 0
 export AVRA_CACHE_DIR="$out/machine"
 # a slice copies, counts and empties stores between builds, so each build saves its own before it
 # answers; the build slice's timing rows alone leave the save to an heir, as a user's build does
@@ -195,6 +203,7 @@ row() {
     name=$1; shift
     rows=$((rows + 1))
     t0=$(date +%s)
+    echo "$name" >"$out/.running"
     if sh tools/bounded.sh "$ROW_SECS" "$@" >"$out/$name.log" 2>&1; then
         echo "row $name pass $(( $(date +%s) - t0 ))s" >>"$out/rows"
         return 0
@@ -208,10 +217,13 @@ row() {
 # a row that judges what an earlier row left: `$1` its name, `$2` the verdict (0 holds)
 judged() {
     rows=$((rows + 1))
-    if [ "$2" = 0 ]; then echo "row $1 pass" >>"$out/rows"; return 0; fi
+    # a suite's seconds, where `tested` timed it; the row's alone, never the next judged row's
+    secs=${took:+ $took}
+    took=
+    if [ "$2" = 0 ]; then echo "row $1 pass$secs" >>"$out/rows"; return 0; fi
     failed=$((failed + 1))
     failures="$failures $1"
-    echo "row $1 FAIL" >>"$out/rows"
+    echo "row $1 FAIL$secs" >>"$out/rows"
     return 1
 }
 
@@ -301,8 +313,11 @@ dealt() { awk -v k="$1" -v n="$2" '(NR - 1) % n == k'; }
 tested() {
     name=$1; shift
     pkg=$(echo "$1" | cut -d/ -f2)
+    t0=$(date +%s)
+    echo "$name" >"$out/.running"
     sh tools/bounded.sh "$ROW_SECS" build/avra test "$@" >"$out/$name.log" 2>&1
     ran=$?
+    took="$(( $(date +%s) - t0 ))s"
     grep '^    ✗' "$out/$name.log" | sed 's/ @ .*//; s/^    ✗ //' | sort -u >"$out/$name.failed"
     listed "tools/gate/$pkg.names" >"$out/$name.known"
     comm -23 "$out/$name.failed" "$out/$name.known" >"$out/$name.unpinned"
@@ -550,6 +565,23 @@ warnings_part() { old_row warnings-witness env WITNESS_ONLY="$1" sh tools/witnes
 
 # the edit witness's edits `$1`
 edit_part() { row edit-witness env WITNESS_ONLY="$1" sh tools/witness_program_edit.sh build/avra; }
+
+# WHAT THIS MACHINE IS, the first line of the slice's rows: its cores as a process may use them and as
+# the machine has them, its cgroup's cpu and memory bounds, its load, the memory pool's slot files,
+# and what one process costs to start — a plain one, and the compiler asked its version, a program
+# of this runtime. A slice slower than its rows' own work says why here first.
+facts() {
+    t0=$(date +%s%N)
+    for _ in 1 2 3 4 5 6 7 8 9 10; do /bin/true; done
+    t1=$(date +%s%N)
+    for _ in 1 2 3 4 5 6 7 8 9 10; do build/avra --version >/dev/null 2>&1; done
+    t2=$(date +%s%N)
+    echo "facts cores=$(nproc) of $(nproc --all) cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo -)" \
+        "memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo -) load=$(cut -d' ' -f1-3 /proc/loadavg)" \
+        "pool-slots=$(find "/tmp/avra-$(id -u)/avra-pool" -name 'slot-*' 2>/dev/null | wc -l)" \
+        "start=$(( (t1 - t0) / 10000000 ))ms avra-version=$(( (t2 - t1) / 10000000 ))ms" >>"$out/rows"
+}
+[ ! -x build/avra ] || facts
 
 if compiler; then
     case $slice in

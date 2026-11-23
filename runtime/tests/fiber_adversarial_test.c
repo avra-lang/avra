@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -259,6 +260,10 @@ static void said(const char* what, Outcome o) {
 }
 
 int main(void) {
+    // A CRASH HERE IS ON PURPOSE AND WRITES NO CORE: a process of this runtime reserves its address
+    // space up front (~128 GB), and a core of it is that much read through the host's core handler —
+    // minutes a crash where the handler is a pipe — for a verdict the wait status already holds
+    setrlimit(RLIMIT_CORE, &(struct rlimit){ 0, 0 });
     // Children first: each forks from a process whose scheduler has not
     // yet settled, so a child's own AVRA_FIBER_STACK is the one read.
     // ── traps and faults, each in a child ───────────────────────
