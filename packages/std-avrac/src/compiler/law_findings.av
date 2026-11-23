@@ -91,29 +91,69 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId)
         view,
         () -> ItemFindings {
             findings: sorted_by(
-                [LawFinding {
-                    by: l.name,
-                    at: kept_at(s.at),
-                    args: s.args,
-                    aside: kept_aside(s.aside),
-                    kind: s.kind,
-                    named: kept_at(s.named),
-                    fixes: [FixAt {
-                        description: x.description,
-                        at: kept_at(x.at),
-                        replacement: x.replacement,
-                        sure: x.sure,
-                        item: x.item,
-                        guess: x.guess,
-                    } for x in s.fixes],
-                    local: s.local,
-                    item: s.item,
-                    unread: kept_unread(s.unread),
-                } for l in held_laws() for s in law_found(engine, file, at, view, l)],
+                [finding_of(l.name, s) for l in held_laws() for s in law_found(engine, file, at, view, l)],
                 stands_before,
             ),
         },
     )
+}
+
+/// What the law named `by` found, as an item's findings keep it.
+fn finding_of(by: string, s: Found) -> LawFinding {
+    LawFinding {
+        by: by,
+        at: kept_at(s.at),
+        args: s.args,
+        aside: kept_aside(s.aside),
+        kind: s.kind,
+        named: kept_at(s.named),
+        fixes: [FixAt {
+            description: x.description,
+            at: kept_at(x.at),
+            replacement: x.replacement,
+            sure: x.sure,
+            item: x.item,
+            guess: x.guess,
+        } for x in s.fixes],
+        local: s.local,
+        item: s.item,
+        unread: kept_unread(s.unread),
+    }
+}
+
+/// WHAT A PROGRAM'S OWN GATHERING BREAKS IN `file`: each const of its written items whose value each
+/// program gathers over its own closure, run as the program of the package `program` gathers it, where
+/// that run broke a settlement's law — the law's finding, each place counted from the file's start.
+/// A file no program reads such a const of finds nothing.
+@query
+export fn program_gathered(engine: QueryEngine, file: SourceFileAddress, program: string) -> ItemFindings {
+    ItemFindings {
+        findings: [finding_in_file(engine, file, at, finding_of(b.by, b.found)) for at in item_ids(engine, file) for b in gathered_broken_found(engine, file, at, program)],
+    }
+}
+
+/// How many findings in `file` fail the build of the program of the package `program`: its laws'
+/// own, none where a verdict vouches for it (`vouched`), and what that program's gathering breaks
+/// there, which no verdict on the file alone can vouch for.
+fn program_file_errors(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    program: string,
+    vouched: bool = false,
+) -> int {
+    let own = if vouched { 0 } else { file_erring(engine, file).errors }
+    if !gathers_per_program(engine, file) { return own }
+    own + [f for f in program_gathered(engine, file, program).findings if fails_build(f)].length
+}
+
+/// Whether `file` declares a top-level const whose value each program gathers over its own closure:
+/// the only declaration a program's gathering can break (`program_gathered`), read off what every
+/// file's declarations and every const's settlement already answer, so a file that declares none
+/// asks nothing more of a program.
+export fn gathers_per_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    file_declares(engine, file)
+        .names
+        .any((d) -> d.kind == ItemKind.Const && settled_in(engine, d)?.per_program ?? false)
 }
 
 /// What the law `l` finds in the item `at` of `file`: where it judges kinds of node, at each node of
@@ -218,9 +258,9 @@ export fn entry_erring(
     if !manifests.is_empty() { return manifests }
     mut reached: Map<string, bool> = {}
     for f in entry_files(engine, entry) { reached.set(spelled_file(f), true) }
-    [f for f in program_files(engine, package) if reached.has(spelled_file(f)) &&
-        !vouched.contains(spelled_file(f)) &&
-        file_erring(engine, f).errors > 0]
+    // each file's gathering is asked whether or not the entry reaches it, as its warnings are
+    // (`program_warned`), so an edit costs the program what it costs any program over that file
+    [f for f in program_files(engine, package) for n in [program_file_errors(engine, f, package, vouched.contains(spelled_file(f)))] if n > 0 && reached.has(spelled_file(f))]
 }
 
 /// The files the program rooted at `package` reads that a law's finding refuses, in any item,
@@ -231,7 +271,7 @@ export fn program_erring(engine: QueryEngine, package: string, vouched: List<str
 > {
     let manifests = manifests_refused(engine, package)
     if !manifests.is_empty() { return manifests }
-    [f for f in program_files(engine, package) if !vouched.contains(spelled_file(f)) && file_erring(engine, f).errors > 0]
+    [f for f in program_files(engine, package) if program_file_errors(engine, f, package, vouched.contains(spelled_file(f))) > 0]
 }
 
 /// What the laws that warn find in one file's written items, each site once, in the order the file

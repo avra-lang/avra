@@ -1092,13 +1092,15 @@ fn binary_refused(disk: Disk, built: BuiltBinary, entry_path: string) -> string?
 /// among them, said as `check` says it, its errors failing the build: 1. A file whose refusal no law
 /// finds is said as such. Where the net accepted the program (`net`), it is said as the program
 /// layer's defect, unless every refusal is a const's settling, which runs past what the net reads:
-/// a trap there is the program's own.
+/// a trap there is the program's own. Said on stdout, as `check` says them; a suite's leg says them
+/// on stderr (`leg`), where the suite reads a leg's report.
 fn refusals_said(
     engine: QueryEngine,
     disk: Disk,
     files: List<SourceFileAddress>,
     entry: SourceFileAddress,
     net: bool = false,
+    leg: bool = false,
 ) -> int {
     let held = [program_file(disk, f) for f in files]
     let entered = program_file(disk, entry)
@@ -1107,7 +1109,10 @@ fn refusals_said(
     for j, ds in said { if ds.is_empty() { eprintln(refusal_unworded(held[j].full)) } }
     let sources = [new_source_file(h.full, text_at(h.full) ?? "") for h in held]
     let all = flatten(said)
-    if !all.is_empty() { eprintln(rendered_among(all, sources)) }
+    if !all.is_empty() {
+        let report = rendered_among(all, sources)
+        if leg { eprintln(report) } else { println(report) }
+    }
     1
 }
 
@@ -1120,7 +1125,7 @@ fn hosts_owed_said(disk: Disk, owed: List<HostOwedAt>) -> int {
         let first = firsts.first()
         let at_first = if first == null { null } else { loc_at(first!.full, span_of_at(r.first_at)) }
         let sources = [src].concat([new_source_file(f.full, text_at(f.full) ?? "") for f in firsts])
-        eprintln(
+        println(
             rendered_among(
                 [
                     host_fn_owed_diag(
@@ -1724,7 +1729,11 @@ fn findings_said(engine: QueryEngine, disk: Disk) -> int {
 
 /// The file `f` and where it stands on `disk`.
 fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {
-    ProgramFile { file: f, full: disk.on_disk(f.package_name, f.path_in_package) }
+    ProgramFile {
+        file: f,
+        full: disk.on_disk(f.package_name, f.path_in_package),
+        program: disk.name,
+    }
 }
 
 /// What every law finds in the file `h`, item by item, then every rule that reads syntax alone, each rendered; absent for one whose law this
@@ -3359,7 +3368,7 @@ fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool
     )
     let refusing = program_refused(engine, entry, disk.name, vouched_files(engine, disk))
     if !refusing.is_empty() {
-        let _ = refusals_said(engine, disk, refusing, entry)
+        let _ = refusals_said(engine, disk, refusing, entry, leg: !live)
         return 3
     }
     let lowered = match made_program(engine, entry) {
@@ -3369,7 +3378,7 @@ fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool
             return 3
         },
         .Refused(files) -> {
-            let _ = refusals_said(engine, disk, files, entry)
+            let _ = refusals_said(engine, disk, files, entry, leg: !live)
             return 3
         },
     }
@@ -4481,7 +4490,7 @@ fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
         .concat([manifest_source(disk.package_root(p)) for p in reached_packages(engine, disk)]) }
     let said = [manifest_said(program_file(disk, f)) for f in manifests_voiced(engine, disk.name)]
         .concat(if graph.voices.is_empty() { [] } else { [rendered_among(graph.voices, graph.sources)] })
-    if !said.is_empty() { eprintln(said.join("\n\n")) }
+    if !said.is_empty() { println(said.join("\n\n")) }
     if manifests_refused(engine, disk.name).is_empty() && graph.voices.is_empty() { null } else { 1 }
 }
 

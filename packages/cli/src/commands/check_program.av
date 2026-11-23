@@ -13,6 +13,8 @@ use @std.avrac.compiler.{
     finding_diag,
     made_program,
     program_erring,
+    program_strays,
+    file_refusals,
     program_files,
     phased,
     WorkCounts,
@@ -22,7 +24,7 @@ use @std.avrac.compiler.{
     StaleCitation,
     stale_citations,
 }
-use @std.avrac.core.{distinct}
+use @std.avrac.core.{distinct, flatten}
 use @std.avrac.compiler.memory.{sound_checked}
 use @std.avrac.diagnostics.{Diag, SourceFile, defect_kind, new_source_file, render, rendered_among}
 use @std.io.{env, write_text}
@@ -37,9 +39,10 @@ use @std.time.{now_ns}
 type SiteAt = { finding: Finding, line: int }
 
 /// `check` of the program `disk` reads on the program layer: what its laws refuse in any file it
-/// reads, exit 1; else — held to the file `baseline` where one is named — a rule site of the package's
-/// own files it doesn't list refuses it, and the package's own warnings are said, exit 0. A
-/// dependency's warnings, rule sites and stale citations are its own check's, and said to be. `pruning`, the baseline is
+/// reads, or where none does, each statement a file but its entry runs, exit 1; else — held to the
+/// file `baseline` where one is named — a rule site of the package's own files it doesn't list
+/// refuses it, and the package's own warnings are said, exit 0. A dependency's warnings, rule sites
+/// and stale citations are its own check's, and said to be. `pruning`, the baseline is
 /// pruned to the sites still found instead, as `accepted` prunes it. Where the net accepted the
 /// program (`net`), a refusal is said as the program layer's defect.
 fn disk_checked(
@@ -70,6 +73,7 @@ fn disk_checked(
     let apart = distinct([h.file.package_name for h in files if disk.deps.has(h.file.package_name)])
     let vouched = vouched_files(engine, disk)
     let erring = phased(engine, "the refusals", () -> program_erring(engine, disk.name, vouched))
+    let strays = if erring.is_empty() { phased(engine, "the strays", () -> entry_strays(engine, disk)) } else { "" }
     let found = phased(
         engine,
         "the warnings",
@@ -82,7 +86,7 @@ fn disk_checked(
     )
     let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
     let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
-    let proved = if erring.is_empty() && sound_checked() { phased(engine, "the proof", () -> program_proved(engine, disk)) } else { [] }
+    let proved = if erring.is_empty() && strays == "" && sound_checked() { phased(engine, "the proof", () -> program_proved(engine, disk)) } else { [] }
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
     let saved = phased(engine, "the store saved", () -> store.saved())
     let unsaved = unsaved_said(store, saved)
@@ -97,6 +101,10 @@ fn disk_checked(
     if !erring.is_empty() {
         if net_vouches(net, () -> program_new_only(engine, disk.name)) { println(false_refusal_header()) }
         println(refused)
+        return 1
+    }
+    if strays != "" {
+        println(strays)
         return 1
     }
     if !proved.is_empty() {
@@ -136,6 +144,19 @@ fn program_proved(engine: QueryEngine, disk: Disk) -> List<Diag> {
         .Unmade(_why, _at) -> [],
         .Refused(_files) -> [],
     }
+}
+
+/// What `check` says of each file of the program `disk` reads, its entry aside, that runs a statement
+/// at its top, which only the entry may; nothing for a package that runs nothing, or where none does.
+fn entry_strays(engine: QueryEngine, disk: Disk) -> string {
+    let entry? = entry_written(disk.root) else { return "" }
+    let home = program_file(disk, disk.file_at(entry))
+    let held = [program_file(disk, f) for f in program_strays(engine, home.file, [], with_tests: true)]
+    if held.is_empty() { return "" }
+    rendered_among(
+        flatten([file_refusals(engine, h, home) for h in held]),
+        [new_source_file(h.full, text_at(h.full) ?? "") for h in held],
+    )
 }
 
 /// What `check` says of a file a law refuses: everything its laws find there, warnings among the

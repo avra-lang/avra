@@ -827,7 +827,8 @@ fn distinct_files(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
 /// law refuses anywhere it reads; its entry, where a body of it refuses; each file holding a body its
 /// shape reaches, lowered or not yet, that a seat refused a node of or that reads a name nothing
 /// declares, in the order the shape reaches each first such body; then each file it reaches that
-/// writes a word as a name it cannot be or declares a method whose name its type already took. Each
+/// writes a word as a name it cannot be or declares a method whose name its type already took; then,
+/// where no law refuses it, each file that runs a statement only its entry may (`program_strays`). Each
 /// file is answered on its own (`file_refused`) over the shape's bodies by file (`refusal_shape`), so
 /// an edit to one body re-asks its file alone, and this stands wherever every file's answer does. A
 /// file `vouched` names stands on the verdict that vouches for it: no law is asked of it.
@@ -864,7 +865,7 @@ export fn program_refused(
         [FileAt { file: f.file, at: reached_at(f, answers[i]) } for i, f in shape.files if answers[i].law],
         (a: FileAt, b: FileAt) -> a.at < b.at,
     )
-    let strays = [f.file for f in shape.files if !f.entry && strays_in(engine, f.file)]
+    let strays = if erring.is_empty() { program_strays(engine, file, [f.file for f in shape.files if !f.entry]) } else { [] }
     distinct_files(
         erring
             .concat(own)
@@ -875,10 +876,41 @@ export fn program_refused(
     )
 }
 
-/// Whether `file` runs a statement at its top, which only a program's entry may: one answer a file,
-/// which an edit to another file leaves standing.
-@cut_query
-fn strays_in(engine: QueryEngine, file: SourceFileAddress) -> bool { !strays_of(engine, file).is_empty() }
+/// Each file but the entry `entry` that runs a statement at its top, which only the entry may: of
+/// those `reached`, then of the entry's own package, read or not, its programs aside — each a proof
+/// marks, and the one its manifest names — said as
+/// lowering is reached, where no law refuses the program. A build of an entry outside `tests/` meets
+/// none of its package's tests but those it reaches, as the old path's build does; a check
+/// (`with_tests`) meets every one.
+export fn program_strays(
+    engine: QueryEngine,
+    entry: SourceFileAddress,
+    reached: List<SourceFileAddress>,
+    with_tests: bool = false,
+) -> List<SourceFileAddress> {
+    let tests = with_tests || in_tests(entry.path_in_package)
+    let own = [SourceFileAddress { package_name: entry.package_name, path_in_package: p } for p in package_sources(engine, entry.package_name, "src") if tests || !in_tests(p)]
+    let program = program_path(package_facts(engine, entry.package_name))
+    // a file is asked whether it strays before anything else of it, so only the few that do are
+    // compared by name, to the entry, the manifest's program, the proofs beside them and each other
+    distinct_files(
+        [f for f in reached if strays_in(engine, f)]
+            .concat(
+                [f for f in own if strays_in(engine, f) &&
+                    !same_file(f, entry) &&
+                    f.path_in_package != program &&
+                    !marked_program(engine, f)],
+            ),
+    )
+}
+
+/// Whether the source at `path`, from its package's root, stands in a `tests/` tree of it.
+fn in_tests(path: string) -> bool { "/${path}".contains("/tests/") }
+
+/// Whether `file` runs a statement at its top, which only a program's entry may: read off what each
+/// of its items says of itself, which an edit to the file asks again already, so it is no answer of
+/// its own to work out again.
+fn strays_in(engine: QueryEngine, file: SourceFileAddress) -> bool { item_ids(engine, file).any((at) -> runs_in(engine, file, at)) }
 
 /// Where each statement `file` runs at its top stands in the file: what a file other than its
 /// program's entry may not hold, since only the entry runs statements. Only an item that runs one is
@@ -2404,7 +2436,8 @@ export fn reaches_gathered(survey: TaskSurvey, root: LoweredFn) -> bool {
 /// the walk goes past it; with `trapped`, the program is made anyway, each such body, and each name
 /// nothing answers, one lowered in that file that traps naming itself. A collect gathering `in
 /// closure` gathers over the closure of the package `program`, where one is named, and each host fn
-/// of `program`'s own files the walk reads — `home` the first — is a body of it.
+/// of `program`'s own files the walk reads — `home` the first — is a body of it, where `hosted`: a
+/// run that only gathers as the program does (a const's) carries none.
 export fn made_reaching(
     survey: TaskSurvey,
     unplaced: LoweredFn,
@@ -2419,6 +2452,7 @@ export fn made_reaching(
     home: SourceFileAddress? = null,
     unhashed_absent: bool = false,
     framing: List<SourceFileAddress>? = null,
+    hosted: bool = true,
 ) -> MadeProgram {
     let root = survey.placed(unplaced, checks)
     let walked = match walked_from(
@@ -2431,6 +2465,7 @@ export fn made_reaching(
         lazy,
         home,
         framing ?? some_list(home),
+        hosted,
     ) { .Met(w) -> w, .Stopped(why, at) -> { return MadeProgram.Unmade(why, at) } }
     let refusing = distinct_files(
         refused_in.concat([m.called.file for m in walked.met if m.facts.refused() > 0]),
@@ -2572,12 +2607,14 @@ fn walked_from(
     lazy: bool = false,
     home: SourceFileAddress? = null,
     roots: List<SourceFileAddress>? = null,
+    hosted: bool = true,
 ) -> Walking {
+    let hosting = if hosted { program } else { null }
     walked(
         survey,
         every_callee_of(root)
-            .concat(hosted_in(survey.engine, home, program))
-            .concat(package_hosted(survey.engine, program, home)),
+            .concat(hosted_in(survey.engine, home, hosting))
+            .concat(package_hosted(survey.engine, hosting, home)),
         {},
         held_of(root.wrappers),
         checks,
@@ -2587,6 +2624,7 @@ fn walked_from(
         lazy,
         home,
         roots ?? some_list(home),
+        hosted,
     )
 }
 
@@ -2604,6 +2642,7 @@ fn walked(
     lazy: bool,
     home: SourceFileAddress? = null,
     roots: List<SourceFileAddress> = [],
+    hosted: bool = true,
 ) -> Walking {
     let engine = survey.engine
     mut queue: List<Calls> = [Calls.Held(start)]
@@ -2639,9 +2678,9 @@ fn walked(
             }
             if !read.has(spelled_file(c.file)) {
                 read.set(spelled_file(c.file), true)
-                let hosted = hosted_in(engine, c.file, program)
+                let hosts = hosted_in(engine, c.file, if hosted { program } else { null })
                 // LICENSED loops.push_loop: the walk's own worklist grows while it is walked
-                if !hosted.is_empty() { queue.push(Calls.Held(hosted)) }
+                if !hosts.is_empty() { queue.push(Calls.Held(hosts)) }
             }
             if c.external {
                 if !bodiless.has(c.symbol) {

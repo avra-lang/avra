@@ -8,7 +8,7 @@ use @std.program.worked_ahead.{WorkAhead, Worked, cores_online, engine_worked_ah
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 use @std.program.source_facts.{listed}
-use @std.path.{dir_of}
+use @std.path.{dir_of, stem_of}
 
 /// A package read whole: its source files, how many items they hold, and how many names clashed.
 @derive(Saved)
@@ -62,6 +62,17 @@ export fn package_sources(engine: QueryEngine, package: string, dir: string) -> 
     flatten(
         [if name.ends_with(".av") { ["${dir}/${name}"] } else { package_sources(engine, package, "${dir}/${name}") } for name in names],
     )
+}
+
+/// Whether the source `file` is a program of its own and not a module file: a proof stands beside
+/// it, so its top-level statements are its own to run.
+export fn marked_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    let path = file.path_in_package
+    let names = listed(
+        engine,
+        DirectoryAddress { package_name: file.package_name, path_in_package: dir_of(path) },
+    ) ?? []
+    program_markers().any((m) -> names.contains("${stem_of(path)}.${m}"))
 }
 
 /// The files a package reaches: its own sources, then each file of every module one of them imports,

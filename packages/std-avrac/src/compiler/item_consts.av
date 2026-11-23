@@ -117,19 +117,30 @@ fn const_run(engine: QueryEngine, file: SourceFileAddress, body: SignedBody, nam
 }
 
 /// The value `body` holds, lowered under `name` as the unit `symbol` and run in the evaluator; or the
-/// settlement that says why it isn't.
+/// settlement that says why it isn't. A value that reaches a collect gathering `in closure` runs only
+/// as the program of the package `program` gathers it, and is each program's own where none is named.
 fn value_run(
     engine: QueryEngine,
     file: SourceFileAddress,
     body: SignedBody,
     name: string,
     symbol: string,
+    program: string? = null,
 ) -> Result<Lifted, ConstSettlement> {
     let root = signed_lowered(engine, file, body, name, null)
     if !root.whole() { return .Err(unsettled_as("a const whose value isn't lowered yet: ${root.missing[0]}")) }
     let survey = task_survey(engine)
-    if reaches_gathered(survey, root) { return .Err(unsettled_as(per_program()) with { per_program: true }) }
-    let made = match made_reaching(survey, root, symbol, [], TaskChecks.Surveyed, lazy: true) {
+    if program == null && reaches_gathered(survey, root) { return .Err(unsettled_as(per_program()) with { per_program: true }) }
+    let made = match made_reaching(
+        survey,
+        root,
+        symbol,
+        [],
+        TaskChecks.Surveyed,
+        program: program,
+        lazy: true,
+        hosted: false,
+    ) {
         .Made(l) -> l,
         .Unmade(why, _) -> {
             if why == unhashed() { return .Err(code_hash_trapped(name)) }
@@ -179,6 +190,32 @@ export fn argument_lifted(
         .Err(why) -> .Err(why.broken ?? BrokenSettlement { kind: "", words: why.unsettled ?? "" }),
     }
 }
+
+/// THE CONST `name` OF THE WRITTEN ITEM `item` OF `file` THAT EACH PROGRAM GATHERS OVER ITS OWN CLOSURE,
+/// RUN AS THE PROGRAM OF THE PACKAGE `program` GATHERS IT: the settlement's law its run broke, as a
+/// const settled once breaks it; absent where it runs clean, or doesn't run yet. A program that builds
+/// it where it's read would trap there, so the program is refused as the old path settles it.
+@query
+export fn gathered_broken(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    item: ItemId,
+    program: string,
+) -> GatheredBroken {
+    let body = match const_body_at(engine, file, name, item) {
+        .Ok(b) -> b,
+        .Err(_) -> { return GatheredBroken { broken: null } },
+    }
+    match value_run(engine, file, body, name, declared_symbol(file, name), program) {
+        .Ok(_) -> GatheredBroken { broken: null },
+        .Err(why) -> GatheredBroken { broken: why.broken },
+    }
+}
+
+/// The law a gathered const's run broke, where it broke one.
+@derive(Saved)
+export type GatheredBroken = { broken: BrokenSettlement? }
 
 /// The const `name` of the written item `item` of `file` as its run answers it, in a heap of its own:
 /// what a seat taking its value is handed. Absent where it doesn't run.

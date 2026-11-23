@@ -31,9 +31,9 @@ export AVRA_SUITE_ALL=1
 # THE NET IS OFF unless a row's claim is the net: the old path's check before every program-layer
 # compile doubles what each row costs and proves nothing a row here asks of it. The rows that keep it
 # (AVRA_PROGRAM_NET=1) are the ones that count what it says: the build slice's net-on cli builds and
-# their "program-layer false refusal" count, the findings slices' build of every package, held to that
-# same count, and the cli's suite, which holds the words a user meets through a child build/avra (at
-# slice_cli). `tapes --findings` passes no door, so the net never stood in it.
+# their "program-layer false refusal" count, and the findings slices' build of every package, held to
+# that same count. The cli's suite runs on the shipped default, the net off, so it holds the words a
+# user meets through a child build/avra. `tapes --findings` passes no door, so the net never stood in it.
 export AVRA_PROGRAM_NET=0
 
 OLD_PATH=${GATE_OLD_PATH:-1}
@@ -334,13 +334,12 @@ tested() {
 # the lines the pin file `$1` lists, sorted, each once; none where there is no such file
 listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
-# THE CLI'S SUITE RUNS WITH THE NET: its cases run build/avra as a user does and hold the words a user
-# meets, refusals among them, and where the program layer accepts a program the old path refuses, those
-# words are the net's — so the suite holds the shipped default, the net on. The one suite that runs the
-# compiler as a child; every other test row holds what it runs in-process.
+# THE CLI'S SUITE RUNS ON THE SHIPPED DEFAULT: its cases run build/avra as a user does and hold the
+# words a user meets, refusals among them, so the suite holds what the program layer says alone, the
+# net off. The one suite that runs the compiler as a child; every other test row holds what it runs
+# in-process.
 slice_cli() {
     cold cli
-    export AVRA_PROGRAM_NET=1
     children_kept tested cli-suite "${@:-packages/cli}"
     children_of_failed cli-suite
     ci_captured
