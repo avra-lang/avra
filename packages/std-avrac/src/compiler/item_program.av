@@ -1678,8 +1678,10 @@ export fn entry_lowered(engine: QueryEngine, file: SourceFileAddress) -> Lowered
 
 /// THE KEY OF EACH OF A PROGRAM'S BUCKETS, by the answers its bodies are made of: its index, `salt`
 /// (what makes the objects besides the program), and each body it holds by its lowering's answer
-/// hash, its symbol, the tests it keeps and what it sees, and each wrapper falling in it; the last bucket, which
-/// holds the program-wide bodies, by the code hashes `hashes`, how each is called, and the stand-ins.
+/// hash, its symbol, the tests it keeps and what it sees, and each wrapper falling in it with the body it
+/// calls as the bodies see it: whether it consumes each seat moves the retains the wrapper owes; the last
+/// bucket, which holds the program-wide bodies, by the code hashes `hashes`, how each is called, and the
+/// stand-ins.
 /// Nothing is read but answer hashes. A key stands for its module's bytes because a module is made from these alone, in
 /// symbol order, and a static it lays out is in the answer of a body reading it; the LLVM the
 /// compiler links is no part of a key.
@@ -1698,7 +1700,8 @@ export fn keyed_objects(
     let keys = shape.unit_keys()
     let held = [shape.unit_keyed(engine, keys, i) for i in 0..by_home.length]
     let wrappers = shape.wrappers()
-    let wrapped = [content_text(w.saved_bytes()) for w in wrappers]
+    let called = wrapped_seen(shape.declared(), wrappers)
+    let wrapped = [content_text(w.saved_bytes()) + " " + (called.get(w.target) ?? "") for w in wrappers]
     let wrapped_in = [symbol_chunk(w.symbol) for w in wrappers]
     let program_wide = [content_text(h.saved_bytes()) for h in hashes]
         .concat([content_text(h.saved_bytes()) for h in shape.hashed()])
@@ -1719,6 +1722,18 @@ export fn keyed_objects(
         dir,
     ) for b in 0..CHUNKS if occupied.has("${b}")]
         .concat(frames_keyed(engine, shape, held, salt, dir))
+}
+
+/// The body each of `wrappers` calls as the bodies naming it see it (`BodySeen`, its consumed seats
+/// among it), by name, read off `declared`; the first body of a name stands, as `seen_bodies` says.
+fn wrapped_seen(declared: List<BodySeen>, wrappers: List<FnWrapper>) -> Map<string, string> {
+    mut wanted: Map<string, bool> = {}
+    for w in wrappers { wanted.set(w.target, true) }
+    mut seen: Map<string, string> = {}
+    for d in declared {
+        if wanted.has(d.name) && !seen.has(d.name) { seen.set(d.name, content_text(d.saved_bytes())) }
+    }
+    seen
 }
 
 /// EACH FILE'S FRAMES AS AN OBJECT OF THEIR OWN: what places them is where each item of the file
@@ -1903,6 +1918,9 @@ impl ShapeAt {
 
     /// The symbols of the bodies chunk `b` is home to, in the shape's order.
     fn symbols_in(b: int) -> List<string> { [self.unit(i).called.symbol for i, home in self.homes() if home == b] }
+
+    /// The symbols of the wrappers chunk `b` is home to, in the shape's order.
+    fn wrappers_in(b: int) -> List<string> { [w.symbol for w in self.wrappers() if symbol_chunk(w.symbol) == b] }
 
     fn unit_keys() -> List<int> { ReachedProgram.unit_keys_in(self.source, self.shape) }
 

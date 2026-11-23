@@ -506,6 +506,7 @@ row docs-cache-attack sh tools/docs_cache_attack.sh
 row obj-gone-attack sh tools/obj_gone_attack.sh
 row chunk-owed-attack sh tools/chunk_owed_attack.sh
 row frame-place-attack sh tools/frame_place_attack.sh
+row wrapper-marks-attack sh tools/wrapper_marks_attack.sh
 row moved-tree-attack sh tools/moved_tree_attack.sh
 row layer-sites-attack sh tools/layer_sites_attack.sh
 row closure-gather-attack sh tools/closure_gather_attack.sh
