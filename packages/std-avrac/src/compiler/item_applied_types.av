@@ -5,6 +5,7 @@
 //! stands, as the old path says it.
 use core.{
     At,
+    declared_head,
     INFERRED,
     MAP_KEYS,
     SignedType,
@@ -52,11 +53,11 @@ fn applied_signed(engine: QueryEngine, written: TypeRef, signed: SignedType) -> 
     if written.arrow || !written.alternatives.is_empty() { return signed }
     let takes? = match signed.head {
         .Owned(name) -> if name == written.name { type_row(avra().rows.types, name)?.arity ?? 0 } else { null },
-        .Declared(file, name) -> if name == written.name && !declared_gathered(engine, file, name) { AppliedScope { engine: engine, file: file, params: [] }.takes(name) } else { null },
+        .Declared(file, name, _) -> if name == written.name && !declared_gathered(engine, file, name) { AppliedScope { engine: engine, file: file, params: [] }.takes(name) } else { null },
         rest -> null,
     } else { return signed }
     let spared = match signed.head {
-        .Declared(file, name) -> spared_count(type_params_written(engine, file, name)),
+        .Declared(file, name, _) -> spared_count(type_params_written(engine, file, name)),
         rest -> 0,
     }
     let keyed = written.name != MAP ||
@@ -80,7 +81,7 @@ fn keys_filed(engine: QueryEngine, key: SignedType) -> bool {
     match key.head {
         .Unnamed(_) or .Inferred -> true,
         // only a declared key is read through its declaration: a signature asks nothing it needn't
-        .Declared(_, _) -> files_as_key(named_over(engine, key) ?? key, (ty: SignedType) -> enum_shape(engine, ty)),
+        .Declared(_, _, _) -> files_as_key(named_over(engine, key) ?? key, (ty: SignedType) -> enum_shape(engine, ty)),
         .Owned(_) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> files_as_key(key, (_ty: SignedType) -> null),
     }
 }
@@ -166,7 +167,7 @@ impl AppliedScope {
         let d? = seen.scope.named(k.name) else { return seen.scope.takes(k.name) != null }
         match d.kind {
             .Alias -> false,
-            .Enum or .Named -> !keys_filed(seen.scope.engine, headed_type(TypeHead.Declared(d.file, d.name))),
+            .Enum or .Named -> !keys_filed(seen.scope.engine, headed_type(declared_head(d.file, d.name))),
             .Record or .Fn or .Const or .State or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .Ctx -> true,
         }
     }

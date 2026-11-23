@@ -1,7 +1,7 @@
 //! WHAT A TRAIT'S OWN BODY GIVES: a method a type never writes, answered by the one trait it
 //! implements that writes a body for it. That body is lowered once per type it answers for, `Self`
 //! and the receiver that type, its unit named for the trait, the method and the type.
-use core.{CalledFn, DefaultSeats, SignedType, StmtId, TypeHead, TypeRef, headed_type}
+use core.{declared_head, CalledFn, DefaultSeats, SignedType, StmtId, TypeHead, TypeRef, headed_type}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
@@ -67,7 +67,7 @@ export fn default_seats(engine: QueryEngine, file: SourceFileAddress, owner: str
     let s? = body.item.stmts.find((x) -> body.item.store.trait_parts(x)?.name == g.giver.name) else { return null }
     let names = body.item.store.decl_tparams(s)
     DefaultSeats {
-        held: headed_type(TypeHead.Declared(g.giver.file, g.giver.name)) with { args: g.args },
+        held: headed_type(declared_head(g.giver.file, g.giver.name)) with { args: g.args },
         takes: [parameter_place(names, p.ty) for p in body.item.store.fn_parts(body.stmt)!.params],
     }
 }
@@ -118,7 +118,7 @@ fn given_callee(
     let written? = given_body(engine, giver, method) else { return null }
     let parts = written.item.store.fn_parts(written.stmt)!
     let used = receiver_use(engine, file, owner, method, giver.file.package_name)
-    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let receiver = headed_type(declared_head(file, owner))
     CalledFn {
         file: giver.file,
         name: method,
@@ -149,7 +149,7 @@ export fn lowered_default(
     let g? = default_giver(engine, file, owner, method, written_as) else { return null }
     let giver = g.giver
     let written? = given_body(engine, giver, method) else { return null }
-    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let receiver = headed_type(declared_head(file, owner))
     let signature? = given_signature(engine, g, method, receiver) else { return null }
     lowered_signed(
         engine,

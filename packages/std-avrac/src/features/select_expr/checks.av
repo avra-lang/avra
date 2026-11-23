@@ -97,7 +97,7 @@ fn waitable(ty: SignedType) -> bool {
     if ty.nullable() { return false }
     if task_answer(ty) != null || task_answer(ty.listed()) != null { return true }
     match ty.head {
-        .Declared(file, name) -> file.package_name == "@std/task" && (name == "Source" || name == "AnyOf") ||
+        .Declared(file, name, _) -> file.package_name == "@std/task" && (name == "Source" || name == "AnyOf") ||
             file.package_name == "@std/time" &&
                 (name == "Deadline" || name == "Quiet" || name == "Every"),
         rest -> false,
@@ -150,7 +150,7 @@ fn answers_nothing(answer: SignedType) -> bool { answer.owns(OwnType.Void) && !a
 /// Whether `ty` is one of `@std/time`'s timers, which fire and hand nothing over.
 fn timed(ty: SignedType) -> bool {
     match ty.head {
-        .Declared(file, name) -> file.package_name == "@std/time" &&
+        .Declared(file, name, _) -> file.package_name == "@std/time" &&
             (name == "Deadline" || name == "Quiet" || name == "Every") &&
             !ty.nullable(),
         rest -> false,
@@ -171,7 +171,7 @@ fn supply(ty: SignedType?) -> bool {
     let t? = ty else { return false }
     if t.nullable() || t.args.length != 1 { return false }
     match t.head {
-        .Declared(file, name) -> file.package_name == "@std/task" && (name == "Source" || name == "AnyOf"),
+        .Declared(file, name, _) -> file.package_name == "@std/task" && (name == "Source" || name == "AnyOf"),
         rest -> false,
     }
 }
@@ -229,7 +229,7 @@ fn waits_on(ty: SignedType?) -> Waits {
     let t? = ty else { return Waits.Other }
     if t.nullable() { return Waits.Other }
     match t.head {
-        .Declared(file, name) -> when {
+        .Declared(file, name, _) -> when {
             file.package_name != "@std/time" -> Waits.Other
             name == "Deadline" -> Waits.Deadline
             name == "Quiet" -> Waits.Quiet
@@ -304,7 +304,7 @@ fn place_path(cx: Checking, e: ExprId) -> List<string> {
 fn unlowered_head(head: SignedType?) -> string? {
     let ty? = head else { return null }
     match ty.head {
-        .Declared(file, name) -> when {
+        .Declared(file, name, _) -> when {
             ty.nullable() -> null
             name == "AnyOf" && file.package_name == "@std/task" -> "an `AnyOf` arm"
             name == "Every" && file.package_name == "@std/time" -> "an `Every` arm"

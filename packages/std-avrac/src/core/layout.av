@@ -307,7 +307,7 @@ impl CheckedProgram {
         if ty.dynamic { return Layout.Boxed(BoxKind.Dyn) }
         match ty.head {
             .Owned(name) -> self.owned_layout(name, ty.args, laying),
-            .Declared(_, _) -> declared_layout(self.declared(ty, laying)),
+            .Declared(_, _, _) -> declared_layout(self.declared(ty, laying)),
             .Function -> Layout.Boxed(BoxKind.Closure),
             .Union -> Layout.Boxed(BoxKind.Union),
             .Parameter(_, _) -> self.parameter_of(ty)?.layout,
@@ -379,7 +379,7 @@ impl CheckedProgram {
                     .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
                 }
             },
-            .Declared(_, _) -> {
+            .Declared(_, _, _) -> {
                 let d? = self.declared(t, laying) else { return null }
                 match d {
                     .WordEnum -> 0,
@@ -443,7 +443,7 @@ impl CheckedProgram {
                     .Void or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
                 }
             },
-            .Declared(_, _) -> {
+            .Declared(_, _, _) -> {
                 let shape = (self.enum_of)(t)
                 if shape != null { return if !t.names_as(owner) && self.word_enum(t) { 0 } else { null } }
                 let record? = self.laid(t, laying) else { return null }
@@ -466,7 +466,7 @@ impl CheckedProgram {
         if t.nulls > 1 || t.dynamic { return false }
         match t.head {
             .Owned(name) -> t.nulls == 0 && (name == "int" || name == "bool"),
-            .Declared(_, _) -> self.word_enum(t.unwrapped()),
+            .Declared(_, _, _) -> self.word_enum(t.unwrapped()),
             .Parameter(_, _) or .Inferred or .Unnamed(_) or .Function or .Union or .Never or .Meta -> false,
         }
     }

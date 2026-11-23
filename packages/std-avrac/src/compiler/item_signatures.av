@@ -5,6 +5,7 @@
 //! name does.
 use core.settings.{avrac_settings}
 use core.{
+    declared_head,
     owned_type,
     Annotation,
     Expr,
@@ -627,7 +628,7 @@ type DeclaredAt = { file: SourceFileAddress, name: string }
 /// Where the type `ty` names is declared, absent for a type the program doesn't declare.
 fn declared_at(ty: SignedType) -> DeclaredAt? {
     match ty.head {
-        .Declared(file, name) -> declared_place(file, name),
+        .Declared(file, name, _) -> declared_place(file, name),
         .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
 }
@@ -743,7 +744,7 @@ fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string
         variants: [VariantSeat {
             name: m.name,
             payloads: member_payloads(engine, m),
-            member: headed_type(TypeHead.Declared(m.file, m.name)),
+            member: headed_type(declared_head(m.file, m.name)),
         } for m in members],
     }
 }
@@ -1134,7 +1135,7 @@ impl Signing {
     /// parameters they leave out.
     fn filled_args(head: TypeHead, args: List<SignedType>) -> List<SignedType> {
         match head {
-            .Declared(file, name) -> defaulted_args(self.engine, file, name, args),
+            .Declared(file, name, _) -> defaulted_args(self.engine, file, name, args),
             rest -> args,
         }
     }
@@ -1166,7 +1167,7 @@ impl Signing {
     /// What a head names when it names an alias.
     fn aliased(head: TypeHead) -> NameOver? {
         match head {
-            .Declared(file, name) -> alias_target(self.engine, file, name),
+            .Declared(file, name, _) -> alias_target(self.engine, file, name),
             .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
         }
     }
@@ -1180,7 +1181,7 @@ impl Signing {
         if at >= 0 { return TypeHead.Parameter(at, name) }
         if builtin_type_name(avra().rows.types, name) || name == RANGE { return TypeHead.Owned(name) }
         let d? = named_where_written(self.engine, self.writer, self.file, name, self.written_only) else { return TypeHead.Unnamed(name) }
-        TypeHead.Declared(d.file, d.name)
+        declared_head(d.file, d.name)
     }
 }
 

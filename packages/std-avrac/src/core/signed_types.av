@@ -6,17 +6,26 @@ use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash}
 use @std.program.interned.{HIGH_LANE, LOW_LANE, KeyLane, hash_text, hash_word, key_of_lanes}
+use @std.program.names.{Name, name_of}
 use @std.program.saved_derive.{Saved}
+use @std.program.saved_layout.{
+    SavedLayoutWriter,
+    SavedRecord,
+    SavedSource,
+    saved_layout_writer,
+    saved_root_record,
+}
 
-/// What a written type's name names.
-@derive(Saved)
+/// What a written type's name names. Saved and folded as its texts, never the ids a declared head's
+/// key packs, which are this process's own.
 export enum TypeHead {
     /// A type the language owns: a scalar or a constructor (`int`, `List`, `Map`).
     Owned(name: string)
     /// One of the fn's own type parameters, by its place among them.
     Parameter(index: int, name: string)
-    /// A type a file declares, known by its file and its name.
-    Declared(file: SourceFileAddress, name: string)
+    /// A type a file declares, known by its file and its name, and by those interned as one key
+    /// (`declared_head` makes one), which tells two declarations apart in one int compare.
+    Declared(file: SourceFileAddress, name: string, key: int)
     /// A name that names no type here.
     Unnamed(name: string)
     /// A type the fn's body decides (`_`), which only typing it answers.
@@ -30,6 +39,110 @@ export enum TypeHead {
     /// A type standing as a value (`Json` in `Json.Obj(x)`): the type is its one argument.
     Meta
 }
+
+impl TypeHead {
+    // SAVED AS ITS TEXTS, IN `Saved`'S OWN LAYOUT: a record per variant, numbered by its place, its
+    // texts and its file as child slots, a number in its slot. Written here, not derived, so a
+    // declared head's key, this process's own, is never saved or folded. A head read back mints its
+    // key again from its texts, so the key is a function of the texts and `==` over heads agrees
+    // with `same_head`.
+
+    fn saved_bytes() -> Bytes {
+        let writer = saved_layout_writer()
+        writer.finished(self.written_into(writer))
+    }
+
+    static fn from_saved_bytes(bytes: Bytes) -> TypeHead {
+        let source = SavedSource.InMemory(bytes)
+        TypeHead.read_from(source, saved_root_record(source, bytes.length))
+    }
+
+    fn written_into(writer: SavedLayoutWriter) -> int {
+        match self {
+            .Owned(name) -> {
+                writer.child(writer.write_text(name))
+                writer.record_closed(0, 1)
+            },
+            .Parameter(index, name) -> {
+                writer.number(index)
+                writer.child(writer.write_text(name))
+                writer.record_closed(1, 2)
+            },
+            .Declared(file, name, _) -> {
+                writer.child(file.written_into(writer))
+                writer.child(writer.write_text(name))
+                writer.record_closed(2, 2)
+            },
+            .Unnamed(name) -> {
+                writer.child(writer.write_text(name))
+                writer.record_closed(3, 1)
+            },
+            .Inferred -> writer.record_closed(4, 0),
+            .Function -> writer.record_closed(5, 0),
+            .Union -> writer.record_closed(6, 0),
+            .Never -> writer.record_closed(7, 0),
+            .Meta -> writer.record_closed(8, 0),
+        }
+    }
+
+    fn folded_into(lane: KeyLane, key_fold: int) -> int {
+        match self {
+            .Owned(name) -> lane.tagged_text(lane.word(key_fold, 0), name),
+            .Parameter(index, name) -> lane.tagged_text(lane.word(lane.word(key_fold, 1), index), name),
+            .Declared(file, name, _) -> lane.tagged_text(file.folded_into(lane, lane.word(key_fold, 2)), name),
+            .Unnamed(name) -> lane.tagged_text(lane.word(key_fold, 3), name),
+            .Inferred -> lane.word(key_fold, 4),
+            .Function -> lane.word(key_fold, 5),
+            .Union -> lane.word(key_fold, 6),
+            .Never -> lane.word(key_fold, 7),
+            .Meta -> lane.word(key_fold, 8),
+        }
+    }
+
+    static fn read_from(source: SavedSource, record: SavedRecord) -> TypeHead {
+        match record.variant_within(9) {
+            0 -> TypeHead.Owned(record.text_at(source, 0)!),
+            1 -> TypeHead.Parameter(record.number_at(source, 0), record.text_at(source, 1)!),
+            2 -> declared_head(
+                SourceFileAddress.read_from(source, record.record_in(source, 0)),
+                record.text_at(source, 1)!,
+            ),
+            3 -> TypeHead.Unnamed(record.text_at(source, 0)!),
+            4 -> TypeHead.Inferred,
+            5 -> TypeHead.Function,
+            6 -> TypeHead.Union,
+            7 -> TypeHead.Never,
+            _ -> TypeHead.Meta,
+        }
+    }
+}
+
+/// The head of the type `file` declares as `name`, its package, path and name interned and packed
+/// into one key; a name past what a key packs keeps `NO_KEY`, and such a head is told apart by its
+/// texts.
+export fn declared_head(file: SourceFileAddress, name: string) -> TypeHead {
+    TypeHead
+        .Declared(
+            file,
+            name,
+            packed_key(name_of(file.package_name), name_of(file.path_in_package), name_of(name)),
+        )
+}
+
+/// Three names packed into one key, exactly, while each id is below `KEY_SPAN`.
+fn packed_key(package: Name, path: Name, name: Name) -> int {
+    let p = package.id
+    let f = path.id
+    let n = name.id
+    if p >= KEY_SPAN || f >= KEY_SPAN || n >= KEY_SPAN { return NO_KEY }
+    (p * KEY_SPAN + f) * KEY_SPAN + n
+}
+
+/// What each of a key's three names is below.
+const KEY_SPAN: int = 2097152
+
+/// A declared head's key where its names don't pack.
+const NO_KEY: int = 0 - 1
 
 /// A written type, resolved: what it names, its type arguments, how many nulls wrap it (`T?` one, a
 /// `T?` whose `T` is optional two), whether it's dynamic, a fn type's seats and answer, and the
@@ -161,7 +274,7 @@ impl SignedType {
         if self.listed()?.bottom() ?? false { return "[]" }
         if self.mapped()?.bottom() ?? false { return "{}" }
         let named = match self.head {
-            .Owned(name) or .Unnamed(name) or .Parameter(_, name) or .Declared(_, name) -> name,
+            .Owned(name) or .Unnamed(name) or .Parameter(_, name) or .Declared(_, name, _) -> name,
             .Inferred -> INFERRED,
             .Function -> "fn(${[s.spelled() for s in self.seats].join(", ")})${answered(self.answer)}",
             .Union -> [a.spelled() for a in self.alternatives].join(" or "),
@@ -474,7 +587,7 @@ fn head_word(h: TypeHead) -> string {
     match h {
         .Owned(name) -> "owned ${name}",
         .Parameter(index, _) -> "parameter ${index}",
-        .Declared(file, name) -> "declared ${file.package_name}/${file.path_in_package} ${name}",
+        .Declared(file, name, _) -> "declared ${file.package_name}/${file.path_in_package} ${name}",
         .Unnamed(name) -> "unnamed ${name}",
         .Inferred -> "inferred",
         .Function -> "function",
@@ -567,7 +680,7 @@ fn head_folded(head: TypeHead, lane: KeyLane, h: int) -> int {
     match head {
         .Owned(name) or .Unnamed(name) -> lane.text(kind, name),
         .Parameter(index, name) -> lane.text(lane.word(kind, index), name),
-        .Declared(file, name) -> lane.text(lane.text(lane.text(kind, file.package_name), file.path_in_package), name),
+        .Declared(file, name, _) -> lane.text(lane.text(lane.text(kind, file.package_name), file.path_in_package), name),
         .Inferred or .Function or .Union or .Never or .Meta -> kind,
     }
 }
@@ -608,7 +721,7 @@ impl SignedType {
             self.args.length != other.args.length ||
             self.seats.length != other.seats.length ||
             self.alternatives.length != other.alternatives.length ||
-            self.head != other.head ||
+            !same_head(self.head, other.head) ||
             !same_answer(self.answer, other.answer) { return false }
         for i, a in self.args { if !a.same_type(other.args[i]) { return false } }
         for i, seat in self.seats {
@@ -634,7 +747,10 @@ fn same_head(a: TypeHead, b: TypeHead) -> bool {
     match a {
         .Owned(name) -> match b { .Owned(n) -> n == name, rest -> false },
         .Parameter(index, name) -> match b { .Parameter(i, n) -> i == index && n == name, rest -> false },
-        .Declared(file, name) -> match b { .Declared(f, n) -> n == name && f.same_as(file), rest -> false },
+        .Declared(file, name, key) -> match b {
+            .Declared(f, n, k) -> if key != NO_KEY && k != NO_KEY { k == key } else { n == name && f.same_as(file) },
+            rest -> false,
+        },
         .Unnamed(name) -> match b { .Unnamed(n) -> n == name, rest -> false },
         .Inferred or .Function or .Union or .Never or .Meta -> head_tag(a) == head_tag(b),
     }
@@ -645,7 +761,7 @@ fn head_tag(h: TypeHead) -> int {
     match h {
         .Owned(_) -> 1,
         .Parameter(_, _) -> 2,
-        .Declared(_, _) -> 3,
+        .Declared(_, _, _) -> 3,
         .Unnamed(_) -> 4,
         .Inferred -> 5,
         .Function -> 6,
@@ -660,7 +776,7 @@ fn head_hash(h: TypeHead) -> int {
     match h {
         .Owned(name) or .Unnamed(name) -> hash_text(head_tag(h), name),
         .Parameter(index, name) -> hash_text(hash_word(2, index), name),
-        .Declared(file, name) -> hash_text(hash_text(3, name), file.path_in_package),
+        .Declared(file, name, _) -> hash_text(hash_text(3, name), file.path_in_package),
         .Inferred or .Function or .Union or .Never or .Meta -> head_tag(h),
     }
 }

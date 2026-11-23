@@ -4,6 +4,7 @@ use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
+    declared_head,
     scoped,
     decl_key,
     NodeNotes,
@@ -923,7 +924,7 @@ export fn lowered_every_variant(
     name: string,
     method: string,
 ) -> LoweredFn? {
-    let of = headed_type(TypeHead.Declared(file, name))
+    let of = headed_type(declared_head(file, name))
     let ty? = enum_static(engine, of, file, name, method)?.answer else { return null }
     let shape? = enum_signature(engine, file, name) else { return null }
     let store = new_node_store()
@@ -1453,7 +1454,7 @@ fn spread_default(engine: QueryEngine, file: SourceFileAddress, parts: StructPar
 fn carried_default(engine: QueryEngine, file: SourceFileAddress, field: string) -> CalledFn? {
     let t? = composer(engine, file) else { return null }
     let record? = composed_record(engine, t) else { return null }
-    default_callee(engine, headed_type(TypeHead.Declared(record.file, record.name)), field)
+    default_callee(engine, headed_type(declared_head(record.file, record.name)), field)
 }
 
 /// The default the record `file` declares as `owner` writes for its field `field`, lowered as a fn of
@@ -1488,7 +1489,7 @@ fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: strin
         item: item,
         body: value,
         stmt: stmt,
-        receiver: if seat.made { headed_type(TypeHead.Declared(file, owner)) } else { null },
+        receiver: if seat.made { headed_type(declared_head(file, owner)) } else { null },
         seat: Seating.FieldDefault(field),
     }
 }
@@ -1540,7 +1541,7 @@ fn field_role(engine: QueryEngine, ty: SignedType, field: string) -> FilledRole?
 /// text or cells. Absent for any other.
 fn role_of(ty: SignedType) -> FilledRole? {
     match ty.head {
-        .Declared(file, name) if file.package_name == META -> FILLED_ROLES.find(filled_type(it) == name),
+        .Declared(file, name, _) if file.package_name == META -> FILLED_ROLES.find(filled_type(it) == name),
         rest -> null,
     }
 }

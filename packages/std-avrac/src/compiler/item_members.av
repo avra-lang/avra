@@ -8,6 +8,7 @@
 use core.{
     OwnType,
     Expr,
+    declared_head,
     Scoped,
     ExprId,
     FnParts,
@@ -656,7 +657,7 @@ fn prelude_verb_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<Miss
 fn words_named(t: SignedType) -> List<string> {
     let own = match t.head {
         .Owned(name) -> [name],
-        .Declared(f, name) -> if of_prelude(f) { [name] } else { [] },
+        .Declared(f, name, _) -> if of_prelude(f) { [name] } else { [] },
         rest -> [],
     }
     own
@@ -830,7 +831,7 @@ fn type_named_miss(
     if typed != null && !(typed!.head is .Meta) { return [] }
     if resolved(engine, t.file, Space.Value, owner.text()).named() != null { return [] }
     let d? = resolved(engine, t.file, Space.Type, owner.text()).named() else { return [] }
-    let described = headed_type(TypeHead.Declared(d.file, d.name))
+    let described = headed_type(declared_head(d.file, d.name))
     let answered = static_type(engine, described, name)
     if answered != null {
         return if called || d.kind != ItemKind.Record {
@@ -1199,7 +1200,7 @@ fn method_arity(
     let owner = described ?? s
     if !plain_known(owner) { return [] }
     let impls? = match owner.head {
-        .Declared(file, declared) -> impls_given(engine, file, declared, name, described != null, t.reader),
+        .Declared(file, declared, _) -> impls_given(engine, file, declared, name, described != null, t.reader),
         rest -> null,
     } else { return [] }
     if impls.length != 1 { return [] }
@@ -1219,7 +1220,7 @@ fn method_arity(
 /// Whether `ty` names a declared enum, whose `all` lists its variants.
 fn declares_enum(engine: QueryEngine, ty: SignedType) -> bool {
     match ty.head {
-        .Declared(file, declared) -> file_declares_named(engine, file, declared)
+        .Declared(file, declared, _) -> file_declares_named(engine, file, declared)
             .names
             .any(it.name == declared && it.kind == ItemKind.Enum),
         rest -> false,
@@ -1255,7 +1256,7 @@ fn literal_named(engine: QueryEngine, t: TypedNodes, name: string) -> SignedType
     let d? = resolved(engine, t.file, Space.Type, name).named() else { return null }
     if d.kind != ItemKind.Record && d.kind != ItemKind.Component { return null }
     if !(written_params(engine, d.file, d.name) ?? []).is_empty() { return null }
-    headed_type(TypeHead.Declared(d.file, d.name))
+    headed_type(declared_head(d.file, d.name))
 }
 
 /// Each field a record literal `e` leaves unwritten where the record or component it builds, as
@@ -1265,7 +1266,7 @@ fn literal_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlace
     let lit? = t.store.struct_lit_parts(e) else { return [] }
     let s? = declared_value((t.type_at)(e.index)) ?? literal_named(engine, t, lit.name) else { return [] }
     let parts? = match s.head {
-        .Declared(file, name) -> written_fields(engine, file, name, s.word()),
+        .Declared(file, name, _) -> written_fields(engine, file, name, s.word()),
         rest -> null,
     } else { return [] }
     let filled = [f.name for f in fields_signed(engine, s) if field_role(engine, s, f.name) != null]
@@ -1518,7 +1519,7 @@ fn contract_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Sp
     let s? = subject else { return [] }
     if !s.dynamic || s.nullable() { return [] }
     let contract? = match s.head {
-        .Declared(file, declared) -> TraitAt { file: file, name: declared },
+        .Declared(file, declared, _) -> TraitAt { file: file, name: declared },
         rest -> null,
     } else { return [] }
     if declaring_item(engine, contract.file, contract.name, ItemKind.Trait) == null ||
@@ -1543,7 +1544,7 @@ fn members_unfit(
     let owner = described ?? s
     if !plain_known(owner) || !by_position(t.store, args) { return [] }
     let impls? = match owner.head {
-        .Declared(file, declared) -> impls_given(engine, file, declared, name, described != null, t.reader),
+        .Declared(file, declared, _) -> impls_given(engine, file, declared, name, described != null, t.reader),
         rest -> null,
     } else { return [] }
     if impls.length < 2 { return [] }
@@ -1607,7 +1608,7 @@ fn method_miss(
     if !plain_known(s) || s.described() != null || member_answers(engine, s, name, reader) { return [] }
     if avra().keywords.contains(name) { return [MissPlaced { at: at, miss: Miss.Keyword(name) }] }
     match s.head {
-        .Declared(file, owner) -> if (fields_of_record(engine, s) ?? []).contains(name) ||
+        .Declared(file, owner, _) -> if (fields_of_record(engine, s) ?? []).contains(name) ||
             name == "all" && declares_enum(engine, s) {
             []
         } else {
@@ -1651,7 +1652,7 @@ fn index_miss(subject: SignedType?, at: Span?) -> List<MissPlaced> {
     if !absent && (!plain_known(s) || s.listed() != null) { return [] }
     let text = !absent && match s.head { .Owned(word) -> word == "string", rest -> false }
     match s.head {
-        .Owned(_) or .Declared(_, _) -> [MissPlaced { at: at, miss: if text { Miss.Text } else { Miss.Index(s.spelled()) } }],
+        .Owned(_) or .Declared(_, _, _) -> [MissPlaced { at: at, miss: if text { Miss.Text } else { Miss.Index(s.spelled()) } }],
         rest -> [],
     }
 }
@@ -1670,7 +1671,7 @@ fn member_answers(engine: QueryEngine, subject: SignedType, name: string, reader
 /// record it makes, which that record's signature reads, and the impls it makes give methods and
 /// statics, which no field read reaches.
 fn home_unread(engine: QueryEngine, subject: SignedType) -> bool {
-    match subject.head { .Declared(file, _) -> !holds_items(engine, file), rest -> false }
+    match subject.head { .Declared(file, _, _) -> !holds_items(engine, file), rest -> false }
 }
 
 /// Whether the file declaring `subject`'s type gives it `name` — an impl there writes it, as a static
@@ -1678,7 +1679,7 @@ fn home_unread(engine: QueryEngine, subject: SignedType) -> bool {
 /// reads as no items here.
 fn home_gives(engine: QueryEngine, subject: SignedType, name: string, statics: bool = false) -> bool {
     match subject.head {
-        .Declared(file, declared) -> home_gives_named(engine, file, declared, name, statics),
+        .Declared(file, declared, _) -> home_gives_named(engine, file, declared, name, statics),
         rest -> false,
     }
 }
@@ -1745,7 +1746,7 @@ fn prelude_fns(engine: QueryEngine, path: string) -> List<string> {
 /// Whether a trait the declared type `subject` implements, at whatever arguments, declares `name`.
 fn trait_gives(engine: QueryEngine, subject: SignedType, name: string) -> bool {
     match subject.head {
-        .Declared(file, declared) -> [i.implements! for i in impls_of(engine, file, declared) if i.implements != null]
+        .Declared(file, declared, _) -> [i.implements! for i in impls_of(engine, file, declared) if i.implements != null]
             .concat(gathered_traits(engine, file, declared))
             .any(declares_member(engine, it, name)),
         rest -> false,
@@ -1756,7 +1757,7 @@ fn trait_gives(engine: QueryEngine, subject: SignedType, name: string) -> bool {
 /// `name`, at whatever trait arguments.
 fn impl_gives(engine: QueryEngine, subject: SignedType, name: string, reader: string) -> bool {
     match subject.head {
-        .Declared(file, declared) -> [false, true].any(!impls_given(engine, file, declared, name, it, reader).is_empty()),
+        .Declared(file, declared, _) -> [false, true].any(!impls_given(engine, file, declared, name, it, reader).is_empty()),
         rest -> false,
     }
 }
@@ -1764,7 +1765,7 @@ fn impl_gives(engine: QueryEngine, subject: SignedType, name: string, reader: st
 /// The fields of the record `subject` is, signed; none for a type that's no record.
 fn fields_signed(engine: QueryEngine, subject: SignedType) -> List<FieldSeat> {
     match subject.head {
-        .Declared(file, name) -> record_signature(engine, file, name)?.fields ?? [],
+        .Declared(file, name, _) -> record_signature(engine, file, name)?.fields ?? [],
         rest -> [],
     }
 }
@@ -1772,7 +1773,7 @@ fn fields_signed(engine: QueryEngine, subject: SignedType) -> List<FieldSeat> {
 /// The fields of the record `subject` is, in order; absent for a type that's no record.
 fn fields_of_record(engine: QueryEngine, subject: SignedType) -> List<string>? {
     let named? = match subject.head {
-        .Declared(file, name) -> record_signature(engine, file, name),
+        .Declared(file, name, _) -> record_signature(engine, file, name),
         rest -> null,
     } else { return null }
     [f.name for f in named.fields]
