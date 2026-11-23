@@ -604,7 +604,7 @@ fn by_value(engine: QueryEngine, ty: SignedType?) -> bool {
     if t.dynamic || !t.args.is_empty() { return false }
     match t.head {
         .Owned(word) -> BY_VALUE.contains(word),
-        .Declared(file, name) -> {
+        .Declared(file, name, _) -> {
             let shape = named_over(engine, t)
             if shape != null { return by_value(engine, shape) }
             let e = enum_signature(engine, file, name)
@@ -811,7 +811,7 @@ export fn signed_kind(ty: SignedType) -> Kind {
     if ty.nulls > 0 { return Kind.Opt(signed_kind(ty with { nulls: ty.nulls - 1 })) }
     match ty.head {
         .Owned(word) -> owned_kind(word, ty),
-        .Declared(_, name) -> if ty.dynamic { Kind.Dyn(name) } else { Kind.Named(name, [signed_kind(a) for a in ty.args]) },
+        .Declared(_, name, _) -> if ty.dynamic { Kind.Dyn(name) } else { Kind.Named(name, [signed_kind(a) for a in ty.args]) },
         .Parameter(_, name) -> Kind.Var(name),
         .Function -> Kind
             .Fn(

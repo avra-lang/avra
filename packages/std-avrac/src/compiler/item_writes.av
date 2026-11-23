@@ -5,6 +5,7 @@
 //! marks `mut`. A lambda's `self` is a copy, so nothing inside one counts. A method whose answer
 //! turns on what can't be read here is unproved, and says why.
 use core.{
+    declared_head,
     FieldSeat,
     ExprId,
     NAMED_FIELD,
@@ -254,7 +255,7 @@ fn gathered_evidence(engine: QueryEngine, m: MethodAt) -> Evidence? {
 /// declared type's method reached, a verb the language gives marked where its receiver is `mut`.
 /// Absent for a type that stands over no shape, or a shape without the method.
 fn shape_evidence(engine: QueryEngine, m: MethodAt) -> Evidence? {
-    let shape? = named_over(engine, headed_type(TypeHead.Declared(m.file, m.owner))) else { return null }
+    let shape? = named_over(engine, headed_type(declared_head(m.file, m.owner))) else { return null }
     let d = declared_at(shape)
     if d != null {
         return Evidence {
@@ -309,7 +310,7 @@ fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
     let item? = trait_item(engine, giving[0]) else { return unread(not_one_impl(m)) }
     let s? = trait_fns(item)
         .find((f) -> item.store.fn_parts(f)?.name == m.name && !item.store.is_static(f)) else { return unread(not_one_impl(m)) }
-    let receiver = headed_type(TypeHead.Declared(m.file, m.owner))
+    let receiver = headed_type(declared_head(m.file, m.owner))
     fns_evidence(
         engine,
         giving[0].file,

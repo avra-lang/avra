@@ -977,7 +977,7 @@ export fn walk_binds(subject: SignedType?) -> WalkBinds {
 export fn supplied(s: SignedType) -> SignedType? {
     if s.nullable() || s.args.length != 1 { return null }
     match s.head {
-        .Declared(file, name) -> if name == "Source" && file.package_name == "@std/task" { s.args[0] } else { null },
+        .Declared(file, name, _) -> if name == "Source" && file.package_name == "@std/task" { s.args[0] } else { null },
         rest -> null,
     }
 }
@@ -2639,7 +2639,7 @@ impl Checking {
         let seen = self.seen(s) ?? s
         let shape? = self.record_of(seen) else { return if s.nullable() { null } else { Seating.Misshapen("record", name, s.spelled()) } }
         if s.nullable() { return null }
-        let declared = match seen.head { .Declared(_, n) -> n, rest -> name }
+        let declared = match seen.head { .Declared(_, n, _) -> n, rest -> name }
         if declared != name { return Seating.Misshapen("record.other", name, declared) }
         let has = [f.name for f in shape.fields]
         let stray = fields.find((f) -> !has.contains(f))
@@ -3684,7 +3684,7 @@ impl Checking {
                 let takes = own_params(want.own())
                 takes != null && takes! != want.args.length
             },
-            .Declared(_, _) -> {
+            .Declared(_, _, _) -> {
                 if self.named_over(want) != null { return false }
                 let params = self.record_of(want)?.params ?? self.enum_of(want)?.params
                 params != null && params! != want.args.length
@@ -4563,7 +4563,7 @@ impl Shapes {
         if ty.dynamic || !ty.args.is_empty() { return false }
         match ty.head {
             .Owned(word) -> COMPARED.contains(word),
-            .Declared(_, _) -> self.unit_enum(ty) || self.one_field(ty),
+            .Declared(_, _, _) -> self.unit_enum(ty) || self.one_field(ty),
             .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
         }
     }
@@ -4595,7 +4595,7 @@ export fn offered(cx: Checking, ty: SignedType) -> Offered {
     if ty.dynamic { return Offered.Dyn }
     match ty.head {
         .Owned(word) -> owned_offered(word, ty),
-        .Declared(_, _) -> when {
+        .Declared(_, _, _) -> when {
             !ty.args.is_empty() -> Offered.Applied
             cx.enum_of(ty) != null -> Offered.Enum
             _ -> Offered.Record
@@ -4816,7 +4816,7 @@ fn callee_word(seat: Seating) -> string {
 
 /// The name a declared type is declared under, else the type spelled.
 fn declared_word(t: SignedType) -> string {
-    match t.head { .Declared(_, name) -> name, rest -> t.spelled() }
+    match t.head { .Declared(_, name, _) -> name, rest -> t.spelled() }
 }
 
 /// Whether the argument at `j`, labelled `name`, writes a seat an argument before it wrote: one with

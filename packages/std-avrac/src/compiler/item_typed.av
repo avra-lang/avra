@@ -5,6 +5,7 @@ use features.{NodeVariant, meta_moved_from}
 use features.annotations.{meta_foreign}
 use diagnostics.{Diag, said_as}
 use core.{
+    declared_head,
     MethodParts,
     flatten,
     FieldSeat,
@@ -451,7 +452,7 @@ fn program_answered(
             .any((f) -> names_state(engine, f, n)),
         bound_of: (t: SignedType) -> signing.bound_of(t),
         default_seats: (t: SignedType, name: string) -> match t.head {
-            .Declared(f, owner) -> default_seats(engine, f, owner, name),
+            .Declared(f, owner, _) -> default_seats(engine, f, owner, name),
             rest -> null,
         },
         context: (n: string, home: string?) -> read_from(engine, file, home)
@@ -845,7 +846,7 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
     if resolved(engine, file, Space.Value, name).named() != null { return null }
     let named = signing.named(name)
     match named.head {
-        .Declared(_, _) or .Owned(_) -> meta_type(named),
+        .Declared(_, _, _) or .Owned(_) -> meta_type(named),
         .Parameter(_, _) -> if signing.bound_of(named) == null { null } else { meta_type(named) },
         .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
@@ -859,7 +860,7 @@ fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> Sign
     let package? = m.package() else { return null }
     let d? = declarations_of(engine, package, m.local(), false, name)
         .find(space_of(it.kind) == Space.Type) else { return null }
-    headed_type(TypeHead.Declared(d.file, d.name))
+    headed_type(declared_head(d.file, d.name))
 }
 
 /// THE META DOOR on the program layer: where the `@std/meta` this engine loads parts from the shapes
@@ -1014,5 +1015,5 @@ type MethodNamed = { subject: ExprId, name: string }
 
 /// Whether the type `ty` is declared in `file`.
 fn declared_in(ty: SignedType, file: SourceFileAddress) -> bool {
-    match ty.head { .Declared(home, _) -> same_file(home, file), rest -> false }
+    match ty.head { .Declared(home, _, _) -> same_file(home, file), rest -> false }
 }
