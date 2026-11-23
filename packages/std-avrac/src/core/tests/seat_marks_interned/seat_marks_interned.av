@@ -1,0 +1,23 @@
+// proves: fn types differing only in a seat's mark — `isolated`, `state`, a rest seat — are three
+// types the memos' interner keeps apart from the unmarked one, each under an id of its own
+
+use @std.avrac.core.{SignedType, SignedSeat, TypeHead, headed_type, owned_type}
+use @std.program.interned.{interned}
+
+fn taking(seat: SignedSeat) -> SignedType { headed_type(TypeHead.Function) with { seats: [seat], answer: owned_type("int") } }
+
+let plain = SignedSeat { ty: owned_type("int"), mutable: false, settled: false }
+let types = [
+    taking(plain),
+    taking(plain with { unshared: true }),
+    taking(plain with { state: true }),
+    taking(plain with { rest: true }),
+]
+let held = interned(
+    (t: SignedType) -> t.quick_hash(),
+    (a: SignedType, b: SignedType) -> a.same_type(b),
+)
+let ids = [held.id_of(t).index for t in types]
+let apart = ids.all((i) -> ids.filter(it == i).length == 1)
+let again = held.id_of(taking(plain with { unshared: true })).index == ids[1]
+"ids apart ${apart} ; isolated again ${again} ; same as plain ${types.drop(1).any(it.same_type(types[0]))}"

@@ -542,10 +542,21 @@ fn seats_folded(seats: List<SignedSeat>, lane: KeyLane) -> int {
     h
 }
 
-/// A seat's marks as one word.
+/// A seat's marks as one word: every field of the seat but its type, which its fold carries, and its
+/// name, which a fn value's seats don't have and no type is told apart by. One destructure names
+/// them all, so a mark the seat gains is refused here until it is folded or set aside.
 fn seat_marks(s: SignedSeat) -> int {
-    if s.mutable { 1 } else { 0 } + if s.settled { 2 } else { 0 } + if s.defaulted { 4 } else { 0 }
+    let SignedSeat { ty: _, mutable, settled, defaulted, name: _, rest, state, unshared } = s
+    mark_bit(mutable, 1) +
+        mark_bit(settled, 2) +
+        mark_bit(defaulted, 4) +
+        mark_bit(rest, 8) +
+        mark_bit(state, 16) +
+        mark_bit(unshared, 32)
 }
+
+/// `bit` where `on`, else nothing.
+fn mark_bit(on: bool, bit: int) -> int { if on { bit } else { 0 } }
 
 /// `head` folded into `lane` after `h`: its kind, then what it names.
 fn head_folded(head: TypeHead, lane: KeyLane, h: int) -> int {
