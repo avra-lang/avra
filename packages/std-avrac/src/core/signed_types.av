@@ -282,14 +282,14 @@ impl SignedType {
             [j for j, s in self.seats if s.asks_past(seat.seats[j])].is_empty()
     }
 
-    /// Whether a value of this type is a value of `seat` as it is: the same type, or one holding
-    /// `never` where `seat` holds a type (`[]` as a `List<int>`), under as many nulls.
+    /// Whether a value of this type is a value of `seat` as it is: the same type, part for part, or
+    /// one holding `never` where `seat` holds a type (`[]` as a `List<int>`), under as many nulls.
+    /// Never by spelling: two declarations of one name in two files spell alike and are two types.
     fn stands_as(seat: SignedType) -> bool {
-        // part for part first: a type standing as itself spells nothing
-        if self.same_type(seat) || self.spelled() == seat.spelled() { return true }
+        if self.same_type(seat) || self.defaults_past(seat) { return true }
         if !self.partial() || self.head is .Never || self.nulls != seat.nulls { return false }
         let joined? = self.joined_with(seat) else { return false }
-        joined.same_type(seat) || joined.spelled() == seat.spelled()
+        joined.same_type(seat)
     }
 
     /// Whether this is a `Result`, present: an ok type and an error type.
@@ -588,6 +588,20 @@ impl SignedType {
     }
 
     /// Whether `other` is this very type, part for part.
+    /// Whether this fn type is `seat`'s but for defaults it gives where `seat` gives none: a fn whose
+    /// seat has a default is called with every argument as well. Never the other way: a seat promising
+    /// a default is never filled by a fn without one.
+    fn defaults_past(seat: SignedType) -> bool {
+        if !(self.head is .Function) ||
+            !(seat.head is .Function) ||
+            self.seats.length != seat.seats.length {
+            return false
+        }
+        if !self.seats.any(it.defaulted) { return false }
+        let relaxed = self with { seats: [if self.seats[i].defaulted && !seat.seats[i].defaulted { self.seats[i] with { defaulted: false } } else { self.seats[i] } for i in 0..self.seats.length] }
+        relaxed.same_type(seat)
+    }
+
     fn same_type(other: SignedType) -> bool {
         if self.nulls != other.nulls ||
             self.dynamic != other.dynamic ||
