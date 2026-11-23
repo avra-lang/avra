@@ -976,10 +976,14 @@ const FEW_READS: int = 16
 /// of its readers did, and the walk goes down from `cut` only through such places. Each place it
 /// meets counts its readers outside the lost that are reached, once; a reader that joins the lost
 /// takes itself off the count of each place it reads, and a place whose count runs out joins them.
-/// Reads never close a cycle, so the lost are exactly the places the whole walk from the roots
-/// leaves. Absent when a read the walk meets doesn't lie within the frontier.
+/// The lost are exactly the places the whole walk from the roots leaves. A WALK OVER WHAT WAS
+/// STORED IS BOUNDED: each place joins the lost once, and past `WALK_PER_PLACE` steps a place the
+/// walk costs more than the whole walk from the roots, which it then takes — so a frontier read
+/// back, whatever its reads hold, cycles included, is walked in time linear in its size. Absent
+/// when a read the walk meets doesn't lie within the frontier.
 fn lost_from(s: Frontier, change: FrontierChange, cut: List<int>) -> List<bool>? {
     let readers? = readers_beside(s, change) else { return null }
+    let budget = Cell.new(WALK_PER_PLACE * change.extent + cut.length)
     mut lost = [false for _i in 0..change.extent]
     mut holding = [-1 for _i in 0..change.extent]
     mut pending = [c for c in cut]
@@ -987,13 +991,16 @@ fn lost_from(s: Frontier, change: FrontierChange, cut: List<int>) -> List<bool>?
         let at = pending.pop()
         if lost[at] || change.root_at(at) { continue }
         if holding[at] < 0 {
-            let count? = holders_of(s, change, readers, lost, at) else { return null }
+            let count? = holders_of(s, change, readers, lost, at, budget) else { return null }
+            if budget.get() < 0 { return whole_lost(change) }
             holding.set(at, count)
         }
         if holding[at] > 0 { continue }
         lost.set(at, true)
         let stood = stood_before(s, change, at)
         let reads? = change.reads_at(at) else { return null }
+        budget.set(budget.get() - reads.length)
+        if budget.get() < 0 { return whole_lost(change) }
         for r in reads {
             if !place_below(r, change.extent) || lost[r] { continue }
             // a reader that stood was counted; one that didn't is counted again
@@ -1002,6 +1009,18 @@ fn lost_from(s: Frontier, change: FrontierChange, cut: List<int>) -> List<bool>?
         }
     }
     lost
+}
+
+/// HOW MUCH THE WALK FROM THE CUT MAY DO, per place of the frontier: past it the walk costs more than
+/// the whole walk from the roots, which finds the same places in time linear in the frontier.
+const WALK_PER_PLACE: int = 4
+
+/// Every place no root reaches once `change` is laid over its state, by the whole walk from the
+/// roots: the places the walk from the cut finds, found in time linear in the frontier whatever its
+/// reads hold. Absent when a read the walk meets doesn't lie within the frontier.
+fn whole_lost(change: FrontierChange) -> List<bool>? {
+    let reached? = change.reached_from_roots() else { return null }
+    [!reached[at] for at in 0..change.extent]
 }
 
 /// Whether the place `at` stood before `change`: then a root reached it.
@@ -1044,16 +1063,19 @@ fn holders_of(
     beside: List<List<int>>,
     lost: List<bool>,
     at: int,
+    budget: Cell<int>,
 ) -> int? {
     let readers? = readers_now(s, change, beside, at) else { return null }
     mut count = 0
     for r in readers {
+        budget.set(budget.get() - 1)
+        if budget.get() < 0 { return count }
         if lost[r] { continue }
         if stood_before(s, change, r) {
             count = count + 1
             continue
         }
-        let reached? = reached_above(s, change, beside, lost, r) else { return null }
+        let reached? = reached_above(s, change, beside, lost, r, budget) else { return null }
         if reached { count = count + 1 }
     }
     count
@@ -1068,10 +1090,13 @@ fn reached_above(
     beside: List<List<int>>,
     lost: List<bool>,
     from: int,
+    budget: Cell<int>,
 ) -> bool? {
     let seen: HashKeyedTable<bool> = hash_keyed_table()
     mut pending = [from]
     while !pending.is_empty() {
+        budget.set(budget.get() - 1)
+        if budget.get() < 0 { return false }
         let r = pending.pop()
         if seen.get(place_key(r)) != null { continue }
         seen.put(place_key(r), true)

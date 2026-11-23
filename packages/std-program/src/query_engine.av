@@ -273,6 +273,11 @@ export type QueryEngine = {
     adopted: Cell<bool>,
     /// The questions asked with nobody asking: the roots, which keep what they read in the frontier.
     asked_alone: HashKeyedTable<bool>,
+    /// THE QUESTIONS ASKED AGAIN TO SEE WHETHER A KEPT RECORD STANDS: a record whose reads lead back
+    /// to one being asked can't stand on it, so a walk over kept records that close a cycle ends at
+    /// the question it started from. One asked and answered is held from then on, and never asked
+    /// again here.
+    verifying: HashKeyedTable<bool>,
     /// Where this process's asks spend their time, absent while they aren't timed.
     times: Cell<QueryTimes?>,
     /// The inputs the store held by a stamp, by question, once read.
@@ -326,6 +331,7 @@ export fn query_engine(
     let computed: Cell<List<string>> = Cell.new([])
     let folded: Cell<List<string>> = Cell.new([])
     let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
+    let verifying: HashKeyedTable<bool> = hash_keyed_table()
     let times: Cell<QueryTimes?> = Cell.new(null)
     let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
     let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
@@ -348,6 +354,7 @@ export fn query_engine(
         records_checked: Cell.new(0),
         frontier: Cell.new(FrontierState.Unread),
         asked_alone: asked_alone,
+        verifying: verifying,
         times: times,
         stamps_kept: stamps_kept,
         stamps_seen: stamps_seen,
@@ -729,6 +736,10 @@ impl QueryEngine {
         let asked? = self.store.question_known_as(question) else { return null }
         let definition? = self.definitions.get().get(asked.query_name) else { return null }
         if definition.code_hash.is_empty() || definition.code_hash != asked.code_hash { return null }
+        // a dependency chain is verified recursively; its depth is bounded by the program's question depth, not by any cycle
+        // a question asked again while it is being asked again can't vouch for itself
+        // and once asked here it is held, so `settled_now` never comes back to this door for it
+        if !self.verifying.first_put(question, true) { return null }
         let _ = self.settled_answer(asked)
         self.settled_held(question)
     }
