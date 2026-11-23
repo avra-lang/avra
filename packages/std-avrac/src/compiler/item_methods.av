@@ -17,6 +17,7 @@ use core.{
     SignedType,
     StmtId,
     SyntaxArena,
+    TypeRef,
     TypeHead,
     headed_type,
     own_type_named,
@@ -455,7 +456,7 @@ fn impl_signed(
         params: [signing.param(p) with { defaulted: p.default != null || trait_seat_default(engine, implemented, name, p.name.text()) != null } for p in written.params],
         answer: signing.signed(written.ret),
         answer_width: null,
-        bounds: target_bounds(engine, at).concat(signing.bounds(written)),
+        bounds: impl_bounds(engine, at, signing).concat(signing.bounds(written)),
         defaults: unbound(at.params.length)
             .concat([if d == null { null } else { signing.signed(d!) } for d in written.defaults]),
     }
@@ -468,7 +469,44 @@ export fn method_declares(engine: QueryEngine, subject: SignedType, name: string
     let impls = impls_given(engine, declared.file, declared.name, name, false, reader)
     if impls.length != 1 { return ParamsDeclared {} }
     let s? = method_signature(engine, impls[0], name) else { return ParamsDeclared {} }
-    ParamsDeclared { bounds: s.bounds, defaults: s.defaults }
+    ParamsDeclared { bounds: s.bounds, defaults: s.defaults, also: also_bounds(engine, impls[0]) }
+}
+
+/// The bound each type parameter the impl at `at` stands over carries in its methods: the one the impl
+/// writes on it (`G<T: B>`), else the one its type declares it with.
+fn impl_bounds(engine: QueryEngine, at: ImplAt, signing: Signing) -> List<SignedType?> {
+    let written = written_bounds(engine, at)
+    let declared = target_bounds(engine, at)
+    [if written[j] == null { declared[j] } else { signing.signed(written[j]!) } for j in 0..at.params.length]
+}
+
+/// The type's own bound at each parameter the impl at `at` writes one on, its parameter in the same
+/// place: what holds beside the impl's, which narrows what its methods accept and never loosens its
+/// type's law. None elsewhere.
+fn also_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?> {
+    let written = written_bounds(engine, at)
+    if written.all(it == null) { return [] }
+    let declared = placed_bounds(engine, at)
+    [if written[j] == null { null } else { declared[j] } for j in 0..at.params.length]
+}
+
+/// The bound the impl at `at` writes on each of its target's arguments, as written; none for an
+/// argument that writes none, or a component's own `fn`s.
+fn written_bounds(engine: QueryEngine, at: ImplAt) -> List<TypeRef?> {
+    let item = read_item(engine, at.file, at.item)
+    let s? = impl_stmt_at(item, at) else { return [null for _j in 0..at.params.length] }
+    let bounds = item.store.impl_bounds_of(s)
+    [if j < bounds.length { bounds[j] } else { null } for j in 0..at.params.length]
+}
+
+/// The bound the impl at `at`'s type declares at each of its parameters, by place whatever the impl
+/// names them; none where the impl's arguments are not as many as the type's parameters.
+fn placed_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?> {
+    let impls = impls_of_item(engine, at.file, at.item)
+    if at.nth >= impls.length { return unbound(at.params.length) }
+    let d? = impl_target(engine, at.file, impls[at.nth]) else { return unbound(at.params.length) }
+    let declared? = record_signature(engine, d.file, d.name) else { return unbound(at.params.length) }
+    if declared.bounds.length != at.params.length { unbound(at.params.length) } else { declared.bounds }
 }
 
 /// The bound each type parameter the impl at `at` stands over carries: the one its type declares it
@@ -948,10 +986,26 @@ export fn implements(engine: QueryEngine, reader: string, ty: SignedType, bound:
     let answers = (i: FiledImpl) -> i.implements != null &&
         i.implements!.name == held.name &&
         i.implements!.file == held.file &&
-        applied_alike(impl_trait_args(engine, i.at), bound.args)
+        applied_alike(impl_trait_args(engine, i.at), bound.args) &&
+        bounds_met_by(engine, reader, i.at, ty)
     if packages.any((p) -> impls_in(package_impls_part(engine, p, d.name), d.file).any(answers)) { return true }
     packages
         .any((p) -> impls_in(package_generated_impls_part(engine, p, d.name), d.file).any(answers))
+}
+
+/// Whether `ty`'s arguments meet the bounds the impl at `at` writes on its target's (`G<T: B>`): an
+/// impl so bounded answers only for the types it accepts. A bound not known to fail holds.
+fn bounds_met_by(engine: QueryEngine, reader: string, at: ImplAt, ty: SignedType) -> bool {
+    let written = written_bounds(engine, at)
+    if written.all(it == null) { return true }
+    let signing = Signing { engine: engine, file: at.file, type_params: at.params }
+    mut found: Map<string, SignedType> = {}
+    for j, a in ty.args { found.set("${j}", a) }
+    for j, b in written {
+        if b == null || j >= ty.args.length { continue }
+        if implements(engine, reader, ty.args[j], signing.signed(b!).filled(found)) == false { return false }
+    }
+    true
 }
 
 /// Whether an impl applying its trait to `written` answers a bound applying it to `asked`: each

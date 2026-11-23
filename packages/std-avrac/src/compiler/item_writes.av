@@ -529,11 +529,14 @@ impl Survey {
         if variant_named(self.engine, d.file, d.name, name) { filled(count, false) } else { null }
     }
 
-    /// The trait the receiver's type parameter `ty` is bound by, where the type that declares the
-    /// receiver writes one; absent for any other type.
+    /// The trait the receiver's type parameter `ty` is bound by: the one the method's own signature
+    /// carries (an impl's `G<T: B>`), else the one the type that declares the receiver writes; absent
+    /// for any other type.
     fn owner_bound(ty: SignedType) -> SignedType? {
         if ty.nullable() { return null }
         let i? = parameter_index(ty) else { return null }
+        let own = (self.signed)()?.bounds ?? []
+        if i < own.length && own[i] != null { return own[i] }
         let k? = self.owner.args.find_index((a) -> parameter_index(a) == i) else { return null }
         let d? = declared_at(self.owner) else { return null }
         let sig? = record_signature(self.engine, d.file, d.name) else { return null }
