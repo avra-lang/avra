@@ -92,15 +92,38 @@ def edited(text, kind, old, new):
     return text.replace(old, new, 1)
 
 
+# THE WORK A WARM EDIT DOES, not only the answers it works out again: each edit's run keeps its whole
+# census (`edit-<kind>.census`), and these of its counters are its rows beside `worked` — a warm edit
+# that does more per answer, with no more answers, is no longer under the gate.
+WARM_COUNTERS = ("boxes", "retains", "releases", "list_writes")
+
+
 def measured(run_dir):
-    """Every workload a run kept (`<name>.out`) -> {(workload, counter): n}."""
+    """Every workload a run kept (`<name>.out`, and each edit's `edit-<kind>.census`) -> {(workload,
+    counter): n}."""
     rows = {}
     for f in sorted(os.listdir(run_dir)):
+        text = None
         if f.endswith(".out"):
             name = f[: -len(".out")]
             got = counts_of(open(os.path.join(run_dir, f), errors="replace").read())
             rows.update({(name, c): n for c, n in got.items()})
+        elif f.startswith("edit-") and f.endswith(".census"):
+            name = f[: -len(".census")]
+            got = counts_of(open(os.path.join(run_dir, f), errors="replace").read())
+            rows.update({(name, c): got[c] for c in WARM_COUNTERS if c in got})
     return rows
+
+
+def run_part(run_dir):
+    """-> (the part a run measured, the workloads it measured): every row of those, and only those, is
+    judged; a run that names none is the whole run of an older tools/cost.sh."""
+    try:
+        part = open(os.path.join(run_dir, "part")).read().strip()
+        names = {line.strip() for line in open(os.path.join(run_dir, "workloads")) if line.strip()}
+    except OSError:
+        return "all", {k[0] for k in measured(run_dir)} | {k[0] for k in read_baseline(open(BASELINE).read())[1]}
+    return part, names
 
 
 def unprinted(now):
@@ -108,7 +131,7 @@ def unprinted(now):
     the answers an edit's warm run worked out again."""
     owed = {}
     for workload, _ in now:
-        owed[workload] = ("worked",) if workload.startswith("edit-") else CENSUS
+        owed[workload] = ("worked",) + WARM_COUNTERS if workload.startswith("edit-") else CENSUS
     return ["cost: %s printed no %s" % (w, c) for w in sorted(owed) for c in owed[w] if (w, c) not in now]
 
 
@@ -199,6 +222,8 @@ def main(argv):
             return 1
         open(path, "w").write(text)
         return 0
+    if len(argv) == 4 and argv[1] == "--same":
+        return same_warm(argv[2], argv[3])
     if len(argv) != 3 or argv[1] not in ("--judge", "--accept"):
         print(__doc__)
         return 2
@@ -210,7 +235,12 @@ def main(argv):
     if not now:
         print("cost: the run printed no counts — refusing to judge")
         return 1
-    missing = unprinted(now)
+    part, ran_workloads = run_part(run_dir)
+    if argv[1] == "--accept" and part != "all":
+        print("cost: an accept records every row, and this run measured the %s part alone" % part)
+        return 1
+    base = {k: n for k, n in base.items() if k[0] in ran_workloads}
+    missing = unprinted(now) + ["cost: %s printed no counts" % w for w in sorted(ran_workloads) if not any(k[0] == w for k in now)]
     if missing:
         print("\n".join(missing))
         return 1
@@ -235,6 +265,35 @@ def main(argv):
     print("cost: %d rows, %d over, %d fell" % (len(base), len(failed), len(fell)))
     candidates_said(run_dir, False)
     return 1 if failed else 0
+
+
+# A WARM ROW HOLDS when two compilers that differ in nothing the work reads move it by no more than a
+# tenth of the tolerance: text of another length hashes to other buckets, a few hundred operations in
+# tens of millions, never a margin the gate's own tolerance would lose; an answer ordered by hash (an
+# owner flipped, a count doubled) moves it by far more, and fails.
+STABLE_PPM = TOLERANCE_PPM // 10
+
+
+def same_warm(a_dir, b_dir):
+    """Two warm runs of compilers that differ in nothing the work reads (tools/cost_stable.sh): every
+    edit's row within STABLE_PPM of the other, the answers worked out again exactly; each row that
+    moved said, by how much. -> 0 when every row holds."""
+    a = {k: n for k, n in measured(a_dir).items() if k[0].startswith("edit-")}
+    b = {k: n for k, n in measured(b_dir).items() if k[0].startswith("edit-")}
+    keys = sorted(set(a) | set(b))
+    unheld = []
+    for k in keys:
+        old, new = a.get(k), b.get(k)
+        if old == new:
+            continue
+        ppm = abs(new - old) * 1_000_000 / old if old and new is not None else None
+        held = ppm is not None and k[1] != "worked" and ppm <= STABLE_PPM
+        print("cost: %s %s: %s -> %s (%s)%s" % (k[0], k[1], old if old is not None else "-", new if new is not None else "-",
+                                               "%.1f ppm" % ppm if ppm is not None else "absent", "" if held else " — NOT HELD"))
+        if not held:
+            unheld.append(k)
+    print("cost: %d warm rows, %d moved, %d past %d ppm or an answer moved" % (len(keys), len([k for k in keys if a.get(k) != b.get(k)]), len(unheld), STABLE_PPM))
+    return 1 if unheld or not a else 0
 
 
 def self_test():
@@ -278,7 +337,21 @@ def self_test():
     assert accepted({("w", "boxes"): 1004}, {("w", "boxes"): 1000}, True) == {("w", "boxes"): 1000}
     assert accepted({("w", "boxes"): 900}, {("w", "boxes"): 1000}, True) == {("w", "boxes"): 900}
     assert accepted({("w", "boxes"): 1200}, {("w", "boxes"): 1000}, False) == {("w", "boxes"): 1200}
-    assert unprinted({("edit-body", "worked"): 3}) == []
+    # an edit owes the answers it worked out again and the work its census counted
+    whole = {("edit-body", "worked"): 3}
+    whole.update({("edit-body", c): 1 for c in WARM_COUNTERS})
+    assert unprinted(whole) == []
+    assert unprinted({("edit-body", "worked"): 3}) == ["cost: edit-body printed no %s" % c for c in WARM_COUNTERS]
+    # an edit's census is read for its warm rows; a back-edit's and the settle's are not rows
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        census = "rc: 7 retains, 6 releases, 1 reclaims\nrc: 1000 list reads, 200 list writes\nalloc: 50 boxes, 4 list buffers\n"
+        for f, text in (("edit-body.out", "worked: 3 answers here; x 3\n"), ("edit-body.census", census), ("back-body.census", census), ("settle.census", census)):
+            open(os.path.join(d, f), "w").write(text)
+        got = measured(d)
+        assert got == {("edit-body", "worked"): 3, ("edit-body", "boxes"): 50, ("edit-body", "retains"): 7,
+                       ("edit-body", "releases"): 6, ("edit-body", "list_writes"): 200}, got
+        assert same_warm(d, d) == 0
     assert unprinted({("check-cli", "queries_computed"): 3})[0] == "cost: check-cli printed no retains"
     # a candidate is keyed by its technique and fn; one the record lacks is said, by its line
     found = candidates_of("candidate: reuse-in-place 40 f packages/x.av:3\ncandidate: strided-list 9 g packages/y.av\n")

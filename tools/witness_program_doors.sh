@@ -12,12 +12,25 @@
 #     module written by each; where it does not, the toolchain's refusal in the same words;
 #   a package pinning @std/text to a copy of its own: run against the copy on both paths, and a
 #     second pin of it, to another directory, refused in the same words on both.
-#   sh tools/witness_program_doors.sh [compiler]   (default build/avra-try)
+#   sh tools/witness_program_doors.sh [compiler [case…]]   (default build/avra-try; every case)
+#   sh tools/witness_program_doors.sh --cases               its cases, one a line, for the gate to deal
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
+# THE CASES, each a door or a group of them that stands alone: named after the compiler, those run
+# alone; named none, every one
+cases() {
+    printf '%s\n' lone-run app-run app-test app-test-file app-check app-check-file lone-check build-specs build-lone
+    for src in "$root"/tools/program-doors/lone-equals-package/*.av; do echo "equals-$(basename "$src" .av)"; done
+    printf '%s\n' specs-test target pin
+}
+if [ "${1:-}" = --cases ]; then cases; exit 0; fi
 avra=${1:-build/avra-try}
+[ $# -eq 0 ] || shift
+only="$*"
+for c in $only; do cases | grep -qx "$c" || { echo "witness_program_doors: no case $c — --cases lists them" >&2; exit 2; }; done
+wanted() { [ -z "$only" ] || case " $only " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_doors: no compiler at $avra" >&2; exit 1; }
 tmp=$(mktemp -d)
@@ -48,28 +61,33 @@ same() {
     cmp -s "$tmp/said.0" "$tmp/said.1" || { missed "\`$*\`: stdout differs"; diff "$tmp/said.0" "$tmp/said.1" >&2; }
 }
 
-same lone run lone/probe.av
-same app run app
-same app test app
-same app test app/src/tests/doubled/doubled.av
-same app check app
-same app check app/src/main.av
-same lone check lone/probe.av
-door 0 build specs
-door 1 build specs
-cmp -s "$tmp/told.0" "$tmp/told.1" && [ "$(cat "$tmp/code.1")" = 1 ] ||
-    missed "\`build specs\`: a library's build is not refused in the old path's words"
-for p in 0 1; do
-    door $p build lone/probe.av
-    out=$("$tmp/w$p/lone/probe" 2>&1)
-    [ "$out" = "lone 42" ] || missed "the lone file built on the path AVRA_PROGRAM=$p prints \"$out\""
-done
+! wanted lone-run || same lone run lone/probe.av
+! wanted app-run || same app run app
+! wanted app-test || same app test app
+! wanted app-test-file || same app test app/src/tests/doubled/doubled.av
+! wanted app-check || same app check app
+! wanted app-check-file || same app check app/src/main.av
+! wanted lone-check || same lone check lone/probe.av
+if wanted build-specs; then
+    door 0 build specs
+    door 1 build specs
+    cmp -s "$tmp/told.0" "$tmp/told.1" && [ "$(cat "$tmp/code.1")" = 1 ] ||
+        missed "\`build specs\`: a library's build is not refused in the old path's words"
+fi
+if wanted build-lone; then
+    for p in 0 1; do
+        door $p build lone/probe.av
+        out=$("$tmp/w$p/lone/probe" 2>&1)
+        [ "$out" = "lone 42" ] || missed "the lone file built on the path AVRA_PROGRAM=$p prints \"$out\""
+    done
+fi
 # each file of lone-equals-package/ built on the program layer alone in a directory of its own, alone
 # under a package's root but outside its src/ (a lone file still, whatever manifest stands above),
 # and as the src/main.av of a package: the same exit, a binary wherever the exit is 0 and none where
 # it isn't, and the binaries, run under the guard, leave the same way printing the same
 for src in "$root"/tools/program-doors/lone-equals-package/*.av; do
     name=$(basename "$src" .av)
+    wanted "equals-$name" || continue
     mkdir -p "$tmp/eq/$name/lone" "$tmp/eq/$name/pkg/src" "$tmp/eq/$name/above/src" "$tmp/eq/$name/above/out/x"
     cp "$src" "$tmp/eq/$name/lone/"
     cp "$src" "$tmp/eq/$name/above/out/x/"
@@ -105,45 +123,50 @@ for src in "$root"/tools/program-doors/lone-equals-package/*.av; do
             missed "$name: run alone and under a package's root outside its src/, it leaves otherwise"
     fi
 done
-same specs test specs
-door 0 build app --target wasm
-door 1 build app --target wasm
-if [ "$(cat "$tmp/code.0")" != "$(cat "$tmp/code.1")" ]; then
-    missed "\`build app --target wasm\`: exit $(cat "$tmp/code.0") on the old path, $(cat "$tmp/code.1") on the program layer"
-elif [ "$(cat "$tmp/code.1")" = 0 ]; then
-    for p in 0 1; do
-        built=$(tail -1 "$tmp/out.$p")
-        case $built in *.wasm) [ -f "$built" ] || missed "\`build app --target wasm\` on the path AVRA_PROGRAM=$p wrote no module at $built" ;;
-        *) missed "\`build app --target wasm\` on the path AVRA_PROGRAM=$p names no module: $built" ;; esac
-    done
-else
-    cmp -s "$tmp/told.0" "$tmp/told.1" || { missed "\`build app --target wasm\`: the toolchain's refusal differs"; diff "$tmp/told.0" "$tmp/told.1" >&2; }
+! wanted specs-test || same specs test specs
+if wanted target; then
+    door 0 build app --target wasm
+    door 1 build app --target wasm
+    if [ "$(cat "$tmp/code.0")" != "$(cat "$tmp/code.1")" ]; then
+        missed "\`build app --target wasm\`: exit $(cat "$tmp/code.0") on the old path, $(cat "$tmp/code.1") on the program layer"
+    elif [ "$(cat "$tmp/code.1")" = 0 ]; then
+        for p in 0 1; do
+            built=$(tail -1 "$tmp/out.$p")
+            case $built in *.wasm) [ -f "$built" ] || missed "\`build app --target wasm\` on the path AVRA_PROGRAM=$p wrote no module at $built" ;;
+            *) missed "\`build app --target wasm\` on the path AVRA_PROGRAM=$p names no module: $built" ;; esac
+        done
+    else
+        cmp -s "$tmp/told.0" "$tmp/told.1" || { missed "\`build app --target wasm\`: the toolchain's refusal differs"; diff "$tmp/told.0" "$tmp/told.1" >&2; }
+    fi
 fi
 
 # a package pinning @std/text to a copy of its own, its `repeat` writing one turn more: run against
 # the copy on both paths; then a package it depends on pinning the toolchain's own copy, which is one
 # name at two directories: refused alike on both
-mkdir -p "$tmp/pin/app/src" "$tmp/pin/other/src"
-cp -R "$root/packages/std-text" "$tmp/pin/text-copy"
-find "$tmp/pin/text-copy" \( -name .avra-cache -o -name build \) -prune -exec find {} -delete \;
-sed '/^export fn repeat(/,/^}/s/while i < n {/while i <= n {/' "$root/packages/std-text/src/text.av" >"$tmp/pin/text-copy/src/text.av"
-printf '[package]\nname = "app"\nversion = "0.0.1"\n\n[dependencies]\n"@std/text" = { path = "../text-copy" }\n' >"$tmp/pin/app/avra.toml"
-printf 'use @std.text.{repeat}\n\nrepeat("ab", 2)\n' >"$tmp/pin/app/src/main.av"
-for p in 0 1; do
-    out=$(cd "$tmp/pin/app" && AVRA_PROGRAM=$p "$avra" run . 2>&1)
-    [ "$out" = "ababab" ] || missed "a pinned @std/text on the path AVRA_PROGRAM=$p prints \"$out\", not the copy's \"ababab\""
-done
-printf '[package]\nname = "@x/other"\nversion = "0.0.1"\n\n[lib]\nname = "x-other"\npath = "src/other.av"\n\n[dependencies]\n"@std/text" = { path = "%s" }\n' "$root/packages/std-text" >"$tmp/pin/other/avra.toml"
-printf 'export fn one() -> int { 1 }\n' >"$tmp/pin/other/src/other.av"
-printf '"@x/other" = { path = "../other" }\n' >>"$tmp/pin/app/avra.toml"
-for p in 0 1; do
-    find "$tmp/pin" -name .avra-cache -prune -exec find {} -delete \;
-    (cd "$tmp/pin/app" && AVRA_PROGRAM=$p "$avra" build . >"$tmp/pin/said.$p" 2>&1; echo $? >"$tmp/pin/code.$p")
-done
-[ "$(cat "$tmp/pin/code.0")" = 1 ] && [ "$(cat "$tmp/pin/code.1")" = 1 ] ||
-    missed "two pins of @std/text: exit $(cat "$tmp/pin/code.0") on the old path, $(cat "$tmp/pin/code.1") on the program layer"
-grep -q "manifest.duplicate_package" "$tmp/pin/said.0" || missed "two pins of @std/text: the old path doesn't refuse them as one name at two directories"
-cmp -s "$tmp/pin/said.0" "$tmp/pin/said.1" || { missed "two pins of @std/text: said otherwise"; diff "$tmp/pin/said.0" "$tmp/pin/said.1" >&2; }
+if wanted pin; then
+    mkdir -p "$tmp/pin/app/src" "$tmp/pin/other/src"
+    cp -R "$root/packages/std-text" "$tmp/pin/text-copy"
+    find "$tmp/pin/text-copy" \( -name .avra-cache -o -name build \) -prune -exec find {} -delete \;
+    sed '/^export fn repeat(/,/^}/s/while i < n {/while i <= n {/' "$root/packages/std-text/src/text.av" >"$tmp/pin/text-copy/src/text.av"
+    printf '[package]\nname = "app"\nversion = "0.0.1"\n\n[dependencies]\n"@std/text" = { path = "../text-copy" }\n' >"$tmp/pin/app/avra.toml"
+    printf 'use @std.text.{repeat}\n\nrepeat("ab", 2)\n' >"$tmp/pin/app/src/main.av"
+    for p in 0 1; do
+        out=$(cd "$tmp/pin/app" && AVRA_PROGRAM=$p "$avra" run . 2>&1)
+        [ "$out" = "ababab" ] || missed "a pinned @std/text on the path AVRA_PROGRAM=$p prints \"$out\", not the copy's \"ababab\""
+    done
+    printf '[package]\nname = "@x/other"\nversion = "0.0.1"\n\n[lib]\nname = "x-other"\npath = "src/other.av"\n\n[dependencies]\n"@std/text" = { path = "%s" }\n' "$root/packages/std-text" >"$tmp/pin/other/avra.toml"
+    printf 'export fn one() -> int { 1 }\n' >"$tmp/pin/other/src/other.av"
+    printf '"@x/other" = { path = "../other" }\n' >>"$tmp/pin/app/avra.toml"
+    for p in 0 1; do
+        find "$tmp/pin" -name .avra-cache -prune -exec find {} -delete \;
+        (cd "$tmp/pin/app" && AVRA_PROGRAM=$p "$avra" build . >"$tmp/pin/said.$p" 2>&1; echo $? >"$tmp/pin/code.$p")
+    done
+    [ "$(cat "$tmp/pin/code.0")" = 1 ] && [ "$(cat "$tmp/pin/code.1")" = 1 ] ||
+        missed "two pins of @std/text: exit $(cat "$tmp/pin/code.0") on the old path, $(cat "$tmp/pin/code.1") on the program layer"
+    grep -q "manifest.duplicate_package" "$tmp/pin/said.0" || missed "two pins of @std/text: the old path doesn't refuse them as one name at two directories"
+    cmp -s "$tmp/pin/said.0" "$tmp/pin/said.1" || { missed "two pins of @std/text: said otherwise"; diff "$tmp/pin/said.0" "$tmp/pin/said.1" >&2; }
+fi
 
-[ "$failed" = 0 ] && echo "witness_program_doors: run, test (a spec suite too), check and build agree on both paths; another target builds where its toolchain stands and refuses alike where it does not; a std pin wins for the whole graph on both, and two pins refuse alike"
+[ "$failed" = 0 ] && [ -n "$only" ] && echo "witness_program_doors: $only — as the whole witness holds them"
+[ "$failed" = 0 ] && [ -z "$only" ] && echo "witness_program_doors: run, test (a spec suite too), check and build agree on both paths; another target builds where its toolchain stands and refuses alike where it does not; a std pin wins for the whole graph on both, and two pins refuse alike"
 [ "$failed" = 0 ]

@@ -41,21 +41,17 @@ jobs:
         with: { fetch-depth: 2 }
       - name: safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # the builder is the compiler of the tree this gate stands on (its parent, the landed head),
-      # never another gate's: a gate's own compiler comes from an unlanded tree
-      - name: base
-        id: base
-        run: echo "sha=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
-      - name: builder cached
-        id: builder
-        uses: actions/cache/restore@v4
-        with:
-          path: gate-builder.tar.gz
-          key: gate-builder-${{ steps.base.outputs.sha }}
+      # THE BUILDER IS ONE DEFINITION: the release `gate-builder`'s compiler, which landing replaces
+      # with the gated compiler of the run that landed. A cache never carries it: a gate/<x> branch
+      # restores only its own caches and the default branch's, never another gate's
       - name: builder
         run: |
-          [ -s gate-builder.tar.gz ] || curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
-          tar xzf gate-builder.tar.gz build/avra
+          curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+          # THE COMMON PATH: the release is the landed head's whole gate pack, and where this tree's
+          # compiler source is that head's, the tree is seeded from it as it stands — its compiler of
+          # generation 2 and its objects — and the seed builds no compiler. Where the source moved,
+          # `unpack` refuses, and the release's compiler is the builder of this one.
+          sh tools/gate.sh unpack gate-builder.tar.gz || tar xzf gate-builder.tar.gz build/avra
           build/avra --version
       - name: seed
         timeout-minutes: 70
@@ -74,18 +70,14 @@ jobs:
           path: build/gate/compiler-*.tar.gz
           retention-days: 3
           if-no-files-found: error
-      - name: next builder
-        run: cp build/gate/compiler-*.tar.gz gate-builder.tar.gz
-      - uses: actions/cache/save@v4
-        with:
-          path: gate-builder.tar.gz
-          key: gate-builder-${{ github.sha }}
 
   slice:
     needs: [seed]
     runs-on: ubuntu-latest
     container: *gate-image
-    timeout-minutes: 60
+    # a slice's wall budget is tools/gate.sh's own (900 s, its verdict OVER, the slice named); the
+    # runner's bound stands just past it, so the gate names the slice before the runner kills the job
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -100,7 +92,7 @@ jobs:
       - name: unpack
         run: sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz
       - name: ${{ matrix.slice }}
-        timeout-minutes: 55
+        timeout-minutes: 16
         run: |
           case "${{ matrix.slice }}" in idioms*|fmt) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
           st=0

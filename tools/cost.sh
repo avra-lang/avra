@@ -28,8 +28,11 @@ git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
     echo "cost: snapshot $snapshot is not in this clone and could not be fetched"; exit 1; }
 command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to one core"; exit 1; }
 
-# The cold workloads: a name, the machine's store it runs over, the census tables it takes, then the
-# command the census compiler runs in the snapshot. A STORE IS NOT THE COMPILER: every run but one has
+# The cold workloads: a name, the part it is measured in, the machine's store it runs over, the census
+# tables it takes, then the command the census compiler runs in the snapshot. PARTS, each a gate slice
+# of its own (COST_PART=cold-a|cold-b|warm; all by default): `warm` is the cli's cold check and the
+# warm edits it leaves a store for — COST_EDITS=<k>/<n> deals them, the k-th share of n, the noop in
+# every share — and the cold runs are two. A STORE IS NOT THE COMPILER: every run but one has
 # the machine's store off, so its rows are what the compiler does, whatever a store holds;
 # `cold-with-store-fill` is the cli's cold check over an empty store, which it fills — the store's own
 # price, ratcheted apart, its sites the check's own and so read once, from check-cli. The death
@@ -37,10 +40,10 @@ command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to on
 # largest run, its fns the check's own — takes the site tables alone, under the cap.
 workloads() {
     cat << 'EOF'
-check-cli off deaths check --counts packages/cli
-build-cli off sites build packages/cli
-check-program off deaths check --counts packages/std-program
-cold-with-store-fill filled none check --counts packages/cli
+check-cli warm off deaths check --counts packages/cli
+build-cli cold-a off sites build packages/cli
+check-program cold-b off deaths check --counts packages/std-program
+cold-with-store-fill cold-b filled none check --counts packages/cli
 EOF
 }
 
@@ -64,11 +67,36 @@ added_after|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p
 EOF
 }
 
+# this run's share of the edits: COST_EDITS=<k>/<n>, the k-th (from 1) of n dealt in turn, the noop —
+# the first, which edits nothing — in every share; every edit where it names none
+shared_edits() {
+    case ${COST_EDITS:-} in
+        '') edits ;;
+        */*) edits | awk -v k="${COST_EDITS%/*}" -v n="${COST_EDITS#*/}" 'NR == 1 || (NR - 2) % n == k - 1' ;;
+        *) echo "cost: COST_EDITS is <k>/<n>, never $COST_EDITS" >&2; exit 2 ;;
+    esac
+}
+
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
 compiler=${COST_COMPILER:-build/avra.census}
+# THE CENSUS COMPILER'S BUILDER IS THIS TREE'S OWN, TWICE OVER: a compiler built once from another
+# source's (generation 1) lays this tree's code as that one would, and moves the counts it builds. The
+# builder's record (`make avra` writes it beside the binary, tools/work built-from) names its source
+# and its generation; one built from another source, of generation 1, or with no record is refused.
+# A census compiler built elsewhere (COST_COMPILER, a gate's seed) carries its builder's record beside
+# it (tools/census_compiler.sh) and is held to the same: one rule, the builder's.
+held_builder() { # <what it is> <its record>
+    read -r b_hash _b_at b_gen _b_more < "$2" 2> /dev/null || { echo "cost: $1 has no record of what built it ($2) — \`make avra\` twice"; exit 1; }
+    [ "$b_hash" = "$(sh tools/work built-from . | cut -d' ' -f1)" ] || { echo "cost: $1 was built from another compiler source — \`make avra\` twice"; exit 1; }
+    [ "${b_gen:-1}" -ge 2 ] || { echo "cost: $1 is generation ${b_gen:-1} of this tree — \`make avra\` once more"; exit 1; }
+}
+builder=${CENSUS_BUILDER:-build/avra}
 if [ -z "${COST_COMPILER:-}" ]; then
+    held_builder "the census builder $builder" "$(dirname "$builder")/.$(basename "$builder")-built-from"
     sh tools/census_compiler.sh "$compiler"
+else
+    held_builder "the census compiler $compiler's builder" "$(dirname "$compiler")/.$(basename "$compiler")-built-from"
 fi
 [ -x "$compiler" ] || { echo "cost: no census compiler at $compiler"; exit 1; }
 
@@ -111,19 +139,22 @@ warm() {
     grep '^worked: ' "$out/$1.census" > "$out/$1.out" || { echo "cost: $1 printed no worked line"; exit 1; }
 }
 
-# Each edit of the warm lane's table, over the store the cli check left.
+# Each edit of the warm lane's table, over the store the cli check left. An edit undone is built back,
+# so the next edit stands on the store the check left; the share's last edit has no next, and its
+# undoing builds nothing.
 warm_edits() {
     warm settle
     cp "$src/$edited" "$out/edited.orig"
-    edits | while IFS='|' read -r kind text becomes; do
+    last=$(shared_edits | tail -1 | cut -d'|' -f1)
+    shared_edits | while IFS='|' read -r kind text becomes; do
         [ -z "$text" ] || python3 "$root/tools/cost_ratchet.py" --edit "$src/$edited" "$kind" "$text" "$becomes"
         warm "edit-$kind"
         if [ -n "$text" ]; then
             cp "$out/edited.orig" "$src/$edited"
-            warm "back-$kind"
+            [ "$kind" = "$last" ] || warm "back-$kind"
         fi
     done
-    find "$out/settle.out" "$out"/back-*.out -delete
+    find "$out" -maxdepth 1 \( -name settle.out -o -name 'back-*.out' \) -delete
 }
 
 # A cold run's site lines with every address its census binary's symbol: <name>.sites, which
@@ -144,7 +175,15 @@ bare() {
     find "$cache" -mindepth 1 -delete
 }
 
-workloads | while read -r name store census command; do
+# the part this run measures, and every workload it measures — what tools/cost_ratchet.py judges
+part=${COST_PART:-all}
+case $part in all | cold-a | cold-b | warm) ;; *) echo "cost: COST_PART is all, cold-a, cold-b or warm, never $part"; exit 2 ;; esac
+if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
+: > "$out/workloads"
+workloads | while read -r name in_part store census command; do
+    [ "$part" = all ] || [ "$part" = "$in_part" ] || continue
+    echo "$name" >> "$out/workloads"
+    [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do echo "edit-$kind" >> "$out/workloads"; done
     bare
     # shellcheck disable=SC2086
     counted "$name" $command
@@ -154,4 +193,4 @@ done
 # THE CANDIDATES: every cold run's sites classified to the zero-cost technique that would remove their
 # cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md)
 "$src/build/avra" census --candidates --root "$src" "$out"/*.sites > "$out/candidates.txt"
-find "$out/cache" "$src" "$out/edited.orig" -delete
+for made in "$out/cache" "$src" "$out/edited.orig"; do [ ! -e "$made" ] || find "$made" -delete; done

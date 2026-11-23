@@ -35,3 +35,14 @@ AVRA_PROGRAM_NET=0 AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES
 mv packages/cli/src/main "$out"
 # A C symbol wears a leading underscore on macOS and none on Linux.
 nm "$out" | grep -Eq '[ _]note_retain$' || { echo "census: $out carries no census — refusing to report"; exit 1; }
+# WHAT BUILT IT, beside it: its builder's record (tools/work built-from), which tools/cost.sh holds a
+# census compiler built elsewhere — a gate's seed — to as it holds a builder
+builder_record="$(dirname "$builder")/.$(basename "$builder")-built-from"
+census_record="$(dirname "$out")/.$(basename "$out")-built-from"
+# and this script's own hash, which decides the census's flags and so is part of what it is
+if [ -s "$builder_record" ]; then
+    read -r r_hash r_at r_gen _ < "$builder_record"
+    echo "$r_hash $r_at $r_gen $(sha256sum tools/census_compiler.sh | cut -d' ' -f1)" > "$census_record"
+else
+    find "$census_record" -delete 2> /dev/null || :
+fi

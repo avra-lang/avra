@@ -519,8 +519,9 @@ avra: $(COMPILER_OBJS)
 	@cp packages/cli/src/main build/avra.next && mv -f build/avra.next build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
-	@# what this binary was built from, for a worktree that wants to start from it
-	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
+	@# what this binary was built from, for a worktree that wants to start from it, and its generation
+	@# of that source: the record still standing is its builder's
+	@sh tools/work built-from . build/.avra-built-from > build/.avra-built-from.next 2>/dev/null && mv -f build/.avra-built-from.next build/.avra-built-from || rm -f build/.avra-built-from build/.avra-built-from.next
 	@sh tools/work deposit . || true
 	@echo "avra: build/avra"
 
@@ -693,6 +694,9 @@ build/runtime-tests/io_fork_test: runtime/tests/io_fork_test.c $(RUNTIME_OBJS) b
 	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS) build/std_io.o
 runtime-tests: $(RUNTIME_TESTS)
 	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
+# one runtime test alone (`make runtime-test-pool_claim_test`): the gate's rows, each timed apart
+runtime-test-%: build/runtime-tests/%
+	@$<
 
 # THE TESTS, TESTED: one line of the scheduler broken at a time, and some
 # runtime test must fail for each (runtime/tests/mutations.py).
