@@ -24,6 +24,7 @@ use core.{
     owned_type,
     some_list,
 }
+use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -253,9 +254,22 @@ fn impl_target(engine: QueryEngine, f: SourceFileAddress, i: ItemImpl, written: 
     declared_of(target_named(engine, f, i.target_in, i.target, written)) ?? own_declared(i.target)
 }
 
-/// The type parameters the impl `i` stands over: those it writes, else those of the type `d` it's for.
+/// The type parameters the impl `i` stands over: those it writes, else those of the type `d` it's
+/// for. An impl writing other than its type's own (`impl Show for Box<int>`, one instantiation, which
+/// the impl laws refuse) stands over its type's own, so its methods read `int` as `int`, never as a
+/// parameter of that name. Read as written, so asking it resolves nothing a generator makes.
 fn impl_params(engine: QueryEngine, i: ItemImpl, d: DeclaredAt) -> List<string> {
-    if i.params.is_empty() { declared_params(engine, d.file, d.name) } else { i.params }
+    let declared = declared_params(engine, d.file, d.name)
+    if i.params.is_empty() { return declared }
+    if !declared.is_empty() { return if params_alike(i.params, declared) { i.params } else { declared } }
+    if i.params.any(builtin_type_name(avra().rows.types, it)) { declared } else { i.params }
+}
+
+/// Whether two lists of parameter names are one, name for name, in order.
+fn params_alike(a: List<string>, b: List<string>) -> bool {
+    if a.length != b.length { return false }
+    for j in 0..a.length { if a[j] != b[j] { return false } }
+    true
 }
 
 /// The type parameters the type `file` declares as `name` stands over: a record's or a component's,
