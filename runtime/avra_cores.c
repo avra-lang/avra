@@ -411,7 +411,8 @@ int64_t avra_cores_heir(int64_t quiet) {
 // reads it as dead, never as a key. A CLAIM is a slot whose state is
 // the claimant's process id: it stands while that process lives.
 
-enum { SHARED_KINDS = 3, SHARED_CLAIMS = 2 };
+// The kinds a table keeps: 0 and 1 octets by key, 2 the claims, 3 and 4 octets by key again.
+enum { SHARED_KINDS = 5, SHARED_CLAIMS = 2 };
 enum { SLOT_FREE = 0, SLOT_READY = -1, SLOT_BUSY_BASE = -1000000000, SLOT_DEAD = -2, SLOT_LET_GO = -3 };
 
 typedef struct {
@@ -420,6 +421,11 @@ typedef struct {
     int64_t from, to;
 } SharedSlot;
 
+// THE KINDS FROM `SHARED_APART` ON keep their octets in an arena of their own, and log where each
+// kept octets lie in the order they were kept: a reader of every one of them reads the log and that
+// arena, never the slots or the octets of the other kinds.
+enum { SHARED_APART = 3 };
+
 typedef struct {
     int64_t slots;       // per kind, a power of two
     int64_t room;        // octets
@@ -427,7 +433,13 @@ typedef struct {
     SharedSlot* table;   // SHARED_KINDS * slots
     char* octets;
     AvraSharedView view; // what a reader maps the octets as
+    char* apart;         // the octets of the kinds from SHARED_APART on
+    AvraSharedView apart_view;
+    int64_t* apart_words; // the octets taken there, then each logged kind's count and its log
 } Shared;
+
+// A logged kind's count, then two words a logged octets: where they end, then where they start, plus one.
+static int64_t* apart_count(Shared* sh, int64_t kind) { return sh->apart_words + 1 + (kind - SHARED_APART) * (1 + 2 * sh->slots); }
 
 // The words every process of a table shares beside its slots: the octets used, the claims counted,
 // how many processes are known gone, and their ids.
@@ -488,6 +500,23 @@ void* avra_shared_made(int64_t slots, int64_t room) {
     sh->octets = octets;
     sh->view.base = octets;
     sh->view.len = room;
+    size_t apart_room = (size_t)room / 4;
+    size_t apart_words = (size_t)(1 + (SHARED_KINDS - SHARED_APART) * (1 + 2 * n)) * sizeof(int64_t);
+    void* apart = mmap(NULL, apart_room, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    void* words = mmap(NULL, apart_words, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (apart == MAP_FAILED || words == MAP_FAILED) {
+        if (apart != MAP_FAILED) munmap(apart, apart_room);
+        if (words != MAP_FAILED) munmap(words, apart_words);
+        munmap(table, table_bytes);
+        munmap(octets, (size_t)room);
+        munmap(used, SHARED_WORDS * sizeof(int64_t));
+        free(sh);
+        return NULL;
+    }
+    sh->apart = apart;
+    sh->apart_view.base = apart;
+    sh->apart_view.len = (int64_t)apart_room;
+    sh->apart_words = words;
     g_shared = sh;
     return sh;
 }
@@ -528,12 +557,17 @@ void avra_shared_ended(void* h) {
     munmap(sh->table, (size_t)SHARED_KINDS * (size_t)sh->slots * sizeof(SharedSlot));
     munmap(sh->octets, (size_t)sh->room);
     munmap(shared_used(sh), SHARED_WORDS * sizeof(int64_t));
+    munmap(sh->apart, (size_t)sh->apart_view.len);
+    munmap(sh->apart_words, (size_t)(1 + (SHARED_KINDS - SHARED_APART) * (1 + 2 * sh->slots)) * sizeof(int64_t));
     if (g_shared == sh) g_shared = NULL;
     free(sh);
 }
 
 // The octets of the table, as a mapping a reader reads in place.
 void* avra_shared_view(void* h) { return &((Shared*)h)->view; }
+
+// The octets of the kinds kept apart, as a mapping a reader reads in place.
+void* avra_shared_apart_view(void* h) { return &((Shared*)h)->apart_view; }
 
 // The state of a slot once it is no longer being written: a slot whose writer died is made dead.
 static int64_t slot_settled(SharedSlot* s) {
@@ -581,18 +615,31 @@ static SharedSlot* slot_taken(Shared* sh, int64_t kind, uint64_t hi, uint64_t lo
 // 1 already kept by another, -1 no room. The first to keep a key keeps it.
 int64_t avra_shared_kept(void* h, int64_t kind, int64_t hi, int64_t lo, const char* p, int64_t n) {
     Shared* sh = h;
-    if (kind < 0 || kind >= SHARED_CLAIMS) return -1;
+    if (kind < 0 || kind >= SHARED_KINDS || kind == SHARED_CLAIMS) return -1;
     int found = 0;
     if (slot_for(sh, kind, (uint64_t)hi, (uint64_t)lo, &found) && found) return 1;
-    int64_t from = __atomic_fetch_add(shared_used(sh), (n + 7) & ~(int64_t)7, __ATOMIC_ACQ_REL);
-    if (from + n > sh->room) return -1;
-    memcpy(sh->octets + from, p, (size_t)n);
+    int apart = kind >= SHARED_APART;
+    int64_t* used = apart ? sh->apart_words : shared_used(sh);
+    int64_t room = apart ? sh->apart_view.len : sh->room;
+    char* octets = apart ? sh->apart : sh->octets;
+    int64_t from = __atomic_fetch_add(used, (n + 7) & ~(int64_t)7, __ATOMIC_ACQ_REL);
+    if (from + n > room) return -1;
+    memcpy(octets + from, p, (size_t)n);
     SharedSlot* s = slot_taken(sh, kind, (uint64_t)hi, (uint64_t)lo, &found);
     if (!s) return -1;
     if (found) return 1;
     s->from = from;
     s->to = from + n;
     __atomic_store_n(&s->state, SLOT_READY, __ATOMIC_RELEASE);
+    if (apart) {
+        // logged once kept whole: a reader of the log never meets octets still being written
+        int64_t* count = apart_count(sh, kind);
+        int64_t at = __atomic_fetch_add(count, 1, __ATOMIC_ACQ_REL);
+        if (at < sh->slots) {
+            __atomic_store_n(count + 2 + 2 * at, from + n, __ATOMIC_RELEASE);
+            __atomic_store_n(count + 1 + 2 * at, from + 1, __ATOMIC_RELEASE);
+        }
+    }
     return 0;
 }
 
@@ -608,6 +655,28 @@ int64_t avra_shared_end(void* h, int64_t kind, int64_t hi, int64_t lo) {
     int found = 0;
     SharedSlot* s = slot_for(h, kind, (uint64_t)hi, (uint64_t)lo, &found);
     return s && found ? s->to : -1;
+}
+
+// THE OCTETS A KIND KEPT APART, READ ONE BY ONE in the order they were kept, which is no order a
+// reader may keep: whoever reads every one sorts what it reads. How many were logged, and where the
+// `at`th starts, -1 where it is still being logged; its end is what its own octets say.
+int64_t avra_shared_logged(void* h, int64_t kind) {
+    Shared* sh = h;
+    if (kind < SHARED_APART || kind >= SHARED_KINDS) return 0;
+    int64_t n = __atomic_load_n(apart_count(sh, kind), __ATOMIC_ACQUIRE);
+    return n < sh->slots ? n : sh->slots;
+}
+
+int64_t avra_shared_logged_start(void* h, int64_t kind, int64_t at) {
+    Shared* sh = h;
+    if (kind < SHARED_APART || kind >= SHARED_KINDS || at < 0 || at >= sh->slots) return -1;
+    return __atomic_load_n(apart_count(sh, kind) + 1 + 2 * at, __ATOMIC_ACQUIRE) - 1;
+}
+
+int64_t avra_shared_logged_end(void* h, int64_t kind, int64_t at) {
+    Shared* sh = h;
+    if (kind < SHARED_APART || kind >= SHARED_KINDS || at < 0 || at >= sh->slots) return -1;
+    return __atomic_load_n(apart_count(sh, kind) + 2 + 2 * at, __ATOMIC_ACQUIRE);
 }
 
 // THE WITNESS'S HOOKS: the process that takes the table's `AVRA_SHARED_KILL_AT`-th claim is killed

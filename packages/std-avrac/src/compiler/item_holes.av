@@ -62,7 +62,7 @@ fn binding_holes(view: ItemView) -> List<Found> {
 /// Every hole the written item `at` of `file`'s `match`es leave in a registry, in node order, both its
 /// laws reading the one answer: each `match`'s subject typed as the body that holds it types it, and
 /// an item with no `match` typing nothing.
-fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemHoles {
+fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
     if !item_held(engine, file, at) { return holes_made(engine, file, at) }
     registry_holes_seen(item_view(engine, file, at))
 }
@@ -78,7 +78,7 @@ fn registry_holes_seen(view: ItemView) -> ItemHoles {
 }
 
 /// What `registry_holes` answers, made.
-fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemHoles {
+fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
     if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
     let item = read_item(engine, file, at)
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
@@ -95,7 +95,7 @@ fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemHole
 
 /// The type the node `k` of the written item `at` of `file` has: as the fn body that holds it types it,
 /// else as the statements the file runs type it.
-export fn item_node_types(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> fn(int) -> SignedType? {
+export fn item_node_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> fn(int) -> SignedType? {
     let bodies = [b.types for b in item_bodies(engine, file, at, item)]
     let entry = entry_types(engine, file)
     let base = entry.bases.find(it.at == at)?.base
@@ -111,7 +111,7 @@ fn entry_typed(entry: EntryTypes, base: int?, k: int) -> SignedType? {
 
 /// Every body the written item `at` of `file` holds, typed over the item's own store: each fn's
 /// as it is written, then each impl's methods and statics.
-export fn item_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+export fn item_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     TypedBody,
 > {
     [b.typed for b in item_stated_bodies(engine, file, at, item)]
@@ -122,7 +122,7 @@ export type StatedBody = { stmt: StmtId, typed: TypedBody }
 
 /// Every body the written item `at` of `file` holds, as `item_bodies` types it, each beside the
 /// statement that declares it.
-fn stated_bodies_read(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+fn stated_bodies_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     StatedBody,
 > {
     let fns = [StatedBody { stmt: s, typed: b! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [written_typed(engine, file, p!.name)] if b != null]
@@ -154,7 +154,7 @@ fn first_typed(bodies: List<List<SignedType?>>, k: int) -> SignedType? {
 
 /// The impls the written item `at` of `file` holds, each as a method's typing reaches it, each query
 /// they stand on asked.
-fn item_impls_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ImplAt> {
+fn item_impls_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ImplAt> {
     [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in item_impls(engine, file, at) for d in [impl_target(engine, file, i)] if d != null]
 }
 

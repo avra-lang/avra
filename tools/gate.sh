@@ -69,7 +69,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack; tools/queue-witness run native
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, frame_place_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack, carried_store_attack, derive_members_witness; tools/queue-witness run native
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -290,8 +290,41 @@ slice_cli() {
     cold cli
     export AVRA_PROGRAM_NET=1
     children_kept tested cli-suite packages/cli
-    export AVRA_PROGRAM_NET=0
     children_of_failed cli-suite
+    ci_captured
+    export AVRA_PROGRAM_NET=0
+}
+
+# WHAT A RED CLI SLICE STOOD ON, kept under $out/capture for its artifact: for each failed case whose
+# child checked an embedding package (embed_law_test), that package's own store and the machine's
+# (`$AVRA_CACHE_DIR`) as they were, this machine's cores, its AVRA_ environment and the compiler's
+# print; then that one check run again under the suite's own environment with the query and trap
+# traces on, its stderr held to 20 MB. A green slice keeps nothing.
+ci_captured() {
+    grep -q '^row cli-suite FAIL' "$out/rows" 2>/dev/null || return 0
+    cap="$out/capture"
+    mkdir -p "$cap"
+    { echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null)"; "$root/build/avra" --version 2>&1 | head -3; env | grep '^AVRA' | sort; } > "$cap/facts.txt"
+    n=0
+    for d in "$out"/children/*/; do
+        grep -q 'embed_law_test' "$d/case" 2>/dev/null || continue
+        for a in "$d"*.args; do
+            [ "$(head -1 "$a")" = check ] || continue
+            pkg=$(sed -n 2p "$a")
+            [ -d "$pkg" ] || continue
+            n=$((n + 1))
+            mkdir -p "$cap/$n"
+            cp "$d/case" "$a" "$cap/$n/"
+            [ -d "$pkg/.avra-cache" ] && cp -R "$pkg/.avra-cache" "$cap/$n/pkg-avra-cache"
+            [ -n "${AVRA_CACHE_DIR:-}" ] && [ -d "$AVRA_CACHE_DIR" ] && cp -R "$AVRA_CACHE_DIR" "$cap/$n/machine-cache"
+            AVRA_QTRACE=1 AVRA_TRAP_TRACE=1 "$root/build/avra" check "$pkg" > "$cap/$n/rerun.out" 2> "$cap/$n/rerun.err.full"
+            echo "exit $?" >> "$cap/$n/rerun.out"
+            head -c 20971520 "$cap/$n/rerun.err.full" > "$cap/$n/rerun.err"
+            find "$cap/$n/rerun.err.full" -delete
+            break
+        done
+    done
+    echo "captured: $n embed check(s)" >> "$cap/facts.txt"
 }
 
 # A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: `$@` with every child
@@ -396,6 +429,7 @@ slice_witness_b() {
     row docs-cache-attack sh tools/docs_cache_attack.sh
     row obj-gone-attack sh tools/obj_gone_attack.sh
     row chunk-owed-attack sh tools/chunk_owed_attack.sh
+    row frame-place-attack sh tools/frame_place_attack.sh
     row moved-tree-attack sh tools/moved_tree_attack.sh
     row layer-sites-attack sh tools/layer_sites_attack.sh
     row closure-gather-attack sh tools/closure_gather_attack.sh
@@ -408,6 +442,8 @@ slice_witness_b() {
     row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
     row queue-witness build/avra run tools/queue-witness
     row std-answers-attack sh tools/std_answers_attack.sh build/avra
+    row carried-store-attack env CARRIED_ATTACK_AVRA="$root/build/avra" sh tools/carried_store_attack.sh
+    row derive-members-witness env WITNESS_NET_ONLY=1 sh tools/derive_members_witness.sh build/avra
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

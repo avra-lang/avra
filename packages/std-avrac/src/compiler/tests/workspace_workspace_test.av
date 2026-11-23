@@ -1,0 +1,56 @@
+// The old path's own mechanism, held apart from workspace_test.av: a signature's
+// fingerprint over the old declaration tables, and the workspace's unit table. They go
+// with the old path.
+use @std.avrac.testing.old_path.{test_workspace}
+use compiler.{Workspace, sig_hash}
+use @std.avrac.core.{DeclId, TypeId}
+use @std.relation.stable.{indexed_scope}
+use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
+use compiler.host.{memory_host}
+
+/// The small package workspace_test.av holds, opened by the old path.
+fn old_ws() -> Workspace { test_workspace(memory_host(ws_files(), ws_names()), "/w") }
+
+spec "signatures" {
+    given "a signature's fingerprint covers the whole signature" {
+        then "a variant's payloads are not the next variant's — `A(x, y) B` vs `A(x) B(y)`" {
+            let x = TypeId { index: 1 }
+            let y = TypeId { index: 2 }
+            let together = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x, y], []] })
+            let apart = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x], [y]] })
+            sig_hash(together, indexed_scope()) != sig_hash(apart, indexed_scope())
+        }
+        then "a field's default is part of the record that declares it" {
+            let x = TypeId { index: 1 }
+            // a struct-literal field seat plants no want, so the
+            // nullable lists are bound at their own type first
+            let absent: List<DeclId?> = [null]
+            let present: List<DeclId?> = [DeclId { index: 0 }]
+            let held = StructSig { names: ["a"], types: [x], defaults: absent }
+            let seeded = StructSig { names: ["a"], types: [x], defaults: present }
+            sig_hash(DeclSig.Record(held), indexed_scope()) != sig_hash(DeclSig.Record(seeded), indexed_scope())
+        }
+        then "a named type's shape is its signature — `type Id = int` is not `type Id = string`" {
+            let over_int = DeclSig.Named(NamedSig { of: TypeId { index: 1 } })
+            let over_text = DeclSig.Named(NamedSig { of: TypeId { index: 2 } })
+            sig_hash(over_int, indexed_scope()) != sig_hash(over_text, indexed_scope())
+        }
+    }
+}
+
+// ── The toolchain's std root ──
+
+spec "the unit table" {
+    given "one table, the workspace's own — never a collection's copy" {
+        then "a name the collection interned answers the SAME id afterwards, and asking it again mints nothing" {
+            let ws = old_ws()
+            let p = ws.program(null)
+            let l = p.lowered()
+            let interned = ws.asks.get()
+            l.fns.length > 0 &&
+                interned.length > 0 &&
+                ws.spec_id(interned[0]) == 0 &&
+                ws.asks.get().length == interned.length
+        }
+    }
+}

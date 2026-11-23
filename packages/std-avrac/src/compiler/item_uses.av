@@ -52,21 +52,13 @@ type UseFaultAt = { at: Span?, path: List<string>, fault: UseFault, unread: Unre
 
 /// Every fault of the `use` lines the written item `at` of `file` writes, line by line, each read
 /// after every `use` line the file writes before it.
-fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<UseFaultAt> {
+fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<UseFaultAt> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let lines = uses_written(item)
     if lines.is_empty() { return [] }
-    let before = flatten(
-        [[UseWritten {
-            at: if l.placed { Span { lo: l.lo, hi: l.hi } } else { null },
-            path: l.path,
-            items: l.items,
-            bound: l.bound,
-            exported: l.exported,
-        } for l in item_front(engine, file, k).uses] for k in 0..at],
-    )
+    let before = [UseWritten { at: null, path: l.path, items: l.items, bound: l.bound, exported: l.exported } for l in front_before(engine, file, at).uses]
     flatten([line_faults(engine, file, l, before.concat(lines.take(j))) for j, l in lines])
 }
 
@@ -217,7 +209,7 @@ export fn unread_in_module(
 ) -> Unread? {
     if module.package != file.package_name { return null }
     for f in module_files(engine, module.package, module.local, module.as_root) {
-        for i in 0..item_count(engine, f) {
+        for i in item_ids(engine, f) {
             let r? = read_item(engine, f, i).store.refusals().first() else { continue }
             let found = refused_found(r)
             let at = if found.at == null { null } else { span_of(file_placed(engine, f, i, kept_at(found.at)!)) }
@@ -285,21 +277,21 @@ fn exported_names(engine: QueryEngine, module: ModuleAt) -> List<string> {
 fn faults_said(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: int,
+    at: ItemId,
     words: fn(UseFault) -> List<string>,
 ) -> List<Found> {
     [Found { at: f.at, args: [f.path.join(".")].concat(w), unread: f.unread } for f in use_faults(engine, file, at) for w in [words(f.fault)] if !w.is_empty()]
 }
 
-fn unpackaged_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn unpackaged_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(engine, file, at, (f: UseFault) -> match f { .Unpackaged -> ["-"], rest -> [] })
 }
 
-fn packageless_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn packageless_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(engine, file, at, (f: UseFault) -> match f { .Packageless -> ["-"], rest -> [] })
 }
 
-fn undeclared_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn undeclared_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [found with { local: [2] } for found in faults_said(
         engine,
         file,
@@ -308,19 +300,19 @@ fn undeclared_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
     )]
 }
 
-fn twofold_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn twofold_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(engine, file, at, (f: UseFault) -> match f { .Twofold -> ["-"], rest -> [] })
 }
 
-fn moduleless_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn moduleless_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(engine, file, at, (f: UseFault) -> match f { .Moduleless -> ["-"], rest -> [] })
 }
 
-fn listed_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn listed_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(engine, file, at, (f: UseFault) -> match f { .Listed(item) -> [item], rest -> [] })
 }
 
-fn unexported_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn unexported_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(
         engine,
         file,
@@ -332,7 +324,7 @@ fn unexported_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
     )
 }
 
-fn clashing_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn clashing_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(
         engine,
         file,
@@ -341,7 +333,7 @@ fn clashing_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     )
 }
 
-fn apart_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+fn apart_uses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     faults_said(
         engine,
         file,

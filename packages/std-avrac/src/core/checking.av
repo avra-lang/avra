@@ -138,9 +138,10 @@ export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List
 /// holds the cell its value lives in, whether that cell is the place its writer names — a
 /// component's `state` seat or member — where a record's is its own, and whether its default reads
 /// the instance (`self`), so it is made once the inputs it reads stand. A record's signature saves its
-/// fields as these, and typing reads them as saved.
+/// fields as these, and typing reads them as saved. `over` is the place a member marked `@over(x)`
+/// is shown over: `x`, absent for a member not so marked.
 @derive(Saved)
-export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false }
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false, over: string? = null }
 
 impl FieldSeat {
     /// What the field's slot holds: its type, or the cell its value lives in for a `state` field;
@@ -479,6 +480,9 @@ export enum Unhanded {
     Unshared
     /// A place rooted in a binding one call hands a `mut` seat twice.
     Twice
+    /// A component's member marked `@over(x)` handed beside a place for `x`: what it shows stands over
+    /// a place the caller already holds.
+    Overshown
 }
 
 /// Why `==` or `!=` refuses an operand.
@@ -758,9 +762,9 @@ export enum Seating {
     Folded(fault: FoldFault)
     /// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
     Pinned(callee: string, want: int, found: int)
-    /// A literal of `record` writing the leading type arguments `args`, which leaves its parameter
-    /// `param` filled by nothing; `fields` are the unwritten fields whose type names it.
-    LiteralUnpinned(record: string, param: string, args: List<string>, fields: List<string>)
+    /// A literal of `record` that leaves its parameter `param` filled by nothing: `shown` spells the
+    /// type arguments that would pin it, `fields` are the unwritten fields whose type names it.
+    LiteralUnpinned(record: string, param: string, shown: List<string>, fields: List<string>)
     /// A bare `null` handed seat `at` of `callee`, which names a type parameter nothing fills.
     NullPin(callee: string, at: int)
     /// A comprehension's range bound, the high one where `high`, that is no `int`.
@@ -4189,6 +4193,7 @@ impl Checking {
         expected: Expected,
         seat_of: fn(int) -> Seating,
         declares: ParamsDeclared = ParamsDeclared {},
+        pins: List<SignedType> = [],
     ) -> SignedType? {
         mut pinned: Map<string, SignedType> = {}
         if self.spreads_records(method, args) {
@@ -4198,6 +4203,7 @@ impl Checking {
         let fill? = self.filling(method, args, 1) else { return self.miscounted(method, args, 1, seat_of(0), false) }
         let seats? = self.seats_filled(fill.f, args.length + 1) else { return self.miscounted(method, args, 1, seat_of(0), false) }
         if !method.seats[0].ty.unifies(subject, pinned) { return self.unfilled(args) }
+        for j, p in pins { pinned.set("${subject.args.length + j}", p) }
         let filled = self
             .fills(
                 [s.ty for s in seats.drop(1)],

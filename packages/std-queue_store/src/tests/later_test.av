@@ -59,6 +59,19 @@ fn past_the_range() -> Result<bool, HomeError> {
     sent != null && early == null && q.depth()? == 1 && q.take()? == null
 }
 
+fn at_the_last_instant() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(9223372036854775807)
+    let q = fresh(at)?
+    let _ = q.send(1, key("a"))?
+    let _ = q.send(2, key("b"))?
+    let both = q.taken(2)?
+    if both.length != 2 { return false }
+    let held = q.reserved(both[0])? && q.began(both[0])?
+    let again = q.release(both[0], hours(1))?
+    let back? = q.take()? else { return false }
+    held && again && back.item == 1 && q.ack(back)? && q.ack(both[1])? && q.depth()? == 0
+}
+
 fn named_twice() -> Result<bool, HomeError> {
     let at: Cell<int> = Cell.new(start)
     let q = fresh(at)?
@@ -110,6 +123,9 @@ spec "std/queue_store — a delayed send" {
         }
         then "a delay past the range of instants is held to the last instant, owed and never a trap" {
             past_the_range() catch false
+        }
+        then "at the last instant a take, a renewed hold and a release hold to it, and the item is handed again" {
+            at_the_last_instant() catch false
         }
     }
     given "a name" {

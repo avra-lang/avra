@@ -19,7 +19,7 @@ extern fn avra_utf8_bad_at(b: Bytes) -> int
 export type LawEntry = {
     name: string,
     kind: string,
-    reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found>,
+    reads: fn(QueryEngine, SourceFileAddress, ItemId) -> List<Found>,
     reads_view: fn(ItemView) -> List<Found>,
     on: List<NodeKind>,
     judge: fn(ItemView, At) -> List<Found>,
@@ -58,7 +58,7 @@ export type LawFinding = {
     local: List<int> = [],
     /// The item of the file its places are counted from the start of, where it stands in another
     /// than the one it was found in.
-    item: int? = null,
+    item: ItemId? = null,
     /// The parse refusal the finding's name may stand behind, said in place of its remedy.
     unread: UnreadKept? = null,
 }
@@ -66,11 +66,11 @@ export type LawFinding = {
 /// An edit a finding offers, where it writes: in the finding's item, or the item `item`; sure, likely,
 /// or a `guess`.
 @derive(Saved)
-export type FixAt = { description: string, at: FindingAt?, replacement: string, sure: bool = false, item: int? = null, guess: bool = false }
+export type FixAt = { description: string, at: FindingAt?, replacement: string, sure: bool = false, item: ItemId? = null, guess: bool = false }
 
 /// A sentence said beside a finding, where it names: in the finding's item, or the item `item`.
 @derive(Saved)
-export type AsideAt = { label: string, at: FindingAt?, item: int? = null }
+export type AsideAt = { label: string, at: FindingAt?, item: ItemId? = null }
 
 /// A parse refusal a finding's name may stand behind: what holds its file, the name, the file as a
 /// path from the finding's, where it stands counted from that file's start, and its words.
@@ -85,7 +85,7 @@ export type ItemFindings = { findings: List<LawFinding> }
 /// stands, then law by law; one with no place last. A law that judges kinds of node is handed each
 /// node of them the item's one view holds; one that judges none reads the item whole.
 @query
-export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFindings {
+export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFindings {
     let view = if item_held(engine, file, at) { item_view(engine, file, at) } else { null }
     pinned_while(
         view,
@@ -119,7 +119,7 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) ->
 /// What the law `l` finds in the item `at` of `file`: where it judges kinds of node, at each node of
 /// them `view` holds where it judges the item, and none where the file holds no item `at`; else in
 /// the item read whole.
-fn law_found(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemView?, l: LawEntry) -> List<
+fn law_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId, view: ItemView?, l: LawEntry) -> List<
     Found,
 > {
     if l.on.is_empty() { return read_whole(engine, file, at, view, l) }
@@ -130,9 +130,13 @@ fn law_found(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemVi
 
 /// What the law `l`, which judges no kind of node, finds in the item `at` of `file` read whole: from
 /// the file, and through `view` where the file holds the item.
-fn read_whole(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemView?, l: LawEntry) -> List<
-    Found,
-> {
+fn read_whole(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    view: ItemView?,
+    l: LawEntry,
+) -> List<Found> {
     let read = (l.reads)(engine, file, at)
     let v? = view else { return read }
     let seen = (l.reads_view)(v)
@@ -158,7 +162,7 @@ export fn file_erring(engine: QueryEngine, file: SourceFileAddress) -> FileErrin
     let absent = if standing_of(engine, file) is .Text { 0 } else { 1 }
     FileErring {
         errors: absent +
-            [f for at in 0..item_count(engine, file) for f in law_findings(engine, file, at).findings if fails_build(f)]
+            [f for at in item_ids(engine, file) for f in law_findings(engine, file, at).findings if fails_build(f)]
                 .length,
     }
 }
@@ -175,10 +179,11 @@ export enum SourceStanding {
     Dangling
 }
 
-/// What the source `file` holds, asked of its text only where it holds no item: a file that holds
-/// one holds text, and its text, which every edit moves, is read by nothing that asks this.
+/// What the source `file` holds, asked of its octets only where it holds no text: whether it holds
+/// text is a part of its items that no edit of its text moves, so its text, which every edit moves,
+/// is read by nothing that asks this.
 export fn standing_of(engine: QueryEngine, file: SourceFileAddress) -> SourceStanding {
-    if item_count(engine, file) > 0 { return SourceStanding.Text }
+    if file_present(engine, file) { return SourceStanding.Text }
     source_standing(engine, file)
 }
 
@@ -200,24 +205,33 @@ fn fails_build(f: LawFinding) -> bool { !(held_laws().find(it.name == f.by)?.war
 /// The files the build of the program whose entry is `entry`, in `package`, reads that a law's
 /// finding refuses — what the entry reaches, never a file of its package nothing it reaches
 /// imports: a build judges its reach, as `check` and `test` judge the package — in the order the
-/// package's files are read, or, where a manifest it stands on refuses it, those manifests alone.
-export fn entry_erring(engine: QueryEngine, entry: SourceFileAddress, package: string) -> List<
-    SourceFileAddress,
-> {
+/// package's files are read, or, where a manifest it stands on refuses it, those manifests alone. A
+/// file `vouched` names (`spelled_file`) stands on the verdict that vouches for it, and no law is asked
+/// of it.
+export fn entry_erring(
+    engine: QueryEngine,
+    entry: SourceFileAddress,
+    package: string,
+    vouched: List<string>,
+) -> List<SourceFileAddress> {
     let manifests = manifests_refused(engine, package)
     if !manifests.is_empty() { return manifests }
     mut reached: Map<string, bool> = {}
     for f in entry_files(engine, entry) { reached.set(spelled_file(f), true) }
-    [f for f in program_files(engine, package) if reached.has(spelled_file(f)) && file_erring(engine, f).errors > 0]
+    [f for f in program_files(engine, package) if reached.has(spelled_file(f)) &&
+        !vouched.contains(spelled_file(f)) &&
+        file_erring(engine, f).errors > 0]
 }
 
 /// The files the program rooted at `package` reads that a law's finding refuses, in any item,
 /// reached or not — or, where a manifest it stands on refuses it, those manifests alone, since no
-/// file of a program its manifests refuse is read.
-export fn program_erring(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
+/// file of a program its manifests refuse is read. A file `vouched` names is asked no law.
+export fn program_erring(engine: QueryEngine, package: string, vouched: List<string> = []) -> List<
+    SourceFileAddress,
+> {
     let manifests = manifests_refused(engine, package)
     if !manifests.is_empty() { return manifests }
-    [f for f in program_files(engine, package) if file_erring(engine, f).errors > 0]
+    [f for f in program_files(engine, package) if !vouched.contains(spelled_file(f)) && file_erring(engine, f).errors > 0]
 }
 
 /// What the laws that warn find in one file's written items, each site once, in the order the file
@@ -228,7 +242,7 @@ export type FileWarned = { file: SourceFileAddress, findings: List<LawFinding> }
 /// What every law that warns finds in the written items of `file`, each site of one kind once.
 @query
 export fn file_warned(engine: QueryEngine, file: SourceFileAddress) -> FileWarned {
-    let found = [f for at in 0..item_count(engine, file) for f in findings_in_file(engine, file, at) if !fails_build(f)]
+    let found = [f for at in item_ids(engine, file) for f in findings_in_file(engine, file, at) if !fails_build(f)]
     FileWarned {
         file: file,
         findings: [f for i, f in found if !found.take(i).any((g) -> same_site(g, f))],
@@ -241,13 +255,12 @@ fn same_site(a: LawFinding, b: LawFinding) -> bool { kind_of(a) == kind_of(b) &&
 /// The kind a finding's law speaks under.
 fn kind_of(f: LawFinding) -> string { held_laws().find(it.name == f.by)?.kind ?? f.by }
 
-/// THE WARNINGS A BUILD OF THE PROGRAM ROOTED AT `package` SAYS: each file it reads that a law
-/// warns of, with what it finds there. Kept as one answer, so a build nothing moved reads no file's
-/// findings.
+/// THE WARNINGS A BUILD OF THE PROGRAM ROOTED AT `package` SAYS: each of the package's own files a
+/// law warns of, with what it finds there; a dependency's warnings are its own check's. Kept as one
+/// answer, so a build nothing moved reads no file's findings.
 @query
 export fn program_warned(engine: QueryEngine, package: string) -> List<FileWarned> {
-    [w for f in program_files(engine, package) for w in [file_warned(engine, f)] if !w.findings.is_empty()]
-
+    [w for f in program_files(engine, package) if f.package_name == package for w in [file_warned(engine, f)] if !w.findings.is_empty()]
 }
 
 /// An aside as a finding keeps it.
@@ -257,7 +270,7 @@ fn kept_aside(a: Aside?) -> AsideAt? {
 }
 
 /// What every law finds in the item `at` of `file`, each place counted from the file's start.
-export fn findings_in_file(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
+export fn findings_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
     LawFinding,
 > {
     [finding_in_file(engine, file, at, f) for f in law_findings(engine, file, at).findings]
@@ -265,7 +278,7 @@ export fn findings_in_file(engine: QueryEngine, file: SourceFileAddress, at: int
 
 /// A finding the item `at` of `file` holds, each place counted from the file's start: from its own
 /// item's where it stands in another.
-fn finding_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: LawFinding) -> LawFinding {
+fn finding_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId, f: LawFinding) -> LawFinding {
     let home = f.item ?? at
     let placed = (p: FindingAt?) -> if p == null { null } else { file_placed(engine, file, home, p!) }
     f with { at: placed(f.at), named: placed(f.named), fixes: [fix_in_file(engine, file, home, x) for x in f.fixes], aside: aside_in_file(engine, file, at, f.aside), item: null }
@@ -273,14 +286,14 @@ fn finding_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: Law
 
 /// An edit a finding the item `home` of `file` offers, counted from the file's start: one in another
 /// item from that item's.
-fn fix_in_file(engine: QueryEngine, file: SourceFileAddress, home: int, x: FixAt) -> FixAt {
+fn fix_in_file(engine: QueryEngine, file: SourceFileAddress, home: ItemId, x: FixAt) -> FixAt {
     let place? = x.at else { return x }
     x with { at: file_placed(engine, file, x.item ?? home, place), item: null }
 }
 
 /// An aside of a finding the item `at` of `file` holds, counted from the file's start: one in another
 /// item from that item's.
-fn aside_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, aside: AsideAt?) -> AsideAt? {
+fn aside_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId, aside: AsideAt?) -> AsideAt? {
     let a? = aside else { return null }
     let place? = a.at else { return a }
     a with { at: file_placed(engine, file, a.item ?? at, place), item: null }
@@ -362,6 +375,6 @@ export fn law_fact_definitions() -> List<QueryDefinition> { definitions_of(liste
 /// Whether a law among `laws`, by name, finds anything in a written item of `file`: what its items'
 /// findings say, read once an item.
 export fn file_found_by(engine: QueryEngine, file: SourceFileAddress, laws: List<string>) -> bool {
-    (0..item_count(engine, file))
-        .any((at: int) -> law_findings(engine, file, at).findings.any((f) -> laws.contains(f.by)))
+    item_ids(engine, file)
+        .any((at: ItemId) -> law_findings(engine, file, at).findings.any((f) -> laws.contains(f.by)))
 }

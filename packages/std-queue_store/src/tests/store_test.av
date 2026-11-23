@@ -294,7 +294,7 @@ fn send_runs_five_programs() -> Result<bool, HomeError> {
     spent(q.db, 6, "") - ran == 500 && spent(q.db, 6, "BEGIN") - began == 100
 }
 
-fn take_and_ack_run_eight_programs() -> Result<bool, HomeError> {
+fn take_and_ack_run_nine_programs() -> Result<bool, HomeError> {
     let q = waiting(200, Order.fifo)?
     let warm? = q.take()? else { return false }
     let _ = q.ack(warm)?
@@ -303,7 +303,7 @@ fn take_and_ack_run_eight_programs() -> Result<bool, HomeError> {
         let d? = q.take()? else { return false }
         let _ = q.ack(d)?
     }
-    spent(q.db, 6, "") - ran == 800
+    spent(q.db, 6, "") - ran == 900
 }
 
 fn a_batch_is_one_transaction() -> Result<bool, HomeError> {
@@ -314,7 +314,7 @@ fn a_batch_is_one_transaction() -> Result<bool, HomeError> {
     let _ = q.send_all(parcels(100))?
     let held = q.taken(100)?
     let _ = q.ack_all(held)?
-    held.length == 100 && spent(q.db, 6, "") - ran == 906 && spent(q.db, 6, "BEGIN") - began == 3
+    held.length == 100 && spent(q.db, 6, "") - ran == 907 && spent(q.db, 6, "BEGIN") - began == 3
 }
 
 fn statements_are_compiled_once() -> Result<bool, HomeError> {
@@ -387,8 +387,11 @@ fn take_plan() -> Result<string, HomeError> {
 fn take_sorts_nothing() -> Result<bool, HomeError> {
     let plan = take_plan()?
     !plan.contains("TEMP B-TREE") &&
-        plan.contains("FlowItem_free") &&
-        plan.contains("FlowItem_leased") &&
+        plan.contains("USING INDEX FlowItem_index(queue) present(in_line) (queue=?)") &&
+        plan
+            .contains(
+                "USING INDEX FlowItem_index(queue,leased_until) present(leased_until) (queue=? AND leased_until<?)",
+            ) &&
         plan.contains("FlowItem_taken")
 }
 
@@ -779,10 +782,10 @@ spec "std/queue_store" {
         then "a send into a queue with room runs five programs: begin, the row and its two triggers, commit" {
             send_runs_five_programs() catch false
         }
-        then "a take and an ack run eight programs: five and three" {
-            take_and_ack_run_eight_programs() catch false
+        then "a take and an ack run nine programs: six and three" {
+            take_and_ack_run_nine_programs() catch false
         }
-        then "a hundred sent, taken and acked at once run 906 programs in three transactions" {
+        then "a hundred sent, taken and acked at once run 907 programs in three transactions" {
             a_batch_is_one_transaction() catch false
         }
         then "twenty rounds of every verb keep no new statement and compile none again" {
