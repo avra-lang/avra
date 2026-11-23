@@ -2,8 +2,8 @@
 // capture decoded once, and the one 422 every refused record earns.
 use @std.http.body.{Body, whole}
 use @std.http.frame.{framed, limits}
-use @std.http.http.{Request, Unrouted, Response}
-use @std.http.route.{compiled, dispatch, post}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{compiled, dispatch, get, post}
 use @std.http.typed.{captured, created, either, found, problem}
 use @std.json.{Json, field}
 use @std.meta.{derive}
@@ -99,10 +99,56 @@ fn ideas_posted(ct: string, body: string) -> string {
     said(dispatch(routes, posted(ct, body.bytes(), target: "/ideas")))
 }
 
+/// A route at `/ideas` taking its body and its query as records.
+fn handed(q: Request<Unrouted>) -> string {
+    let routes = compiled(
+        [
+            post "/ideas" { req ->
+                req
+                    .body_and_query_to((i: Idea, p: Page) -> created(shown(i), "/ideas?limit=${p.limit}"))
+            },
+        ],
+    )
+    said(dispatch(routes, q))
+}
+
+/// A route at `/boards/{board}` taking its body as a record.
+fn boarded(ct: string, body: string) -> string {
+    let routes = compiled(
+        [
+            post "/boards/{board: int}" { req -> req.body_to((i: Idea) -> text(200, "${req.params.board} ${i.title}")) },
+        ],
+    )
+    said(dispatch(routes, posted(ct, body.bytes(), target: "/boards/7")))
+}
+
+/// A route at `/pages/{limit}` taking its query as a record.
+fn paged(target: string) -> string {
+    let q? = asked_get(target) else { return "unframed" }
+    let routes = compiled(
+        [
+            get "/pages/{limit: int}" { req -> req.query_to((p: Page) -> text(200, "${req.params.limit} ${p.limit}")) },
+        ],
+    )
+    said(dispatch(routes, q))
+}
+
+/// A GET of `/boards/7` sending `body` as JSON.
+fn got_with(body: string) -> string {
+    let raw = "GET /boards/7 HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n"
+    let q? = framed_from(raw.bytes()) else { return "unframed" }
+    let routes = compiled(
+        [get "/boards/{board: int}" { req -> req.body_to((i: Idea) -> text(200, i.title)) }],
+    )
+    said(dispatch(routes, q with { body: whole(body.bytes()) }))
+}
+
+fn handed_json(target: string, body: string) -> string { handed(posted("application/json", body.bytes(), target: target)) }
+
 spec "std/http — typed reads and answers" {
     given "the empty cases, written first" {
         then "an empty body is not JSON" { idea(json_posted("")) == "400 the body is not JSON: unexpected the end of the text at byte 0" }
-        then "an empty object names every required field" { idea(json_posted("{}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"title\",\"rule\":\"required\",\"message\":\"is required\"}]}" }
+        then "an empty object names every required field" { idea(json_posted("{}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"body\",\"path\":\"title\",\"rule\":\"required\",\"message\":\"is required\"}]}" }
         then "no query takes every default" { page("/p") == "50 - [] false" }
         then "an empty query takes every default" { page("/p?") == "50 - [] false" }
         then "no query refuses a required field" { search("/p").contains("\"path\":\"q\",\"rule\":\"required\"") }
@@ -118,7 +164,7 @@ spec "std/http — typed reads and answers" {
         then "octets that are not UTF-8" { idea(posted("application/json", [123, 255, 125].bytes()!)) == "400 the body is not UTF-8" }
         then "malformed JSON is json's 400, never a 422" { idea(json_posted("{\"title\":")) == "400 the body is not JSON: unexpected the end of the text at byte 9" }
         then "every issue at once" {
-            idea(json_posted("{\"title\":\"\",\"votes\":12}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"path\":\"votes\",\"rule\":\"range\",\"message\":\"must be between 0 and 9\"}]}"
+            idea(json_posted("{\"title\":\"\",\"votes\":12}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"body\",\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"in\":\"body\",\"path\":\"votes\",\"rule\":\"range\",\"message\":\"must be between 0 and 9\"}]}"
         }
         then "a field it does not name is an issue" {
             idea(json_posted("{\"title\":\"go\",\"tilte\":1}"))
@@ -215,5 +261,44 @@ spec "std/http — typed reads and answers" {
     given "a route answering either side" {
         then "the ok side" { ideas_posted("application/json", "{\"title\":\"go\"}") == "201 {\"title\":\"go\"}" }
         then "the refusing side" { ideas_posted("text/plain", "{}") == "415 the body must be `application/json`" }
+    }
+    given "a route handed its records" {
+        then "a body and a query that read" {
+            handed_json("/ideas?limit=3", "{\"title\":\"go\"}") == "201 {\"title\":\"go\"}"
+        }
+        then "the handler answers a Response bare" { boarded("application/json", "{\"title\":\"go\"}") == "200 7 go" }
+        then "a capture and a query field of one name stay apart" { paged("/pages/4?limit=9") == "200 4 9" }
+        then "no query takes every default" { paged("/pages/4") == "200 4 50" }
+        then "a body and a query both refused is ONE 422, every issue at its part" {
+            handed_json("/ideas?limit=x", "{\"title\":\"\"}") == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"body\",\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"in\":\"query\",\"path\":\"limit\",\"rule\":\"type\",\"message\":\"must be an integer, not text\"}]}"
+        }
+        then "a field of one name in both is told apart by its part" {
+            let said = handed_json("/ideas?votes=1&limit=x", "{\"title\":\"go\",\"limit\":2}")
+            said.contains("{\"in\":\"body\",\"path\":\"limit\",\"rule\":\"unknown\"") &&
+                said.contains("{\"in\":\"query\",\"path\":\"limit\"")
+        }
+        then "a body refused alone" {
+            handed_json("/ideas", "{}") == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"body\",\"path\":\"title\",\"rule\":\"required\",\"message\":\"is required\"}]}"
+        }
+        then "a query refused alone" {
+            handed_json("/ideas?limit=x", "{\"title\":\"go\"}")
+                .starts_with(
+                    "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"query\",\"path\":\"limit\"",
+                )
+        }
+        then "a body's framing outranks the query's issues" {
+            handed(posted("text/plain", "{}".bytes(), target: "/ideas?limit=x")) == "415 the body must be `application/json`"
+        }
+        then "a query's framing is answered before the body is read" {
+            let big = "{\"title\":\"" + ["x" for _i in 0..1048576].join("") + "\"}"
+            handed_json("/ideas?limit=%G1", big) == "400 the query's `limit` is not percent-encoded text"
+        }
+        then "a body past the bound is the body's 413" {
+            let big = "{\"title\":\"" + ["x" for _i in 0..1048576].join("") + "\"}"
+            handed_json("/ideas", big) == "413 the body is larger than this server takes"
+        }
+        then "malformed JSON is json's 400" { boarded("application/json", "{\"title\":") == "400 the body is not JSON: unexpected the end of the text at byte 9" }
+        then "a GET declaring a body reads the body it was sent" { got_with("{\"title\":\"go\"}") == "200 go" }
+        then "a GET declaring a body and sent none is json's 400" { got_with("") == "400 the body is not JSON: unexpected the end of the text at byte 0" }
     }
 }

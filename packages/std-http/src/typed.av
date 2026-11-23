@@ -1,20 +1,25 @@
-//! TYPED READS AND ANSWERS — a handler reads its body and its query as
+//! TYPED READS AND ANSWERS — a handler takes its body and its query as
 //! the records it declares, a capture as the text it encodes, and answers
 //! through one verb per outcome:
 //!
-//!     post "/ideas" { req -> either(added(req.body_as())) }
-//!
-//!     fn added(asked: Result<Idea, Response>) -> Result<Response, Response> {
-//!         let idea = asked?
-//!         let at = ideas.add(idea)?
-//!         created(idea.json(), "/ideas/${at}")
+//!     post "/boards/{board: int}/ideas" {
+//!         req -> req.body_and_query_to((idea: Idea, q: Filter) -> either(added(req.params.board, idea, q)))
 //!     }
 //!
-//! `?` hands any refusal straight back, and `either` makes whichever side
-//! came back the reply.
+//!     fn added(board: int, idea: Idea, q: Filter) -> Result<Response, Response> {
+//!         let at = ideas.add(board, idea, q.notify)?
+//!         created(idea.json(), "/boards/${board}/ideas/${at}")
+//!     }
+//!
+//! The fn's parameters declare the records; each is decoded before it
+//! runs, and a refusal answers in its place. `body_to` and `query_to`
+//! take one of the two; `body_as` and `query_as` answer the `Result` for
+//! a handler that reads its parts itself. `?` hands any refusal straight
+//! back, and `either` makes whichever side came back the reply.
 //!
 //! A RECORD THAT DOES NOT VALIDATE IS ONE 422, `application/problem+json`
-//! (RFC 9457), listing EVERY issue at its path — `problem`, the one
+//! (RFC 9457), listing EVERY issue at its path and, read from a request,
+//! the part (`"in": "body"` or `"query"`) it was found in — `problem`, the one
 //! encoder every door that judges a record answers with. A body that is
 //! not JSON, or not said to be, keeps `json()`'s 400 and 415: those are
 //! the request's framing, not the record's.
@@ -34,7 +39,7 @@ use @std.json.{Json, field, to_text}
 use @std.text.{has_nul}
 use @std.url.{decoded}
 use @std.validate.{Coercion, Decode, Issue, Issues, Keyed, from_keyed}
-use http.{Request, Response, status, text, body_json}
+use http.{Request, Respond, Response, status, text, body_json}
 use query.{Pair, Query}
 
 impl Request {
@@ -42,26 +47,114 @@ impl Request {
     /// and 400, a 400 for text that is not JSON, and a 422 naming every
     /// issue for JSON that is not a `T`.
     fn body_as<T: Decode>() -> Result<T, Response> {
-        let doc = self.json_text()?
-        match T.from_json(doc) {
-            .Ok(v) -> v,
-            .Err(issues) -> {
-                let _ = body_json(doc)?
-                fail problem(issues)
-            },
-        }
+        let read: Reading<T> = self.body_read()
+        answered(read)
     }
 
     /// THE QUERY AS A `Q`, or the response refusing it: a 400 for a name
     /// or value that decodes to no text, a 422 naming every issue for
     /// fields that are not a `Q`.
     fn query_as<Q: Decode>() -> Result<Q, Response> {
-        let fields = keyed(self.query())?
-        match Q.decode(from_keyed(fields), Coercion.Lax) {
-            .Ok(q) -> q,
-            .Err(issues) -> { fail problem(issues) },
+        let read: Reading<Q> = self.query_read()
+        answered(read)
+    }
+
+    /// THE BODY HANDED TO `f` AS THE `B` IT DECLARES, or `body_as`'s
+    /// refusal, `f` never run.
+    fn body_to<B: Decode, A: Respond>(f: fn(B) -> A) -> Response {
+        let read: Reading<B> = self.body_read()
+        match read {
+            .Read(body) -> f(body).response(),
+            .Framed(r) -> r,
+            .Unfit(found) -> problem_found([found]),
         }
     }
+
+    /// THE QUERY HANDED TO `f` AS THE `Q` IT DECLARES, or `query_as`'s
+    /// refusal, `f` never run.
+    fn query_to<Q: Decode, A: Respond>(f: fn(Q) -> A) -> Response {
+        let read: Reading<Q> = self.query_read()
+        match read {
+            .Read(query) -> f(query).response(),
+            .Framed(r) -> r,
+            .Unfit(found) -> problem_found([found]),
+        }
+    }
+
+    /// THE BODY AND THE QUERY HANDED TO `f` AS THE RECORDS IT DECLARES,
+    /// or one refusal, `f` never run: the query's 400 before the body is
+    /// gathered, then the body's 415 or 400, then ONE 422 naming every
+    /// issue of both, each at its part.
+    fn body_and_query_to<B: Decode, Q: Decode, A: Respond>(f: fn(B, Q) -> A) -> Response {
+        let q: Reading<Q> = self.query_read()
+        match q { .Framed(r) -> r, .Read(_) or .Unfit(_) -> self.beside_query(q, f) }
+    }
+
+    /// The body read beside a query already read, handed to `f` with it.
+    fn beside_query<B: Decode, Q: Decode, A: Respond>(q: Reading<Q>, f: fn(B, Q) -> A) -> Response {
+        let b: Reading<B> = self.body_read()
+        match b {
+            .Read(body) -> match q {
+                .Read(query) -> f(body, query).response(),
+                .Framed(r) -> r,
+                .Unfit(found) -> problem_found([found]),
+            },
+            .Framed(r) -> r,
+            .Unfit(found) -> problem_found([found].concat(unfit(q))),
+        }
+    }
+
+    /// The body read as a `T`.
+    fn body_read<T: Decode>() -> Reading<T> {
+        let doc = match self.json_text() { .Ok(d) -> d, .Err(r) -> { return .Framed(r) } }
+        match T.from_json(doc) {
+            .Ok(v) -> .Read(v),
+            .Err(issues) -> match body_json(doc) {
+                .Ok(_) -> .Unfit(Found { origin: .Body, issues: issues }),
+                .Err(r) -> .Framed(r),
+            },
+        }
+    }
+
+    /// The query read as a `Q`.
+    fn query_read<Q: Decode>() -> Reading<Q> {
+        let fields = match keyed(self.query()) { .Ok(f) -> f, .Err(r) -> { return .Framed(r) } }
+        match Q.decode(from_keyed(fields), Coercion.Lax) {
+            .Ok(v) -> .Read(v),
+            .Err(issues) -> .Unfit(Found { origin: .Query, issues: issues }),
+        }
+    }
+}
+
+/// Where in a request a record was read from.
+enum Origin {
+    Body
+    Query
+}
+
+/// The issues a record read from one part of a request has.
+type Found = { origin: Origin, issues: Issues }
+
+/// One part of a request read as a `T`: the record, the response
+/// refusing the part's framing, or the issues the record has.
+enum Reading<T> {
+    Read(value: T)
+    Framed(refusal: Response)
+    Unfit(found: Found)
+}
+
+/// A reading as its record, or the response refusing it.
+fn answered<T>(r: Reading<T>) -> Result<T, Response> {
+    match r {
+        .Read(v) -> v,
+        .Framed(refusal) -> { fail refusal },
+        .Unfit(found) -> { fail problem_found([found]) },
+    }
+}
+
+/// The issues a reading has, none when it read or was refused framed.
+fn unfit<T>(r: Reading<T>) -> List<Found> {
+    match r { .Unfit(found) -> [found], .Read(_) or .Framed(_) -> [] }
 }
 
 /// A capture as the text it encodes, decoded once, or the 400 refusing
@@ -94,7 +187,15 @@ export fn created(j: Json, at: string) -> Response {
 /// THE ONE REFUSAL OF A RECORD: 422, `application/problem+json`, every
 /// issue at its path, the rule that refused and its words. What an issue
 /// received is never echoed: a refusal can be read by whoever is shown it.
-export fn problem(issues: Issues) -> Response {
+export fn problem(issues: Issues) -> Response { problem_of([issue_json(i, null) for i in issues.all]) }
+
+/// The one refusal of records read from a request: every issue, each
+/// naming the part it was found in.
+fn problem_found(found: List<Found>) -> Response {
+    problem_of([issue_json(i, f.origin) for f in found for i in f.issues.all])
+}
+
+fn problem_of(issues: List<Json>) -> Response {
     Response {
         status: 422,
         headers: [Header { name: "content-type", value: "application/problem+json" }],
@@ -102,26 +203,40 @@ export fn problem(issues: Issues) -> Response {
     }
 }
 
-fn problem_json(issues: Issues) -> Json {
+fn problem_json(issues: List<Json>) -> Json {
     Json
         .Obj(
             [
                 field("title", Json.Str(unvalidated())),
                 field("status", Json.Int(422)),
-                field("issues", Json.Arr([issue_json(i) for i in issues.all])),
+                field("issues", Json.Arr(issues)),
             ],
         )
 }
 
-fn issue_json(i: Issue) -> Json {
+/// An issue as JSON, naming the part of the request it was found in when
+/// it was read from one.
+fn issue_json(i: Issue, origin: Origin?) -> Json {
+    let placed = match origin {
+        p? -> [field("in", Json.Str(origin_word(p)))]
+        null -> []
+    }
     Json
         .Obj(
-            [
-                field("path", Json.Str(i.path.text())),
-                field("rule", Json.Str(i.rule)),
-                field("message", Json.Str(i.message)),
-            ],
+            placed
+                .concat(
+                    [
+                        field("path", Json.Str(i.path.text())),
+                        field("rule", Json.Str(i.rule)),
+                        field("message", Json.Str(i.message)),
+                    ],
+                ),
         )
+}
+
+/// A part's name in a refusal.
+fn origin_word(o: Origin) -> string {
+    match o { .Body -> "body", .Query -> "query" }
 }
 
 // ── The query, decoded ──────────────────────────────────────────

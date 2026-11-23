@@ -34,7 +34,7 @@ export fn queue_admin(db: Db, allowed: fn(Request<Unrouted>) -> bool, clock: fn(
         found: [guarded(r, allowed) for r in [
             get "/" { _req -> either(listed(db, clock)) },
             get "/{queue}" { req -> either(one(db, req.params.queue, clock)) },
-            get "/{queue}/items" { req -> either(page(db, req.params.queue, req.query_as(), clock)) },
+            get "/{queue}/items" { req -> req.query_to((p: Paging) -> either(page(db, req.params.queue, p, clock))) },
             post "/{queue}/items/{id}/retry" { req -> either(acted_on(db, req.params.queue, req.params.id, retry, clock)) },
             delete "/{queue}/items/{id}" { req -> either(acted_on(db, req.params.queue, req.params.id, discard, clock)) },
         ]],
@@ -62,12 +62,8 @@ fn one(db: Db, raw: string, clock: fn() -> Time) -> Result<Response, Response> {
     found(served(queue_named(db, name, clock))?, standing_json, missing: text(404, no_queue(name)))
 }
 
-fn page(db: Db, raw: string, asked: Result<Paging, Response>, clock: fn() -> Time) -> Result<
-    Response,
-    Response,
-> {
+fn page(db: Db, raw: string, p: Paging, clock: fn() -> Time) -> Result<Response, Response> {
     let name = captured(raw)?
-    let p = asked?
     let items = served(peek(db, name, limit: p.limit, after: p.after, clock: clock))?
     Response.json(Json.Arr([peeked_json(i) for i in items]))
 }
