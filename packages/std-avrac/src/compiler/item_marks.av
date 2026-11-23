@@ -17,7 +17,10 @@ use core.{
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use @std.program.address.{SourceFileAddress}
-use @std.program.query_engine.{QueryEngine}
+use @std.meta.{derive}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 
 /// Every mark the written item `view` shows writes that no reader claims, with the one that
 /// leaves it unread (none for the declaration itself) and the marks read: a field's or a variant's
@@ -85,6 +88,7 @@ fn marks_alone(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena,
     let worn = store.annotations_of(s)
     if worn.is_empty() || !worn.all(marks(engine, file, it.name)) { return [] }
     if gathered_by_any(engine, file, [a.name for a in worn]) { return [] }
+    if worn.any((a) -> gathered_by_mark(engine, file, a.name)) { return [] }
     worn
 }
 
@@ -114,6 +118,49 @@ fn gathered_by_any(engine: QueryEngine, file: SourceFileAddress, words: List<str
                 .any((s) -> gathers_by_word(read_item(engine, file, k).store, s, words)),
         )
 }
+
+/// Whether a gathering gathers by the mark `name` as `file` reads it: one written in any source of
+/// `file`'s package, or of the package that declares the mark, whose annotation names that same
+/// declaration. A `collect … in closure` a dependency writes claims the marks a program's own
+/// declarations wear.
+fn gathered_by_mark(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let mark? = resolved(engine, file, Space.Value, name).named() else { return false }
+    let key = mark_key(mark.file, mark.name)
+    distinct([file.package_name, mark.file.package_name])
+        .any((p) -> package_gathered_marks(engine, p).marks.contains(key))
+}
+
+/// The marks the gatherings of `package`'s sources gather by, each as `mark_key` names its
+/// declaration: asked once a package, whatever reads it.
+@query
+fn package_gathered_marks(engine: QueryEngine, package: string) -> GatheredMarks {
+    GatheredMarks {
+        marks: distinct(
+            [k for path in package_source_paths(engine, package).paths for k in file_gathered_marks(engine, source_at(package, path))],
+        ),
+    }
+}
+
+/// The marks one package's gatherings gather by.
+@derive(Saved)
+type GatheredMarks = { marks: List<string> }
+
+/// The marks the gatherings the source `f` writes gather by, each as `mark_key` names the declaration
+/// its annotation resolves to where it is written.
+fn file_gathered_marks(engine: QueryEngine, f: SourceFileAddress) -> List<string> {
+    [k! for at in item_ids(engine, f) for item in [read_item(engine, f, at)] for s in item.stmts for k in [gathering_mark(engine, f, item.store, s)] if k != null]
+}
+
+/// The mark the statement `s` of `f` gathers by, as `mark_key` names it; absent for any other.
+fn gathering_mark(engine: QueryEngine, f: SourceFileAddress, store: SyntaxArena, s: StmtId) -> string? {
+    let kind? = store.collect_enum_parts(s)?.kind ?? store.collect_parts(s)?.kind else { return null }
+    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
+    let d? = resolved(engine, f, Space.Value, word).named() else { return null }
+    mark_key(d.file, d.name)
+}
+
+/// A mark declaration's key: its file and its name.
+fn mark_key(file: SourceFileAddress, name: string) -> string { "${spelled_file(file)}#${name}" }
 
 /// Whether the statement `s` is a gathering by one of the annotations `words`.
 fn gathers_by_word(store: SyntaxArena, s: StmtId, words: List<string>) -> bool {
@@ -174,3 +221,8 @@ export law mark_has_a_reader {
 }
 
 fn unread_words(a: List<string>) -> Voice { unread_mark_said(a[0], a.drop(2), if a[1].is_empty() { null } else { a[1] }) }
+
+collect listed_mark_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the mark laws read through, for a process to hand its engine.
+export fn mark_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_mark_facts) }

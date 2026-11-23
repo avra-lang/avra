@@ -726,6 +726,8 @@ export enum Seating {
     ArmApart(of: Meeting)
     /// The second branch of an `if` no seat judges, answering another type than the first.
     BranchesApart
+    /// An arm of a `when` no seat judges whose answer the `_` arm's doesn't join.
+    WhenApart
     /// A value a record literal or a `with` writes for the field `name` a second time.
     FieldRepeated(name: string)
     /// A `?` with no caller to pass to — a failure where `failing`, else absence: inside a lambda
@@ -747,6 +749,9 @@ export enum Seating {
     CaughtArm
     /// The value a binding names, which answers nothing.
     Voided
+    /// A `within`: its block, which answers nothing, or — `untimed` — the `within` itself, in a
+    /// program that loads no `@std/time`, whose `Duration` and `TimedOut` it answers through.
+    Within(untimed: bool)
     /// A read of the property `name` on a value that may be absent.
     Guarantee(name: string)
     /// The subject of a `for`, which walks nothing as `fault` says.
@@ -1544,6 +1549,30 @@ impl Checking {
         if self.refused.get().length == rest.length { self.refused.set(all) }
     }
 
+    /// The arms `values` of a `when` under a seat that wants nothing, of these types, `total` among them
+    /// the `_` arm: each arm whose answer the `_` arm's can't join, refused against it. The `_` arm
+    /// anchors, since it always runs when nothing else does. Absent where the `_` arm isn't known.
+    mut fn when_arms_apart(values: List<ExprId>, types: List<SignedType?>, total: int) {
+        if self.meanings || total < 0 || total >= types.length { return }
+        let anchor? = settled_arm(types[total]) else { return }
+        for at, ty in types {
+            if at == total { continue }
+            let t? = settled_arm(ty) else { continue }
+            if types_joined([anchor, t]) == null {
+                self
+                    .refused
+                    .push(
+                        Refused {
+                            at: self.answering(values[at]),
+                            want: anchor,
+                            found: t,
+                            seat: Seating.WhenApart,
+                        },
+                    )
+            }
+        }
+    }
+
     /// Each arm among `arms`, of these types, that the first known arm's answer joined with each in
     /// turn can't join, refused as an arm. An arm that leaves, one typing doesn't know whole and one
     /// of a type the language doesn't own are left alone, as is every arm where the anchor is absent
@@ -2315,12 +2344,13 @@ impl Checking {
     /// that test it, column by column over its payloads, take every value, else refused once; a
     /// variant pattern over a value of no enum is refused at the subject; over any other value, the
     /// arms take every value by a catch-all, or a list by its lengths, else the match is refused, as
-    /// a `let` whose pattern can refuse where the `let` wrote it. A match is judged as it's written,
+    /// a `let` whose pattern can refuse where the `let` wrote it; a `dyn` among them, which its type
+    /// tests leave open, since any type may implement its trait. A match is judged as it's written,
     /// never as the core a sugar means.
     mut fn arms_cover(e: ExprId, on: ExprId, subject: SignedType?, arms: List<Arm>) {
         if self.meanings || self.store.is_sugar_match(e) { return }
         let s? = subject else { return }
-        if s.generic() || s.inferred() || s.dynamic || s.head is .Unnamed { return }
+        if s.generic() || s.inferred() || s.head is .Unnamed { return }
         let rows = [read_row([p]) for a in arms if a.guard == null for p in a.pats]
         let shape? = self.enum_of(s) else { return self.unenumerated_cover(e, on, s, arms, rows) }
         self.arms_once(arms)
@@ -2473,7 +2503,7 @@ impl Checking {
             .Member(name, _) -> self.member_misshapen(name.of, s, top),
             .Fields(name, fields, rests) -> self.record_misshapen(p, name.of, [f.name.of for f in fields], rests, s),
             .Seq(_, middles, _) -> self.list_misshapen(middles, seen, s),
-            .Typed(_, _) -> self.narrow_misshapen(s),
+            .Typed(_, ty) -> self.narrow_misshapen(s, ty),
             rest -> null,
         }
     }
@@ -2530,11 +2560,36 @@ impl Checking {
 
     /// What refuses a type pattern over a value of `s`, absent for a `dyn` value, read through a name:
     /// one that may be absent where it holds a `dyn`, any other value plain.
-    fn narrow_misshapen(s: SignedType) -> Seating? {
+    fn narrow_misshapen(s: SignedType, ty: TypeRef) -> Seating? {
         let held = self.seen(s with { nulls: 0 }) ?? s
-        if !s.nullable() && held.dynamic { return null }
+        if !s.nullable() && held.dynamic { return self.narrow_target(held, ty) }
         Seating
             .Misshapen(if s.nullable() && held.dynamic { "absent" } else { "typed" }, "", s.spelled())
+    }
+
+    /// What refuses the type `ty` a type pattern names over a value of the `dyn` `holder`, as the old
+    /// path's narrow law says it: a box names no box, absence, type parameter or built-in generic, and
+    /// what it names implements the trait. Absent where it fits, and where the name names no type,
+    /// which the type-naming law refuses.
+    fn narrow_target(holder: SignedType, ty: TypeRef) -> Seating? {
+        let to = self.written(ty)
+        if to.unknown() || to.inferred() { return null }
+        let trait_name = (holder with { dynamic: false }).spelled()
+        if to.dynamic { return Seating.Misshapen("narrow.dyn", trait_name, to.spelled()) }
+        if to.nullable() {
+            return Seating
+                .Misshapen("narrow.absent", (to with { nulls: 0 }).spelled(), to.spelled())
+        }
+        if to.head is .Parameter { return Seating.Misshapen("narrow.param", "", to.spelled()) }
+        if [OwnType.List, OwnType.Map, OwnType.Cell, OwnType.Task, OwnType.Result]
+            .any((o) -> to.owns(o)) {
+            return Seating.Misshapen("narrow.builtin", "", to.spelled())
+        }
+        if (self.program.implements)(to, holder with { dynamic: false }) == false {
+            return Seating
+                .Misshapen("narrow.impl", trait_name, "${to.spelled()}\n${holder.spelled()}")
+        }
+        null
     }
 
     /// The patterns the pattern `p` holds, each beside the type of what it matches over a value of
@@ -3174,6 +3229,16 @@ impl Checking {
         self
             .refused
             .push(Refused { at: handler, want: none, found: none, seat: Seating.Fateless(word) })
+    }
+
+    /// The `within` at `at` refused: its block answers nothing, or — `untimed` — the program loads no
+    /// `@std/time` for it to answer through.
+    mut fn within_refused(at: ExprId, untimed: bool) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        self
+            .refused
+            .push(Refused { at: at, want: none, found: none, seat: Seating.Within(untimed) })
     }
 
     /// The quote's hole, or the quote, at `at`, refused as `fault` says.

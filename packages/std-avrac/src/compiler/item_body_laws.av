@@ -21,6 +21,7 @@ use core.{
     flatten,
     jump_word,
     op_symbol,
+    rt_index,
     rt_waits,
     same_binder,
     some_list,
@@ -33,7 +34,7 @@ use features.closures.{capture_named, captured_label, lambda_answer_label}
 use features.lists.{list_element_untyped, list_element_void}
 use features.maps.{map_value_untyped}
 use features.select_expr.{guard_reads_binder}
-use compiler.{cleanup_unbounded, row_wait_said, spawn_wait_said}
+use compiler.{called_wait_said, cleanup_unbounded, row_wait_said, spawn_wait_said}
 use features.loops.{jump_behind_lambda, jump_in_comprehension, jump_unaimed, jump_unlooped}
 use features.nullable.{
     coalesce_answers,
@@ -247,7 +248,9 @@ fn breaches_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> It
         rows: written_breaches(store)
             .concat([b for e in typed for b in some_list(typed_breach(engine, store, typing, e))])
             .concat([b for d in deferrals for b in defer_breaches(store, typing, deferrals, d)])
-            .concat([b for d in deferrals for b in some_list(cleanup_breach(store, typing, d))])
+            .concat(
+                [b for d in deferrals for b in some_list(cleanup_breach(engine, file, store, typing, d))],
+            )
             .concat([b for s in fails for b in some_list(fail_breach(store, typing, s))])
             .concat([b for s in writes for b in some_list(write_breach(store, typing, s))])
             .concat([b for s in owners for b in some_list(unowned_breach(engine, store, typing, s))])
@@ -806,8 +809,15 @@ fn defer_breaches(store: SyntaxArena, typing: ItemTyping, deferrals: List<Deferr
 /// What the deferred body of `d` breaks where it waits outside every `within` it writes: a call of a
 /// runtime row that may switch the task out, or a `spawn`, the first it writes, said where it
 /// stands. Judged in the bodies a fn, a method or a trait's member writes, whatever reaches them —
-/// never in the statements an entry runs, nor a default's or a const's value.
-fn cleanup_breach(store: SyntaxArena, typing: ItemTyping, d: Deferral) -> BreachAt? {
+/// never in the statements an entry runs, nor a default's or a const's value. A call of a fn `file`
+/// declares or imports waits where its body links a scheduler, as the old path's cancel fact says.
+fn cleanup_breach(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    typing: ItemTyping,
+    d: Deferral,
+) -> BreachAt? {
     if typing.holding(d.body)?.promise == null { return null }
     let body? = store.lambda_parts(d.body)?.body else { return null }
     let at? = store.expr_span(body) else { return null }
@@ -816,7 +826,7 @@ fn cleanup_breach(store: SyntaxArena, typing: ItemTyping, d: Deferral) -> Breach
     let word = if d.errs { "errdefer" } else { "defer" }
     let found? = nodes
         .find_map(
-            (e) -> if bounds.any((b) -> in_span(store.expr_span(e), b)) { null } else { node_wait(store, e) },
+            (e) -> if bounds.any((b) -> in_span(store.expr_span(e), b)) { null } else { node_wait(engine, file, store, e) },
         ) else {
         return null
     }
@@ -829,14 +839,32 @@ fn cleanup_breach(store: SyntaxArena, typing: ItemTyping, d: Deferral) -> Breach
 /// A node that waits, and how its wait is said.
 type NodeWaits = { at: ExprId, wait: string }
 
-/// How the node `e` waits, where it calls a runtime row that may switch the task out or spawns a
-/// task; absent for any other node.
-fn node_wait(store: SyntaxArena, e: ExprId) -> NodeWaits? {
+/// How the node `e` waits, where it calls a runtime row that may switch the task out, calls a fn
+/// `file` names whose body links a scheduler (`called_wait`), or spawns a task; absent for any
+/// other node. Another runtime row runs no Avra body, so its declaration is never read.
+fn node_wait(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> NodeWaits? {
     match store.expr(e) {
-        .Call(callee, _, _) -> if rt_waits(callee.of) { NodeWaits { at: e, wait: row_wait_said(callee.of) } } else { null },
+        .Call(callee, _, _) -> when {
+            rt_waits(callee.of) -> NodeWaits { at: e, wait: row_wait_said(callee.of) }
+            rt_index().get(callee.of) != null -> null
+            called_waits(engine, file, callee.of) -> NodeWaits {
+                at: e,
+                wait: called_wait_said(callee.of),
+            }
+            _ -> null
+        },
         .Spawn(_) -> NodeWaits { at: e, wait: spawn_wait_said() },
         rest -> null,
     }
+}
+
+/// Whether the fn `file` names `name` runs a body that links a scheduler: it calls a runtime row
+/// that may switch the task out, or a fn that does, as the task survey reads its lowered bodies.
+fn called_waits(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    if d.kind != ItemKind.Fn { return false }
+    let c? = callee_of(engine, d) else { return false }
+    !c.external && task_survey(engine).links(body_at(c))
 }
 
 /// Where the body of the `within` `e` stands; absent for any other node.

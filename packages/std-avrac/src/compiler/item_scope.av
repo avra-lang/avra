@@ -98,6 +98,8 @@ export fn module_bindings(engine: QueryEngine, package: string, local: List<stri
             held.bind(space, d.name, d)
             continue
         }
+        // the module's own declaration, again on its surface as one of its files re-exports it
+        if prior.is(d) || clashes.any(it.lost.is(d)) { continue }
         let own = apart
             .find((a) -> same_file(a.file, d.file) && a.name == d.name && space_of(a.kind) == space) ?? prior
         if kept_apart(own, d) {
@@ -181,7 +183,7 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
             let ds = module_declarations_of(engine, at, item)
             for d in ds {
                 if !d.exported && !(privately && read_privately(ds, d)) { continue }
-                let clash = imported(engine, own, file, u.bound_as(j), d)
+                let clash = imported(engine, own, file, u.bound_as(j), d, u.exported)
                 if clash != null { clashes.push(clash!) } else { own.bind(space_of(d.kind), u.bound_as(j), d) }
             }
         }
@@ -197,7 +199,7 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
 /// where they do neither, what its generators declare.
 fn module_declarations_of(engine: QueryEngine, at: ModuleAt, name: string) -> List<DeclaredName> {
     let written = declarations_of(engine, at.package, at.local, at.as_root, name)
-    if !written.is_empty() || reexports_name(engine, at, name) { return written }
+    if !written.is_empty() || imports_name(engine, at, name) { return written }
     generated_declarations_of(engine, at.package, at.local, at.as_root, name)
 }
 
@@ -212,6 +214,19 @@ fn reexports_name(engine: QueryEngine, at: ModuleAt, name: string) -> bool {
         )
 }
 
+/// Whether a `use` line of the module `at`'s files binds `name`: the name is then that line's — on
+/// its surface where it's an `export use`, the module's own where it's not — whatever stands behind
+/// it, and no generator's, so asking it runs none (a generator's run asks every file's scope, and a
+/// scope asking it back would loop).
+fn imports_name(engine: QueryEngine, at: ModuleAt, name: string) -> bool {
+    module_files(engine, at.package, at.local, at.as_root)
+        .any(
+            (f) -> file_words(engine, f)
+                .uses
+                .any((u) -> (0..u.items.length).any((j: int) -> u.bound_as(j) == name)),
+        )
+}
+
 /// Whether a module's own test reads its private `d`, among `ds`, every declaration of its name:
 /// it's the one declaration of that name in its space. An export there wins, and two private ones
 /// keep the name apart from the test too.
@@ -219,18 +234,27 @@ fn read_privately(ds: List<DeclaredName>, d: DeclaredName) -> bool { ds.filter(s
 
 /// The clash an import of `d` as `name` makes, absent when it binds: a name already this file's, or
 /// its module's export or its own, clashes unless it's that very declaration; a sibling's private
-/// one it shadows.
-fn imported(engine: QueryEngine, own: Bound, file: SourceFileAddress, name: string, d: DeclaredName) -> NameClash? {
+/// one a plain import shadows, and a re-export (`claiming`), which claims the name for the module,
+/// clashes with.
+fn imported(
+    engine: QueryEngine,
+    own: Bound,
+    file: SourceFileAddress,
+    name: string,
+    d: DeclaredName,
+    claiming: bool,
+) -> NameClash? {
     let space = space_of(d.kind)
-    let prior? = own.held(space, name) ?? claimed(engine, file, space, name) else { return null }
+    let prior? = own.held(space, name) ?? claimed(engine, file, space, name, claiming) else { return null }
     if prior.is(d) { return null }
     NameClash { lost: d, holder: prior, imported: true }
 }
 
-/// The module's holder of a name as `file` sees it claimed: an export, or this file's own.
-fn claimed(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
+/// The module's holder of a name as `file` sees it claimed: an export, or this file's own — or,
+/// where a re-export claims the name itself (`claiming`), a sibling's private one.
+fn claimed(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string, claiming: bool) -> DeclaredName? {
     let d? = winner(engine, file, space, name) else { return null }
-    if d.exported || same_file(d.file, file) { d } else { null }
+    if claiming || d.exported || same_file(d.file, file) { d } else { null }
 }
 
 /// The prelude's export `file` sees as `name` in `space` where nothing else took it; a file of
@@ -296,6 +320,13 @@ export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, n
         .Unbound -> if written_elsewhere(engine, scope, file, space, name) { written } else { generated_resolution(engine, file, space, name) },
         .Named(_) or .KeptApart(_) -> written,
     }
+}
+
+/// What `name` names in `space` as `file` reads it among what is written alone: what no generator
+/// made, so asking it runs none.
+export fn resolved_written(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
+    let scope? = file_scope(engine, file) else { return Resolution.Unbound }
+    resolved_in(engine, scope, file, space, name)
 }
 
 /// Whether `name` is the language's own type, or written names bind it in a space but `space`: a

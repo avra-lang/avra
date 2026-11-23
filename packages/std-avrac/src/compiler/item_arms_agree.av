@@ -3,8 +3,8 @@
 //! the arms, else against the first arm joined with each arm in turn, as the body's typing refused
 //! it; one a `void` fn, method or static ends on against the seat, read off the item's typed
 //! nodes. A build that let them through would join values of two types, or a value with nothing.
-use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten, owned_type}
-use compiler.laws.{Found, FoundFix, law}
+use core.{ExprId, NodeKind, OwnType, SignedType, Span, StmtId, SyntaxArena, flatten, owned_type}
+use compiler.laws.{Found, FoundFix, law, sees_no_item}
 use diagnostics.{Voice}
 use features.{
     Conversion,
@@ -97,11 +97,25 @@ fn void_fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
 }
 
 /// The bodies of the methods and statics each impl the written item `at` of `file` writes answers
-/// `void` from.
-fn void_method_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    ExprId,
-> {
-    [p!.body for a in impls_at(engine, file, at) for s in impl_fns(item, a) for p in [item.store.fn_parts(s)] if p != null && answers_void(method_signature(engine, a, p!.name))]
+/// `void` from; with `whens`, only those that end on a `when`.
+fn void_method_bodies(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    item: ReadItem,
+    whens: bool = false,
+) -> List<ExprId> {
+    [p!.body for a in impls_at(engine, file, at) for s in impl_fns(item, a) for p in [item.store.fn_parts(s)] if p != null &&
+        (!whens || ends_on_when(item.store, p!.body)) &&
+        answers_void(method_signature(engine, a, p!.name))]
+}
+
+/// Whether the body `body` of `store` ends on a `when`: read at its tail alone, so a fn that ends on
+/// no `when` is never asked for its signature.
+fn ends_on_when(store: SyntaxArena, body: ExprId?) -> bool {
+    let b? = body else { return false }
+    let tail? = store.tail_of(b) else { return false }
+    store.expr(tail) is .When
 }
 
 /// Whether `sig` answers `void`; absent, it answers nothing known.
@@ -221,6 +235,78 @@ fn disagrees(ty: SignedType, want: SignedType) -> bool { ty.head is .Owned && !t
 /// Where an arm's refusal points: its value.
 fn arm_span(t: TypedNodes, v: ExprId) -> Span? { t.store.expr_span(v) }
 
+/// Every arm of a `when` in the written item `view` shows that no seat judges and whose answer the
+/// `_` arm's can't join, as the body's typing refused it: against the `_` arm, with the conversion
+/// the old path offers.
+fn whens_disagreeing(view: ItemView) -> List<Found> {
+    if !view.holds_kind(NodeKind.ExprWhen) { return sees_no_item(view) }
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    let refused = refused_in(view.engine, view.file, view.at)
+    let apart = refused.any(it.seat is .WhenApart)
+    let void_tails = [b! for s in item.stmts if ends_on_when(item.store, item.store.fn_parts(s)?.body) for b in void_fn_bodies(view.engine, view.file, item, s) if b != null]
+        .concat(void_method_bodies(view.engine, view.file, view.at, item, true))
+    if !apart && void_tails.is_empty() { return [] }
+    let text = item_under(view.engine, view.file, view.at).text
+    flatten([when_arm_refused(r, text) for r in refused])
+        .concat(
+            flatten(
+                [void_whens_disagreeing(t, void_tails, text) for t in item_typed_nodes(view.engine, view.file, view.at, item)],
+            ),
+        )
+}
+
+/// Each arm of a `when` a `void` fn, method or static ends on, among `void_tails` and in `t`, that
+/// answers something: refused against the seat's `void`.
+fn void_whens_disagreeing(t: TypedNodes, void_tails: List<ExprId>, text: string) -> List<Found> {
+    let tails = [x! for b in void_tails for x in [t.store.tail_of(b)] if x != null && x!.index >= t.lo && x!.index < t.hi]
+    let seat = void_seat()
+    [disagreeing(t, v, ty!, seat, text) for w in tails for v in when_values(t, w) for ty in [settled_arm((t.type_at)(v.index))] if ty != null && disagrees(ty!, seat.want)]
+}
+
+/// The arms' values of the `when` `w`, its `_` arm's last; none where `w` is no `when`.
+fn when_values(t: TypedNodes, w: ExprId) -> List<ExprId> {
+    match t.store.expr(w) { .When(_, values, defaults) -> values.concat(defaults), rest -> [] }
+}
+
+/// The `when` arm the body's typing refused as `r`, against the `_` arm; none for any other refusal.
+fn when_arm_refused(r: RefusedSeat, text: string) -> List<Found> {
+    match r.seat {
+        .WhenApart -> [
+            said_apart(
+                span_of(r.at),
+                r.found,
+                TOTAL_ARM,
+                r.want,
+                conversion_spelled(r.found, r.want, text_at(r.at, text)),
+            ),
+        ],
+        rest -> [],
+    }
+}
+
+const TOTAL_ARM: string = "the `_` arm"
+
+/// every arm of a `when` answers what its `_` arm answers
+export law when_arms_agree {
+    kind: "type.mismatch"
+    reads_view: whens_disagreeing
+    voice: when_disagreeing_words
+    witness: "fn f(c: bool) {\n    let v = when { c -> 1, _ -> \"x\" }\n}\n"
+}
+
+fn when_disagreeing_words(a: List<string>) -> Voice { arms_words("a `when`'s arms", a) }
+
+/// The words of an arm whose answer `a[0]` its anchor `a[1]`, answering `a[2]`, can't join, the arms
+/// `whose` names: the conversion `a[3]` offers, else what the seat asks.
+fn arms_words(whose: string, a: List<string>) -> Voice {
+    Voice {
+        message: arms_disagreement(whose, a[0], a[1], a[2]),
+        label: this_is(a[0]),
+        help: if a[3].is_empty() { value_wanted(a[2]) } else { a[3] },
+    }
+}
+
 /// a `match`'s arms meet at one type
 export law match_arms_agree {
     kind: "type.match"
@@ -229,10 +315,4 @@ export law match_arms_agree {
     witness: "enum H {\n    A\n    B\n}\n\nfn note(n: int) { }\n\nfn f(h: H) -> int {\n    match h {\n        .A -> note(1),\n        rest -> {}\n    }\n    2\n}\n\nf(H.A)\n"
 }
 
-fn disagreeing_words(a: List<string>) -> Voice {
-    Voice {
-        message: arms_disagreement("a `match`'s arms", a[0], a[1], a[2]),
-        label: this_is(a[0]),
-        help: if a[3].is_empty() { value_wanted(a[2]) } else { a[3] },
-    }
-}
+fn disagreeing_words(a: List<string>) -> Voice { arms_words("a `match`'s arms", a) }

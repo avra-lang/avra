@@ -603,6 +603,29 @@ impl SyntaxArena {
             self.ctx_declared(s) != null
     }
 
+    /// Whether a top-level statement of the entry runs where it's written: one that declares
+    /// nothing, or a named instance, which the entry builds there — so a `server web { … }` runs
+    /// where it's written — though it's the declaration every fn reads.
+    fn runs_in_entry(s: StmtId) -> bool { !self.is_declaration(s) || self.is_component_inst(s) }
+
+    /// Where the word `let` of the binding `s` stands, when `const` can stand there instead: a `let`,
+    /// never exported, whose value is built of literals alone — literals, lists of them, and
+    /// operators over them. Absent for any other statement.
+    fn let_made_const(s: StmtId) -> Span? {
+        let v? = match self.stmt(s) { .Let(_, _, v) -> v, _ -> null } else { return null }
+        if self.is_exported(s) { return null }
+        let built = self
+            .every_expr(v)
+            .any(
+                (e) -> !(is_literal(self.expr(e)) ||
+                    self.list_lit_values(e) != null ||
+                    self.expr(e) is .Binary),
+            )
+        if built { return null }
+        let at? = self.stmt_span(s) else { return null }
+        Span { lo: at.lo, hi: at.lo + LET.length }
+    }
+
     /// An extern fn's pieces, when the statement is one — a bodiless one
     /// that names a symbol, or a host fn that defines one.
     fn extern_parts(s: StmtId) -> ExternParts? {
@@ -871,3 +894,6 @@ impl Stmt {
         }
     }
 }
+
+/// The word a run-time binding of the top level is written with, which `const` replaces.
+const LET: string = "let"

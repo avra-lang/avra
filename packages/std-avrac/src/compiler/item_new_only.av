@@ -2,6 +2,7 @@
 //! uses one is the program layer's alone to judge, so the net steps aside for it, and a tool that
 //! holds the two paths side by side leaves it out and says so. Read off the parsed items.
 use core.{
+    Annotation,
     At,
     ExprId,
     NEVER,
@@ -118,11 +119,22 @@ fn fields_named(
 ) -> bool {
     stmts
         .any(
-            (s) -> store
-                    .annotations_of(s)
-                    .any((a) -> seats_take_fields(annotation_seats(engine, file, a.name))) ||
+            (s) -> store.annotations_of(s).any((a) -> names_fields(engine, file, store, s, a)) ||
                 field_seated(engine, file, store, s),
         )
+}
+
+/// Whether the annotation `a` the statement `s` wears names fields: its fn has a seat taking them,
+/// or it writes a word among the fields of what `s` declares.
+fn names_fields(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    a: Annotation,
+) -> bool {
+    seats_take_fields(annotation_seats(engine, file, a.name)) ||
+        !annotation_field_words(engine, file, store, a, has_fields(store, s)).is_empty()
 }
 
 /// Whether the statement `s` declares an annotation's fn whose first seat takes a declaration other

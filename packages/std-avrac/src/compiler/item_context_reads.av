@@ -43,12 +43,12 @@ type Through = { subject: string, held: string, placed: bool = false }
 /// A set in force while a body is walked: its key, and the statement that wrote it.
 type InForce = { key: int, stmt: int }
 
-/// A survey of the program `package` that has walked every entry of it: every fn value and `dyn`
+/// A survey of the program `package` that has walked every entry of it, each file that is a program: every fn value and `dyn`
 /// box the program makes is known to it before it walks one body alone.
 fn program_survey(engine: QueryEngine, package: string) -> ReadSurvey {
     let survey = read_survey(engine, package)
     for f in program_files(engine, package) {
-        if f.package_name != package { continue }
+        if f.package_name != package || !is_program_file(engine, f) { continue }
         let e? = entry_plain(engine, f) else { continue }
         let _ = survey.settled(e)
     }
@@ -521,12 +521,17 @@ fn context_required_of(engine: QueryEngine, d: DeclaredName) -> bool {
     item.stmts.any((s) -> item.store.ctx_declared(s) == d.name && item.store.stmt_value(s) == null)
 }
 
-/// The first statement `file` runs, where the written item `at` holds it.
+/// The first statement `file` runs, where the written item `at` holds it: a program's entry runs
+/// its instance builds where they're written as it runs its statements.
 fn first_running(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> StmtId? {
     if !item_held(engine, file, at) { return null }
-    if runs_before(engine, file, at) { return null }
+    let starts = (k: ItemId) -> item_said(engine, file, k).runs ||
+        item_said(engine, file, k).builds && is_program_file(engine, file)
+    if !starts(at) || runs_before(engine, file, at) { return null }
+    if is_program_file(engine, file) &&
+        items_before(engine, file, at).any((k) -> item_said(engine, file, k).builds) { return null }
     let item = read_item(engine, file, at)
-    item.stmts.find((s) -> !item.store.is_declaration(s))
+    item.stmts.find((s) -> item.store.runs_in_entry(s))
 }
 
 /// Each required context an entry the written item `view` shows holds reaches with nothing setting
@@ -543,28 +548,30 @@ fn requireds_unset(view: ItemView) -> List<Found> {
     let survey = read_survey(engine, file.package_name)
     let item = view.item
     let store = item.store
-    let program = [f for s in some_list(first_running(engine, file, at)) for e in some_list(entry_lowered(engine, file)) for f in unset_from(survey, declared, e, store.stmt_span(s), PROGRAM_STARTS)]
+    let program = [f for s in some_list(first_running(engine, file, at)) for e in some_list(entry_lowered(engine, file)) for f in unset_from(survey, declared, e, store.stmt_span(s), PROGRAM_STARTS, built_by(store, s))]
     let cases = file_cases(engine, file).cases
-    let specs = [f for s in item.stmts for parts in some_list(store.spec_parts(s)) for local, c in parts.cases for k in some_list(cases.find_index(it.item == at && it.index == local)) for body in some_list(reached_body(engine, found_called(CaseFound { file: file, at: cases[k], k: k }))) for f in unset_from(read_survey(engine, file.package_name), declared, body, c.span, CASE_STARTS)]
-    let hosts = [f for s in item.stmts if store.is_host_fn(s) for p in some_list(store.fn_parts(s)) for h in file_host_fns(engine, file).fns if h.called.name == p.name for body in some_list(reached_body(engine, h.called)) for f in unset_from(survey, declared, body, store.stmt_span(s), HOST_STARTS)]
+    let specs = [f for s in item.stmts for parts in some_list(store.spec_parts(s)) for local, c in parts.cases for k in some_list(cases.find_index(it.item == at && it.index == local)) for body in some_list(reached_body(engine, found_called(CaseFound { file: file, at: cases[k], k: k }))) for f in unset_from(read_survey(engine, file.package_name), declared, body, c.span, CASE_STARTS, null)]
+    let hosts = [f for s in item.stmts if store.is_host_fn(s) for p in some_list(store.fn_parts(s)) for h in file_host_fns(engine, file).fns if h.called.name == p.name for body in some_list(reached_body(engine, h.called)) for f in unset_from(survey, declared, body, store.stmt_span(s), HOST_STARTS, null)]
     program.concat(specs).concat(hosts)
 }
 
 /// Each required context of `declared` the body `entry` reaches with nothing setting it, said at
-/// `at`, where `starts` starts.
+/// `at`, where `starts` starts; a read's chain goes on from inside the instance `built`, where the
+/// start builds one.
 fn unset_from(
     survey: ReadSurvey,
     declared: List<Declared>,
     entry: LoweredFn,
     at: Span?,
     starts: string,
+    built: string?,
 ) -> List<Found> {
     let walked = survey.settled(entry)
     [Found {
         at: at,
         args: [
             d.name,
-            chain_said(r.chain),
+            chain_said(from_start(r.chain, built)),
             r.through?.subject ?? "",
             r.through?.held ?? "",
             if r.through?.placed ?? false { PLACED_THERE } else { CALLED_THERE },
@@ -580,6 +587,15 @@ const CASE_STARTS: string = "case"
 
 const HOST_STARTS: string = "host fn"
 
+/// The instance the statement `s` builds, where a program starts at it: the chain of a read under
+/// that build goes on from inside it.
+fn built_by(store: SyntaxArena, s: StmtId) -> string? { if store.is_component_inst(s) { store.let_name(s) } else { null } }
+
+/// A read's chain from where the program starts: a start that builds the instance `built` is that
+/// instance's build, so the chain goes on from inside it.
+fn from_start(chain: List<string>, built: string?) -> List<string> {
+    if built != null && chain.first() == built { chain.drop(1) } else { chain }
+}
 /// How a read is reached, as a reader follows it.
 fn chain_said(chain: List<string>) -> string {
     if chain.is_empty() { return "where it starts" }

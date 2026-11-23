@@ -40,8 +40,7 @@ fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: Item
     if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
     let fns = [b! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns_at(item, a) if item.store.fn_parts(s) != null for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
-    let declared = [b for d in file_declares_at(engine, file, at).names if d.item == at && built_instance(engine, d) for b in declared_body(engine, d)]
-    let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item)).concat(declared)
+    let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item))
     let entry = if runs_in(engine, file, at) { entry_read(engine, file) } else { null }
     let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
     let judged = [judged_in(engine, file, b, ItemId(-1)) for b in bodies].concat(ran)
@@ -126,11 +125,6 @@ fn instance_checked(engine: QueryEngine, file: SourceFileAddress, j: Judged, e: 
         .Ok(answer) -> [InstanceSaid { at: place, message: s.message, help: s.help, warning: s.warning } for s in answer.saids()],
         .Err(why) -> did_not_run(place, why),
     }
-}
-
-/// The body the instance `d` declares its value by; none where it has none.
-fn declared_body(engine: QueryEngine, d: DeclaredName) -> List<SignedBody> {
-    match const_body(engine, d) { .Ok(b) -> [b], .Err(_) -> [] }
 }
 
 /// The body `b` judged in a store of its own, typed through each node's meaning there; `only` the

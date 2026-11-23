@@ -309,6 +309,8 @@ type ItemAbout = {
     impls: List<ItemImpl>,
     /// Whether a statement of the item runs, beside what it declares.
     runs: bool = false,
+    /// Whether the item declares a named instance, which a program's entry builds where it's written.
+    builds: bool = false,
     /// What each name the item's statements declare or bind wears, each name once.
     worn: List<NameWorn> = [],
     /// The item's id, where its file's items are read (`file_abouts`).
@@ -410,6 +412,7 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
                 } for s in stmts for c in [store.component_parts(s)] if c != null],
             ),
         runs: stmts.any((s) -> !store.is_declaration(s)),
+        builds: stmts.any((s) -> store.is_component_inst(s)),
         worn: names_worn(store, stmts.concat(store.hoisted_decls())),
     }
         .saved_bytes()
@@ -549,10 +552,10 @@ fn item_tape_about(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 }
 
 /// What a written item's tape says of it that a reader would else read the item back to learn:
-/// whether a statement of it runs, what each name it declares or binds wears, and whether it
-/// declares a name its module reads.
+/// whether a statement of it runs, whether it declares a named instance, what each name it
+/// declares or binds wears, and whether it declares a name its module reads.
 @derive(Saved)
-type ItemSaid = { runs: bool, worn: List<NameWorn>, declares: bool = false, instanced: bool = false }
+type ItemSaid = { runs: bool, builds: bool = false, worn: List<NameWorn>, declares: bool = false, instanced: bool = false }
 
 /// The names the `use` lines of `file` bind that nothing answers (`refused_imports`), worked out once
 /// for the file however many of its items ask.
@@ -613,7 +616,8 @@ fn item_read_parts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
             NamedValue {
                 name: LETS_PART,
                 value: ItemLets {
-                    names: [n! for s in item.stmts for n in [item.store.let_name(s)] if n != null],
+                    // a `for` binds its counter for its body alone, never for what follows the loop
+                    names: [n! for s in item.stmts if !binds_its_body_alone(item.store, s) for n in [item.store.let_name(s)] if n != null],
                 }
                     .saved_bytes(),
             },
@@ -630,6 +634,9 @@ const REFUSED_PART: string = "refused"
 
 /// The part of `item_read_parts` holding the names its item's statements bind with `let`.
 const LETS_PART: string = "lets"
+
+/// Whether the statement `s` binds its name for its own body alone: a `for`'s counter.
+fn binds_its_body_alone(store: SyntaxArena, s: StmtId) -> bool { store.stmt(s) is .ForEach }
 
 /// The names an item's statements bind with `let`, in order.
 @derive(Saved)
@@ -753,6 +760,7 @@ fn item_summary(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Ans
                 name: SAID_PART,
                 value: ItemSaid {
                     runs: about.runs,
+                    builds: about.builds,
                     worn: about.worn,
                     declares: !declares.is_empty(),
                     instanced: !about.instance_words.is_empty(),
@@ -879,6 +887,53 @@ fn file_words(engine: QueryEngine, file: SourceFileAddress) -> FileWords {
     }
 }
 
+/// A component a module exports, by its word.
+@derive(Saved)
+type ComponentHome = { word: string, module: string }
+
+/// Every component a module of a package in reach exports, in the order the packages list their
+/// files.
+@derive(Saved)
+type ComponentHomes = { homes: List<ComponentHome> }
+
+/// The components every module of `package` and of each package its manifest depends on exports,
+/// tests aside — every package a `use` of it may name, imported yet or not — each file's words read
+/// once for every lookup.
+@query
+fn component_homes(engine: QueryEngine, package: string) -> ComponentHomes {
+    let packages = depended_on(engine, [package], [])
+    ComponentHomes {
+        homes: [ComponentHome { word: w.shape.declared, module: module_written(package, f) } for p in packages for path in package_sources(engine, p, SOURCE_ROOT) if !path.contains("/tests/") for f in [SourceFileAddress { package_name: p, path_in_package: path }] for w in file_words(engine, f).components if w.exported],
+    }
+}
+
+/// The module `file` stands in as a `use` line of `reader`'s spells it: its path under the package's
+/// sources where it is `reader`'s own, else the package then that path.
+fn module_written(reader: string, file: SourceFileAddress) -> string {
+    if file.package_name == reader { module_segments(file).join(".") } else { dotted_module(file) }
+}
+
+/// The `use` path that brings the component `word` into `file` from another module that exports it
+/// — `@acme.kit.{c3}` — absent where none of the packages `file`'s may name does.
+export fn component_import(engine: QueryEngine, file: SourceFileAddress, word: string) -> string? {
+    let own = module_written(file.package_name, file)
+    let home? = component_homes(engine, file.package_name)
+        .homes
+        .find(it.word == word && it.module != own) else { return null }
+    "${home.module}.{${home.word}}"
+}
+
+/// `asked`, then each package their manifests depend on, and theirs, each once — `seen` those met.
+fn depended_on(engine: QueryEngine, asked: List<string>, seen: List<string>) -> List<string> {
+    let new = distinct([p for p in asked if !seen.contains(p)])
+    if new.is_empty() { return seen }
+    depended_on(
+        engine,
+        flatten([package_facts(engine, p).depends_on for p in new]),
+        seen.concat(new),
+    )
+}
+
 /// The modules a file's `use` lines name, each as written, dotted.
 export fn file_imports(engine: QueryEngine, file: SourceFileAddress) -> List<string> { [u.path.join(".") for u in file_words(engine, file).uses] }
 
@@ -909,9 +964,21 @@ fn two_modules(engine: QueryEngine, package: string, local: List<string>) -> boo
 }
 
 fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> LineShapes {
-    let none = LineShapes { components: [], grammars: [], instances: [] }
-    let at? = imported_module(engine, file, u) else { return none }
-    let exports = module_exports(engine, at.package, at.local, at.as_root)
+    let at? = imported_module(engine, file, u) else { return no_shapes() }
+    shapes_taken(u, module_exports(engine, at.package, at.local, at.as_root))
+}
+
+/// What the `use` line `u` of `file` takes of the block words its module's own files declare, a
+/// re-export left out: what a re-export of it puts on its own module's surface.
+fn own_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> LineShapes {
+    let at? = imported_module(engine, file, u) else { return no_shapes() }
+    shapes_taken(u, module_own_exports(engine, at.package, at.local, at.as_root))
+}
+
+fn no_shapes() -> LineShapes { LineShapes { components: [], grammars: [], instances: [] } }
+
+/// What the `use` line `u` takes of `exports`, each under the name it binds.
+fn shapes_taken(u: UseLine, exports: ModuleExports) -> LineShapes {
     LineShapes {
         components: [c with { word: u.bound_as(j) } for j, item in u.items for c in exports.components.get(item) ?? []],
         grammars: [g with { word: u.bound_as(j) } for j, item in u.items for g in exports.grammars.get(item) ?? []],
@@ -970,8 +1037,33 @@ type ModuleExports = {
     instances: Map<string, List<NamedInstance>>,
 }
 
+/// What a module puts on its surface of block words: what its files declare, then what each `export
+/// use` of theirs takes of the block words its module declares.
 @query
 fn module_exports(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleExports {
+    mut exports = module_own_exports(engine, package, local, as_root)
+    for f in module_files(engine, package, local, as_root) {
+        for u in [u for u in file_words(engine, f).uses if u.exported] { exports = exports.with_shapes(own_shapes(engine, f, u)) }
+    }
+    exports
+}
+
+impl ModuleExports {
+    /// These exports with what `shapes` takes beside them, each under the name it's taken by.
+    fn with_shapes(shapes: LineShapes) -> ModuleExports {
+        mut components = self.components
+        mut grammars = self.grammars
+        mut instances = self.instances
+        for c in shapes.components { components.set(c.word, (components.get(c.word) ?? []).concat([c])) }
+        for g in shapes.grammars { grammars.set(g.word, (grammars.get(g.word) ?? []).concat([g])) }
+        for i in shapes.instances { instances.set(i.name, (instances.get(i.name) ?? []).concat([i])) }
+        self with { components: components, grammars: grammars, instances: instances }
+    }
+}
+
+/// What the files of a module declare of block words, each kept by the name it's declared by.
+@query
+fn module_own_exports(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleExports {
     let files = module_files(engine, package, local, as_root)
     mut components: Map<string, List<WordShape>> = {}
     mut grammars: Map<string, List<GrammarWord>> = {}

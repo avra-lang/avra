@@ -3,8 +3,8 @@
 //! doesn't hold — or, for the module's own test, holds privately in two files. Read off the item's
 //! `use` lines and the surfaces of the modules they name, in the old reader's order: the path first,
 //! then each item.
-use core.{ModulePath, Span, distinct, flatten, module_path}
-use compiler.laws.{Found, Unread, law}
+use core.{ModulePath, Span, distinct, flatten, module_path, some_list}
+use compiler.laws.{Found, Unread, law, no_findings}
 use diagnostics.{Voice}
 use features.{import_clashed}
 use compiler.{
@@ -407,6 +407,43 @@ export law use_binds_a_name_once {
 }
 
 fn clashing_words(a: List<string>) -> Voice { import_clashed(a[1], "`${a[2]}`") }
+
+/// Every name a `use` line of the written item `at` of `file` imports that the file's own module
+/// already holds — the file's own declaration, or an export of its module; for an `export use`,
+/// which claims the name for the module, a sibling's private one too — beside the file that holds
+/// it. A name the module refuses as declared twice is that refusal's, and a re-export of a name
+/// already on the module's surface the surface law's.
+fn held_uses(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item = view.item
+    if !item.stmts.any((s) -> item.store.use_parts(s) != null) || !item.store.refusals().is_empty() { return no_findings() }
+    let lines = uses_written(item)
+    let scope? = file_scope(engine, file) else { return [] }
+    if !scope.clashes.any(it.imported) { return [] }
+    let home = module_files(engine, file.package_name, module_segments(file), true)
+    let taken = [c for c in scope.clashes if c.imported && home.any(same_file(it, c.holder.file))]
+    if taken.is_empty() { return [] }
+    let twice = [c for c in module_kept(engine, file.package_name, module_segments(file), true).clashes if home.any(same_file(it, c.lost.file))]
+    [Found { at: l.at, args: [l.path.join("."), name, below_root(c!.holder.file.path_in_package)] } for l in lines for m in some_list(module_named(file, l.path)) for j, listed in l.items for name in [l.bound[j]] if !twice.any(it.lost.name == name) for c in [taken_by(engine, taken, m, listed, name)] if c != null && !(l.exported && c!.holder.exported)]
+}
+
+/// The clash among `taken` the import of `item` from the module `m`, bound as `name`, makes.
+fn taken_by(engine: QueryEngine, taken: List<NameClash>, m: ModuleAt, item: string, name: string) -> NameClash? {
+    let ds = module_declarations_of(engine, m, item)
+    taken.find((c) -> c.holder.name == name && ds.any((d) -> c.lost.is(d)))
+}
+
+/// a `use` binds no name its own module already holds
+export law use_meets_its_module {
+    kind: "resolve.import_clash"
+    reads_view: held_uses
+    voice: held_words
+    witness: "use util.{twice}\nfn twice(n: int) -> int { n }\ntwice(1)\n"
+    witness_files: {"src/util/m.av": "export fn twice(n: int) -> int { n + n }\n"}
+}
+
+fn held_words(a: List<string>) -> Voice { import_clashed(a[1], "this module (`${a[2]}`)") }
 
 /// a `use` names what its module exports
 export law use_names_an_export {

@@ -19,9 +19,10 @@ fn said(r: Result<int, DrainError>) -> string {
     match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
 }
 
+state began: Cell<int> = Cell.new(0)
+state starts: Cell<List<int>> = Cell.new([])
 avra_clock_virtual(1)
-let began = now_ms()
-let starts: Cell<List<int>> = Cell.new([])
+began.set(now_ms())
 queue<Dead<int, string>> letters {}
 queue<int> jobs {
     retries: 6
@@ -30,7 +31,7 @@ queue<int> jobs {
 }
 worker never {
     reads: jobs
-    each: (d: Delivery<int>) -> refused(starts, began, d)
+    each: (d: Delivery<int>) -> refused(starts, began.get(), d)
     dead: letters
 }
 use tests.support.letters.{first_letter}

@@ -686,16 +686,61 @@ fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
 @derive(Saved)
 type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt> }
 
-/// Each `collect enum` a package writes with a trait that derives, and what it gathers.
+/// Each `collect enum` a package writes with a trait that derives, and what it gathers; and what the
+/// members its enums gather over a trait that derives nothing owe of impls, kept by the path of the
+/// file that declares each member, with its item — so an item finds what it owes in one look, its
+/// file's path the key it already holds.
 @derive(Saved)
-type DerivedGatherings = { each: List<DerivedGathering> }
+type DerivedGatherings = { each: List<DerivedGathering>, owed: Map<string, List<OwedImpl>> = {} }
 
-/// The gatherings a package's written `collect enum`s make, each read where it's written.
+/// The gatherings a package's written `collect enum`s make, each read where it's written, read once a
+/// package: the derives a member takes, and the impls the member law asks of each item.
 @cut_query
-fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
-    let enums = [d for p in package_sources(engine, package, "src") for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
-    DerivedGatherings { each: [g! for d in enums for g in [gathering(engine, d)] if g != null] }
+export fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
+    let enums = [d for p in package_listed_sources(engine, package).paths for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
+    mut owed: Map<string, List<OwedImpl>> = {}
+    for e in enums {
+        for t in gathered_traits(engine, e.file, e.name, true) {
+            if !derives(engine, t) {
+                // a member of another package is no item this package's laws read
+                for m in [m for m in members_of(engine, e.file, e.name, false, "") ?? [] if m.file.package_name == package] {
+                    let key = m.file.path_in_package
+                    owed
+                        .set(
+                            key,
+                            (owed.get(key) ?? [])
+                                .concat(
+                                    [
+                                        OwedImpl {
+                                            owner: e.name,
+                                            word: t.name,
+                                            member: m.name,
+                                            item: m.item,
+                                        },
+                                    ],
+                                ),
+                        )
+                }
+            }
+        }
+    }
+    DerivedGatherings {
+        each: [g! for d in enums for g in [gathering(engine, d)] if g != null],
+        owed: owed,
+    }
 }
+
+/// Whether a member of `package` owes an impl of a trait its `collect enum` is written over: one
+/// word, read once a package, so the member law reads no gathering for an item of a package that
+/// owes none — as most packages, declaring no `collect enum`, do.
+@cut_query
+export fn owes_impls(engine: QueryEngine, package: string) -> bool { !package_gatherings(engine, package).owed.is_empty() }
+
+/// A member a package's `collect enum` gathers over a trait that derives nothing: the enum, the
+/// trait, the member and the written item of its file that declares it, which owes an impl of the
+/// trait.
+@derive(Saved)
+export type OwedImpl = { owner: string, word: string, member: string, item: ItemId }
 
 /// The gathering the `collect enum` `d` makes; absent when none of its traits derives, or it gathers
 /// only once built.

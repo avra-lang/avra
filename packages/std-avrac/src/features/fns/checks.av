@@ -40,7 +40,16 @@ impl Checks for Call {
         if cx.local(self.callee.of) != null {
             if cx.value_call_refused(e, self.callee.of, written, !self.pins.is_empty()) { return cx.unfilled(self.args) }
             let held? = cx.program.called_as(written) else { return cx.unfilled(self.args) }
-            if cx.seats_named(e, held, self.args, 0, self.callee.of) { return null }
+            // a fn value's seats have no names, whatever the fn it holds named them: a named argument
+            // is refused as an extern's is, by position
+            if cx
+                .seats_named(
+                    e,
+                    held with { seats: [s with { name: null } for s in held.seats] },
+                    self.args,
+                    0,
+                    self.callee.of,
+                ) { return null }
             let answer = cx
                 .rigidly_called(
                     held with { seats: [s with { defaulted: false } for s in held.seats] },

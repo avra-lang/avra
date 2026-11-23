@@ -48,6 +48,7 @@ use features.{no_kind}
 use features.annotations.{
     const_unspelled,
     generated_name_taken,
+    meta_foreign,
     wrap_resigned,
     wrap_source_unnamed,
     wrap_unbodied,
@@ -126,14 +127,15 @@ export fn unreached_reexport(module: string, item: string) -> Voice {
     }
 }
 
-fn reexport_cycle(at: Loc?, home: string, other: string) -> Diag {
-    refusal(
-        "resolve.reexport_cycle",
-        at,
-        "`${other}` already uses `${home}`, so re-exporting from it here would close a package cycle",
-        "in this use",
-        "packages never depend in a cycle — re-export both from a facade package above them, made of `export use` lines",
-    )
+fn reexport_cycle(at: Loc?, home: string, other: string) -> Diag { said_as("resolve.reexport_cycle", at, cycle_reexported(home, other)) }
+
+/// A re-export in the package `home` from the package `other`, which already uses `home`.
+export fn cycle_reexported(home: string, other: string) -> Voice {
+    Voice {
+        message: "`${other}` already uses `${home}`, so re-exporting from it here would close a package cycle",
+        label: "in this use",
+        help: "packages never depend in a cycle — re-export both from a facade package above them, made of `export use` lines",
+    }
 }
 
 fn reexport_twice(at: Loc?, name: string) -> Diag { said_as("resolve.reexport_twice", at, surface_taken(name)) }
@@ -625,15 +627,7 @@ fn unspelled_const(ann: string, name: string, at: Loc?) -> Diag { said_as("annot
 /// follows a refused boundary can reach a file the crossing never
 /// touched. The words are the annotation door's, so a reader who has
 /// seen one has seen both.
-fn foreign_package(moved: string) -> Diag {
-    refusal(
-        "annotation.meta",
-        null,
-        "the compiler crosses `@std/meta`'s own shapes",
-        "the compiler was built against another `@std/meta` — ${moved}",
-        "build against the `@std/meta` this compiler ships",
-    )
-}
+fn foreign_package(moved: string) -> Diag { said_as("annotation.meta", null, meta_foreign(moved)) }
 
 fn generated_taken(ann: string, name: string, at: Loc?) -> Diag { said_as("annotation.generated_taken", at, generated_name_taken(ann, name)) }
 

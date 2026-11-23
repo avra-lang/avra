@@ -18,7 +18,7 @@
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
 use compiler.{avra, new_workspace, one_shot_let_go, Want}
-use compiler.host.{memory_host}
+use compiler.host.{Host, memory_host}
 use @std.program.source_facts.{FileOctets}
 use testing.{
     held_at,
@@ -79,7 +79,7 @@ export type CodeWitness = { code: string, witness: Witness }
 /// says what a build says — the refusal, or the warnings of a program that lowers.
 fn built_report(files: Map<string, string>) -> string {
     one_shot_let_go()
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let ws = new_workspace(witness_host(files), "/w", avra())
     ws.alone()
     match ws.derived("/w/src/main.av", Want.Binary) { .Err(report) -> report, .Ok(d) -> d.warnings }
 }
@@ -165,17 +165,19 @@ fn package_text(files: Map<string, string>) -> string {
 /// program — never the witness itself, so a golden does not print it.
 fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.starts_with("/std/") }
 
+/// The memory host a witness's `files` stand in: one naming the std root where they carry a std
+/// package there, so the toolchain reads it as its own.
+fn witness_host(files: Map<string, string>) -> Host {
+    let host = memory_host(files, files.keys())
+    if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host }
+}
+
 /// A package witness compiled: its files laid out in memory at `/w`,
 /// and what the program there says. One one-shot workspace is alive at a
 /// time, so the one before is let go.
 fn package_report(files: Map<string, string>) -> string {
     one_shot_let_go()
-    let host = memory_host(files, files.keys())
-    let ws = new_workspace(
-        if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host },
-        "/w",
-        avra(),
-    )
+    let ws = new_workspace(witness_host(files), "/w", avra())
     ws.alone()
     let entry: string? = if files.has("/w/src/main.av") { "/w/src/main.av" } else { null }
     match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
@@ -1228,17 +1230,7 @@ fn witnesses() -> List<CodeWitness> {
         },
         CodeWitness {
             code: "resolve.reexport_cycle",
-            witness: Witness
-                .Package(
-                    {
-                        "/w/avra.toml": app_manifest,
-                        "/w/src/main.av": "use @std.low.{g}\ng()\n",
-                        "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
-                        "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
-                        "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
-                        "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
-                    },
-                ),
+            witness: Witness.Package(reexport_cycle_files()),
         },
         CodeWitness {
             code: "type.cell_map",
@@ -1684,6 +1676,20 @@ fn entry_program(main: string, others: Map<string, string>) -> Witness {
     mut files = {"/w/avra.toml": app_manifest, "/w/src/main.av": main}
     for path, text in others { files.set(path, text) }
     Witness.Built(files)
+}
+
+/// resolve.reexport_cycle's witness, the one case its law is held to on both paths and in the
+/// workspace's own test: two std packages, under a std of their own at `/std`, that use each other
+/// with no manifest between them, one re-exporting from the other.
+export fn reexport_cycle_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": app_manifest,
+        "/w/src/main.av": "use @std.low.{g}\ng()\n",
+        "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
+        "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
+        "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
+        "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
+    }
 }
 
 /// A lawful manifest, for a witness to add one wrong line to.

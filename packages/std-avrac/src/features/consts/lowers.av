@@ -3,6 +3,8 @@
 //! of those handed to it, and a read of it is the binary's own data; any other is lowered where it
 //! stands. Either way its name binds, for the statements after it, as a const a pattern compares
 //! with. A const's value is pure, so one reading per declaration answers what each read of it would.
+//! A named instance the entry builds where it's written is the declaration's own value, its unit
+//! called there: built once, the box every fn reads.
 use core.{
     Bound,
     ConstSeed,
@@ -18,6 +20,11 @@ use core.stmt.{ConstDecl}
 
 impl StmtLowers for ConstDecl {
     fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        if cx.store.is_component_inst(s) {
+            let named = (cx.program.named)(self.name.of, null)
+            let held = (cx.program.checked.value_named)(self.name.of, null)
+            if named != null && held != null { return cx.bind(self.name.of, Bound.Const(cx.const_read(named!, held!), held!)) }
+        }
         let ty? = cx.binding_type(self.ty, self.value, s) else { return cx.missed("an untyped `const`") }
         let seeds = settled_reads(cx, self)
         if seeds != null {

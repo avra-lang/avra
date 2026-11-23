@@ -14,7 +14,17 @@ use core.{
 }
 use core.{binds_type, binds_name}
 use core.{SeatMark}
-use diagnostics.{Diag, Voice, guess_fix, guessed, refusal, said_as, unread_behind}
+use diagnostics.{
+    Diag,
+    Voice,
+    const_fix,
+    guess_fix,
+    guessed,
+    loc_at,
+    refusal,
+    said_as,
+    unread_behind,
+}
 use features.{
     ResolveCx,
     SelfSeat,
@@ -521,8 +531,19 @@ impl ResolveCx {
 
     fn unbound_pronoun(at: Loc?) { self.emit(unresolved_at(at, pronoun_unbound())) }
 
+    /// A read at `at` of `name`, a run-time binding of the top level, refused: offering to make it a
+    /// `const` where its value is one (`let_made_const`).
     fn runtime_binding(name: string, at: Loc?) {
-        self.emit(said_as("resolve.runtime_binding", at, runtime_bound(name)))
+        let store = self.view.store
+        let made = [l! for d in self.all_defs if d.name == name for l in [loc_at(self.view.source.file, store.let_made_const(d.stmt))] if l != null]
+        self
+            .emit(
+                said_as(
+                    "resolve.runtime_binding",
+                    at,
+                    if self.in_instance { instance_bound(name) } else { runtime_bound(name) },
+                ) with { suggestions: [const_fix(name, l) for l in made.take(1)] },
+            )
     }
 
     fn refuse_self(at: Loc?) { self.emit(unnamed(at, implementor_named())) }
@@ -741,6 +762,17 @@ export fn runtime_bound(name: string) -> Voice {
         message: "`${name}` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it",
         label: "read here",
         help: "pass `${name}` in as a parameter, or make it a fn",
+    }
+}
+
+/// A run-time binding of the top level read in a named instance's value: an instance is a
+/// declaration, built once wherever it's read, so it reads declarations; a value it keeps across the
+/// program is a `state`'s.
+export fn instance_bound(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a run-time binding of the top level — an instance is a declaration and reads declarations, not the values around it",
+        label: "read here",
+        help: "make `${name}` a `state`, or pass it in where the instance's value is read",
     }
 }
 

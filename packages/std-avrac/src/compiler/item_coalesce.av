@@ -84,7 +84,9 @@ fn never_fires(engine: QueryEngine, file: SourceFileAddress, at: ItemId, cx: Cop
 fn narrowed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, cx: Copies, left: ExprId) -> bool {
     let step? = cx.store.place_step(left) else { return false }
     match step {
-        .Root(n) -> !let_never_absent(cx, n.of, left) && !entry_never_absent(engine, file, at, cx, n.of, left),
+        .Root(n) -> !let_never_absent(cx, n.of, left) &&
+            !param_never_absent(cx, n.of, left) &&
+            !entry_never_absent(engine, file, at, cx, n.of, left),
         .Field(subject, name) -> field_optional(engine, cx, subject, name.of),
         .At(_, _) or .Unwrap(_) -> false,
     }
@@ -100,6 +102,25 @@ fn let_never_absent(cx: Copies, name: string, at: ExprId) -> bool {
     let v? = cx.store.stmt_value(s) else { return false }
     let ty? = (cx.type_at)(v.index) else { return false }
     !ty.nullable()
+}
+
+/// Whether `name`, bound by no `let` before the read `at`, is a parameter of the innermost fn around
+/// that read whose written type is never absent: it is read as a `let` that writes its type is.
+fn param_never_absent(cx: Copies, name: string, at: ExprId) -> bool {
+    if cx.store.stmt_ids().any((s) -> cx.store.let_name(s) == name && cx.stmt_lo(s) < cx.lo(at)) { return false }
+    let read = cx.lo(at)
+    let around = [s for s in cx.store.stmt_ids() if cx.store.fn_parts(s) != null && holds_read(cx.store.stmt_span(s), read)]
+    let inner? = around.find((s) -> !around.any((o) -> cx.stmt_lo(o) > cx.stmt_lo(s))) else { return false }
+    let parts? = cx.store.fn_parts(inner) else { return false }
+    let p? = parts.params.find(it.name.of == name) else { return false }
+    let written? = p.ty else { return false }
+    never_absent_written(written)
+}
+
+/// Whether the place `span`, where it is known, holds the read that starts at `read`.
+fn holds_read(span: Span?, read: int) -> bool {
+    let held? = span else { return false }
+    held.lo <= read && read < held.hi
 }
 
 /// Whether `name`, bound by no `let` of the item `at` itself, is bound by the last `let` before the

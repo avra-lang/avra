@@ -225,13 +225,21 @@ fn entry_read_held(engine: QueryEngine, file: SourceFileAddress, placed: bool) -
 }
 
 /// Every item of `file` that runs a statement, read back into one store, each query it stands on
-/// asked.
+/// asked; in a program's entry, each item that builds a named instance too, built where it's
+/// written. A module file's instance is a declaration, built where it's read, so none is read back.
 fn entry_read_back(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryRead {
     let store = new_node_store()
     mut items: List<ItemBase> = []
     mut stmts: List<StmtId> = []
-    for at in item_ids(engine, file) {
-        if item_said(engine, file, at).declares && !runs_in(engine, file, at) { continue }
+    let ids = item_ids(engine, file)
+    // each item's summary is read once; whether the file is a program is asked once, of a file with
+    // an item that builds a named instance, off what its items already say: no answer of its own an
+    // edit to it works again
+    let saids = [item_said(engine, file, at) for at in ids]
+    let program = saids.any(it.builds) && is_program_file(engine, file)
+    for i, at in ids {
+        let said = saids[i]
+        if said.declares && !runs_in(engine, file, at) && !(said.builds && program) { continue }
         let base = store.exprs.count()
         let running = read_into(
             engine,
@@ -262,8 +270,17 @@ fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool {
     item_held(engine, file, at) && item_said(engine, file, at).runs
 }
 
-/// Whether a top-level statement runs: one that declares nothing.
-fn runs(store: SyntaxArena, s: StmtId) -> bool { !store.is_declaration(s) }
+/// Whether a top-level statement runs in the entry, where it's written.
+fn runs(store: SyntaxArena, s: StmtId) -> bool { store.runs_in_entry(s) }
+
+/// WHETHER `file` IS A PROGRAM of its package, an entry it may be run from: it runs a statement, a
+/// proof stands beside it, or its manifest names it the package's program. A module file that
+/// declares instances and runs nothing is none — its instances are built at their first read.
+export fn is_program_file(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    item_ids(engine, file).any((at) -> runs_in(engine, file, at)) ||
+        marked_program(engine, file) ||
+        program_path(package_facts(engine, file.package_name)) == file.path_in_package
+}
 
 /// The entry's shown value printed as text, as the type it's typed with spells it: text as itself, a
 /// number or a truth by its row, a list or a record as the list of its parts' texts, as the

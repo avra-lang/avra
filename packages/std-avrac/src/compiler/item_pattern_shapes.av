@@ -8,13 +8,7 @@ use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.enums.{fraction_unmatched, fraction_written}
 use features.nullable.{coalesce_always_absent}
-use features.formats.{
-    adjacent_fault,
-    format_on,
-    hole_unread,
-    reads_of as hole_reads,
-    repeated_fault,
-}
+use features.formats.{adjacent_fault, format_on, hole_unread, repeated_fault}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -83,13 +77,14 @@ fn formats_off_text(view: ItemView, at: At) -> List<Found> {
 const TEXTS: List<string> = ["string", "Bytes"]
 
 /// Every format pattern of the `match` `at` of `view`'s typed nodes over text, its holes apart and
-/// named once, with a hole reading its span as a type text doesn't read as; handed the hole and the
+/// named once, with a hole reading its span as a type that crosses no text; handed the hole and the
 /// type.
 fn holes_unread(view: ItemView, at: At) -> List<Found> {
+    let signing = signing_in(view.engine, view.file, [])
     [Found { at: f.store.pat_span(f.at), args: [h!.hole.name, h!.hole.ty!.name] } for f in format_arms(view, at) if f.subject != null &&
         TEXTS.contains(f.subject!) &&
         adjacent_fault(f.parts) == null &&
-        repeated_fault(f.parts) == null for h in [f.parts.find(hole_reads(it.hole) == null)] if h != null]
+        repeated_fault(f.parts) == null for h in [f.parts.find((p) -> !read_as_text(view.engine, view.file, signing, p.hole))] if h != null]
 }
 
 /// a format pattern reads text

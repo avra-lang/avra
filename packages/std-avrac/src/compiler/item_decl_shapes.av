@@ -31,7 +31,7 @@ use core.{
     flatten,
     same_stmt,
 }
-use compiler.laws.{Found, law}
+use compiler.laws.{Found, law, no_findings}
 use compiler.resolve.{builtin_named, index_as_element}
 use compiler.typing.{
     beyond_trait,
@@ -62,6 +62,7 @@ use compiler.typing.{
 }
 use diagnostics.{Voice}
 use features.{
+    build_reads_itself,
     const_reads_itself,
     method_row,
     property_row,
@@ -73,7 +74,7 @@ use features.{
     nested_uses,
 }
 use features.specs.{case_group}
-use features.collects.{enum_gathers_nothing, lawful_header}
+use features.collects.{enum_gathers_nothing, lawful_header, no_trait_said, unimplemented_said}
 use features.sublang.{
     GrammarAction,
     action_miscounted,
@@ -877,6 +878,44 @@ fn enums_gathering_nothing(view: ItemView) -> List<Found> {
         enum_signature(view.engine, view.file, c!.name)?.variants?.is_empty() ?? false]
 }
 
+/// Every trait a `collect enum` of the written item `view` is written over that names a declaration
+/// other than a trait: at the word, its voice handed the enum and the word. A word naming nothing is
+/// resolve's to refuse.
+fn enum_traits_untraited(view: ItemView) -> List<Found> {
+    // the item is in hand: a statement that is no `collect enum` is passed over, and nothing is read
+    let item = view.item
+    let store = item.store
+    [Found { at: store.expr_span(t), args: [c!.name, word!] } for s in item.stmts for c in [store.collect_enum_parts(s)] if c != null for t in c!.traits for word in [store.ident_name(t)] if word != null && names_no_trait(view.engine, view.file, word!)]
+}
+
+/// Every declaration of the written item `view` a `collect enum` of its package gathers that writes
+/// no impl of a trait the enum is written over, where that trait derives none for it: at the
+/// declaration, its voice handed the enum, the trait and the member.
+fn members_unimplemented(view: ItemView) -> List<Found> {
+    // only a type implements a trait: an item declaring none owes no impl, and reads nothing more
+    let store = view.item.store
+    if !view.item.stmts.any((s) -> store.type_decl_name(s) != null) { return [] }
+    // a package whose members owe nothing says so in one word, and no item of it reads its gatherings
+    if !owes_impls(view.engine, view.file.package_name) { return [] }
+    let owed? = package_gatherings(view.engine, view.file.package_name)
+        .owed
+        .get(view.file.path_in_package) else { return [] }
+    [Found { at: declared_span(view, o.member), args: [o.owner, o.word, o.member] } for o in owed if o.item == view.at && !written_traits(view.engine, view.file, o.member).contains(o.word)]
+}
+
+/// Where the written item `view` declares `name`: the statement declaring it.
+fn declared_span(view: ItemView, name: string) -> Span? {
+    let store = view.item.store
+    let s? = view.item.stmts.find((x) -> store.declared_name(x) == name) else { return null }
+    store.stmt_span(s)
+}
+
+/// Whether `word`, read from `file` as a type, names a declaration that is no trait.
+fn names_no_trait(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
+    let d? = resolved(engine, file, Space.Type, word).named() else { return false }
+    d.kind != ItemKind.Trait
+}
+
 /// Whether the `collect enum` `c` of `file` asks lawfully: its header names a scope that exists and
 /// an order, and the component it gathers, where it names one, is one this file sees.
 fn gathers_lawfully(engine: QueryEngine, file: SourceFileAddress, c: CollectEnumParts) -> bool {
@@ -942,7 +981,16 @@ fn declared_found(
     keep: fn(string) -> bool,
 ) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
-    let item = read_item(engine, file, at)
+    found_named(read_item(engine, file, at), name_of, keep)
+}
+
+/// Each statement of `item` that `name_of` names, where `keep` keeps the name: found at the
+/// statement, handed the name.
+fn found_named(
+    item: ReadItem,
+    name_of: fn(SyntaxArena, StmtId) -> string?,
+    keep: fn(string) -> bool,
+) -> List<Found> {
     [Found { at: item.store.stmt_span(s), args: [n!] } for s in item.stmts for n in [name_of(item.store, s)] if n != null && keep(n!)]
 }
 
@@ -959,6 +1007,98 @@ export law const_reads_itself_law {
     reads: consts_reading_themselves
     voice: const_cycle_words
     witness: "const a = a\n"
+}
+
+/// a named instance's build, or a module `state`'s start, never reads what it builds
+export law build_reads_itself_law {
+    kind: "const.cycle"
+    reads_view: builds_reading_themselves
+    voice: build_cycle_words
+    witness: "component box {\n    n: int = 0\n}\n\nfn size() -> int { b.n }\n\nbox b { n: size() }\n\nprintln(\"\${b.n}\")\n"
+}
+
+fn build_cycle_words(a: List<string>) -> Voice { build_reads_itself(a[0]) }
+
+/// Every named instance and module `state` the written item `at` of `file` declares whose build reads
+/// it back (`build_loop`), found where it's declared.
+fn builds_reading_themselves(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.stmts.any((s) -> built_named(item.store, s) != null) { return no_findings() }
+    found_named(item, built_named, (n) -> build_loop(view.engine, declared_place(view.file, n)))
+}
+
+/// The name the statement `s` builds at run time: a named instance's, or a module `state`'s.
+fn built_named(store: SyntaxArena, s: StmtId) -> string? {
+    if store.is_component_inst(s) || store.is_module_state(s) { store.let_name(s) } else { null }
+}
+
+/// Whether the build of `home` — a named instance's value, a module `state`'s start — reads `home`
+/// before it has one: through the fns, methods and statics it calls, and the builds of the instances
+/// and states it reads, each asked for first. A fn only named, held as a value, and a lambda's body,
+/// run nothing here.
+fn build_loop(engine: QueryEngine, home: DeclaredAt) -> bool {
+    let first? = build_body(engine, home) else { return false }
+    mut bodies = [first]
+    mut walked: Map<string, bool> = {}
+    mut k = 0
+    while k < bodies.length {
+        let b = bodies[k]
+        k = k + 1
+        if walked.has(b.key) { continue }
+        walked.set(b.key, true)
+        let store = b.item.store
+        let nodes = under(store, At.Expr(b.root))
+        let bound = b.seats.concat(flatten([bound_at(store, n) for n in nodes]))
+        let held = [x for l in nodes for e in some_list(expr_at(l)) if store.lambda_parts(e) != null for x in under(store, l).drop(1)]
+        for n in nodes {
+            if held.any((h) -> same_at(h, n)) { continue }
+            let e? = expr_at(n) else { continue }
+            let called = store.call_parts(e)?.callee
+            let read = if called == null { store.ident_name(e) } else { null }
+            let name? = called ?? read else { continue }
+            if bound.contains(name) { continue }
+            let d? = resolved(engine, b.file, Space.Value, name).named() else { continue }
+            if called != null {
+                if d.kind == ItemKind.Fn { bodies = bodies.concat(some_list(fn_body(engine, d))) }
+                continue
+            }
+            let place = declared_place(d.file, d.name)
+            let built = build_body(engine, place)
+            if built == null { continue }
+            if same_declared(place, home) { return true }
+            bodies.push(built!)
+        }
+        bodies = bodies.concat(methods_run(engine, b))
+    }
+    false
+}
+
+/// The expression the node `at` is; absent for any other node.
+fn expr_at(at: At) -> ExprId? { match at { .Expr(e) -> e, rest -> null } }
+
+/// Whether two nodes are one.
+fn same_at(a: At, b: At) -> bool {
+    match a { .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), rest -> false }, rest -> false }
+}
+
+/// The build of the named instance or module `state` at `place`, as a body a run asks for: its value,
+/// or its start. Absent for any other declaration.
+fn build_body(engine: QueryEngine, place: DeclaredAt) -> RunBody? {
+    for kind in [ItemKind.Const, ItemKind.State] {
+        let at? = declared_item(engine, place.file, place.name, kind) else { continue }
+        let item = read_item(engine, place.file, at)
+        let s? = item.stmts.find((s) -> built_named(item.store, s) == place.name) else { continue }
+        let v? = item.store.stmt_value(s) ?? item.store.const_value(s) else { continue }
+        return RunBody {
+            file: place.file,
+            at: at,
+            item: item,
+            root: v,
+            seats: [],
+            key: "${place.file.package_name}/${place.file.path_in_package}/${place.name}\$build",
+        }
+    }
+    null
 }
 
 /// Every method an impl of a trait the written item `view` shows writes that the trait doesn't
@@ -1318,6 +1458,22 @@ export law index_named_as_element {
     witness: "fn f() -> int {\n    for i, i in [1] {\n        1\n    }\n    1\n}\n"
 }
 
+/// a collected enum is written over traits
+export law collect_enum_over_a_trait {
+    kind: "collect_enum.trait"
+    reads_view: enum_traits_untraited
+    voice: untraited_words
+    witness: "type Nope = {}\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// each member of a collected enum implements the traits it is written over
+export law collect_enum_member_implements {
+    kind: "collect_enum.trait"
+    reads_view: members_unimplemented
+    voice: unimplemented_words
+    witness: "use @std.meta.{Named, Marker}\n\nexport fn shape(_d: Named) -> Marker { Marker {} }\n\ntrait Area {\n    fn area() -> int\n}\n\n@shape\ntype Dot = {}\n\ncollect enum Shape: Area = @shape in self by it.name\n"
+}
+
 /// a collected enum gathers at least one member
 export law collect_enum_empty {
     kind: "collect_enum.empty"
@@ -1375,6 +1531,10 @@ fn stray_words(_a: List<string>) -> Voice { no_method() }
 fn paired_words(a: List<string>) -> Voice { index_as_element(a[0]) }
 
 fn gathers_words(a: List<string>) -> Voice { enum_gathers_nothing(a[0]) }
+
+fn untraited_words(a: List<string>) -> Voice { no_trait_said(a[0], a[1]) }
+
+fn unimplemented_words(a: List<string>) -> Voice { unimplemented_said(a[0], a[1], a[2]) }
 
 fn nested_use_words(_a: List<string>) -> Voice { nested_uses() }
 

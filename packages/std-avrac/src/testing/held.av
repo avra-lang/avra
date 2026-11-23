@@ -1,6 +1,7 @@
 //! A PROGRAM HELD IN MEMORY, asked of the program layer: its files, where each package it names
 //! stands, and what a build of it says, runs and lowers to.
 use compiler.{
+    meta_door,
     item_ids,
     InferringFn,
     program_unset_holes,
@@ -235,7 +236,9 @@ impl Held {
     /// files.
     fn judged_with(entry: SourceFileAddress, engine: QueryEngine) -> Judged {
         self.entered()
-        let graph = self.manifests_said(engine)
+        let said_of_graph = self.manifests_said(engine)
+        // the meta door, as the old path's: a loaded `@std/meta` whose shapes moved speaks alone
+        let graph = if has_errors(said_of_graph) { said_of_graph } else { said_of_graph.concat(meta_door(engine)) }
         let said = if has_errors(graph) { graph } else { graph.concat(self.files_said(engine, entry)) }
         Judged { held: self, engine: engine, entry: entry, diagnostics: said }
     }

@@ -108,14 +108,19 @@ export fn generator_signature(engine: QueryEngine, file: SourceFileAddress, name
 
 /// The type a top-level binding — a `const`, a `collect` or a `state` — `file` declares as `name` is written
 /// with, resolved where it's written: a generated one's in the generator's file. Absent when it
-/// declares none or writes no type.
+/// declares none or writes no type — a named instance writes none, its written type arguments a
+/// prefix its fields finish.
 @query
 export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let item? = [ItemKind.Const, ItemKind.Collect, ItemKind.State]
         .find_map((k) -> declaring_item(engine, file, name, k)) else { return null }
     let s? = item
         .stmts
-        .find((x) -> item.store.let_name(x) == name && item.store.binding_ty(x) != null) else { return null }
+        .find(
+            (x) -> item.store.let_name(x) == name &&
+                item.store.binding_ty(x) != null &&
+                !item.store.is_component_inst(x),
+        ) else { return null }
     Signing { engine: engine, file: file, type_params: [], writer: written_by(item.store, s) }
         .signed(item.store.binding_ty(s)!)
 }

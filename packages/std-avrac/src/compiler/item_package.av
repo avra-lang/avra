@@ -1,6 +1,6 @@
 //! WHAT A PACKAGE READS AS: every source file's items and what its top level sees, asked as one
 //! question, so a process asking it of a package nobody edited checks one record of inputs.
-use core.{flatten, distinct}
+use core.{flatten, distinct, some_list}
 use @std.meta.{derive}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -74,7 +74,6 @@ export fn marked_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
     ) ?? []
     program_markers().any((m) -> names.contains("${stem_of(path)}.${m}"))
 }
-
 /// The files a package reaches: its own sources, then each file of every module one of them imports,
 /// and so on, each once.
 @derive(Saved)
@@ -141,6 +140,29 @@ export fn package_reach(engine: QueryEngine, package: string) -> ReachedPackages
     ReachedPackages {
         packages: distinct([f.package_name for f in package_closure(engine, package).files]),
     }
+}
+
+/// The std packages the library of `package` reaches through its files' `use` lines, itself among them,
+/// each once, widened until a step adds none — asked once a package, as a re-export's cycle law
+/// asks it of each package it re-exports from. A package is its library: what its tests use is no
+/// edge of it.
+@query
+export fn package_uses_reached(engine: QueryEngine, package: string) -> List<string> { uses_widened(engine, [package]) }
+
+/// `keys` and every package they reach through `use` lines, widened until a step adds none.
+fn uses_widened(engine: QueryEngine, keys: List<string>) -> List<string> {
+    let wider = distinct(keys.concat(flatten([package_uses(engine, k) for k in keys])))
+    if wider.length == keys.length { keys } else { uses_widened(engine, wider) }
+}
+
+/// The std packages the library of `package` names in its `use` lines, itself aside: what a
+/// re-export's cycle can close through, where no manifest row stands between them.
+@query
+fn package_uses(engine: QueryEngine, package: string) -> List<string> {
+    let files = [source_at(package, p) for p in package_source_paths(engine, package).paths]
+    distinct(
+        [m.package for f in files for u in file_words(engine, f).uses for m in some_list(imported_module(engine, f, u)) if m.package != package && m.package.starts_with(STD)],
+    )
 }
 
 collect listed_package_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

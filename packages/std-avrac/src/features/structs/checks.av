@@ -261,13 +261,20 @@ fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType?
 }
 
 /// The value `v` a `with` writes for the field `name` of `subject`, checked against that field: a
-/// field of `@std/meta`'s `Key` as a literal's is; a value of a subject no field is known of, freely.
+/// field of `@std/meta`'s `Key` as a literal's is; a field its record doesn't have refused at the
+/// value, as a literal's is (`LiteralFault.Unknown`); a value of a subject no field is known of,
+/// freely.
 fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
     let held? = subject else {
         let _ = cx.check(v, Expected.Free)
         return
     }
     let field? = cx.field_of(held, name) else {
+        let record = cx.record_of(held)
+        if record != null && !cx.store.refused_elsewhere(v) {
+            cx
+                .literal_refused(v, LiteralFault.Unknown(held.spelled(), name, [f.name for f in record!.fields]))
+        }
         let _ = cx.check(v, Expected.Free)
         return
     }

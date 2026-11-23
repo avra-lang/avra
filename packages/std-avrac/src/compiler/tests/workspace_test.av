@@ -3,6 +3,7 @@
 // and every failed `use` speaks in its own words.
 use @std.avrac.testing.held.{Held, Judged, held_at}
 use compiler.{in_scope}
+use compiler.dev.{reexport_cycle_files}
 use @std.avrac.diagnostics.{Diag, render, new_source_file}
 
 /// A small package: a root file, a root sibling, a directory module
@@ -490,6 +491,16 @@ spec "the toolchain's std packages" {
             let a = held_main("use @std.text.{shout}\n1\n").judged_at("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("`@std/text` is not a dependency of this package")
+        }
+    }
+    given "two std packages that use each other, no manifest between them" {
+        then "a re-export of one from the other is refused where it closes the cycle" {
+            let a = held_files(reexport_cycle_files()).judged_at("/w/src/main.av")
+            a
+                .report()
+                .contains(
+                    "error[resolve.reexport_cycle]: `@std/high` already uses `@std/low`, so re-exporting from it here would close a package cycle\n  ╭─[/std/std-low/src/low.av:4:8]",
+                )
         }
     }
     given "a manifest row for a std package" {

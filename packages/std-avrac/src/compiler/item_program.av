@@ -2417,7 +2417,8 @@ export fn program_fact_definitions() -> List<QueryDefinition> { definitions_of(l
 export fn scheduled_by(survey: TaskSurvey, entry: LoweredFn) -> TaskChecks { if survey.links_from(entry) { TaskChecks.Scheduled } else { TaskChecks.Tested } }
 
 /// Whether what `root` reaches holds a collect gathering `in closure`: a value made of it is each
-/// program's own, read over that program's closure.
+/// program's own, read over that program's closure. A body reached only as a fn value is reached
+/// too, since a run that calls it reads the collect as surely as a direct call does.
 export fn reaches_gathered(survey: TaskSurvey, root: LoweredFn) -> bool {
     match walked_from(
         survey,
@@ -2426,7 +2427,7 @@ export fn reaches_gathered(survey: TaskSurvey, root: LoweredFn) -> bool {
         null,
         true,
         null,
-        true,
+        false,
     ) { .Met(w) -> w.met.any(it.called.gathers_closure), .Stopped(_why, _at) -> false }
 }
 
@@ -2897,8 +2898,13 @@ fn taken_bodies(
 /// THE ONE DOOR EVERY COMPILE-TIME RUN OF A LAZILY MADE PROGRAM TAKES (a const's settling, a
 /// generator's run, an instance's check): the piece `made_late` makes for a fn the program defers,
 /// asked the first time the run calls it, its tests kept as `checks` names, as the program's were.
-export fn late_door(survey: TaskSurvey, checks: TaskChecks) -> fn(Lowered, string) -> Lowered? {
-    (have: Lowered, name: string) -> made_late(survey, have, name, checks)
+export fn late_door(
+    survey: TaskSurvey,
+    checks: TaskChecks,
+    program: string? = null,
+    hosted: bool = true,
+) -> fn(Lowered, string) -> Lowered? {
+    (have: Lowered, name: string) -> made_late(survey, have, name, checks, program, hosted)
 }
 
 /// THE DOOR A LAZILY MADE PROGRAM IS GROWN BY: the deferred fn `symbol` names (itself, or the wrapper
@@ -2907,8 +2913,17 @@ export fn late_door(survey: TaskSurvey, checks: TaskChecks) -> fn(Lowered, strin
 /// bodies, data and rows, and the deferred fns the grown program holds. Each body is asked of the engine here, so a run that calls it
 /// reads it and one that never calls it doesn't. Absent for a name `have` doesn't defer, and where
 /// the piece isn't made: a body not lowered yet, a code hash. A place a value took before its body
-/// was made holds no instructions, and is no body here.
-export fn made_late(survey: TaskSurvey, have: Lowered, symbol: string, checks: TaskChecks) -> Lowered? {
+/// was made holds no instructions, and is no body here. A collect gathering `in closure` it meets
+/// gathers as the program of the package `program` reads it, as the run that defers it does, and
+/// `hosted` says whether that program's host fns are bodies of it.
+export fn made_late(
+    survey: TaskSurvey,
+    have: Lowered,
+    symbol: string,
+    checks: TaskChecks,
+    program: string? = null,
+    hosted: bool = true,
+) -> Lowered? {
     let d? = have.deferred.find(it.callee.symbol == symbol || it.wrapper?.symbol == symbol) else { return null }
     let made = [b for b in have.fns if !b.ins.is_empty()].concat([have.entry])
     mut seen: Map<string, bool> = {}
@@ -2916,10 +2931,20 @@ export fn made_late(survey: TaskSurvey, have: Lowered, symbol: string, checks: T
     let held = held_of(
         [w! for x in have.deferred if x.callee.symbol != d.callee.symbol for w in [x.wrapper] if w != null],
     )
-    let walk = match walked(survey, [d.callee], seen, held, checks, null, false, null, true) {
-        .Met(w) -> taken_walk(survey.engine, w),
-        .Stopped(_, _) -> { return null },
-    }
+    let walk = match walked(
+        survey,
+        [d.callee],
+        seen,
+        held,
+        checks,
+        null,
+        false,
+        program,
+        true,
+        null,
+        [],
+        hosted,
+    ) { .Met(w) -> taken_walk(survey.engine, w), .Stopped(_, _) -> { return null } }
     let taken = taken_bodies(walk, [], [], some_list(d.wrapper))
     let waiting = deferred_of(walk.deferred, taken.wrappers)
     let fresh = [if b.name == d.callee.symbol { b with { marks: [] } } else { b } for b in taken.fns]

@@ -56,11 +56,12 @@ impl Checks for InstanceFn {
 }
 
 /// The type an instance of the component `word` is: the component, applied to the type arguments
-/// written; absent when the word names no component the program declares.
+/// written — a prefix, the rest left to its fields — absent when the word names no component the
+/// program declares.
 fn instance_type(cx: Checking, word: string, targs: List<TypeRef>) -> SignedType? {
     let named = cx.type_named(word, null)
     match named.head {
-        .Declared(_, _) -> named with { args: if targs.is_empty() { inferred_args(cx, named) } else { [cx.written(t) for t in targs] } },
+        .Declared(_, _) -> named with { args: [cx.written(t) for t in targs].concat(inferred_args(cx, named).drop(targs.length)) },
         rest -> null,
     }
 }
@@ -83,8 +84,8 @@ fn generic_instance(cx: Checking, word: string) -> bool {
     cx.record_of(named)?.params ?? 0 > 0
 }
 
-/// The type arguments an instance that writes none leaves its component's parameters: each one the
-/// instance's fields decide, so inferred.
+/// The type arguments an instance leaves its component's parameters: each one the instance's fields
+/// decide, so inferred.
 fn inferred_args(cx: Checking, declared: SignedType) -> List<SignedType> {
     [headed_type(TypeHead.Inferred) for _p in 0..cx.record_of(declared)?.params ?? 0]
 }

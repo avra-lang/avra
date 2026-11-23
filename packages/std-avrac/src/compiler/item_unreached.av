@@ -2,11 +2,13 @@
 //! const of its name to compare against — leaves the arm after it nothing to match. Read over a
 //! written item's `match`es; the arm after each such catch-all is warned of where its first pattern
 //! stands.
-use core.{ExprId, PatId, SignedType, SyntaxArena, flatten, some_list}
+use core.{Arm, ExprId, GrammarSpec, PatId, SignedType, SyntaxArena, flatten, some_list}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.enums.{last_arm_compares_said, unreached_after_binder_said, unreached_after_hole_said}
-use @std.meta.{derive}
+use features.formats.{format_covers_arm, pattern_text}
+
+use @std.meta.{derive, format_subsumes}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
@@ -159,6 +161,85 @@ export law arm_after_hole {
     warns: true
     witness: "fn f(n: int) -> int {\n    match n {\n        _ -> 1,\n        2 -> 2,\n    }\n}\n"
 }
+
+/// Every arm of the written item `view` shows whose pattern an earlier unguarded arm's format
+/// accepts every text of — `format_subsumes` answering that it covers — found where it stands; handed
+/// the earlier pattern as written. An item holding fewer than two format or text patterns has none,
+/// and reads none of its nodes for it.
+fn formats_covered(view: ItemView) -> List<Found> {
+    let store = view.item.store
+    let first? = (0..store.pat_count()).find((i) -> text_pattern(store, PatId { index: i })) else { return [] }
+    if !(first + 1..store.pat_count()).any((i) -> text_pattern(store, PatId { index: i })) { return [] }
+    let written_only = template_nodes(store)
+    let signing = signing_in(view.engine, view.file, [])
+    [f! for i in 0..store.exprs.count() for e in [ExprId { index: i }] if !written_only.contains(e) for m in some_list(match_at(store, e)) for j in 0..m.arms.length for f in [covered_arm(store, signing, m.arms, j)] if f != null]
+}
+
+/// The arm `j` of `arms` where an earlier unguarded arm's format covers its pattern: found at its
+/// pattern, handed the earlier one; absent where none does or none can be told to.
+fn covered_arm(store: SyntaxArena, signing: Signing, arms: List<Arm>, j: int) -> Found? {
+    if arms[j].pats.length != 1 { return null }
+    let b? = pat_shape(store, signing, arms[j].pats[0]) else { return null }
+    let k? = (0..j)
+        .find(
+            (i) -> arms[i].guard == null &&
+                arms[i].pats.length == 1 &&
+                shape_covers(store, signing, arms[i].pats[0], b),
+        ) else { return null }
+    let above? = pattern_spelled(store, arms[k].pats[0]) else { return null }
+    Found { at: store.pat_span(arms[j].pats[0]), args: ["\"${above}\""] }
+}
+
+/// Whether the pattern `p` is a format that accepts every text `b` does.
+fn shape_covers(store: SyntaxArena, signing: Signing, p: PatId, b: FormatShape) -> bool {
+    let a? = pat_shape(store, signing, p) else { return false }
+    format_subsumes(a, b) is .Covers
+}
+
+/// Whether the pattern `p` is a format or a text literal: the patterns a format covers, and the ones
+/// it covers with.
+fn text_pattern(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) {
+        .Format(_, _) -> true,
+        .Lit(v) -> store.expr(v).text_of() != null,
+        rest -> false,
+    }
+}
+
+/// The shape of the pattern `p` where it is a format or a text literal; absent for any other.
+fn pat_shape(store: SyntaxArena, signing: Signing, p: PatId) -> FormatShape? {
+    match store.pat(p) {
+        .Format(head, parts) -> {
+            let format = GrammarSpec { head: head, parts: parts }
+            format_shape(format, readings_of(format, signing))
+        },
+        .Lit(v) -> {
+            let text? = store.expr(v).text_of() else { return null }
+            FormatShape { head: text, holes: [] }
+        },
+        rest -> null,
+    }
+}
+
+/// The pattern `p`, a format or a text literal, as it is written; absent for any other.
+fn pattern_spelled(store: SyntaxArena, p: PatId) -> string? {
+    match store.pat(p) {
+        .Format(head, parts) -> pattern_text(head, parts),
+        .Lit(v) -> store.expr(v).text_of(),
+        rest -> null,
+    }
+}
+
+/// an arm after a format that accepts every text it does
+export law arm_after_format {
+    kind: "type.unreachable_arm"
+    reads_view: formats_covered
+    voice: format_arm_words
+    warns: true
+    witness: "fn f(t: string) -> int {\n    match t {\n        \"/a/{x}\" -> 1,\n        \"/a/b\" -> 2,\n        _ -> 3,\n    }\n}\n"
+}
+
+fn format_arm_words(a: List<string>) -> Voice { format_covers_arm(a[0]) }
 
 fn binder_words(a: List<string>) -> Voice { unreached_after_binder_said(a[0]) }
 

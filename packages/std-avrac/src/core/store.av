@@ -1818,17 +1818,18 @@ impl SyntaxArena {
         self.hoisted.get().any(same_stmt(it, s))
     }
 
-    /// An EXPORTED named instance at a file's top level is a
-    /// declaration — a `const` built once per run at its first read,
-    /// never a statement of `main` — carrying what was written over it.
-    /// One not exported stays the statement it was written as.
+    /// A named instance at a file's top level is a declaration — a
+    /// `const` built once per run, kept for every read after, as a
+    /// module `state`'s box is — carrying what was written over it,
+    /// export included. The entry builds its own where they're written
+    /// (`runs_in_entry`); a module file's are built at their first read.
     fn declared_instance(s: StmtId) -> StmtId {
-        if !self.is_component_inst(s) || !self.is_exported(s) { return s }
+        if !self.is_component_inst(s) { return s }
         let name? = self.let_name(s) else { return s }
         let value? = self.stmt_value(s) else { return s }
         let d = self.alloc_stmt(Stmt.ConstDecl(Scoped(name), null, value), self.stmt_span(s))
         self.mark_component_inst(d, self.instance_of(s)!)
-        self.mark_exported(d)
+        if self.is_exported(s) { self.mark_exported(d) }
         let group = self.doc_group(s)
         if group != null { self.document(d, group!.lines, group!.at) }
         for a in self.annotations_of(s) { self.annotate(d, a) }

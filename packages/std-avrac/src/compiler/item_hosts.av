@@ -144,13 +144,24 @@ fn package_host_fns(engine: QueryEngine, package: string) -> HostFns {
 /// The paths of `package`'s sources, its tests aside: its listings settled on the names of its sources,
 /// so a name a listing gains that is no source — a binary placed beside them, an asset — moves no reader.
 @cut_query
-fn package_source_paths(engine: QueryEngine, package: string) -> SourcePaths {
-    SourcePaths { paths: [p for p in package_sources(engine, package, "src") if !in_tests(p)] }
+export fn package_source_paths(engine: QueryEngine, package: string) -> SourcePaths {
+    SourcePaths {
+        paths: [p for p in package_listed_sources(engine, package).paths if !in_tests(p)],
+    }
+}
+
+/// The paths of every source of `package`, its tests among them, in listing order: the package's
+/// listing read once a process, for every reader that asks what files a package holds — an `in package`
+/// gathering, the laws over a package's gatherings and its `use` lines — settled on the names of its
+/// sources, so a name a listing gains that is no source moves no reader.
+@cut_query
+export fn package_listed_sources(engine: QueryEngine, package: string) -> SourcePaths {
+    SourcePaths { paths: package_sources(engine, package, "src") }
 }
 
 /// A package's source paths, in listing order.
 @derive(Saved)
-type SourcePaths = { paths: List<string> }
+export type SourcePaths = { paths: List<string> }
 
 /// The host fns a build of the program `file` runs for `target` exports, beside the word that names
 /// each one's host: each hosted body its reach holds that its own package declares, and each another

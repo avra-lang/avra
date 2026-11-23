@@ -1,9 +1,14 @@
 //! WHAT A FN'S BODY IS TYPED AS: every node checked by its feature's rule, under the fn's signature,
 //! each name it reads asked of the names layer and that declaration's signature alone. The answer is
 //! a column of types beside the item's tape, by each node's place in the item read back.
+use features.{NodeVariant, meta_moved_from}
+use features.annotations.{meta_foreign}
+use diagnostics.{Diag, said_as}
 use core.{
     MethodParts,
     flatten,
+    FieldSeat,
+    OwnType,
     At,
     TypeMemos,
     ConstSeed,
@@ -462,7 +467,7 @@ export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: s
         program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
         null,
     )
-    cx.check(value, Expected.Free)
+    cx.check_seated(value, null, Seating.Binding(name))
 }
 
 /// The type a top-level value's name has from `file`: a fn's, as a fn type, its answer with the error
@@ -815,6 +820,61 @@ fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> Sign
     let d? = declarations_of(engine, package, m.local(), false, name)
         .find(space_of(it.kind) == Space.Type) else { return null }
     headed_type(TypeHead.Declared(d.file, d.name))
+}
+
+/// THE META DOOR on the program layer: where the `@std/meta` this engine loads parts from the shapes
+/// this compiler was built against, the first shape that moved — the old path's own question
+/// (`meta_moved_from`), asked of the records and the `Node` the program reads; null where none does.
+@query
+export fn meta_moved(engine: QueryEngine) -> string? {
+    meta_moved_from(
+        (pkg: string, name: string) -> loaded_fields(engine, pkg, name),
+        loaded_node(engine),
+    )
+}
+
+/// The fields, in order, of the record the toolchain's module `module` declares as `name`; absent
+/// where it declares none.
+fn loaded_fields(engine: QueryEngine, module: string, name: string) -> List<string>? {
+    let ty? = toolchain_declared(engine, module, name) else { return null }
+    let at? = declared_at(ty) else { return null }
+    let record? = record_signature(engine, at.file, at.name) else { return null }
+    flatten([field_slots(engine, f) for f in record.fields])
+}
+
+/// The slots a crossed record's field takes, as the runtime lays them out: a field holding a record
+/// of more than one field, every one a scalar, never absent, rides inline — one slot per field,
+/// named by it (`@std/meta`'s `Spelled.mark`, a `SeatMark`, is `mutable` and `settled`); any other
+/// field is one slot of its own name.
+fn field_slots(engine: QueryEngine, f: FieldSeat) -> List<string> {
+    let ty? = f.ty else { return [f.name] }
+    if ty.nullable() { return [f.name] }
+    let at? = declared_at(ty) else { return [f.name] }
+    let inner? = record_signature(engine, at.file, at.name) else { return [f.name] }
+    if inner.fields.length < 2 || !inner.fields.all(scalar_seat(it)) { return [f.name] }
+    [g.name for g in inner.fields]
+}
+
+/// Whether a field holds a scalar, never absent: an `int`, a `float` or a `bool`.
+fn scalar_seat(f: FieldSeat) -> bool {
+    let ty? = f.ty else { return false }
+    !ty.nullable() && (ty.owns(OwnType.Int) || ty.owns(OwnType.Float) || ty.owns(OwnType.Bool))
+}
+
+/// The variants, in order, of the `Node` the loaded `@std/meta` declares, each by its payload count;
+/// absent where it declares none.
+fn loaded_node(engine: QueryEngine) -> List<NodeVariant>? {
+    let ty? = toolchain_declared(engine, "@std.meta", "Node") else { return null }
+    let at? = declared_at(ty) else { return null }
+    let e? = enum_signature(engine, at.file, at.name) else { return null }
+    [NodeVariant { name: v.name, arity: v.payloads.length } for v in e.variants ?? []]
+}
+
+/// What the meta door says before anything else of a program: the loaded `@std/meta`'s moved shape,
+/// in the old path's words and nowhere in the source — the boundary speaks first, and alone.
+export fn meta_door(engine: QueryEngine) -> List<Diag> {
+    let moved? = meta_moved(engine) else { return [] }
+    [said_as("annotation.meta", null, meta_foreign(moved))]
 }
 
 /// The package that holds the language's compile-time shapes.

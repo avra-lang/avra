@@ -271,6 +271,7 @@ fn signed_lowered(
     settled: List<SettledSeat> = [],
     framed: List<string> = [],
     notes: NodeNotes? = null,
+    built_once: bool = false,
 ) -> LoweredFn {
     let body = elaborated(engine, file, signed)
     let fills = bound_fills(parameters ?? [])
@@ -318,7 +319,7 @@ fn signed_lowered(
     }
     cx.scope_enter()
     let r = when {
-        signed.item.store.is_once(signed.stmt) -> cx
+        built_once || signed.item.store.is_once(signed.stmt) -> cx
             .once_answered(declared_symbol(file, name), body.body, signature.answer)
         signed.case -> case_lowered(cx, body.body)
         _ -> cx.lower(body.body)
@@ -1046,14 +1047,16 @@ fn unit_callee(m: DeclaredName) -> CalledFn {
 }
 
 /// The unit the const `file` declares as `name` builds its value by where it's read
-/// (`built_where_read`): no seats, its value answered. Absent for any other declaration.
+/// (`built_where_read`): no seats, its value answered — a component's instance once a run, kept in
+/// the unit's slot for every read after, as a module `state`'s box is. Absent for any other
+/// declaration.
 fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
     let d? = file_declares_named(engine, file, name)
         .names
         .find(it.name == name && it.kind == ItemKind.Const) else { return null }
     if !built_where_read(engine, d) { return null }
     match const_body(engine, d) {
-        .Ok(body) -> signed_lowered(engine, file, body, name, null),
+        .Ok(body) -> signed_lowered(engine, file, body, name, null, [], [], null, built_instance(engine, d)),
         .Err(_) -> null,
     }
 }

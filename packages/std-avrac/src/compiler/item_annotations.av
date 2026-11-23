@@ -361,13 +361,8 @@ fn worn_on(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Wor
     [WornOn { decl: d.name, kind: d.kind, store: item.store, a: a, read: item } for d in file_declares_at(engine, file, at).names if d.item == at for s in item.stmts if source_wrote_stmt(item.store, s) && item.store.declared_name(s) == d.name for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
 }
 
-/// The words `w` writes into seats of its fn taking fields; none where it writes none.
-fn words_of(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<ExprId> {
-    seat_field_words(
-        annotation_seats(engine, file, w.a.name),
-        [e for e in w.a.args if w.store.arg_label(e) == null],
-    )
-}
+/// The words `w` writes as names of its declaration's fields; none where it writes none.
+fn words_of(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<ExprId> { annotation_field_words(engine, file, w.store, w.a, fielded(w.kind)) }
 
 /// Whether a declaration of `kind` has fields an annotation may name: a record's, a component's.
 fn fielded(kind: ItemKind) -> bool { kind == ItemKind.Record || kind == ItemKind.Component }
