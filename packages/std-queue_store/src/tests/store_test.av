@@ -6,7 +6,7 @@ use @std.sqlite.{Db, sql}
 use @std.sqlite.c.{sqlite3_stmt_status}
 use @std.sqlite.error.{SqlError}
 use @std.text.{from_codepoint, repeat}
-use @std.time.{Time, ms}
+use @std.time.{Time, ms, secs}
 use fault.{homed}
 use queue_store.{Store, Wire, bury_in, store_home_with, wire_of}
 use rows.{take_next}
@@ -348,6 +348,62 @@ fn take_steps(n: int, held: int, order: Order) -> Result<int, HomeError> {
     let before = spent(q.db, 4, "UPDATE \"FlowItem\" SET \"reader\"")
     let _ = q.take()?
     spent(q.db, 4, "UPDATE \"FlowItem\" SET \"reader\"") - before
+}
+
+/// The steps `drop_oldest` takes to give up the oldest waiting item of a
+/// full queue past `n` released rows that back off, and whether the one
+/// given up was that item, no backing-off row among the gone.
+fn dropping_steps(n: int) -> Result<int, HomeError> {
+    let db = homed(Db.memory())?
+    let wide = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 100000, overflow: Overflow.drop_oldest },
+    )?
+    let _ = wide.send_all(parcels(n))?
+    for d in wide.taken(n)? { let _ = wide.release(d, secs(60))? }
+    let full = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 2, overflow: Overflow.drop_oldest },
+    )?
+    let _ = full.send(1, key("a"))?
+    let _ = full.send(2, key("b"))?
+    let before = spent(db, 4, drop_text)
+    let _ = full.send(3, key("c"))?
+    let gone = rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"key\" = 'a'")? == 0 &&
+        rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"epoch\" > 0")? == n
+    if !gone { return 0 - 1 }
+    spent(db, 4, drop_text) - before
+}
+
+/// A row sent `after:` under terms that allow it, older than the line,
+/// is the oldest waiting item once the terms give up the oldest.
+fn delayed_row_is_given_up_first() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let wide = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 100000, overflow: Overflow.fail },
+    )?
+    let _ = wide.send_after(1, key("a"), secs(60))?
+    let _ = wide.send(2, key("b"))?
+    let full = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 2, overflow: Overflow.drop_oldest },
+    )?
+    let _ = full.send(3, key("c"))?
+    rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"key\" = 'a'")? == 0 &&
+        rows(db, "SELECT count(*) FROM \"FlowItem\"")? == 2
+}
+
+/// The start of `drop_oldest`'s statement.
+const drop_text: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = (SELECT min"
+
+fn dropping_walks_no_backing_off_row() -> Result<bool, HomeError> {
+    let few = dropping_steps(10)?
+    few > 0 && dropping_steps(2000)? == few
 }
 
 fn send_cost_is_the_same_at_any_depth() -> Result<bool, HomeError> {
@@ -793,6 +849,12 @@ spec "std/queue_store" {
         }
         then "a send takes the same steps into a queue of 5000 as into one of 10" {
             send_cost_is_the_same_at_any_depth() catch false
+        }
+        then "drop_oldest gives up a delayed row older than the line, sent before its terms gave up the oldest" {
+            delayed_row_is_given_up_first() catch false
+        }
+        then "drop_oldest gives up its oldest waiting item in the same steps past 2000 backing-off rows as past 10" {
+            dropping_walks_no_backing_off_row() catch false
         }
         then "a take takes the same steps past 2000 held rows as past 10" {
             take_passes_no_held_row() catch false

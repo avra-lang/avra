@@ -226,6 +226,19 @@ let ticking = spawn nightly.run()
   alone, which the free index walked too. The delayed count still walks what it counts. A
   plain `(queue, ready_at)` index on the free rows was measured worse (100 226): the planner
   took it for the candidate and sorted by id.
+- Paid (was owed): `drop_oldest` walked every row backing off. A home whose terms give up the
+  oldest (`drop_oldest`, `latest`) makes `FlowItem_untaken`, `(queue) WHERE leased_until IS NULL
+  AND in_line IS NULL AND epoch = 0`: the rows that wait and no take reached, in send order, so
+  the statement's `min(id)` over them is one index entry. The statement, and so the row it
+  gives up, is unchanged. 10 000 rows backing off, fifo / by_key: 50 123 / 50 114 → 126 / 117
+  (`store_test` holds it equal past 2000 backing-off rows and past 10). The index is a cost on
+  every write of a database that holds such a queue — send 108 → 114, `after:` send 109 → 120,
+  take 121 → 124 (fifo) and 292 → 303 (by_key), ack 77 → 80, release 60 → 70 — and none on
+  any other database.
+- Still owed, by choice: operate's delayed count walks the rows that wait (50 054 past 10 000
+  backing off; 60 046 when the 10 000 are the delayed rows it counts). An index-only count is
+  measured — `(queue, ready_at)` under the same three conditions answers 52 — but it costs every
+  write of every database the steps above, for an operator's command, which may walk.
 
 Jobs and operating a queue (Q6):
 
