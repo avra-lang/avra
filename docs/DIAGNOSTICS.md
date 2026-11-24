@@ -6225,6 +6225,35 @@ error[type.code_hash_named]: `code_hash` hashes a declared fn, named where it is
 help: name the fn itself — `code_hash(answer)` — never a value or a call
 ```
 
+## type.marks_named
+
+`marks` asks after a declared fn, named where it is called
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{marks, Annotation}
+fn rule(a: Annotation) -> bool { marks(a, "secret") }
+0
+```
+
+```
+error[type.marks_named]: `marks` asks after a declared fn, named where it is called
+  ╭─[/w/src/main.av:2:43]
+2 │ fn rule(a: Annotation) -> bool { marks(a, "secret") }
+  ·                                           ┬
+  ·                                           ╰── this names no declared fn
+──╯
+help: name the fn the annotation is — `marks(a, secret)` — never its name as text, a value or a call
+```
+
 ## type.guard_value
 
 `guarded` is lowered where it is called — handed on uncalled it would run nothing

@@ -463,6 +463,9 @@ fn dispatched_call(
         if refused != null { return refused! }
     }
     if cx.view.decls.is_meta_fn(d, "code_hash") && !names_a_fn(cx, placed.args[0]) { return code_hash_unnamed(cx, placed.args[0]) }
+    if cx.view.decls.is_meta_fn(d, "marks") &&
+        placed.args.length == 2 &&
+        !names_a_fn(cx, placed.args[1]) { return marks_unnamed(cx, placed.args[1]) }
     if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, placed.args) }
     let tp: List<string> = cx.tparams(d)
@@ -741,11 +744,25 @@ fn names_a_fn(cx: TypeCx, f: ExprId) -> bool {
 
 fn code_hash_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId { cx.spoken(said_as("type.code_hash_named", cx.loc_of(f), hashed_unnamed())) }
 
+fn marks_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId { cx.spoken(said_as("type.marks_named", cx.loc_of(f), marked_unnamed())) }
+
+/// What a meta fn taking a declared fn by name says of a value that names none.
+const NAMES_NO_DECLARED_FN: string = "this names no declared fn"
+
+/// `marks` asked after what names no declared fn.
+export fn marked_unnamed() -> Voice {
+    Voice {
+        message: "`marks` asks after a declared fn, named where it is called",
+        label: NAMES_NO_DECLARED_FN,
+        help: "name the fn the annotation is — `marks(a, secret)` — never its name as text, a value or a call",
+    }
+}
+
 /// `code_hash` handed what names no declared fn.
 export fn hashed_unnamed() -> Voice {
     Voice {
         message: "`code_hash` hashes a declared fn, named where it is called",
-        label: "this names no declared fn",
+        label: NAMES_NO_DECLARED_FN,
         help: "name the fn itself — `code_hash(answer)` — never a value or a call",
     }
 }

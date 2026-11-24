@@ -68,11 +68,11 @@ findings-d the last third
 warnings-a witness_program_warnings — the cli built cold and again with no change
 warnings-b witness_program_warnings — the cases under tools/program-warnings/, against their frozen warnings
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
-edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived"
-edit-b     witness_program_edit, WITNESS_ONLY=1
-edit-c     witness_program_edit, WITNESS_ONLY=5
-edit-d     witness_program_edit, WITNESS_ONLY=10
-edit-e     witness_program_edit, WITNESS_ONLY=rename
+edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived", the frontier walk checked
+edit-b     witness_program_edit, WITNESS_ONLY=1, the frontier walk checked
+edit-c     witness_program_edit, WITNESS_ONLY=5, the frontier walk checked
+edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
+edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
@@ -91,8 +91,8 @@ splits() {
 avrac-b|3|test packages/std-avrac — src/features/[a-e]*, its dirs dealt in turn
 avrac-c|2|test packages/std-avrac — src/features/[f-m]*, its dirs dealt in turn
 avrac-e|2|test packages/std-avrac — src/features/[s-z]*, its dirs dealt in turn
-edit-f|2|witness_program_edit's whole-mode cases (modes-whole), each alone over its own cold product
-edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone over its own cold product
+edit-f|2|witness_program_edit's whole-mode cases (modes-whole), each alone over its own cold product, the frontier walk checked
+edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone over its own cold product, the frontier walk checked
 cli|6|test packages/cli, its tests dealt in turn, failing names held to tools/gate/cli.names
 program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-ns and each runtime test (runtime/tests/*.c) — dealt in turn
 refusal|8|witness_program_refusal over its cases, dealt in turn
@@ -583,7 +583,16 @@ part_of() {
 warnings_part() { row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
 
 # the edit witness's edits `$1`
-edit_part() { row edit-witness env WITNESS_ONLY="$1" sh tools/witness_program_edit.sh build/avra; }
+# THE WALK IS CHECKED WHERE IT IS WRITTEN: every warm build an edit witness makes checks a frontier
+# write's walk from where reads were cut against the whole walk from the roots, and says a mismatch in
+# the row's trips file — a save that traps after its process answered fails no build, so the trips
+# are judged apart: none holds.
+edit_part() {
+    trips="$out/walk-check.trips"
+    : >"$trips"
+    row edit-witness env WITNESS_ONLY="$1" AVRA_FRONTIER_WALK_CHECK="$trips" sh tools/witness_program_edit.sh build/avra
+    judged edit-walk-check "$([ -s "$trips" ] && echo 1 || echo 0)"
+}
 
 # WHAT THIS MACHINE IS, the first line of the slice's rows: its cores as a process may use them and as
 # the machine has them, its cgroup's cpu and memory bounds, its load, the memory pool's slot files,

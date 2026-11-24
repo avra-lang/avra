@@ -41,6 +41,8 @@ extern fn avra_embed(path: string) -> string
 
 extern fn avra_type_named(name: string) -> Type?
 
+extern fn avra_fn_declared(key: string) -> Fn?
+
 /// A TYPE AS A SHAPE, beside the spelling every seat has always
 /// carried. A rule that DISPATCHES on a type asks this; a rule that
 /// PRINTS one asks `spelled()`, which answers the same words the
@@ -182,7 +184,32 @@ export type MarkArg = { label: string, value: string }
 /// refusals pointing here. `args` holds the positional arguments and
 /// `named` each `label: value`, as a `Mark`'s do; a list argument's
 /// text is its source spelling (`["open", "done"]`).
-export type Annotation = { name: string, args: List<string>, at: Loc?, call: Code? = null, named: List<MarkArg> = [] }
+/// `key` is the identity of the fn the annotation names, empty where the
+/// name resolves to no fn: ask which fn it is with `marks`, never by its
+/// name, and read the fn itself with `decl`, which builds it only then.
+export type Annotation = { name: string, args: List<string>, at: Loc?, call: Code? = null, named: List<MarkArg> = [], key: string = "" }
+
+/// The fn the annotation `a` names, as a `Fn`: its seats, its answer and
+/// the annotations it wears, each of those asked after by `decl` in turn.
+/// The compiler builds it when a derive asks, and never for an annotation
+/// no derive reads; absent where the name resolves to no fn, and where no
+/// compiler answers.
+export fn decl(a: Annotation) -> Fn? {
+    if a.key.is_empty() { return null }
+    avra_fn_declared(a.key)
+}
+
+/// WHETHER `a` IS AN ANNOTATION BY THE FN `f`, by the declaration's
+/// identity: `marks(a, secret)` holds for `@secret` and for the same fn
+/// worn under any name a `use` gave it, and for nothing else. `f` is a
+/// declared fn, named where it is called, so a misspelt or moved one is
+/// a resolve error. The compiler answers it; this body, reached only
+/// where no compiler did, answers false.
+export fn marks<F>(_a: Annotation, _f: F) -> bool { false }
+
+/// `marks`'s answer, as the compiler lowers it: `a`'s fn has the
+/// identity `key`.
+fn marked_by(a: Annotation, key: string) -> bool { !a.key.is_empty() && a.key == key }
 
 /// The annotation called over a value — `@range(13, 130)` over `v`
 /// is `range(v, 13, 130)`. An annotation whose first seat takes a value is

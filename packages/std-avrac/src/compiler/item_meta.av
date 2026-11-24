@@ -29,6 +29,7 @@ use core.{
     headed_type,
     sorted_by,
     spelled,
+    decl_key,
     decl_keyed,
 }
 use features.{
@@ -681,7 +682,8 @@ fn mark_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Ma
 /// A mark's named arguments, each as its label and literal.
 fn named_args(m: Mark) -> List<MetaMarkArg> { [MetaMarkArg { label: n.label, value: n.value } for n in m.named] }
 
-/// A member's mark `file` writes as its own `Annotation`, with the call a rule splices.
+/// A member's mark `file` writes as its own `Annotation`, with the call a rule splices and the
+/// identity of the fn its name resolves to.
 fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaAnnotation {
     MetaAnnotation {
         name: m.name,
@@ -689,27 +691,42 @@ fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadIt
         at: meta_place(engine, file, item, m.span),
         call: call_written(engine, file, item, m.name, m.span),
         named: named_args(m),
+        key: key_of(named_decl(engine, file, m.name)),
     }
 }
 
 /// An annotation a statement of `file` wears as an `Annotation`: each argument as the literal it
-/// writes, and the call a rule splices where it is one.
+/// writes, the call a rule splices where it is one, and the identity of the fn its name resolves to.
 fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaAnnotation {
     let store = item.store
+    let named = named_decl(engine, file, a.name)
     MetaAnnotation {
         name: a.name,
-        call: if rule_named(engine, file, a.name) { call_written(engine, file, item, a.name, a.span) } else { null },
+        key: key_of(named),
+        call: if rule_of(engine, named) { call_written(engine, file, item, a.name, a.span) } else { null },
         args: [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null],
         at: meta_place(engine, file, item, a.span),
         named: [MetaMarkArg { label: store.arg_label(e)!, value: arg_lit(store, store.unnamed(e)).text } for e in a.args if store.arg_label(e) != null],
     }
 }
 
+/// The declaration an annotation `file` writes as `name` resolves to, read once for both its call
+/// and its identity; absent where it resolves to none.
+fn named_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> DeclaredName? {
+    let scope? = file_scope(engine, file) else { return null }
+    resolved_in(engine, scope, file, Space.Value, name).named()
+}
+
+/// The identity of the fn `d` is, which `decl` builds only when a derive asks; empty for no fn.
+fn key_of(d: DeclaredName?) -> string {
+    let held? = d else { return "" }
+    if held.kind != ItemKind.Fn { "" } else { decl_key(held.file, held.name) }
+}
+
 /// THE CALL LAW: an annotation whose fn's first seat takes a value is a rule and carries a call; one
 /// whose first seat takes a declaration runs at compile time and carries none.
-fn rule_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
-    let scope? = file_scope(engine, file) else { return true }
-    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return true }
+fn rule_of(engine: QueryEngine, named: DeclaredName?) -> bool {
+    let d? = named else { return true }
     let sig? = fn_signature(engine, d.file, d.name) else { return true }
     let first? = sig.params.first() else { return true }
     !takes_a_declaration(first.ty)

@@ -11,6 +11,7 @@ use core.{
     BoxKind,
     Bound,
     CalledFn,
+    decl_key,
     ExprId,
     Layout,
     Lowering,
@@ -42,6 +43,7 @@ impl Lowers for Call {
         let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.missed_as(uncalled(cx, self, e)) }
         if self.args.length == 1 && metas(cx, named, GUARDED) { return guarded_run(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, CODE_HASH) { return code_hash_read(cx, e, self.args[0]) }
+        if self.args.length == 2 && metas(cx, named, MARKS) { return marks_read(cx, e, self.args) }
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
@@ -128,6 +130,12 @@ const GUARDED: string = "guarded"
 /// `@std/meta`'s fn whose answer the program gives.
 const CODE_HASH: string = "code_hash"
 
+/// `@std/meta`'s fn whose answer is an annotation's fn held to a named fn's identity.
+const MARKS: string = "marks"
+
+/// `@std/meta`'s fn that answers `marks`, handed the identity.
+const MARKED_BY: string = "marked_by"
+
 /// `@std/meta`'s fn whose fn value runs under the frame of contexts in force where it is called.
 const REHOMED: string = "rehomed"
 
@@ -197,6 +205,26 @@ fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unhashed()) }
     let _ = cx.lower(target)
     cx.code_hash_called(cx.layout_at(e), callee)
+}
+
+/// `marks(a, f)` over a fn the program declares: `@std/meta`'s `marked_by` of `a` and `f`'s identity,
+/// so the answer holds `a`'s fn to the declaration `f` names and never to a name. Any other argument
+/// isn't lowered yet.
+fn marks_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
+    let target = cx.store.unnamed(args[1])
+    let name? = cx.store.ident_name(target) else { return cx.missed_as(unmarked()) }
+    let named? = cx.named(target, name) else { return cx.missed_as(unmarked()) }
+    let marked? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unmarked()) }
+    let by? = (cx.program.toolchain_fn)(META_MODULE, MARKED_BY) else { return cx.missed_as(unmarked()) }
+    let mark = cx.handing_mark()
+    let r = cx
+        .call_fn(
+            cx.layout_at(e),
+            by,
+            [cx.lower(cx.store.unnamed(args[0])), cx.const_str(decl_key(marked.file, marked.name))],
+        )
+    cx.handed_back(mark)
+    r
 }
 
 /// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on
@@ -313,3 +341,5 @@ fn unlaid(callee: CalledFn) -> string { "a call of the generic `${callee.name}` 
 
 /// A code hash's argument naming no fn the program declares.
 fn unhashed() -> string { "a code hash of what names no declared fn" }
+
+fn unmarked() -> string { "a mark asked after what names no declared fn" }

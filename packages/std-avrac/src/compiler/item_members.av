@@ -34,7 +34,7 @@ use compiler.typing.{builtin_type_name}
 use features.floats.{to_int_unseen}
 use diagnostics.{Voice}
 use compiler.resolve.{type_param_as_value}
-use features.fns.{hashed_unnamed}
+use features.fns.{hashed_unnamed, marked_unnamed}
 use features.lists.{walk_unknowable, enumerate_unpaired, scan_unvalued}
 use features.closures.{uncallable_value}
 use features.enums.{variant_unbuilt, variant_unenumed, variant_unwanted}
@@ -234,6 +234,8 @@ enum Miss {
     /// A `?.` call of a method the declared type a nullable holds doesn't have, beside what the
     /// call means and where it stands.
     ChainMethod(owner: string, name: string, means: string, lo: int, hi: int)
+    /// `marks` asked after what names no declared fn.
+    MarkedUnnamed
 }
 
 impl Miss {
@@ -416,7 +418,7 @@ fn kept_miss(m: MissPlaced) -> MissAt { MissAt { at: kept_at(m.at), miss: m.miss
 /// answered is had.
 fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> List<MissPlaced> {
     let landed = shape_misses(engine, t, e, scope)
-        .concat(hash_miss(engine, t, e))
+        .concat(meta_named_miss(engine, t, e))
         .concat(call_spread_misses(engine, t, e))
         .concat(empty_map_miss(engine, t, e))
         .concat(owned_literal_miss(engine, t, e))
@@ -1067,18 +1069,41 @@ fn sole_signature(engine: QueryEngine, d: DeclaredName) -> FnSignature? {
     fn_signature(engine, d.file, d.name)
 }
 
-/// A call `e` of `@std/meta`'s `code_hash` whose one argument names no fn the file sees declared, by
-/// name or as the fn a call of it calls; a quote's hole names what its expansion writes.
-fn hash_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
+/// A call `e` of `@std/meta`'s `code_hash` or `marks` whose fn argument names no fn the file sees
+/// declared: its callee resolved once, for both. A quote's hole names what its expansion writes.
+fn meta_named_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
     let call? = t.store.call_parts(e) else { return [] }
-    if call.args.length != 1 { return [] }
+    // a call of two is asked after only where it writes `marks`, so no other call of two resolves
+    // its callee here; one under another name its `use` gave is refused where it is lowered
+    if call.args.length == 2 && call.callee != MARKS { return [] }
+    if call.args.length != 1 && call.args.length != 2 { return [] }
     let d? = resolved(engine, t.file, Space.Value, call.callee).named() else { return [] }
-    if d.kind != ItemKind.Fn || d.name != "code_hash" || d.file.package_name != "@std/meta" { return [] }
-    let arg = t.store.unnamed(call.args[0])
+    if d.kind != ItemKind.Fn || d.file.package_name != "@std/meta" { return [] }
+    if d.name == "code_hash" && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
+    if d.name == "marks" && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
+    []
+}
+
+/// `@std/meta`'s fn a call of two is asked after by.
+const MARKS: string = "marks"
+
+/// `code_hash`'s argument `arg`, where it names no fn the file sees declared, by name or as the fn a
+/// call of it calls.
+fn hash_miss(engine: QueryEngine, t: TypedNodes, arg: ExprId) -> List<MissPlaced> {
     let name = t.store.ident_name(arg) ?? t.store.call_parts(arg)?.callee
     if name != null && hole_name(name!) != null { return [] }
     if name != null && resolved(engine, t.file, Space.Value, name!).named()?.kind == ItemKind.Fn { return [] }
     [MissPlaced { at: t.store.expr_span(arg), miss: Miss.HashedUnnamed }]
+}
+
+/// `marks`'s fn argument `arg`, where it names no fn the file sees declared; a name nothing declares
+/// is the resolver's to say.
+fn marks_miss(engine: QueryEngine, t: TypedNodes, arg: ExprId) -> List<MissPlaced> {
+    let name = t.store.ident_name(arg)
+    if name != null && hole_name(name!) != null { return [] }
+    let named = if name == null { null } else { resolved(engine, t.file, Space.Value, name!).named() }
+    if name != null && (named == null || named!.kind == ItemKind.Fn) { return [] }
+    [MissPlaced { at: t.store.expr_span(arg), miss: Miss.MarkedUnnamed }]
 }
 
 /// A call of the fn `callee` whose arguments, each written by position, are a count its seats don't
@@ -1937,6 +1962,8 @@ fn list_verbs_missed(view: ItemView) -> List<Found> {
 
 fn hashes_unnamed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .HashedUnnamed -> ["hashed"], rest -> [] }) }
 
+fn marks_unnamed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .MarkedUnnamed -> ["marked"], rest -> [] }) }
+
 fn method_arities_missed(view: ItemView) -> List<Found> {
     misses_seen_in(
         view,
@@ -2473,6 +2500,16 @@ export law code_hash_names_a_fn {
 }
 
 fn hash_words(_a: List<string>) -> Voice { hashed_unnamed() }
+
+/// `marks` asks after a fn named where it is called
+export law marks_names_a_fn {
+    kind: "type.marks_named"
+    reads_view: marks_unnamed
+    voice: mark_words
+    witness: "use @std.meta.{marks, Annotation}\n\nfn f(a: Annotation) -> bool { marks(a, 1) }\n"
+}
+
+fn mark_words(_a: List<string>) -> Voice { marked_unnamed() }
 
 /// a record literal's spread carrying a field the record lacks, or at another type
 export law spread_carries_otherwise {

@@ -25,7 +25,7 @@ use answer_record.{
     words_of,
 }
 use defect.{defect}
-use @std.io.{env}
+use @std.io.{append_bytes, env}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{Saved}
 use saved_layout.{
@@ -1011,13 +1011,21 @@ impl FrontierChange {
 fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> FrontierChange? {
     let before = state?.length() ?? 0
     let moved = held.filter((h) -> moved_from(state, h))
-    let closed = fresh_closed(
+    let existing = moved.filter((h) -> place_in(state, h.question) != null)
+    let closed = fresh_reached(
         state,
-        sorted_by_hash(moved.filter((h) -> place_in(state, h.question) == null), (h) -> h.question),
+        existing,
+        fresh_closed(
+            state,
+            sorted_by_hash(
+                moved.filter((h) -> place_in(state, h.question) == null),
+                (h) -> h.question,
+            ),
+            before,
+        ),
         before,
     )
     let fresh = closed.entries
-    let existing = moved.filter((h) -> place_in(state, h.question) != null)
     let existing_reads = [placed_reads(state, closed.places, h) for h in existing]
     let placeable = [h for at, h in existing if existing_reads[at] != null]
     let places = [place_in(state, h.question)! for h in placeable]
@@ -1217,10 +1225,19 @@ fn whole_walk_held(change: FrontierChange, stale_now: List<bool>, unreached: Lis
     let reached? = change.reached_from_roots() else { return }
     let whole = [at for at in 0..change.extent if !reached[at] && !stale_now[at] && change.stands_at(at)]
     if whole.length != unreached.length || !(0..whole.length).all(whole[it] == unreached[it]) {
-        defect(
-            "the walk from where reads were cut left ${unreached.length} places unreached, the whole walk ${whole.length}",
-        )
+        let message = "the walk from where reads were cut left ${unreached.length} places unreached, the whole walk ${whole.length}"
+        walk_trip_kept(message)
+        defect(message)
     }
+}
+
+/// `message` appended to the file `AVRA_FRONTIER_WALK_CHECK` names, where it names one: a save that
+/// traps after its process answered says so where a gate can read it.
+fn walk_trip_kept(message: string) {
+    let to = whole_walk_checked() ?? ""
+    if to == "" || to == "1" { return }
+    // LICENSED input.debug_flag: a trip is said where the flag says, never read by an answer
+    let _ = append_bytes(to, "${message}\n".bytes()) catch ""
 }
 
 // LICENSED input.debug_flag: a debug flag is the process's own, not an input
@@ -1274,6 +1291,37 @@ fn fresh_closed(state: Frontier?, fresh: List<HeldEntry>, before: int) -> Placed
     let reads = [placed_reads(state, places, h) for h in fresh]
     if reads.all(it != null) { return PlacedFresh { entries: fresh, places: places, reads: [r! for r in reads] } }
     fresh_closed(state, [h for at, h in fresh if reads[at] != null], before)
+}
+
+/// THE NEW QUESTIONS SOMETHING REACHES, placed: each a root, or read by an answer the change rewrites
+/// or by another reached, so no answer no root reaches is written as standing — one a process
+/// settled checking a record that then didn't stand, which nothing read. An answer the change
+/// rewrites that no root reaches any more is found lost from where its reads were cut, and what it
+/// read new is lost with it. Over no state, every question is new and the write folds, keeping only
+/// what the roots reach: nothing is walked here.
+fn fresh_reached(state: Frontier?, existing: List<HeldEntry>, closed: PlacedFresh, before: int) -> PlacedFresh {
+    if state == null { return closed }
+    let count = closed.entries.length
+    mut kept = [h.root for h in closed.entries]
+    mut pending = [i for i in 0..count if kept[i]]
+    for h in existing {
+        let reads? = placed_reads(state, closed.places, h) else { continue }
+        for p in reads {
+            if p < before || kept[p - before] { continue }
+            kept.set(p - before, true)
+            pending.push(p - before)
+        }
+    }
+    while !pending.is_empty() {
+        let i = pending.pop()
+        for p in closed.reads[i] {
+            if p < before || kept[p - before] { continue }
+            kept.set(p - before, true)
+            pending.push(p - before)
+        }
+    }
+    if kept.all(it) { return closed }
+    fresh_closed(state, [h for i, h in closed.entries if kept[i]], before)
 }
 
 /// Whether `h` says something `state` doesn't: a question it doesn't hold, one stale there, or
