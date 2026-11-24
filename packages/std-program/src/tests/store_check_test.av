@@ -1,0 +1,220 @@
+// The store checked at rest: a store whole processes wrote is clean, and each thing no write may
+// leave, laid into one by hand, is found where it lies.
+use @std.io.{make_dirs, write_bytes}
+use @std.time.{stamp}
+use answer_record.{ContentHash, content_hash}
+use disk_store.{disk_store_at, frontier_file_path, frontier_prints}
+use frontier.{FrontierEntry, FrontierWrite, base_file, delta_file}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use saved_query.{ListedQuery, definitions_of, input, query, query_definition}
+use store_check.{StoreFault, store_faults}
+
+once fn checked_world() -> Cell<Map<string, string>> {
+    let world: Map<string, string> = {}
+    Cell.new(world)
+}
+
+@input("summary")
+fn checked_text(_engine: QueryEngine, path: string) -> string { checked_world().get().get(path) ?? "" }
+
+@query("summary")
+fn checked_length(engine: QueryEngine, path: string) -> int { checked_text(engine, path).length }
+
+@query("summary")
+fn checked_sum(engine: QueryEngine, first: string, second: string) -> int {
+    checked_length(engine, first) + checked_length(engine, second)
+}
+
+collect checked_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn fresh_directory(label: string) -> string {
+    let directory = "/tmp/avra-store-check/${stamp()}-${label}"
+    let _ = make_dirs(directory) catch ""
+    directory
+}
+
+/// A whole process over the store at `directory`: asks the sum of two paths, keeps its frontier,
+/// publishes.
+fn process_summing(directory: string, first: string, second: string) {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, definitions_of(checked_queries))
+    let _ = checked_sum(engine, first, second)
+    engine.frontier_kept()
+    let _ = store.saved()
+}
+
+/// A store three processes wrote, an edit between each: a base and a chain over it.
+fn written_store(label: string) -> string {
+    let directory = fresh_directory(label)
+    let a = "${label}-a"
+    let b = "${label}-b"
+    checked_world().put(a, "one")
+    checked_world().put(b, "three")
+    process_summing(directory, a, b)
+    checked_world().put(a, "seven")
+    process_summing(directory, a, b)
+    checked_world().put(b, "eleven")
+    process_summing(directory, a, b)
+    directory
+}
+
+/// `write` laid into `directory` as the binary printed `print`'s file.
+fn laid(directory: string, print: string, write: FrontierWrite) {
+    let octets = write.runs.fold("".bytes(), (all, run) -> all.concat(run))
+    let _ = write_bytes(frontier_file_path(directory, print, write.kind, write.id), octets) catch ""
+}
+
+fn hash_of(n: int) -> ContentHash { content_hash("${n}".bytes()) }
+
+/// Whether `faults` holds one at `place` saying `words`.
+fn found(faults: List<StoreFault>, place: int?, words: string) -> bool {
+    faults.any(it.place == place && it.said.contains(words))
+}
+
+spec "store_check — what no write may leave, found at rest" {
+    given "a store whole processes wrote" {
+        then "it is clean, its base and every delta over it" {
+            let directory = written_store("clean")
+            frontier_prints(directory).length == 1 && store_faults(directory).is_empty()
+        }
+    }
+    given "an entry that stands and no root reaches" {
+        then "it is found at its place" {
+            let directory = fresh_directory("orphan")
+            laid(
+                directory,
+                "laid",
+                base_file(
+                    [
+                        FrontierEntry {
+                            question: hash_of(1),
+                            answer: hash_of(2),
+                            reads: [],
+                            input: true,
+                            root: true,
+                        },
+                        FrontierEntry {
+                            question: hash_of(3),
+                            answer: hash_of(4),
+                            reads: [],
+                            input: true,
+                            root: false,
+                        },
+                    ],
+                    [],
+                    1,
+                ),
+            )
+            let faults = store_faults(directory)
+            faults.length == 1 && faults.any((f) -> f.said.contains("no root reaches it"))
+        }
+    }
+    given "an entry whose reads lie past the frontier" {
+        then "it is found, and nothing else is read of the frontier" {
+            let directory = fresh_directory("past")
+            laid(
+                directory,
+                "laid",
+                base_file(
+                    [
+                        FrontierEntry {
+                            question: hash_of(1),
+                            answer: hash_of(2),
+                            reads: [9],
+                            input: false,
+                            root: true,
+                        },
+                    ],
+                    [],
+                    1,
+                ),
+            )
+            let faults = store_faults(directory)
+            faults.length == 1 && faults[0].said.contains("don't lie within the frontier")
+        }
+    }
+    given "a standing answer no record holds" {
+        then "it is found at its place" {
+            let directory = fresh_directory("unrecorded")
+            laid(
+                directory,
+                "laid",
+                base_file(
+                    [
+                        FrontierEntry {
+                            question: hash_of(1),
+                            answer: hash_of(2),
+                            reads: [],
+                            input: false,
+                            root: true,
+                        },
+                    ],
+                    [],
+                    1,
+                ),
+            )
+            store_faults(directory).any((f) -> f.said.contains("no record of its question holds"))
+        }
+    }
+    given "an input's answer moved under a reader that still stands" {
+        then "the reader is found standing on a read that no longer holds" {
+            let directory = written_store("moved")
+            let print = frontier_prints(directory)[0]
+            let store = disk_store_at(directory)
+            let f = store.frontier_of(print)!
+            let input = [at for at in 0..f.length() if f.input_at(at)][0]
+            laid(
+                directory,
+                print,
+                delta_file(
+                    f.id(),
+                    [
+                        FrontierEntry {
+                            question: f.question_at(input),
+                            answer: hash_of(99),
+                            reads: [],
+                            input: true,
+                            root: f.root_at(input),
+                        },
+                    ],
+                    [input],
+                    [],
+                    f.length(),
+                    f.generation() + 1,
+                ),
+            )
+            store_faults(directory)
+                .any((fault) -> fault.said.contains("a read that no longer holds"))
+        }
+    }
+    given "a reader written as reading what its record doesn't" {
+        then "it is found: a read the frontier holds went unrecorded" {
+            let directory = written_store("unrecorded-read")
+            let print = frontier_prints(directory)[0]
+            let f = disk_store_at(directory).frontier_of(print)!
+            let reader = [at for at in 0..f.length() if !f.input_at(at) && !(f.reads_at(at) ?? []).is_empty()][0]
+            let extra = [at for at in 0..f.length() if !(f.reads_at(reader) ?? []).contains(at) && at != reader][0]
+            laid(
+                directory,
+                print,
+                delta_file(
+                    f.id(),
+                    [
+                        FrontierEntry {
+                            question: f.question_at(reader),
+                            answer: f.answer_at(reader),
+                            reads: (f.reads_at(reader) ?? []).concat([extra]),
+                            input: false,
+                            root: f.root_at(reader),
+                        },
+                    ],
+                    [reader],
+                    [],
+                    f.length(),
+                    f.generation() + 1,
+                ),
+            )
+            found(store_faults(directory), reader, "a read went unrecorded")
+        }
+    }
+}

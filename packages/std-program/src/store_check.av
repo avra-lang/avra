@@ -1,0 +1,214 @@
+//! THE STORE CHECKED AT REST (`avra cache check`): what a store holds that no write may leave. Each
+//! frontier it keeps is read as a later process reads it, and held to what every write promises:
+//! - every entry's reads lie within the frontier;
+//! - every place that stands is reached from a root, through what every entry read, stale or not —
+//!   the whole walk a write checks its walk from the cut against;
+//! - every answer that stands, an input's aside, stands on a record of it, and that record reads
+//!   what the frontier says it read: no read the frontier holds goes unrecorded, and none recorded
+//!   is missing from it;
+//! - every read that record made still holds against the frontier: the question stands, with the
+//!   answer seen, or, for a part read, the part seen;
+//! - the frontier folded into one base, by the fold a write makes, is what its chain of deltas says
+//!   at every place a root reaches.
+//! An input's answer is the world's, so it is held to nothing here but its place and its reach.
+use answer_parts.{part_hash_seen, part_in_saved_parts}
+use answer_record.{ContentHash, KeptRecord, binary_of}
+use disk_store.{disk_store_at, frontier_prints}
+use frontier.{Frontier, frontier_folded, reached_at_rest}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use query_engine.{AnswerStore}
+
+/// One thing a store holds that no write may leave: the print of the frontier it's in, the place,
+/// none for the frontier as a whole, and what's wrong there.
+export type StoreFault = { print: string, place: int?, said: string }
+
+impl StoreFault {
+    /// The fault as one line: the frontier, the place, what's wrong.
+    fn line() -> string {
+        let at = if self.place == null { "" } else { " at place ${self.place!}" }
+        "frontier ${self.print}${at}: ${self.said}"
+    }
+}
+
+/// Everything wrong with the store at `directory` alone, frontier by frontier, place by place.
+export fn store_faults(directory: string) -> List<StoreFault> { store_faults_over(directory, disk_store_at(directory)) }
+
+/// Everything wrong with the frontiers kept at `directory`, their records read through `store` as a
+/// build reads them: the package's own store over the machine's, where one is.
+export fn store_faults_over(directory: string, store: dyn AnswerStore) -> List<StoreFault> {
+    mut faults: List<StoreFault> = []
+    for print in frontier_prints(directory) {
+        store.answering_for(binary_of(print))
+        let f? = store.frontier_of(print) else {
+            faults
+                .push(
+                    StoreFault {
+                        print: print,
+                        place: null,
+                        said: "its files hold no frontier that reads",
+                    },
+                )
+            continue
+        }
+        faults = faults.concat(frontier_faults(store, print, f))
+    }
+    faults
+}
+
+/// What's wrong with the frontier `f` the binary printed `print` keeps in `store`.
+fn frontier_faults(store: dyn AnswerStore, print: string, f: Frontier) -> List<StoreFault> {
+    let unplaced = [at for at in 0..f.length() if f.reads_at(at) == null]
+    if !unplaced.is_empty() {
+        return [StoreFault { print: print, place: at, said: "its reads don't lie within the frontier" } for at in unplaced]
+    }
+    let reached? = reached_at_rest(f) else {
+        return [
+            StoreFault { print: print, place: null, said: "a read lies past the frontier's end" },
+        ]
+    }
+    mut faults = [PlaceFault {
+        place: at,
+        said: "${named(store, f, at)} stands, and no root reaches it; ${readers_said(f, at)}",
+    } for at in 0..f.length() if f.stands(at) && !reached[at]]
+    for at in 0..f.length() {
+        if !f.stands(at) || f.input_at(at) { continue }
+        let said? = record_fault(store, f, at) else { continue }
+        faults.push(PlaceFault { place: at, said: said })
+    }
+    [StoreFault { print: print, place: p.place, said: p.said } for p in faults.concat(fold_faults(f, reached))]
+}
+
+/// The answer at `at`, by its query's name where the store knows the question.
+fn named(store: dyn AnswerStore, f: Frontier, at: int) -> string {
+    let asked? = store.question_known_as(f.question_at(at)) else { return "its answer" }
+    "the `${asked.query_name}`"
+}
+
+/// The places that read `at`, each with whether it stands and whether it's a root; none, said so.
+fn readers_said(f: Frontier, at: int) -> string {
+    let readers = [r for r in 0..f.length() if (f.reads_at(r) ?? []).contains(at)]
+    if readers.is_empty() { return "nothing reads it" }
+    let said = [reader_said(f, r) for r in readers]
+    "read by ${said.join(", ")}"
+}
+
+/// One reader of a place: where it is, whether it stands, whether it's a root.
+fn reader_said(f: Frontier, r: int) -> string {
+    let standing = if f.stands(r) { "standing" } else { "stale" }
+    let rooted = if f.root_at(r) { ", a root" } else { "" }
+    "${r} (${standing}${rooted})"
+}
+
+/// What's wrong with the records the answer standing at `at` stands on: none kept, none reading
+/// what the frontier says it read, or none of those whose reads all still hold. Absent when one
+/// stands.
+fn record_fault(store: dyn AnswerStore, f: Frontier, at: int) -> string? {
+    let answer = f.answer_at(at)
+    let records = store.records_of(f.question_at(at)).filter(it.answer.same_as(answer))
+    if records.is_empty() { return "it stands on an answer no record of its question holds" }
+    let read = [f.question_at(r) for r in f.reads_at(at) ?? []]
+    let matching = records.filter((r) -> same_questions(r.read_questions(), read))
+    if matching.is_empty() {
+        return "what it read and what its record read differ: a read went unrecorded, or a recorded one is missing"
+    }
+    // an answer worked out again the same keeps a record beside the one before: it stands on any
+    if !matching.any((r) -> reads_hold(store, f, r)) { return "it stands on a read that no longer holds" }
+    null
+}
+
+/// Whether every read `record` made still holds against `f`: the question stands with the answer
+/// seen, or a part read's part is the one seen.
+fn reads_hold(store: dyn AnswerStore, f: Frontier, record: KeptRecord) -> bool {
+    record
+        .every_read(
+            (question, seen) -> standing_answer(f, question)?.same_as(seen) ?? false,
+            (question, seen, part_name, part_hash) -> part_holds(
+                store,
+                f,
+                question,
+                seen,
+                part_name,
+                part_hash,
+            ),
+        )
+}
+
+/// The answer standing at `question` in `f`; absent when it isn't held, or stands no more.
+fn standing_answer(f: Frontier, question: ContentHash) -> ContentHash? {
+    let at? = f.place_of(question) else { return null }
+    if f.stands(at) { f.answer_at(at) } else { null }
+}
+
+/// Whether a part read of `question` still sees what it saw: the whole answer `seen`, or the part
+/// named `part_name` hashing `part_hash`, absence included.
+fn part_holds(
+    store: dyn AnswerStore,
+    f: Frontier,
+    question: ContentHash,
+    seen: ContentHash,
+    part_name: ContentHash,
+    part_hash: ContentHash,
+) -> bool {
+    let now? = standing_answer(f, question) else { return false }
+    if now.same_as(seen) { return true }
+    let bytes? = store.answer_bytes(now) else { return false }
+    part_hash_seen(part_in_saved_parts(bytes, part_name)).same_as(part_hash)
+}
+
+/// Whether two lists name the same questions, each as often as the other names it at least once.
+fn same_questions(a: List<ContentHash>, b: List<ContentHash>) -> bool {
+    let in_a: HashKeyedTable<bool> = hash_keyed_table()
+    for q in a { in_a.put(q, true) }
+    let in_b: HashKeyedTable<bool> = hash_keyed_table()
+    for q in b { in_b.put(q, true) }
+    a.all((q) -> in_b.get(q) != null) && b.all((q) -> in_a.get(q) != null)
+}
+
+/// What's wrong at one place of a frontier, none for the frontier as a whole.
+type PlaceFault = { place: int?, said: string }
+
+/// Where `f` folded into one base differs from what its chain says, at each place a root reaches:
+/// the place, and how. A fold holds only what a root reaches, so nothing else is compared.
+fn fold_faults(f: Frontier, reached: List<bool>) -> List<PlaceFault> {
+    let g? = frontier_folded(f) else { return [PlaceFault { place: null, said: "its chain doesn't fold into a base that reads" }] }
+    mut faults: List<PlaceFault> = []
+    mut count = 0
+    for at in 0..f.length() {
+        if !reached[at] { continue }
+        count = count + 1
+        let q = f.question_at(at)
+        let there? = g.place_of(q) else {
+            faults.push(PlaceFault { place: at, said: "the fold of its frontier drops it" })
+            continue
+        }
+        if !g.answer_at(there).same_as(f.answer_at(at)) ||
+            g.stands(there) != f.stands(at) ||
+            g.root_at(there) != f.root_at(at) ||
+            g.input_at(there) != f.input_at(at) {
+            faults
+                .push(
+                    PlaceFault {
+                        place: at,
+                        said: "the fold of its frontier holds another answer, standing or kind there",
+                    },
+                )
+            continue
+        }
+        let ours = [f.question_at(r) for r in f.reads_at(at) ?? []]
+        let theirs = [g.question_at(r) for r in g.reads_at(there) ?? []]
+        if ours.length != theirs.length || !(0..ours.length).all((k) -> ours[k].same_as(theirs[k])) {
+            faults
+                .push(PlaceFault { place: at, said: "the fold of its frontier reads otherwise there" })
+        }
+    }
+    if g.length() != count {
+        faults
+            .push(
+                PlaceFault {
+                    place: null,
+                    said: "the fold of its frontier holds ${g.length()} places, its chain reaches ${count}",
+                },
+            )
+    }
+    faults
+}
