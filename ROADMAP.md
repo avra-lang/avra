@@ -3720,24 +3720,38 @@ Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG e
 ### Interim record — the config component's asks
 
 Filed here because this session's tasks server holds no `avra-8sb5.10`;
-each moves to that epic as its own ticket. The wanting site of all three
-is the `config` component, `docs/2026_11_24_CONFIG.md` §2.0; probes Q2,
-Q3 and Q5 (§13) give the refusals, on the committed seed.
+they replace the first wording of tickets `avra-8sb5.10.203`–`.205`. The
+wanting site of each is `@std/config`'s component declaration,
+`docs/2026_11_24_CONFIG.md` §2.0. A declaration already IS a type, takes
+field lines with marks, and has its body composed by a `@composes` trait
+(probes D1–D6, §13, on the gate's compiler from `b455e144`), so what is
+left is ceremony and one silent hole.
 
-- **A1 — a component instance that DECLARES a type.**
-  `Example: config App { port: int = 8080 }` then `fn f(a: App)`.
-  Today: `type.unknown: App names no type` — `Instancing` has only
-  `Record` and `Template`, so an instance is a value or an expression;
-  the want is a declaring `expand` (`-> Decls`).
-  `Callsite:` `config App { … }`, §2.0.
-- **A2 — field lines in an instance block.**
-  `Example: config App { port: int = 8080 }`.
-  Today: `parse.expected: expected BREAK` at the field line.
-  `Callsite:` the same block's fields.
-- **A3 — annotations on those field lines.**
-  `Example: config App { @secret password: string = "" }`.
-  Today: `expected BREAK` at the `@`.
-  `Callsite:` `@range`, `@env` and `@secret` on config fields, §2.0.
+- **A1 — two bounds on one type parameter.**
+  `Example: fn load<T: Decode + Configured>() -> Result<T, Issues>`.
+  Today: `parse.expected: expected (` at the `+`.
+  `Callsite:` `@std/config`'s `load`, which instead takes the sources from
+  a `static fn` its derive writes per type.
+- **A2 — two `@composes` traits visible in one file compose neither, and
+  nothing says so.**
+  `Example:` a file importing `@std/config`'s `Configured` and a second
+  composer, declaring `component App { … file "app.toml" }`.
+  Today: only `type.method: App has no method sourced` at the use; the
+  two-composers voice in features/components/check.av does not fire.
+  `Callsite:` a config component in a file that also imports `@std/ui`.
+- **A3 — a composer that also derives `Decode`.**
+  `Example: component App { port: int = 8080  file "app.toml" }` with no
+  `@derive(Decode)` written beside it.
+  Today: the annotation is written by hand.
+  `Callsite:` every config component, §2.0.
+- **A4 — `env_names()` in `@std/io`.**
+  `Example: env_names().filter(it.starts_with("SHOP__"))`.
+  Today: no verb lists the environment.
+  `Callsite:` the env source's strict refusal of a variable no field names.
+- **A5 — an upper-case text verb in `@std/text`.**
+  `Example: "db".upper() == "DB"`.
+  Today: none; `@std/config` keeps a private ASCII `shouted`.
+  `Callsite:` the env source's variable names.
 
 ### Interim record — the tasks server was unreachable at landing
 

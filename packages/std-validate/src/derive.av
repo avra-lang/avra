@@ -23,8 +23,9 @@
 //! reads that field's value. A rule on the record itself reads the
 //! whole value once every field has passed — the cross-field rules.
 //! A `type Name = shape` carrying rules reads its shape, then wraps
-//! it: a `Username` is proof it passed. `@secret` on a field is no
-//! rule: no issue about it ever shows what it received.
+//! it: a `Username` is proof it passed. `@secret` on a field, or a
+//! field whose type implements `Hidden`, is no rule: no issue about it
+//! ever shows what it received.
 //!
 //! `from_json` reads the text directly (json.av): a record takes its
 //! keys in the order the text writes them, matched by length then by
@@ -221,7 +222,7 @@ fn field_check(f: Field) -> Stmts {
 /// The field's value as a `Value`, when it is a scalar a person can
 /// read in a report; null for a secret and for any shape that is not.
 fn shown(f: Field, k: Kind) -> Code {
-    if f.annotations.any(is_secret(it)) { return quote { null } }
+    if secret_field(f) { return quote { null } }
     match k {
         .Str -> quote { if ${name(bind().got)} == null { null } else { Value.Text(${name(bind().got)}!) } },
         .Int -> quote { if ${name(bind().got)} == null { null } else { Value.Int(${name(bind().got)}!) } },
@@ -346,7 +347,7 @@ fn shape_list(t: Type) -> Code {
 
 fn field_shape(t: Type, f: Field) -> Code {
     let owed = if optional(f) { quote { false } } else { quote { true } }
-    let hidden = if f.annotations.any(is_secret(it)) { quote { true } } else { quote { false } }
+    let hidden = if secret_field(f) { quote { true } } else { quote { false } }
     quote { FieldShape { name: ${literal(f.name)}, kind: ${field_kind(inner(f.kind), t.name)}, required: ${owed}, secret: ${hidden} } }
 }
 
@@ -524,7 +525,7 @@ fn projection_slot(f: Field) -> Code {
 }
 
 fn hidden_slot(f: Field, at: Code) -> Code {
-    if f.annotations.any(is_secret(it)) { quote { ${at}.secret() } } else { at }
+    if secret_field(f) { quote { ${at}.secret() } } else { at }
 }
 
 /// `@secret`: a field whose value is never echoed. No rule, so never run: its word marks what the
@@ -534,6 +535,14 @@ export fn secret(_d: Marked) -> Unrun { Unrun {} }
 
 /// Whether `a` is `@secret`, by the fn it names.
 fn is_secret(a: Annotation) -> bool { marks(a, secret) }
+
+/// Whether nothing about the field ever shows what it received: it
+/// carries `@secret`, or its type implements `Hidden`.
+fn secret_field(f: Field) -> bool { f.annotations.any(is_secret(it)) || secret_type(inner(f.kind)) }
+
+fn secret_type(k: Kind) -> bool {
+    match k { .Named(n, _) -> implements(n, "Hidden"), _ -> false }
+}
 
 /// One rule over the value read so far, recorded where it refuses.
 /// The value is bound where the rule's call lands, under a name no
@@ -776,7 +785,7 @@ fn absent(f: Field) -> Code {
 
 fn required_code(f: Field) -> Code { if optional(f) { quote { false } } else { quote { true } } }
 
-fn secret_code(f: Field) -> Code { if f.annotations.any(is_secret(it)) { quote { true } } else { name(hidden) } }
+fn secret_code(f: Field) -> Code { if secret_field(f) { quote { true } } else { name(hidden) } }
 
 /// The direct reader for a shape, at `depth`.
 fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
