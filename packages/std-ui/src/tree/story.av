@@ -1,0 +1,279 @@
+//! `tree/story.av` — A STORY: a view in every state its own members imply. The author writes the
+//! base where it stands, beside the component, as a fn answering it; `@story` reads the component's
+//! members and writes one case per member varied from that base, never two at once:
+//!
+//!     /// Words to press.
+//!     @story
+//!     fn button_story() -> button { button "Save" }
+//!
+//! answers `base`, `label empty`, `label long`, `label unbroken`, `disabled`, `loading` and
+//! `submits`. What a member's SHAPE derives is `derived`'s registry; a shape it derives nothing
+//! for is the author's to name, as a case of its own that answers the same type:
+//!
+//!     @case("busy")
+//!     fn button_busy() -> button { button_story() with { loading: true, disabled: true } }
+//!
+//! Each writes a fn marked `@case_of` beside it, answering the cases as a `Story`; `stories`
+//! gathers this package's, and a program gathers its own the same way. A case varied into the
+//! base's own value is dropped, so no case draws what another already does.
+use @std.meta.{
+    Fn,
+    Field,
+    Type,
+    Kind,
+    Named,
+    Marker,
+    Declared,
+    Directive,
+    Code,
+    Diagnostic,
+    declares,
+    literal,
+    bool_node,
+    as_code,
+    name,
+    nothing_made,
+    type_named,
+    refuse_as_at,
+}
+use tree.view.{View, makes_view}
+use tree.story_text.{long_text, unbroken_text, sample_text}
+
+/// One drawn state of a view: what it is called, the view, and the spelling that made it.
+export type Case = { name: string, view: dyn View, spelling: string = "" }
+
+/// A view's cases, as one story or one named case tells them: the component they draw, the module
+/// that declares it, the fn that tells them, whether they open on a base (`@story`) or stand alone
+/// (`@case`), and the story's own doc.
+export type Story = { owner: string, module: string, told_by: string, based: bool, doc: string, cases: List<Case> }
+
+/// A case beside whether it draws exactly what the base does.
+export type Varied = { case: Case, same: bool }
+
+/// The cases that draw something the base does not.
+export fn differing(varied: List<Varied>) -> List<Case> { [v.case for v in varied if !v.same] }
+
+/// The mark a story's generated fn carries.
+export fn case_of(_d: Named) -> Marker { Marker {} }
+
+/// A gathered story: the fn that answers it.
+export type Told = { tell: fn() -> Story }
+
+/// Every story this package tells, by the name of the fn that tells it.
+export collect stories: List<Told> = @case_of in package as Told { tell: it } by it.module, it.name
+
+/// `@story`: the base a fn answers, and one case per member its component declares, varied. A
+/// member `fixed` names (`@story("chord")`, names split by spaces) keeps the base's value: a text
+/// that is a grammar of its own, as a key's chord is, has no empty, long or unbroken case to draw.
+export fn story(f: Fn, fixed: string = "") -> Declared {
+    let t? = told_type(f) else { return nothing_made([no_component(f)]) }
+    let kept = [w for w in fixed.split(" ") if !w.is_empty()]
+    let problems = told_problems(f, t)
+        .concat([no_member(f, t, w) for w in kept if !t.fields.any(it.name == w)])
+    if !problems.is_empty() { return nothing_made(problems) }
+    let cases = [written(f, "base")]
+        .concat([c for m in t.fields if !kept.contains(m.name) for c in derived(f.name, m)])
+    Declared { made: [told(f, t, true, cases)] }
+}
+
+/// `@case(name)`: one named case of the component a fn answers, exactly as written.
+export fn case(f: Fn, name: string) -> Declared {
+    let t? = told_type(f) else { return nothing_made([no_component(f)]) }
+    let problems = told_problems(f, t).concat(if name.is_empty() { [unnamed_case(f)] } else { [] })
+    if !problems.is_empty() { return nothing_made(problems) }
+    Declared { made: [told(f, t, false, [written(f, name)])] }
+}
+
+/// The component a story's fn answers, as its declaration reads.
+fn told_type(f: Fn) -> Type? {
+    match f.answers { .Named(name, _) -> type_named(name), rest -> null }
+}
+
+/// What a story's fn gets wrong whatever it tells: the arguments it would need, and an answer that
+/// is no view.
+fn told_problems(f: Fn, t: Type) -> List<Diagnostic> {
+    let seated = if f.params.is_empty() { [] } else { [seated(f)] }
+    seated.concat(if makes_view(t) { [] } else { [no_view(f, t)] })
+}
+
+/// The fn a story writes beside its own: the base, bound once, and each case varied from it.
+fn told(f: Fn, t: Type, based: bool, cases: List<Code>) -> Directive {
+    let made = "${f.name}\$story"
+    declares(
+        made,
+        f.at,
+        quote {
+            @case_of
+            export fn ${made}() -> Story {
+                let b = ${f.name}()
+                Story {
+                    owner: ${literal(t.name)},
+                    module: ${literal(t.module)},
+                    told_by: ${literal(f.name)},
+                    based: ${as_code(bool_node(based))},
+                    doc: ${literal(f.doc ?? "")},
+                    cases: differing([..${cases}]),
+                }
+            }
+        },
+    )
+}
+
+/// One case as the generated fn spells it: its name, its view, its spelling, and whether it draws
+/// exactly what the base does.
+fn varied(name: Code, view: Code, spelled: Code, same: Code) -> Code {
+    quote { Varied { case: Case { name: ${name}, view: ${view}, spelling: ${spelled} }, same: ${same} } }
+}
+
+/// The base as its fn answers it, under `name`.
+fn written(f: Fn, name: string) -> Code { varied(literal(name), quote { b }, literal("${f.name}()"), quote { false }) }
+
+// ── The registry: what a member's shape derives ──
+
+/// The cases one member derives, each varied from the base alone. A REGISTRY over the member's
+/// shape: every kind is spelled, and a kind that derives nothing says so by answering none.
+fn derived(base: string, m: Field) -> List<Code> {
+    if m.says != null { return [] }
+    match m.kind {
+        .Str -> if m.defaulted { [given_text(base, m)] } else { required_text(base, m) },
+        .Bool -> [flipped(base, m, "")],
+        .Opt(inner) -> present(base, m, inner),
+        .List(_) -> [emptied(base, m)],
+        .Named(name, _) -> variants(base, m, name),
+        .Cell(inner) -> placed(base, m, inner),
+        .Int or .Float or .Ptr or .Void or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> [],
+    }
+}
+
+/// A required text drawn empty, long and unbroken.
+fn required_text(base: string, m: Field) -> List<Code> {
+    [
+        set_to(base, m, "empty", quote { "" }, "\"\""),
+        set_to(base, m, "long", quote { long_text }, "long_text"),
+        set_to(base, m, "unbroken", quote { unbroken_text }, "unbroken_text"),
+    ]
+}
+
+/// A text the base may leave to its default, or a place it holds, given the sample.
+fn given_text(base: string, m: Field) -> Code { set_to(base, m, "given", quote { sample_text }, "sample_text") }
+
+/// A member set to `value`, named by the member and `word`, and dropped where the base holds it.
+fn set_to(base: string, m: Field, word: string, value: Code, spelled: string) -> Code {
+    varied(
+        literal("${m.name} ${word}"),
+        quote { b with { ${m.name}: ${value} } },
+        literal(spelling(base, m.name, spelled)),
+        quote { b.${m.name} == ${value} },
+    )
+}
+
+/// A place handed in: a flag given the other way from the base, a text given the sample.
+fn placed(base: string, m: Field, inner: Kind) -> List<Code> {
+    match inner {
+        .Bool -> [flipped(base, m, " given")],
+        .Str -> [given_text(base, m)],
+        .Int or .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> [],
+    }
+}
+
+/// A flag drawn the other way from the base, named by the member and `word`.
+fn flipped(base: string, m: Field, word: string) -> Code {
+    varied(
+        quote { if b.${m.name} { ${literal("not ${m.name}${word}")} } else { ${literal("${m.name}${word}")} } },
+        quote { b with { ${m.name}: !b.${m.name} } },
+        quote { if b.${m.name} { ${literal(spelling(base, m.name, "false"))} } else { ${literal(spelling(base, m.name, "true"))} } },
+        quote { false },
+    )
+}
+
+/// An optional flag or text given where the base leaves it absent.
+fn present(base: string, m: Field, inner: Kind) -> List<Code> {
+    match inner {
+        .Bool -> [optional_to(base, m, quote { true }, "true")],
+        .Str -> [optional_to(base, m, quote { sample_text }, "sample_text")],
+        .Int or .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> [],
+    }
+}
+
+/// An optional member given `value`, dropped where the base already gives one.
+fn optional_to(base: string, m: Field, value: Code, spelled: string) -> Code {
+    varied(
+        literal(m.name),
+        quote { b with { ${m.name}: ${value} } },
+        literal(spelling(base, m.name, spelled)),
+        quote { b.${m.name} != null },
+    )
+}
+
+/// A list drawn with nothing in it, dropped where the base holds nothing.
+fn emptied(base: string, m: Field) -> Code {
+    varied(
+        literal("${m.name} empty"),
+        quote { b with { ${m.name}: [] } },
+        literal(spelling(base, m.name, "[]")),
+        quote { b.${m.name}.is_empty() },
+    )
+}
+
+/// Each variant of a plain enum, but the one the base holds; a record, or an enum whose variants
+/// carry payloads, derives none.
+fn variants(base: string, m: Field, enum_name: string) -> List<Code> {
+    let t? = type_named(enum_name) else { return [] }
+    if t.variants.is_empty() || t.variants.any(!it.fields.is_empty()) { return [] }
+    [varied(
+        literal("${m.name} ${v.name}"),
+        quote { b with { ${m.name}: ${name(enum_name)}.${v.name} } },
+        literal(spelling(base, m.name, ".${v.name}")),
+        quote { b.${m.name} == ${name(enum_name)}.${v.name} },
+    ) for v in t.variants]
+}
+
+/// How a derived case is spelled: its base, with the one member it varies.
+fn spelling(base: string, member: string, value: string) -> string { "${base}() with { ${member}: ${value} }" }
+
+// ── The voices ──
+
+fn no_view(f: Fn, t: Type) -> Diagnostic {
+    refuse_as_at(
+        "story-view",
+        f.at,
+        "a story tells a view — `${t.name}` is no component that draws",
+        "answer a component: a primitive, or one whose body is the views it is made of",
+    )
+}
+
+fn seated(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "story-seated",
+        f.at,
+        "a story's fn takes no arguments — its base is the one value it answers",
+        "drop the parameters, and write what they stood for into the base",
+    )
+}
+
+fn no_member(f: Fn, t: Type, word: string) -> Diagnostic {
+    refuse_as_at(
+        "story-fixed",
+        f.at,
+        "`${word}` names no member of `${t.name}`, so there is nothing to keep fixed",
+        "the members are ${[m.name for m in t.fields].join(", ")}",
+    )
+}
+
+fn unnamed_case(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "story-unnamed",
+        f.at,
+        "a case is named — `@case` on `${f.name}` names none",
+        "name what it draws: `@case(\"busy\")`",
+    )
+}
+
+fn no_component(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "story-answer",
+        f.at,
+        "a story's fn answers the component it tells — `${f.name}` answers `${f.answer}`",
+        "answer the component itself: `fn ${f.name}() -> button { button \"Save\" }`",
+    )
+}

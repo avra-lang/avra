@@ -72,6 +72,7 @@ use @std.meta.{
 use @std.text.{parse_int}
 use tree.node.{Node, Prim, Attribute, Action, Handler, Stamp}
 use tree.seats.{SeatRow, seat, seat_named}
+use tree.viewed.{ViewRow, viewed}
 // LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
 use tree.sites.{sighted}
 use tree.identity.{Stand, Step, stand_of, stepped}
@@ -116,7 +117,7 @@ export trait View {
                 theme: drawn,
             }
         }
-        let rows = [said.seat_row(t, f) for f in t.fields if f.says != null]
+        let rows = [said.seat_row(t, f) for f in t.fields if f.says != null].concat([view_row(t)])
         if !t.fields.any(it.state && !it.prop) {
             return Declared {
                 made: [
@@ -190,6 +191,20 @@ export trait View {
 
 /// A view that was refused: the impl that stands in for it, and why.
 fn unmade(t: Type, problems: List<Diagnostic>) -> Declared { Declared { made: [refused_view(t)], problems: problems } }
+
+/// The const that names a component as a view, beside it: its name and its module, so a collect
+/// over `@viewed` lists every view a scope declares — a primitive and a composition alike.
+fn view_row(t: Type) -> Directive {
+    let named = "${t.name}\$view"
+    declares(
+        named,
+        t.at,
+        quote {
+            @viewed
+            export const ${named}: ViewRow = ViewRow { name: ${literal(t.name)}, module: ${literal(t.module)} }
+        },
+    )
+}
 
 /// What a refused view is given: a `describe` that draws nothing, so the
 /// refusal is the one thing said and no user of the view is blamed for a
@@ -281,6 +296,7 @@ fn composition(said: Vocabulary, t: Type) -> Declared {
     let stateful = t.fields.any(it.state)
     let me = if stateful { said.standing_instance(t, seat, said.prop_names(t)) } else { quote { self } }
     let made = [
+        view_row(t),
         beside(
             t,
             quote {
@@ -823,6 +839,10 @@ const sighted_fields: List<string> = ["words", "reads"]
 /// The primitive a component named with `@prim` — `@prim(.Button)` says
 /// `Button` — absent when it named none.
 fn prim_word(t: Type) -> string? { t.annotations.find(it.name == prim_mark)?.args?.first() }
+
+/// Whether the View derive makes a view of `t`: a primitive names its word (`@prim`), and a
+/// composition is made of its body.
+export fn makes_view(t: Type) -> bool { prim_word(t) != null || t.body != null }
 
 /// A primitive spreads the shared box in: the node's box is read off it
 /// field for field.

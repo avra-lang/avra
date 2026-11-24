@@ -1,4 +1,6 @@
-# The storyboard — phase 1 design proposal
+# The storyboard
+
+The design proposal (§1–§9, phase 1) was approved with rulings; §10 is what is built, slice by slice.
 
 Every view in std-ui, in every state its own members imply, drawn under every OS dial on every target:
 a page for the owner, a gate for the machine, and later a parity check between targets.
@@ -213,3 +215,80 @@ table.
 3. Should the storyboard be its own gate slice (recommended), or a row in ui-browser?
 4. RTL: does a node carry `dir` (or `dir="auto"`) from its words? P7 shows it carries none today.
 5. `long` is ≈200 characters, and `rtl` is one Arabic phrase: are these fixed data in the dial table's file?
+
+---
+
+## 10. Built
+
+### Slice 1 — the list, the stories, the page (on program `69ff97e`)
+
+| Piece | Where | What it does |
+|---|---|---|
+| `@viewed` | `std-ui/src/tree/viewed.av`, the View derive (`tree/view.av`'s `view_row`) | a row beside every view the derive makes, primitive or composition; `views` is std-ui's, by `@viewed in package` |
+| `@story`, `@case` | `std-ui/src/tree/story.av` | a fn answering a component; the derivation REGISTRY over the member's `Kind`; `stories` gathers this package's |
+| fixed data | `std-ui/src/tree/story_text.av`, `std-ui/art/story.svg` | `long_text` (≈200 chars), `unbroken_text` (65 letters, no space, no hyphen), `sample_text`, `story_picture` |
+| `Case` | moved to `tree/story.av`; the gallery reads it | one type |
+| the page | `std-ui_gallery/src/storyboard.av`, `tools/storyboard` | an index with counts (danger ink for none), a filter, every case in light and dark side by side under `ctx theme`, each case's spelling |
+
+Rulings applied: the list is every view, compositions included (29); a story's fn sits in its
+component's file; required text derives `empty`, `long`, `unbroken`; script coverage is one named
+`@case("scripts")` on `text` and one on `field`; RTL is not a case (the direction dial is slice 5).
+
+**The registry** (`derived`, one arm per `Kind`, every kind spelled):
+
+| Member | Cases |
+|---|---|
+| `string`, required | `<m> empty`, `<m> long`, `<m> unbroken` |
+| `string` with a default | `<m> given` (the sample) |
+| `bool` | flipped from the base (`<m>`, or `not <m>`) |
+| a place (`Cell<bool>`, `Cell<string>`) | `<m> given` |
+| `bool?`, `string?` | `<m>` (true, the sample) |
+| `List<…>` | `<m> empty` |
+| a plain enum | `<m> <Variant>`, each but the base's |
+| an event, `int`, a record, a fn, … | none: the author names a `@case` |
+
+`@story("chord")` keeps a member fixed (a key's chord is a grammar, not text). A case that draws
+exactly what its base draws is set aside by NAME on the page (`drawn as the base: initial`): a
+place's seed (`initial`) given after the base was built does not reseed it.
+
+**Counts.** 32 stories (29 bases + `button busy`, `text scripts`, `field scripts`), 124 cases
+before the page sets aside the ones drawn as the base. The page says `29 views · 122 cases · 0 with no
+story` for std-ui's own stories.
+
+**Refusals**, each spoken once, where the story stands, under the library's kind (fixture
+`packages/cli/src/commands/tests/story_refused/`):
+
+```
+error[@std/ui:story-answer]: a story's fn answers the component it tells — `tells_a_number` answers `int`
+error[@std/ui:story-view]: a story tells a view — `Plain` is no component that draws
+error[@std/ui:story-fixed]: `nosuch` names no member of `button`, so there is nothing to keep fixed
+error[@std/ui:story-seated]: a story's fn takes no arguments — its base is the one value it answers
+error[@std/ui:story-unnamed]: a case is named — `@case` on `names_no_case` names none
+```
+
+**Zero cost (ruling a).** The board was built three ways on the same machine, from the tree at
+`69ff97e` and from this one: the wasm module, the native server and the native page. Two are
+byte-identical and the third is the same size. Nothing an app does not read is carried.
+
+| | `69ff97e` | with 32 stories, 29 rows |
+|---|---|---|
+| board wasm module | 316,595 B | 316,595 B (identical bytes) |
+| board server, `--release` | 3,095,944 B | 3,095,944 B (identical bytes) |
+| board page drawer, `--release` | 2,430,784 B | 2,430,784 B |
+| `tools/storyboard` wasm module | — | 326,693 B |
+
+**The board's own views (ruling 1, measured before slice 1 lands).** `collect … = @viewed in
+package` from a copy of `tools/ui-board` answers `package 12: about bar board board_page filters
+footer header new_task tab task_row task_rows toggle`. Every plain composition with a body is
+gathered. `in closure` answers 37: the board's 12 plus the 25 primitives its imports reach (the
+forms module is not reached, so it is not counted).
+
+**Findings.**
+- `avra dev` serves no bundled asset: the page asks `/assets/<digest>.svg` and is answered 404, so
+  `icon` and `image` draw no picture under `avra dev`. Their semantic cases are whole.
+- A literal instance refuses a value for a place (`type.seat`: "takes a place, and this is a
+  value"), while `with` on an instance sets it: the derived `given` cases draw the value given.
+- `avra fmt` drops the parentheses in `(a ?? 0) == (b ?? -1)`, and the result parses differently. A
+  `then` that typed clean before formatting is refused after it. Not fixed here.
+- Two `std-ui_gallery` tests were red on `69ff97e` (theming added `th-1` to every html); they are
+  updated here.
