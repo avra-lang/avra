@@ -1,0 +1,36 @@
+use @std.meta.{Fn, Field, Named, Marker, Declared, Code, declares, literal, type_named, refuse}
+use @std.ui.tree.view.{View}
+
+/// One drawn state of a component.
+export type Shown = { name: string, view: dyn View }
+
+/// The mark a story's generated cases carry.
+export fn case_of(_d: Named) -> Marker { Marker {} }
+
+/// A story: the base instance a fn answers, and one case per bool member flipped.
+export fn story(f: Fn) -> Declared {
+    let t? = type_named(f.answer) else { return Declared { made: [], problems: [refuse("`${f.answer}` names no type")] } }
+    let flips = [flipped(f.name, m) for m in t.fields if m.ty == "bool" && !m.state]
+    let base = quote { Shown { name: "base", view: ${f.name}() } }
+    let made = "${f.name}_cases"
+    let at = f.at!
+    let wrote = "${at.file ?? ""}:${at.lo}-${at.hi}"
+    Declared {
+        made: [
+            declares(
+                made,
+                f.at,
+                quote {
+                    @case_of
+                    export fn ${made}() -> List<Shown> { [${base}, ..${flips}] }
+
+                    export fn ${f.name}_wrote() -> string { ${literal(wrote)} }
+                },
+            ),
+        ],
+    }
+}
+
+fn flipped(base: string, m: Field) -> Code {
+    quote { Shown { name: ${literal(m.name)}, view: ${base}() with { ${m.name}: true } } }
+}
