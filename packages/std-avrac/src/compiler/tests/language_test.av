@@ -1,6 +1,7 @@
 // The driver seam: the canonical language assembles clean, programs
 // parse through one fn, recovery holes are VISIBLE Stmt.Error nodes,
 // and lex errors ride the same diagnostics list.
+use @std.avrac.core.{scoped}
 use @std.avrac.compiler.{
     avra,
     assemble,
@@ -140,7 +141,7 @@ impl Small {
         then "lets and expression statements land in order" {
             let p = parse_source("let x = 1 + y\nx")
             let let_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, _, _) -> name == "x",
+                .Let(name, _, _) -> name.spells("x"),
                 _ -> false,
             }
             p.voices.list.is_empty() &&
@@ -154,7 +155,7 @@ impl Small {
             let p = parse_source("let a = 1\nlet = 3\nlet y = 2")
             let hole_ok = p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error
             let tail_ok = match p.store.stmt(p.stmts[2]) {
-                .Let(name, _, _) -> name == "y",
+                .Let(name, _, _) -> name.spells("y"),
                 _ -> false,
             }
             p.voices.list.length == 1 && hole_ok && tail_ok

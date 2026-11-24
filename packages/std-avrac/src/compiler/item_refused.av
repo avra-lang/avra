@@ -247,8 +247,23 @@ type StoredBody = { store: SyntaxArena, typed: TypedBody }
 /// Every node a seat refused, and every name read that nothing binds or declares, in the written
 /// item `at` of `file`: in the bodies it declares, then in the statements it runs where its file is
 /// an entry. A body that didn't parse refuses nothing.
-@query("laws")
 fn item_refusals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemRefusals {
+    if !item_judged(engine, file, at) { return refusals_made(engine, file, at) }
+    refusals_seen(item_view(engine, file, at))
+}
+
+/// What `item_refusals` answers through the item's `view`, made the first time it is asked.
+fn refusals_seen(view: ItemView) -> ItemRefusals {
+    let held? = view.refusals.get() else {
+        let made = refusals_made(view.engine, view.file, view.at)
+        view.refusals.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_refusals` answers, made.
+fn refusals_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemRefusals {
     if !item_judged(engine, file, at) { return ItemRefusals { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemRefusals { rows: [] } }
@@ -287,20 +302,20 @@ fn pat_site(site: BindSite) -> PatId? {
     match site { .Pat(p) -> PatId { index: p }, rest -> null }
 }
 
-/// Whether the bare name `name` of the pattern `p`, standing in `store` in the written item `at` of
-/// `file`, compares the subject with a const rather than binds: by what the name is bound to where
-/// the pattern stands, as the body's typing read it, or a const only a generator makes.
+/// Whether the bare name `name` of the pattern `p`, standing in `store` in a written item of `file`
+/// whose typing found the patterns at `compared` comparing, compares the subject with a const rather
+/// than binds: by what the name is bound to where the pattern stands, as the body's typing read it,
+/// or a const only a generator makes.
 fn pattern_compares(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    compared: List<FindingAt>,
     store: SyntaxArena,
     p: PatId,
     name: string,
 ) -> bool {
     let span? = kept_at(store.pat_span(p)) else { return false }
-    item_refusals(engine, file, at).compared.any(it.lo == span.lo && it.hi == span.hi) ||
-        compared_value(engine, file, name) == null
+    compared.any(it.lo == span.lo && it.hi == span.hi) || compared_value(engine, file, name) == null
 }
 
 /// Each const the body `b` declares whose type has no compile-time value form, and each one that
@@ -378,10 +393,10 @@ fn seats_placed(store: SyntaxArena, rows: List<SeatReadAt>) -> List<ConstSeated>
     } for r in rows]
 }
 
-/// Each body const in the written item `at` of `file` whose value reads a seat that holds a value
+/// Each body const in the written item `view` shows whose value reads a seat that holds a value
 /// only while its fn runs: at its value, its voice handed its name and the seat's.
-fn consts_seated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(c.at), args: [c.name, c.seat] } for c in item_refusals(engine, file, at).seated]
+fn consts_seated(view: ItemView) -> List<Found> {
+    [Found { at: span_of(c.at), args: [c.name, c.seat] } for c in refusals_seen(view).seated]
 }
 
 fn seated_said(a: List<string>) -> Voice { unsettled_voice(a[0], Unsettled.Param(a[1]))! }
@@ -389,7 +404,7 @@ fn seated_said(a: List<string>) -> Voice { unsettled_voice(a[0], Unsettled.Param
 /// a const in a body whose value reads a seat that holds a value only while its fn runs
 export law const_param {
     kind: "const.param"
-    reads: consts_seated
+    reads_view: consts_seated
     voice: seated_said
     witness: "fn f(n: int) -> int {\n    const X: int = n + 1\n    X\n}\n"
 }
@@ -716,6 +731,9 @@ fn item_holding(read: EntryRead, at: int) -> ItemId { read.items.filter(it.base 
 /// Every node a seat refused in the written item `at` of `file`, as its laws read them.
 fn refused_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<RefusedSeat> { item_refusals(engine, file, at).rows }
 
+/// The refused seats of the item `view` shows.
+fn refused_seen(view: ItemView) -> List<RefusedSeat> { refusals_seen(view).rows }
+
 /// Whether a refusal is of a variant an `is` asks for, which is said at the `is`.
 fn asked_variant(seat: Seating) -> bool { match seat { .Unvaried(_, _, _, asked) -> asked, rest -> false } }
 
@@ -762,20 +780,20 @@ fn span_of(at: FindingAt?) -> Span? {
 }
 
 /// An argument of a fn a seat refused: the fn, its place.
-fn arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let text = item_text(engine, file, at)
-    flatten([argument_words(r, text) for r in refused_in(engine, file, at) if r.instance == null])
+fn arguments_refused(view: ItemView) -> List<Found> {
+    let text = item_text(view.engine, view.file, view.at)
+    flatten([argument_words(r, text) for r in refused_seen(view) if r.instance == null])
 }
 
 /// Each argument an instance's expansion hands to a seat it does not fill, in the instance's words.
-fn instance_seats_unfilled(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [r.instance!, r.want, r.found] } for r in refused_in(engine, file, at) if r.instance != null]
+fn instance_seats_unfilled(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [r.instance!, r.want, r.found] } for r in refused_seen(view) if r.instance != null]
 }
 
 /// what an instance is written with fills the seat its expansion hands it to
 export law instance_seat_mismatch {
     kind: "type.mismatch"
-    reads: instance_seats_unfilled
+    reads_view: instance_seats_unfilled
     voice: instance_seat_words
     witness: "use @std.meta.{Code}\n\ntype Req<R> = { p: R }\n\ntype In = { a: int }\n\nexport fn takes(serve: fn(Req<int>) -> int) -> int { 1 }\n\nexport component served(name: string) {\n    body: Code\n    fn expand() -> Code {\n        quote { takes(\${self.body}) }\n    }\n}\n\nfn g() -> int { served \"x\" { (inp: In) -> inp.a } }\n"
 }
@@ -794,9 +812,9 @@ fn argument_words(r: RefusedSeat, text: string) -> List<Found> {
 const EMPTY_LIST: string = "[]"
 
 /// An argument of a method a seat refused: the method's owner and name, the argument's place.
-fn method_arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let text = item_text(engine, file, at)
-    flatten([method_words(r, text) for r in refused_in(engine, file, at)])
+fn method_arguments_refused(view: ItemView) -> List<Found> {
+    let text = item_text(view.engine, view.file, view.at)
+    flatten([method_words(r, text) for r in refused_seen(view)])
 }
 
 fn method_words(r: RefusedSeat, text: string) -> List<Found> {
@@ -807,9 +825,9 @@ fn method_words(r: RefusedSeat, text: string) -> List<Found> {
 }
 
 /// A record literal's field a seat refused.
-fn fields_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let text = item_text(engine, file, at)
-    flatten([field_words(r, text) for r in refused_in(engine, file, at)])
+fn fields_refused(view: ItemView) -> List<Found> {
+    let text = item_text(view.engine, view.file, view.at)
+    flatten([field_words(r, text) for r in refused_seen(view)])
 }
 
 fn field_words(r: RefusedSeat, text: string) -> List<Found> {
@@ -820,8 +838,8 @@ fn field_words(r: RefusedSeat, text: string) -> List<Found> {
 }
 
 /// A setting naming an event whose value its handler's seat refused.
-fn handlers_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([heard_words(r) for r in refused_in(engine, file, at)])
+fn handlers_refused(view: ItemView) -> List<Found> {
+    flatten([heard_words(r) for r in refused_seen(view)])
 }
 
 fn heard_words(r: RefusedSeat) -> List<Found> {
@@ -832,8 +850,8 @@ fn heard_words(r: RefusedSeat) -> List<Found> {
 }
 
 /// A variant's payload a seat refused.
-fn payloads_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([payload_words(r) for r in refused_in(engine, file, at)])
+fn payloads_refused(view: ItemView) -> List<Found> {
+    flatten([payload_words(r) for r in refused_seen(view)])
 }
 
 fn payload_words(r: RefusedSeat) -> List<Found> {
@@ -844,9 +862,9 @@ fn payload_words(r: RefusedSeat) -> List<Found> {
 }
 
 /// A `let`'s or a `const`'s value a seat refused.
-fn bindings_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let text = item_text(engine, file, at)
-    flatten([binding_words(r, text) for r in refused_in(engine, file, at)])
+fn bindings_refused(view: ItemView) -> List<Found> {
+    let text = item_text(view.engine, view.file, view.at)
+    flatten([binding_words(r, text) for r in refused_seen(view)])
 }
 
 /// A binding's value refused where it stands, with the conversion the old path offers of it, its
@@ -859,8 +877,8 @@ fn binding_words(r: RefusedSeat, text: string) -> List<Found> {
 }
 
 /// A `return`'s value a seat refused.
-fn returns_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([return_words(r) for r in refused_in(engine, file, at)])
+fn returns_refused(view: ItemView) -> List<Found> {
+    flatten([return_words(r) for r in refused_seen(view)])
 }
 
 fn return_words(r: RefusedSeat) -> List<Found> {
@@ -871,8 +889,8 @@ fn return_words(r: RefusedSeat) -> List<Found> {
 }
 
 /// A fn's body a seat refused.
-fn bodies_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([body_words(r) for r in refused_in(engine, file, at)])
+fn bodies_refused(view: ItemView) -> List<Found> {
+    flatten([body_words(r) for r in refused_seen(view)])
 }
 
 /// What a `then` case's body seat is named: a keyword, so no fn's body wears it.
@@ -888,9 +906,9 @@ fn case_answer(r: RefusedSeat) -> bool {
     match r.seat { .Body(name) -> name == CASE_SEAT, rest -> false }
 }
 
-/// Each `then` case of the item `at` of `file` whose answer isn't a bool.
-fn cases_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [found_in(r, []) for r in refused_in(engine, file, at) if case_answer(r)]
+/// Each `then` case of the item `view` shows whose answer isn't a bool.
+fn cases_refused(view: ItemView) -> List<Found> {
+    [found_in(r, []) for r in refused_seen(view) if case_answer(r)]
 }
 
 fn case_refused(a: List<string>) -> Voice {
@@ -900,7 +918,7 @@ fn case_refused(a: List<string>) -> Voice {
 /// a `then` case whose answer isn't the bool it proves
 export law case_mismatch {
     kind: "type.case"
-    reads: cases_refused
+    reads_view: cases_refused
     voice: case_refused
     witness: "spec \"s\" {\n    given \"g\" {\n        then \"t\" { 1 }\n    }\n}\n"
 }
@@ -915,7 +933,7 @@ fn body_words(r: RefusedSeat) -> List<Found> {
 /// a fn's argument whose type isn't the seat's
 export law argument_mismatch {
     kind: "type.mismatch"
-    reads: arguments_refused
+    reads_view: arguments_refused
     voice: argument_refused
     witness: "fn f(n: int) -> int { n }\n\nfn g() -> int { f(\"x\") }\n"
 }
@@ -923,7 +941,7 @@ export law argument_mismatch {
 /// a method's argument whose type isn't the seat's
 export law method_argument_mismatch {
     kind: "type.method"
-    reads: method_arguments_refused
+    reads_view: method_arguments_refused
     voice: method_argument_refused
     witness: "type P = { n: int }\n\nimpl P {\n    fn add(k: int) -> int { self.n + k }\n}\n\nfn g(p: P) -> int { p.add(\"x\") }\n"
 }
@@ -931,7 +949,7 @@ export law method_argument_mismatch {
 /// a record literal's field whose type isn't the field's
 export law field_mismatch {
     kind: "type.struct_fields"
-    reads: fields_refused
+    reads_view: fields_refused
     voice: field_refused
     witness: "type P = { n: int }\n\nfn g() -> P { P { n: \"x\" } }\n"
 }
@@ -939,7 +957,7 @@ export law field_mismatch {
 /// a setting naming an event holds a handler of the event's type
 export law handler_mismatch {
     kind: "type.component_event"
-    reads: handlers_refused
+    reads_view: handlers_refused
     voice: handler_refused
     witness: "component panel {\n    on press\n}\n\nfn f() -> int {\n    let a = panel { press: 5 }\n    1\n}\n"
 }
@@ -949,7 +967,7 @@ fn handler_refused(a: List<string>) -> Voice { handler_mistyped(a[0], a[1], a[2]
 /// a variant's payload whose type isn't the payload's
 export law payload_mismatch {
     kind: "type.variant_arity"
-    reads: payloads_refused
+    reads_view: payloads_refused
     voice: payload_refused
     witness: "enum E {\n    A(int)\n    B\n}\n\nfn g() -> E { E.A(\"x\") }\n"
 }
@@ -957,20 +975,20 @@ export law payload_mismatch {
 /// a binding's value whose type isn't the one it declares
 export law binding_mismatch {
     kind: "type.binding"
-    reads: bindings_refused
+    reads_view: bindings_refused
     voice: binding_refused
     witness: "fn g() -> int {\n    let n: int = \"x\"\n    n\n}\n"
 }
 
 /// A `return` no fn encloses.
-fn fnless_returns(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([found_saying(r, []) for r in refused_in(engine, file, at) if r.seat is .Fnless])
+fn fnless_returns(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, []) for r in refused_seen(view) if r.seat is .Fnless])
 }
 
 /// a `return` that no fn encloses
 export law return_unenclosed {
     kind: "type.return"
-    reads: fnless_returns
+    reads_view: fnless_returns
     voice: fnless_said
     witness: "return 1\n"
 }
@@ -978,14 +996,14 @@ export law return_unenclosed {
 fn fnless_said(_a: List<string>) -> Voice { return_fnless() }
 
 /// A bare `return` in a fn that answers a value: what it answers.
-fn bare_returns(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([found_saying(r, [r.want]) for r in refused_in(engine, file, at) if r.seat is .Bare])
+fn bare_returns(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, [r.want]) for r in refused_seen(view) if r.seat is .Bare])
 }
 
 /// a bare `return` in a fn that answers a value
 export law return_unanswered {
     kind: "type.return"
-    reads: bare_returns
+    reads_view: bare_returns
     voice: bare_said
     witness: "fn g() -> int {\n    return\n}\n"
 }
@@ -995,7 +1013,7 @@ fn bare_said(a: List<string>) -> Voice { return_bare(a[0]) }
 /// a `return` whose value isn't what the fn answers
 export law return_mismatch {
     kind: "type.return"
-    reads: returns_refused
+    reads_view: returns_refused
     voice: return_refused
     witness: "fn g() -> int {\n    return \"x\"\n}\n"
 }
@@ -1003,7 +1021,7 @@ export law return_mismatch {
 /// a fn's body whose value isn't what the fn declares it answers
 export law body_mismatch {
     kind: "type.mismatch"
-    reads: bodies_refused
+    reads_view: bodies_refused
     voice: body_refused
     witness: "fn g() -> int { \"x\" }\n"
 }
@@ -1073,8 +1091,8 @@ fn body_refused(a: List<string>) -> Voice {
 }
 
 /// A record field's default whose type isn't the field's.
-fn field_defaults_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([field_default_words(r) for r in refused_in(engine, file, at)])
+fn field_defaults_refused(view: ItemView) -> List<Found> {
+    flatten([field_default_words(r) for r in refused_seen(view)])
 }
 
 fn field_default_words(r: RefusedSeat) -> List<Found> {
@@ -1085,8 +1103,8 @@ fn field_default_words(r: RefusedSeat) -> List<Found> {
 }
 
 /// A fn seat's default whose type isn't the seat's.
-fn seat_defaults_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([seat_default_words(r) for r in refused_in(engine, file, at)])
+fn seat_defaults_refused(view: ItemView) -> List<Found> {
+    flatten([seat_default_words(r) for r in refused_seen(view)])
 }
 
 fn seat_default_words(r: RefusedSeat) -> List<Found> {
@@ -1097,8 +1115,8 @@ fn seat_default_words(r: RefusedSeat) -> List<Found> {
 }
 
 /// An annotation's argument whose type isn't its seat's.
-fn annotation_seats_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [found_in(r, [name]) for r in refused_in(engine, file, at) for name in annotation_seat_named(r.seat)]
+fn annotation_seats_refused(view: ItemView) -> List<Found> {
+    [found_in(r, [name]) for r in refused_seen(view) for name in annotation_seat_named(r.seat)]
 }
 
 /// The annotation a refused seat is an argument of, as a list; none for any other seat.
@@ -1107,7 +1125,7 @@ fn annotation_seat_named(seat: Seating) -> List<string> { match seat { .Annotati
 /// an annotation's argument fits the seat of its fn it fills
 export law annotation_argument_fits_its_seat {
     kind: "annotation.seats"
-    reads: annotation_seats_refused
+    reads_view: annotation_seats_refused
     voice: annotation_seat_words
     witness: "use @std.meta.{Type}\nfn counted(t: Type, n: int) {}\n\n@counted(\"seven\")\ntype P = { x: int }\n"
 }
@@ -1117,7 +1135,7 @@ fn annotation_seat_words(a: List<string>) -> Voice { seat_takes(a[0], a[1]) }
 /// a record field's default whose type isn't the field's
 export law field_default_mismatch {
     kind: "type.struct_fields"
-    reads: field_defaults_refused
+    reads_view: field_defaults_refused
     voice: field_default_refused
     witness: "type P = { n: int = \"x\" }\n"
 }
@@ -1125,7 +1143,7 @@ export law field_default_mismatch {
 /// a fn seat's default whose type isn't the seat's
 export law seat_default_mismatch {
     kind: "type.param_default"
-    reads: seat_defaults_refused
+    reads_view: seat_defaults_refused
     voice: seat_default_refused
     witness: "fn f(n: int = \"x\") -> int { n }\n"
 }
@@ -1135,8 +1153,8 @@ fn field_default_refused(a: List<string>) -> Voice { refused_voice("field `${a[0
 fn seat_default_refused(a: List<string>) -> Voice { refused_voice("parameter `${a[0]}` defaults to `${a[2]}`, and it is `${a[1]}`", a[1], a[2]) }
 
 /// A quote's hole whose position doesn't take its value: the position's words, then what it holds.
-fn holes_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([hole_words(r) for r in refused_in(engine, file, at)])
+fn holes_refused(view: ItemView) -> List<Found> {
+    flatten([hole_words(r) for r in refused_seen(view)])
 }
 
 fn hole_words(r: RefusedSeat) -> List<Found> {
@@ -1149,7 +1167,7 @@ fn hole_words(r: RefusedSeat) -> List<Found> {
 /// a quote's hole whose position doesn't take what it holds
 export law hole_mismatch {
     kind: "type.quote_hole"
-    reads: holes_refused
+    reads_view: holes_refused
     voice: hole_refused
     witness: "use @std.meta.{Code, name}\n\ntype M = { c: string }\n\nimpl M {\n    fn code() -> Code { quote { \${name(self.c)}(self) } }\n}\n"
 }
@@ -1163,8 +1181,8 @@ fn hole_refused(a: List<string>) -> Voice {
 }
 
 /// A quote's hole, or the quote, breaking its seat beyond its position: the fault, then what it holds.
-fn holes_faulted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([hole_fault_words(r) for r in refused_in(engine, file, at)])
+fn holes_faulted(view: ItemView) -> List<Found> {
+    flatten([hole_fault_words(r) for r in refused_seen(view)])
 }
 
 fn hole_fault_words(r: RefusedSeat) -> List<Found> {
@@ -1183,7 +1201,7 @@ fn hole_fault_words(r: RefusedSeat) -> List<Found> {
 /// a quote's holes fill as the quote's kind takes them
 export law hole_fills_its_quote {
     kind: "type.quote_hole"
-    reads: holes_faulted
+    reads_view: holes_faulted
     voice: hole_fault_said
     witness: "use @std.meta.{Code}\n\nfn f(s: string) -> Code { quote { fn g() -> string { \${s} } } }\n"
 }
@@ -1198,8 +1216,8 @@ fn hole_fault_said(a: List<string>) -> Voice {
 }
 
 /// A condition that isn't a `bool`: its site's words, then what it holds.
-fn conditions_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([condition_words(r) for r in refused_in(engine, file, at)])
+fn conditions_refused(view: ItemView) -> List<Found> {
+    flatten([condition_words(r) for r in refused_seen(view)])
 }
 
 fn condition_words(r: RefusedSeat) -> List<Found> {
@@ -1212,7 +1230,7 @@ fn condition_words(r: RefusedSeat) -> List<Found> {
 /// a condition whose value isn't a `bool`
 export law condition_mismatch {
     kind: "type.mismatch"
-    reads: conditions_refused
+    reads_view: conditions_refused
     voice: condition_refused
     witness: "fn g() -> int {\n    if 1 { 2 } else { 3 }\n}\n"
 }
@@ -1220,14 +1238,14 @@ export law condition_mismatch {
 fn condition_refused(a: List<string>) -> Voice { Voice { message: "${a[0]} is a `bool`, found `${a[2]}`", label: a[1], help: condition_help } }
 
 /// An arm of a `match` a `collect` keeps that answers a list of what it keeps.
-fn kept_arms_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [found_in(r, []) for r in refused_in(engine, file, at) if r.seat is .KeptArm]
+fn kept_arms_refused(view: ItemView) -> List<Found> {
+    [found_in(r, []) for r in refused_seen(view) if r.seat is .KeptArm]
 }
 
 /// an arm of a kept `match` answers one element
 export law kept_arm_answers_one {
     kind: "type.kept_arm"
-    reads: kept_arms_refused
+    reads_view: kept_arms_refused
     voice: kept_arm_refused
     witness: "enum K {\n    A\n    B\n}\nlet k = K.A\nlet xs: List<int> = collect {\n    match k {\n        .A -> [1, 2]\n        .B -> 3\n    }\n}\nxs.length\n"
 }
@@ -1235,14 +1253,14 @@ export law kept_arm_answers_one {
 fn kept_arm_refused(a: List<string>) -> Voice { kept_arm_listed(a[0], a[1]) }
 
 /// A seat no voice names yet: what it wants and what it found, said plainly.
-fn unnamed_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [found_in(r, []) for r in refused_in(engine, file, at) if r.seat is .Unnamed]
+fn unnamed_refused(view: ItemView) -> List<Found> {
+    [found_in(r, []) for r in refused_seen(view) if r.seat is .Unnamed]
 }
 
 /// a value refused by a seat no voice names yet
 export law seat_mismatch {
     kind: "type.mismatch"
-    reads: unnamed_refused
+    reads_view: unnamed_refused
     voice: seat_refused
     witness: "fn ap(f: fn(int) -> int) -> int { f(1) }\n\nfn g() -> int { ap((x) -> \"a\") }\n"
 }
@@ -1259,14 +1277,14 @@ fn refused_voice(message: string, want: string, found: string) -> Voice {
 }
 
 /// The pronoun's own lambda in a seat that takes no fn: the seat's type.
-fn pronouns_starved(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [r.want] } for r in refused_in(engine, file, at) if r.seat is .Pronoun]
+fn pronouns_starved(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [r.want] } for r in refused_seen(view) if r.seat is .Pronoun]
 }
 
 /// `it` handed to a seat that takes no fn has no element
 export law pronoun_starved {
     kind: "type.lambda"
-    reads: pronouns_starved
+    reads_view: pronouns_starved
     voice: starved_words
     witness: "fn f(ys: List<int>) -> bool { ys.contains(it) }\n"
 }
@@ -1275,13 +1293,8 @@ fn starved_words(a: List<string>) -> Voice { pronoun_without_element(a[0]) }
 
 /// Each lambda, and each call of a value, the written item `at` of `file` holds refused for a fault
 /// `chosen` takes: at the node, its voice handed the words `chosen` gives.
-fn lambdas_faulted(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    chosen: fn(LambdaFault) -> List<string>?,
-) -> List<Found> {
-    [Found { at: span_of(r.at), args: words! } for r in refused_in(engine, file, at) for f in some_list(lambda_fault(r.seat)) for words in [chosen(f)] if words != null]
+fn lambdas_faulted(view: ItemView, chosen: fn(LambdaFault) -> List<string>?) -> List<Found> {
+    [Found { at: span_of(r.at), args: words! } for r in refused_seen(view) for f in some_list(lambda_fault(r.seat)) for words in [chosen(f)] if words != null]
 }
 
 /// The fault a lambda's refusal names; absent for any other seat.
@@ -1289,29 +1302,17 @@ fn lambda_fault(seat: Seating) -> LambdaFault? {
     match seat { .Lambda(fault) -> fault, rest -> null }
 }
 
-fn lambda_seats_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    lambdas_faulted(
-        engine,
-        file,
-        at,
-        (f: LambdaFault) -> match f { .SeatTwice(name) -> [name], rest -> null },
-    )
+fn lambda_seats_twice(view: ItemView) -> List<Found> {
+    lambdas_faulted(view, (f: LambdaFault) -> match f { .SeatTwice(name) -> [name], rest -> null })
 }
 
-fn seats_unheard(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    lambdas_faulted(
-        engine,
-        file,
-        at,
-        (f: LambdaFault) -> match f { .Unheard(name) -> [name], rest -> null },
-    )
+fn seats_unheard(view: ItemView) -> List<Found> {
+    lambdas_faulted(view, (f: LambdaFault) -> match f { .Unheard(name) -> [name], rest -> null })
 }
 
-fn lambdas_unseated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn lambdas_unseated(view: ItemView) -> List<Found> {
     lambdas_faulted(
-        engine,
-        file,
-        at,
+        view,
         (f: LambdaFault) -> match f {
             .Unseated(seat, block) -> if block { null } else { [seat] },
             rest -> null,
@@ -1319,11 +1320,9 @@ fn lambdas_unseated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) ->
     )
 }
 
-fn blocks_unseated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn blocks_unseated(view: ItemView) -> List<Found> {
     lambdas_faulted(
-        engine,
-        file,
-        at,
+        view,
         (f: LambdaFault) -> match f {
             .Unseated(seat, block) -> if block { [seat] } else { null },
             rest -> null,
@@ -1331,28 +1330,21 @@ fn blocks_unseated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
     )
 }
 
-fn values_called(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn values_called(view: ItemView) -> List<Found> {
     lambdas_faulted(
-        engine,
-        file,
-        at,
+        view,
         (f: LambdaFault) -> match f { .Uncallable(callee, held) -> [callee, held], rest -> null },
     )
 }
 
-fn values_pinned(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    lambdas_faulted(
-        engine,
-        file,
-        at,
-        (f: LambdaFault) -> match f { .Pinned(callee) -> [callee], rest -> null },
-    )
+fn values_pinned(view: ItemView) -> List<Found> {
+    lambdas_faulted(view, (f: LambdaFault) -> match f { .Pinned(callee) -> [callee], rest -> null })
 }
 
 /// a lambda names each seat once
 export law lambda_seat_named_twice {
     kind: "type.lambda"
-    reads: lambda_seats_twice
+    reads_view: lambda_seats_twice
     voice: seat_twice_words
     witness: "let f = (a: int, a: int) -> a\n"
 }
@@ -1360,7 +1352,7 @@ export law lambda_seat_named_twice {
 /// a lambda under no seat writes each seat's type
 export law lambda_seat_typed {
     kind: "type.lambda"
-    reads: seats_unheard
+    reads_view: seats_unheard
     voice: seat_unheard_words
     witness: "let f = (x) -> x + 1\n"
 }
@@ -1368,7 +1360,7 @@ export law lambda_seat_typed {
 /// a lambda stands in a seat that takes a fn
 export law lambda_in_fn_seat {
     kind: "type.lambda"
-    reads: lambdas_unseated
+    reads_view: lambdas_unseated
     voice: lambda_unseated_words
     witness: "let n: int = (x: int) -> x + 1\n"
 }
@@ -1376,7 +1368,7 @@ export law lambda_in_fn_seat {
 /// a trailing block stands in a seat that takes a fn
 export law block_in_fn_seat {
     kind: "type.lambda"
-    reads: blocks_unseated
+    reads_view: blocks_unseated
     voice: block_unseated_words
     witness: "fn one(v: int) -> int { v }\none { x -> x }\n"
 }
@@ -1384,7 +1376,7 @@ export law block_in_fn_seat {
 /// a call's callee holds a fn
 export law value_called_holds_fn {
     kind: "type.lambda"
-    reads: values_called
+    reads_view: values_called
     voice: uncallable_words
     witness: "let n = 5\nn(1)\n"
 }
@@ -1392,7 +1384,7 @@ export law value_called_holds_fn {
 /// a fn value takes no type arguments
 export law fn_value_unpinned {
     kind: "type.lambda"
-    reads: values_pinned
+    reads_view: values_pinned
     voice: pinned_words
     witness: "let f = (x: int) -> x\nf<int>(1)\n"
 }
@@ -1410,8 +1402,8 @@ fn uncallable_words(a: List<string>) -> Voice { name_uncallable(a[0], a[1]) }
 fn pinned_words(a: List<string>) -> Voice { fn_value_pinned(a[0]) }
 
 /// Each `select` shape no lowering stands for: what it is.
-fn selects_unwaited(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [what] } for r in refused_in(engine, file, at) for what in some_list(unwaited_what(r.seat))]
+fn selects_unwaited(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [what] } for r in refused_seen(view) for what in some_list(unwaited_what(r.seat))]
 }
 
 /// What a `select` shape refused for no lowering is, where `seat` refused one.
@@ -1422,7 +1414,7 @@ fn unwaited_what(seat: Seating) -> string? {
 /// a `select` the language refuses: an arm-set law broken, or a shape no lowering stands for
 export law select_unlowered {
     kind: "flow.select"
-    reads: selects_unwaited
+    reads_view: selects_unwaited
     voice: unwaited_words
     witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    let t = spawn one()\n    @fair select {\n        r in t -> r\n    }\n}\n"
 }
@@ -1431,8 +1423,8 @@ fn unwaited_words(a: List<string>) -> Voice { select_refused_voice(a[0]) }
 
 /// A receiver a writing verb refused: its root's name and the verb, or the verb alone where it stands
 /// in no place.
-fn receivers_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([receiver_words(r) for r in refused_in(engine, file, at)])
+fn receivers_refused(view: ItemView) -> List<Found> {
+    flatten([receiver_words(r) for r in refused_seen(view)])
 }
 
 fn receiver_words(r: RefusedSeat) -> List<Found> {
@@ -1446,7 +1438,7 @@ fn receiver_words(r: RefusedSeat) -> List<Found> {
 /// a writing verb's receiver that isn't a `mut` place
 export law receiver_unwritten {
     kind: "type.place"
-    reads: receivers_refused
+    reads_view: receivers_refused
     voice: receiver_refused
     witness: "fn f(xs: List<int>) {\n    xs.push(1)\n}\n"
 }
@@ -1455,8 +1447,8 @@ fn receiver_refused(a: List<string>) -> Voice { if a.length == 2 { unwritten_rec
 
 /// A pattern naming a variant its enum doesn't declare: the enum, the variant, whether an `is` names
 /// it, then the variants it declares.
-fn variants_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([variant_words(r) for r in refused_in(engine, file, at)])
+fn variants_refused(view: ItemView) -> List<Found> {
+    flatten([variant_words(r) for r in refused_seen(view)])
 }
 
 fn variant_words(r: RefusedSeat) -> List<Found> {
@@ -1469,7 +1461,7 @@ fn variant_words(r: RefusedSeat) -> List<Found> {
 /// a pattern naming a variant its enum doesn't declare
 export law variant_unknown {
     kind: "type.match"
-    reads: variants_refused
+    reads_view: variants_refused
     voice: variant_refused
     witness: "enum E {\n    A\n    B\n}\n\nfn f(e: E) -> int {\n    match e {\n        .C -> 1,\n        _ -> 2,\n    }\n}\n"
 }
@@ -1477,8 +1469,8 @@ export law variant_unknown {
 fn variant_refused(a: List<string>) -> Voice { unknown_variant(a[0], a[1], a.drop(3), a[2] == "true") }
 
 /// A walk's fn argument handed a value that is no fn: the walk, then what it was handed.
-fn walks_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([walk_words(r) for r in refused_in(engine, file, at)])
+fn walks_refused(view: ItemView) -> List<Found> {
+    flatten([walk_words(r) for r in refused_seen(view)])
 }
 
 fn walk_words(r: RefusedSeat) -> List<Found> {
@@ -1491,7 +1483,7 @@ fn walk_words(r: RefusedSeat) -> List<Found> {
 /// a walk handed a value that is no fn
 export law walk_fnless_mismatch {
     kind: "type.mismatch"
-    reads: walks_refused
+    reads_view: walks_refused
     voice: walk_refused
     witness: "fn f(xs: List<int>) -> bool { xs.all(true) }\n"
 }
@@ -1499,8 +1491,8 @@ export law walk_fnless_mismatch {
 fn walk_refused(a: List<string>) -> Voice { walk_fnless(a[0], a[1]) }
 
 /// A walk handed a fn taking another element: the walk, the element, then the fn it was handed.
-fn walk_elements_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([walk_element_words(r) for r in refused_in(engine, file, at)])
+fn walk_elements_refused(view: ItemView) -> List<Found> {
+    flatten([walk_element_words(r) for r in refused_seen(view)])
 }
 
 fn walk_element_words(r: RefusedSeat) -> List<Found> {
@@ -1513,7 +1505,7 @@ fn walk_element_words(r: RefusedSeat) -> List<Found> {
 /// a walk handed a fn taking another element
 export law walk_element_mismatch {
     kind: "type.mismatch"
-    reads: walk_elements_refused
+    reads_view: walk_elements_refused
     voice: walk_element_refused
     witness: "fn f(xs: List<int>) -> bool { xs.all((s: string) -> true) }\n"
 }
@@ -1521,15 +1513,15 @@ export law walk_element_mismatch {
 fn walk_element_refused(a: List<string>) -> Voice { walk_unseated(a[0], a[1], a[2]) }
 
 /// A list literal's element whose type isn't the one the list holds, with the conversion a seat offers of it.
-fn elements_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let text = item_text(engine, file, at)
-    [seat_converted(found_in(r, []), r, text) for r in refused_in(engine, file, at) if r.seat is .Element]
+fn elements_refused(view: ItemView) -> List<Found> {
+    let text = item_text(view.engine, view.file, view.at)
+    [seat_converted(found_in(r, []), r, text) for r in refused_seen(view) if r.seat is .Element]
 }
 
 /// a list literal's element whose type isn't the list's
 export law element_mismatch {
     kind: "type.list_element"
-    reads: elements_refused
+    reads_view: elements_refused
     voice: element_refused
     witness: "fn f() -> List<int> { [\"a\"] }\n"
 }
@@ -1537,8 +1529,8 @@ export law element_mismatch {
 fn element_refused(a: List<string>) -> Voice { helped(refused_voice(list_holds(a[0], a[1]), a[0], a[1]), a, 2) }
 
 /// A `match` that handles no arm for one of its enum's variants: the enum, then the variant.
-fn matches_uncovered(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([uncovered_words(r) for r in refused_in(engine, file, at)])
+fn matches_uncovered(view: ItemView) -> List<Found> {
+    flatten([uncovered_words(r) for r in refused_seen(view)])
 }
 
 fn uncovered_words(r: RefusedSeat) -> List<Found> {
@@ -1551,7 +1543,7 @@ fn uncovered_words(r: RefusedSeat) -> List<Found> {
 /// a `match` on an enum that handles none of its arms one of its variants
 export law match_uncovered {
     kind: "type.match"
-    reads: matches_uncovered
+    reads_view: matches_uncovered
     voice: uncovered_refused
     witness: "enum E {\n    A\n    B\n}\n\nfn f(e: E) -> int {\n    match e {\n        .A -> 1,\n    }\n}\n"
 }
@@ -1559,8 +1551,8 @@ export law match_uncovered {
 fn uncovered_refused(a: List<string>) -> Voice { variant_unhandled(a[0], a[1]) }
 
 /// A `match` on a value of no enum that no arm takes every value of: the value's type.
-fn matches_catchless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([catchless_words(r) for r in refused_in(engine, file, at)])
+fn matches_catchless(view: ItemView) -> List<Found> {
+    flatten([catchless_words(r) for r in refused_seen(view)])
 }
 
 fn catchless_words(r: RefusedSeat) -> List<Found> {
@@ -1570,7 +1562,7 @@ fn catchless_words(r: RefusedSeat) -> List<Found> {
 /// a `match` on a value of no enum that no arm takes every value of
 export law match_catchless {
     kind: "type.match"
-    reads: matches_catchless
+    reads_view: matches_catchless
     voice: catchless_refused
     witness: "fn f(n: int) -> int {\n    match n {\n        1 -> 0,\n    }\n}\n"
 }
@@ -1578,8 +1570,8 @@ export law match_catchless {
 fn catchless_refused(a: List<string>) -> Voice { catchless_match(a[0]) }
 
 /// A `let` taking a value apart by a pattern that can refuse it, with no `else`: the value's type.
-fn lets_refutable(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([refutable_words(r) for r in refused_in(engine, file, at)])
+fn lets_refutable(view: ItemView) -> List<Found> {
+    flatten([refutable_words(r) for r in refused_seen(view)])
 }
 
 fn refutable_words(r: RefusedSeat) -> List<Found> {
@@ -1589,7 +1581,7 @@ fn refutable_words(r: RefusedSeat) -> List<Found> {
 /// a `let` whose pattern can refuse its value and that says nothing for what it refuses
 export law let_refutable {
     kind: "type.let_pattern"
-    reads: lets_refutable
+    reads_view: lets_refutable
     voice: refutable_refused
     witness: "fn f(xs: List<int>) -> int {\n    let [first, ..rest] = xs\n    first\n}\n"
 }
@@ -1597,16 +1589,14 @@ export law let_refutable {
 fn refutable_refused(a: List<string>) -> Voice { refutable_pattern(a[0]) }
 
 /// A `match` testing variants of a value that is no enum: the value's type.
-fn matches_unenumerated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [found_saying(r, [r.found]) for r in refused_in(engine, file, at) if r.seat is .Unmatchable],
-    )
+fn matches_unenumerated(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, [r.found]) for r in refused_seen(view) if r.seat is .Unmatchable])
 }
 
 /// a `match` testing variants of a value that is no enum
 export law match_unenumerated {
     kind: "type.match"
-    reads: matches_unenumerated
+    reads_view: matches_unenumerated
     voice: unenumerated_refused
     witness: "enum C {\n    R\n    G\n}\n\nfn f(c: C?) -> int {\n    match c {\n        null -> 0,\n        .R -> 1,\n        .G -> 2,\n    }\n}\n"
 }
@@ -1614,8 +1604,8 @@ export law match_unenumerated {
 fn unenumerated_refused(a: List<string>) -> Voice { unenumerated_match(a[0]) }
 
 /// An arm taking whole a variant an arm before it took: the variant.
-fn arms_repeated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([repeated_words(r) for r in refused_in(engine, file, at)])
+fn arms_repeated(view: ItemView) -> List<Found> {
+    flatten([repeated_words(r) for r in refused_seen(view)])
 }
 
 fn repeated_words(r: RefusedSeat) -> List<Found> { match r.seat { .Repeated(variant) -> found_saying(r, [variant]), _ -> [] } }
@@ -1623,7 +1613,7 @@ fn repeated_words(r: RefusedSeat) -> List<Found> { match r.seat { .Repeated(vari
 /// an arm that takes whole a variant an arm before it took
 export law match_repeated {
     kind: "type.match"
-    reads: arms_repeated
+    reads_view: arms_repeated
     voice: repeated_refused
     witness: "enum C {\n    R\n    G\n}\n\nfn f(c: C) -> int {\n    match c {\n        .R -> 1,\n        .R -> 2,\n        .G -> 3,\n    }\n}\n"
 }
@@ -1631,8 +1621,8 @@ export law match_repeated {
 fn repeated_refused(a: List<string>) -> Voice { variant_repeated(a[0]) }
 
 /// A pattern binding a name twice: the name.
-fn names_bound_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([bound_twice_found(r) for r in refused_in(engine, file, at)])
+fn names_bound_twice(view: ItemView) -> List<Found> {
+    flatten([bound_twice_found(r) for r in refused_seen(view)])
 }
 
 fn bound_twice_found(r: RefusedSeat) -> List<Found> { match r.seat { .BindsTwice(name) -> found_saying(r, [name]), _ -> [] } }
@@ -1640,7 +1630,7 @@ fn bound_twice_found(r: RefusedSeat) -> List<Found> { match r.seat { .BindsTwice
 /// a pattern that binds one name twice
 export law pattern_binds_twice {
     kind: "type.binds_twice"
-    reads: names_bound_twice
+    reads_view: names_bound_twice
     voice: twice_refused
     witness: "enum E {\n    A(n: int, m: int)\n}\n\nfn f(e: E) -> int {\n    match e {\n        .A(n, n) -> n,\n    }\n}\n"
 }
@@ -1648,8 +1638,8 @@ export law pattern_binds_twice {
 fn twice_refused(a: List<string>) -> Voice { name_bound_twice(a[0]) }
 
 /// A value of a sealed type built or rewritten outside its module: the type, the module, the site.
-fn seals_broken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([sealed_words(r) for r in refused_in(engine, file, at)])
+fn seals_broken(view: ItemView) -> List<Found> {
+    flatten([sealed_words(r) for r in refused_seen(view)])
 }
 
 fn sealed_words(r: RefusedSeat) -> List<Found> { match r.seat { .Sealed(name, home, how) -> found_saying(r, [name, home, how]), _ -> [] } }
@@ -1657,7 +1647,7 @@ fn sealed_words(r: RefusedSeat) -> List<Found> { match r.seat { .Sealed(name, ho
 /// a value of a sealed type built or rewritten outside the module that declares it
 export law seal_broken {
     kind: "type.sealed"
-    reads: seals_broken
+    reads_view: seals_broken
     voice: sealed_refused
     witness: "use urls.{Url}\n\nfn g() -> Url { \"x\" }\n"
     witness_files: {
@@ -1668,8 +1658,8 @@ export law seal_broken {
 fn sealed_refused(a: List<string>) -> Voice { sealed_elsewhere(a[0], a[1], a[2]) }
 
 /// A list literal's element whose type isn't its first element's: the first's type, then its.
-fn elements_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([elements_apart_words(r) for r in refused_in(engine, file, at)])
+fn elements_apart(view: ItemView) -> List<Found> {
+    flatten([elements_apart_words(r) for r in refused_seen(view)])
 }
 
 fn elements_apart_words(r: RefusedSeat) -> List<Found> {
@@ -1682,7 +1672,7 @@ fn elements_apart_words(r: RefusedSeat) -> List<Found> {
 /// a list literal whose elements are of more than one type
 export law elements_share_one_type {
     kind: "type.list_element"
-    reads: elements_apart
+    reads_view: elements_apart
     voice: apart_elements_refused
     witness: "fn f() -> int {\n    let xs = [1, true]\n    xs.length\n}\n"
 }
@@ -1693,10 +1683,8 @@ fn apart_elements_refused(a: List<string>) -> Voice {
 }
 
 /// A spread in a list or a map literal of what is no list or map: which literal, then the value's type.
-fn spreads_unlike(engine: QueryEngine, file: SourceFileAddress, at: ItemId, of: string) -> List<
-    Found,
-> {
-    flatten([unlike_words(r, of) for r in refused_in(engine, file, at)])
+fn spreads_unlike(view: ItemView, of: string) -> List<Found> {
+    flatten([unlike_words(r, of) for r in refused_seen(view)])
 }
 
 fn unlike_words(r: RefusedSeat, of: string) -> List<Found> {
@@ -1706,14 +1694,14 @@ fn unlike_words(r: RefusedSeat, of: string) -> List<Found> {
     }
 }
 
-fn list_spreads_unlike(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { spreads_unlike(engine, file, at, "list") }
+fn list_spreads_unlike(view: ItemView) -> List<Found> { spreads_unlike(view, "list") }
 
-fn map_spreads_unlike(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { spreads_unlike(engine, file, at, "map") }
+fn map_spreads_unlike(view: ItemView) -> List<Found> { spreads_unlike(view, "map") }
 
 /// a list literal spreading what is no list
 export law list_spread_unlike {
     kind: "type.spread_list"
-    reads: list_spreads_unlike
+    reads_view: list_spreads_unlike
     voice: list_unlike_refused
     witness: "fn f() -> int {\n    let xs = [..5]\n    xs.length\n}\n"
 }
@@ -1721,7 +1709,7 @@ export law list_spread_unlike {
 /// a map literal spreading what is no map
 export law map_spread_unlike {
     kind: "type.spread_map"
-    reads: map_spreads_unlike
+    reads_view: map_spreads_unlike
     voice: map_unlike_refused
     witness: "fn f() -> int {\n    let m = { ..5 }\n    m.length\n}\n"
 }
@@ -1729,8 +1717,8 @@ export law map_spread_unlike {
 fn list_unlike_refused(a: List<string>) -> Voice { list_spread_unlisted(a[0]) }
 
 /// A spread's field into a seat that takes a place or a settled value: the callee, then the seat.
-fn spreads_placeless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([placeless_words(r) for r in refused_in(engine, file, at)])
+fn spreads_placeless(view: ItemView) -> List<Found> {
+    flatten([placeless_words(r) for r in refused_seen(view)])
 }
 
 fn placeless_words(r: RefusedSeat) -> List<Found> {
@@ -1740,7 +1728,7 @@ fn placeless_words(r: RefusedSeat) -> List<Found> {
 /// a spread's field fills no seat that takes a place or a settled value
 export law spread_fills_plain_seats {
     kind: "type.spread_seat"
-    reads: spreads_placeless
+    reads_view: spreads_placeless
     voice: placeless_refused
     witness: "type O = { a: int }\n\nfn g(mut a: int) -> int { a }\n\nfn f() -> int { g(..O { a: 2 }) }\n"
 }
@@ -1748,8 +1736,8 @@ export law spread_fills_plain_seats {
 fn placeless_refused(a: List<string>) -> Voice { spread_placeless(a[0], a[1]) }
 
 /// A spread of a list into a call whose callee takes no rest: the callee.
-fn spreads_restless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([restless_words(r) for r in refused_in(engine, file, at)])
+fn spreads_restless(view: ItemView) -> List<Found> {
+    flatten([restless_words(r) for r in refused_seen(view)])
 }
 
 fn restless_words(r: RefusedSeat) -> List<Found> {
@@ -1759,7 +1747,7 @@ fn restless_words(r: RefusedSeat) -> List<Found> {
 /// `..` of a list fills a seat that takes the rest
 export law spread_finds_a_rest {
     kind: "type.spread_seat"
-    reads: spreads_restless
+    reads_view: spreads_restless
     voice: restless_refused
     witness: "fn g(a: int) -> int { a }\n\nfn f() -> int { g(..[1]) }\n"
 }
@@ -1768,13 +1756,13 @@ fn restless_refused(a: List<string>) -> Voice { spread_restless(a[0]) }
 
 /// A variant built with other than it carries: the enum, the variant, how, what it carries, what
 /// it's given.
-fn variants_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([miscounted_words(r, false) for r in refused_in(engine, file, at)])
+fn variants_miscounted(view: ItemView) -> List<Found> {
+    flatten([miscounted_words(r, false) for r in refused_seen(view)])
 }
 
 /// A variant that carries a payload named without it: the enum, the variant, what it carries.
-fn variants_bare(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([miscounted_words(r, true) for r in refused_in(engine, file, at)])
+fn variants_bare(view: ItemView) -> List<Found> {
+    flatten([miscounted_words(r, true) for r in refused_seen(view)])
 }
 
 fn miscounted_words(r: RefusedSeat, named_bare: bool) -> List<Found> {
@@ -1787,7 +1775,7 @@ fn miscounted_words(r: RefusedSeat, named_bare: bool) -> List<Found> {
 /// a variant is built with what it carries
 export law variant_carries_its_payloads {
     kind: "type.variant_arity"
-    reads: variants_miscounted
+    reads_view: variants_miscounted
     voice: miscounted_refused
     witness: "enum S {\n    a(int)\n    b\n}\n\nfn f() -> S { S.a() }\n"
 }
@@ -1803,7 +1791,7 @@ fn miscounted_refused(a: List<string>) -> Voice {
 /// a variant that carries a payload is never named without it
 export law variant_named_with_payload {
     kind: "type.mismatch"
-    reads: variants_bare
+    reads_view: variants_bare
     voice: bare_refused
     witness: "enum S {\n    a(int)\n    b\n}\n\nfn f() -> S { S.a }\n"
 }
@@ -1811,8 +1799,8 @@ export law variant_named_with_payload {
 fn bare_refused(a: List<string>) -> Voice { variant_named_bare(a[0], a[1], a[3]) }
 
 /// `all` on an enum a variant of which carries a payload: the enum, then that variant.
-fn enums_unlistable(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([unlistable_words(r) for r in refused_in(engine, file, at)])
+fn enums_unlistable(view: ItemView) -> List<Found> {
+    flatten([unlistable_words(r) for r in refused_seen(view)])
 }
 
 fn unlistable_words(r: RefusedSeat) -> List<Found> {
@@ -1822,7 +1810,7 @@ fn unlistable_words(r: RefusedSeat) -> List<Found> {
 /// `all` lists an enum whose variants carry nothing
 export law enum_all_bare {
     kind: "type.enum_all"
-    reads: enums_unlistable
+    reads_view: enums_unlistable
     voice: unlistable_refused
     witness: "enum K {\n    A\n    B(int)\n}\n\nfn f() -> int { K.all().length }\n"
 }
@@ -1830,8 +1818,8 @@ export law enum_all_bare {
 fn unlistable_refused(a: List<string>) -> Voice { variants_unlistable(a[0], a[1]) }
 
 /// `put` on a cell holding no map: what it holds.
-fn cells_unmapped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([unmapped_words(r) for r in refused_in(engine, file, at)])
+fn cells_unmapped(view: ItemView) -> List<Found> {
+    flatten([unmapped_words(r) for r in refused_seen(view)])
 }
 
 fn unmapped_words(r: RefusedSeat) -> List<Found> {
@@ -1841,7 +1829,7 @@ fn unmapped_words(r: RefusedSeat) -> List<Found> {
 /// `put` inserts into the map a cell holds
 export law cell_put_mapped {
     kind: "type.cell_map"
-    reads: cells_unmapped
+    reads_view: cells_unmapped
     voice: unmapped_refused
     witness: "fn f() {\n    let c = Cell.new(1)\n    c.put(\"a\", 1)\n}\n"
 }
@@ -1850,8 +1838,8 @@ fn unmapped_refused(a: List<string>) -> Voice { cell_unmapped(a[0]) }
 
 /// An extern read as a value: the wrapper that hands it on, beside the extern's declaration where
 /// this file writes it.
-fn externs_valued(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([extern_valued_words(engine, file, r) for r in refused_in(engine, file, at)])
+fn externs_valued(view: ItemView) -> List<Found> {
+    flatten([extern_valued_words(view.engine, view.file, r) for r in refused_seen(view)])
 }
 
 fn extern_valued_words(engine: QueryEngine, file: SourceFileAddress, r: RefusedSeat) -> List<Found> {
@@ -1876,7 +1864,7 @@ fn extern_declared(engine: QueryEngine, file: SourceFileAddress, name: string) -
 /// an extern fn is called, never read as a value
 export law extern_called_only {
     kind: "type.extern_value"
-    reads: externs_valued
+    reads_view: externs_valued
     voice: extern_valued_refused
     witness: "extern fn avra_host_is_dir(path: string) -> int\n\nfn f() -> int {\n    let g = avra_host_is_dir\n    g(\"corpus\")\n}\n"
 }
@@ -1884,8 +1872,8 @@ export law extern_called_only {
 fn extern_valued_refused(a: List<string>) -> Voice { extern_unvalued(a[0]) }
 
 /// A call naming its callee's seats as no call of it can: the callee, how, the seat, then the seats.
-fn seats_misnamed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([misnamed_words(r) for r in refused_in(engine, file, at)])
+fn seats_misnamed(view: ItemView) -> List<Found> {
+    flatten([misnamed_words(r) for r in refused_seen(view)])
 }
 
 fn misnamed_words(r: RefusedSeat) -> List<Found> {
@@ -1898,14 +1886,14 @@ fn misnamed_words(r: RefusedSeat) -> List<Found> {
 /// a named argument writes a seat its callee declares, once, and every seat without a default is written
 export law seats_named_once {
     kind: "type.named_arg"
-    reads: seats_misnamed
+    reads_view: seats_misnamed
     voice: misnamed_refused
     witness: "fn sub(a: int, b: int) -> int { a - b }\n\nfn f() -> int { sub(a: 1, c: 2) }\n"
 }
 
 /// A comprehension walking what holds no element: its type.
-fn comps_unwalked(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([unwalked_comp_words(r) for r in refused_in(engine, file, at)])
+fn comps_unwalked(view: ItemView) -> List<Found> {
+    flatten([unwalked_comp_words(r) for r in refused_seen(view)])
 }
 
 fn unwalked_comp_words(r: RefusedSeat) -> List<Found> {
@@ -1915,7 +1903,7 @@ fn unwalked_comp_words(r: RefusedSeat) -> List<Found> {
 /// a comprehension walks a list
 export law comp_walks_a_list {
     kind: "type.list"
-    reads: comps_unwalked
+    reads_view: comps_unwalked
     voice: unwalked_comp_refused
     witness: "fn f() -> int { [x for x in 1].length }\n"
 }
@@ -1924,8 +1912,8 @@ fn unwalked_comp_refused(a: List<string>) -> Voice { comp_walks_list(a[0]) }
 
 /// A lambda taking its seat's record by name asking for what it doesn't offer: the name, how, then
 /// the fields it offers.
-fn offers_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([offer_words(r) for r in refused_in(engine, file, at)])
+fn offers_refused(view: ItemView) -> List<Found> {
+    flatten([offer_words(r) for r in refused_seen(view)])
 }
 
 fn offer_words(r: RefusedSeat) -> List<Found> {
@@ -1938,7 +1926,7 @@ fn offer_words(r: RefusedSeat) -> List<Found> {
 /// a lambda takes by name what its seat's record offers
 export law offer_taken_by_name {
     kind: "type.not_offered"
-    reads: offers_refused
+    reads_view: offers_refused
     voice: offer_refused_words
     witness: "type Offer = { req: string, db: int }\n\nfn handle(f: fn(Offer) -> string) -> string { f(Offer { req: \"GET /\", db: 7 }) }\n\nfn g() -> string { handle { db, reqq -> \"x\" } }\n"
 }
@@ -1947,9 +1935,9 @@ fn offer_refused_words(a: List<string>) -> Voice { if a[1] == "typed" { offer_ty
 
 /// A `select` arm waiting on what nothing waits on: its type, then whether the program loads
 /// `@std/time`.
-fn arms_unwaitable(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let timers = package_reach(engine, file.package_name).packages.contains("@std/time")
-    flatten([unwaitable_words(r, timers) for r in refused_in(engine, file, at)])
+fn arms_unwaitable(view: ItemView) -> List<Found> {
+    let timers = package_reach(view.engine, view.file.package_name).packages.contains("@std/time")
+    flatten([unwaitable_words(r, timers) for r in refused_seen(view)])
 }
 
 fn unwaitable_words(r: RefusedSeat, timers: bool) -> List<Found> {
@@ -1962,7 +1950,7 @@ fn unwaitable_words(r: RefusedSeat, timers: bool) -> List<Found> {
 /// a `select` arm waits on a task, a list of tasks, a source or a timer
 export law arm_waits {
     kind: "flow.arm"
-    reads: arms_unwaitable
+    reads_view: arms_unwaitable
     voice: unwaitable_refused
     witness: "fn f() -> int {\n    select {\n        1 -> 2\n    }\n}\n"
 }
@@ -1970,8 +1958,8 @@ export law arm_waits {
 fn unwaitable_refused(a: List<string>) -> Voice { arm_unwaited(a[0], a[1] != "") }
 
 /// A `select` arm binding what its head hands over not as it does: how, the index, the binder.
-fn arms_misbound(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([misbound_words(r) for r in refused_in(engine, file, at)])
+fn arms_misbound(view: ItemView) -> List<Found> {
+    flatten([misbound_words(r) for r in refused_seen(view)])
 }
 
 fn misbound_words(r: RefusedSeat) -> List<Found> {
@@ -1981,7 +1969,7 @@ fn misbound_words(r: RefusedSeat) -> List<Found> {
 /// a `select` arm binds what its head hands over
 export law arm_binds_as_handed {
     kind: "flow.arm_binder"
-    reads: arms_misbound
+    reads_view: arms_misbound
     voice: misbound_refused
     witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    let job = spawn one()\n    select {\n        i, r in job -> r\n    }\n}\n"
 }
@@ -1989,14 +1977,14 @@ export law arm_binds_as_handed {
 fn misbound_refused(a: List<string>) -> Voice { arm_binder_said(a[0], a[1], a[2]) }
 
 /// A `select` arm waiting on a list of tasks inside a loop.
-fn arms_spent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [] } for r in refused_in(engine, file, at) if r.seat is .SpentArm]
+fn arms_spent(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [] } for r in refused_seen(view) if r.seat is .SpentArm]
 }
 
 /// a list arm is taken once
 export law list_arm_once {
     kind: "flow.spent_arm"
-    reads: arms_spent
+    reads_view: arms_spent
     voice: spent_refused
     witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    let jobs = [spawn one()]\n    mut n = 0\n    while n < 1 {\n        n = n + select {\n            r in jobs -> r\n        }\n    }\n    n\n}\n"
 }
@@ -2004,14 +1992,9 @@ export law list_arm_once {
 fn spent_refused(_a: List<string>) -> Voice { arm_spent_said() }
 
 /// What a `select`'s arms leave unsaid, as the law `pick` reads it: the words its voice is handed.
-fn selects_faulted(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    pick: fn(SelectFault) -> List<string>?,
-) -> List<Found> {
+fn selects_faulted(view: ItemView, pick: fn(SelectFault) -> List<string>?) -> List<Found> {
     flatten(
-        [found_saying(r, words!) for r in refused_in(engine, file, at) for words in [select_fault_of(r.seat, pick)] if words != null],
+        [found_saying(r, words!) for r in refused_seen(view) for words in [select_fault_of(r.seat, pick)] if words != null],
     )
 }
 
@@ -2020,11 +2003,9 @@ fn select_fault_of(seat: Seating, pick: fn(SelectFault) -> List<string>?) -> Lis
     match seat { .SelectFault(fault) -> pick(fault), _ -> null }
 }
 
-fn ends_unanswered(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn ends_unanswered(view: ItemView) -> List<Found> {
     selects_faulted(
-        engine,
-        file,
-        at,
+        view,
         (f: SelectFault) -> match f { .Unended(name) -> [name], .Unkeyed -> [], rest -> null },
     )
 }
@@ -2032,15 +2013,15 @@ fn ends_unanswered(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 /// a supply a `select` waits on is answered by its own `.ended` arm
 export law supply_ends_answered {
     kind: "flow.end_arm"
-    reads: ends_unanswered
+    reads_view: ends_unanswered
     voice: end_words
     witness: "use @std.task.{Source}\n\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n"
 }
 
 fn end_words(a: List<string>) -> Voice { if a.is_empty() { supply_unnamed() } else { end_unanswered(a[0]) } }
 
-fn timers_fresh(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    selects_faulted(engine, file, at, fresh_picked)
+fn timers_fresh(view: ItemView) -> List<Found> {
+    selects_faulted(view, fresh_picked)
 }
 
 /// A fresh timer's words: none.
@@ -2052,15 +2033,15 @@ fn fresh_picked(f: SelectFault) -> List<string>? {
 /// a timer a loop's `select` waits on is made before the loop
 export law timer_made_before_loop {
     kind: "flow.fresh_deadline"
-    reads: timers_fresh
+    reads_view: timers_fresh
     voice: fresh_words
     witness: "use @std.time.{every}\n\nfn f() -> int {\n    mut n = 0\n    while n < 1 {\n        n = n + select {\n            every(5) -> 1\n        }\n    }\n    n\n}\n"
 }
 
 fn fresh_words(_a: List<string>) -> Voice { timer_made_fresh() }
 
-fn quiets_beside_else(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    selects_faulted(engine, file, at, quiet_picked)
+fn quiets_beside_else(view: ItemView) -> List<Found> {
+    selects_faulted(view, quiet_picked)
 }
 
 /// A quiet beside `else`'s words: none.
@@ -2072,7 +2053,7 @@ fn quiet_picked(f: SelectFault) -> List<string>? {
 /// a `Quiet` stands in no `select` beside `else`
 export law quiet_without_else {
     kind: "flow.quiet_never"
-    reads: quiets_beside_else
+    reads_view: quiets_beside_else
     voice: quiet_words
     witness: "use @std.time.{quiet}\n\nfn f() -> int {\n    let calm = quiet(5)\n    select {\n        calm -> 1\n        else -> 2\n    }\n}\n"
 }
@@ -2080,8 +2061,8 @@ export law quiet_without_else {
 fn quiet_words(_a: List<string>) -> Voice { quiet_beside_else() }
 
 /// A component's handler that can fail, where it names no fate: the component.
-fn handlers_fateless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([fateless_words(r) for r in refused_in(engine, file, at)])
+fn handlers_fateless(view: ItemView) -> List<Found> {
+    flatten([fateless_words(r) for r in refused_seen(view)])
 }
 
 fn fateless_words(r: RefusedSeat) -> List<Found> {
@@ -2091,7 +2072,7 @@ fn fateless_words(r: RefusedSeat) -> List<Found> {
 /// a component holding a handler that can fail names a fate
 export law handler_fated {
     kind: "flow.no_fate"
-    reads: handlers_fateless
+    reads_view: handlers_fateless
     voice: fateless_refused
     witness: "fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\ntype W = { each: fn(int) -> Result<int, string>, dead: string? = null }\n\nfn f() -> W { W { each: ok } }\n"
 }
@@ -2100,23 +2081,16 @@ fn fateless_refused(a: List<string>) -> Voice { fate_unnamed(a[0]) }
 
 /// A call whose count of arguments its seats refused, as `spoken` picks its words, where the member
 /// law says nothing of it: a count is said once.
-fn miscounts_in(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    spoken: fn(Seating) -> List<string>,
-) -> List<Found> {
-    let said = [m.at! for m in item_misses(engine, file, at).rows if m.miss.counts() && m.at != null]
-    [Found { at: span_of(r.at), args: a } for r in refused_in(engine, file, at) if !said.any(it.lo == r.at?.lo && it.hi == r.at?.hi) for a in [spoken(r.seat)] if !a.is_empty()]
+fn miscounts_in(view: ItemView, spoken: fn(Seating) -> List<string>) -> List<Found> {
+    let said = [m.at! for m in misses_seen(view).rows if m.miss.counts() && m.at != null]
+    [Found { at: span_of(r.at), args: a } for r in refused_seen(view) if !said.any(it.lo == r.at?.lo && it.hi == r.at?.hi) for a in [spoken(r.seat)] if !a.is_empty()]
 }
 
 /// A fn's or a verb's call miscounted, or a member's whose seats have defaults: the callee, the
 /// least and the most it takes, what it's handed, the trailing blocks among them, and whether piped.
-fn calls_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn calls_miscounted(view: ItemView) -> List<Found> {
     miscounts_in(
-        engine,
-        file,
-        at,
+        view,
         (s: Seating) -> match s {
             .Miscounted(owner, name, _, least, most, found, blocks, piped) -> if owner != "" && least == most {
                 []
@@ -2137,11 +2111,9 @@ fn calls_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) ->
 
 /// A declared type's method or static miscounted, each of its seats written: the type, the member,
 /// whether it's a static, what it takes and what it's handed.
-fn members_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn members_miscounted(view: ItemView) -> List<Found> {
     miscounts_in(
-        engine,
-        file,
-        at,
+        view,
         (s: Seating) -> match s {
             .Miscounted(owner, name, statics, least, most, found, _, _) -> if owner == "" || least != most { [] } else { [owner, name, if statics { "static" } else { "" }, "${most}", "${found}"] },
             _ -> [],
@@ -2152,7 +2124,7 @@ fn members_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
 /// a call writes as many arguments as its seats take
 export law call_miscounted {
     kind: "type.mismatch"
-    reads: calls_miscounted
+    reads_view: calls_miscounted
     voice: call_miscounted_words
     witness: "fn g(xs: List<int>) -> int? { xs.get() }\n"
 }
@@ -2171,19 +2143,19 @@ fn call_miscounted_words(a: List<string>) -> Voice {
 
 /// A fn's argument written as a trailing block its seat refused: the fn, the seat's place, whether
 /// the seat takes a fn.
-fn blocks_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn blocks_refused(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .Block(callee, place, takes_fn) -> [found_in(r, [callee, "${place}", if takes_fn { "fn" } else { "" }])],
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// a trailing block fills a fn seat of its type
 export law block_mismatch {
     kind: "type.mismatch"
-    reads: blocks_refused
+    reads_view: blocks_refused
     voice: block_refused
     witness: "fn run(f: fn() -> int) -> int { f() }\n\nfn g() -> int { run { \"s\" } }\n"
 }
@@ -2191,16 +2163,16 @@ export law block_mismatch {
 fn block_refused(a: List<string>) -> Voice { block_misfit(a[0], count_at(a, 1), a[3], a[4], a[2] == "fn") }
 
 /// A predicate walk's fn answering no `bool`: the walk, what the fn answers.
-fn walks_unpredicated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn walks_unpredicated(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Unpredicated(name, got, _) -> found_saying(r, [name, got]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Unpredicated(name, got, _) -> found_saying(r, [name, got]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a predicate walk's fn answers a `bool`
 export law walk_fn_tests {
     kind: "type.mismatch"
-    reads: walks_unpredicated
+    reads_view: walks_unpredicated
     voice: unpredicated_words
     witness: "fn g(xs: List<int>) -> List<int> { xs.filter((x: int) -> x + 1) }\n"
 }
@@ -2208,16 +2180,16 @@ export law walk_fn_tests {
 fn unpredicated_words(a: List<string>) -> Voice { walk_unpredicated(a[0], a[1]) }
 
 /// An assignment's value its place refused: the place as it's named.
-fn assignments_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn assignments_refused(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Assigned(spot, _) -> [found_in(r, [spot])], _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Assigned(spot, _) -> [found_in(r, [spot])], _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// an assignment writes a value of its place's type
 export law assignment_mismatch {
     kind: "type.mismatch"
-    reads: assignments_refused
+    reads_view: assignments_refused
     voice: assignment_refused
     witness: "fn g() -> int {\n    mut n = 1\n    n = \"s\"\n    n\n}\n"
 }
@@ -2225,20 +2197,13 @@ export law assignment_mismatch {
 fn assignment_refused(a: List<string>) -> Voice { refused_voice("assignment changes ${a[0]}: `${a[1]}` to `${a[2]}`", a[1], a[2]) }
 
 /// An arm its construct's seat refused, where the construct is one `spoken` names: whose arms.
-fn arms_apart(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    spoken: fn(Meeting) -> string,
-) -> List<Found> {
-    [found_in(r, [whose!]) for r in refused_in(engine, file, at) for whose in [match r.seat { .ArmApart(of) -> spoken(of), _ -> null }] if whose != null]
+fn arms_apart(view: ItemView, spoken: fn(Meeting) -> string) -> List<Found> {
+    [found_in(r, [whose!]) for r in refused_seen(view) for whose in [match r.seat { .ArmApart(of) -> spoken(of), _ -> null }] if whose != null]
 }
 
-fn branches_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn branches_disagreeing(view: ItemView) -> List<Found> {
     arms_apart(
-        engine,
-        file,
-        at,
+        view,
         (of: Meeting) -> match of { .If -> "an `if`'s branches", .When -> "a `when`'s arms" },
     )
 }
@@ -2246,7 +2211,7 @@ fn branches_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: ItemId
 /// the branches of an `if` and the arms of a `when` answer what their seat wants
 export law branches_answer_the_seat {
     kind: "type.mismatch"
-    reads: branches_disagreeing
+    reads_view: branches_disagreeing
     voice: arm_apart_refused
     witness: "fn f(c: bool) -> int { if c { \"a\" } else { 1 } }\n"
 }
@@ -2254,16 +2219,16 @@ export law branches_answer_the_seat {
 fn arm_apart_refused(a: List<string>) -> Voice { refused_voice(arms_disagreement(a[0], a[2], "the seat", a[1]), a[1], a[2]) }
 
 /// An `if` no seat judges whose branches answer two types: the first's, the second's.
-fn ifs_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn ifs_apart(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .BranchesApart -> found_saying(r, [r.want, r.found]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .BranchesApart -> found_saying(r, [r.want, r.found]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// the branches of an `if` answer one type
 export law branches_share_a_type {
     kind: "type.mismatch"
-    reads: ifs_apart
+    reads_view: ifs_apart
     voice: ifs_apart_words
     witness: "fn g(n: int) -> int { n }\n\nfn f(c: bool) -> int { g(if c { \"a\" } else { 1 }) }\n"
 }
@@ -2271,16 +2236,16 @@ export law branches_share_a_type {
 fn ifs_apart_words(a: List<string>) -> Voice { branches_apart(a[0], a[1]) }
 
 /// A field a literal writes a second time: the field.
-fn fields_written_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn fields_written_twice(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .FieldRepeated(name) -> found_saying(r, [name]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .FieldRepeated(name) -> found_saying(r, [name]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a literal writes each field once
 export law field_written_once {
     kind: "type.struct_fields"
-    reads: fields_written_twice
+    reads_view: fields_written_twice
     voice: field_twice_words
     witness: "type P = { x: int }\n\nfn f() -> P { P { x: 1, x: 2 } }\n"
 }
@@ -2288,9 +2253,9 @@ export law field_written_once {
 fn field_twice_words(a: List<string>) -> Voice { field_repeated(a[0]) }
 
 /// A `?` its caller can't carry: how, and the words its voice is handed.
-fn propagates_uncarried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn propagates_uncarried(view: ItemView) -> List<Found> {
     flatten(
-        [found_saying(r, a) for r in refused_in(engine, file, at) for a in [passed_words(r.seat)] if !a.is_empty()],
+        [found_saying(r, a) for r in refused_seen(view) for a in [passed_words(r.seat)] if !a.is_empty()],
     )
 }
 
@@ -2307,7 +2272,7 @@ fn passed_words(seat: Seating) -> List<string> {
 /// a `?` passes to a caller whose promise carries it
 export law propagate_carried {
     kind: "type.propagate"
-    reads: propagates_uncarried
+    reads_view: propagates_uncarried
     voice: passed_refused
     witness: "fn a() -> int? { null }\n\nfn b() -> int { a()? }\n"
 }
@@ -2322,16 +2287,14 @@ fn passed_refused(a: List<string>) -> Voice {
 }
 
 /// A `fail`'s value its fn's promise refused.
-fn fails_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [match r.seat { .Raised(_) -> [found_in(r, [])], _ -> [] } for r in refused_in(engine, file, at)],
-    )
+fn fails_refused(view: ItemView) -> List<Found> {
+    flatten([match r.seat { .Raised(_) -> [found_in(r, [])], _ -> [] } for r in refused_seen(view)])
 }
 
 /// a `fail` raises what its fn promises to fail with
 export law fail_mismatch {
     kind: "type.fail"
-    reads: fails_refused
+    reads_view: fails_refused
     voice: fail_refused
     witness: "enum E {\n    boom\n}\n\nfn f() -> Result<int, E> {\n    fail 5\n}\n"
 }
@@ -2339,29 +2302,29 @@ export law fail_mismatch {
 fn fail_refused(a: List<string>) -> Voice { refused_voice("`fail` raises a `${a[0]}`, this is `${a[1]}`", a[0], a[1]) }
 
 /// A range's bound that is no `int`: where it stands, what it is.
-fn range_bounds_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn range_bounds_refused(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .RangeBound(ends) -> found_saying(r, [if ends { "ends" } else { "starts" }, r.found]),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// A comprehension's range bound that is no `int`: which it is, what it is.
-fn comp_bounds_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn comp_bounds_refused(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .CompBound(high) -> found_saying(r, [if high { "high" } else { "" }, r.found]),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// a comprehension's range counts between `int`s
 export law comp_bound_mismatch {
     kind: "type.mismatch"
-    reads: comp_bounds_refused
+    reads_view: comp_bounds_refused
     voice: comp_bound_words
     witness: "[i for i in \"a\"..3]\n"
 }
@@ -2371,7 +2334,7 @@ fn comp_bound_words(a: List<string>) -> Voice { comp_bound(a[0] != "", a[1]) }
 /// a range counts between `int`s
 export law range_bound_mismatch {
     kind: "type.mismatch"
-    reads: range_bounds_refused
+    reads_view: range_bounds_refused
     voice: range_bound_words
     witness: "fn f() -> int {\n    for i in 0..\"x\" { }\n    1\n}\n"
 }
@@ -2379,9 +2342,9 @@ export law range_bound_mismatch {
 fn range_bound_words(a: List<string>) -> Voice { range_bound_said(a[0], a[1]) }
 
 /// A `catch` refused, as its fault's own words.
-fn catches_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn catches_refused(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Caught(fault) -> found_saying(r, fault_words(fault)), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Caught(fault) -> found_saying(r, fault_words(fault)), _ -> [] } for r in refused_seen(view)],
     )
 }
 
@@ -2416,7 +2379,7 @@ fn fault_of(a: List<string>) -> CatchFault {
 /// a `catch` names failures its subject has, and lets pass only what its fn carries
 export law catch_arms_lawful {
     kind: "type.catch"
-    reads: catches_refused
+    reads_view: catches_refused
     voice: catch_words
     witness: "enum E {\n    boom\n    small(int)\n}\n\nfn a() -> Result<int, E> {\n    1\n}\n\nfn b() -> int {\n    a() catch {\n        .boom -> 0\n    }\n}\n"
 }
@@ -2424,16 +2387,14 @@ export law catch_arms_lawful {
 fn catch_words(a: List<string>) -> Voice { catch_fault(fault_of(a)) }
 
 /// A `catch` arm's value its subject's ok side refused.
-fn catch_arms_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [match r.seat { .CaughtArm -> [found_in(r, [])], _ -> [] } for r in refused_in(engine, file, at)],
-    )
+fn catch_arms_refused(view: ItemView) -> List<Found> {
+    flatten([match r.seat { .CaughtArm -> [found_in(r, [])], _ -> [] } for r in refused_seen(view)])
 }
 
 /// a `catch` arm answers the ok side
 export law catch_arm_mismatch {
     kind: "type.catch"
-    reads: catch_arms_refused
+    reads_view: catch_arms_refused
     voice: catch_arm_refused
     witness: "fn a() -> Result<int, string> {\n    1\n}\n\nfn b() -> int {\n    a() catch e -> \"s\"\n}\n"
 }
@@ -2441,16 +2402,16 @@ export law catch_arm_mismatch {
 fn catch_arm_refused(a: List<string>) -> Voice { refused_voice("a `catch` arm answers the ok side: `${a[0]}`, this is `${a[1]}`", a[0], a[1]) }
 
 /// A binding of a value that answers nothing.
-fn nothings_bound(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn nothings_bound(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Voided -> found_saying(r, ["nothing"]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Voided -> found_saying(r, ["nothing"]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a binding names a value
 export law binding_names_a_value {
     kind: "type.mismatch"
-    reads: nothings_bound
+    reads_view: nothings_bound
     voice: nothing_bound_words
     witness: "fn g(mut xs: List<int>) -> int {\n    let n = xs.push(2)\n    1\n}\n"
 }
@@ -2459,8 +2420,8 @@ fn nothing_bound_words(_a: List<string>) -> Voice { void_bound() }
 
 /// A `within` refused: its block answering nothing, or a program loading no `@std/time` for it —
 /// nothing built for an item whose typing refused nothing, as most items' does.
-fn withins_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let rows = refused_in(engine, file, at)
+fn withins_refused(view: ItemView) -> List<Found> {
+    let rows = refused_seen(view)
     if rows.is_empty() { return [] }
     flatten(
         [match r.seat {
@@ -2473,7 +2434,7 @@ fn withins_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 /// a `within` answers its block or the deadline it ran past
 export law within_answers {
     kind: "type.within"
-    reads: withins_refused
+    reads_view: withins_refused
     voice: within_words
     witness: "use @std.time.{ms}\nlet r = within ms(100) {\n    let a = 1\n}\n0\n"
 }
@@ -2481,16 +2442,16 @@ export law within_answers {
 fn within_words(a: List<string>) -> Voice { if a[0].is_empty() { within_unanswered() } else { within_untimed() } }
 
 /// A property read on a value that may be absent: the property.
-fn guarantees_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn guarantees_read(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Guarantee(name) -> found_saying(r, [name, r.found]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Guarantee(name) -> found_saying(r, [name, r.found]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a property is read on a value that is there
 export law property_reads_a_guarantee {
     kind: "type.mismatch"
-    reads: guarantees_read
+    reads_view: guarantees_read
     voice: guarantee_words
     witness: "type U = { age: int }\n\nfn f(u: U?) -> int { u.age }\n"
 }
@@ -2498,9 +2459,9 @@ export law property_reads_a_guarantee {
 fn guarantee_words(a: List<string>) -> Voice { guarantee_read(a[0], a[1]) }
 
 /// A `for` whose subject walks nothing: how, and what it is.
-fn fors_unwalked(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn fors_unwalked(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .ForUnwalked(fault) -> found_saying(r, walk_fault_words(fault)), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .ForUnwalked(fault) -> found_saying(r, walk_fault_words(fault)), _ -> [] } for r in refused_seen(view)],
     )
 }
 
@@ -2516,7 +2477,7 @@ fn walk_fault_words(fault: WalkFault) -> List<string> {
 /// a `for` walks a value that holds elements
 export law for_walks_elements {
     kind: "type.mismatch"
-    reads: fors_unwalked
+    reads_view: fors_unwalked
     voice: for_unwalked_words
     witness: "fn f() -> int {\n    mut t = 0\n    for x in 5 {\n        t = t + x\n    }\n    t\n}\n"
 }
@@ -2533,9 +2494,9 @@ fn for_unwalked_words(a: List<string>) -> Voice {
 }
 
 /// A record literal refused, as its fault's own words.
-fn literals_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn literals_refused(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Literal(fault) -> found_saying(r, literal_words(fault)), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Literal(fault) -> found_saying(r, literal_words(fault)), _ -> [] } for r in refused_seen(view)],
     )
 }
 
@@ -2551,7 +2512,7 @@ fn literal_words(fault: LiteralFault) -> List<string> {
 /// a record literal names a record and writes its fields
 export law literal_fills_a_record {
     kind: "type.struct_fields"
-    reads: literals_refused
+    reads_view: literals_refused
     voice: literal_refused_words
     witness: "type T = { tone: int }\n\nfn f() -> T { T { tone: 1, hue: 2 } }\n"
 }
@@ -2568,16 +2529,16 @@ fn literal_refused_words(a: List<string>) -> Voice {
 }
 
 /// A call filling a type parameter with a type that doesn't implement its bound: the type, the bound.
-fn bounds_unmet(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn bounds_unmet(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Unimplemented -> found_saying(r, [r.found, r.want]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Unimplemented -> found_saying(r, [r.found, r.want]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a type parameter is filled with a type that implements its bound
 export law bound_implemented {
     kind: "type.mismatch"
-    reads: bounds_unmet
+    reads_view: bounds_unmet
     voice: bound_unmet_words
     witness: "trait Show {\n    fn show() -> int\n}\n\ntype Q = { y: int }\n\nfn f<T: Show>(v: T) -> int { v.show() }\n\nfn g() -> int { f(Q { y: 1 }) }\n"
 }
@@ -2586,40 +2547,38 @@ fn bound_unmet_words(a: List<string>) -> Voice { bound_unimplemented(a[0], a[1],
 
 /// A static's call whose answer names a type parameter nothing it's handed fills: the static, the
 /// parameter.
-fn statics_unpinned(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn statics_unpinned(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .StaticUnpinned(callee, parameter) -> found_saying(r, [callee, parameter]),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// A `fold` refused, its fault's own words, where `seedless` picks the seed's law or the others'.
-fn folds_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId, seedless: bool) -> List<
-    Found,
-> {
+fn folds_refused(view: ItemView, seedless: bool) -> List<Found> {
     flatten(
         [match r.seat {
             .Folded(fault) -> if (fault is .Seedless || fault is .Walkless) == seedless { found_saying(r, fold_words(fault)) } else { [] },
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// a static's type parameter is filled by its arguments or its wanted answer
 export law static_pinned {
     kind: "type.method"
-    reads: statics_unpinned
+    reads_view: statics_unpinned
     voice: static_unpinned_words
     witness: "type B<T> = { v: T }\n\nimpl B<T> {\n    static fn none() -> B<T>? { null }\n}\n\nfn g() -> int {\n    let b = B.none()\n    1\n}\n"
 }
 
 fn static_unpinned_words(a: List<string>) -> Voice { static_unpinned(a[0], a[1]) }
 
-fn folds_misshapen(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { folds_refused(engine, file, at, false) }
+fn folds_misshapen(view: ItemView) -> List<Found> { folds_refused(view, false) }
 
-fn folds_seedless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { folds_refused(engine, file, at, true) }
+fn folds_seedless(view: ItemView) -> List<Found> { folds_refused(view, true) }
 
 fn fold_words(fault: FoldFault) -> List<string> {
     match fault {
@@ -2646,7 +2605,7 @@ fn fold_refused_words(a: List<string>) -> Voice {
 /// a `fold` takes a seed and a fn of the accumulator and the element
 export law fold_takes_seed_and_fn {
     kind: "type.mismatch"
-    reads: folds_misshapen
+    reads_view: folds_misshapen
     voice: fold_refused_words
     witness: "fn g(xs: List<int>) -> int { xs.fold(0) }\n"
 }
@@ -2654,42 +2613,42 @@ export law fold_takes_seed_and_fn {
 /// a `fold`'s seed names what it accumulates
 export law fold_seed_typed {
     kind: "type.list_element"
-    reads: folds_seedless
+    reads_view: folds_seedless
     voice: fold_refused_words
     witness: "fn g(xs: List<int>) -> int {\n    let n = xs.fold([], (acc, x) -> acc)\n    1\n}\n"
 }
 
 /// A call pinning a count of type arguments its fn doesn't declare: the fn, what it declares, what is pinned.
-fn pins_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn pins_miscounted(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .Pinned(callee, want, found) -> found_saying(r, [callee, "${want}", "${found}"]),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// A call leaving a type parameter of its fn filled by nothing: the parameter, the fn.
-fn params_unpinned(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn params_unpinned(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Unpinned(param, callee) -> found_saying(r, [param, callee]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .Unpinned(param, callee) -> found_saying(r, [param, callee]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// A bare `null` in a seat naming a type parameter nothing fills: the fn, the seat's place, what it wants.
-fn nulls_unpinning(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn nulls_unpinning(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .NullPin(callee, place) -> found_saying(r, [callee, "${place + 1}", r.want]),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// a bare `null` fills no type parameter
 export law null_pins_no_parameter {
     kind: "type.mismatch"
-    reads: nulls_unpinning
+    reads_view: nulls_unpinning
     voice: null_unpinning_words
     witness: "fn id<T>(v: T?) -> T? { v }\n\nfn g() -> int? { id(null) }\n"
 }
@@ -2698,19 +2657,19 @@ fn null_unpinning_words(a: List<string>) -> Voice { null_unpinning(a[0], count_a
 
 /// A literal leaving a parameter of its record filled by nothing: the record, the parameter, the
 /// type arguments it writes, then the fields that could name it.
-fn literals_unpinned(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn literals_unpinned(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .LiteralUnpinned(record, param, args, fields) -> found_saying(r, [record, param, "${args.length}"].concat(args).concat(fields)),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// a literal's record has each of its type parameters pinned
 export law literal_pins_each_parameter {
     kind: "type.struct_targs"
-    reads: literals_unpinned
+    reads_view: literals_unpinned
     voice: literal_unpinned_words
     witness: "type Pair<A, B> = { a: A, b: B? = null }\n\nfn g() -> int { Pair<int> { a: 1 }.a }\n"
 }
@@ -2723,7 +2682,7 @@ fn literal_unpinned_words(a: List<string>) -> Voice {
 /// a call fills every type parameter its fn declares
 export law type_parameters_pinned {
     kind: "type.mismatch"
-    reads: params_unpinned
+    reads_view: params_unpinned
     voice: unpinned_words
     witness: "fn zero<T>(n: int) -> int { n }\n\nzero(5)\n"
 }
@@ -2733,7 +2692,7 @@ fn unpinned_words(a: List<string>) -> Voice { param_unpinned(a[0], a[1]) }
 /// a call pins as many type arguments as its fn declares
 export law type_arguments_counted {
     kind: "type.mismatch"
-    reads: pins_miscounted
+    reads_view: pins_miscounted
     voice: pins_words
     witness: "fn plain(x: int) -> int { x }\n\nfn g() -> int { plain<int>(5) }\n"
 }
@@ -2741,16 +2700,16 @@ export law type_arguments_counted {
 fn pins_words(a: List<string>) -> Voice { pins_refused(a[0], count_at(a, 1), count_at(a, 2)) }
 
 /// A walk handed other than its one fn: the walk, what it's handed.
-fn walks_miscounted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn walks_miscounted(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .OneFn(name, found) -> found_saying(r, [name, "${found}"]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .OneFn(name, found) -> found_saying(r, [name, "${found}"]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a list's walk takes one fn
 export law walk_takes_a_fn {
     kind: "type.mismatch"
-    reads: walks_miscounted
+    reads_view: walks_miscounted
     voice: one_fn_words
     witness: "fn g(xs: List<int>) -> List<int> { xs.map((x: int) -> x, (y: int) -> y) }\n"
 }
@@ -2758,16 +2717,16 @@ export law walk_takes_a_fn {
 fn one_fn_words(a: List<string>) -> Voice { walk_takes_one_fn(a[0], count_at(a, 1)) }
 
 /// A walk's lambda taking other than one param: the walk, what the lambda takes.
-fn walks_misseated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn walks_misseated(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .WalkSeats(name, seats) -> found_saying(r, [name, "${seats}"]), _ -> [] } for r in refused_in(engine, file, at)],
+        [match r.seat { .WalkSeats(name, seats) -> found_saying(r, [name, "${seats}"]), _ -> [] } for r in refused_seen(view)],
     )
 }
 
 /// a walk's lambda takes the element
 export law walk_lambda_takes_the_element {
     kind: "type.mismatch"
-    reads: walks_misseated
+    reads_view: walks_misseated
     voice: walk_seats_words
     witness: "fn g(xs: List<int>) -> List<int> { xs.map((a, b) -> a) }\n"
 }
@@ -2777,7 +2736,7 @@ fn walk_seats_words(a: List<string>) -> Voice { walk_misseated(a[0], count_at(a,
 /// a member's call writes as many arguments as its seats take
 export law member_miscounted {
     kind: "type.method"
-    reads: members_miscounted
+    reads_view: members_miscounted
     voice: member_miscounted_words
     witness: "type P = { n: int }\n\nimpl P {\n    fn add(k: int) -> int { self.n + k }\n}\n\nfn g(p: P) -> int { p.add(1) { 2 } }\n"
 }
@@ -2786,8 +2745,8 @@ fn member_miscounted_words(a: List<string>) -> Voice {
     if a[2] == "static" { static_arity_missed(a[0], a[1], count_at(a, 3), count_at(a, 4)) } else { method_arity_missed(a[0], a[1], count_at(a, 3), count_at(a, 4)) }
 }
 /// A type literal's hole naming a binding that holds no id: the binding, then what it holds.
-fn type_holes_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([type_hole_words(r) for r in refused_in(engine, file, at)])
+fn type_holes_refused(view: ItemView) -> List<Found> {
+    flatten([type_hole_words(r) for r in refused_seen(view)])
 }
 
 fn type_hole_words(r: RefusedSeat) -> List<Found> {
@@ -2797,7 +2756,7 @@ fn type_hole_words(r: RefusedSeat) -> List<Found> {
 /// a type literal's hole names a binding holding an id
 export law type_hole_mismatch {
     kind: "type.mismatch"
-    reads: type_holes_refused
+    reads_view: type_holes_refused
     voice: type_hole_refused
     witness: "enum Sp {\n    Id(id: int)\n}\n\ntype N = { n: int }\n\nimpl N {\n    fn interned(t: Sp) -> int { 1 }\n}\n\nfn g(n: N) -> int {\n    let s = \"x\"\n    n.type(s)\n}\n"
 }
@@ -2806,19 +2765,19 @@ fn type_hole_refused(a: List<string>) -> Voice { hole_holds(a[0], a[1]) }
 
 /// A trait's own body called on a value whose type doesn't implement the trait at the call's
 /// arguments: the type, then the trait so applied.
-fn defaults_unimplemented(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn defaults_unimplemented(view: ItemView) -> List<Found> {
     flatten(
         [match r.seat {
             .DefaultUnimplemented(applied) -> found_saying(r, [r.found, applied]),
             _ -> [],
-        } for r in refused_in(engine, file, at)],
+        } for r in refused_seen(view)],
     )
 }
 
 /// a trait's own body runs through the impl at the call's arguments
 export law default_implemented {
     kind: "type.method"
-    reads: defaults_unimplemented
+    reads_view: defaults_unimplemented
     voice: default_unimplemented_refused
     witness: "type H = { n: int = 0 }\n\ntrait Echo<T> {\n    fn show(t: T) -> string\n    fn twice(t: T) -> string { self.show(t) + self.show(t) }\n}\n\nimpl Echo<int> for H {\n    fn show(t: int) -> string { \"i\" }\n}\n\nfn f() -> string { H {}.twice(true) }\n"
 }
@@ -2826,8 +2785,8 @@ export law default_implemented {
 fn default_unimplemented_refused(a: List<string>) -> Voice { default_impl_missing(a[0], a[1]) }
 
 /// `find_map`'s fn answering what is never absent: what it answers.
-fn projections_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([projection_words(r) for r in refused_in(engine, file, at)])
+fn projections_refused(view: ItemView) -> List<Found> {
+    flatten([projection_words(r) for r in refused_seen(view)])
 }
 
 fn projection_words(r: RefusedSeat) -> List<Found> {
@@ -2837,7 +2796,7 @@ fn projection_words(r: RefusedSeat) -> List<Found> {
 /// `find_map`'s fn answers a nullable
 export law find_map_unprojected {
     kind: "type.mismatch"
-    reads: projections_refused
+    reads_view: projections_refused
     voice: projection_refused
     witness: "fn g(xs: List<int>) -> int? { xs.find_map((x: int) -> x) }\n"
 }
@@ -2847,9 +2806,12 @@ fn projection_refused(a: List<string>) -> Voice { seeks_unprojected(a[0]) }
 /// A walk on `[]`: the walk, once — where checking found it unknowable, and where a written `[]` is
 /// walked at a place checking said nothing of (one walk's two spans start alike and may end apart,
 /// so they meet by their start).
-fn unknowable_walks(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let seated = flatten([unknowable_words(r) for r in refused_in(engine, file, at)])
-    seated.concat([w for w in empty_walks(engine, file, at) if !seated.any(it.at?.lo == w.at?.lo)])
+fn unknowable_walks(view: ItemView) -> List<Found> {
+    let seated = flatten([unknowable_words(r) for r in refused_seen(view)])
+    seated
+        .concat(
+            [w for w in empty_walks(view.engine, view.file, view.at) if !seated.any(it.at?.lo == w.at?.lo)],
+        )
 }
 
 fn unknowable_words(r: RefusedSeat) -> List<Found> {
@@ -2859,7 +2821,7 @@ fn unknowable_words(r: RefusedSeat) -> List<Found> {
 /// a walk knows its list's elements
 export law walk_knows_elements {
     kind: "type.list_element"
-    reads: unknowable_walks
+    reads_view: unknowable_walks
     voice: unknowable_refused
     witness: "let n = [].find_map((x: int) -> x)\n"
 }
@@ -2867,14 +2829,14 @@ export law walk_knows_elements {
 fn unknowable_refused(a: List<string>) -> Voice { walk_unknowable(a[0]) }
 
 /// The value a new cell holds that isn't what its seat says the cell holds.
-fn cells_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [found_in(r, []) for r in refused_in(engine, file, at) if r.seat is .CellHolds]
+fn cells_refused(view: ItemView) -> List<Found> {
+    [found_in(r, []) for r in refused_seen(view) if r.seat is .CellHolds]
 }
 
 /// a new cell holds what its seat says it holds
 export law cell_holds_mismatch {
     kind: "type.mismatch"
-    reads: cells_refused
+    reads_view: cells_refused
     voice: cell_refused
     witness: "let c: Cell<int> = Cell.new(\"s\")\n"
 }
@@ -2896,30 +2858,26 @@ fn misnamed_refused(a: List<string>) -> Voice {
 fn map_unlike_refused(a: List<string>) -> Voice { map_spread_unmapped(a[0]) }
 
 /// A variant pattern over a value that is no enum: the name it names, then the value's type.
-fn pattern_variant_unshaped_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
-    Found,
-> { misshapen_found(engine, file, at, ["variant"]) }
+fn pattern_variant_unshaped_found(view: ItemView) -> List<Found> { misshapen_found(view, ["variant"]) }
 
-/// Each pattern of the written item `at` of `file` comparing its subject with a value of another
+/// Each pattern of the written item `view` shows comparing its subject with a value of another
 /// type: at the pattern, its voice handed the value's type, then the subject's.
-fn patterns_unmatched(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn patterns_unmatched(view: ItemView) -> List<Found> {
     flatten(
-        [found_saying(r, [r.found, r.want]) for r in refused_in(engine, file, at) if r.seat is .Unmatched],
+        [found_saying(r, [r.found, r.want]) for r in refused_seen(view) if r.seat is .Unmatched],
     )
 }
 
-/// Each `is` of the written item `at` of `file` asking a value that is no enum for a variant: at the
+/// Each `is` of the written item `view` shows asking a value that is no enum for a variant: at the
 /// value, its voice handed the value's type.
-fn variants_asked_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [found_saying(r, [r.found]) for r in refused_in(engine, file, at) if r.seat is .Unasked],
-    )
+fn variants_asked_of(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, [r.found]) for r in refused_seen(view) if r.seat is .Unasked])
 }
 
 /// an `is` asks an enum for its variant
 export law is_asks_an_enum {
     kind: "type.match"
-    reads: variants_asked_of
+    reads_view: variants_asked_of
     voice: asked_of_words
     witness: "fn f(n: int) -> bool { n is .a }\n"
 }
@@ -2929,7 +2887,7 @@ fn asked_of_words(a: List<string>) -> Voice { variant_asked_of(a[0]) }
 /// a pattern compares its subject with a value of the subject's type
 export law pattern_of_subject_type {
     kind: "type.pattern"
-    reads: patterns_unmatched
+    reads_view: patterns_unmatched
     voice: unmatched_words
     witness: "fn f(n: int) -> int {\n    match n {\n        \"x\" -> 1\n        _ -> 0\n    }\n}\n"
 }
@@ -2939,7 +2897,7 @@ fn unmatched_words(a: List<string>) -> Voice { pattern_unmatched(a[0], a[1]) }
 /// a variant pattern over a value that is no enum
 export law pattern_variant_unshaped {
     kind: "type.pattern"
-    reads: pattern_variant_unshaped_found
+    reads_view: pattern_variant_unshaped_found
     voice: pattern_variant_unshaped_words
     witness: "enum E {\n    a(int)\n}\n\nfn f(e: E) -> int {\n    match e {\n        .a(.x) -> 1,\n        _ -> 0,\n    }\n}\n"
 }
@@ -2947,14 +2905,12 @@ export law pattern_variant_unshaped {
 fn pattern_variant_unshaped_words(a: List<string>) -> Voice { variant_unshaped(a[1], a[2]) }
 
 /// An `as` pattern over a written variant: the name it names, then the value's type.
-fn pattern_member_written_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
-    Found,
-> { misshapen_found(engine, file, at, ["member"]) }
+fn pattern_member_written_found(view: ItemView) -> List<Found> { misshapen_found(view, ["member"]) }
 
 /// an `as` pattern over a written variant
 export law pattern_member_written {
     kind: "type.member_pattern"
-    reads: pattern_member_written_found
+    reads_view: pattern_member_written_found
     voice: pattern_member_written_words
     witness: "enum E {\n    a(int)\n}\n\nfn f(e: E) -> int {\n    match e {\n        .a as x -> 1,\n    }\n}\n"
 }
@@ -2962,14 +2918,12 @@ export law pattern_member_written {
 fn pattern_member_written_words(a: List<string>) -> Voice { member_unrecorded(a[1], a[2]) }
 
 /// A record pattern over a value that is no record: the name it names, then the value's type.
-fn pattern_record_unrecorded_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
-    Found,
-> { misshapen_found(engine, file, at, ["record"]) }
+fn pattern_record_unrecorded_found(view: ItemView) -> List<Found> { misshapen_found(view, ["record"]) }
 
 /// a record pattern over a value that is no record
 export law pattern_record_unrecorded {
     kind: "type.record_pattern"
-    reads: pattern_record_unrecorded_found
+    reads_view: pattern_record_unrecorded_found
     voice: pattern_record_unrecorded_words
     witness: "type P = { x: int }\n\nfn f(n: int) -> int {\n    match n {\n        P { x, .. } -> x,\n        _ -> 0,\n    }\n}\n"
 }
@@ -2978,11 +2932,9 @@ fn pattern_record_unrecorded_words(a: List<string>) -> Voice { record_pattern_un
 
 /// A record pattern refused as `kind` names it (`record_misshapen`): the kind, the name the pattern
 /// names, then what the kind keeps.
-fn record_patterns_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn record_patterns_found(view: ItemView) -> List<Found> {
     misshapen_found(
-        engine,
-        file,
-        at,
+        view,
         [
             "record.rests",
             "record.after",
@@ -2997,7 +2949,7 @@ fn record_patterns_found(engine: QueryEngine, file: SourceFileAddress, at: ItemI
 /// a record pattern names the subject's record and its fields
 export law pattern_record_fields {
     kind: "type.record_pattern"
-    reads: record_patterns_found
+    reads_view: record_patterns_found
     voice: record_pattern_words
     witness: "type P = { x: int, y: int }\n\nfn f(p: P) -> int {\n    match p {\n        P { x } -> x,\n    }\n}\n"
 }
@@ -3014,16 +2966,14 @@ fn record_pattern_words(a: List<string>) -> Voice {
 }
 
 /// A list pattern over a value that is no list: the name it names, then the value's type.
-fn pattern_list_unlisted_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
-    Found,
-> { misshapen_found(engine, file, at, ["list"]) }
+fn pattern_list_unlisted_found(view: ItemView) -> List<Found> { misshapen_found(view, ["list"]) }
 
-fn pattern_list_rests_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { misshapen_found(engine, file, at, ["list.rests"]) }
+fn pattern_list_rests_found(view: ItemView) -> List<Found> { misshapen_found(view, ["list.rests"]) }
 
 /// a list pattern writes one `..`
 export law pattern_list_one_rest {
     kind: "type.list_pattern"
-    reads: pattern_list_rests_found
+    reads_view: pattern_list_rests_found
     voice: pattern_list_rests_words
     witness: "fn f(xs: List<int>) -> int {\n    match xs {\n        [..a, ..b] -> 1,\n        _ -> 0,\n    }\n}\n"
 }
@@ -3033,7 +2983,7 @@ fn pattern_list_rests_words(_a: List<string>) -> Voice { list_pattern_two_rests(
 /// a list pattern over a value that is no list
 export law pattern_list_unlisted {
     kind: "type.list_pattern"
-    reads: pattern_list_unlisted_found
+    reads_view: pattern_list_unlisted_found
     voice: pattern_list_unlisted_words
     witness: "fn f(n: int) -> int {\n    match n {\n        [a, ..] -> a,\n        _ -> 0,\n    }\n}\n"
 }
@@ -3042,12 +2992,12 @@ fn pattern_list_unlisted_words(a: List<string>) -> Voice { list_pattern_unlisted
 
 /// A type pattern over a value no `dyn` is, or one that may be absent: whether absent, then the
 /// value's type.
-fn pattern_narrow_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { misshapen_found(engine, file, at, ["typed", "absent"]) }
+fn pattern_narrow_found(view: ItemView) -> List<Found> { misshapen_found(view, ["typed", "absent"]) }
 
 /// a type pattern over a value no `dyn` is
 export law pattern_narrow_plain {
     kind: "type.narrow"
-    reads: pattern_narrow_found
+    reads_view: pattern_narrow_found
     voice: pattern_narrow_words
     witness: "fn f() -> int {\n    match 5 {\n        c: int -> 1,\n        _ -> 0,\n    }\n}\n"
 }
@@ -3060,9 +3010,7 @@ fn pattern_narrow_words(a: List<string>) -> Voice { if a[0] == "absent" { narrow
 fn pattern_narrow_target_found(view: ItemView) -> List<Found> {
     if !view.holds_kind(NodeKind.PatTyped) { return sees_no_item(view) }
     misshapen_found(
-        view.engine,
-        view.file,
-        view.at,
+        view,
         ["narrow.dyn", "narrow.absent", "narrow.param", "narrow.builtin", "narrow.impl"],
     )
 }
@@ -3087,10 +3035,8 @@ fn pattern_narrow_target_words(a: List<string>) -> Voice {
 
 /// Each pattern refused as the shape of its value, of a kind among `kinds`: the kind, the name it
 /// names, the value's type.
-fn misshapen_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId, kinds: List<string>) -> List<
-    Found,
-> {
-    flatten([misshapen_words(r, kinds) for r in refused_in(engine, file, at)])
+fn misshapen_found(view: ItemView, kinds: List<string>) -> List<Found> {
+    flatten([misshapen_words(r, kinds) for r in refused_seen(view)])
 }
 
 fn misshapen_words(r: RefusedSeat, kinds: List<string>) -> List<Found> {
@@ -3102,8 +3048,8 @@ fn misshapen_words(r: RefusedSeat, kinds: List<string>) -> List<Found> {
 
 /// An `or` arm whose alternative binds other names than its first: the alternative, its names, then
 /// the first's.
-fn alternatives_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([apart_words(r) for r in refused_in(engine, file, at)])
+fn alternatives_apart(view: ItemView) -> List<Found> {
+    flatten([apart_words(r) for r in refused_seen(view)])
 }
 
 fn apart_words(r: RefusedSeat) -> List<Found> {
@@ -3113,12 +3059,12 @@ fn apart_words(r: RefusedSeat) -> List<Found> {
     }
 }
 
-fn alternatives_typed_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { misshapen_found(engine, file, at, ["or.types"]) }
+fn alternatives_typed_found(view: ItemView) -> List<Found> { misshapen_found(view, ["or.types"]) }
 
 /// an `or` arm's alternatives bind each name at one type
 export law alternatives_typed_alike {
     kind: "type.or_binds"
-    reads: alternatives_typed_found
+    reads_view: alternatives_typed_found
     voice: typed_apart_refused
     witness: "enum Q {\n    A(v: int)\n    B(v: string)\n}\n\nfn f(q: Q) -> int {\n    match q {\n        .A(v) or .B(v) -> 1,\n    }\n}\n"
 }
@@ -3131,7 +3077,7 @@ fn typed_apart_refused(a: List<string>) -> Voice {
 /// an `or` arm whose alternatives bind other names
 export law alternatives_bind_alike {
     kind: "type.or_binds"
-    reads: alternatives_apart
+    reads_view: alternatives_apart
     voice: apart_refused
     witness: "enum E {\n    a(int)\n    b\n}\n\nfn f(e: E) -> int {\n    match e {\n        .a(n) or .b -> n,\n    }\n}\n"
 }
@@ -3143,16 +3089,14 @@ fn apart_refused(a: List<string>) -> Voice {
 }
 
 /// A payload `is` outside an `if` condition.
-fn payloads_outside(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [found_saying(r, []) for r in refused_in(engine, file, at) if r.seat is .PayloadOutside],
-    )
+fn payloads_outside(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, []) for r in refused_seen(view) if r.seat is .PayloadOutside])
 }
 
 /// a payload `is` outside an `if` condition
 export law payload_is_bound_outside {
     kind: "type.is_bind"
-    reads: payloads_outside
+    reads_view: payloads_outside
     voice: outside_refused
     witness: "enum E {\n    a(int)\n}\n\nfn f(e: E) -> bool { e is .a(x) }\n"
 }
@@ -3162,8 +3106,8 @@ fn outside_refused(_a: List<string>) -> Voice { payload_is_outside() }
 /// An `isolated` seat handed what may share its caller's: the callee and the seat, then the
 /// capture's name, whether it is or holds the identity, and the identity, where a lambda captured
 /// one.
-fn isolations_broken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([isolated_words(r) for r in refused_in(engine, file, at)])
+fn isolations_broken(view: ItemView) -> List<Found> {
+    flatten([isolated_words(r) for r in refused_seen(view)])
 }
 
 fn isolated_words(r: RefusedSeat) -> List<Found> {
@@ -3180,7 +3124,7 @@ fn isolated_words(r: RefusedSeat) -> List<Found> {
 /// an `isolated` seat handed a fn that may share what its caller has
 export law isolation_broken {
     kind: "type.isolated"
-    reads: isolations_broken
+    reads_view: isolations_broken
     voice: isolated_refused
     witness: "fn run(isolated make: fn() -> int) -> int { make() }\n\nfn g() -> int {\n    let c = Cell.new(1)\n    run(() -> c.get())\n}\n"
 }
@@ -3188,8 +3132,8 @@ export law isolation_broken {
 fn isolated_refused(a: List<string>) -> Voice { if a.length == 2 { isolated_unknowable(a[0], a[1]) } else { isolated_captures(a[0], a[1], a[2], a[3], a[4]) } }
 
 /// A `const` seat handed a value computed at run time: the callee, then the seat.
-fn seats_computed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([computed_words(r) for r in refused_in(engine, file, at)])
+fn seats_computed(view: ItemView) -> List<Found> {
+    flatten([computed_words(r) for r in refused_seen(view)])
 }
 
 fn computed_words(r: RefusedSeat) -> List<Found> { match r.seat { .Computed(callee, seat) -> found_saying(r, [callee, seat]), _ -> [] } }
@@ -3197,7 +3141,7 @@ fn computed_words(r: RefusedSeat) -> List<Found> { match r.seat { .Computed(call
 /// a `const` seat handed a value computed at run time
 export law const_seat_computed {
     kind: "type.const_seat"
-    reads: seats_computed
+    reads_view: seats_computed
     voice: computed_refused
     witness: "fn take(const n: int) -> int {\n    n\n}\n\nfn g(k: int) -> int { take(k + 1) }\n"
 }
@@ -3206,8 +3150,8 @@ fn computed_refused(a: List<string>) -> Voice { computed_const_seat(a[0], a[1]) 
 
 /// A variant pattern naming another number of payloads than its variant carries: the variant's
 /// words.
-fn arities_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([arity_words(r) for r in refused_in(engine, file, at)])
+fn arities_refused(view: ItemView) -> List<Found> {
+    flatten([arity_words(r) for r in refused_seen(view)])
 }
 
 fn arity_words(r: RefusedSeat) -> List<Found> {
@@ -3221,7 +3165,7 @@ fn arity_words(r: RefusedSeat) -> List<Found> {
 /// a variant pattern naming another number of payloads than its variant carries
 export law pattern_arity_mismatch {
     kind: "type.variant_arity"
-    reads: arities_refused
+    reads_view: arities_refused
     voice: arity_refused
     witness: "enum E {\n    A(int, int)\n    B\n}\n\nfn f(e: E) -> int {\n    match e {\n        .A(x) -> x,\n        .B -> 0,\n    }\n}\n"
 }
@@ -3231,14 +3175,14 @@ fn arity_refused(a: List<string>) -> Voice {
 }
 
 /// A map literal's key that isn't text, or value whose type isn't the one the map holds.
-fn map_entries_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [found_in(r, []) for r in refused_in(engine, file, at) if r.seat is .MapValue]
+fn map_entries_refused(view: ItemView) -> List<Found> {
+    [found_in(r, []) for r in refused_seen(view) if r.seat is .MapValue]
 }
 
 /// a map literal's value whose type isn't the map's
 export law map_value_mismatch {
     kind: "type.map_value"
-    reads: map_entries_refused
+    reads_view: map_entries_refused
     voice: map_value_refused
     witness: "fn f() -> Map<string, int> { {\"a\": \"b\"} }\n"
 }
@@ -3246,14 +3190,14 @@ export law map_value_mismatch {
 fn map_value_refused(a: List<string>) -> Voice { refused_voice(map_holds(a[0], a[1]), a[0], a[1]) }
 
 /// A map literal's key that isn't text: what it is.
-fn map_keys_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [r.found] } for r in refused_in(engine, file, at) if r.seat is .MapKey]
+fn map_keys_refused(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [r.found] } for r in refused_seen(view) if r.seat is .MapKey]
 }
 
 /// a map literal's key that isn't text
 export law map_key_mismatch {
     kind: "type.map_key"
-    reads: map_keys_refused
+    reads_view: map_keys_refused
     voice: map_key_refused
     witness: "fn f() -> Map<string, int> { {1: 2} }\n"
 }
@@ -3261,14 +3205,14 @@ export law map_key_mismatch {
 fn map_key_refused(a: List<string>) -> Voice { Voice { message: map_keyed(a[0]), label: "this is `${a[0]}`", help: "key by text" } }
 
 /// An index holding a value that is no `int`: what it holds.
-fn indexes_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([found_saying(r, [r.found]) for r in refused_in(engine, file, at) if r.seat is .Index])
+fn indexes_refused(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, [r.found]) for r in refused_seen(view) if r.seat is .Index])
 }
 
 /// an index that isn't an `int`
 export law index_mismatch {
     kind: "type.mismatch"
-    reads: indexes_refused
+    reads_view: indexes_refused
     voice: index_refused
     witness: "fn f(xs: List<int>) -> int { xs[\"a\"] }\n"
 }
@@ -3276,8 +3220,8 @@ export law index_mismatch {
 fn index_refused(a: List<string>) -> Voice { unplaced_index(a[0]) }
 
 /// An operand an operator refused: the operator, the type it needs, what the operand holds.
-fn operands_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten([operand_words(r) for r in refused_in(engine, file, at)])
+fn operands_refused(view: ItemView) -> List<Found> {
+    flatten([operand_words(r) for r in refused_seen(view)])
 }
 
 fn operand_words(r: RefusedSeat) -> List<Found> {
@@ -3296,7 +3240,7 @@ fn noted_aside(note: SugarNote?) -> Aside? {
 /// an operand of an operator that isn't the type the operator needs
 export law operand_mismatch {
     kind: "type.mismatch"
-    reads: operands_refused
+    reads_view: operands_refused
     voice: operand_refused
     witness: "fn f() -> int { 1 + true }\n"
 }
@@ -3304,16 +3248,14 @@ export law operand_mismatch {
 fn operand_refused(a: List<string>) -> Voice { operand_needed(a[0], a[1], a[2]) }
 
 /// A value `!` negates that is no `bool`: what it holds.
-fn negations_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [found_saying(r, [r.found]) for r in refused_in(engine, file, at) if r.seat is .Negated],
-    )
+fn negations_refused(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, [r.found]) for r in refused_seen(view) if r.seat is .Negated])
 }
 
 /// a value `!` negates that isn't a `bool`
 export law negation_mismatch {
     kind: "type.mismatch"
-    reads: negations_refused
+    reads_view: negations_refused
     voice: negation_refused
     witness: "fn f(n: int) -> bool { !n }\n"
 }
@@ -3321,13 +3263,8 @@ export law negation_mismatch {
 fn negation_refused(a: List<string>) -> Voice { unnegated(a[0]) }
 
 /// An operand `==` or `!=` refused as `how` says, by the words its voice reads.
-fn compared_refused(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    how: fn(Uncompared) -> bool,
-) -> List<Found> {
-    flatten([compared_words(r) for r in refused_in(engine, file, at) if compared_how(r.seat, how)])
+fn compared_refused(view: ItemView, how: fn(Uncompared) -> bool) -> List<Found> {
+    flatten([compared_words(r) for r in refused_seen(view) if compared_how(r.seat, how)])
 }
 
 /// Whether the seat `seat` is an operand `==` or `!=` refused as `how` takes.
@@ -3349,33 +3286,31 @@ fn compared_help(how: Uncompared) -> string {
     match how { .Uncomparable(o) -> compare_help(o), .Mismatched or .Unasked or .Absent -> "" }
 }
 
-fn mismatched_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { compared_refused(engine, file, at, (c) -> c is .Mismatched) }
+fn mismatched_found(view: ItemView) -> List<Found> { compared_refused(view, (c) -> c is .Mismatched) }
 
 fn mismatched_said(a: List<string>) -> Voice { sides_unmatched(a[0], a[1], a[2]) }
 
-fn uncompared_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { compared_refused(engine, file, at, (c) -> c is .Uncomparable) }
+fn uncompared_found(view: ItemView) -> List<Found> { compared_refused(view, (c) -> c is .Uncomparable) }
 
 fn uncompared_said(a: List<string>) -> Voice { uncompared(a[0], a[2], a[3]) }
 
-fn unasked_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { compared_refused(engine, file, at, (c) -> c is .Unasked) }
+fn unasked_found(view: ItemView) -> List<Found> { compared_refused(view, (c) -> c is .Unasked) }
 
 fn unasked_said(a: List<string>) -> Voice { null_unasked(a[0], a[2]) }
 
-fn absent_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { compared_refused(engine, file, at, (c) -> c is .Absent) }
+fn absent_found(view: ItemView) -> List<Found> { compared_refused(view, (c) -> c is .Absent) }
 
 fn absent_said(a: List<string>) -> Voice { always_absent(a[0]) }
 
 /// An operand wearing a name beside another's: the name the other side wears, then its own.
-fn names_mixed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    flatten(
-        [found_saying(r, [r.want, r.found]) for r in refused_in(engine, file, at) if r.seat is .TwoNames],
-    )
+fn names_mixed(view: ItemView) -> List<Found> {
+    flatten([found_saying(r, [r.want, r.found]) for r in refused_seen(view) if r.seat is .TwoNames])
 }
 
 /// an operand wearing a name beside one wearing another
 export law named_operands {
     kind: "type.mismatch"
-    reads: names_mixed
+    reads_view: names_mixed
     voice: names_mixed_said
     witness: "type A = int\ntype B = int\n\nfn f(a: A, b: B) -> A { a + b }\n"
 }
@@ -3384,9 +3319,9 @@ fn names_mixed_said(a: List<string>) -> Voice { two_named(a[0], a[1]) }
 
 /// An operand of the shape a name stands over, beside one wearing the name: the name, the shape, and
 /// the construction that crosses it in, sure, where the operand is written.
-fn shapes_mixed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let text = item_under(engine, file, at).text
-    [shape_found(r, text) for r in refused_in(engine, file, at) if r.seat is .Shaped]
+fn shapes_mixed(view: ItemView) -> List<Found> {
+    let text = item_under(view.engine, view.file, view.at).text
+    [shape_found(r, text) for r in refused_seen(view) if r.seat is .Shaped]
 }
 
 /// The refusal `r` of an operand of a name's shape, offering `Name(value)` over its written text.
@@ -3404,7 +3339,7 @@ fn shape_found(r: RefusedSeat, text: string) -> Found {
 /// an operand of a name's own shape beside one wearing the name
 export law mixed_with_shape {
     kind: "type.mismatch"
-    reads: shapes_mixed
+    reads_view: shapes_mixed
     voice: shape_mixed_said
     witness: "type Meters = int\n\nfn f(m: Meters, k: int) -> Meters { m + k }\n"
 }
@@ -3414,7 +3349,7 @@ fn shape_mixed_said(a: List<string>) -> Voice { shape_mixed(a[0], a[1]) }
 /// `==` or `!=` between two types
 export law comparison_mismatch {
     kind: "type.mismatch"
-    reads: mismatched_found
+    reads_view: mismatched_found
     voice: mismatched_said
     witness: "fn f(n: int) -> bool { n == \"a\" }\n"
 }
@@ -3422,7 +3357,7 @@ export law comparison_mismatch {
 /// `==` or `!=` beside a value that compares by no value
 export law comparison_by_value {
     kind: "type.mismatch"
-    reads: uncompared_found
+    reads_view: uncompared_found
     voice: uncompared_said
     witness: "fn f(xs: List<int>) -> bool { xs == xs }\n"
 }
@@ -3430,7 +3365,7 @@ export law comparison_by_value {
 /// `== null` or `!= null` beside a value that is never absent
 export law comparison_unasked {
     kind: "type.mismatch"
-    reads: unasked_found
+    reads_view: unasked_found
     voice: unasked_said
     witness: "fn f(n: int) -> bool { n == null }\n"
 }
@@ -3438,16 +3373,14 @@ export law comparison_unasked {
 /// `==` or `!=` between two `null`s
 export law comparison_absent {
     kind: "type.mismatch"
-    reads: absent_found
+    reads_view: absent_found
     voice: absent_said
     witness: "fn f() -> bool { null == null }\n"
 }
 
 /// An argument a `mut` seat refused, as `how` says: its callee, its place, and the root it stands in.
-fn handed_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId, how: Unhanded) -> List<
-    Found,
-> {
-    [h! for r in refused_in(engine, file, at) for h in [handed_words(r, how)] if h != null]
+fn handed_refused(view: ItemView, how: Unhanded) -> List<Found> {
+    [h! for r in refused_seen(view) for h in [handed_words(r, how)] if h != null]
 }
 
 fn handed_words(r: RefusedSeat, how: Unhanded) -> Found? {
@@ -3457,23 +3390,23 @@ fn handed_words(r: RefusedSeat, how: Unhanded) -> Found? {
     }
 }
 
-fn seats_valued(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Valued) }
+fn seats_valued(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Valued) }
 
-fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Unwritten) }
+fn seats_unwritten(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Unwritten) }
 
-fn seats_captured(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Captured) }
+fn seats_captured(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Captured) }
 
-fn seats_cellless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Cellless) }
+fn seats_cellless(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Cellless) }
 
-fn seats_stateless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Stateless) }
+fn seats_stateless(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Stateless) }
 
-fn seats_unshared(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Unshared) }
+fn seats_unshared(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Unshared) }
 
-fn seats_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Twice) }
+fn seats_twice(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Twice) }
 
 /// An extern's argument a seat name names: the extern and the name.
-fn externs_named(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [n.callee, n.label] } for r in refused_in(engine, file, at) for n in some_list(named_extern(r.seat))]
+fn externs_named(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [n.callee, n.label] } for r in refused_seen(view) for n in some_list(named_extern(r.seat))]
 }
 
 /// The extern and the name a `Nameless` seat carries; absent for any other seat.
@@ -3490,7 +3423,7 @@ type NamedExtern = { callee: string, label: string }
 /// an extern's seats are called by position
 export law extern_named_argument {
     kind: "type.named_arg"
-    reads: externs_named
+    reads_view: externs_named
     voice: nameless_words
     witness: "extern fn frexp(x: float, mut exponent: i32) -> float\n\nfn f() -> float {\n    mut e = 0\n    frexp(exponent: e, x: 0.25)\n}\n"
 }
@@ -3500,7 +3433,7 @@ fn nameless_words(a: List<string>) -> Voice { nameless_seats(a[1], a[0]) }
 /// a `mut` seat handed a value
 export law seat_valued {
     kind: "type.seat"
-    reads: seats_valued
+    reads_view: seats_valued
     voice: valued_words
     witness: "fn grow(mut xs: List<int>) {\n    xs.push(1)\n}\n\nfn f() {\n    grow([1])\n}\n"
 }
@@ -3508,7 +3441,7 @@ export law seat_valued {
 /// a `mut` seat handed a place rooted in a binding that isn't `mut`
 export law seat_unwritten {
     kind: "type.seat"
-    reads: seats_unwritten
+    reads_view: seats_unwritten
     voice: unwritten_words
     witness: "fn grow(mut xs: List<int>) {\n    xs.push(1)\n}\n\nfn f() {\n    let ys = [1]\n    grow(ys)\n}\n"
 }
@@ -3516,7 +3449,7 @@ export law seat_unwritten {
 /// a `mut` seat handed a place a lambda holds a copy of
 export law seat_captured {
     kind: "type.seat"
-    reads: seats_captured
+    reads_view: seats_captured
     voice: captured_words
     witness: "fn grow(mut xs: List<int>) {\n    xs.push(1)\n}\n\nfn f() {\n    mut ys = [1]\n    let g = () -> grow(ys)\n    g()\n}\n"
 }
@@ -3524,7 +3457,7 @@ export law seat_captured {
 /// an extern's `mut` seat handed a place that is no `mut` binding's own cell
 export law seat_cellless {
     kind: "type.host_seat"
-    reads: seats_cellless
+    reads_view: seats_cellless
     voice: cellless_words
     witness: "extern fn time(mut t: i64) -> i64\n\nfn stamp(mut t: int) -> int { time(t) }\n"
 }
@@ -3532,7 +3465,7 @@ export law seat_cellless {
 /// a `state` seat handed what is no `state` of the caller's own
 export law seat_stateless {
     kind: "type.seat"
-    reads: seats_stateless
+    reads_view: seats_stateless
     voice: stateless_words
     witness: "fn bump(state n: int) { n = n + 1 }\n\nfn f() {\n    bump(1)\n}\n"
 }
@@ -3540,19 +3473,19 @@ export law seat_stateless {
 /// a component's `state` seat or member handed what is no place
 export law seat_unshared {
     kind: "type.seat"
-    reads: seats_unshared
+    reads_view: seats_unshared
     voice: unshared_words
     witness: "component tally(state n: int) {\n    fn up() {\n        self.n = self.n + 1\n    }\n}\n\nlet t = tally 1\n"
 }
 
 fn unshared_words(a: List<string>) -> Voice { unshared_seat(a[0], a[2]) }
 
-fn seats_overshown(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { handed_refused(engine, file, at, Unhanded.Overshown) }
+fn seats_overshown(view: ItemView) -> List<Found> { handed_refused(view, Unhanded.Overshown) }
 
 /// a member a component shows over one of its places, given beside a place for it
 export law seat_overshown {
     kind: "type.seat"
-    reads: seats_overshown
+    reads_view: seats_overshown
     voice: overshown_words
     witness: "use @std.ui.components.{field}\n\nstate draft: string = \"\"\n\nlet f = field \"Name\" {\n    value: draft\n    shown: \"x\"\n}\n"
 }
@@ -3567,7 +3500,7 @@ fn overshown_words(a: List<string>) -> Voice {
 /// one call handing two `mut` seats one place
 export law seat_handed_twice {
     kind: "type.seat"
-    reads: seats_twice
+    reads_view: seats_twice
     voice: twice_words
     witness: "fn swap(mut a: List<int>, mut b: List<int>) {\n    a.push(1)\n    b.push(2)\n}\n\nfn f() {\n    mut v = [1]\n    swap(v, v)\n}\n"
 }

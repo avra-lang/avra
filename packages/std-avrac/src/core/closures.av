@@ -75,13 +75,13 @@ impl Lowering {
         let lanes: Cell<List<Lane>> = Cell
             .new(if framed { [Lane { name: FRAME_LANE, slots: 1 }] } else { [] })
         let record = self.offered_record(lam, ty)
-        let written = if record != null { [] } else { [p.name.of for at, p in lam.params if ty.seats[at].mutable] }
+        let written = if record != null { [] } else { [p.name.text() for at, p in lam.params if ty.seats[at].mutable] }
         mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked, written_seats: written, names: self.names, roots: [lam.body] }
         for scope in self.scopes.get() {
             for name, b in scope { body.bind(name, b.outer(name, lanes)) }
         }
         let _ = body.mint(body.laid_out(ty))
-        if record != null { body.offer_seated(lam, record!) } else { for at, p in lam.params { body.seated_written(p.name.of, ty.seats[at].ty, ty.seats[at].mutable) } }
+        if record != null { body.offer_seated(lam, record!) } else { for at, p in lam.params { body.seated_written(p.name.text(), ty.seats[at].ty, ty.seats[at].mutable) } }
         body.scope_enter()
         if framed {
             body.opened()
@@ -269,8 +269,9 @@ impl Lowering {
             return
         }
         for p in lam.params {
-            let n = fields.find_index(it.name == p.name.of)!
-            self.bind(p.name.of, Bound.Value(self.field_read(v, record, laid, n), fields[n].ty!))
+            let n = fields.find_index((f) -> p.name.spells(f.name))!
+            self
+                .bind(p.name.text(), Bound.Value(self.field_read(v, record, laid, n), fields[n].ty!))
         }
     }
 }
@@ -280,7 +281,8 @@ impl Lowering {
 /// included: it writes no seat's type, and each seat names a field, `it` never.
 export fn takes_by_name(params: List<Param>, seats: int, fields: List<string>?) -> bool {
     let names? = fields else { return false }
-    seats == 1 && params.all((p) -> p.ty == null && p.name.of != "it" && names.contains(p.name.of))
+    seats == 1 &&
+        params.all((p) -> p.ty == null && !p.name.spells("it") && names.contains(p.name.text()))
 }
 
 /// Why the lambda `lam` of type `ty` isn't lifted yet, absent when it is: each of its seats is one

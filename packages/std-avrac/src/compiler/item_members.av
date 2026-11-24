@@ -7,6 +7,7 @@
 use core.{
     OwnType,
     Expr,
+    Scoped,
     ExprId,
     FnParts,
     Member,
@@ -474,7 +475,7 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
                     t.store.expr_span(e),
                 ),
             ),
-        .Call(callee, _, args) -> call_arity(engine, t, callee.of, args, t.store.expr_span(e)),
+        .Call(callee, _, args) -> call_arity(engine, t, callee.text(), args, t.store.expr_span(e)),
         .TypeLiteral(subject, _) -> uninterned_miss(engine, t, e, (t.type_at)(subject.index), false),
         .ChainType(subject, _) -> uninterned_miss(engine, t, e, (t.type_at)(subject.index), true),
         .Index(subject, _) -> index_miss((t.type_at)(subject.index), t.store.expr_span(subject)),
@@ -509,9 +510,9 @@ fn shape_misses(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope)
         .MapLit(entries) -> flatten([literal_spread_miss(t, "map", v, v) for v in map_spreads(entries)]),
         .ChainApply(subject, _) -> chain_call_miss(t, e, subject).concat(chain_applied_miss(engine, t, e, subject)),
         .ChainCall(subject, name, _) -> chain_call_miss(t, e, subject).concat(chain_method_miss(engine, t, e, subject, name.of)),
-        .Ident(name) -> param_value_miss(t.store, e, name.of, scope.generic)
+        .Ident(name) -> param_value_miss(t.store, e, name, scope.generic)
             .concat(
-                if scope.values.has("${e.index}") && read_as_type(t, e) { type_value_miss(engine, t, name.of, t.store.expr_span(e)) } else { [] },
+                if scope.values.has("${e.index}") && read_as_type(t, e) { type_value_miss(engine, t, name.text(), t.store.expr_span(e)) } else { [] },
             ),
         rest -> [],
     }
@@ -570,14 +571,14 @@ fn statement_values(store: SyntaxArena) -> Map<string, bool> {
 /// A read at `e` of `name`, a type parameter of the fn whose body holds it — among `generic`, the
 /// store's fns that take type parameters — that no seat of the fn wears as a value's name, anywhere
 /// but as the subject a static is called on.
-fn param_value_miss(store: SyntaxArena, e: ExprId, name: string, generic: List<FnParts>) -> List<
+fn param_value_miss(store: SyntaxArena, e: ExprId, name: Scoped, generic: List<FnParts>) -> List<
     MissPlaced,
 > {
-    let holders = [p for p in generic if p.tparams.any(it.name.of == name) && !p.params.any(it.name.of == name)]
+    let holders = [p for p in generic if p.tparams.any(it.name == name) && !p.params.any(it.name == name)]
     if holders.is_empty() || !holders.any((p) -> store.every_expr(p.body).contains(e)) { return [] }
     if (0..store.expr_count())
         .any((i: int) -> store.method_parts(ExprId { index: i })?.subject == e) { return [] }
-    [MissPlaced { at: store.expr_span(e), miss: Miss.ParamAsValue(name) }]
+    [MissPlaced { at: store.expr_span(e), miss: Miss.ParamAsValue(name.text()) }]
 }
 
 /// The type literal `e` where a name it spells is a type parameter of the fn it stands in, which names
@@ -586,7 +587,7 @@ fn param_value_miss(store: SyntaxArena, e: ExprId, name: string, generic: List<F
 fn literal_param_miss(store: SyntaxArena, e: ExprId, generic: List<FnParts>) -> List<MissPlaced> {
     if !(store.expr(e) is .TypeLiteral) { return [] }
     let holes = [h for k in 0..store.expr_count() for h in [ExprId { index: k }] if store.is_hole(h) && store.minted_for(h)?.index == e.index]
-    [MissPlaced { at: store.expr_span(h), miss: m.miss } for h in holes for n in some_list(store.ident_name(h)) for m in param_value_miss(store, e, n, generic)]
+    [MissPlaced { at: store.expr_span(h), miss: m.miss } for h in holes for n in some_list(store.ident_named(h)) for m in param_value_miss(store, e, n, generic)]
 }
 
 /// The method call `e` of a verb on a type the language owns whose fn, answer or arguments name a
@@ -682,7 +683,7 @@ fn component_head(engine: QueryEngine, file: SourceFileAddress, name: string) ->
     let item? = record_item(engine, file, name) else { return [] }
     let parts? = [p! for s in item.stmts for p in [item.store.component_parts(s)] if p != null && p!.name == name]
         .first() else { return [] }
-    [p.name.of for p in parts.head]
+    [p.name.text() for p in parts.head]
 }
 
 /// What a component's word is written with by name at `e`: a record literal's fields, or the
@@ -784,8 +785,8 @@ fn type_named_miss(
     if hole_name(name) != null { return [] }
     let typed = (t.type_at)(subject.index)
     if typed != null && !(typed!.head is .Meta) { return [] }
-    if resolved(engine, t.file, Space.Value, owner).named() != null { return [] }
-    let d? = resolved(engine, t.file, Space.Type, owner).named() else { return [] }
+    if resolved(engine, t.file, Space.Value, owner.text()).named() != null { return [] }
+    let d? = resolved(engine, t.file, Space.Type, owner.text()).named() else { return [] }
     let described = headed_type(TypeHead.Declared(d.file, d.name))
     let answered = static_type(engine, described, name)
     if answered != null {
@@ -796,7 +797,12 @@ fn type_named_miss(
                 MissPlaced {
                     at: at,
                     miss: Miss
-                        .TypeNamed(owner, name, "static_read", [static_wrapped(owner, name, answered!)]),
+                        .TypeNamed(
+                            owner.text(),
+                            name,
+                            "static_read",
+                            [static_wrapped(owner.text(), name, answered!)],
+                        ),
                 },
             ]
         }
@@ -807,17 +813,17 @@ fn type_named_miss(
     let miss? = when {
         d.kind == ItemKind.Enum && variants != null -> if !called ||
             variants!.contains(name) ||
-            name == "all" { null } else { Miss.TypeNamed(owner, name, "variant_called", variants!) }
+            name == "all" { null } else { Miss.TypeNamed(owner.text(), name, "variant_called", variants!) }
         d.kind == ItemKind.Record -> if called {
             Miss
                 .TypeNamed(
-                    owner,
+                    owner.text(),
                     name,
                     if declares_grammar(engine, d) { "door_called" } else { "static_called" },
                     statics,
                 )
         } else {
-            Miss.TypeNamed(owner, name, "record_read", [])
+            Miss.TypeNamed(owner.text(), name, "record_read", [])
         }
         _ -> null
     } else { return [] }
@@ -961,7 +967,7 @@ fn spread_miss(operand: SignedType?, at: Span?) -> List<MissPlaced> {
 fn call_spread_misses(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
     let call? = t.store.call_parts(e) else { return [] }
     if !call.args.any((a) -> t.store.spread_operand(a) != null) { return [] }
-    let d? = resolved(engine, t.file, Space.Value, call.callee).named() else { return [] }
+    let d? = resolved(engine, t.file, Space.Value, call.callee.text()).named() else { return [] }
     if d.kind != ItemKind.Fn { return [] }
     let signs = fn_signatures(engine, d.file, d.name)
     if signs.length != 1 || signs[0].params.any(it.rest) { return [] }
@@ -970,7 +976,7 @@ fn call_spread_misses(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<Mis
     let unreadable = [m for s in spread for m in s.miss]
     if !unreadable.is_empty() { return unreadable.take(1) }
     let params = signs[0].params
-    let carried = [m for j, a in call.args for f in spread[j].fields for m in field_seated(call.callee, params, f, t.store.expr_span(a))]
+    let carried = [m for j, a in call.args for f in spread[j].fields for m in field_seated(call.callee.text(), params, f, t.store.expr_span(a))]
     if !carried.is_empty() || spread_into_place(params, spread) { return carried }
     let seats = [p.name for p in params]
     let fills = t.store.seat_fills(call.args, seats, [[f.name for f in s.fields] for s in spread])
@@ -979,7 +985,7 @@ fn call_spread_misses(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<Mis
         return [
             MissPlaced {
                 at: t.store.expr_span(e),
-                miss: Miss.SeatUnwritten(call.callee, unwritten[0]),
+                miss: Miss.SeatUnwritten(call.callee.text(), unwritten[0]),
             },
         ]
     }
@@ -1056,7 +1062,7 @@ fn spread_into_place(params: List<SignedParam>, spread: List<SpreadRead>) -> boo
 /// types as the list it fills; nothing for any other node.
 fn variadic_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
     let call? = t.store.call_parts(e) else { return [] }
-    [m for m in call_arity(engine, t, call.callee, call.args, t.store.expr_span(e)) if m.miss is .Short]
+    [m for m in call_arity(engine, t, call.callee.text(), call.args, t.store.expr_span(e)) if m.miss is .Short]
 }
 
 /// The signature of the fn `d` names where its file writes exactly one fn of that name: the one its
@@ -1075,9 +1081,9 @@ fn meta_named_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPl
     let call? = t.store.call_parts(e) else { return [] }
     // a call of two is asked after only where it writes `marks`, so no other call of two resolves
     // its callee here; one under another name its `use` gave is refused where it is lowered
-    if call.args.length == 2 && call.callee != MARKS { return [] }
+    if call.args.length == 2 && !call.callee.spells(MARKS) { return [] }
     if call.args.length != 1 && call.args.length != 2 { return [] }
-    let d? = resolved(engine, t.file, Space.Value, call.callee).named() else { return [] }
+    let d? = resolved(engine, t.file, Space.Value, call.callee.text()).named() else { return [] }
     if d.kind != ItemKind.Fn || d.file.package_name != "@std/meta" { return [] }
     if d.name == "code_hash" && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
     if d.name == "marks" && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
@@ -1090,7 +1096,7 @@ const MARKS: string = "marks"
 /// `code_hash`'s argument `arg`, where it names no fn the file sees declared, by name or as the fn a
 /// call of it calls.
 fn hash_miss(engine: QueryEngine, t: TypedNodes, arg: ExprId) -> List<MissPlaced> {
-    let name = t.store.ident_name(arg) ?? t.store.call_parts(arg)?.callee
+    let name = t.store.ident_name(arg) ?? t.store.callee_name(arg)
     if name != null && hole_name(name!) != null { return [] }
     if name != null && resolved(engine, t.file, Space.Value, name!).named()?.kind == ItemKind.Fn { return [] }
     [MissPlaced { at: t.store.expr_span(arg), miss: Miss.HashedUnnamed }]
@@ -1254,7 +1260,7 @@ fn written_fields(engine: QueryEngine, file: SourceFileAddress, name: string, wo
         .first() else { return null }
     LiteralRecord {
         name: parts.name,
-        fields: [LiteralField { name: f.name.of, defaulted: f.default != null, state: f.state } for f in parts.fields],
+        fields: [LiteralField { name: f.name.text(), defaulted: f.default != null, state: f.state } for f in parts.fields],
     }
 }
 
@@ -2005,21 +2011,21 @@ fn spreads_generic(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Mis
 
 fn uncallables(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .Uncallable(found) -> [found], rest -> [] }) }
 
-/// Each bare variant literal of the written item `at` of `file` built where nothing names its enum.
-fn variants_unenumed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [u.name] } for r in refused_in(engine, file, at) for u in some_list(unenumed_of(r.seat)) if u.want.is_empty()]
+/// Each bare variant literal of the written item `view` shows built where nothing names its enum.
+fn variants_unenumed(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [u.name] } for r in refused_seen(view) for u in some_list(unenumed_of(r.seat)) if u.want.is_empty()]
 }
 
-/// Each bare variant literal of the written item `at` of `file` built in a seat of a type that is
+/// Each bare variant literal of the written item `view` shows built in a seat of a type that is
 /// no enum.
-fn variants_unwanted(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [u.name, u.want] } for r in refused_in(engine, file, at) for u in some_list(unenumed_of(r.seat)) if !u.want.is_empty() && u.variants.is_empty()]
+fn variants_unwanted(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [u.name, u.want] } for r in refused_seen(view) for u in some_list(unenumed_of(r.seat)) if !u.want.is_empty() && u.variants.is_empty()]
 }
 
-/// Each bare variant literal of the written item `at` of `file` built in a seat of an enum with no
+/// Each bare variant literal of the written item `view` shows built in a seat of an enum with no
 /// such variant: its voice handed the enum, the name, then each variant the enum holds.
-fn variants_unbuilt(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(r.at), args: [u.want, u.name].concat(u.variants) } for r in refused_in(engine, file, at) for u in some_list(unenumed_of(r.seat)) if !u.variants.is_empty()]
+fn variants_unbuilt(view: ItemView) -> List<Found> {
+    [Found { at: span_of(r.at), args: [u.want, u.name].concat(u.variants) } for r in refused_seen(view) for u in some_list(unenumed_of(r.seat)) if !u.variants.is_empty()]
 }
 
 /// A bare variant literal's name, the seat it was refused in, spelled, empty for none, and the
@@ -2626,7 +2632,7 @@ export law value_callable {
 /// a bare variant literal takes the enum its seat names
 export law variant_enumed {
     kind: "type.variant_lit"
-    reads: variants_unenumed
+    reads_view: variants_unenumed
     voice: unenumed_words
     witness: "fn g() -> int {\n    let x = .foo\n    1\n}\n"
 }
@@ -2634,7 +2640,7 @@ export law variant_enumed {
 /// a bare variant literal names a variant of its seat's enum
 export law variant_of_seat_enum {
     kind: "type.variant_lit"
-    reads: variants_unbuilt
+    reads_view: variants_unbuilt
     voice: unbuilt_words
     witness: "enum T {\n    A\n    B\n}\n\nfn g() -> T { .C }\n"
 }
@@ -2642,7 +2648,7 @@ export law variant_of_seat_enum {
 /// a bare variant literal stands in a seat of an enum
 export law variant_seat_enumed {
     kind: "type.variant_lit"
-    reads: variants_unwanted
+    reads_view: variants_unwanted
     voice: unwanted_words
     witness: "fn g() -> int {\n    let x: int = .foo\n    x\n}\n"
 }

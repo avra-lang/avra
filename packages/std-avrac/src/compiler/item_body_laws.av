@@ -308,7 +308,7 @@ type ArmGuard = { bind: string, index: string, guard: ExprId? }
 /// The node `e` as a select arm; absent for any other node.
 fn wait_arm(store: SyntaxArena, e: ExprId) -> ArmGuard? {
     match store.expr(e) {
-        .WaitArm(index, bind, _, guard, _) -> ArmGuard { bind: bind.of, index: index.of, guard: guard },
+        .WaitArm(index, bind, _, guard, _) -> ArmGuard { bind: bind.text(), index: index.text(), guard: guard },
         rest -> null,
     }
 }
@@ -404,7 +404,7 @@ fn is_loop(store: SyntaxArena, s: StmtId) -> bool {
 /// The names the loop `s` binds that a label may read: a `for`'s element and index.
 fn loop_names(store: SyntaxArena, s: StmtId) -> List<string> {
     match store.stmt(s) {
-        .ForEach(index, name, _, _) -> [name.of].concat([i.of for i in some_list(index)]),
+        .ForEach(index, name, _, _) -> [name.text()].concat([i.text() for i in some_list(index)]),
         rest -> [],
     }
 }
@@ -896,11 +896,11 @@ type NodeWaits = { at: ExprId, wait: string }
 fn node_wait(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> NodeWaits? {
     match store.expr(e) {
         .Call(callee, _, _) -> when {
-            rt_waits(callee.of) -> NodeWaits { at: e, wait: row_wait_said(callee.of) }
-            rt_index().get(callee.of) != null -> null
-            called_waits(engine, file, callee.of) -> NodeWaits {
+            rt_waits(callee.text()) -> NodeWaits { at: e, wait: row_wait_said(callee.text()) }
+            rt_index().get(callee.text()) != null -> null
+            called_waits(engine, file, callee.text()) -> NodeWaits {
                 at: e,
-                wait: called_wait_said(callee.of),
+                wait: called_wait_said(callee.text()),
             }
             _ -> null
         },
@@ -1514,22 +1514,22 @@ fn jump_comprehension_words(a: List<string>) -> Voice { jump_in_comprehension(a[
 
 /// Every jump whose label names no `for` around it; a label nothing binds is the naming law's,
 /// said where it is read.
-fn jumps_unaimed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn jumps_unaimed(view: ItemView) -> List<Found> {
     let unaimed = breaches_said(
-        engine,
-        file,
-        at,
+        view.engine,
+        view.file,
+        view.at,
         (b) -> match b { .Unaimed(word, name) -> [word, name], rest -> null },
     )
     if unaimed.is_empty() { return [] }
-    let unread = [u.at!.lo for u in item_refusals(engine, file, at).unread if u.at != null]
+    let unread = [u.at!.lo for u in refusals_seen(view).unread if u.at != null]
     [f for f in unaimed if !unread.contains(f.at?.lo ?? -1)]
 }
 
 /// a jump whose label names no enclosing `for`
 export law jump_unaimed_law {
     kind: "loop.label"
-    reads: jumps_unaimed
+    reads_view: jumps_unaimed
     voice: unaimed_words
     witness: "fn f(xs: List<int>) {\n    let y = 1\n    for x in xs {\n        break y\n    }\n}\n"
 }

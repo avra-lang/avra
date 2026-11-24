@@ -396,7 +396,7 @@ fn body_evidence(
         at: at,
         types: types,
         signed: signed,
-        locals: [p.name.of for p in parts.params].concat(bodies.lets),
+        locals: [p.name.text() for p in parts.params].concat(bodies.lets),
         written: false,
         unproved: null,
         reached: [],
@@ -450,7 +450,7 @@ impl Survey {
     /// type marks.
     mut fn called_evidence(e: ExprId) {
         let call = self.store.call_parts(e)
-        if call != null { return self.named_evidence(call!.callee, call!.args) }
+        if call != null { return self.named_evidence(call!.callee.text(), call!.args) }
         let applied? = self.store.applied_parts(e) else { return }
         if !self.hands_write(applied.args) { return }
         let f? = self.typed_at(applied.subject) else { return self.unread(handed_to_value()) }
@@ -549,7 +549,7 @@ impl Survey {
         let s? = trait_fns(item).find((f) -> item.store.fn_parts(f)?.name == name) else { return self.unread(no_method(ty, name)) }
         if item.store.is_mutating(s) { self.written = true }
         let params = item.store.fn_parts(s)!.params
-        self.fed([p.promises.mutable for p in params], args, name, [p.name.of for p in params])
+        self.fed([p.promises.mutable for p in params], args, name, [p.name.text() for p in params])
     }
 
     /// A call of the fn a field of `ty` holds: its arguments feed the fn type's seats.
@@ -639,7 +639,7 @@ impl Survey {
     fn path_words(e: ExprId) -> string {
         let step? = self.store.place_step(e) else { return "…" }
         match step {
-            .Root(n) -> n.of,
+            .Root(n) -> n.text(),
             .Field(subject, name) -> "${self.path_words(subject)}.${name.of}",
             .At(subject, _) -> "${self.path_words(subject)}[…]",
             .Unwrap(subject) -> "${self.path_words(subject)}!",
@@ -739,7 +739,7 @@ fn seat_names(engine: QueryEngine, d: DeclaredName) -> List<string?> { [n for n 
 fn seats_named(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> List<
     string,
 >? {
-    [p.name.of for p in seats_declared(read_item(engine, file, at), name)?]
+    [p.name.text() for p in seats_declared(read_item(engine, file, at), name)?]
 }
 
 /// The types the language owns whose values a seat copies.

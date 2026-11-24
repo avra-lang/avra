@@ -232,7 +232,11 @@ impl Copies {
     /// The writes the call by name at `e` makes, none for any other node.
     fn called_writes(e: ExprId) -> List<Write> {
         let call? = self.store.call_parts(e) else { return [] }
-        self.handed(self.local_marks(call.callee, e) ?? (self.call_marks)(call.callee), call.args)
+        self
+            .handed(
+                self.local_marks(call.callee.text(), e) ?? (self.call_marks)(call.callee.text()),
+                call.args,
+            )
     }
 
     /// Which seats of the fn value the local `callee` holds at the call `e` are `mut`: the last
@@ -288,7 +292,7 @@ impl Copies {
     fn root_name(root: ExprId) -> string? {
         if (self.type_at)(root.index)?.described() != null { return null }
         let step? = self.store.place_step(root) else { return null }
-        match step { .Root(n) -> n.of, .Field(_, _) or .At(_, _) or .Unwrap(_) -> null }
+        match step { .Root(n) -> n.text(), .Field(_, _) or .At(_, _) or .Unwrap(_) -> null }
     }
 
     /// Where the innermost fn statement that holds the node `at` starts, -1 for none.

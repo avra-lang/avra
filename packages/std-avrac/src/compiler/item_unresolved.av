@@ -25,10 +25,8 @@ use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query_defi
 /// Every name the written item `at` of `file` reads that nothing answers, read as `read`: a word that
 /// can be no name aside, which the naming laws refuse, a name its module's files keep apart, and one
 /// a re-export with nothing behind it binds.
-fn unread_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: ReadAs) -> List<
-    UnreadName,
-> {
-    [u for u in unread_as(engine, file, at, read) if !cannot_name(u.name)]
+fn unread_in(view: ItemView, read: ReadAs) -> List<UnreadName> {
+    [u for u in unread_as(view, read) if !cannot_name(u.name)]
 }
 
 /// Every name the written item `at` of `file` reads as `read` that nothing answers, a word that can
@@ -36,10 +34,10 @@ fn unread_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: Rea
 /// over the file's declarations failed, or a builder refused a statement of the file: the names they
 /// would make are unknown, and their failure is what a build says. An item none of whose names goes
 /// unread as `read`, nearly every one, asks nothing more.
-fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: ReadAs) -> List<
-    UnreadName,
-> {
-    let held = item_refusals(engine, file, at).unread
+fn unread_as(view: ItemView, read: ReadAs) -> List<UnreadName> {
+    let engine = view.engine
+    let file = view.file
+    let held = refusals_seen(view).unread
     if !held.any(it.read == read) { return [] }
     if !file_generated(engine, file).said.is_empty() || read_refused(engine, file) { return [] }
     let unread = [u for u in held if u.read == read &&
@@ -83,8 +81,11 @@ fn unread_behind_found(
 /// Every value read nothing answers, beside the names the file defines at its top level; a member
 /// of a record its file declares, read bare in an impl, is a member's law, and a binding the file's
 /// statements make, the run-time binding's.
-fn values_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
+fn values_unread(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
+    let unread = [u for u in unread_in(view, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
     if unread.is_empty() { return [] }
     let defined = top_level_defined(engine, file)
     [unread_behind_found(engine, file, u, defined) for u in unread if !defined.contains(u.name)]
@@ -93,12 +94,13 @@ fn values_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Li
 /// Every value read nothing answers that a binding of the file's top level makes, in a declaration
 /// or an impl where `declared` — a run-time value a body only declarations reach reads — else in a statement
 /// the file runs before the one that binds it.
-fn top_level_reads(engine: QueryEngine, file: SourceFileAddress, at: ItemId, declared: bool) -> List<
-    Found,
-> {
+fn top_level_reads(view: ItemView, declared: bool) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if (file_declares_at(engine, file, at).names.any(it.item == at) ||
         !impls_at(engine, file, at).is_empty()) != declared { return [] }
-    let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
+    let unread = [u for u in unread_in(view, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
     if unread.is_empty() { return [] }
     let defined = top_level_defined(engine, file)
     [unread_found(u, []) for u in unread if defined.contains(u.name)]
@@ -106,8 +108,11 @@ fn top_level_reads(engine: QueryEngine, file: SourceFileAddress, at: ItemId, dec
 
 /// Every read of a run-time binding of the top level in a declaration, offering to make the binding a
 /// `const` where its value is one (`let_made_const`).
-fn runtime_reads(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let found = top_level_reads(engine, file, at, true)
+fn runtime_reads(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
+    let found = top_level_reads(view, true)
     if found.is_empty() { return found }
     let instance = item_said(engine, file, at).instanced
     [f with { args: if instance { [f.args[0], INSTANCE_READ] } else { f.args }, fixes: made_const_fixes(engine, file, f.args[0]) } for f in found]
@@ -124,8 +129,10 @@ fn made_const_fixes(engine: QueryEngine, file: SourceFileAddress, name: string) 
     made.take(1)
 }
 
-fn early_reads(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [f with { aside: defined_at(engine, file, f.args[0]) } for f in top_level_reads(engine, file, at, false)]
+fn early_reads(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    [f with { aside: defined_at(engine, file, f.args[0]) } for f in top_level_reads(view, false)]
 }
 
 /// Where the statement of `file`'s top level that binds `name` stands, said beside a read of it: in
@@ -138,7 +145,7 @@ fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Asi
 /// Every `self` read in the written item `view` shows where no method's receiver stands, beside
 /// where: a seat's default, else a `static fn`, else a fn that is no method.
 fn receivers_unread(view: ItemView) -> List<Found> {
-    let unread = [u for u in item_refusals(view.engine, view.file, view.at).unread if u.read is .Receiver]
+    let unread = [u for u in refusals_seen(view).unread if u.read is .Receiver]
     if unread.is_empty() { return [] }
     let item = view.item
     [Found { at: span_of(u.at), args: [receiverless_word(item, u.at)] } for u in unread]
@@ -165,13 +172,18 @@ const STATIC_WORD: string = "static"
 const DEFAULT_WORD: string = "default"
 
 /// Every member of a record the file declares, read bare in an impl the written item `at` holds.
-fn members_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Value) if member_read_bare(engine, file, at, u.name)]
+fn members_unread(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
+    [unread_found(u, []) for u in unread_in(view, ReadAs.Value) if member_read_bare(engine, file, at, u.name)]
 }
 
 /// Every call of a fn nothing declares, beside the values the file's names hold.
-fn calls_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let unread = unread_in(engine, file, at, ReadAs.Call)
+fn calls_unread(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let unread = unread_in(view, ReadAs.Call)
     if unread.is_empty() { return [] }
     let names = names_seen(engine, file, Space.Value)
     [unread_behind_found(engine, file, u, names) for u in unread]
@@ -179,8 +191,10 @@ fn calls_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Lis
 
 /// Every record literal of a type nothing declares, beside the types the file's names hold; one
 /// whose name declares a fn is that law's.
-fn records_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let unread = [u for u in unread_as(engine, file, at, ReadAs.Record) if !names_fn(engine, file, u.name) && component_import(engine, file, u.name) == null]
+fn records_unread(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let unread = [u for u in unread_as(view, ReadAs.Record) if !names_fn(engine, file, u.name) && component_import(engine, file, u.name) == null]
     if unread.is_empty() { return [] }
     let names = names_seen(engine, file, Space.Type)
     [unread_behind_found(engine, file, u, names) for u in unread]
@@ -188,19 +202,23 @@ fn records_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
 
 /// Every record literal whose name is a component another module exports that `file` doesn't import:
 /// handed the `use` that brings it.
-fn components_unimported(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    if !item_refusals(engine, file, at).unread.any(it.read == ReadAs.Record) { return no_findings() }
-    [Found { at: span_of(u.at), args: [u.name, home!] } for u in unread_as(engine, file, at, ReadAs.Record) for home in [component_import(engine, file, u.name)] if home != null]
+fn components_unimported(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    if !refusals_seen(view).unread.any(it.read == ReadAs.Record) { return no_findings() }
+    [Found { at: span_of(u.at), args: [u.name, home!] } for u in unread_as(view, ReadAs.Record) for home in [component_import(engine, file, u.name)] if home != null]
 }
 
 /// Every record literal whose name declares a fn and no type.
-fn records_naming_fns(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Record) if names_fn(engine, file, u.name)]
+fn records_naming_fns(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    [unread_found(u, []) for u in unread_in(view, ReadAs.Record) if names_fn(engine, file, u.name)]
 }
 
 /// Every `it` read where no call binds the pronoun.
-fn pronouns_unread(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Pronoun)]
+fn pronouns_unread(view: ItemView) -> List<Found> {
+    [unread_found(u, []) for u in unread_in(view, ReadAs.Pronoun)]
 }
 
 /// Whether `name`, read bare in the written item `at` of `file`, is a member: the item is an impl,
@@ -247,7 +265,7 @@ fn top_level_defined(engine: QueryEngine, file: SourceFileAddress) -> List<strin
 /// a name read that nothing binds or declares
 export law value_unresolved {
     kind: "resolve.unresolved"
-    reads: values_unread
+    reads_view: values_unread
     voice: value_words
     witness: "fn f() -> int { nowhere }\n"
 }
@@ -255,7 +273,7 @@ export law value_unresolved {
 /// a body reads a run-time binding of the top level
 export law runtime_binding_read {
     kind: "resolve.runtime_binding"
-    reads: runtime_reads
+    reads_view: runtime_reads
     voice: runtime_words
     witness: "let fonts: List<int> = []\n\nfn f() -> int { fonts.length }\n"
 }
@@ -263,7 +281,7 @@ export law runtime_binding_read {
 /// a statement reads a name the file binds only later
 export law used_before_defined {
     kind: "resolve.use_before_def"
-    reads: early_reads
+    reads_view: early_reads
     voice: early_words
     witness: "x\nlet x = 1\n"
 }
@@ -281,16 +299,16 @@ fn apart_type_files(engine: QueryEngine, file: SourceFileAddress, name: string) 
     [d.file.path_in_package.split("/").last() ?? "" for d in scope.siblings if d.name == name && !names_value(d.kind)]
 }
 
-/// Every value or call the written item `at` of `file` reads that its module's files each keep
+/// Every value or call the written item `view` shows reads that its module's files each keep
 /// private, beside those files.
-fn apart_reads(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [Found { at: span_of(u.at), args: [u.name].concat(apart) } for u in item_refusals(engine, file, at).unread if u.read is .Value || u.read is .Call for apart in [apart_files(engine, file, u.name)] if !apart.is_empty()]
+fn apart_reads(view: ItemView) -> List<Found> {
+    [Found { at: span_of(u.at), args: [u.name].concat(apart) } for u in refusals_seen(view).unread if u.read is .Value || u.read is .Call for apart in [apart_files(view.engine, view.file, u.name)] if !apart.is_empty()]
 }
 
 /// a name two files of a module each declare privately is each file's own
 export law kept_apart_read {
     kind: "resolve.kept_apart"
-    reads: apart_reads
+    reads_view: apart_reads
     voice: apart_words
     witness: "use util.{g}\ng()\n"
     witness_files: {
@@ -303,7 +321,7 @@ export law kept_apart_read {
 /// a call of a fn nothing declares
 export law call_unresolved {
     kind: "resolve.unresolved"
-    reads: calls_unread
+    reads_view: calls_unread
     voice: call_words
     witness: "fn reached() -> int { misspeled(1) }\n\nfn misspelled(n: int) -> int { n }\n"
 }
@@ -311,7 +329,7 @@ export law call_unresolved {
 /// a record literal of a type nothing declares
 export law record_unresolved {
     kind: "resolve.unresolved"
-    reads: records_unread
+    reads_view: records_unread
     voice: record_words
     witness: "type Point = { x: int }\n\nfn f() -> int { Pont { x: 1 }.x }\n"
 }
@@ -319,7 +337,7 @@ export law record_unresolved {
 /// a record literal whose name declares a fn
 export law record_names_a_fn {
     kind: "resolve.unresolved"
-    reads: records_naming_fns
+    reads_view: records_naming_fns
     voice: record_fn_words
     witness: "fn g() -> int { 1 }\n\nfn f() -> int { g { x: 1 }.x }\n"
 }
@@ -327,7 +345,7 @@ export law record_names_a_fn {
 /// a component's word is read where it is imported
 export law component_unimported {
     kind: "resolve.unresolved"
-    reads: components_unimported
+    reads_view: components_unimported
     voice: unimported_words
     witness: "c3 {\n}\n1\n"
     witness_files: {"src/kit/kit.av": "export component c3 {\n}\n"}
@@ -336,7 +354,7 @@ export law component_unimported {
 /// `it` read where no method call's block binds it
 export law pronoun_unresolved {
     kind: "resolve.unresolved"
-    reads: pronouns_unread
+    reads_view: pronouns_unread
     voice: pronoun_words
     witness: "fn f() -> int { it }\n"
 }
@@ -352,7 +370,7 @@ export law receiver_unresolved {
 /// a member of the receiver read bare
 export law member_unresolved {
     kind: "resolve.unresolved"
-    reads: members_unread
+    reads_view: members_unread
     voice: member_words
     witness: "type P = { n: int }\n\nimpl P {\n    fn get() -> int { n }\n}\n"
 }

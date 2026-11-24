@@ -2,7 +2,7 @@
 //! computed, stands outside the package, names a package this one doesn't reach, or names a file
 //! that isn't there, is reached through a link, or isn't the text `embed` answers. Judged at the
 //! literal by the one embed place (`embed_file`), the file read as the build's own input.
-use core.{EmbedBase, ExprId, SyntaxArena}
+use core.{scoped, EmbedBase, ExprId, Scoped, SyntaxArena}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.{EmbedFault, embed_file}
@@ -76,18 +76,26 @@ fn embedding_base(
     file: SourceFileAddress,
     store: SyntaxArena,
     e: ExprId,
-    callee: string,
+    callee: Scoped,
 ) -> EmbedBase? {
-    let base? = match callee {
-        "embed" -> EmbedBase.Beside,
-        "provided" -> EmbedBase.Root,
-        _ -> null,
-    } else { return null }
+    let base? = embedding_fns().find(it.name == callee)?.base else { return null }
     for f in read_from(engine, file, store.home_of(e)) {
-        let named? = resolved(engine, f, Space.Value, callee).named() else { continue }
+        let named? = resolved(engine, f, Space.Value, callee.text()).named() else { continue }
         return if named.file.package_name == META_PACKAGE { base } else { null }
     }
     null
+}
+
+/// An embedding fn of `@std/meta` by its name, and where it reads its file from.
+type EmbeddingFn = { name: Scoped, base: EmbedBase }
+
+/// `@std/meta`'s embedding fns, `embed` reading beside the source and `provided` from the package's
+/// root, their names minted once a process.
+once fn embedding_fns() -> List<EmbeddingFn> {
+    [
+        EmbeddingFn { name: scoped("embed"), base: EmbedBase.Beside },
+        EmbeddingFn { name: scoped("provided"), base: EmbedBase.Root },
+    ]
 }
 
 /// What is wrong with the file the literal `rel`, written in `file`, names from `base`; absent where

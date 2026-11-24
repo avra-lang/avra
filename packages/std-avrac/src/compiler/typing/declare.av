@@ -4,6 +4,7 @@
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{
+    scoped,
     Variant,
     carries_composed,
     binds_type,
@@ -178,7 +179,7 @@ impl TypeCx {
         let spoken = self.facts.voices
         let at = self.stmt_loc(s)
         let held = self
-            .payload_verdict(at, payload_unslotted("", f.name.of, spelled(ty)), self.written_by(m.file, at, ty))
+            .payload_verdict(at, payload_unslotted("", f.name.text(), spelled(ty)), self.written_by(m.file, at, ty))
         self.facts.voices = spoken
         held
     }
@@ -197,7 +198,7 @@ impl TypeCx {
         self
             .payload_verdict(
                 at,
-                payload_unslotted(variant, p.name.of, spelled(p.ty!)),
+                payload_unslotted(variant, p.name.text(), spelled(p.ty!)),
                 self.written_type_of(s, p.ty!),
             )
     }
@@ -226,9 +227,9 @@ impl TypeCx {
         let states = [f.state || f.prop && self.compares_by_value(plain[j]) for j, f in fields]
         let types = [self.slot_of(plain[j], states[j]) for j in 0..fields.length]
         let own = StructSig {
-            names: [f.name.of for f in fields],
+            names: [f.name.text() for f in fields],
             types: types,
-            defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
+            defaults: [self.view.decls.default_named(record, f.name.text()) for f in fields],
             lacking: lacking,
             states: states,
         }
@@ -237,7 +238,7 @@ impl TypeCx {
         for d in duplicate_names("type.duplicate_field", owner, sig.names, self.stmt_loc(s)) {
             self.emit(d)
         }
-        let names = [Scoped(n) for n in sig.names]
+        let names = [scoped(n) for n in sig.names]
         if self.marks_identity(record) { self.identity_law(s, record, names, sig.types) }
         self.lacks_law(s, owner, names, lacking)
         self.declare(s, DeclSig.Record(sig))
@@ -317,7 +318,7 @@ impl TypeCx {
     fn identity_law(s: StmtId, record: DeclId, names: List<Scoped>, types: List<TypeId>) {
         let plain = self.identity_plain_fields(record)
         for j, ty in types {
-            let field = names[j].of
+            let field = names[j].text()
             if !self.identity_field_ok(ty) && !plain.contains(field) {
                 self.non_identity_field(s, field, ty)
             }
@@ -358,7 +359,7 @@ impl TypeCx {
     /// declare — a second reason, or a declared field, contradicts it.
     fn lacks_law(s: StmtId, owner: string, names: List<Scoped>, lacking: List<Lacked>) {
         for j, l in lacking {
-            if names.any(it.of == l.field) { self.lacks_declared(s, owner, l.field) }
+            if names.any(it.spells(l.field)) { self.lacks_declared(s, owner, l.field) }
             if lacking.slice(0, j).any(it.field == l.field) { self.lacks_twice(s, owner, l.field) }
         }
     }
@@ -453,7 +454,7 @@ impl TypeCx {
     /// ends.
     fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        let voice = field_unslotted(f.name.of, spelled(f.ty!))
+        let voice = field_unslotted(f.name.text(), spelled(f.ty!))
         let held = self.slot_law(s, "type.struct_scalar", voice, f.ty!)
         if self.view.decls.is_owned(self.decl_of(s)) { return held }
         if self.escapes_with_task(self.stmt_loc(s), voice.label!, held) { return self.error_type }
@@ -528,7 +529,7 @@ impl TypeCx {
         for d in duplicate_names(
             "type.duplicate_param",
             owner,
-            [pp.name.of for pp in seats],
+            [pp.name.text() for pp in seats],
             self.stmt_loc(s),
         ) {
             self.emit(d)
@@ -654,7 +655,7 @@ impl TypeCx {
 
     fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
-        self.typeless_param(s, pp.name.of)
+        self.typeless_param(s, pp.name.text())
     }
 
     /// A fn's whole SEAT LIST, typed — the receiver's type first when there is

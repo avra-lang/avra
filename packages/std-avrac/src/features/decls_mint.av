@@ -3,6 +3,7 @@
 //! impl lives in decls.av.
 use @std.meta.{bracket}
 use core.{
+    scoped,
     side_table,
     side_put,
     side_grow,
@@ -782,7 +783,19 @@ impl Decls {
         maker: string,
     ) -> List<DeclId> {
         [self
-            .mint_faced(f, s, p.name.of, DeclKind.Default, false, owner, parent, "", p.default, maker, null) for p in members if p.default != null]
+            .mint_faced(
+                f,
+                s,
+                p.name.text(),
+                DeclKind.Default,
+                false,
+                owner,
+                parent,
+                "",
+                p.default,
+                maker,
+                null,
+            ) for p in members if p.default != null]
     }
 
     /// A parent admitted again lists its members afresh.
@@ -1170,12 +1183,12 @@ impl Decls {
         // / exit puts wrap is a later directive; v1 proves the seam.)
         let v = "${name}\$\$v"
         let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
-        let call = store.alloc_expr(Expr.Call(Scoped(original), [], arg_ids), at)
-        let bound = store.alloc_expr(Expr.Ident(Scoped(v)), at)
-        let l2 = store.alloc_stmt(Stmt.Let(Scoped(v), null, call), at)
+        let call = store.alloc_expr(Expr.Call(scoped(original), [], arg_ids), at)
+        let bound = store.alloc_expr(Expr.Ident(scoped(v)), at)
+        let l2 = store.alloc_stmt(Stmt.Let(scoped(v), null, call), at)
         let body = store
             .alloc_expr(Expr.Block([l2, store.alloc_stmt(Stmt.ExprStmt(bound), at)]), at)
-        let s = store.alloc_stmt(Stmt.FnDecl(Scoped(name), tparams, params, ret, body), at)
+        let s = store.alloc_stmt(Stmt.FnDecl(scoped(name), tparams, params, ret, body), at)
         let d = self.mint(f, s, name, DeclKind.Fn, false, "", null, "", body)
         // THE GENERATED RANGE: the twin's own nodes, minted last, so
         // its body's exprs sit at the arena's end — lo its first, hi
@@ -1380,7 +1393,7 @@ fn same_group(a: ItemLine, b: ItemLine) -> bool {
 fn default_lines(store: SyntaxArena, s: StmtId, members: List<Param>, owner: string, parent: int) -> List<
     ItemLine,
 > {
-    [item_line(store, s, p.name.of, DeclKind.Default, false, owner, parent, p.default, false) for p in members if p.default != null]
+    [item_line(store, s, p.name.text(), DeclKind.Default, false, owner, parent, p.default, false) for p in members if p.default != null]
 }
 
 /// Whether a declaration of this kind is the one its statement names: a default rides its

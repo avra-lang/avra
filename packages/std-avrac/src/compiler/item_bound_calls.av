@@ -98,13 +98,14 @@ fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<Ungiv
     let signed = b.signed
     let typed = b.typed
     let store = signed.item.store
-    let own = [p.name.of for p in store.fn_parts(signed.stmt)?.tparams ?? []]
+    let own = [p.name.text() for p in store.fn_parts(signed.stmt)?.tparams ?? []]
     [r! for k in 0..typed.types.length if called_on(store, ExprId { index: k }) != null for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
 }
 
 /// The type parameter of `sig` the node `e` names, where it is written as a bare name: a static
 /// called through the parameter itself.
 fn parameter_named(store: SyntaxArena, sig: FnSignature, e: ExprId) -> SignedType? {
+    if sig.type_params.is_empty() { return null }
     let name? = store.ident_name(e) else { return null }
     let at = sig.type_params.index_of(name)
     if at < 0 { null } else { headed_type(TypeHead.Parameter(at, name)) }

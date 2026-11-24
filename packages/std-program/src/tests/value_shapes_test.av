@@ -53,8 +53,12 @@ fn leaf() -> MetaType {
     )
 }
 
+/// The program layer's interned name: an id a tape writes as its text.
+fn interned_name() -> MetaType { record("Name", [field("id", Kind.Int)]) }
+
 fn declared(name: string) -> MetaType? {
     match name {
+        "Name" -> interned_name(),
         "Label" -> label(),
         "Leaf" -> leaf(),
         "LeafId" -> leaf_id(),
@@ -87,6 +91,13 @@ spec "value shapes" {
         then "it's renamed, and lies as the shape" {
             tiny().shape_of(Kind.Named("Label", []))! is .Renamed &&
                 lies(Kind.Named("Label", [])) == "string"
+        }
+    }
+    given "an interned name" {
+        then "it lies as its text, no node of its own" {
+            lies(Kind.Named("Name", [])) == "string" &&
+                node_path(tiny().shape_of(Kind.Named("Name", []))!) == null &&
+                lies(Kind.List(Kind.Opt(Kind.Named("Name", [])))) == "List<string?>"
         }
     }
     given "an id" {

@@ -5,6 +5,7 @@
 //! component is a literal of its record, the body's settings by name and its
 //! other statements `collect`ed into its one `List` field.
 use core.{
+    scoped,
     Minting,
     Expansion,
     ComponentWord,
@@ -371,7 +372,7 @@ impl Mint {
     /// still two names here and only the declaration is refused.
     fn unread_seat(place: int, says: string, at: Span?) -> Param {
         Param {
-            name: Scoped("_${says}_${place}"),
+            name: scoped("_${says}_${place}"),
             ty: null,
             default: null,
             promises: plain_mark,
@@ -418,7 +419,7 @@ impl Mint {
         let at = self.store.expr_span(head)
         if !self.store.hoists(name) { self.store.hoist(self.store.declared_format(name, text, at, false)?) }
         // minted before the copy, so it resolves in the user's file
-        .Ok(Minted { name: name, named: self.store.alloc_expr(Expr.Ident(Scoped(name)), at) })
+        .Ok(Minted { name: name, named: self.store.alloc_expr(Expr.Ident(scoped(name)), at) })
     }
 
     /// What a template's body hole takes: a written fn whole, or the
@@ -623,7 +624,7 @@ fn minted_instance(cx: MeanCx, c: Component) -> Result<Minting, string> {
 impl Mint {
     /// The meaning of the instance `c`: a keyed list's loop, or the instance as written.
     fn made(c: Component) -> Result<Expansion, string> {
-        let key? = c.key else { return self.instance(c.targs, c.heads, c.body, c.name?.of) }
+        let key? = c.key else { return self.instance(c.targs, c.heads, c.body, c.name?.text()) }
         let word = self.provided.word.word
         let body? = c.body else { return .Err(keyed_body(word)) }
         let lam? = self.store.body_fn(body) else { return .Err(keyed_body(word)) }

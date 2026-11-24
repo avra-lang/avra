@@ -488,15 +488,21 @@ impl Rebuilder {
     /// A name that KEYS A SCOPE: a hole in it marks the open node as
     /// wearing the target's origin, since the filled name resolves
     /// where the code lands.
-    mut fn scoped_name(text: Scoped) -> Scoped {
-        if !self.verbatim && hole_name(text.of) != null { self.holed_here() }
-        let named = self.rewritten(text.of)
-        let mark? = self.fresh else { return Scoped(named) }
-        if self.copying &&
+    mut fn scoped_name(name: Scoped) -> Scoped {
+        let text = name.text()
+        let holed = hole_name(text) != null
+        if !self.verbatim && holed { self.holed_here() }
+        let named = self.rewritten(text)
+        if self.fresh != null &&
+            self.copying &&
             !self.verbatim &&
-            hole_name(text.of) == null &&
-            self.binds.contains(text.of) { return Scoped("${named}${mark}") }
-        Scoped(named)
+            !holed &&
+            self.binds.contains(text) {
+            return scoped("${named}${self.fresh!}")
+        }
+        // A name no rewrite reached is the name it was: it is handed on, not minted again. Only a hole
+        // a copy fills rewrites a name.
+        if self.verbatim || !holed || !self.copying { name } else { scoped(named) }
     }
 
     mut fn scoped_name_opt(text: Scoped?) -> Scoped? {
@@ -543,7 +549,7 @@ impl Rebuilder {
         if !self.copying { return rebuilt }
         let id = self.dst.alloc_param_id(self.src.param_id_span(p.id))
         self.made_params.push(id)
-        if !self.verbatim && hole_name(p.name.of) != null { self.holed_params.push(id) }
+        if !self.verbatim && hole_name(p.name.text()) != null { self.holed_params.push(id) }
         rebuilt with { id: id }
     }
 
@@ -632,7 +638,7 @@ impl Rebuilder {
     /// A hole that binds is renamed as a bind is; `_` stays.
     mut fn rebuilt_part(p: FormatPart) -> FormatPart {
         if !binds(p.hole) { return p }
-        p with { hole: p.hole with { name: self.scoped_name(Scoped(p.hole.name)).of } }
+        p with { hole: p.hole with { name: self.scoped_name(scoped(p.hole.name)).text() } }
     }
 
     mut fn rebuilt_parts(parts: List<FormatPart>) -> List<FormatPart> { [self.rebuilt_part(p) for p in parts] }
@@ -813,11 +819,11 @@ impl Rebuilder {
     mut fn filled_pat(k: int) -> PatId {
         match self.filled(k, HoleKind.Binder) {
             .Pat(p) -> p,
-            .Name(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t))),
-            .Names(ts) -> self.dst.alloc_pat(Pat.Bind(Scoped(ts.first() ?? ""))),
-            .Type(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t.name))),
-            .Unplaceable(why) -> self.dst.alloc_pat(Pat.Bind(Scoped(self.unplaced_name(k, why)))),
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.dst.alloc_pat(Pat.Bind(Scoped(self.misfit(k)))),
+            .Name(t) -> self.dst.alloc_pat(Pat.Bind(scoped(t))),
+            .Names(ts) -> self.dst.alloc_pat(Pat.Bind(scoped(ts.first() ?? ""))),
+            .Type(t) -> self.dst.alloc_pat(Pat.Bind(scoped(t.name))),
+            .Unplaceable(why) -> self.dst.alloc_pat(Pat.Bind(scoped(self.unplaced_name(k, why)))),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.dst.alloc_pat(Pat.Bind(scoped(self.misfit(k)))),
         }
     }
 
@@ -833,11 +839,11 @@ impl Rebuilder {
     mut fn filled_binders(k: int) -> List<PatId> {
         match self.filled(k, HoleKind.Binder) {
             .Pat(p) -> [p],
-            .Names(ts) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t))) for t in ts],
-            .Name(t) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t)))],
-            .Type(t) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t.name)))],
-            .Unplaceable(why) -> [self.dst.alloc_pat(Pat.Bind(Scoped(self.unplaced_name(k, why))))],
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.dst.alloc_pat(Pat.Bind(Scoped(self.misfit(k))))],
+            .Names(ts) -> [self.dst.alloc_pat(Pat.Bind(scoped(t))) for t in ts],
+            .Name(t) -> [self.dst.alloc_pat(Pat.Bind(scoped(t)))],
+            .Type(t) -> [self.dst.alloc_pat(Pat.Bind(scoped(t.name)))],
+            .Unplaceable(why) -> [self.dst.alloc_pat(Pat.Bind(scoped(self.unplaced_name(k, why))))],
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.dst.alloc_pat(Pat.Bind(scoped(self.misfit(k))))],
         }
     }
 

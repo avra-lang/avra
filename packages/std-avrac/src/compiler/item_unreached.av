@@ -52,11 +52,12 @@ fn unreached_seen(view: ItemView) -> ItemUnreached {
 fn unreached_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnreached {
     if !item_held(engine, file, at) { return ItemUnreached { arms: [] } }
     let item = read_item(engine, file, at)
-    let unread = [u.at for u in item_refusals(engine, file, at).unread]
+    let refusals = item_refusals(engine, file, at)
+    let unread = [u.at for u in refusals.unread]
     let written_only = template_nodes(item.store)
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if !written_only.contains(e) for m in some_list(match_at(item.store, e)) if !reads_unanswered(item.store, m.subject, unread)]
     if matches.is_empty() { return ItemUnreached { arms: [] } }
-    let cover = reach_cover(engine, file, at, item)
+    let cover = reach_cover(engine, file, refusals.compared, item)
     ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
 }
 
@@ -95,12 +96,17 @@ fn stands_at(u: FindingAt?, at: FindingAt) -> bool {
 
 /// What the arms' reach reads of the written item `at` of `file`, read as `item`: no type, and a
 /// bare name by what it is bound to where its pattern stands.
-fn reach_cover(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> Cover {
+fn reach_cover(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    compared: List<FindingAt>,
+    item: ReadItem,
+) -> Cover {
     Cover {
         store: item.store,
         type_at: (_k: int) -> no_type(),
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
-        compares: (p: PatId, n: string) -> pattern_compares(engine, file, at, item.store, p, n),
+        compares: (p: PatId, n: string) -> pattern_compares(engine, file, compared, item.store, p, n),
     }
 }
 
@@ -129,8 +135,9 @@ fn binder_of(cover: Cover, hole: PatId) -> string { cover.store.bind_name(hole) 
 fn last_arms_comparing(view: ItemView) -> List<Found> {
     let item = view.item
     let store = item.store
-    let cover = reach_cover(view.engine, view.file, view.at, item)
-    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) if cover.catching(m.arms) == null for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && pattern_compares(view.engine, view.file, view.at, store, p, n!)]
+    let compared = refusals_seen(view).compared
+    let cover = reach_cover(view.engine, view.file, compared, item)
+    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) if cover.catching(m.arms) == null for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && pattern_compares(view.engine, view.file, compared, store, p, n!)]
 }
 
 /// the last arm of a `match` whose bare name is a const

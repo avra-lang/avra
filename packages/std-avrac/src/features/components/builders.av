@@ -5,6 +5,7 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{
+    scoped,
     FnSeat,
     ComponentWord,
     Record,
@@ -42,13 +43,13 @@ fn component_decl_written(s: dyn Slots) -> Result<Built, string> {
     if s.present_of("third")? { return .Err(three_dots()) }
     let members = s.params_of("members")?
     let written = s.params_of("head")?
-    if written.first()?.default != null { return .Err(first_defaulted(written[0].name.of)) }
+    if written.first()?.default != null { return .Err(first_defaulted(written[0].name.text())) }
     let placed = written.find(it.state && it.default != null)
-    if placed != null { return .Err(state_defaulted(placed!.name.of)) }
+    if placed != null { return .Err(state_defaulted(placed!.name.text())) }
     let head = if members.any(it.state) { [propped_param(p) for p in written] } else { written }
     let decl = Stmt
         .ComponentDecl(
-            Scoped(s.text_of("name")?),
+            scoped(s.text_of("name")?),
             s.params_of("tparams")?,
             head,
             members,
@@ -104,7 +105,7 @@ fn event_written(s: dyn Slots) -> Result<Built, string> {
         Built
             .Seat(
                 Param {
-                    name: Scoped(s.text_of("name")?),
+                    name: scoped(s.text_of("name")?),
                     ty: TypeRef {
                         name: "fn",
                         applied: [],
@@ -177,7 +178,7 @@ fn opened(s: dyn Slots) -> Result<ComponentWord, string> {
 fn headed(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
     let store = s.arena()
     let at = s.at_of("name")?
-    let name = store.alloc_expr(Expr.Ident(Scoped(s.text_of("name")?)), at)
+    let name = store.alloc_expr(Expr.Ident(scoped(s.text_of("name")?)), at)
     let inst = s
         .made_expr(
             Expr
@@ -192,7 +193,7 @@ fn headed(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
 /// the printer spells back as it was written.
 fn bound(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
     let store = s.arena()
-    let name = Scoped(s.text_of("name")?)
+    let name = scoped(s.text_of("name")?)
     let value = s
         .made_expr(Expr.Component(word.word, s.types_of("targs")?, [], s.expr_opt_of("body")?, name, null))?
     let stmt = store.alloc_stmt(Stmt.Let(name, null, value), s.built_at())

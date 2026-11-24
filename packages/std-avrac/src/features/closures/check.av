@@ -7,7 +7,7 @@ use features.{TypeCx, this_is, slot_worthy, Cap}
 use diagnostics.{Voice, refusal, said_as}
 
 fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId {
-    let names = [pp.name.of for pp in params]
+    let names = [pp.name.text() for pp in params]
     let twice: string? = names.find(repeated_in(names, it))
     if twice != null { return seat_named_twice(cx, e, twice!) }
     let offer: TypeId? = offered(cx, e, params)
@@ -67,8 +67,8 @@ export fn takes_by_name(cx: TypeCx, params: List<Param>, seats: List<TypeId>) ->
     if seats.length != 1 { return false }
     let fields? = cx.fields_of(seats[0]) else { return false }
     if params.length != 1 { return true }
-    let lone = params[0].name.of
-    lone != "it" && fields.names.contains(lone)
+    let lone = params[0].name
+    !lone.spells("it") && fields.names.contains(lone.text())
 }
 
 /// Each named field bound as a parameter of its own type; the lambda
@@ -76,13 +76,13 @@ export fn takes_by_name(cx: TypeCx, params: List<Param>, seats: List<TypeId>) ->
 /// off the one record it is handed.
 fn taken_by_name(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId, record: TypeId) -> TypeId {
     let fields = cx.fields_of(record)!
-    let stranger: Param? = params.find((pp: Param) -> !fields.names.contains(pp.name.of))
-    if stranger != null { return not_offered(cx, e, stranger!.name.of, fields.names) }
+    let stranger: Param? = params.find((pp: Param) -> !fields.names.contains(pp.name.text()))
+    if stranger != null { return not_offered(cx, e, stranger!.name.text(), fields.names) }
     let written: Param? = params.find(it.ty != null)
-    if written != null { return typed_offer(cx, e, written!.name.of) }
+    if written != null { return typed_offer(cx, e, written!.name.text()) }
     let answer: TypeId? = wanted_answer(cx, e, 1)
     if answer != null { cx.plant_want(body, answer!) }
-    let ptys = [fields.types[fields.slot_of(pp.name.of)!] for pp in params]
+    let ptys = [fields.types[fields.slot_of(pp.name.text())!] for pp in params]
     let marks = [SeatMark { mutable: false, settled: false } for pp in params]
     cx.facts.offer(e)
     let ret = cx.lambda_body(e, ptys, marks, body, cx.promised(answer))
@@ -227,7 +227,7 @@ export fn unfed_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId?) {
 
 fn first_param_name(cx: TypeCx, e: ExprId) -> string {
     let parts? = cx.view.store.lambda_parts(e) else { return "the parameter" }
-    parts.params.first()?.name?.of ?? "the parameter"
+    parts.params.first()?.name?.text() ?? "the parameter"
 }
 
 // ── The voices ──

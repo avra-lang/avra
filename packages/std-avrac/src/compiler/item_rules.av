@@ -157,7 +157,8 @@ fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemA
 }
 
 /// What every rule that reads its item alone finds in the item `at` of `file`, each beside the node
-/// it fired at — every place counted from the item's own start.
+/// it fired at — every place counted from the item's own start. Its own query, asked where rule rows
+/// are: a check reads rules over the program's own files, and laws over every file it reaches.
 @query("laws")
 export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFound {
     let alone = item_alone(engine, file, at)
@@ -524,7 +525,7 @@ fn calls_written(store: SyntaxArena) -> List<ReadName> {
 /// The name a call at `e` names its callee by; absent for any other node.
 fn callee_read(store: SyntaxArena, e: ExprId) -> ReadName? {
     if !(store.expr(e).use_shape() is .Callee) { return null }
-    value_read(store.call_parts(e)?.callee)
+    value_read(store.callee_name(e))
 }
 
 /// Each call the program `program` makes of the fn `name` that `file` declares, by the file making it.
@@ -586,7 +587,7 @@ fn names_read(store: SyntaxArena) -> List<ReadName> {
 fn expr_name(store: SyntaxArena, e: ExprId) -> ReadName? {
     match store.expr(e).use_shape() {
         .Read -> value_read(store.ident_name(e)),
-        .Callee -> value_read(store.call_parts(e)?.callee),
+        .Callee -> value_read(store.callee_name(e)),
         .Method(_, _) -> null,
         .Record(name) -> type_read(name.of),
         .Component(word) -> type_read(word),

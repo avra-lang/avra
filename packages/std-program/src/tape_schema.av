@@ -17,7 +17,7 @@ use @std.meta.{derive, Type as MetaType}
 use saved_derive.{Saved}
 use sorted.{sorted_by}
 use @std.text.{text_before}
-use value_shapes.{Reading, ShapedVariant, ValueShape, path_of}
+use value_shapes.{NAME_TYPE, Reading, ShapedVariant, ValueShape, path_of}
 
 /// What a field holds once it's unwrapped.
 @derive(Saved)
@@ -131,11 +131,17 @@ export fn lying(shape: ValueShape) -> Lying {
         .Listed(inner) -> wrapped_in(.List, lying(inner)),
         .Celled(inner) or .Renamed(_, inner) -> lying(inner),
         .Entries(_, _) -> wrapped_in(.List, plain(.Node(node_path(shape)!))),
-        .Sides(_, _) or .Declared(_, _) or .Tags(_, _, _) -> plain(.Node(node_path(shape)!)),
+        .Sides(_, _) or .Declared(_, _) or .Tags(_, _, _) -> node_lying(shape),
         .Id(_, _, root_path) -> plain(.Reached(root_path)),
         .Placed(_, _) -> plain(.Place),
         .Offset -> plain(.Offset),
     }
+}
+
+/// How a shape that may be a node lies: as that node, or as text for a name, which is no node.
+fn node_lying(shape: ValueShape) -> Lying {
+    let path? = node_path(shape) else { return plain(.Text) }
+    plain(.Node(path))
 }
 
 /// The path of the node type a shape is, absent for a shape that isn't a node. A map's node is
@@ -144,7 +150,8 @@ export fn node_path(shape: ValueShape) -> string? {
     match shape {
         .Entries(key, value) -> "Map<${lying(key).spelled()}, ${lying(value).spelled()}>",
         .Sides(ok, err) -> "Result<${lying(ok).spelled()}, ${lying(err).spelled()}>",
-        .Declared(_, path) or .Tags(_, path, _) -> path,
+        .Declared(type_name, path) -> if type_name == NAME_TYPE { null } else { path },
+        .Tags(_, path, _) -> path,
         .Id(_, _, node_path) -> node_path,
         .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Placed(_, _) -> null,
     }

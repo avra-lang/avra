@@ -8,6 +8,7 @@
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
 use @std.meta.{Type as MetaType, Field, Directive, Code, literal, beside}
+use @std.program.names.{text_of}
 
 /// What a payload holds, as far as a template's hole can say.
 export enum Fill {
@@ -60,7 +61,10 @@ fn fill_of(f: Field) -> Code {
     match f.ty {
         "ExprId" -> quote { Fill.Value(self.${f.name}) },
         "ExprId?" -> quote { if self.${f.name} == null { Fill.Gone } else { Fill.Value(self.${f.name}!) } },
-        "Plain" or "Scoped" -> quote { Fill.Name(self.${f.name}.of) },
+        // Generated code reads a name's text through a free fn: a method would resolve against the
+        // impls the generators of its own file are still making.
+        "Scoped" -> quote { Fill.Name(text_of(self.${f.name}.of)) },
+        "Plain" -> quote { Fill.Name(self.${f.name}.of) },
         "TypeRef" -> quote { Fill.Ty(self.${f.name}) },
         _ -> quote { Fill.Other },
     }

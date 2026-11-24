@@ -33,7 +33,7 @@ spec "features/let_stmt" {
         then "one Let lands in the arena with the expression tree under it" {
             let p = parse_prog("let x = 1 + y")
             let tree_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, _, value) -> name == "x" &&
+                .Let(name, _, value) -> name.spells("x") &&
                     match p.store.expr(value) {
                         .Binary(op, l, r) -> op == BinOp.Add && p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
                         _ -> false,
@@ -52,11 +52,11 @@ spec "features/let_stmt" {
         then "lets accumulate in source order" {
             let p = parse_prog("let a = 1\nlet b = 2")
             let a_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, _, _) -> name == "a",
+                .Let(name, _, _) -> name.spells("a"),
                 _ -> false,
             }
             let b_ok = match p.store.stmt(p.stmts[1]) {
-                .Let(name, _, _) -> name == "b",
+                .Let(name, _, _) -> name.spells("b"),
                 _ -> false,
             }
             p.voices.list.is_empty() && p.stmts.length == 2 && a_ok && b_ok
@@ -66,7 +66,7 @@ spec "features/let_stmt" {
         then "the WRITTEN type rides the node, `?` included" {
             let p = parse_prog("let x: int? = 1")
             match p.store.stmt(p.stmts[0]) {
-                .Let(name, t, _) -> declares_opt_int(name.of, t),
+                .Let(name, t, _) -> declares_opt_int(name.text(), t),
                 _ -> false,
             }
         }
@@ -106,7 +106,7 @@ spec "features/let_stmt" {
         then "one diagnostic, a visible hole, and whole neighbors" {
             let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
             let tail_ok = match p.store.stmt(p.stmts[2]) {
-                .Let(name, _, _) -> name == "y",
+                .Let(name, _, _) -> name.spells("y"),
                 _ -> false,
             }
             p.voices.list.length == 1 &&

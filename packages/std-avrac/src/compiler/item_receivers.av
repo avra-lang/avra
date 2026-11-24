@@ -3,7 +3,7 @@
 //! isn't `mut`, writes where nobody looks. A `mut` local, a `mut` seat, a `state` and the method's
 //! own `self` are places. Read over the writes a written item's bodies make, as the copy laws read
 //! them; a root nothing in the fn binds is the program's, which other laws hold.
-use core.{ExprId, NodeKind, Param, PatId, StmtId}
+use core.{scoped, ExprId, NodeKind, Param, PatId, StmtId}
 use compiler.laws.{Found, ItemAnalysis, Reach, law}
 use diagnostics.{Voice}
 use features.{chain_receiver_copied, receiver_a_value, receiver_captured, receiver_not_mut}
@@ -143,10 +143,11 @@ fn receiver_binder(cx: Copies, root: ExprId, at: ExprId, lambdas: List<ExprId>) 
     let from = cx.fn_lo(at)
     if cx.store.is_receiver(root) { return ReceiverBinder { lo: from, mutable: true } }
     let name = cx.root_word(root)
+    let named = scoped(name)
     let here = cx.lo(at)
     let stated = [ReceiverBinder { lo: cx.stmt_lo(s), mutable: binds_writable(cx, s) } for s in cx.store.stmt_ids() if cx.store.let_name(s) == name && cx.stmt_lo(s) > from && cx.stmt_lo(s) < here]
-    let seated = [ReceiverBinder { lo: from, mutable: p.promises.mutable } for s in cx.store.stmt_ids() if cx.stmt_lo(s) == from for f in [cx.store.fn_parts(s)] if f != null for p in f!.params if p.name.of == name]
-    let seats = [ReceiverBinder { lo: cx.lo(l), mutable: p.promises.mutable || heard_mut(cx, l, j) } for l in lambdas if cx.holds(l, here) for parts in [cx.store.lambda_parts(l)] if parts != null for j, p in parts!.params if p.name.of == name]
+    let seated = [ReceiverBinder { lo: from, mutable: p.promises.mutable } for s in cx.store.stmt_ids() if cx.stmt_lo(s) == from for f in [cx.store.fn_parts(s)] if f != null for p in f!.params if p.name == named]
+    let seats = [ReceiverBinder { lo: cx.lo(l), mutable: p.promises.mutable || heard_mut(cx, l, j) } for l in lambdas if cx.holds(l, here) for parts in [cx.store.lambda_parts(l)] if parts != null for j, p in parts!.params if p.name == named]
     let patterned = [ReceiverBinder { lo: span!.lo, mutable: false } for i in 0..cx.store.pat_count() for p in [PatId { index: i }] if cx.store.bind_name(p) == name for span in [cx.store.pat_span(p)] if span != null && span!.lo > from && span!.lo < here]
     latest_binder(stated.concat(seated).concat(seats).concat(patterned))
 }

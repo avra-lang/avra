@@ -430,7 +430,7 @@ export fn reads_self(store: SyntaxArena, e: ExprId?) -> bool {
 fn field_seat(engine: QueryEngine, signing: Signing, p: Param) -> FieldSeat {
     let ty: SignedType? = if p.ty == null { holder_type(signing, p) } else { signing.signed(p.ty!) }
     FieldSeat {
-        name: p.name.of,
+        name: p.name.text(),
         ty: ty,
         state: p.state || p.prop && ty != null && declared_shapes(engine).compares_by_value(ty!),
         over: shown_over(p),
@@ -551,7 +551,7 @@ export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: str
         variants: [VariantSeat {
             name: v.name.of,
             payloads: [FieldSeat {
-                name: p.name.of,
+                name: p.name.text(),
                 ty: if p.ty == null { null } else { signing.signed(p.ty!) },
             } for p in v.payloads],
         } for v in parts.variants],
@@ -793,7 +793,7 @@ const TYPE_KINDS: List<ItemKind> = [
 /// signed where it's declared; absent for one with no default.
 fn type_defaults(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType?> {
     let written = type_params_written(engine, file, name)
-    signing_in(engine, file, [p.name.of for p in written]).defaults_written(written)
+    signing_in(engine, file, [p.name.text() for p in written]).defaults_written(written)
 }
 
 /// How many of the type parameters `written`, counted from the last, have a default: the ones a written
@@ -856,7 +856,7 @@ fn written_at(store: SyntaxArena, s: StmtId, name: string) -> WrittenFn? {
     }
     if declared.name != name { return null }
     WrittenFn {
-        type_params: [t.name.of for t in declared.tparams],
+        type_params: [t.name.text() for t in declared.tparams],
         bounds: [t.ty for t in declared.tparams],
         defaults: [t.type_default for t in declared.tparams],
         params: declared.params,
@@ -904,7 +904,7 @@ impl Signing {
 
     fn param(p: Param) -> SignedParam {
         SignedParam {
-            name: p.name.of,
+            name: p.name.text(),
             ty: if p.ty == null { null } else { self.signed(widthless(p.ty)!) },
             mutable: p.promises.mutable,
             settled: p.promises.settled,

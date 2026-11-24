@@ -84,11 +84,12 @@ fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemH
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
     if matches.is_empty() { return ItemHoles { holes: [] } }
     let typed = item_node_types(engine, file, at, item)
+    let compared = item_refusals(engine, file, at).compared
     let cover = Cover {
         store: item.store,
         type_at: typed,
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
-        compares: (p: PatId, n: string) -> pattern_compares(engine, file, at, item.store, p, n),
+        compares: (p: PatId, n: string) -> pattern_compares(engine, file, compared, item.store, p, n),
     }
     ItemHoles { holes: [h! for e in matches for h in [cover.hole_in(e)] if h != null] }
 }
@@ -210,7 +211,7 @@ impl Cover {
     /// Whether a bare name in a pattern names a value it compares with.
     fn compared(p: PatId) -> bool {
         match self.store.pat(p) {
-            .Bind(n) -> (self.compares)(p, n.of),
+            .Bind(n) -> (self.compares)(p, n.text()),
             .Wild or .Rest or .Variant(_, _) or .Member(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
         }
     }

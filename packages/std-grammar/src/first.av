@@ -182,7 +182,9 @@ impl FirstCx {
     }
 
     fn started_alt(rname: string, a: Alt) -> Alt {
-        a with { branches: [self.started_seq(rname, s) for s in a.branches] }
+        let branches = [self.started_seq(rname, s) for s in a.branches]
+        let shared = [if i == 0 { 0 } else { shared_lead(branches[i - 1], s) } for i, s in branches]
+        a with { branches: [s with { shared: shared[i], lends: if i + 1 < shared.length { shared[i + 1] } else { 0 } } for i, s in branches] }
     }
 
     fn started_seq(rname: string, s: Seq) -> Seq {
@@ -204,6 +206,34 @@ impl FirstCx {
             .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
         }
     }
+}
+
+/// How many leading members `b` shares with `a`, the branch before it: each a single terminal,
+/// labelled alike, which the engine matches once for both. A branch that climbs operators reads
+/// its first member as the operand, so it shares none.
+fn shared_lead(a: Seq, b: Seq) -> int {
+    if a.operators != null || b.operators != null { return 0 }
+    mut n = 0
+    while n < a.items.length && n < b.items.length && same_lead_member(a.items[n], b.items[n]) { n = n + 1 }
+    n
+}
+
+/// Whether two members are one terminal, read and bound the same way.
+fn same_lead_member(a: Item, b: Item) -> bool {
+    let word? = a.prim.token_name() else { return false }
+    a.rep == Rep.One &&
+        b.rep == Rep.One &&
+        a.expect == null &&
+        b.expect == null &&
+        !a.trailer &&
+        !b.trailer &&
+        a.head == b.head &&
+        a.label == b.label &&
+        a.slot == b.slot &&
+        a.label_slot == b.label_slot &&
+        a.prim.literal() == b.prim.literal() &&
+        a.prim.class() == b.prim.class() &&
+        b.prim.token_name() == word
 }
 
 /// How a terminal and the rule that holds it are minted together.

@@ -36,13 +36,14 @@ impl Checks for Ident {
     /// name that names a type and no value is that type, standing as a value. A name nothing binds
     /// and the program gives no type is noted as unanswered.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        let read = cx.read(e, self.name.of)
-        if read != null && cx.extern_read(e, self.name.of, read!) { return null }
-        if read != null || cx.local(self.name.of) != null { return read }
-        let as_type = cx.type_value(self.name.of, cx.home_of(e))
+        let name = self.name.text()
+        let read = cx.read(e, name)
+        if read != null && cx.extern_read(e, name, read!) { return null }
+        if read != null || cx.local(name) != null { return read }
+        let as_type = cx.type_value(name, cx.home_of(e))
         if as_type != null { return as_type }
         cx
-            .unbound_read(e, self.name.of, if self.name.of == PRONOUN { ReadAs.Pronoun } else { ReadAs.Value })
+            .unbound_read(e, name, if self.name.spells(PRONOUN) { ReadAs.Pronoun } else { ReadAs.Value })
         null
     }
 }

@@ -8,6 +8,7 @@
 //! the generator's made program, so it runs once per change of either. A generator the program
 //! layer doesn't make says why instead.
 use core.{
+    scoped,
     distinct,
     template_file,
     template_home,
@@ -439,7 +440,7 @@ fn moved_method(engine: QueryEngine, m: MethodSite, name: string, store: SyntaxA
     let moved = store
         .alloc_stmt(
             Stmt
-                .FnDecl(Scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+                .FnDecl(scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
             store.stmt_span(s),
         )
     let marks = store.marks_at(s)
@@ -493,7 +494,7 @@ fn signature_spelled(store: SyntaxArena, s: StmtId) -> string {
         p.promises.settled,
         if p.ty == null { INFERRED } else { spelled(p.ty!) },
     ) for p in parts.params]
-    "<${[t.name.of for t in parts.tparams].join(", ")}>(${seats.join(", ")}) -> ${spelled(parts.ret)}"
+    "<${[t.name.text() for t in parts.tparams].join(", ")}>(${seats.join(", ")}) -> ${spelled(parts.ret)}"
 }
 
 /// The fn `file` writes as `name`, read into `store` under the name a wrap moves its body to, at the
@@ -508,7 +509,7 @@ fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store:
     let moved = store
         .alloc_stmt(
             Stmt
-                .FnDecl(Scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+                .FnDecl(scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
             store.stmt_span(s),
         )
     let marks = store.marks_at(s)
@@ -536,10 +537,10 @@ fn twin_of(
     let call = store
         .alloc_expr(
             Expr
-                .Call(Scoped(name), [], [store.alloc_expr(Expr.Ident(p.name), at) for p in parts.params]),
+                .Call(scoped(name), [], [store.alloc_expr(Expr.Ident(p.name), at) for p in parts.params]),
             at,
         )
-    store.alloc_stmt(Stmt.FnDecl(Scoped(twin), parts.tparams, parts.params, parts.ret, call), at)
+    store.alloc_stmt(Stmt.FnDecl(scoped(twin), parts.tparams, parts.params, parts.ret, call), at)
 }
 
 /// The name a wrap moves a written fn's body to, which no written name can take.

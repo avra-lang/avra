@@ -83,6 +83,10 @@ type FarthestFailure = { cursor: int, expected: Want, in_rule: string }
 /// every boundary). The four states that exist, and no fifth.
 enum MatchStatus { Hit, Miss, Broke, Fatal }
 
+/// Where a branch stood once its first `at` members had all matched: what a sibling sharing those
+/// members (`Seq.shared`) starts from instead of matching them again.
+type SeqPoint<T, N> = { at: int, cursor: int, bindings: List<Binding<T, N>>, vals: List<Captured<T, N>>, open: bool }
+
 /// One match attempt's outcome.
 type MatchResult<T, N> = {
     status: MatchStatus,
@@ -539,11 +543,31 @@ fn match_alt<T, N>(
 ) -> MatchResult<T, N> {
     mut farthest: FarthestFailure? = null
     mut broken: List<List<Failure>> = []
+    // THE SHARED LEAD: a branch that begins with the members the one before it began with starts where
+    // that one stood after them (`lent`, the point the branch before lends, when it got there), so a
+    // lead siblings share is matched once
+    mut lent: List<SeqPoint<T, N>> = []
     for br in a.branches {
         if cannot_take<T, N>(cx, cursor, br.start) {
+            lent = []
             if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
         } else {
-            let r = match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin)
+            let next = br.lends
+            let held = lent.first()
+            let resumed = held != null && br.shared > 0 && held!.at == br.shared
+            let r = if resumed || next > 0 {
+                let from = if resumed {
+                    held!
+                } else {
+                    SeqPoint { at: 0, cursor: cursor, bindings: bindings, vals: [], open: !capped }
+                }
+                let lead = seq_lead<T, N>(cx, rule_name, br, acc, from, next)
+                lent = if next > 0 && lead.at == next { [lead] } else { [] }
+                match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin, lead)
+            } else {
+                lent = []
+                match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin, null)
+            }
             farthest = far_merge(farthest, r.farthest)
             if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
                 return r with { farthest: farthest }
@@ -582,6 +606,42 @@ fn committed_failure<T, N>(
     farthest_failure<T, N>(cx, f)
 }
 
+/// Where the branch `s` stands once the members of its lead have matched from `from`, up to its
+/// first `upto`: each a single terminal (`shared_member`), which builds nothing, so a sibling reading
+/// the same members from the same place stands exactly here. It stops at the first that misses.
+fn seq_lead<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    s: Seq,
+    acc: bool,
+    from: SeqPoint<T, N>,
+    upto: int,
+) -> SeqPoint<T, N> {
+    if from.at >= upto { return from }
+    mut at = from.at
+    mut cursor = from.cursor
+    mut bindings = from.bindings
+    mut vals = from.vals
+    mut open = from.open
+    while at < upto {
+        let member = s.items[at]
+        if !shared_member(member) { break }
+        let r = match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
+        if r.status != MatchStatus.Hit || !r.diagnostics.is_empty() { break }
+        if opens(member.prim) { open = true }
+        cursor = r.cursor
+        bindings = r.bindings
+        vals.push(r.value)
+        at = at + 1
+    }
+    SeqPoint { at: at, cursor: cursor, bindings: bindings, vals: vals, open: open }
+}
+
+/// Whether a branch's member can stand in a lead its sibling shares: a single terminal, which
+/// builds nothing and leaves no trace but the token it takes.
+fn shared_member(m: Item) -> bool { m.rep == Rep.One && m.expect == null && !m.trailer && m.prim.token_name() != null }
+
+/// The branch `s` matched from `entry`; from where `lead` stands when its first members have matched.
 fn match_seq<T, N>(
     mut cx: MatchContext<T, N>,
     rule_name: string,
@@ -591,17 +651,22 @@ fn match_seq<T, N>(
     acc: bool,
     capped: bool,
     origin: int,
+    lead: SeqPoint<T, N>?,
 ) -> MatchResult<T, N> {
-    mut cursor = entry
-    mut bindings = entry_bindings
-    mut vals: List<Captured<T, N>> = []
+    let led = lead?.cursor ?? entry
+    mut cursor = led
+    mut bindings = lead?.bindings ?? entry_bindings
+    mut vals: List<Captured<T, N>> = lead?.vals ?? []
     mut diagnostics: List<Failure> = []
     mut farthest: FarthestFailure? = null
-    mut anchored = false
+    // a lead that consumed a token anchored the branch
+    mut anchored = led > entry
     // THE HEAD LAW: a trailer never matches under a cap, and a
     // delimiter the sequence consumes opens the rest of it
-    mut open = !capped
-    for member in s.items {
+    mut open = lead?.open ?? !capped
+    let start = lead?.at ?? 0
+    for i, member in s.items {
+        if i < start { continue }
         let r = when {
             member.trailer && !open -> missed<T, N>(cx, cursor, bindings, cx.silence, null)
             s.fold != null && (member.rep == Rep.Star || member.rep == Rep.Opt) -> match_fold<T, N>(

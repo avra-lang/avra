@@ -3737,6 +3737,19 @@ The ask the kids walk raised stands in the same way:
   core/shape_derive.av). It cut 0.32% of a cli check's boxes, too little to
   carry six licences.
 
+The ask identifiers as Names raised (NAME_DESIGN) stands in the same way:
+
+- **A map keyed on an interned name.** A map's keys are strings only ("a map's
+  keys are strings, not `int`"), so a table by name cannot key on the program
+  layer's `Name`. It either keys on `name.text()`, which hashes and compares the
+  text the Name exists to stop comparing, or holds a DenseWindow indexed by the
+  id, which is the process's own and must never be saved.
+  `Example: mut bound: Map<Name, DeclaredName> = {}` with `bound.get(ident)`
+  costing one int hash and one int compare, and saved as text like a Name field.
+  `Callsite:` resolve's by-name tables: `Bound`'s values/types/syntaxes maps and
+  FileScope's sibling names (compiler/item_scope.av), and resolve's scope and
+  overlay lookups once identifiers are Names (compiler/resolve/walk.av).
+
 The ask the mmap slice raised (db-05a, `store/mapped.av`) stands in the
 same way:
 

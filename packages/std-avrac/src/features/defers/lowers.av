@@ -61,8 +61,8 @@ fn in_place(mut cx: Lowering, lam: ExprId) -> DeferredRun? {
 fn in_place_operands(cx: Lowering, body: ExprId) -> Result<List<ExprId>, DeferDecline> {
     match cx.store.expr(body) {
         .Call(callee, _, args) -> {
-            if cx.bound(callee.of) != null { return .Err(DeferDecline.NotOneCall) }
-            let named? = cx.named(body, callee.of) else { return .Err(DeferDecline.NotOneCall) }
+            if cx.bound(callee.text()) != null { return .Err(DeferDecline.NotOneCall) }
+            let named? = cx.named(body, callee.text()) else { return .Err(DeferDecline.NotOneCall) }
             let f? = match named { .Fn(c) -> c, rest -> null } else { return .Err(DeferDecline.NotOneCall) }
             if f.params.is_empty() && !args.is_empty() { return .Err(DeferDecline.NotOneCall) }
             if f.params.any(it.mutable) { .Err(DeferDecline.CalleeWrites) } else { .Ok(args) }
@@ -84,7 +84,7 @@ fn moving(mut cx: Lowering, a: ExprId) -> DeferDecline? {
     match cx.store.expr(a) {
         .IntLit(_) or .BoolLit(_) or .FloatLit(_) -> null,
         .Ident(name) -> {
-            let b? = cx.bound(name.of) else { return DeferDecline.OperandComputed }
+            let b? = cx.bound(name.text()) else { return DeferDecline.OperandComputed }
             match b {
                 .Shared(_, _) or .OuterShared(_, _, _) -> DeferDecline.OperandShared,
                 .Value(_, t) or .Const(_, t) or .Slot(_, t) or .Outer(_, t, _) or .Held(_, t) -> if cx.laid_out(t).counted() { DeferDecline.OperandCounted } else { null },

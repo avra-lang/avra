@@ -19,7 +19,7 @@ impl Lowering {
     mut fn opened_place(s: ExprId) -> Reg {
         let step? = self.store.place_step(s) else { return self.missed_as("a write through a value") }
         match step {
-            .Root(n) -> self.root_opened(n.of),
+            .Root(n) -> self.root_opened(n.text()),
             .Field(subject, name) -> {
                 let cell = self.state_cell(subject, name.of)
                 if cell != null { return self.slot_opened(s, cell!, self.const_int(0)) }
@@ -97,8 +97,8 @@ impl Lowering {
         let step? = self.store.place_step(target) else { return self.missed("a write to a value") }
         match step {
             .Root(n) -> {
-                let b? = self.bound(n.of) else {
-                    if !self.state_written(target, n.of, v) { self.missed("a write to a name the body doesn't bind") }
+                let b? = self.bound(n.text()) else {
+                    if !self.state_written(target, n.text(), v) { self.missed("a write to a name the body doesn't bind") }
                     return
                 }
                 match b {
@@ -106,7 +106,11 @@ impl Lowering {
                     .Value(_, _) -> self.missed("a write to a `let`"),
                     .Const(_, _) -> self.missed("a write to a `const`"),
                     .Outer(_, ty, lanes) -> self
-                        .rewritten_from(Reg { index: 0 }, capture_slot(lanes, n.of, self.laid_out(ty).slots()), v),
+                        .rewritten_from(
+                            Reg { index: 0 },
+                            capture_slot(lanes, n.text(), self.laid_out(ty).slots()),
+                            v,
+                        ),
                     .Held(box, _) -> self.slot_written(box, self.const_int(0), v, true),
                     .Shared(_, _) or .OuterShared(_, _, _) -> self.slot_written(self.shared_cell(b)!, self.const_int(0), v, true),
                 }
@@ -200,7 +204,7 @@ impl Lowering {
     /// refuses.
     mut fn place_cell(a: ExprId) -> Reg? {
         match self.store.expr(a) {
-            .Ident(n) -> self.named_cell(a, n.of),
+            .Ident(n) -> self.named_cell(a, n.text()),
             .Prop(subject, name) -> self.state_cell(subject, name.of),
             _ -> null,
         }

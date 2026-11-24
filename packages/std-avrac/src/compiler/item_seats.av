@@ -74,9 +74,12 @@ fn unwritten_seats(engine: QueryEngine, cx: Copies, file: SourceFileAddress, s: 
     let parts? = cx.store.fn_parts(s) else { return [] }
     let span? = cx.store.stmt_span(s) else { return [] }
     let at = kept_at(span)
-    [UnwrittenSeat { at: at, seat: p.name.of, fn_name: parts.name } for p in parts.params if p.promises.mutable &&
+    [UnwrittenSeat { at: at, seat: p.name.text(), fn_name: parts.name } for p in parts.params if p.promises.mutable &&
         p.seated() &&
-        !written_through(engine, seat_body_evidence(engine, cx, file, p.name.of, span.lo, span.hi))]
+        !written_through(
+            engine,
+            seat_body_evidence(engine, cx, file, p.name.text(), span.lo, span.hi),
+        )]
 }
 
 /// A seat of a declared fn: the fn, by its file, its item and its name, and the seat's place.
@@ -130,7 +133,7 @@ fn seat_evidence(engine: QueryEngine, s: SeatOf) -> SeatEvidence {
         engine,
         copies_in(engine, s.file, s.item, item),
         s.file,
-        params[s.at].name.of,
+        params[s.at].name.text(),
         span.lo,
         span.hi,
     )
@@ -169,7 +172,7 @@ fn rooted_in(cx: Copies, e: ExprId, name: string) -> bool {
 fn writes_seat(engine: QueryEngine, cx: Copies, file: SourceFileAddress, e: ExprId, name: string) -> SeatEvidence {
     let mp? = cx.store.method_parts(e) else {
         let call? = cx.store.call_parts(e) else { return applied_with_seat(cx, e, name) }
-        return called_with_seat(engine, cx, file, call.callee, call.args, name)
+        return called_with_seat(engine, cx, file, call.callee.text(), call.args, name)
     }
     let ty? = (cx.type_at)(mp.subject.index) else {
         return SeatEvidence {

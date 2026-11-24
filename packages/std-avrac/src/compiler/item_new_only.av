@@ -162,7 +162,7 @@ fn writes_never(t: TypeRef) -> bool {
 /// record's literal; or writes any after a method's name. Counts are read off the declarations, so this only sets a judge aside.
 fn prefix_pinned(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) {
-        .Call(callee, pins, _) -> !pins.is_empty() && pins.length < fn_type_params(engine, file, callee.of)?.length ?? 0,
+        .Call(callee, pins, _) -> !pins.is_empty() && pins.length < fn_type_params(engine, file, callee.text())?.length ?? 0,
         .MethodCall(_, _, _) -> !store.struct_targs_of(e).is_empty(),
         _ -> {
             let written = store.struct_targs_of(e)
@@ -207,7 +207,7 @@ fn contexted(store: SyntaxArena, nodes: List<ExprId>) -> bool {
 fn widely_placed(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) {
         .Call(callee, _, args) -> args.any((a) -> wide_arg(engine, file, store, store.unnamed(a))) &&
-            state_seated(engine, file, callee.of),
+            state_seated(engine, file, callee.text()),
         _ -> false,
     }
 }
@@ -267,7 +267,7 @@ fn state_seated(engine: QueryEngine, file: SourceFileAddress, callee: string) ->
 fn wide_arg(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, a: ExprId) -> bool {
     match store.expr(a) {
         .Prop(_, _) -> true,
-        .Ident(n) -> resolved(engine, file, Space.Value, n.of).named()?.kind == ItemKind.State,
+        .Ident(n) -> resolved(engine, file, Space.Value, n.text()).named()?.kind == ItemKind.State,
         _ -> false,
     }
 }

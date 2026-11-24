@@ -105,7 +105,7 @@ type NamedRecord = { name: string, waits: RecordWaits }
 /// field holding a contract makes one of what a literal passes it, which no summary says.
 fn fields_waits(store: SyntaxArena, fields: List<Param>) -> RecordWaits {
     RecordWaits {
-        fields: [f.name.of for f in fields],
+        fields: [f.name.text() for f in fields],
         types: [if f.ty == null { "" } else { type_code(f.ty!) } for f in fields],
         defaults: joined_waits(
             [exprs_waits(store, store.expr_span(d!), [], null) for f in fields for d in [f.default] if d != null]
@@ -169,11 +169,11 @@ fn node_waits(store: SyntaxArena, bound: Bindings, e: ExprId) -> BodyWaits {
     let none = no_waits()
     match store.expr(e) {
         .Call(callee, _, _) -> when {
-            rt_index().get(callee.of) != null -> none with { waits: rt_waits(callee.of) }
-            bound.names.contains(callee.of) -> none
-            _ -> none with { calls: [callee.of] }
+            rt_index().get(callee.text()) != null -> none with { waits: rt_waits(callee.text()) }
+            bound.names.contains(callee.text()) -> none
+            _ -> none with { calls: [callee.text()] }
         },
-        .Ident(n) -> if bound.names.contains(n.of) { none } else { none with { calls: [n.of] } },
+        .Ident(n) -> if bound.names.contains(n.text()) { none } else { none with { calls: [n.text()] } },
         .MethodCall(subject, name, _) -> method_waits_at(bound, path_of(store, subject), name.of),
         .ChainCall(subject, name, _) -> method_waits_at(bound, carried(path_of(store, subject)), name.of),
         .StructLit(name, _, _) -> none with { records: [name.of] },
@@ -240,9 +240,12 @@ fn bindings(
     params: List<Param>,
     target: string?,
 ) -> Bindings {
-    let seated = [BoundPath { name: p.name.of, path: if p.ty == null { [] } else { code_path(type_code(p.ty!)) } } for p in params]
+    let seated = [BoundPath {
+        name: p.name.text(),
+        path: if p.ty == null { [] } else { code_path(type_code(p.ty!)) },
+    } for p in params]
     let lets = [BoundPath { name: n!, path: let_path(store, s) } for s in stmts for n in [store.let_name(s)] if n != null]
-    let lambdas = [unpathed(p.name.of) for e in nodes for l in [store.lambda_parts(e)] if l != null for p in l!.params]
+    let lambdas = [unpathed(p.name.text()) for e in nodes for l in [store.lambda_parts(e)] if l != null for p in l!.params]
     let pats = [unpathed(n) for i in 0..store.pat_count() for n in [pat_bound(store, i)] if n != ""]
     let heads = [unpathed(n) for e in nodes for c in comp_clauses(store, e) for n in comp_binders(c)]
     let indices = [unpathed(n) for s in stmts for n in walk_index(store, s)]
@@ -262,7 +265,7 @@ fn unpathed(name: string) -> BoundPath { BoundPath { name: name, path: [] } }
 
 /// The name the pattern `i` binds; "" for one that binds none.
 fn pat_bound(store: SyntaxArena, i: int) -> string {
-    match store.pat(PatId { index: i }) { .Bind(name) -> name.of, rest -> "" }
+    match store.pat(PatId { index: i }) { .Bind(name) -> name.text(), rest -> "" }
 }
 
 /// The clauses of the comprehension `e`; none for any other node.
@@ -273,14 +276,17 @@ fn comp_clauses(store: SyntaxArena, e: ExprId) -> List<CompClause> {
 /// The names a comprehension's clause binds: a head's element, and its index where it names one.
 fn comp_binders(c: CompClause) -> List<string> {
     match c {
-        .Head(index, name, _, _) -> [name.of].concat([i.of for i in some_list(index)]),
+        .Head(index, name, _, _) -> [name.text()].concat([i.text() for i in some_list(index)]),
         .Filter(_) -> [],
     }
 }
 
 /// The index the walk `s` binds, where it names one.
 fn walk_index(store: SyntaxArena, s: StmtId) -> List<string> {
-    match store.stmt(s) { .ForEach(index, _, _, _) -> [i.of for i in some_list(index)], rest -> [] }
+    match store.stmt(s) {
+        .ForEach(index, _, _, _) -> [i.text() for i in some_list(index)],
+        rest -> [],
+    }
 }
 
 /// The path of the type the `let` `s` binds: its written type, else its value's.
@@ -300,7 +306,7 @@ fn let_path(store: SyntaxArena, s: StmtId) -> List<string> {
 fn path_of(store: SyntaxArena, e: ExprId) -> List<string> {
     match store.expr(e) {
         .Receiver -> ["S"],
-        .Ident(n) -> ["V:${n.of}"],
+        .Ident(n) -> ["V:${n.text()}"],
         .Prop(subject, name) -> stepped(path_of(store, subject), [name.of]),
         .Chain(subject, name) -> stepped(path_of(store, subject), ["?", name.of]),
         .MethodCall(subject, name, _) -> stepped(path_of(store, subject), ["()${name.of}"]),
@@ -308,7 +314,7 @@ fn path_of(store: SyntaxArena, e: ExprId) -> List<string> {
         .Propagate(v) or .Force(v) -> carried(path_of(store, v)),
         .With(subject, _, _) -> path_of(store, subject),
         .StructLit(name, _, _) -> ["T:${name.of}"],
-        .Call(callee, _, _) -> if rt_index().get(callee.of) != null { ["B"] } else { ["F:${callee.of}"] },
+        .Call(callee, _, _) -> if rt_index().get(callee.text()) != null { ["B"] } else { ["F:${callee.text()}"] },
         .IntLit(_) or .StrLit(_) or .BoolLit(_) or .FloatLit(_) -> ["B"],
         rest -> [],
     }

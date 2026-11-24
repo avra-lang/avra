@@ -4,6 +4,7 @@ use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
+    scoped,
     NodeNotes,
     node_notes,
     CostRemark,
@@ -1406,7 +1407,8 @@ fn default_callee(engine: QueryEngine, ty: SignedType, field: string) -> CalledF
     let item? = record_item(engine, at.file, at.name) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
         .find(it.name == at.name) else { return null }
-    let written? = parts.fields.find(it.name.of == field) else {
+    let wanted = scoped(field)
+    let written? = parts.fields.find(it.name == wanted) else {
         return spread_default(engine, at.file, parts, field) ?? carried_default(
             engine,
             at.file,
@@ -1465,9 +1467,10 @@ export fn lowered_field_default(
 fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: string, field: string) -> SignedBody? {
     let item? = record_item(engine, file, owner) else { return null }
     let stmt? = item.stmts.find((s) -> fields_written(item.store, s)?.name == owner) else { return null }
+    let wanted = scoped(field)
     let value? = fields_written(item.store, stmt)!
         .fields
-        .find(it.name.of == field && it.default != null)?.default else { return null }
+        .find(it.name == wanted && it.default != null)?.default else { return null }
     let seat? = (record_signature(engine, file, owner)?.fields ?? []).find(it.name == field) else { return null }
     let ty? = seat.ty else { return null }
     SignedBody {
@@ -1509,7 +1512,8 @@ export fn seat_default_lowered(
 /// The default the fn `signed` writes for its seat `seat`, as a body of no seats answering the seat's
 /// type and reading no receiver. Absent where it writes none.
 fn seat_default_body(signed: SignedBody, seat: string) -> SignedBody? {
-    let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name.of == seat)?.default else { return null }
+    let wanted = scoped(seat)
+    let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name == wanted)?.default else { return null }
     let ty? = signed.signature.params.find(it.name == seat)?.ty else { return null }
     signed with { signature: value_signature(ty), body: value, receiver: null, seat: Seating.SeatDefault(seat) }
 }

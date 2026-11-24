@@ -1,6 +1,7 @@
 // Tapes written and read back in order: the empty tape first, numbers of every size, flags past one
 // number, texts once, octets, places, and which changes move which hash.
 use answer_record.{content_hash}
+use names.{name_of}
 use saved_layout.{saved_bytes_in_memory}
 use syntax_tape.{SectionsView, SyntaxTape, TapeWriter, sections_view, tape_reader, tape_writer}
 
@@ -78,6 +79,25 @@ spec "syntax_tape — a tree as its types say it" {
             tape_reader(tape).is_done() &&
                 tape.meaning.structure.length == 0 &&
                 tape.places.places.length == 0
+        }
+    }
+    given "names" {
+        then "a name is written as its text: the same tape" {
+            mut by_name = tape_writer()
+            by_name.name(name_of("alpha"))
+            mut by_text = tape_writer()
+            by_text.text("alpha")
+            by_name.finished().saved_bytes() == by_text.finished().saved_bytes()
+        }
+        then "each reads back as the name its text spells, one text once" {
+            mut writer = tape_writer()
+            for word in ["alpha", "beta", "alpha"] { writer.name(name_of(word)) }
+            let reader = tape_reader(writer.finished())
+            let read = [reader.name() for _word in 0..3]
+            read[0] == name_of("alpha") &&
+                read[1] == name_of("beta") &&
+                read[2] == read[0] &&
+                read[0] != read[1]
         }
     }
     given "numbers" {

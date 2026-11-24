@@ -38,7 +38,7 @@ impl Lowers for Call {
     /// the program declares (a generic one's unit under its arguments' layouts): its arguments in
     /// order, each into the seat it fills, then the call. Any other call isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
-        let value = cx.bound(self.callee.of)
+        let value = cx.bound(self.callee.text())
         if value != null { return called_value(cx, self, e, value!) }
         let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.missed_as(uncalled(cx, self, e)) }
         if self.args.length == 1 && metas(cx, named, GUARDED) { return guarded_run(cx, e, self.args[0]) }
@@ -200,7 +200,7 @@ const EMBED_UNPLACED: string = "an embedded file's path the embed law refuses"
 /// value is, then a call of the body the program answers `f`'s code hash with. Any other argument
 /// isn't lowered yet.
 fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
-    let name? = cx.store.ident_name(target) ?? cx.store.call_parts(target)?.callee else { return cx.missed_as(unhashed()) }
+    let name? = cx.store.ident_name(target) ?? cx.store.callee_name(target) else { return cx.missed_as(unhashed()) }
     let named? = cx.named(target, name) else { return cx.missed_as(unhashed()) }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unhashed()) }
     let _ = cx.lower(target)
@@ -263,8 +263,8 @@ fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
 /// `Name(value)`: the value as it is, a named type being its shape to the machine. Absent for a call
 /// of any other name.
 fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
-    if call.args.length != 1 || cx.bound(call.callee.of) != null { return null }
-    let named? = (cx.program.checked.type_value)(call.callee.of, cx.store.home_of(e))?.described() else { return null }
+    if call.args.length != 1 || cx.bound(call.callee.text()) != null { return null }
+    let named? = (cx.program.checked.type_value)(call.callee.text(), cx.store.home_of(e))?.described() else { return null }
     if cx.program.checked.named_shape(named) == null { return null }
     cx.lower(call.args[0])
 }
@@ -272,8 +272,8 @@ fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
 /// The fn a call names, when the program declares it with seats a call fills, pinning each of its
 /// type parameters or none.
 fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
-    if cx.bound(call.callee.of) != null { return null }
-    let named? = cx.named(e, call.callee.of) else { return null }
+    if cx.bound(call.callee.text()) != null { return null }
+    let named? = cx.named(e, call.callee.text()) else { return null }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
     if !callee.plain && callee.params.is_empty() || call.pins.length > callee.type_params { null } else { callee }
 }
@@ -323,10 +323,10 @@ impl StmtLowers for Return {
 /// A call of a name that is no fn a call here reaches, by what the name is.
 fn uncalled(cx: Lowering, call: Call, e: ExprId) -> string {
     let name = call.callee.of
-    let named? = cx.named(e, name) else { return "a call of `${name}`, which names nothing this body reads" }
+    let named? = cx.named(e, name.text()) else { return "a call of `${name.text()}`, which names nothing this body reads" }
     match named {
-        .Fn(_) -> "a call of `${name}` with type arguments it doesn't declare, or into seats a call doesn't fill",
-        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> "a call of `${name}`, which names a value",
+        .Fn(_) -> "a call of `${name.text()}` with type arguments it doesn't declare, or into seats a call doesn't fill",
+        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> "a call of `${name.text()}`, which names a value",
     }
 }
 

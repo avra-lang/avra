@@ -84,9 +84,9 @@ fn never_fires(engine: QueryEngine, file: SourceFileAddress, at: ItemId, cx: Cop
 fn narrowed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, cx: Copies, left: ExprId) -> bool {
     let step? = cx.store.place_step(left) else { return false }
     match step {
-        .Root(n) -> !let_never_absent(cx, n.of, left) &&
-            !param_never_absent(cx, n.of, left) &&
-            !entry_never_absent(engine, file, at, cx, n.of, left),
+        .Root(n) -> !let_never_absent(cx, n.text(), left) &&
+            !param_never_absent(cx, n.text(), left) &&
+            !entry_never_absent(engine, file, at, cx, n.text(), left),
         .Field(subject, name) -> field_optional(engine, cx, subject, name.of),
         .At(_, _) or .Unwrap(_) -> false,
     }
@@ -112,7 +112,7 @@ fn param_never_absent(cx: Copies, name: string, at: ExprId) -> bool {
     let around = [s for s in cx.store.stmt_ids() if cx.store.fn_parts(s) != null && holds_read(cx.store.stmt_span(s), read)]
     let inner? = around.find((s) -> !around.any((o) -> cx.stmt_lo(o) > cx.stmt_lo(s))) else { return false }
     let parts? = cx.store.fn_parts(inner) else { return false }
-    let p? = parts.params.find(it.name.of == name) else { return false }
+    let p? = parts.params.find(it.name.spells(name)) else { return false }
     let written? = p.ty else { return false }
     never_absent_written(written)
 }

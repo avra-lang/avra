@@ -137,9 +137,9 @@ fn tparams_owned(view: ItemView) -> List<Found> {
 /// A fn's seats, or an extern's.
 fn fn_seats(store: SyntaxArena, s: StmtId) -> OwnNames? {
     let f = store.fn_parts(s)
-    if f != null { return OwnNames { owner: f!.name, names: [p.name.of for p in f!.params] } }
+    if f != null { return OwnNames { owner: f!.name, names: [p.name.text() for p in f!.params] } }
     let host? = store.extern_parts(s) else { return null }
-    OwnNames { owner: host.name, names: [p.name.of for p in host.params] }
+    OwnNames { owner: host.name, names: [p.name.text() for p in host.params] }
 }
 
 /// A fn's or a type declaration's type parameters.
@@ -209,7 +209,7 @@ fn seated_fns_viewed(view: ItemView) -> List<Seated> {
 /// a second one.
 fn rests_misplaced(view: ItemView) -> List<Found> {
     let store = view.item.store
-    [Found { at: store.stmt_span(f.stmt), args: [f.params[r!].name.of, f.name] } for f in seated_fns(view.engine, view.file, view.at) for r in [f.params.find_index(it.is_rest())] if r != null && (r! != f.params.length - 1 || f.params.filter(it.is_rest()).length > 1)]
+    [Found { at: store.stmt_span(f.stmt), args: [f.params[r!].name.text(), f.name] } for f in seated_fns(view.engine, view.file, view.at) for r in [f.params.find_index(it.is_rest())] if r != null && (r! != f.params.length - 1 || f.params.filter(it.is_rest()).length > 1)]
 }
 
 /// Every seat written with no type in the written item `view` shows: a fn's at its top level, and a
@@ -220,7 +220,7 @@ fn seats_typeless(view: ItemView) -> List<Found> {
     let fns = item
         .stmts
         .concat([f for s in item.stmts for f in item.store.impl_parts(s)?.fns ?? []])
-    [Found { at: item.store.stmt_span(f), args: [p.name.of] } for f in fns for p in item.store.fn_parts(f)?.params ?? [] if p.ty == null && p.seated()]
+    [Found { at: item.store.stmt_span(f), args: [p.name.text()] } for f in fns for p in item.store.fn_parts(f)?.params ?? [] if p.ty == null && p.seated()]
 }
 
 /// a fn's seat declares its type
@@ -236,7 +236,7 @@ fn typeless_words(a: List<string>) -> Voice { param_typeless(a[0]) }
 /// Every fn of the written item `view` shows whose one last `..` seat is written as no list.
 fn rests_unlisted(view: ItemView) -> List<Found> {
     let store = view.item.store
-    [Found { at: store.stmt_span(f.stmt), args: [p.name.of, f.name] } for f in seated_fns(view.engine, view.file, view.at) for p in some_list(f.params.last()) if p.is_rest() && f.params.filter(it.is_rest()).length == 1 && p.ty != null && p.ty!.name != LIST]
+    [Found { at: store.stmt_span(f.stmt), args: [p.name.text(), f.name] } for f in seated_fns(view.engine, view.file, view.at) for p in some_list(f.params.last()) if p.is_rest() && f.params.filter(it.is_rest()).length == 1 && p.ty != null && p.ty!.name != LIST]
 }
 
 /// The type a `..` seat collects its arguments into.
@@ -246,7 +246,10 @@ const LIST: string = "List"
 /// found at the first default.
 fn defaults_misplaced(view: ItemView) -> List<Found> {
     let store = view.item.store
-    [Found { at: store.expr_span(f.params[d!].default!), args: [u!.name.of, f.params[d!].name.of] } for f in seated_fns(view.engine, view.file, view.at) for d in [f.params.find_index(it.default != null)] if d != null for u in [f.params.slice(d!, f.params.length).find(it.default == null)] if u != null]
+    [Found {
+        at: store.expr_span(f.params[d!].default!),
+        args: [u!.name.text(), f.params[d!].name.text()],
+    } for f in seated_fns(view.engine, view.file, view.at) for d in [f.params.find_index(it.default != null)] if d != null for u in [f.params.slice(d!, f.params.length).find(it.default == null)] if u != null]
 }
 
 /// Every fn of the written item `view` shows, and every method of its impls that takes no type
@@ -273,11 +276,11 @@ fn fn_defaults_unlowered(store: SyntaxArena, f: Seated, sign: FnSignature?) -> L
         .find(f.params[it].default != null && s[it].ty?.generic() ?? false)
     if open != null {
         let p = f.params[open!]
-        return [Found { at: store.expr_span(p.default!), args: [p.name.of, "generic", f.name] }]
+        return [Found { at: store.expr_span(p.default!), args: [p.name.text(), "generic", f.name] }]
     }
     [Found {
         at: store.expr_span(p.default!),
-        args: [p.name.of, if p.promises.mutable { "`mut`" } else { "`const`" }, f.name],
+        args: [p.name.text(), if p.promises.mutable { "`mut`" } else { "`const`" }, f.name],
     } for p in f.params if p.default != null && (p.promises.mutable || p.promises.settled || p.promises.state)]
 }
 
@@ -367,7 +370,7 @@ fn methods_stated(view: ItemView) -> List<Found> {
     let store = item.store
     let methods = [m for s in item.stmts for m in store.impl_parts(s)?.fns ?? [] if (store.fn_parts(m)?.tparams ?? []).is_empty()]
     let members = methods.concat(flatten([store.trait_parts(s)?.fns ?? [] for s in item.stmts]))
-    [Found { at: store.stmt_span(m), args: [p.name.of] } for m in members for f in some_list(store.fn_parts(m)) for p in f.params if p.promises.state]
+    [Found { at: store.stmt_span(m), args: [p.name.text()] } for m in members for f in some_list(store.fn_parts(m)) for p in f.params if p.promises.state]
 }
 
 /// a `state` seat is a free fn's
@@ -869,7 +872,7 @@ fn heads_paired_alike(store: SyntaxArena, e: ExprId) -> List<string> {
 
 fn head_paired_alike(c: CompClause) -> List<string> {
     match c {
-        .Head(index, name, _, _) -> if index?.of == name.of { [name.of] } else { [] },
+        .Head(index, name, _, _) -> if index?.of == name.of { [name.text()] } else { [] },
         .Filter(_) -> [],
     }
 }
@@ -1091,7 +1094,7 @@ fn build_loop(engine: QueryEngine, home: DeclaredAt) -> bool {
         for n in nodes {
             if held.any((h) -> same_at(h, n)) { continue }
             let e? = expr_at(n) else { continue }
-            let called = store.call_parts(e)?.callee
+            let called = store.call_parts(e)?.callee?.text()
             let read = if called == null { store.ident_name(e) } else { null }
             let name? = called ?? read else { continue }
             if bound.contains(name) { continue }

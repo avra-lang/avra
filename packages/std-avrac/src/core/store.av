@@ -1408,7 +1408,7 @@ impl SyntaxArena {
     /// The pronoun's own seat, minted for one implicit `it` lambda: a seat the source never wrote.
     fn pronoun_seat() -> Param {
         Param {
-            name: Scoped("it"),
+            name: scoped("it"),
             ty: null,
             default: null,
             promises: plain_mark,
@@ -1440,7 +1440,7 @@ impl SyntaxArena {
     /// node: a hole is not a sub-pattern.
     fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
-            .Bind(name) or .Typed(name, _) or .Member(_, name) -> [Binder { pat: id, name: name.of }],
+            .Bind(name) or .Typed(name, _) or .Member(_, name) -> [Binder { pat: id, name: name.text() }],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
             .Fields(_, fields, _) -> flatten([self.pattern_binds(f.pat) for f in fields]),
             .Seq(before, middle, after) -> flatten([self.pattern_binds(a) for a in before.concat(middle).concat(after)]),
@@ -1452,7 +1452,7 @@ impl SyntaxArena {
 
     /// A binding pattern's name; absence for any other pattern.
     fn bind_name(id: PatId) -> string? {
-        match self.pat(id) { .Bind(name) -> name.of, _ -> null }
+        match self.pat(id) { .Bind(name) -> name.text(), _ -> null }
     }
 
     /// A pattern nothing can refuse: a hole or a name.
@@ -1469,13 +1469,13 @@ impl SyntaxArena {
         match p {
             .Wild -> fp(50, []),
             .Rest -> fp(51, []),
-            .Bind(name) -> fp(52, [fp_str(name.of)]),
+            .Bind(name) -> fp(52, [fp_str(name.text())]),
             .Variant(name, args) -> fp(53, [fp_str(name.of), fp_list([self.pat_fingerprint(a) for a in args])]),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
             .Format(head, parts) -> fp(129, [fp_str(head), fp_list([hole_fp(p) for p in parts])]),
             .Quote(body) -> fp(143, [self.expr_fingerprint(body)]),
-            .Typed(name, ty) -> fp(196, [fp_str(name.of), type_fp(ty)]),
-            .Member(name, bind) -> fp(197, [fp_str(name.of), fp_str(bind.of)]),
+            .Typed(name, ty) -> fp(196, [fp_str(name.text()), type_fp(ty)]),
+            .Member(name, bind) -> fp(197, [fp_str(name.of), fp_str(bind.text())]),
             .Seq(before, middle, after) -> fp(
                 315,
                 [
@@ -1827,7 +1827,7 @@ impl SyntaxArena {
         if !self.is_component_inst(s) { return s }
         let name? = self.let_name(s) else { return s }
         let value? = self.stmt_value(s) else { return s }
-        let d = self.alloc_stmt(Stmt.ConstDecl(Scoped(name), null, value), self.stmt_span(s))
+        let d = self.alloc_stmt(Stmt.ConstDecl(scoped(name), null, value), self.stmt_span(s))
         self.mark_component_inst(d, self.instance_of(s)!)
         if self.is_exported(s) { self.mark_exported(d) }
         let group = self.doc_group(s)
@@ -1923,9 +1923,19 @@ impl SyntaxArena {
     /// An expression's print derived again from what it is now, and its extensions'.
     fn resettled_expr(e: ExprId) {
         self.expr_prints.settling(e.index)
-        self.expr_prints.reidentified(e.index, self.expr(e).identity(self))
+        let node = self.expr(e)
+        // A bare name folds nothing but its own name, so unless it was replaced since the last
+        // settle, the identity it was given still stands: its name's print is not read again.
+        if !(node is .Ident && self.kept_since_settle(e)) { self.expr_prints.reidentified(e.index, node.identity(self)) }
         let roots = self.extended_by(e)
         if !roots.is_empty() { self.expr_prints.stamp(e.index, 198, fp_list([self.expr_fingerprint(r) for r in roots])) }
+    }
+
+    /// Whether `e` stands as it was when its identity was last derived: no node at or below it was
+    /// replaced since the last settle, which forgets the arena's rewrites.
+    fn kept_since_settle(e: ExprId) -> bool {
+        let from = self.exprs.rewritten_from()
+        from < 0 || e.index < from
     }
 
     /// A statement's print derived again from what it is now, and its annotations'.
@@ -2054,17 +2064,22 @@ impl SyntaxArena {
     /// The INDEX name a pairing loop binds — null for every other
     /// statement, and for a loop that names only its element.
     fn loop_index(s: StmtId) -> string? {
-        match self.stmt(s) { .ForEach(index, _, _, _) -> index?.of, _ -> null }
+        match self.stmt(s) { .ForEach(index, _, _, _) -> index?.text(), _ -> null }
     }
 
     /// A bare name's text; null for every other expression.
+    /// The name an identifier at `e` reads, as a name: absent for any other node.
+    fn ident_named(e: ExprId) -> Scoped? {
+        match self.expr(e) { .Ident(name) -> name, _ -> null }
+    }
+
     fn ident_name(e: ExprId) -> string? {
-        match self.expr(e) { .Ident(name) -> name.of, _ -> null }
+        match self.expr(e) { .Ident(name) -> name.text(), _ -> null }
     }
 
     /// A call-by-name's callee; null for every other expression.
     fn callee_name(e: ExprId) -> string? {
-        match self.expr(e) { .Call(callee, _, _) -> callee.of, _ -> null }
+        match self.expr(e) { .Call(callee, _, _) -> callee.text(), _ -> null }
     }
 
     /// Whether an expression APPLIES a fn — a direct call, or a fn
@@ -2093,10 +2108,10 @@ impl SyntaxArena {
     fn pronoun_rides(id: ExprId) -> bool {
         if self.body_fn(id) != null { return false }
         match self.expr(id) {
-            .Ident(name) -> name == "it",
+            .Ident(name) -> name == pronoun_name(),
             .Lambda(_, _) -> false,
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
-            .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
+            .Call(callee, _, args) -> callee == pronoun_name() || self.any_rides(args),
             .Body(_, _, holes, _) -> self.any_rides(holes),
             rest -> self.any_rides(self.reached(id)),
         }
@@ -2261,8 +2276,8 @@ impl SyntaxArena {
             .Head(index, name, source, hi) -> fp(
                 151,
                 [
-                    fp_str(index?.of ?? ""),
-                    fp_str(name.of),
+                    fp_str(index?.text() ?? ""),
+                    fp_str(name.text()),
                     self.expr_fingerprint(source),
                     self.opt_fp(hi),
                 ],

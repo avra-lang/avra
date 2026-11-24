@@ -258,7 +258,7 @@ fn param_of(store: SyntaxArena, owner: StmtId, index: int) -> Param {
     match store.stmt(owner) {
         .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> params[index],
         rest -> Param {
-            name: Scoped(""),
+            name: no_name(),
             ty: null,
             default: null,
             promises: plain_mark,
@@ -286,12 +286,16 @@ fn shallow_param(store: SyntaxArena, owner: StmtId, index: int) -> int {
 export fn own_name_at(store: SyntaxArena, at: At) -> string? {
     match at {
         .Stmt(id) -> match store.stmt(id) {
-            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .ForEach(_, name, _, _) -> name.of,
+            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .ForEach(_, name, _, _) -> name.text(),
             rest -> null,
         },
-        .Pat(id) -> match store.pat(id) { .Bind(name) -> name.of, .Variant(name, _) -> name.of, rest -> null },
+        .Pat(id) -> match store.pat(id) {
+            .Bind(name) -> name.text(),
+            .Variant(name, _) -> name.of,
+            rest -> null,
+        },
         .Expr(id) -> match store.expr(id) {
-            .Call(callee, _, _) -> callee.of,
+            .Call(callee, _, _) -> callee.text(),
             .MethodCall(_, name, _) or .Prop(_, name) -> name.of,
             .Comp(_, clauses) -> comp_own_name(clauses),
             .StructLit(name, _, _) -> name.of,
@@ -304,7 +308,7 @@ export fn own_name_at(store: SyntaxArena, at: At) -> string? {
             rest -> null,
         },
         .Field(owner, index) -> field_name_of(store, owner, index),
-        .Param(owner, index) -> param_of(store, owner, index).name.of,
+        .Param(owner, index) -> param_of(store, owner, index).name.text(),
     }
 }
 
@@ -331,21 +335,21 @@ export fn own_type_at(store: SyntaxArena, at: At) -> TypeRef? {
 /// has one.
 fn first_param_name(params: List<Param>) -> string? {
     let p? = params.first() else { return null }
-    p.name.of
+    p.name.text()
 }
 
 /// `params` with its first entry's name blanked — `first_param_name`'s
 /// read is what this blanks.
 fn blanked_param_name(params: List<Param>) -> List<Param> {
     let p? = params.first() else { return params }
-    [p with { name: Scoped("") }].concat(params.slice(1, params.length))
+    [p with { name: no_name() }].concat(params.slice(1, params.length))
 }
 
 /// A comprehension's own name-bearing field: its FIRST head's binder
 /// — the one every later clause and the element read.
 fn comp_own_name(clauses: List<CompClause>) -> string? {
     let head? = clauses.first() else { return null }
-    match head { .Head(_, name, _, _) -> name.of, .Filter(_) -> null }
+    match head { .Head(_, name, _, _) -> name.text(), .Filter(_) -> null }
 }
 
 /// `clauses` with its first head's name blanked — `comp_own_name`'s
@@ -353,7 +357,7 @@ fn comp_own_name(clauses: List<CompClause>) -> string? {
 fn comp_blanked(clauses: List<CompClause>) -> List<CompClause> {
     let head? = clauses.first() else { return clauses }
     match head {
-        .Head(index, _, source, hi) -> [CompClause.Head(index, Scoped(""), source, hi)].concat(clauses.slice(1, clauses.length)),
+        .Head(index, _, source, hi) -> [CompClause.Head(index, no_name(), source, hi)].concat(clauses.slice(1, clauses.length)),
         .Filter(_) -> clauses,
     }
 }
@@ -390,15 +394,15 @@ export fn typed_node_shallow_at(store: SyntaxArena, at: At, kids: List<Shape>, o
 fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool, blank_run: bool) -> Stmt {
     match s {
         .Let(name, ty, value) -> Stmt
-            .Let(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+            .Let(if blank_name { no_name() } else { name }, if blank_type { null } else { ty }, value),
         .MutLet(name, ty, value) -> Stmt
-            .MutLet(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+            .MutLet(if blank_name { no_name() } else { name }, if blank_type { null } else { ty }, value),
         .ConstDecl(name, ty, value) -> Stmt
-            .ConstDecl(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+            .ConstDecl(if blank_name { no_name() } else { name }, if blank_type { null } else { ty }, value),
         .ForEach(index, name, subject, stmts) -> Stmt
             .ForEach(
                 index,
-                if blank_name { Scoped("") } else { name },
+                if blank_name { no_name() } else { name },
                 subject,
                 if blank_run { [] } else { stmts },
             ),
@@ -410,7 +414,7 @@ fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool, blank_run: bool) -> 
 
 fn folded_pat(p: Pat, blank_name: bool) -> Pat {
     match p {
-        .Bind(_) -> if blank_name { Pat.Bind(Scoped("")) } else { p },
+        .Bind(_) -> if blank_name { Pat.Bind(no_name()) } else { p },
         .Variant(name, args) -> Pat.Variant(if blank_name { Plain("") } else { name }, args),
         rest -> p,
     }
@@ -424,7 +428,7 @@ fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> 
     match e {
         .Call(callee, pins, args) -> Expr
             .Call(
-                if blank_name { Scoped("") } else { callee },
+                if blank_name { no_name() } else { callee },
                 if blank_type { [] } else { pins },
                 if blank_run { [] } else { args },
             ),

@@ -434,8 +434,9 @@ fn arm_apart(ty: SignedType, want: SignedType) -> bool { ty.head is .Owned && !t
 
 /// The name two of a lambda's seats `params` wear, the first so named; absent where each names one.
 export fn seat_worn_twice(params: List<Param>) -> string? {
-    let names = [p.name.of for p in params]
-    names.find((n) -> names.filter(it == n).length > 1)
+    let names = [p.name for p in params]
+    let twice? = names.find((n) -> names.filter(it == n).length > 1) else { return null }
+    twice.text()
 }
 
 /// What a `select`'s arms leave unsaid: a supply `name` waited on with no `.ended` arm of its own; a
@@ -1696,7 +1697,7 @@ impl Checking {
             .Exactly(want) -> !self.holds_fn(want) &&
                 self
                     .lambda_faulted(e, LambdaFault.Unseated(want.spelled(), self.store.written_as_block(e))),
-            .Free or .Dropped -> unheard != null && self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.of)),
+            .Free or .Dropped -> unheard != null && self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.text())),
             .Unknown -> false,
         }
     }
@@ -1767,7 +1768,7 @@ impl Checking {
         if s.generic() || s.inferred() || s.unknown() || s.dynamic { return }
         let got? = match self.store.pat(p) {
             .Lit(v) -> self.literal_unmatched(v, s),
-            .Bind(name) -> if self.compares(name.of) { const_apart(self.bound_from(name.of, self.home_of(e)), s) } else { null },
+            .Bind(name) -> if self.compares(name.text()) { const_apart(self.bound_from(name.text(), self.home_of(e)), s) } else { null },
             rest -> null,
         } else { return }
         self.refused.push(Refused { at: e, want: s, found: got, seat: Seating.Unmatched, pat: p })
@@ -1780,7 +1781,9 @@ impl Checking {
         let s? = subject else { return }
         if self.meanings || s.generic() || s.inferred() || s.unknown() || s.dynamic { return }
         let name? = match self.store.pat(p) { .Bind(name) -> name.of, rest -> null } else { return }
-        if !self.compares(name) || compares_by_value(self, s) || self.refused.get().any(it.pat == p) { return }
+        if !self.compares(name.text()) ||
+            compares_by_value(self, s) ||
+            self.refused.get().any(it.pat == p) { return }
         let how = Uncompared.Uncomparable(offered(self, unnamed_shape(self, s)))
         self
             .refused
@@ -1853,10 +1856,10 @@ impl Checking {
         let record? = known(one.seats[0].ty) else { return false }
         let fields? = self.record_of(record)?.fields?.map(it.name) else { return false }
         if params.length == 1 &&
-            (params[0].name.of == PRONOUN || !fields.contains(params[0].name.of)) { return false }
-        let stranger = params.find((p) -> !fields.contains(p.name.of))
+            (params[0].name.spells(PRONOUN) || !fields.contains(params[0].name.text())) { return false }
+        let stranger = params.find((p) -> !fields.contains(p.name.text()))
         let typed = params.find(it.ty != null)
-        let seat = if stranger != null { Seating.NotOffered(stranger!.name.of, "offered", fields) } else if typed != null { Seating.NotOffered(typed!.name.of, "typed", []) } else { return false }
+        let seat = if stranger != null { Seating.NotOffered(stranger!.name.text(), "offered", fields) } else if typed != null { Seating.NotOffered(typed!.name.text(), "typed", []) } else { return false }
         self.refused.push(Refused { at: e, want: record, found: record, seat: seat })
         true
     }
@@ -1878,7 +1881,7 @@ impl Checking {
         for at, p in params {
             self
                 .bind(
-                    p.name.of,
+                    p.name.text(),
                     types[at],
                     false,
                     p.promises.mutable || seat?.seats?.get(at)?.mutable ?? false,
@@ -1955,9 +1958,9 @@ impl Checking {
     /// parameter is its field's type, its body checks against the seat's answer as any lambda's does,
     /// and the lambda is the fn type of that one seat.
     mut fn offer_checked(params: List<Param>, body: ExprId, seat: SignedType, record: SignedType) -> SignedType? {
-        let types = [self.field_of(record, p.name.of) for p in params]
+        let types = [self.field_of(record, p.name.text()) for p in params]
         self.fenced()
-        for at, p in params { self.bind(p.name.of, types[at], false, false) }
+        for at, p in params { self.bind(p.name.text(), types[at], false, false) }
         let answer = self.lambda_answered(body, seat)
         self.closed()
         if answer == null || types.any(it == null) { return null }
@@ -2127,7 +2130,7 @@ impl Checking {
     /// The first value the lambda `lam` captures — read, or called — that is or holds an identity, as
     /// its refusal says it.
     fn identity_captured(lam: LambdaParts) -> Captured? {
-        let own = [p.name.of for p in lam.params]
+        let own = [p.name.text() for p in lam.params]
         let read = [n for e in self.store.every_expr(lam.body) for n in some_list(self.store.ident_name(e) ?? self.store.callee_name(e)) if !own.contains(n)]
         for at, n in read {
             if read.take(at).contains(n) { continue }
@@ -2186,7 +2189,7 @@ impl Checking {
         if is_literal(node) { return true }
         match node {
             .NullLit or .ListLit(_) or .MapLit(_) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
-            .Ident(name) -> self.settled_name(k, name.of),
+            .Ident(name) -> self.settled_name(k, name.text()),
             .Prop(subject, _) or .MethodCall(subject, _, _) -> self.type_of(subject)?.described() != null,
             rest -> false,
         }
@@ -2338,7 +2341,7 @@ impl Checking {
     /// copy of its record shares. Anything else is a value.
     fn placed(a: ExprId) -> bool {
         match self.store.expr(a) {
-            .Ident(n) -> self.state_named(a, n.of),
+            .Ident(n) -> self.state_named(a, n.text()),
             .Prop(_, _) -> self.state_field(a),
             _ -> false,
         }
@@ -2378,7 +2381,7 @@ impl Checking {
     /// The name a place's root `root` reads, absent for a root that reads none.
     fn root_word(root: ExprId) -> string? {
         let step? = self.store.place_step(root) else { return null }
-        match step { .Root(n) -> n.of, rest -> null }
+        match step { .Root(n) -> n.text(), rest -> null }
     }
 
     /// The place `e`'s last step, where it's a field.
@@ -2867,7 +2870,7 @@ impl Checking {
 
     /// Whether the pattern `p` is a bare name that compares with the const it names.
     fn compares_bare(p: PatId) -> bool {
-        match self.store.pat(p) { .Bind(name) -> self.compares(name.of), rest -> false }
+        match self.store.pat(p) { .Bind(name) -> self.compares(name.text()), rest -> false }
     }
 
     /// The types of the variant `v`'s payloads on a value of `ty`, one per payload, absent where unknown.

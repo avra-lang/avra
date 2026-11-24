@@ -195,7 +195,7 @@ fn param_kind_meta(
     kind: Kind,
 ) -> MetaParam {
     MetaParam {
-        name: p.name.of,
+        name: p.name.text(),
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         mutable: p.promises.mutable,
         settled: p.promises.settled,
@@ -255,7 +255,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
                 d.file,
                 item,
                 p,
-                field_kind(signed, p.name.of),
+                field_kind(signed, p.name.text()),
                 written_default(engine, d.file, item, p),
                 field_cell(engine, signed, p),
             ) for p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
@@ -527,7 +527,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
             m.file,
             item,
             p,
-            field_kind(signed, p.name.of),
+            field_kind(signed, p.name.text()),
             written_default(engine, m.file, item, p),
             field_cell(engine, signed, p),
         ) for p in fields],
@@ -559,7 +559,7 @@ const MARKER: string = "Marker"
 /// stands.
 fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
     let item = read_item(engine, m.file, m.item)
-    let carried = [p.name.of for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
+    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
     [f for f in record_signature(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
 }
 
@@ -576,7 +576,7 @@ fn field_meta(
     cell: bool,
 ) -> MetaField {
     MetaField {
-        name: p.name.of,
+        name: p.name.text(),
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
         kind: if cell { Kind.Cell(kind) } else { kind },
@@ -593,7 +593,7 @@ fn field_meta(
 /// Whether the field `p`, among `signed`, is a cell: written `state`, or a prop whose type compares by
 /// value, which its instance keeps as one though it wasn't written `state`.
 fn field_cell(engine: QueryEngine, signed: List<FieldSeat>, p: Param) -> bool {
-    p.state || p.prop && by_value(engine, signed.find(it.name == p.name.of)?.ty)
+    p.state || p.prop && by_value(engine, signed.find((s) -> p.name.spells(s.name))?.ty)
 }
 
 /// Whether two values of `ty` compare by value: a number, a truth or text, an enum of no payloads, a
@@ -658,7 +658,7 @@ fn variant_meta(
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
         at: meta_place(engine, file, item, v.span),
-        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.of), null, false) for p in v.payloads],
+        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.text()), null, false) for p in v.payloads],
         marks: [mark_meta(engine, file, item, m) for m in v.marks],
     }
 }

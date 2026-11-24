@@ -46,12 +46,12 @@ use diagnostics.{Voice, refusal, said_as}
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, fparams, fret, body) -> {
-            defaults_law(cx, s, fname.of, fparams)
-            variadic_law(cx, s, fname.of, fparams)
-            if cx.view.store.is_host_fn(s) { host_fn_law(cx, s, fname.of, fparams) }
-            checked_fn(cx, s, fname.of, fret ?? void_ref, body)
+            defaults_law(cx, s, fname.text(), fparams)
+            variadic_law(cx, s, fname.text(), fparams)
+            if cx.view.store.is_host_fn(s) { host_fn_law(cx, s, fname.text(), fparams) }
+            checked_fn(cx, s, fname.text(), fret ?? void_ref, body)
         },
-        .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname.of, hparams, hret),
+        .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname.text(), hparams, hret),
         rest -> nothing(),
     }
 }
@@ -87,7 +87,7 @@ fn host_fn_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
     }
     let sig? = cx.stmt_sig(s) else { return nothing() }
     for j, p in sig.params {
-        if !host_handed(cx.view.types, p) { host_seat_unhanded(cx, s, hname, hparams[j].name.of, p) }
+        if !host_handed(cx.view.types, p) { host_seat_unhanded(cx, s, hname, hparams[j].name.text(), p) }
     }
     if !(cx.view.types.shape_of(sig.ret) is .Void) && !host_handed(cx.view.types, sig.ret) { host_answer_unhanded(cx, s, hname, sig.ret) }
 }
@@ -138,7 +138,7 @@ fn callback_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) 
     let sig? = cx.stmt_sig(s) else { return nothing() }
     for j, ty in sig.params {
         let answer? = fn_answer_of(cx.view.types, ty) else { continue }
-        if cx.view.types.rides_pointer(answer) { callback_pointer(cx, s, hname, hparams[j].name.of) }
+        if cx.view.types.rides_pointer(answer) { callback_pointer(cx, s, hname, hparams[j].name.text()) }
     }
 }
 
@@ -349,7 +349,7 @@ fn variadic_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
 }
 
 fn variadic_misplaced(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
-    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_not_last(p.name.of, fname)))
+    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_not_last(p.name.text(), fname)))
 }
 
 /// A `..seat` of `fname` that stands before another seat, or beside a second one.
@@ -371,13 +371,13 @@ export fn rest_unlisted(seat: string, fname: string) -> Voice {
 }
 
 fn variadic_unlisted(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
-    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_unlisted(p.name.of, fname)))
+    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_unlisted(p.name.text(), fname)))
 }
 
 /// Whether a seat's default answers a type naming a type parameter.
 fn default_opens(cx: TypeCx, s: StmtId, p: Param) -> bool {
     if p.default == null { return false }
-    let d? = cx.view.decls.default_named(cx.decl_of(s), p.name.of) else { return false }
+    let d? = cx.view.decls.default_named(cx.decl_of(s), p.name.text()) else { return false }
     let ret? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return false }
     cx.view.types.open(ret)
 }
@@ -654,7 +654,14 @@ fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
 // ── The voices ──
 
 fn generic_default(mut cx: TypeCx, p: Param, fname: string) {
-    cx.emit(said_as("type.param_default", cx.loc_of(p.default!), default_opened(p.name.of, fname)))
+    cx
+        .emit(
+            said_as(
+                "type.param_default",
+                cx.loc_of(p.default!),
+                default_opened(p.name.text(), fname),
+            ),
+        )
 }
 
 /// The seat `seat` of `fname` carrying a default whose type names one of `fname`'s type parameters.
@@ -672,7 +679,7 @@ fn marked_default(mut cx: TypeCx, p: Param, fname: string) {
             said_as(
                 "type.param_default",
                 cx.loc_of(p.default!),
-                default_marked(p.name.of, seat_kind(p), fname),
+                default_marked(p.name.text(), seat_kind(p), fname),
             ),
         )
 }
@@ -692,7 +699,7 @@ fn required_after_default(mut cx: TypeCx, unfilled: Param, first: Param) {
             said_as(
                 "type.param_default",
                 cx.loc_of(first.default!),
-                default_before_plain(unfilled.name.of, first.name.of),
+                default_before_plain(unfilled.name.text(), first.name.text()),
             ),
         )
 }
@@ -1090,7 +1097,7 @@ fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Par
 fn host_fn_names_a_row(mut cx: TypeCx, s: StmtId, hname: string) { cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_row_voice(hname))) }
 
 fn host_seat_promises(mut cx: TypeCx, s: StmtId, hname: string, p: Param) {
-    cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_promise_voice(hname, p.name.of)))
+    cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_promise_voice(hname, p.name.text())))
 }
 
 fn host_seat_unhanded(mut cx: TypeCx, s: StmtId, hname: string, seat: string, p: TypeId) {

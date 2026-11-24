@@ -12,9 +12,10 @@ use @std.program.query_engine.{QueryEngine}
 /// at compile time, whose run broke the settlement's law `kind`: at its value, its voice handed its
 /// name and the words the law carries. An item whose embedded
 /// file's literal is refused already spoke: its run's failure to read it says nothing more.
-fn settles_broken(kind: string, engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
-    Found,
-> {
+fn settles_broken(kind: string, view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) || !embeds_refused(engine, file, at).is_empty() { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
@@ -31,7 +32,7 @@ fn settles_broken(kind: string, engine: QueryEngine, file: SourceFileAddress, at
     }
     found
         .concat(
-            [Found { at: span_of(c.at), args: [c.name, c.words, file.package_name] } for c in item_refusals(engine, file, at).broken if c.kind == kind],
+            [Found { at: span_of(c.at), args: [c.name, c.words, file.package_name] } for c in refusals_seen(view).broken if c.kind == kind],
         )
 }
 
@@ -88,11 +89,11 @@ fn broken_at(
     Found { at: store.expr_span(value), args: [name, words, file.package_name] }
 }
 
-fn settles_trapped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { settles_broken("const.trap", engine, file, at) }
+fn settles_trapped(view: ItemView) -> List<Found> { settles_broken("const.trap", view) }
 
-fn settles_spent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { settles_broken("const.budget", engine, file, at) }
+fn settles_spent(view: ItemView) -> List<Found> { settles_broken("const.budget", view) }
 
-fn settles_reaching(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { settles_broken("const.reach", engine, file, at) }
+fn settles_reaching(view: ItemView) -> List<Found> { settles_broken("const.reach", view) }
 
 fn reach_said(a: List<string>) -> Voice { unsettled_voice(a[0], unsettled_of("const.reach", a[1]))! }
 
@@ -103,7 +104,7 @@ fn budget_said(a: List<string>) -> Voice { owner_budget_spent(a[0], a[1], a[2]) 
 /// a const whose value traps while it settles at compile time
 export law const_trapped {
     kind: "const.trap"
-    reads: settles_trapped
+    reads_view: settles_trapped
     voice: trap_said
     witness: "fn boom() -> int {\n    avra_trap(\"boom\")\n    1\n}\n\nextern fn avra_trap(s: string)\n\nconst X: int = boom()\n"
 }
@@ -111,7 +112,7 @@ export law const_trapped {
 /// a const whose value runs past its budget while it settles at compile time
 export law const_over_budget {
     kind: "const.budget"
-    reads: settles_spent
+    reads_view: settles_spent
     voice: budget_said
     witness: "fn spin() -> int {\n    mut n = 0\n    while n >= 0 { n = n + 1 }\n    n\n}\n\nconst X: int = spin()\n"
 }
@@ -119,7 +120,7 @@ export law const_over_budget {
 /// a const whose value reads the world while it settles at compile time
 export law const_reaching {
     kind: "const.reach"
-    reads: settles_reaching
+    reads_view: settles_reaching
     voice: reach_said
     witness: "extern fn avra_now_ns() -> int\n\nconst T: int = avra_now_ns()\n"
 }

@@ -56,8 +56,8 @@ fn scan_at(engine: QueryEngine, t: TypedNodes, clauses: List<CompClause>, h: int
         rest -> null,
     } else { return null }
     let owner? = match t.store.expr(called.subject) { .Ident(n) -> n.of, rest -> null } else { return null }
-    if resolved(engine, t.file, Space.Value, owner).named() != null { return null }
-    let d? = resolved(engine, t.file, Space.Type, owner).named() else { return null }
+    if resolved(engine, t.file, Space.Value, owner.text()).named() != null { return null }
+    let d? = resolved(engine, t.file, Space.Type, owner.text()).named() else { return null }
     if !static_marks(engine, d.file, d.name).any(it.name == called.name && it.word == PLANS_ALL) { return null }
     RelationScan {
         relation: d.name,
@@ -81,13 +81,13 @@ fn head_source(c: CompClause) -> ExprId? {
 
 /// A head's element binder; empty for a filter.
 fn head_row(c: CompClause) -> string {
-    match c { .Head(_, name, _, _) -> name.of, .Filter(_) -> "" }
+    match c { .Head(_, name, _, _) -> name.text(), .Filter(_) -> "" }
 }
 
 /// Each name a clause binds: a head's element and its index.
 fn head_binders(c: CompClause) -> List<string> {
     match c {
-        .Head(index, name, _, _) -> [name.of].concat([i.of for i in some_list(index)]),
+        .Head(index, name, _, _) -> [name.text()].concat([i.text() for i in some_list(index)]),
         .Filter(_) -> [],
     }
 }
@@ -225,7 +225,7 @@ fn row_field(store: SyntaxArena, e: ExprId, row: string) -> string? {
 
 /// Whether `e` is a read of the name `name`.
 fn reads_name(store: SyntaxArena, e: ExprId, name: string) -> bool {
-    match store.expr(e) { .Ident(n) -> n.of == name, rest -> false }
+    match store.expr(e) { .Ident(n) -> n.spells(name), rest -> false }
 }
 
 /// A value the lookup may compute once per scan: a literal, a name bound outside the scan that is
@@ -233,7 +233,7 @@ fn reads_name(store: SyntaxArena, e: ExprId, name: string) -> bool {
 fn invariant(engine: QueryEngine, t: TypedNodes, e: ExprId, scan: RelationScan) -> bool {
     match t.store.valued(e) {
         .IntLit(_) or .StrLit(_) or .BoolLit(_) -> true,
-        .Ident(n) -> !scan.unsteady.contains(n.of) && !names_fn(engine, t.file, n.of),
+        .Ident(n) -> !scan.unsteady.contains(n.text()) && !names_fn(engine, t.file, n.text()),
         .Prop(subject, _) -> invariant(engine, t, subject, scan),
         rest -> false,
     }
