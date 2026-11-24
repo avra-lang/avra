@@ -106,7 +106,7 @@ fn main() -> Result<string, HomeError> {
         durable: stored<Email>()
         retries: 5
     }
-    queue<Dead<Email, string>> undeliverable {
+    queue<Dead<Email>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Email>()
     }
@@ -146,7 +146,7 @@ Where it still differs from §1, and what closes each gap:
 | no `name:` | `name: "emails"` | a component reading its own instance name |
 | declared at a file's top level | declared inside the fn that sets `ctx db` | a `ctx` read charged where a fn value is called, and top-level instances as declarations (ruled, being built) |
 | `tx.send(emails, …)` | `emails.send(…, tx: tx)` | a generic method (`impl Tx { fn send<T>(q: queue<T>, …) }` is refused today) |
-| `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email, string>>()` serves |
+| `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email>>()` serves |
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
 | `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
