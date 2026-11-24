@@ -183,7 +183,10 @@ ledgered() {
         HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
         taskset -c 0 build/avra "$sub" --passes --passes-rows "$@" > /dev/null 2> "$root/$out/$ran.ledger") || {
         tail -20 "$out/$ran.ledger"; echo "cost: $ran's ledger run failed"; exit 1; }
-    grep '^pass-row' "$out/$ran.ledger" > "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
+    # its pass rows, and the work it did — the queries it computed, the answers an edit worked out again
+    # — which its counted twin did too, to the one (tools/cost_ratchet.py `same_work`)
+    grep -E '^(pass-row|counts: |worked: )' "$out/$ran.ledger" > "$out/$ran.out" || :
+    grep -q '^pass-row' "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
     # the settle and each edit undone are no rows, and no table of the ledger
     case $ran in ledger-settle | ledger-back-*) ;; *) ledger_summary "$ran" "$out/$ran.ledger" ;; esac
     rm -f "$out/$ran.ledger"

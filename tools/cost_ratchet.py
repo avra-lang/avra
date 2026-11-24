@@ -195,6 +195,33 @@ def rows_said(run_dir):
     return 0
 
 
+# A LEDGER'S RUN DOES THE WORK ITS COUNTED TWIN DOES: the same workload, tree, snapshot and isolation,
+# so the queries it computes and the answers an edit works out again are the same to the one. Its
+# census counters are not compared: it keeps the ledger's clock, which the counted run leaves out. A run
+# whose work depends on what ran before it in the measurement, or on state outside the tree, differs.
+SAME_WORK = ("queries_computed", "worked")
+
+
+def same_work(now, base):
+    """Each ledger run's work that differs from its counted twin's: the twin's count from this run where
+    it measured both, else from the baseline. -> failure lines."""
+    failed = []
+    for (workload, counter), n in sorted(now.items()):
+        if not workload.startswith("ledger-") or counter not in SAME_WORK:
+            continue
+        twin = (workload[len("ledger-"):], counter)
+        counted = now.get(twin, base.get(twin))
+        if counted is not None and counted != n:
+            failed.append("cost: %s %s %d, its counted run's %d: the run's work depends on what ran before it or on state outside the tree"
+                          % (workload, counter, n, counted))
+    return failed
+
+
+def recorded_rows(now):
+    """The rows an accept may record: a ledger run's pass rows, never the work its twin's rows hold."""
+    return {k: n for k, n in now.items() if not k[0].startswith("ledger-") or k[1].startswith("pass_")}
+
+
 def judge(now, base):
     """-> (failures, lowered) lines: each baseline row a run printed no count for, or measured past
     the tolerance; and each row a run measured under."""
@@ -292,6 +319,10 @@ def main(argv):
     if missing:
         print("\n".join(missing))
         return 1
+    astray = same_work(now, {**others, **base} if ran == pinned else {})
+    if astray:
+        print("\n".join(astray))
+        return 1
     lost = verdicts_lost(run_dir)
     if lost and not (argv[1] == "--accept" and ran != pinned):
         for name in lost:
@@ -306,7 +337,7 @@ def main(argv):
                 print("\n".join(failed))
                 print("cost: an accept never raises a row over the same snapshot")
                 return 1
-        open(BASELINE, "w").write(render(ran, {**others, **accepted(now, base, same)}))
+        open(BASELINE, "w").write(render(ran, {**others, **accepted(recorded_rows(now), base, same)}))
         made = os.path.join(run_dir, "verdicts")
         if os.path.exists(made):
             open(VERDICTS, "w").write("# the std packages the snapshot's answers ship a verdict for (tools/cost_ratchet.py)\n" + open(made).read())
@@ -420,6 +451,13 @@ def self_test():
                                                               "pass_tape_rechecks": 5, "pass_tape_rechecks_per_moved": 2500}
     # a row of the old four fields binds nothing: a ledger and its ratchet move together
     assert counts_of("pass-row\ttape\t12\t3000\t0\n") == {}
+    # a ledger's run does its counted twin's work, to the one, from this run or the baseline
+    assert same_work({("ledger-check-cli", "queries_computed"): 7, ("check-cli", "queries_computed"): 7}, {}) == []
+    assert same_work({("ledger-edit-body", "worked"): 14}, {("edit-body", "worked"): 14}) == []
+    assert "depends on what ran before it" in same_work({("ledger-check-program", "queries_computed"): 9}, {("check-program", "queries_computed"): 8})[0]
+    assert same_work({("ledger-build-cli", "queries_computed"): 9}, {}) == []
+    assert recorded_rows({("ledger-x", "queries_computed"): 1, ("ledger-x", "pass_tape_asks"): 2, ("x", "queries_computed"): 3}) == {
+        ("ledger-x", "pass_tape_asks"): 2, ("x", "queries_computed"): 3}
     # a candidate is keyed by its technique and fn; one the record lacks is said, by its line
     found = candidates_of("candidate: reuse-in-place 40 f packages/x.av:3\ncandidate: strided-list 9 g packages/y.av\n")
     assert set(found) == {("reuse-in-place", "f"), ("strided-list", "g")}
