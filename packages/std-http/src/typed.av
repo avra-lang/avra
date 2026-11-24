@@ -1,0 +1,51 @@
+//! TYPED ANSWERS — one verb per outcome a handler answers with.
+//!
+//! A RECORD THAT DOES NOT VALIDATE IS ONE 422, `application/problem+json`
+//! (RFC 9457), listing EVERY issue at its path — `problem`, the one
+//! encoder every door that judges a record answers with.
+use @std.http_message.message.{Header}
+use @std.json.{Json, field, to_text}
+use @std.validate.{Issue, Issues}
+use http.{Response}
+
+/// 201 carrying `j`, its `location` the address it now stands at.
+export fn created(j: Json, at: string) -> Response {
+    (Response.json(j) with { status: 201 }).with_header("location", at)
+}
+
+/// THE ONE REFUSAL OF A RECORD: 422, `application/problem+json`, every
+/// issue at its path, the rule that refused and its words. What an issue
+/// received is never echoed: a refusal can be read by whoever is shown it.
+export fn problem(issues: Issues) -> Response {
+    Response {
+        status: 422,
+        headers: [Header { name: "content-type", value: "application/problem+json" }],
+        body: to_text(problem_json(issues)).bytes(),
+    }
+}
+
+fn problem_json(issues: Issues) -> Json {
+    Json
+        .Obj(
+            [
+                field("title", Json.Str(unvalidated())),
+                field("status", Json.Int(422)),
+                field("issues", Json.Arr([issue_json(i) for i in issues.all])),
+            ],
+        )
+}
+
+fn issue_json(i: Issue) -> Json {
+    Json
+        .Obj(
+            [
+                field("path", Json.Str(i.path.text())),
+                field("rule", Json.Str(i.rule)),
+                field("message", Json.Str(i.message)),
+            ],
+        )
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn unvalidated() -> string { "the request does not validate" }
