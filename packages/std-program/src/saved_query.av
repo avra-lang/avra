@@ -71,6 +71,7 @@ use value_shapes.{ValueShape}
 use interned.{HIGH_LANE, LOW_LANE, KeyLane}
 use answer_record.{Question, content_hash}
 use read_memo.{AskedMemo, asked_memo}
+use pass.{Pass, pass_code, pass_named, pass_words}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{
     FOLDED,
@@ -108,12 +109,15 @@ export type ListedQuery = { definition: fn() -> QueryDefinition }
 /// The definitions of what a `collect` listed.
 export fn definitions_of(listed: List<ListedQuery>) -> List<QueryDefinition> { [(q.definition)() for q in listed] }
 
-/// `@query`: remembered across processes.
-export fn query(f: Fn) -> Declared { remembered(f, false, [], false, false) }
+/// `@query(pass)`: remembered across processes. Every query annotation names the pass its work
+/// belongs to by its word (`@query("typing")`, `pass.av`), which its definition carries, so a run's
+/// work is read pass by pass; a word no pass wears is refused. The seat names none yet where it is
+/// left out, while the compiler's own queries are declared before they name one.
+export fn query(f: Fn, pass: string = "") -> Declared { remembered(f, false, [], false, false, pass) }
 
 /// `@input`: reads the outside world, so it runs once in every process, and its readers stand
 /// when it comes out the same.
-export fn input(f: Fn) -> Declared { remembered(f, true, [], false, false) }
+export fn input(f: Fn, pass: string = "") -> Declared { remembered(f, true, [], false, false, pass) }
 
 /// `@memo`: a question answered once in a process and held as a VALUE, never as bytes, so its
 /// answer needs no saved shape. It is no question of the engine's own: its working-out's reads are
@@ -170,24 +174,32 @@ fn memo_wrapper(f: Fn) -> Decls {
 /// frontier opens wherever a change reaches it, and past which a change reaches nothing where it
 /// comes out the same. It answers a file's address, or what one names, so asking it then is
 /// asking what the build would.
-export fn cut_query(f: Fn) -> Declared { remembered(f, false, [], false, true) }
+export fn cut_query(f: Fn, pass: string = "") -> Declared { remembered(f, false, [], false, true, pass) }
 
 /// `@cut_parted_query`: a parted query that cuts a change off, as `@cut_query` does.
-export fn cut_parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, true) }
+export fn cut_parted_query(f: Fn, pass: string = "") -> Declared { remembered(f, false, part_door(f), false, true, pass) }
 
 /// `@parted_query`: a query answering `AnswerParts`, which also answers one part at a time through
 /// `<name>_part(engine, …, part_name)`. A reader of one part stands when other parts change.
-export fn parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, false) }
+export fn parted_query(f: Fn, pass: string = "") -> Declared { remembered(f, false, part_door(f), false, false, pass) }
 
 /// `@folded_query(step)`: a query whose answer is folded forward from its last one by `step`.
-export fn folded_query(f: Fn, step: Fn) -> Declared {
+export fn folded_query(f: Fn, step: Fn, pass: string = "") -> Declared {
     let problems = step_problems(f, step)
     if !problems.is_empty() { return nothing_made(problems) }
-    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true, false)
+    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true, false, pass)
 }
 
-fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool, cuts: bool) -> Declared {
-    let problems = problems_of(f)
+fn remembered(
+    f: Fn,
+    is_input: bool,
+    also_made: List<Directive>,
+    folds: bool,
+    cuts: bool,
+    pass: string,
+) -> Declared {
+    let named = if pass == "" { null } else { pass_named(pass) }
+    let problems = problems_of(f).concat(if pass != "" && named == null { [no_such_pass(f, pass)] } else { [] })
     if !problems.is_empty() { return nothing_made(problems) }
     let made = [
         Directive { twin: "", name: f.name, at: f.at, wraps: true, source: asking_wrapper(f) },
@@ -200,7 +212,7 @@ fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool, cu
                 declares(compute_door(f), f.at, computing_door(f)),
                 declares(encoded_door(f), f.at, encoding_door(f)),
                 declares(answer_read_door(f), f.at, answer_reader(f)),
-                declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts)),
+                declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts, named)),
                 declares(known_door(f), f.at, known_answer_door(f)),
                 declares(question_door(f), f.at, asked_question_door(f)),
             ],
@@ -529,7 +541,8 @@ fn fold_kept(f: Fn) -> Stmts {
     quote { if answers_held() { ${fresh_door(f)}().set([FreshAnswer { arguments: arguments, value: answer }]) } }
 }
 
-fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool) -> Decls {
+fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool, pass: Pass?) -> Decls {
+    let passed = if pass == null { quote { null } } else { pass_code(pass!) }
     let folding = if folds { quote { Folding.By(${name(fold_door(f))}) } } else { quote { Folding.Full } }
     quote {
         @query_definition
@@ -541,6 +554,7 @@ fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool) -> Decls {
                 compute: ${name(compute_door(f))},
                 folding: ${folding},
                 cuts: ${as_code(bool_node(cuts))},
+                pass: ${passed},
             }
         }
     }
@@ -666,6 +680,10 @@ fn nullable_fold(f: Fn) -> Diagnostic {
     refuse(
         "`${f.name}` answers a `${f.answer}`, and a fold's step answers none where it doesn't fold, so the answer it folds can't itself be absent",
     )
+}
+
+fn no_such_pass(f: Fn, word: string) -> Diagnostic {
+    refuse("`${f.name}` names `${word}` as its pass, which is none of ${pass_words()}")
 }
 
 fn no_engine_seat(f: Fn) -> Diagnostic {
