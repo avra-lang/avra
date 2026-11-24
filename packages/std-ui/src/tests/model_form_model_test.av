@@ -1,6 +1,7 @@
-//! `model_form<T>` over a `@model` type: the model's own field rules are the
-//! form's, the issue each refusal shows is the one the database write would
-//! name, and what a submit hands over is a row the database takes.
+//! `model_form<T>` over a `@model`'s draft, the create form: an input per
+//! field the create is handed and none for the key, the model's own field
+//! rules the form's, each refusal the one the database write would name,
+//! and what a submit hands over a draft the database stores.
 use @std.db.{model}
 use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db}
@@ -16,12 +17,12 @@ type Member = {
     nick: string? = null,
 }
 
-fn page(got: Cell<List<Member>>) -> Screen {
-    headless(() -> model_form<Member> { on submit { m -> got.set(got.get().concat([m])) } })
+fn page(got: Cell<List<MemberDraft>>) -> Screen {
+    headless(() -> model_form<MemberDraft> { on submit { m -> got.set(got.get().concat([m])) } })
 }
 
 /// Every issue the database write names, as `path rule`.
-fn refused_by_insert(m: Member) -> Result<string, ModelError> {
+fn refused_by_insert(m: MemberDraft) -> Result<string, ModelError> {
     let db = modeled(Db.memory())?
     modeled(Member.create_table(db))?
     match m.insert(db) {
@@ -30,17 +31,20 @@ fn refused_by_insert(m: Member) -> Result<string, ModelError> {
     }
 }
 
-/// The handed row, stored: its key as the database named it.
-fn stored(m: Member) -> Result<int, ModelError> {
+/// The handed draft, stored: its key as the database named it.
+fn stored(m: MemberDraft) -> Result<int, ModelError> {
     let db = modeled(Db.memory())?
     modeled(Member.create_table(db))?
     (m.insert(db)?).id
 }
 
-spec "std/ui model_form over a @model" {
+spec "std/ui model_form over a @model's draft" {
     given "a model whose fields carry rules" {
+        then "draws a field per drafted field, and none for the key" {
+            page(Cell.new([])).text() == "form\n  list\n    column key=\"email\"\n      field \"email\" value=\"\" placeholder=\"\"\n    column key=\"age\"\n      field \"age\" value=\"\" placeholder=\"\"\n    column key=\"nick\"\n      field \"nick\" value=\"\" placeholder=\"\"\n  button \"Save\" submits"
+        }
         then "a refused field shows its rule's words beside it, and nothing is handed" {
-            let got: Cell<List<Member>> = Cell.new([])
+            let got: Cell<List<MemberDraft>> = Cell.new([])
             let p = page(got)
             p.fill("email", "ab") &&
                 p.fill("age", "9") &&
@@ -58,10 +62,10 @@ spec "std/ui model_form over a @model" {
                     )
         }
         then "the rules the form refuses by are the ones the database write refuses by" {
-            (refused_by_insert(Member { email: "ab", age: 9 }) catch _ -> "") == "email length, age range"
+            (refused_by_insert(MemberDraft { email: "ab", age: 9 }) catch _ -> "") == "email length, age range"
         }
-        then "a submit hands over a row the database stores" {
-            let got: Cell<List<Member>> = Cell.new([])
+        then "a submit hands over a draft the database stores under a key it names" {
+            let got: Cell<List<MemberDraft>> = Cell.new([])
             let p = page(got)
             let handed = p.fill("email", "ada@x") && p.fill("age", "36") && p.submit("email")
             handed &&
