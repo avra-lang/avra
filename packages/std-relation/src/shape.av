@@ -125,6 +125,36 @@ fn reach_spelled(r: ShapeReach) -> List<string> {
     [part(r.name), "${r.shape}"].concat(form).concat(slots_spelled(r.slots))
 }
 
+/// A run of reaches as text: its count, then each reach's parts.
+export fn reaches_spelled(rs: List<ShapeReach>) -> string {
+    ["${rs.length}"].concat([p for r in rs for p in reach_spelled(r)]).join("|")
+}
+
+/// Each reach a spelled run holds that `met` has none of that name for, kept in order.
+export fn reaches_met(mut met: Map<string, ShapeReach>, run: string) {
+    let c = Parts { all: run.split("|"), at: Cell.new(0) }
+    let n = c.count(reach_width) ?? 0
+    for _i in 0..n {
+        let r? = c.reach() else { return }
+        if !met.has(r.name) { met.set(r.name, r) }
+    }
+}
+
+/// A coded type's reach of itself, spelled as a run of one, its codec's header `hash` filled.
+export fn reach_coded(run: string, hash: int) -> ShapeReach {
+    let c = Parts { all: run.split("|"), at: Cell.new(1) }
+    let r = c.reach()!
+    match r.form {
+        .Coded(_, scoped, tagged) -> r with { form: Form.Coded(hash, scoped, tagged) },
+        .Unsaid or .Record or .Variants or .Over or .Dense -> r,
+    }
+}
+
+/// A coded type's descriptor: what `own` spells, its fingerprint and reaches filled.
+export fn descriptor_filled(own: string, hash: int, reached: List<ShapeReach>) -> string {
+    (descriptor_unspelled(own)! with { hash: hash, reached: reached }).spelled()
+}
+
 /// The descriptor a text spells, or absent for any other text.
 export fn descriptor_unspelled(text: string) -> Descriptor? {
     let c = Parts { all: text.split("|"), at: Cell.new(1) }

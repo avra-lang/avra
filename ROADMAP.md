@@ -3497,6 +3497,14 @@ was typed as text (std-ui/src/forms). The split is clean in its own right;
 the want is a `once fn` with type parameters — one cache per
 instantiation — so `$kept` can be derived for `X<T>`.
 
+### A `once fn` answers a scalar
+
+`@codec` holds each type's fingerprint, folded on the first ask, in a derived
+`once fn …_codec_shape() -> List<int>` read back as `[0]`, because a `once fn`
+answering `int` is refused ("which the runtime cannot keep"). The want: a
+`once fn` answers any type, a scalar kept beside its done mark. Wanting site:
+std-relation's `stored_generated`.
+
 ### A `match` in a component body composes its arms' views
 
 In a component body `if`/`else` draws whichever branch holds, while a

@@ -82,7 +82,16 @@ use rows.{
     bool_part,
 }
 use db.{Db, Stores, stores}
-use shape.{Descriptor, Form, ShapeReach, ShapeSlot}
+use shape.{
+    Descriptor,
+    Form,
+    ShapeReach,
+    ShapeSlot,
+    descriptor_filled,
+    reach_coded,
+    reaches_met,
+    reaches_spelled,
+}
 use refused.{InsertRefused, unheld, int_text, bool_text}
 use stable.{
     Scope,
@@ -1801,29 +1810,60 @@ fn codec_declared_under(k: Kind, seen: List<string>) -> bool {
 /// another one misses once instead of being read as this one.
 const stored_format: int = 3
 
-/// A stored type's fingerprint, folded at derive time: its own declaration and every type it
-/// reaches, through the types that wear their own codec too, so a type that moves under a
-/// reached one moves too.
-fn stored_shape(s: Stored) -> int { shape_under(s, [s.t.name]) }
-
-/// `stored_shape` with `seen` the coded types whose fold is under way: the reached run's
-/// count, then each reach as one value.
-fn shape_under(s: Stored, seen: List<string>) -> int {
-    mut h = stable_hasher(text_hash(stable_name(s.t))).int(stored_format).count(s.reached.length)
-    for k in s.reached { h = h.int(reach_print(s.t, k, seen)) }
-    h.finish()
+/// `codec_shape_under`'s body: a stored type's fingerprint with `seen` the coded types the fold
+/// has met, by stable name — its own declaration, the reached run's count, then each reach as
+/// one value. A reached type that wears its own codec is folded by that codec at run time, the
+/// first time the fold meets it, so each type spells only itself here, each declaration is
+/// folded once, and a type that moves under a reached one moves too.
+fn shape_folded(s: Stored) -> Code {
+    let head = quote {
+        stable_hasher(${text_hash(stable_name(s.t))}).int(${stored_format}).count(${s.reached.length})
+    }
+    let folded = s
+        .reached
+        .fold(head, (h: Code, k: Kind) -> quote { ${h}.int(${reach_print(s.t, k)}) })
+    quote { ${folded}.finish() }
 }
 
 /// One reached kind as one value: its spelling and which it is, then its declaration's
 /// spelling, or for another type that wears its own codec, that codec's fold — its name alone
-/// when `seen` holds it.
-fn reach_print(t: Type, k: Kind, seen: List<string>) -> int {
+/// when `seen` holds it, the fold having met it.
+fn reach_print(t: Type, k: Kind) -> Code {
     let named = stable_hasher(text_hash(k.spelled()))
-    let ty? = stored_type_of(t, k) else { return named.int(0).finish() }
-    if ty.name == t.name || !wears_codec(ty.name) { return named.int(1).text(described(ty)).finish() }
-    if seen.contains(ty.name) { return named.int(2).finish() }
-    named.int(3).int(shape_under(stored(ty), seen.concat([ty.name]))).finish()
+    let ty? = stored_type_of(t, k) else { return quote { ${named.int(0).finish()} } }
+    if ty.name == t.name || !wears_codec(ty.name) { return quote { ${named.int(1).text(described(ty)).finish()} } }
+    let n = literal(stable_name(ty))
+    quote {
+        if seen.contains(${n}) {
+            ${named.int(2).finish()}
+        } else {
+            seen.push(${n})
+            stable_hasher(${text_hash(k.spelled())}).int(3).int(${name(ty.name)}.codec_shape_under(seen)).finish()
+        }
+    }
 }
+
+/// Whether a stored type's fold reaches another type that wears its own codec, so it reads
+/// `seen`.
+fn folds_coded(s: Stored) -> bool { s.reached.any(coded_other(s.t, it)) }
+
+/// Whether a kind names a type, other than `t`, that wears its own codec.
+fn coded_other(t: Type, k: Kind) -> bool {
+    match k { .Named(n, _) -> n != t.name && wears_codec(n), rest -> false }
+}
+
+/// The once fn that holds a stored type's fingerprint, folded on the first ask.
+fn shape_held_name(t: Type) -> string { held_name(t, "shape") }
+
+/// The once fn that holds a stored type's descriptor, spelled on the first ask.
+fn descriptor_held_name(t: Type) -> string { held_name(t, "descriptor") }
+
+/// A name a derive's top-level fn holds for one declaration: its type's, then its file's, since
+/// two files of one module may each declare a private type of one name.
+fn held_name(t: Type, what: string) -> string { "${snake(t.name)}_codec_${what}_${file_mark(t)}" }
+
+/// A declaration's file as a part of a name: its path's fingerprint, its sign spelled out.
+fn file_mark(t: Type) -> string { "${text_hash(t.at?.file ?? "")}".replace("-", "n") }
 
 /// The declaration a kind names, when it names one.
 fn stored_type_of(t: Type, k: Kind) -> Type? {
@@ -1847,14 +1887,21 @@ fn stored_made(s: Stored) -> List<Directive> {
 fn stored_generated(s: Stored) -> Decls {
     let t = s.t
     if !s.problems.is_empty() { return quote { impl ${t} { } } }
-    let shape = stored_shape(s)
     let inner = stored_within(s)
+    let shape = quote { ${name(t.name)}.codec_shape() }
     let w = "w"
     quote {
-        impl Storable for ${t} {
-            static fn codec_shape() -> int { ${shape} }
+        once fn ${shape_held_name(t)}() -> List<int> {
+            mut seen = [${literal(stable_name(t))}]
+            [${name(t.name)}.codec_shape_under(seen)]
+        }
 
-            static fn codec_descriptor() -> string { ${literal(stored_descriptor(s, shape).spelled())} }
+        ${descriptor_held(s)}
+
+        impl Storable for ${t} {
+            static fn codec_shape() -> int { ${shape_held_name(t)}()[0] }
+
+            static fn codec_descriptor() -> string { ${descriptor_held_name(t)}() }
 
             fn encoded_in(scope: dyn Scope) -> Bytes {
                 let ${w} = writer()
@@ -1880,6 +1927,14 @@ fn stored_generated(s: Stored) -> Decls {
 
         impl ${t} {
             ${stored_helpers(s, inner)}
+
+            ${shape_under_member(s)}
+
+            static fn codec_reach() -> ShapeReach {
+                reach_coded(${literal(reaches_spelled([own_reach(s)]))}, ${shape})
+            }
+
+            ${reaches_into_member(s, inner)}
 
             static fn written_by(${w}: Writer, scope: dyn Scope, v: ${t}) {
                 ${name(w)}.fixed(${shape})
@@ -1958,36 +2013,100 @@ fn variant_slot(v: Variant) -> ShapeSlot {
 /// What a field carries, spelled: its type, then its marks.
 fn slot_spelled(f: Field) -> string { "${f.ty}${[" @${m.name}" for m in f.marks].join("")}" }
 
-/// A stored type's shape as data. A record's own declaration is among the reached only when
-/// its wire reaches it: a nested one is read whole, so it cannot grow. Every type its wire
-/// reaches is described, through the types that wear their own codec too, so a reader with
-/// no program follows each.
-fn stored_descriptor(s: Stored, shape: int) -> Descriptor {
-    let seed = if s.t.variants.is_empty() { [] } else { [Kind.Named(s.t.name, [])] }
+/// `codec_shape_under`: the fold, reading `seen` only when another coded type is folded.
+fn shape_under_member(s: Stored) -> Decls {
+    if folds_coded(s) { return quote { static fn codec_shape_under(mut seen: List<string>) -> int { ${shape_folded(s)} } } }
+    quote { static fn codec_shape_under(_seen: List<string>) -> int { ${shape_folded(s)} } }
+}
+
+/// A stored type's shape as data, every part but its fingerprint and its reaches, which the
+/// run fills.
+fn own_descriptor(s: Stored) -> Descriptor {
     Descriptor {
-        hash: shape,
+        hash: 0,
         format: stored_format,
         tagged: !s.t.variants.is_empty(),
         slots: stored_slots(s),
-        reached: [reach for k in reached_kinds(s.wire, seed, false).drop(seed.length) for reach in reach_of(s.t, k)],
+        reached: [],
         name: s.t.name,
         scoped: s.owner.scoped,
     }
 }
 
-/// A reached kind's declaration, fingerprinted and described; none for a kind that names none.
-fn reach_of(t: Type, k: Kind) -> List<ShapeReach> {
-    let ty? = stored_type_of(t, k) else { return [] }
-    let n = match k { .Named(b, _) -> b, rest -> k.spelled() }
-    let args = match k { .Named(_, a) -> a, rest -> [] }
-    let reach = ShapeReach { name: k.spelled(), shape: text_hash(described(ty)) }
-    if n != t.name && wears_codec(n) { return [coded_reach(reach, stored(ty))] }
-    [described_reach(reach, if n == t.name { shape_of(t) } else { instance_shape(n, args) })]
+/// The type as a reach of a type that wears it: its declaration's fingerprint, its header — the
+/// run fills it — its texts' crossing and its own slots.
+fn own_reach(s: Stored) -> ShapeReach {
+    ShapeReach {
+        name: s.t.name,
+        shape: text_hash(described(s.t)),
+        form: Form.Coded(0, s.owner.scoped, !s.t.variants.is_empty()),
+        slots: stored_slots(s),
+    }
 }
 
-/// A reach that wears its own codec: its header, its texts' crossing and its own slots.
-fn coded_reach(reach: ShapeReach, s: Stored) -> ShapeReach {
-    reach with { form: Form.Coded(stored_shape(s), s.owner.scoped, !s.t.variants.is_empty()), slots: stored_slots(s) }
+/// The once fn that spells the descriptor: every type the wire reaches, each named once in
+/// reach order, through the types that wear their own codec too — each of those describes
+/// itself. An enum's own declaration is never among them; a record's is only when its wire
+/// reaches it, a nested one being read whole, so it cannot grow.
+fn descriptor_held(s: Stored) -> Decls {
+    let t = s.t
+    let own = literal(own_descriptor(s).spelled())
+    if t.variants.is_empty() {
+        return quote {
+            once fn ${descriptor_held_name(t)}() -> string {
+                mut met: Map<string, ShapeReach> = {}
+                ${name(t.name)}.codec_reaches_into(met)
+                descriptor_filled(${own}, ${name(t.name)}.codec_shape(), met.values())
+            }
+        }
+    }
+    quote {
+        once fn ${descriptor_held_name(t)}() -> string {
+            mut met: Map<string, ShapeReach> = {}
+            met.set(${literal(t.name)}, ${name(t.name)}.codec_reach())
+            ${name(t.name)}.codec_reaches_into(met)
+            descriptor_filled(${own}, ${name(t.name)}.codec_shape(), met.values().drop(1))
+        }
+    }
+}
+
+/// `codec_reaches_into`: each reach the type's own walk meets, described here, until a type
+/// that wears its own codec, which meets its own.
+fn reaches_into_member(s: Stored, inner: List<Kind>) -> Decls {
+    let steps = reach_steps(s, inner)
+    if steps.is_empty() { return quote { static fn codec_reaches_into(_met: Map<string, ShapeReach>) { } } }
+    quote { static fn codec_reaches_into(mut met: Map<string, ShapeReach>) { ${steps} } }
+}
+
+/// The statements that meet a walk's reaches: each described here, and each coded type, when
+/// unmet, by itself.
+fn reach_steps(s: Stored, inner: List<Kind>) -> List<Stmts> { [step for k in inner for step in reach_step(s, k)] }
+
+fn reach_step(s: Stored, k: Kind) -> List<Stmts> {
+    let ty? = stored_type_of(s.t, k) else { return [] }
+    if coded_other(s.t, k) { return [met_coded(ty.name)] }
+    let told = described_reach(
+        ShapeReach { name: k.spelled(), shape: text_hash(described(ty)) },
+        reach_shape(s, k),
+    )
+    [quote { reaches_met(met, ${literal(reaches_spelled([told]))}) }]
+}
+
+fn met_coded(n: string) -> Stmts {
+    quote {
+        if !met.has(${literal(n)}) {
+            met.set(${literal(n)}, ${name(n)}.codec_reach())
+            ${name(n)}.codec_reaches_into(met)
+        }
+    }
+}
+
+/// A reached kind's shape, as the stored reading read it: the type's own, or the owner's.
+fn reach_shape(s: Stored, k: Kind) -> NamedShape {
+    match k {
+        .Named(n, args) -> if n == s.t.name { shape_of(s.t) } else { s.owner.shape(n, args) },
+        rest -> NamedShape.Plain,
+    }
 }
 
 /// A reach crossed by its owner's helpers, as its shape says.
