@@ -302,7 +302,7 @@ forms module is not reached, so it is not counted).
 |---|---|
 | 1. every frame named and bounded | each frame carries its dial's name over it, and a 4 px band in the dial's `Neutral` tone around the dial's `Canvas`, both in the dial's own theme |
 | 2. a narrow frame | the dial table has a `width` column: `Sizing.Fill` (grows to the room the page gives, never past it) and a `narrow` row at `Sizing.Fixed(320)` |
-| 3. the page on a phone | an index entry is a button that shows its view alone, under the index; frames stand one a row by default; iPhone 13 (390 px): `scrollWidth == innerWidth` (390) on the page as it opens and with every dial chosen |
+| 3. the page on a phone | an index entry is a button that shows its view alone, under the index; frames stand one a row by default. iPhone 13 (390 px): no sideways scroll once a view's labels fit; a label's unbroken word still widens the page to 558 px with every view shown (frames one a row), and that waits on ruling 2 |
 | 4. dials choosable | a checkbox per row of the table, `light` and `dark` first |
 | 5. set-aside cases | the index says `dialog 7 +1 aside`, and the tally says `29 views · 119 cases drawn · 5 set aside, drawing exactly what their base draws · 0 with no story` |
 
