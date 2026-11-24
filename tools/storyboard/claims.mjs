@@ -88,6 +88,8 @@ async function ready(page) {
     await page.press(`[...document.querySelectorAll("button")].find((b) => b.textContent.split(" ")[0] === ${JSON.stringify(only)})`);
     await page.frame();
   }
+  // every picture asked for has answered, drawn or not
+  await page.read(`Promise.all([...document.images].map((i) => i.complete ? 1 : new Promise((done) => { i.onload = i.onerror = done; setTimeout(done, 3000); })))`);
   return page.read(MARK);
 }
 
@@ -105,6 +107,10 @@ const LIB = `
   const frames = [...document.querySelectorAll("[data-sb]")];
 `;
 
+// WHAT IS INACTIVE, as data: words no contrast standard holds to a ratio — a disabled control's, and
+// words in the theme's disabled ink, which says the same of what it draws.
+const inactive = [":disabled", "[aria-disabled=true]", ".color-disabled"];
+
 // Each family: its name, what it holds, and an in-page check over one frame answering the reasons
 // it fails there (none: it holds).
 const families = [
@@ -115,8 +121,8 @@ const families = [
   },
   {
     name: "legible",
-    holds: "every word a frame draws stands out from what it is drawn on: 4.5:1, 3:1 for large type; a disabled control's owe nothing",
-    check: `(f) => worded(f).filter((e) => !e.closest(":disabled, [aria-disabled=true]")).map((e) => {
+    holds: "every word a frame draws stands out from what it is drawn on: 4.5:1, 3:1 for large type; inactive words owe nothing",
+    check: `(f) => worded(f).filter((e) => !e.closest(${JSON.stringify(inactive.join(", "))})).map((e) => {
       const s = getComputedStyle(e); const size = parseFloat(s.fontSize); const large = size >= 24 || (size >= 18.66 && Number(s.fontWeight) >= 700);
       const r = ratio(rgb(s.color), ground(e)); return r >= (large ? 3 : 4.5) ? null : "\\"" + e.textContent.trim().slice(0, 24) + "\\" at " + r.toFixed(2) + ":1";
     }).filter(Boolean)`,
@@ -132,6 +138,11 @@ const families = [
     holds: "a field's input never stands past the frame it is drawn in",
     check: `(f) => { const edge = Math.min(f.getBoundingClientRect().right, f.closest("[data-sb-frame]").getBoundingClientRect().right);
       return [...f.querySelectorAll("input")].filter((i) => i.getBoundingClientRect().right > edge + 1).map((i) => "input " + Math.round(i.getBoundingClientRect().right - edge) + " px past"); }`,
+  },
+  {
+    name: "pictured",
+    holds: "every picture a frame draws has drawn: its file arrived and decoded",
+    check: `(f) => [...f.querySelectorAll("img")].filter((i) => !i.complete || i.naturalWidth === 0).map((i) => "a picture not drawn: " + (i.getAttribute("src") ?? ""))`,
   },
   {
     name: "tickable",
@@ -224,6 +235,7 @@ const breaking = {
   legible: `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] * { color: rgb(200,200,200) !important; background: rgb(255,255,255) !important }"; document.head.append(s); })()`,
   contained: `document.querySelectorAll("[data-sb]").forEach((f) => { const d = document.createElement("div"); d.style.width = "2000px"; d.style.height = "1px"; f.append(d); })`,
   "input-held": `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] input { min-width: 2000px !important; max-width: none !important }"; document.head.append(s); })()`,
+  pictured: `document.querySelectorAll("[data-sb]").forEach((f) => { const i = document.createElement("img"); i.src = "/no-such-picture.png"; f.append(i); })`,
   tickable: `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] input[type=checkbox] { width: 0 !important; min-width: 0 !important }"; document.head.append(s); })()`,
   reachable: `document.querySelectorAll("[data-sb] button, [data-sb] input").forEach((c) => c.setAttribute("tabindex", "-1"))`,
   scheme: `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] { background: rgb(255,255,255) !important }"; document.head.append(s); })()`,
@@ -232,9 +244,16 @@ const breaking = {
 
 // ── the run ──────────────────────────────────────────────────────
 
-const pinned = fs.existsSync(path.join(here, "pinned.txt"))
-  ? fs.readFileSync(path.join(here, "pinned.txt"), "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")).map((l) => l.split(" — ")[0])
-  : [];
+const pinLines = fs.existsSync(path.join(here, "pinned.txt")) ? fs.readFileSync(path.join(here, "pinned.txt"), "utf8").split("\n").map((l) => l.trim()) : [];
+const ceiling = Number((pinLines.find((l) => l.startsWith("# at most ")) ?? "# at most 0").slice(10));
+const pinned = pinLines.filter((l) => l && !l.startsWith("#")).map((l) => l.split(" — ")[0]);
+// a pin says why it fails and what ends it, and the baseline only shrinks
+const malformed = pinLines.filter((l) => l && !l.startsWith("#") && !/ — .+ — waits on: .+/.test(l));
+if (malformed.length || pinned.length > ceiling) {
+  for (const l of malformed) console.log(`storyboard: a pin with no reason or no ruling: ${l}`);
+  if (pinned.length > ceiling) console.log(`storyboard: ${pinned.length} pins, and the baseline says at most ${ceiling}: it only shrinks`);
+  process.exit(1);
+}
 const isPinned = (line) => pinned.some((p) => line.startsWith(p));
 
 const began = Date.now();

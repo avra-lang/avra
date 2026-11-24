@@ -399,3 +399,34 @@ the checks' WebKit (iPhone) run once the page cannot overflow (ruling 2).
 **Zero cost holds**: the board's wasm module and native server are unchanged by the stories and
 their wiring (316,595 B and 3,095,944 B with the input rule left out). The input rule itself costs
 the board +149 B of wasm and the page drawer +240 B.
+
+### Landing slices 1–3, on program `b6dce5f2`
+
+The nine commits were rebased onto `b6dce5f2` (the deletion). `tools/gate.sh` keeps HEAD's
+`findings-a` line and comment, with the storyboard's line and `slice_storyboard()` beside them. The
+gate's `storyboard` slice runs the claims in FIREFOX, which is how the Firefox path is verified: this
+machine has only Chromium.
+
+| Ruling | Done |
+|---|---|
+| (4) no least width from an engine's legacy default | `fieldset{min-width:0}` in the web realizer; `contained` holds for every fieldset case but the unbroken legend (ruling 2's) |
+| Disabled exempt from legibility, as data | the claims table's `inactive` list: `:disabled`, `[aria-disabled=true]`, `.color-disabled` (words in the theme's disabled ink); the `ink Disabled` pin is gone |
+| a baseline that only shrinks | `tools/storyboard/pinned.txt`: each line `<family> <view>/<case>/[dial] — why — waits on: <ruling>`, and `# at most 17`. The claims refuse a stale pin, a line with no reason or no ruling, and more lines than the ceiling |
+| the page shows a pinned case as pinned | `tools/storyboard` embeds the baseline (`pins_of`); each pinned case says `pinned: <family> — <why> — waits on <ruling>` in the warning ink |
+| the image cases stay pinned | a new family, `pictured`: every picture a frame draws has drawn. Its mutant puts a missing picture in every frame. The icon and image cases are pinned on lowering-quality's P1 (a bundled picture traps in wasm). On `b6dce5f2`, `avra dev` still answers the asset 404 |
+
+**Terminal goldens did not move.** No `.expected` under `realize/tui` or the terminal program
+tests changed: `scale`, `screen`, `contained_terminal`, `instance_terminal`, `terminal`,
+`terminal_timer` and `terminal_window` all read `eval == native == expected`. The storyboard golden's
+80-column drawings also held.
+
+**Byte goldens that did move,** both from the web realizer's base rules (the input rule and the
+fieldset rule together): wire 3539 → 3616 and mount 3721 → 3798 octets on the first frame.
+
+**Run here** (Chromium; the gate's Firefox is the verdict): 585 frames, 76 failures, all under the
+17 pins; every family's mutant caught (35–1110 times). std-ui 1058/1058 with all 87 program proofs;
+std-ui_gallery 50/50 with the golden.
+
+**A Mac compiler of this head** cannot be made here (a Linux container, with no macOS SDK or
+toolchain). On a Mac, `make bootstrap` from the landed head builds it, or the pipeline's own build
+once this lands.
