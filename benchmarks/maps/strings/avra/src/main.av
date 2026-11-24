@@ -1,0 +1,104 @@
+//! STRING-KEYED MAP in Avra: `Map<string, int>`, insertion-ordered. Prints
+//! build, hit, miss, walk and remove per operation at three sizes, the sum
+//! of one pass of hits and the entries left after removing all.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{now_ns}
+
+/// The benchmark's environment value, or its default.
+fn env_int(name: string, fallback: int) -> int {
+    parse_int(env_or(name, "${fallback}")) ?? fallback
+}
+
+/// `spent` nanoseconds over `ops` operations, with one decimal place.
+fn per_op(spent: int, ops: int) -> string {
+    let tenths = (spent * 10 + ops / 2) / ops
+    "${tenths / 10}.${tenths % 10}"
+}
+
+/// The best round of each operation, and the witnesses at the largest size.
+type Size = { build: int, hit: int, miss: int, walk: int, remove: int, sum: int, left: int }
+
+/// The lesser of a best so far and a fresh round; the first round stands alone.
+fn least(best: int, spent: int, round: int) -> int {
+    if round == 0 || spent < best { spent } else { best }
+}
+
+/// Every operation at `n` keys, `rounds` times, each round `ops` operations or so.
+fn one_size(n: int, ops: int, rounds: int) -> Size {
+    let hit = ["key${i}" for i in 0..n]
+    let miss = ["nokey${i}" for i in 0..n]
+    let reps = if ops / n > 0 { ops / n } else { 1 }
+    mut best = Size { build: 0, hit: 0, miss: 0, walk: 0, remove: 0, sum: 0, left: 0 }
+    for r in 0..rounds {
+        let t0 = now_ns()
+        mut ms: List<Map<string, int>> = []
+        for _q in 0..reps {
+            mut m: Map<string, int> = {}
+            for i, k in hit { m.set(k, i) }
+            ms.push(m)
+        }
+        let built = now_ns() - t0
+        let m = ms[0]
+        let t1 = now_ns()
+        mut s = 0
+        for _q in 0..reps {
+            for k in hit { s = s + (m.get(k) ?? 0) }
+        }
+        let hits = now_ns() - t1
+        let t2 = now_ns()
+        mut found = 0
+        for _q in 0..reps {
+            for k in miss { if m.has(k) { found = found + 1 } }
+        }
+        let misses = now_ns() - t2
+        let t3 = now_ns()
+        mut w = 0
+        for _q in 0..reps {
+            for _k, v in m { w = w + v }
+        }
+        let walks = now_ns() - t3
+        // each map taken out of the list once, as the other twins hold each map once
+        let t4 = now_ns()
+        mut left = 0
+        while ms.length > 0 {
+            mut gone = ms.pop()
+            for k in hit { gone.remove(k) }
+            left = gone.length
+        }
+        let removes = now_ns() - t4
+        if found + w < 0 { println("# sink") }
+        best = Size {
+            build: least(best.build, built, r),
+            hit: least(best.hit, hits, r),
+            miss: least(best.miss, misses, r),
+            walk: least(best.walk, walks, r),
+            remove: least(best.remove, removes, r),
+            sum: s / reps,
+            left: left,
+        }
+    }
+    best
+}
+
+/// One size's rows, named by `tag`.
+fn rows(z: Size, n: int, ops: int, rounds: int, tag: string) {
+    let reps = if ops / n > 0 { ops / n } else { 1 }
+    let per = reps * n
+    println("maps_build_${tag}_ns_per_op\t${per_op(z.build, per)}\tns\t${rounds}")
+    println("maps_hit_${tag}_ns_per_op\t${per_op(z.hit, per)}\tns\t${rounds}")
+    println("maps_miss_${tag}_ns_per_op\t${per_op(z.miss, per)}\tns\t${rounds}")
+    println("maps_walk_${tag}_ns_per_op\t${per_op(z.walk, per)}\tns\t${rounds}")
+    println("maps_remove_${tag}_ns_per_op\t${per_op(z.remove, per)}\tns\t${rounds}")
+}
+
+let ops = env_int("BENCH_OPS", 100000)
+let rounds = env_int("BENCH_ROUNDS", 5)
+let small = one_size(8, ops, rounds)
+rows(small, 8, ops, rounds, "8")
+let mid = one_size(1000, ops, rounds)
+rows(mid, 1000, ops, rounds, "1k")
+let large = one_size(100000, ops, rounds)
+rows(large, 100000, ops, rounds, "100k")
+println("maps_hit_sum\t${large.sum}\tops\t${rounds}")
+println("maps_left\t${large.left}\tops\t${rounds}")

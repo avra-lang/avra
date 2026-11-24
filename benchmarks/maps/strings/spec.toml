@@ -1,0 +1,100 @@
+# A string-keyed map, the five things a program asks of one: build it,
+# find a key that is there, find one that is not, walk every entry, and
+# remove every key. At three sizes — eight keys (the size most of a
+# compiler's maps are), a thousand (in cache), a hundred thousand (out of
+# it) — because a map can be quick at one size and quadratic at another:
+# a remove that shifts and rebuilds hides at eight keys and costs
+# milliseconds at a hundred thousand.
+languages = ["c", "rust", "go", "python", "avra"]
+
+[benchmark]
+name = "strings"
+family = "maps"
+title = "String-keyed map"
+invariant = "n keys `key<i>` map to i; every hit answers its own i, so one pass of hits sums to n(n-1)/2; no `nokey<i>` is found; a walk visits n entries; removing every key leaves the map empty"
+row = "wall-clock nanoseconds per operation for build (per key inserted), hit, miss, walk (per entry) and remove (per key), at 8, 1000 and 100000 keys; small maps repeat until each round covers about 100000 operations"
+
+[workload]
+sizes = [8, 1000, 100000]
+ops_per_round = 100000
+rounds = 5
+
+[analogues]
+c = "a plain open-addressing table over a text hash (wyhash's mix), linear probing at most half full, tombstones on remove — the floor"
+rust = "std::collections::HashMap<String, u64> with its default hasher (SipHash-1-3), as a Rust program gets it"
+go = "map[string]int (Swiss tables since Go 1.24)"
+python = "dict, insertion-ordered as Avra's map is"
+avra = "Map<string, int>: insertion-ordered, a chunked index over dense entries"
+
+[rows.maps_build_8_ns_per_op]
+unit = "ns"
+about = "nanoseconds per key building a map of 8 keys, the map made fresh each time"
+
+[rows.maps_hit_8_ns_per_op]
+unit = "ns"
+about = "nanoseconds per lookup of a present key in a map of 8"
+
+[rows.maps_miss_8_ns_per_op]
+unit = "ns"
+about = "nanoseconds per lookup of an absent key in a map of 8"
+
+[rows.maps_walk_8_ns_per_op]
+unit = "ns"
+about = "nanoseconds per entry walking a map of 8, key and value"
+
+[rows.maps_remove_8_ns_per_op]
+unit = "ns"
+about = "nanoseconds per key removing every key of a map of 8, in insertion order"
+
+[rows.maps_build_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per key building a map of 1000 keys"
+
+[rows.maps_hit_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per lookup of a present key in a map of 1000"
+
+[rows.maps_miss_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per lookup of an absent key in a map of 1000"
+
+[rows.maps_walk_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per entry walking a map of 1000"
+
+[rows.maps_remove_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per key removing every key of a map of 1000 — a remove that shifts and rebuilds costs microseconds here"
+
+[rows.maps_build_100k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per key building a map of 100000 keys"
+
+[rows.maps_hit_100k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per lookup of a present key in a map of 100000"
+
+[rows.maps_miss_100k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per lookup of an absent key in a map of 100000"
+
+[rows.maps_walk_100k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per entry walking a map of 100000"
+
+[rows.maps_remove_100k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per key removing every key of a map of 100000 — the row an O(n) remove cannot hide"
+
+[rows.maps_hit_sum]
+unit = "ops"
+check = "exact"
+about = "the sum of every hit's value in one pass over 100000 keys — a witness each key answers its own value"
+
+[rows.maps_left]
+unit = "ops"
+check = "exact"
+about = "the entries left after every key of the 100000 was removed — a witness the remove removes"
+
+[notes]
+text = "Build includes making the key's text only where the language must (Rust clones each String into the map; the others share the key). The walk reads each entry's value; Go's and Rust's walks are unordered, Python's and Avra's in insertion order."
