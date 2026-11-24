@@ -12,6 +12,7 @@ use address.{
     InstantiationAddress,
     ModuleAddress,
     SourceFileAddress,
+    source_file,
 }
 
 /// An enum whose variants hold nothing, with no derive of its own.
@@ -86,7 +87,7 @@ fn outcome_words(outcome: Result<int, string>) -> string {
     match outcome { .Ok(number) -> "ok ${number}", .Err(words) -> "err ${words}" }
 }
 
-fn sample_file() -> SourceFileAddress { SourceFileAddress { package_name: "cli", path_in_package: "src/shared.av" } }
+fn sample_file() -> SourceFileAddress { source_file("cli", "src/shared.av") }
 
 fn written_declaration() -> DeclarationAddress {
     DeclarationAddress {
@@ -149,9 +150,16 @@ spec "program/saved_derive — addresses saved and read back" {
     }
     given "the same text split differently" {
         then "the bytes differ" {
-            let first = SourceFileAddress { package_name: "a.b", path_in_package: "c" }
-            let second = SourceFileAddress { package_name: "a", path_in_package: "b.c" }
+            let first = source_file("a.b", "c")
+            let second = source_file("a", "b.c")
             blake3_hex(first.saved_bytes()) != blake3_hex(second.saved_bytes())
+        }
+        then "the keys differ" { !source_file("a.b", "c").same_as(source_file("a", "b.c")) }
+    }
+    given "a file read back" {
+        then "carries the key its door makes" {
+            let back = SourceFileAddress.from_saved_bytes(sample_file().saved_bytes())
+            back.same_as(sample_file()) && back.key.same_as(sample_file().key)
         }
     }
     given "one address saved twice" {
