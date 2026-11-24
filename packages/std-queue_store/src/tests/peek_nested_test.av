@@ -10,12 +10,14 @@ use @std.queue.{queue, Dead, Fate, HomeError}
 use @std.relation.{codec}
 use @std.relation.shape.{Descriptor, descriptor_unspelled}
 use @std.sqlite.{Db, sql}
+use @std.text.{from_codepoint}
 use @std.time.{Time, now_ns}
 use durable.{db, stored}
 use fault.{homed}
 use letters.{stored_dead}
 use operate.{Peeked, peek}
 use queue_store.{store_home_with, wire}
+use readout.{read_through}
 
 fn ticking() -> Time {
     Time { ns: now_ns() }
@@ -165,6 +167,15 @@ fn doubling(levels: int) -> string {
         .join("|")
 }
 
+/// What a doubling record of `levels` reads as over eight zero octets:
+/// `whole` where it reads, else its reason.
+fn doubled(levels: int) -> string {
+    match read_through(doubling(levels), [from_codepoint(0) for _i in 0..8].join("").bytes()) {
+        .Ok(_) -> "whole",
+        .Err(why) -> why,
+    }
+}
+
 /// Rows whose descriptor or octets no build wrote: a descriptor cut
 /// short, one that reaches itself through octets it never reads, one
 /// that doubles past any octets, and octets shorter than the descriptor
@@ -219,6 +230,11 @@ spec "std/queue_store — peeking an item that nests" {
     given "a descriptor an earlier build wrote" {
         then "the item reads as none, saying which type it does not describe, until a home of this build opens" {
             told(earlier_build()) == "unread: its descriptor names `PkAddr` and does not describe it | kept 1 | {\"ship\":{\"street\":\"a st\",\"n\":1},\"extra\":[{\"street\":\"b st\",\"n\":2}],\"bill\":null,\"unit\":{\"name\":\"kg\"},\"pay\":{\"Card\":[\"4242\",{\"street\":\"c st\",\"n\":3}]},\"notes\":{\"gift\":1}}"
+        }
+    }
+    given "a descriptor that asks values of no octets" {
+        then "over eight octets a doubling of 11 levels reads whole and one of 12 is refused" {
+            "${doubled(11)} | ${doubled(12)}" == "whole | its descriptor asks more values than its octets can hold"
         }
     }
     given "a descriptor or octets no build wrote" {
