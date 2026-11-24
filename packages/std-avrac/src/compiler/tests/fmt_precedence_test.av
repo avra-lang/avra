@@ -1,0 +1,147 @@
+// FMT NEVER MOVES MEANING: for every pair of binary operators, each nested inside the other on
+// either side, in every context an expression stands in, the printed text parses to the same tree
+// as the source (each top-level statement's fingerprint, span-blind) and is a fixed point. The printer drops a parenthesis only where the
+// grammar would rebind the same way without it; a tier or an associativity the printer got wrong
+// prints text that parses to another tree, and this names the pair.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{projected}
+
+/// Every binary operator the expression spine climbs, loosest to tightest within each band.
+const OPERATORS: List<string> = [
+    "||",
+    "&&",
+    "==",
+    "!=",
+    "<=",
+    ">=",
+    "<",
+    ">",
+    "??",
+    "|>",
+    "|",
+    "^",
+    "&",
+    "<<",
+    ">>",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+]
+
+/// Whether `source` parses, and prints to text that parses to the same tree and prints to itself.
+fn holds(source: string) -> bool {
+    let out = projected(source)
+    out != "<parse refused>" && projected(out) == out && same_tree(source, out)
+}
+
+fn same_tree(source: string, printed: string) -> bool {
+    let before = parse_source(source)
+    let after = parse_source(printed)
+    if !before.voices.list.is_empty() ||
+        !after.voices.list.is_empty() ||
+        before.stmts.length != after.stmts.length {
+        return false
+    }
+    for j, stmt in before.stmts {
+        if before.store.stmt_fingerprint(stmt) != after.store.stmt_fingerprint(after.stmts[j]) { return false }
+    }
+    true
+}
+
+/// Whether `source` parses at all: a nesting the grammar refuses (two comparisons side by side)
+/// is no case for the printer.
+fn parses(source: string) -> bool { parse_source(source).voices.list.is_empty() }
+
+/// The nestings of `outer` over `inner`, grouped on the left and on the right and bare, as
+/// expressions, each where it parses standing alone.
+fn nestings(outer: string, inner: string) -> List<string> {
+    [
+        "(a ${inner} b) ${outer} c",
+        "a ${outer} (b ${inner} c)",
+        "a ${inner} b ${outer} c",
+        "a ${outer} b ${inner} c",
+    ]
+        .filter((e) -> parses("let x = ${e}"))
+}
+
+/// Every place an expression stands that the printer renders on its own path, `@` where it goes:
+/// a binding's value, a call's and a method's argument, an `if`'s head and branch, a `while`'s head,
+/// a match arm and a match's subject, a string's hole, a `with` record's field, a record
+/// literal's field, a lambda's body, a list's element, a map's value, an index and a `return`.
+const CONTEXTS: List<string> = [
+    "let x = @",
+    "let x = f(@, 1)",
+    "let x = g.m(1, @)",
+    "let x = if @ { 1 } else { 2 }",
+    "let x = if k { @ } else { 2 }",
+    "while @ {\n    work()\n}",
+    "let x = match k {\n    .A -> @,\n    _ -> 0,\n}",
+    "let x = match @ {\n    _ -> 0,\n}",
+    "let x = \"v \${@} w\"",
+    "let x = r with { f: @ }",
+    "let x = R { f: @ }",
+    "let x = (q) -> @",
+    "let x = [@, 1]",
+    "let x = { \"k\": @ }",
+    "let x = xs[@]",
+    "fn h() -> int {\n    return @\n}",
+]
+
+/// `e` in each context, where the context with it parses.
+fn placed(e: string) -> List<string> {
+    [s for c in CONTEXTS for s in [c.replace("@", e)] if parses(s)]
+}
+
+/// Every case that breaks the law, as `source => printed`, a line each — empty where none does, and
+/// text so a failing `then` shows them.
+fn broken(sources: List<string>) -> string {
+    [s + " => " + projected(s) for s in sources if !holds(s)].join("\n")
+}
+
+spec "fmt keeps meaning" {
+    given "every pair of binary operators" {
+        then "each nesting, as a binding's value, prints to text that parses to the same tree" {
+            broken(
+                ["let x = ${e}" for outer in OPERATORS for inner in OPERATORS for e in nestings(outer, inner)],
+            ) == ""
+        }
+        then "every pair yields a case on each side, so the law is not vacuous" {
+            [o + " over " + i for o in OPERATORS for i in OPERATORS if nestings(o, i).length < 2]
+                .join(", ") == ""
+        }
+        then "each nesting holds in every context an expression stands in" {
+            broken(
+                [s for outer in OPERATORS for inner in OPERATORS for e in nestings(outer, inner) for s in placed(e)],
+            ) == ""
+        }
+        then "every context takes a nesting, so no context is skipped" {
+            [c for c in CONTEXTS if !parses(c.replace("@", "(a ?? 0) == (b ?? -1)"))].join(", ") == ""
+        }
+    }
+    given "`??` beside the comparisons, the storyboard's case" {
+        then "a grouped default on each side of `==` prints to the same tree, in every context" {
+            broken(
+                [s for e in [
+                    "(a ?? 0) == (b ?? -1)",
+                    "(a ?? 0) < (b ?? 0)",
+                    "a < (b ?? 0)",
+                    "(a ?? 0) == (b ?? -1) && c",
+                ] for s in placed(e)],
+            ) == ""
+        }
+        then "a chain of defaults keeps its grouping" {
+            broken(
+                [s for e in ["a ?? (b ?? c)", "(a ?? b) ?? c", "(a == b) ?? c"] for s in placed(e)],
+            ) == ""
+        }
+    }
+    given "a unary operator over each binary one" {
+        then "negation, not and bit-not keep their operand whole, in every context" {
+            broken(
+                [s for op in OPERATORS for e in ["-(a ${op} b)", "!(a ${op} b)", "~(a ${op} b)"] if parses("let x = ${e}") for s in placed(e)],
+            ) == ""
+        }
+    }
+}
