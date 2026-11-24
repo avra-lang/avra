@@ -415,6 +415,17 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapNew,
             inert: true,
         },
+        // A map a literal of `n` pairs fills: its arrays and its table made for them at once.
+        RtSig {
+            name: "avra_map_sized",
+            ret: RtKind.Ptr,
+            params: [RtKind.I64],
+            answer: Box.Map,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.MapNew,
+            inert: true,
+        },
         RtSig {
             name: "avra_map_len",
             ret: RtKind.I64,
@@ -644,6 +655,31 @@ export once fn rt_sigs() -> List<RtSig> {
             answer: Box.List,
             boxes: [Box.Map],
         },
+        // WHAT A WALK READS: the same keys and values, as the map's own
+        // arrays retained where they hold no hole — a walk reads them in
+        // place, and a write into the map copies an array a walk still
+        // holds. Never seeded into a binding a program writes, so the
+        // answer is `Any`: it may have stood, or been made.
+        RtSig {
+            name: "avra_map_walk_keys",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.MapKeys,
+            inert: true,
+            boxes: [Box.Map],
+        },
+        RtSig {
+            name: "avra_map_walk_vals",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.MapVals,
+            inert: true,
+            boxes: [Box.Map],
+        },
         // A key removed — the rest keep their order; the answer is
         // nothing, the value read before the call.
         RtSig {
@@ -651,6 +687,20 @@ export once fn rt_sigs() -> List<RtSig> {
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.Ptr],
             writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapRemove,
+            inert: true,
+            boxes: [Box.Map, Box.Text],
+        },
+        // The remove a hit's read already found: the read's word handed
+        // over, believed only where its slot holds this very key, so the
+        // key is not probed or compared twice.
+        RtSig {
+            name: "avra_map_remove_at",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.Ptr, RtKind.I64],
+            writes: [true, false, false],
             owns_result: false,
             has_owned_twin: false,
             host: RtHost.MapRemove,
