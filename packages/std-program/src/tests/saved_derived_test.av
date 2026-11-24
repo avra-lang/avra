@@ -1,0 +1,107 @@
+// A `@derived` field: never written, never folded, never in the saved shape, and rebuilt on every
+// read through its type's own door: from bytes, from bytes already held, and in place inside a
+// bigger answer.
+use @std.meta.{derive, Field, Kind, Mark, Type as MetaType}
+use saved_derive.{DERIVED_MARK, Saved, saved_variants}
+use saved_layout.{SavedSource, saved_root_record}
+use answer_record.{content_hash}
+use interned.{HIGH_LANE, LOW_LANE}
+
+/// A point and the sum of its coordinates, which its door makes.
+@derive(Saved)
+type Point = { x: int, y: int, @derived(point) sum: int }
+
+/// The door every point is made by.
+fn point(x: int, y: int) -> Point { Point { x: x, y: y, sum: x + y } }
+
+/// A point without its derived field.
+@derive(Saved)
+type Plain = { x: int, y: int }
+
+/// A point inside a bigger answer.
+@derive(Saved)
+type Holder = { label: string, at: Point, all: List<Point> }
+
+/// A record whose derived field holds a cell.
+@derive(Saved)
+type Counter = { start: int, @derived(counter) count: Cell<int> }
+
+fn counter(start: int) -> Counter { Counter { start: start, count: Cell.new(start) } }
+
+fn point_key(p: Point) -> string {
+    "${HIGH_LANE.finished(p.folded_into(HIGH_LANE, HIGH_LANE.seed))}:${LOW_LANE.finished(p.folded_into(LOW_LANE, LOW_LANE.seed))}"
+}
+
+fn plain_key(p: Plain) -> string {
+    "${HIGH_LANE.finished(p.folded_into(HIGH_LANE, HIGH_LANE.seed))}:${LOW_LANE.finished(p.folded_into(LOW_LANE, LOW_LANE.seed))}"
+}
+
+/// A point whose derived field says what its door never would.
+fn forged(x: int, y: int) -> Point { Point { x: x, y: y, sum: 999 } }
+
+fn field(name: string, kind: Kind, marks: List<Mark>) -> Field {
+    Field { name: name, ty: kind.spelled(), at: null, kind: kind, marks: marks }
+}
+
+fn declared(name: string, fields: List<Field>) -> MetaType {
+    MetaType { name: name, fields: fields, variants: [], at: null, module: "m" }
+}
+
+/// The saved shape of `t`, spelled: each variant's fields, by name.
+fn shape_spelled(t: MetaType) -> string { [v.fields.map(it.field.name).join(",") for v in saved_variants(t)].join("|") }
+
+spec "saved_derive — a derived field" {
+    given "a record with a derived field" {
+        then "reads back as written, the field rebuilt" {
+            let back = Point.from_saved_bytes(point(2, 3).saved_bytes())
+            back.x == 2 && back.y == 3 && back.sum == 5
+        }
+        then "a field forged on write is rebuilt by the door on read" { Point.from_saved_bytes(forged(2, 3).saved_bytes()).sum == 5 }
+        then "writes the bytes the record without the field writes" { point(2, 3).saved_bytes() == Plain { x: 2, y: 3 }.saved_bytes() }
+        then "folds to the key the record without the field folds to" { point_key(point(2, 3)) == plain_key(Plain { x: 2, y: 3 }) }
+        then "two values differing only in it write and fold alike" {
+            point(2, 3).saved_bytes() == forged(2, 3).saved_bytes() &&
+                point_key(point(2, 3)) == point_key(forged(2, 3))
+        }
+        then "a written field still folds apart" { point_key(point(2, 3)) != point_key(point(3, 2)) }
+    }
+    given "the reads that hold or reach inside" {
+        then "a held decode is a fresh one, the field rebuilt" {
+            let bytes = forged(4, 5).saved_bytes()
+            let first = Point.from_saved_held(bytes, content_hash(bytes))
+            let again = Point.from_saved_held(bytes, content_hash(bytes))
+            first.sum == 9 && again.sum == 9 && Point.from_saved_bytes(bytes).sum == 9
+        }
+        then "inside a bigger answer, read whole or in place, the field is rebuilt" {
+            let h = Holder { label: "h", at: forged(1, 2), all: [forged(3, 4), forged(5, 6)] }
+            let bytes = h.saved_bytes()
+            let back = Holder.from_saved_bytes(bytes)
+            let source = SavedSource.InMemory(bytes)
+            let in_place = Holder.at_in(source, saved_root_record(source, bytes.length))
+            back.at.sum == 3 && back.all[0].sum == 7 && back.all[1].sum == 11 && in_place.sum == 3
+        }
+    }
+    given "a derived field holding a cell" {
+        then "is seen, so no two reads share one value" {
+            let bytes = counter(7).saved_bytes()
+            let first = Counter.from_saved_held(bytes, content_hash(bytes))
+            first.count.set(8)
+            Counter.from_saved_held(bytes, content_hash(bytes)).count.get() == 7
+        }
+    }
+    given "the saved shape" {
+        then "leaves a derived field out, so adding one moves no format" {
+            let derived = [Mark { name: DERIVED_MARK, args: ["point"], at: null }]
+            let marked = declared(
+                "Point",
+                [
+                    field("x", Kind.Int, []),
+                    field("y", Kind.Int, []),
+                    field("sum", Kind.Int, derived),
+                ],
+            )
+            let without = declared("Plain", [field("x", Kind.Int, []), field("y", Kind.Int, [])])
+            shape_spelled(marked) == "x,y" && shape_spelled(marked) == shape_spelled(without)
+        }
+    }
+}
