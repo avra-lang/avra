@@ -16,6 +16,15 @@ export enum Expected {
     Dropped
     /// Unknown: the node stands under one with no rule, which may use its value or drop it.
     Unknown
+    /// Part of a type: a seat that names a type parameter its call leaves open, that parameter
+    /// `never`. It pins what a call's answer fills of it and judges nothing, so a node under it is
+    /// otherwise one under no rule.
+    Partly(ty: SignedType)
+}
+
+impl Expected {
+    /// Whether the seat says nothing the node is judged by: unknown, or only part of a type.
+    fn unknowing() -> bool { self is .Unknown || self is .Partly }
 }
 
 /// What a body's checking reads of the program: the type a top-level value's name has from the
@@ -1538,7 +1547,7 @@ impl Checking {
     /// branch of another type keeps as its seat under a seat that wants nothing, or the seat's type
     /// where they don't join, which each lifts into; nothing under a seat that isn't known, which may widen them.
     fn branches_met(branches: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
-        if expected is .Unknown || types.any(it == null) { return null }
+        if expected.unknowing() || types.any(it == null) { return null }
         let joined = types_joined(types)
         if joined != null { return if expected is .Free { self.met_seated(branches, types, joined) } else { joined } }
         match expected { .Exactly(wanted) -> wanted, rest -> null }
@@ -1550,11 +1559,11 @@ impl Checking {
     /// free seat, an arm whose type isn't known is checked again where the others meet, which pins a
     /// generic answer (a generic call's, a generic enum's variant).
     mut fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
-        if expected is .Unknown || types.any(it == null) { return null }
+        if expected.unknowing() || types.any(it == null) { return null }
         match expected {
             .Exactly(wanted) -> wanted,
             .Free -> self.met_seated(arms, types, types_joined(types) ?? self.met_at_one(arms, types)),
-            .Dropped or .Unknown -> types_joined(types),
+            .Dropped or .Unknown or .Partly(_) -> types_joined(types),
         }
     }
 
@@ -1569,7 +1578,7 @@ impl Checking {
         expected: Expected,
         before: int,
     ) -> SignedType? {
-        if expected is .Exactly { self.arms_seated(e, arms, types, before) } else if !(expected is .Unknown) { self.arms_apart(arms, types) }
+        if expected is .Exactly { self.arms_seated(e, arms, types, before) } else if !expected.unknowing() { self.arms_apart(arms, types) }
         self.arms_met(arms, types, expected)
     }
 
@@ -1698,7 +1707,7 @@ impl Checking {
                 self
                     .lambda_faulted(e, LambdaFault.Unseated(want.spelled(), self.store.written_as_block(e))),
             .Free or .Dropped -> unheard != null && self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.text())),
-            .Unknown -> false,
+            .Unknown or .Partly(_) -> false,
         }
     }
 
@@ -1713,7 +1722,7 @@ impl Checking {
         let seat = match expected {
             .Free or .Dropped -> null,
             .Exactly(ty) -> ty with { nulls: 0 },
-            .Unknown -> { return },
+            .Unknown or .Partly(_) -> { return },
         }
         let variants = self.seat_variants(seat)
         if variants == null && self.unjudged_seat(seat) { return }
@@ -1890,7 +1899,7 @@ impl Checking {
         let before = self.refused.get().length
         let read = self.lambda_answered(body, seat, !params.is_empty())
         self.closed()
-        if expected is .Unknown || read == null || types.any(it == null) { return null }
+        if expected.unknowing() || read == null || types.any(it == null) { return null }
         let answer = self.answer_lifted(body, expected, before) ?? read
         headed_type(TypeHead.Function) with { seats: [SignedSeat {
             ty: types[at]!,
@@ -3424,7 +3433,7 @@ impl Checking {
                 self.unmet(v, seat, read, seat_of(at), before)
             }
         }
-        let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
+        let wanted = match expected { .Exactly(ty) or .Partly(ty) -> ty, rest -> null }
         let handed = found
         mut from_seat: Map<string, SignedType> = {}
         if answer != null && wanted != null && answer_pinned(answer!, wanted!, from_seat) {
@@ -3450,7 +3459,7 @@ impl Checking {
             let open = !seat.fills_all(found)
             let lambda = self.store.closure_parts(v) != null
             let before = self.refused.get().length
-            let read = if open && !lambda { self.check(v, Expected.Unknown) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
+            let read = if open && !lambda { self.check(v, Expected.Partly(seat.filled_or_never(found))) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
             if lambda && !open && !seat.fills_all(handed) && self.refused.get().length != before {
                 let own = self.answered_alone(v, seat, handed, seat_of(at), before)
                 if own != null {

@@ -19,7 +19,7 @@
 //! feature's; the members that may carry one are spelled by the
 //! features that declare them.
 use features.{LanguageFeature}
-use diagnostics.{DiagCode}
+use diagnostics.{DiagCode, Remedy}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 export fn annotations() -> LanguageFeature {
     let codes = table<DiagCode> {
@@ -42,12 +42,16 @@ export fn annotations() -> LanguageFeature {
         "annotation.wrap_mismatch"   | "a WRAP directive's wrapper signature does not match"
         "annotation.wrap_kind"       | "a WRAP directive over a declaration that is neither a fn nor a method"
     }
+    let fixed = table<DiagCode> {
+        kind                    | summary                                                                      | remedy
+        "annotation.unimported" | "a mark names a fn its file imports — the `use` shows where it comes from" | Remedy.Fix
+    }
     LanguageFeature annotations {
         gram: grammar {
             stmt = name:PKG ( "(" ( args:argument ( "," args:argument )* ","? )? ")" )? BREAK? decl:stmt -> Stmt.FnDecl by annotated_written
             mark = name:PKG ( "(" ( args:argument ( "," args:argument )* ","? )? ")" @expect(")", "expected `)` to close the mark's arguments") )? -> Record.Mark by mark_written
         }
-        diags: codes
+        diags: codes.concat(fixed)
     }
     annotations
 }

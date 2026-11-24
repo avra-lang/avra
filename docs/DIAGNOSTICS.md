@@ -1484,6 +1484,52 @@ a WRAP directive over a declaration that is neither a fn nor a method
 
 No witness here: a declaration with a body root that is no fn or method is a seat default or a spec case, and no annotation can stand on either — `@a` before `then` is a parse error.
 
+## annotation.unimported
+
+a mark names a fn its file imports — the `use` shows where it comes from
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{derive}
+use kit.{Reads}
+
+@derive(Reads)
+type R = { @flag n: int }
+0
+
+// /w/src/kit/kit.av
+use @std.meta.{Named, Marker, Type, Directive}
+
+export fn flag(_d: Named) -> Marker { Marker {} }
+
+export trait Reads {
+    static fn derive(t: Type) -> List<Directive> { [] }
+    static fn marks(t: Type) -> List<string> { ["flag"] }
+}
+
+```
+
+```
+error[annotation.unimported]: a mark names a fn its file imports — the `use` shows where it comes from
+  ╭─[/w/src/main.av:5:12]
+5 │ type R = { @flag n: int }
+  ·            ┬
+  ·            ╰── `@flag` is imported nowhere here
+──╯
+help: import it — `use kit.{flag}`
+fix (high): import `flag` — `use kit.{flag}`
+  use kit.{flag}
+
+```
+
 ## resolve.no_module
 
 a `use` names a module the package does not have

@@ -3799,6 +3799,18 @@ same way:
   `Example: extern fn avra_mmap_slice(h: ptr, lo: int, hi: int) -> Bytes`.
   `Callsite:` `packages/std-avrac/src/compiler/store/mapped.av`'s
   `mapped_at`, the store's whole in-place read.
+- **A derive reads which names an annotation's ARGUMENTS resolve to.**
+  `Annotation.decl` says which fn a mark is; nothing says what its
+  arguments name. `@matches(password, "password")` reads a sibling
+  field, and a derive learns so only by scanning each argument's TEXT
+  for a field's name as a word of its own, so an argument that merely
+  mentions the word, or names it through a path, is misread. Wanted:
+  each argument as the names it resolves to where it is written (a
+  field of the record, a top-level declaration, a literal), read by
+  identity as `marks` reads the fn.
+  `Example: [j for j, a in rules if a.reads.any(it.field != null)].first()`.
+  `Callsite:` `packages/std-validate/src/derive.av`'s `waits_from` /
+  `names_a_field`.
 
 The ask a services lane raised stands in the same way, a language addition for the owner to take:
 

@@ -53,6 +53,9 @@ use @std.meta.{
     Field,
     Kind,
     Annotation,
+    Marker as Unrun,
+    Named as Marked,
+    marks,
     Directive,
     Code,
     Decls,
@@ -524,8 +527,13 @@ fn hidden_slot(f: Field, at: Code) -> Code {
     if f.annotations.any(is_secret(it)) { quote { ${at}.secret() } } else { at }
 }
 
-/// `@secret` is no rule: it hides what the field received.
-fn is_secret(a: Annotation) -> bool { a.name == "secret" }
+/// `@secret`: a field whose value is never echoed. No rule, so never run: its word marks what the
+/// field received as hidden. Its seat's and answer's types are imported under other names, since a
+/// derive's code reads a name here first and a program may declare its own `Named` or `Marker`.
+export fn secret(_d: Marked) -> Unrun { Unrun {} }
+
+/// Whether `a` is `@secret`, by the fn it names.
+fn is_secret(a: Annotation) -> bool { marks(a, secret) }
 
 /// One rule over the value read so far, recorded where it refuses.
 /// The value is bound where the rule's call lands, under a name no

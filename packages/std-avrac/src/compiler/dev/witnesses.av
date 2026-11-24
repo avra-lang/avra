@@ -1165,6 +1165,17 @@ fn witnesses() -> List<CodeWitness> {
             witness: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
         },
         CodeWitness {
+            code: "annotation.unimported",
+            witness: on_the_program_layer(
+                with_meta_modules(
+                    "use @std.meta.{derive}\nuse kit.{Reads}\n\n@derive(Reads)\ntype R = { @flag n: int }\n0\n",
+                    {
+                        "/w/src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\nexport trait Reads {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n",
+                    },
+                ),
+            ),
+        },
+        CodeWitness {
             code: "type.marks_named",
             witness: with_meta(
                 "use @std.meta.{marks, Annotation}\nfn rule(a: Annotation) -> bool { marks(a, \"secret\") }\n0",
@@ -1712,6 +1723,12 @@ fn program_golden(case: string) -> Witness {
 
 /// A package witness whose program sees `@std/meta`, vendored in memory.
 export fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }
+
+/// `w`'s files judged on the program layer, the only reader of a law no other path holds, nothing
+/// held unread.
+fn on_the_program_layer(w: Witness) -> Witness {
+    match w { .Package(files) -> Witness.Unread(files, {}), _ -> w }
+}
 
 /// `with_meta`, with more files of the program's own beside the entry.
 fn with_meta_modules(main: string, more: Map<string, string>) -> Witness {
