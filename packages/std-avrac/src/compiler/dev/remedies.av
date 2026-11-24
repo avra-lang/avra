@@ -13,6 +13,7 @@ use core.{flatten}
 use diagnostics.{new_source_file, spliced, Diag}
 use @std.errors.{Suggestion}
 use compiler.{avra}
+use testing.held.{entry_of, held_alone}
 
 /// What an applied remedy must come to — `becomes`.
 export enum Then {
@@ -45,6 +46,19 @@ export fn rows() -> List<RemedyRow> {
             applied: Witness
                 .Source(
                     "extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.method",
+            says: "has no method `totl`",
+            refused: Witness
+                .Source(
+                    "type Cart = { n: int }\nimpl Cart {\n    fn total() -> int { self.n }\n}\nCart { n: 1 }.totl()",
+                ),
+            applied: Witness
+                .Source(
+                    "type Cart = { n: int }\nimpl Cart {\n    fn total() -> int { self.n }\n}\nCart { n: 1 }.total()",
                 ),
             becomes: Then.Clean,
         },
@@ -387,7 +401,7 @@ export fn rows() -> List<RemedyRow> {
             applied: with_meta(
                 "use @std.meta.{derive, Type, Directive}\ntrait X {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n@derive(X)\ntype T = { x: int }\n0",
             ),
-            becomes: Then.Draws("annotation.seats"),
+            becomes: Then.Clean,
         },
         RemedyRow {
             kind: "flow.yield",
@@ -782,13 +796,13 @@ fn unsound(s: Shown) -> bool {
         .Package(_) or .Built(_) or .Unread(_, _) or .Absent or .Beyond(_) -> "",
     }
     if text.is_empty() { return false }
-    let drawn = [d for d in avra().analyze(new_source_file("witness.av", text)).diagnostics if d.kind == s.code.kind]
+    let drawn = [d for d in held_alone(text).judged(entry_of("alone")).diagnostics if d.kind == s.code.kind]
     [spliced_fails(s.code.kind, text, d, sg) for d in drawn for sg in d.suggestions].any(it)
 }
 
 fn spliced_fails(kind: string, text: string, d: Diag, sg: Suggestion) -> bool {
     let after? = spliced(text, sg.edits) else { return true }
-    let out = avra().check(new_source_file("witness.av", after))
+    let out = held_alone(after).judged(entry_of("alone")).report()
     unreadable(out) || out.contains("[${kind}]: ${d.message}")
 }
 

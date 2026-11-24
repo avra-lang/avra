@@ -428,11 +428,6 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type, plan: 
 /// The words a body made late says where it reaches the world, as `world_reached` says it.
 fn late_world(b: Body) -> string { "`${as_symbolled(b.name)}` reaches the world" }
 
-/// Run a lowered program: its printed output, or the refusal.
-export fn run_lowered(l: Lowered) -> Result<string, string> {
-    .Ok(printed(ran(l, l.entry)?))
-}
-
 /// What a run left behind: the boxes and maps `held` — still counted
 /// when it ended, where a run that frees what it lets go leaves none —
 /// and the table `entries` it ever needed, which a run that reuses
@@ -463,15 +458,6 @@ export enum Ended {
     Clean
     Trapped(words: string)
     Cancelled(words: string)
-}
-
-/// Run a lowered program LIVE — what `avra run` is: every line printed
-/// as it is printed, so a program that never ends (a server) is heard,
-/// and a trap does not take the lines before it along.
-export fn run_live(l: Lowered) -> Ended {
-    mut m = fresh_machine(l) with { live: true, freeing: true }
-    let _ = m.run_body(l.entry, [])
-    m.ending()
 }
 
 /// One PROGRAM of a programs binary, run in the evaluator: its body by
@@ -813,11 +799,6 @@ fn walk_calls(by: Map<string, Body>, from: string, to: string, seen: List<string
 
 /// The first call in `b` of a row a compile-time call may not run; absent where it makes none.
 fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> Ins? { b.ins.find(reaches_out(rows, it, permits_embed)) }
-
-/// Whether one body calls a row a compile-time call may not run.
-export fn reaches_world(b: Body, permits_embed: bool) -> bool {
-    world_in(rt_index(), b, permits_embed) != null
-}
 
 /// A row a compile-time call may not run: one the registry marks
 /// World, an embed without an input-carrying result — or one unknown,

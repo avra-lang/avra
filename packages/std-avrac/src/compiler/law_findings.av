@@ -249,6 +249,42 @@ export fn file_found(engine: QueryEngine, file: SourceFileAddress) -> FileFound 
     }
 }
 
+/// WHAT THE LAWS FIND IN `file`'s `then` CASES THAT ITS ITEMS' OWN JUDGEMENT DOESN'T: each case's
+/// nodes, typed as its unit reads them, judged with every law over a view of its item whose misses
+/// are its cases' — a member a case asks of a type that has none of it. Only a suite asks it, before
+/// it makes the cases (`check` judges a case's answer and what it reads, never its members): a case
+/// a member law refuses is refused in that law's words, never as a body the layer can't make.
+/// Each place counted from the file's start.
+@query("laws")
+export fn case_found(engine: QueryEngine, file: SourceFileAddress) -> FileFound {
+    FileFound {
+        findings: [finding_in_file(engine, file, at, f) for at in swept_item_ids(engine, file) for f in case_findings(engine, file, at)],
+    }
+}
+
+/// What `case_found` finds in the item `at` of `file`, counted from the item's start.
+fn case_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<LawFinding> {
+    if !item_judged(engine, file, at) || case_bodies(engine, file, at).is_empty() { return [] }
+    let own = [finding_key(f) for f in law_findings(engine, file, at).findings]
+    let view = view_made(engine, file, at, null)
+    view.misses.set(case_misses(engine, file, at))
+    let lost = lost_a_name(engine, file, at)
+    let found = pinned_while(
+        view,
+        () -> [finding_of(g.entry.name, s) for g in gated_laws() if (generated_rank(at) == null || !g.entry.warns) &&
+            (!lost || g.entry.judges_lost) &&
+            (g.gates.is_empty() || reads_item(view, g.gates)) for s in law_found(engine, file, at, view, g.entry)],
+    )
+    [f for f in found if !own.contains(finding_key(f))]
+}
+
+/// A finding as one judgement of an item tells it from another: its law, its place and its words.
+fn finding_key(f: LawFinding) -> string {
+    let lo = f.at?.lo ?? -1
+    let hi = f.at?.hi ?? -1
+    "${f.by} ${lo} ${hi} ${f.args.join(" | ")}"
+}
+
 /// What `file_found` answers.
 @derive(Saved)
 export type FileFound = { findings: List<LawFinding> }

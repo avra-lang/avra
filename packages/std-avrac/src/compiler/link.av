@@ -9,57 +9,6 @@ use compiler.backend.{
     link_named,
 }
 
-/// clang's words for a link: the objects, the packages' own objects and
-/// flags, the runtime, then the path it is staged at — `binary` is where it
-/// lands. A host link runs `ld` when one is named.
-/// A PROGRAM CARRIES WHAT IT REACHES: the link drops every fn and object
-/// member nothing reaches, so a package imported and not called costs
-/// nothing. A program whose packages resolve its own symbols by name keeps
-/// them all instead (`-rdynamic`): the evaluator resolves an extern through
-/// `dlsym(RTLD_DEFAULT)`, which on ELF reaches the executable only when its
-/// globals stand in the dynamic table.
-/// `-lm` RIDES EVERY NATIVE LINK, as libc does: core's float methods (`round`, `floor`, `ceil`,
-/// `trunc`) lower to libm calls, so a package must not have to name the math library for a
-/// method of the language itself (macOS keeps it in libSystem). The runtime archive is last of the
-/// objects, and the library follows it.
-/// THE RUNTIME IS LAST because it is an archive: an ELF linker takes from it
-/// only what the words BEFORE it name, so a member only a package object
-/// reaches — a row the compiler's host table names — is otherwise dropped.
-fn link_objects(
-    objs: List<string>,
-    ws: Workspace,
-    runtime: string,
-    out: string,
-    binary: string,
-    target: string,
-    reactor: bool,
-    debug: bool,
-    ld: string,
-    hosted: List<string>,
-) -> List<string> {
-    if target != "" {
-        // A WASM LINK: the driver's own target names crt1 and a libc, and the
-        // runtime archive is the wasm one. A package's WASM objects are linked
-        // where its manifest names them; a package whose C has no wasm body is
-        // refused by the build, never handed to the linker.
-        // A REACTOR does not run `main` and does not exit: the host calls
-        // `_initialize` once, `avra_main` for the program's own statements,
-        // and then its exported fns per event.
-        // `--strip-all` drops the DWARF and name sections the C toolchain
-        // leaves in every object: a module is what a browser downloads, and
-        // its debug info was four fifths of it.
-        wasm_link_head(target, reactor, debug)
-            .concat(objs)
-            .concat(ws.link_words(target))
-            .concat(wasm_link_tail(runtime, out))
-    } else {
-        native_link_head(ws.names_its_symbols(), ld, hosted, binary)
-            .concat(objs)
-            .concat(ws.link_words(""))
-            .concat(native_link_tail(runtime, out))
-    }
-}
-
 /// The words a wasm link for `target` starts with: the driver's own target, which names crt1 and a
 /// libc; its debug sections stripped unless `debug`; a reactor's entry where `reactor`; the host
 /// fns and the function table exported.
@@ -84,10 +33,6 @@ export fn wasm_link_tail(runtime: string, out: string) -> List<string> {
         out,
     ]
 }
-
-/// The words a native link ends with: the runtime archive `runtime`, the maths library, and the
-/// binary it writes at `out`.
-export fn native_link_tail(runtime: string, out: string) -> List<string> { [runtime, "-lm", "-o", out] }
 
 /// The words a native link starts with: every symbol in the image's dynamic table where a package's
 /// C names the program's own symbols by name (`[link] dynamic_symbols`), else what nothing reaches

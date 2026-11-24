@@ -26,13 +26,6 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
-# THE NET IS OFF unless a row's claim is the net: the old path's check before every program-layer
-# compile doubles what each row costs and proves nothing a row here asks of it. The rows that keep it
-# (AVRA_PROGRAM_NET=1) are the ones that count what it says: the build slice's net-on cli builds and
-# their "program-layer false refusal" count, and the findings slices' build of every package, held to
-# that same count. The cli's suite runs on the shipped default, the net off, so it holds the words a
-# user meets through a child build/avra. `tapes --findings` passes no door, so the net never stood in it.
-export AVRA_PROGRAM_NET=0
 
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
@@ -43,7 +36,7 @@ DOORS_B="std-ui std-http"
 
 slices() {
     cat <<'EOF'
-build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm, net on and off, 0 false refusals
+build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm
 avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
 avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
 avrac-d    test packages/std-avrac — src/features/[n-r]*
@@ -61,7 +54,7 @@ cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's 
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
-findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
+findings-a tapes --findings on std-avrac and cli, 0 refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
 findings-d the last third
@@ -238,26 +231,25 @@ cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec fin
 # build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made in
 # ONE generation — from the committed seed's link where no compiler stands, else from the one that does
 # — with the package libraries beside it, built without building the compiler again. A gate's
-# compiler makes no claim of the net, so it is built without it; the two-generation fixed point is the
-# build slice's.
+# two-generation fixed point is the build slice's.
 compiler() {
     if compiler_stands; then return 0; fi
     if [ ! -x build/avra ]; then row compiler-recover make recover || return 1; fi
-    row compiler-gen1 env AVRA_PROGRAM_NET=0 AVRA_STD_ANSWERS=0 make avra || return 1
-    row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
+    row compiler-gen1 env AVRA_STD_ANSWERS=0 make avra || return 1
+    row compiler-libs make -o avra libs
 }
 
-# what `$1`'s cold build of packages/cli took, in seconds, net on or off by `$2`
+# what the cold build of packages/cli took, in seconds, and the warm one after it
 cli_built() {
     cold cli
     find "$AVRA_CACHE_DIR" -mindepth 1 -delete
     c0=$(date +%s)
-    row "cli-build-$1-cold" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
+    row cli-build-cold env -u AVRA_STORE_KEPT_HERE build/avra build packages/cli || return 1
     c1=$(date +%s)
-    row "cli-build-$1-warm" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
-    echo "cli build net $1: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
+    row cli-build-warm env -u AVRA_STORE_KEPT_HERE build/avra build packages/cli || return 1
+    echo "cli build: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
     # the warm build's heir waited out, before a row after empties the store it saves
-    env AVRA_PROGRAM_NET="$2" build/avra build packages/cli >/dev/null 2>&1 || :
+    build/avra build packages/cli >/dev/null 2>&1 || :
 }
 
 slice_build() {
@@ -265,9 +257,7 @@ slice_build() {
     row avra-a env AVRA_STD_ANSWERS=0 make avra && cp build/avra "$out/avra-a"
     cold cli
     row avra-b env AVRA_STD_ANSWERS=0 make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
-    cli_built on 1
-    cli_built off 0
-    judged cli-build-false-refusals "$(cat "$out"/cli-build-*.log | grep -c 'program-layer false refusal')"
+    cli_built
 }
 
 # the std-avrac suite over `$@`, its paths under the package: one row for every path of std-avrac's
@@ -335,10 +325,8 @@ tested() {
 # the lines the pin file `$1` lists, sorted, each once; none where there is no such file
 listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
-# THE CLI'S SUITE RUNS ON THE SHIPPED DEFAULT: its cases run build/avra as a user does and hold the
-# words a user meets, refusals among them, so the suite holds what the program layer says alone, the
-# net off. The one suite that runs the compiler as a child; every other test row holds what it runs
-# in-process.
+# THE CLI'S SUITE: the one suite that runs the compiler as a child; every other test row holds what it
+# runs in-process.
 slice_cli() {
     cold cli
     children_kept tested cli-suite "${@:-packages/cli}"
@@ -485,16 +473,12 @@ slice_ui_browser() {
     row board-dev env CI=true sh tools/witness_board_dev.sh build/avra
 }
 
-# each package named: tapes --findings with no refusal; built — a library stops at "declares no entry
-# point", which is no refusal — with no program-layer false refusal; the cli's builds are the build slice's
+# each package named: tapes --findings with no refusal
 findings_on() {
     for p in "$@"; do
         cold "$p"
         row "findings-$p" build/avra tapes "$root/packages/$p" --findings
         judged "refusals-$p" "$(grep -c '^error\[' "$out/findings-$p.log")"
-        [ "$p" != cli ] || continue
-        sh tools/bounded.sh "$ROW_SECS" env AVRA_PROGRAM_NET=1 build/avra build "packages/$p" >"$out/build-$p.log" 2>&1
-        judged "false-refusals-$p" "$(grep -c 'program-layer false refusal' "$out/build-$p.log")"
     done
 }
 HEAVY_FINDINGS="std-avrac cli"

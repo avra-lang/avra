@@ -1,36 +1,17 @@
 // The first pass: uses resolve to definition sites, shadowing takes
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
-use @std.avrac.compiler.{avra, analyze_source, parse_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{judged, shown, refused_with}
 use @std.errors.{Confidence}
-use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{ExprId}
-use features.{NameFacts}
-
-/// The statement index a use's Def binding names; -1 otherwise.
-fn defined_at(r: NameFacts, e: ExprId) -> int {
-    let b? = r.binding(e) else { return -1 }
-    match b {
-        .Def(s) -> s.index,
-        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) or .TypeParam(_) -> -1,
-    }
-}
 
 spec "compiler/resolve" {
     given "resolution facts" {
         then "a use resolves to its definition site" {
-            let a = analyze_source("let x = 1\nx")
-            let p = a.view
-            let r = a.names
-            let use_expr = p.store.stmt_value(p.stmts[1])!
-            r.voices.list.is_empty() && defined_at(r, use_expr) == 0
+            judged("let x = 1\nx").diagnostics.is_empty() && shown("let x = 7\nx") == "7"
         }
         then "a later let shadows an earlier one" {
-            let a = analyze_source("let x = 1\nlet x = 2\nx")
-            let p = a.view
-            let r = a.names
-            defined_at(r, p.store.stmt_value(p.stmts[2])!) == 1
+            shown("let x = 1\nlet x = 2\nx") == "2"
         }
     }
     given "the shadowing chain — the lookup ORDER is the law" {
@@ -56,52 +37,44 @@ spec "compiler/resolve" {
     }
     given "unresolved names" {
         then "a use before its definition names the remedy" {
-            let a = analyze_source("x\nlet x = 1")
-            let p = a.view
-            let r = a.names
-            r.voices.list.length == 1 &&
-                r.voices.list[0].kind == "resolve.use_before_def" &&
-                r.voices.list[0].help != null
+            let r = judged("x\nlet x = 1")
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].kind == "resolve.use_before_def" &&
+                r.diagnostics[0].help != null
         }
         then "a typo one edit away suggests with High confidence" {
-            let a = analyze_source("let value = 1 + valu")
-            let p = a.view
-            let r = a.names
-            r.voices.list.length == 1 &&
-                r.voices.list[0].kind == "resolve.unresolved" &&
-                r.voices.list[0].suggestions.length == 1 &&
-                r.voices.list[0].suggestions[0].confidence == Confidence.High &&
-                r.voices.list[0].suggestions[0].edits.length == 1 &&
-                r.voices.list[0].suggestions[0].edits[0].replacement == "value"
+            let r = judged("let value = 1 + valu")
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].kind == "resolve.unresolved" &&
+                r.diagnostics[0].suggestions.length == 1 &&
+                r.diagnostics[0].suggestions[0].confidence == Confidence.High &&
+                r.diagnostics[0].suggestions[0].edits.length == 1 &&
+                r.diagnostics[0].suggestions[0].edits[0].replacement == "value"
         }
         then "two edits away is Medium; far away is silent" {
-            let an = analyze_source("let value = 1\nvlaue")
-            let near = an.view
-            let rn = an.names
-            let af = analyze_source("let alpha = 1\nzz")
-            let far = af.view
-            let rf = af.names
-            rn.voices.list[0].suggestions[0].confidence == Confidence.Medium &&
-                rf.voices.list[0].suggestions.is_empty() &&
-                !(rf.voices.list[0].help ?? "").contains("did you mean")
+            let rn = judged("let value = 1\nvlaue")
+            let rf = judged("let alpha = 1\nzz")
+            rn.diagnostics[0].suggestions[0].confidence == Confidence.Medium &&
+                rf.diagnostics[0].suggestions.is_empty() &&
+                !(rf.diagnostics[0].help ?? "").contains("did you mean")
         }
     }
     given "reserved words" {
         then "binding one is refused as reserved" {
-            let r = analyze_source("let systems = 1").names
-            r.voices.list.length == 1 && r.voices.list[0].kind == "resolve.reserved"
+            let r = judged("let systems = 1")
+            r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
         }
         then "binding a grammar keyword refuses — the list derives from the grammar" {
-            let r = analyze_source("let while = 1").names
-            r.voices.list.length == 1 && r.voices.list[0].message == "`while` is a keyword"
+            let r = judged("let while = 1")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`while` is a keyword"
         }
         then "USING one as a value is a keyword, not a missing name" {
-            let r = analyze_source("let y = 1\ny + while").names
-            r.voices.list.length == 1 && r.voices.list[0].message == "`while` is a keyword"
+            let r = judged("let y = 1\ny + while")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`while` is a keyword"
         }
         then "CALLING one is reserved too — `fn if` can never exist" {
-            let r = analyze_source("if()").names
-            r.voices.list.length == 1 && r.voices.list[0].message == "`if` is a keyword"
+            let r = judged("if()")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`if` is a keyword"
         }
         then "the absence PARSES in callee position — typing refuses it" {
             // the applied level takes `()` after any primary; the
@@ -110,56 +83,53 @@ spec "compiler/resolve" {
             parse_source("null()").voices.list.is_empty()
         }
         then "a BUILT-IN type name cannot be redeclared" {
-            let r = analyze_source("type int = { x: bool }").names
-            r.voices.list.length == 1 && r.voices.list[0].message == "`int` is a built-in type"
+            let r = judged("type int = { x: bool }")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`int` is a built-in type"
         }
         then "a type CONSTRUCTOR name is protected too" {
-            let r = analyze_source("type List = { x: int }").names
-            r.voices.list.length == 1 && r.voices.list[0].message == "`List` is a built-in type"
+            let r = judged("type List = { x: int }")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`List` is a built-in type"
         }
         then "every built-in name is protected, enums too" {
-            let r = analyze_source("enum bool {\n    a\n}").names
-            r.voices.list.length == 1 && r.voices.list[0].message == "`bool` is a built-in type"
+            let r = judged("enum bool {\n    a\n}")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`bool` is a built-in type"
         }
         then "using one is reserved, never a typo hunt" {
-            let r = analyze_source("spawn").names
-            r.voices.list.length == 1 && r.voices.list[0].kind == "resolve.reserved"
+            let r = judged("spawn")
+            r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
         }
         then "the rendering names the future keyword" {
-            let lang = avra()
             let expected = """error[resolve.reserved]: `bare` is reserved for a future Avra feature
-  ╭─[app.av:1:1]
+  ╭─[<source>:1:1]
 1 │ let bare = 1
   · ┬
   · ╰── cannot be a name
 ──╯
 help: pick another name — `bare` becomes a keyword"""
-            lang.check(new_source_file("app.av", "let bare = 1")) == expected
+            judged("let bare = 1").report() == expected
         }
     }
     given "use before definition, rendered" {
         then "both places show: the use and the definition" {
-            let lang = avra()
             let expected = """error[resolve.use_before_def]: `x` is used before its definition
-  ╭─[app.av:1:1]
+  ╭─[<source>:1:1]
 1 │ x
   · ┬
   · ╰── used here
 ──╯
-  ╭─[app.av:2:1]
+  ╭─[<source>:2:1]
 2 │ let x = 1
   · ┬
   · ╰── defined here
 ──╯
 help: move the definition above this use"""
-            lang.check(new_source_file("app.av", "x\nlet x = 1")) == expected
+            judged("x\nlet x = 1").report() == expected
         }
     }
     given "the milestone gate" {
         then "avra check renders the world-class error" {
-            let lang = avra()
             let expected = """error[resolve.unresolved]: `y` is not defined
-  ╭─[app.av:1:13]
+  ╭─[<source>:1:13]
 1 │ let x = 1 + y
   ·             ┬
   ·             ╰── not defined anywhere in this program
@@ -167,7 +137,7 @@ help: move the definition above this use"""
 help: did you mean `x`?
 fix (high): replace `y` with `x`
   x"""
-            lang.check(new_source_file("app.av", "let x = 1 + y")) == expected
+            judged("let x = 1 + y").report() == expected
         }
     }
 }

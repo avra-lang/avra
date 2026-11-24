@@ -29,6 +29,8 @@ use core.{
     hears_want,
     some_list,
     closest,
+    distinct,
+    edit_distance,
 }
 use diagnostics.{Diag, Guess, Severity, Voice, guess_fix, refusal, said_as, warning}
 use @std.errors.{Confidence, Edit, Suggestion, Loc}
@@ -1457,8 +1459,10 @@ impl TypeCx {
         // a short name one letter off is a typo; two off is a different word
         if name.length <= 4 && n.distance > 1 { return d }
         let at: Loc? = if subject == null { null } else { self.name_after(subject!, name) }
+        // a machine edit is offered only where the nearest name is the one name that near: a tie is a guess
+        let tied = distinct(candidates).filter((c) -> edit_distance(name, c) == n.distance).length
         let fix = Suggestion {
-            confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
+            confidence: if n.distance == 1 && tied == 1 { Confidence.High } else { Confidence.Medium },
             description: "replace `${name}` with `${n.name}`",
             edits: [Edit { loc: l, replacement: n.name } for l in some_list(at)],
         }

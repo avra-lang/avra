@@ -105,3 +105,24 @@ spec "compiler/structural — the structural set on the layer" {
         }
     }
 }
+
+/// The fingerprint of the view `v`'s declaring statement, as the program layer reads its item —
+/// the file's own words in hand — and its canonical reading (`item_canonical`) fingerprints it.
+fn last_fp(body: string) -> int {
+    let items = struct_judged(body).rule_items(STRUCT_PATH)
+    [i.file.view.store.stmt_fingerprint(s) for i in items for s in i.stmts if i.file.view.store.declared_name(s) == "v"]
+        .first() ?? 0
+}
+
+spec "compiler — a view's declaration fingerprint follows its sited text" {
+    given "two views that differ only inside a sited hole" {
+        then "an edit inside the hole moves the declaration's fingerprint" {
+            last_fp("fn v() -> said { said \"a \${n}\" }\n") != last_fp("fn v() -> said { said \"a \${n + 1}\" }\n")
+        }
+    }
+    given "two views written the same way" {
+        then "the same source fingerprints alike" {
+            last_fp("fn v() -> said { said \"a \${n}\" }\n") == last_fp("fn v() -> said { said \"a \${n}\" }\n")
+        }
+    }
+}

@@ -305,6 +305,29 @@ fn typed_nodes_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, it
     [entry_nodes(engine, file, at) ?? own]
 }
 
+/// The misses in each `then` case the written item `at` of `file` writes, its nodes typed as its unit
+/// reads them: what only a suite asks (`case_found`), never among the item's own misses.
+fn case_misses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemMisses {
+    let text = item_under(engine, file, at).text
+    let typed = [StoredBody { store: c.item.store, typed: kept_body(body_checked(engine, file, c, false)) } for c in case_bodies(engine, file, at)]
+    ItemMisses {
+        rows: flatten(
+            [misses_in(
+                engine,
+                TypedNodes {
+                    store: c.store,
+                    type_at: (k: int) -> first_typed([c.typed.types], k),
+                    lo: 0,
+                    hi: c.store.expr_count(),
+                    file: file,
+                    reader: file.package_name,
+                    text: text,
+                },
+            ) for c in typed],
+        ),
+    }
+}
+
 /// A method an impl writes: its name, and whether it's a static.
 type WrittenMethod = { name: string, statics: bool }
 

@@ -3,8 +3,8 @@
 // per call, and the IR carries the ABI — a parameter is borrowed: no
 // count at the call, none at the exit, and a param answered takes its own.
 use @std.avrac.core.{RtKind, joined}
-use @std.avrac.compiler.{analyze_source, avra}
-use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals, provided}
+use @std.avrac.compiler.{avra}
+use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals, provided, judged}
 use compiler.backend.{render_ir}
 
 spec "features/fns" {
@@ -40,14 +40,14 @@ spec "features/fns" {
             extern_shape("extern fn c_plain(v: int) -> int\nc_plain(1)", "c_plain") == "i64 -> i64"
         }
         then "a callback seat answering a pointer is refused by name" {
-            let a = analyze_source("extern fn c_on(cb: fn(int) -> ptr)")
+            let a = judged("extern fn c_on(cb: fn(int) -> ptr)")
             a.diagnostics.length == 2 &&
                 a
                     .report()
                     .contains("is a callback under a cancel, and it answers a pointer the C would follow")
         }
         then "a callback seat answering a word draws no callback refusal" {
-            let a = analyze_source("extern fn c_on(cb: fn(int) -> int)")
+            let a = judged("extern fn c_on(cb: fn(int) -> int)")
             a.diagnostics.length == 1 && !a.report().contains("callback_pointer")
         }
         then "the call site spells nothing — the `mut` lives on the declaration" {
@@ -81,11 +81,13 @@ spec "features/fns" {
             )
         }
         then "only a LOCAL binding has a cell — a `mut` param has none" {
-            refused_saying(
+            let a = judged(
                 "extern fn c_get(mut out: ptr) -> int\nextern fn c_null() -> ptr\nfn thru(mut p: ptr) -> int {\n    c_get(p)\n}\nmut q: ptr = c_null()\nthru(q)",
-                "only a LOCAL binding has a cell to hand over",
-                2,
             )
+            a.diagnostics.length == 1 &&
+                a.report().contains("error[type.host_seat]") &&
+                a.report().contains("only a LOCAL binding has a cell to hand over") &&
+                !a.report().contains("type.seat_unused")
         }
         then "a `let` in a host `mut` seat is the standing seat law" {
             refused_with(
@@ -178,7 +180,7 @@ spec "features/fns" {
             )
         }
         then "the row's absence law renders whole" {
-            analyze_source("extern fn avra_host_env(name: string?) -> string\n1")
+            judged("extern fn avra_host_env(name: string?) -> string\n1")
                 .report()
                 .starts_with(
                     "error[type.host_absence]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: a runtime row reads the pointer it is handed, so its seat takes no absence",
@@ -190,7 +192,7 @@ spec "features/fns" {
             shown("extern fn avra_int_and(a: int, b: int) -> int\navra_int_and(6, 3)") == "2"
         }
         then "and its seats obey the uniform frame's law — a fn value does not cross" {
-            let a = analyze_source(
+            let a = judged(
                 "extern fn avra_rc_retain(p: fn() -> string)\navra_rc_retain(() -> \"hi\")\n1",
             )
             a.diagnostics.length == 2 &&
@@ -328,7 +330,7 @@ spec "features/fns" {
             ) == "true"
         }
         then "the refusal renders whole — at the READ, the declaration second" {
-            analyze_source(
+            judged(
                 "extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")",
             )
                 .report()
@@ -340,7 +342,7 @@ spec "features/fns" {
             shown("extern fn avra_now_ns() -> int\nlet f = () -> avra_now_ns()\nf() >= 0") == "true"
         }
         then "and it carries every seat's type and count, not a fixed one" {
-            let a = analyze_source(
+            let a = judged(
                 "extern fn avra_proc_ready(h: int, timeout_ms: int) -> int\nlet f = avra_proc_ready\n1",
             )
             a.diagnostics.length == 1 &&
@@ -349,12 +351,12 @@ spec "features/fns" {
                     .contains("help: wrap it — `(x0: int, x1: int) -> avra_proc_ready(x0, x1)`")
         }
         then "a zero-arg extern's wrapper takes no seats at all" {
-            let a = analyze_source("extern fn avra_now_ns() -> int\nlet f = avra_now_ns\n1")
+            let a = judged("extern fn avra_now_ns() -> int\nlet f = avra_now_ns\n1")
             a.diagnostics.length == 1 &&
                 a.report().contains("help: wrap it — `() -> avra_now_ns()`")
         }
         then "a `mut` seat's wrapper carries the mark — the contract travels with the type" {
-            let a = analyze_source(
+            let a = judged(
                 "extern fn avra_selfhost_argc(mut out: i64) -> int\nlet f = avra_selfhost_argc\n1",
             )
             a.diagnostics.length == 1 &&
@@ -416,25 +418,25 @@ spec "features/fns" {
     }
     given "wrong shapes" {
         then "an unknown callee names the namespace it searched" {
-            let a = analyze_source("nope(1)")
+            let a = judged("nope(1)")
             a.diagnostics.length == 1 && a.report().contains("no `fn nope` is defined")
         }
         then "arity is exact" {
-            let a = analyze_source("fn f(x: int) -> int { x }\nf(1, 2)")
+            let a = judged("fn f(x: int) -> int { x }\nf(1, 2)")
             a.diagnostics.length == 1 && a.report().contains("`f` takes 1 arguments, found 2")
         }
         then "an argument matches its param" {
-            let a = analyze_source("fn f(x: int) -> int { x }\nf(\"no\")")
+            let a = judged("fn f(x: int) -> int { x }\nf(\"no\")")
             a.diagnostics.length == 1 &&
                 a.report().contains("argument 1 of `f` wants `int`, found `string`")
         }
         then "the body must answer the declared return" {
-            let a = analyze_source("fn f(x: int) -> string { x + 1 }\nf(1)")
+            let a = judged("fn f(x: int) -> string { x + 1 }\nf(1)")
             a.diagnostics.length == 1 &&
                 a.report().contains("the body answers `int` but `f` declares `string`")
         }
         then "an unknown type annotation names today's types — and ABSORBS at the call" {
-            let a = analyze_source("fn f(x: decimal) -> int { 1 }\nf(1)")
+            let a = judged("fn f(x: decimal) -> int { 1 }\nf(1)")
             a.diagnostics.length == 1 &&
                 a.report().contains("`decimal` names no type") &&
                 a
@@ -442,7 +444,7 @@ spec "features/fns" {
                     .contains("a type is a built-in (`int`, `string`, `bool`, `float`) or one you declared")
         }
         then "two fns cannot share a name" {
-            let a = analyze_source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)")
+            let a = judged("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)")
             a.diagnostics.length == 1 && a.report().contains("`f` is defined more than once")
         }
     }
@@ -523,7 +525,7 @@ ret r1"""
             ) == "85"
         }
         then "the refusal renders whole — a count outside the range names both ends" {
-            analyze_source("fn ok(a: int, b: int = 2) -> int { a + b }\nok()")
+            judged("fn ok(a: int, b: int = 2) -> int { a + b }\nok()")
                 .report()
                 .starts_with(
                     "error[type.mismatch]: `ok` takes 1 to 2 arguments, found 0\n  ╭─[<source>:2:1]\n2 │ ok()\n  · ┬\n  · ╰── this call\n──╯\nhelp: the last seat has a default, and a call may leave it unwritten",
@@ -536,7 +538,7 @@ ret r1"""
             )
         }
         then "the default law renders whole — a seat without a default after one with" {
-            analyze_source("fn o(a: int = 1, b: int) -> int { b }\n0")
+            judged("fn o(a: int = 1, b: int) -> int { b }\n0")
                 .report()
                 .starts_with(
                     "error[type.param_default]: `b` has no default and follows `a`, which has one — defaulted seats come last\n  ╭─[<source>:1:15]\n1 │ fn o(a: int = 1, b: int) -> int { b }\n  ·               ┬\n  ·               ╰── the first default\n──╯\nhelp: move the defaulted seats last, or give `b` a default too",
@@ -611,7 +613,7 @@ ret r1"""
             ) == "5"
         }
         then "the refusal renders whole — a captured cell" {
-            analyze_source(
+            judged(
                 "fn run(isolated make: fn() -> int) -> int { make() }\nlet c = Cell.new(1)\nrun(() -> c.get())",
             )
                 .report()
@@ -675,21 +677,21 @@ ret r1"""
             ) == "245"
         }
         then "the refusal renders whole — a name that is no seat lists the seats" {
-            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, c: 2)")
+            judged("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, c: 2)")
                 .report()
                 .starts_with(
                     "error[type.named_arg]: `sub` has no seat named `c`\n  ╭─[<source>:2:11]\n2 │ sub(a: 1, c: 2)\n  ·           ┬\n  ·           ╰── named here\n──╯\nhelp: its seats are `a`, `b`",
                 )
         }
         then "the refusal renders whole — a seat no argument writes" {
-            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 2)")
+            judged("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 2)")
                 .report()
                 .starts_with(
                     "error[type.named_arg]: seat `a` of `sub` is written by no argument, and has no default\n  ╭─[<source>:2:1]\n2 │ sub(b: 2)\n  · ┬\n  · ╰── this call\n──╯\nhelp: write it — `a: …`",
                 )
         }
         then "the refusal renders whole — a fn value's seats have no names" {
-            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nlet f = sub\nf(a: 1, b: 2)")
+            judged("fn sub(a: int, b: int) -> int { a - b }\nlet f = sub\nf(a: 1, b: 2)")
                 .report()
                 .starts_with(
                     "error[type.named_arg]: `a:` names a seat, and `f`'s seats have no names\n  ╭─[<source>:3:3]\n3 │ f(a: 1, b: 2)\n  ·   ┬\n  ·   ╰── named here\n──╯\nhelp: drop the name — a fn value, a runtime method, a contract's member and an extern are called by position",
@@ -836,7 +838,7 @@ fn ir_has(source: string, phrase: string) -> bool {
 /// later improvement VISIBLE — here the seat-unused warning beside
 /// the cell refusal.
 fn refused_saying(source: string, phrase: string, n: int) -> bool {
-    let a = analyze_source(source)
+    let a = judged(source)
     a.diagnostics.length == n && a.report().contains(phrase)
 }
 

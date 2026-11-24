@@ -26,42 +26,6 @@ export fn language_words(_db: RelDb, _of: string) -> string {
     ""
 }
 
-impl Workspace {
-    /// The workspace's language staged as the relation Db's `language_words` input, once.
-    fn stage_language() { set_language_words(self.decls.rows_db.get(), "", joined(self.lang.keywords, " ")) }
-
-    /// A source's text staged as the relation Db's `file_text` input — what a query that
-    /// reads the file is asked of, so its record names the text by its hash.
-    fn stage_text(path: string) { set_file_text(self.decls.rows_db.get(), path, self.listed_text(path)) }
-
-    /// The relation Db, `path`'s text staged in it — once, by the driver, so the query asking
-    /// reads its own answer and never the text; the world moving stages it again.
-    fn text_staged(path: string) -> RelDb {
-        if self.keys.staged.get().get(path) == null { self.db.kernel.unheard(() -> self.restaged(path)) }
-        self.decls.rows_db.get()
-    }
-
-    /// The Db a query over the workspace is asked under.
-    fn query_db() -> RelDb { self.decls.rows_db.get() }
-
-    /// `path`'s text staged as it is read now.
-    fn restaged(path: string) {
-        self.stage_text(path)
-        self.keys.staged.put(path, self.text_word(path))
-    }
-}
-/// The door a workspace's relation Db keeps its answers through: `slot` is the
-/// store the workspace attaches when it opens one, `tree` the checkout its paths are
-/// spelled from — fixed when the Db is made, so every spelling in the process is one.
-// LICENSED compiler.free_state_verb: a CONSTRUCTOR — the store's slot in, the hooks out.
-export fn answer_hooks(slot: Cell<Store?>, tree: string) -> Durable {
-    Durable {
-        answer: (query: string, args: int) -> kept_answer(slot, query, args),
-        keep: (query: string, args: int, record: Bytes) -> keep_answer(slot, query, args, record),
-        home: () -> tree,
-    }
-}
-
 /// The key an answer is filed under: the query's durable name and its arguments' hash.
 fn answer_key(query: string, args: int) -> string { node_key(Stored.Answer, [query, "${args}"]) }
 
@@ -70,28 +34,7 @@ fn kept_answer(slot: Cell<Store?>, query: string, args: int) -> Bytes? {
     store.get_octets(Stored.Answer, answer_key(query, args))
 }
 
-fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
-    let store? = slot.get() else { return }
-    let _ = store.keep_octets(Stored.Answer, answer_key(query, args), record, [])
-}
-
 /// A lasting query over the Db alone, opened by its `_known` door.
 type KnownOverDb = { open: fn(RelDb) -> void }
 
-/// A lasting query over the workspace, opened by its `_known` door.
-type KnownOverWs = { open: fn(Workspace) -> void }
-
 collect known_over_db: List<KnownOverDb> = @query_known_db in package as KnownOverDb { open: it } by it.name
-
-collect known_over_ws: List<KnownOverWs> = @query_known in package as KnownOverWs { open: it } by it.name
-
-impl Workspace {
-    /// EVERY LASTING QUERY IS KNOWN BEFORE ANY IS ASKED: a record that read a call this
-    /// process never asked asks it by its spelling — restored, or run where its own reads
-    /// moved — while a call the process alone answers stays a miss.
-    fn known_opened() {
-        let rdb = self.query_db()
-        for q in known_over_db { (q.open)(rdb) }
-        for q in known_over_ws { (q.open)(self) }
-    }
-}

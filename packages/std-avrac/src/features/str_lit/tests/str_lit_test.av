@@ -1,11 +1,8 @@
 // The first widening, vertically complete: the branch merges into
 // `primary` under the dead-branch gate, strings type as string, and
 // mixing them into arithmetic renders the first type.mismatch.
-use @std.avrac.core.{ExprId}
-use @std.avrac.compiler.{analyze_source, avra, Analysis}
-use @std.avrac.testing.{shown, refused_with, refused_at_run, ir_of}
+use @std.avrac.testing.{judged, shown, refused_with, refused_at_run, ir_of}
 use compiler.backend.{render_ir}
-use @std.avrac.diagnostics.{new_source_file}
 
 /// The program's IR as text.
 fn ir(source: string) -> string { render_ir(ir_of(source)) }
@@ -13,43 +10,36 @@ fn ir(source: string) -> string { render_ir(ir_of(source)) }
 /// How many loops the IR opens.
 fn loops(text: string) -> int { text.split("loop {").length - 1 }
 
-/// What `avra check` says of a one-file program.
-fn said(source: string) -> string { avra().check(new_source_file("app.av", source)) }
-
-/// Statement `i`'s value expression.
-fn value_of(a: Analysis, i: int) -> ExprId {
-    a.view.store.stmt_value(a.view.stmts[i])!
-}
+/// What a one-file program's build says, rendered.
+fn said(source: string) -> string { judged(source).report() }
 
 spec "features/str_lit" {
     given "a string in a program" {
         then "it parses, types as string, and nothing is wrong" {
-            let a = analyze_source("let s = \"hi\"\ns")
-            a.clean() &&
-                a.type_name(value_of(a, 0)) == "string" &&
-                a.type_name(value_of(a, 1)) == "string"
+            judged("let s: string = \"hi\"\ns").clean() && shown("let s = \"hi\"\ns") == "hi"
         }
     }
     given "a string fed to arithmetic" {
         then "the mismatch names the operator, the type, and the place" {
-            let lang = avra()
             let expected = """error[type.mismatch]: `+` needs `int` operands, found `string`
-  ╭─[app.av:1:13]
+  ╭─[<source>:1:13]
 1 │ let x = 1 + "a"
   ·             ┬
   ·             ╰── this is `string`
 ──╯
 help: give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number"""
-            lang.check(new_source_file("app.av", "let x = 1 + \"a\"")) == expected
+            said("let x = 1 + \"a\"") == expected
         }
         then "each wrong operand reports once; Error never echoes" {
-            let both = analyze_source("let x = \"a\" - \"b\"")
-            let broken = analyze_source("let x = 1 + y + \"a\"")
-            both.diagnostics.length == 2 && broken.diagnostics.length == 2
+            let both = judged("let x = \"a\" - \"b\"")
+            // `1 + y` is an Error, and `+` joins strings too: the `"a"` is no wrong operand beside it
+            // `1 + y` is an Error, and `+` joins strings too: the second `+`'s `"a"` is no wrong
+            // operand beside it, only a follow-on of `y` — the old path said that echo as a second
+            let broken = judged("let x = 1 + y + \"a\"")
+            both.diagnostics.length == 2 && broken.diagnostics.length == 1
         }
         then "a mismatch types as Error and absorbs downstream" {
-            let a = analyze_source("let x = 1 + \"a\"\nlet y = x - 1")
-            a.diagnostics.length == 1 && a.type_name(value_of(a, 1)) == "<error>"
+            judged("let x = 1 + \"a\"\nlet y = x - 1").diagnostics.length == 1
         }
     }
     given "interpolation" {
@@ -66,7 +56,7 @@ help: give the operand the type the operator needs — `.length` measures text a
             shown("\"a \\\${x} b\"") == "a \${x} b"
         }
         then "a list hole refuses with the remedy" {
-            let a = analyze_source("let xs = [1]\n\"\${xs}\"")
+            let a = judged("let xs = [1]\n\"\${xs}\"")
             a.diagnostics.length == 1 &&
                 a
                     .report()
@@ -176,7 +166,7 @@ help: give the operand the type the operator needs — `.length` measures text a
     given "a bare string is no walk — the voice names both views" {
         then "a `for` over a string" {
             let expected = """error[type.mismatch]: `for … in` walks a `List`, and a `string` names no element without a view
-  ╭─[app.av:1:10]
+  ╭─[<source>:1:10]
 1 │ for c in "ab" { }
   ·          ┬
   ·          ╰── this is `string`
@@ -186,7 +176,7 @@ help: iterate its octets with `s.bytes()`, or its code points with `s.chars()`""
         }
         then "a comprehension over a string" {
             let expected = """error[type.list]: a comprehension walks a list, and a `string` names no element without a view
-  ╭─[app.av:1:22]
+  ╭─[<source>:1:22]
 1 │ let xs = [c for c in "ab"]
   ·                      ┬
   ·                      ╰── this is `string`
@@ -203,7 +193,7 @@ help: iterate its octets with `s.bytes()`, or its code points with `s.chars()`""
     given "a string is not indexed" {
         then "an int index names the three views" {
             let expected = """error[type.mismatch]: an `int` names no place in a `string` — its elements are a view's
-  ╭─[app.av:2:1]
+  ╭─[<source>:2:1]
 2 │ s[0]
   · ┬
   · ╰── this is `string`

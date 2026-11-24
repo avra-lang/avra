@@ -1,20 +1,8 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use compiler.{analyze_source, one_shot_let_go, parse_source}
-use testing.held.{
-    Held,
-    Judged,
-    OldSaid,
-    differential,
-    ir_differential,
-    differing,
-    entry_of,
-    held_alone,
-    held_at,
-    run_said,
-    said_sorted,
-}
+use compiler.{parse_source}
+use testing.held.{Held, Judged, entry_of, held_alone, held_at}
 use testing.std_sources.{StdFile, StdPkg, std_sources}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
@@ -24,40 +12,7 @@ use compiler.backend.{render_ir}
 use compiler.format.{render_source}
 
 /// What the program layer says of one source standing in no package.
-export fn judged(source: string) -> Judged {
-    if !differential() { return held_alone(source).judged(entry_of("alone")) }
-    let old = old_said(source)
-    let j = held_alone(source).judged(entry_of("alone"))
-    differing(source, old.said, said_sorted(j.diagnostics), old.run, run_said(j.run(), old.quiet))
-    j
-}
-
-/// What the old path says of `source`, read whole and its workspace let go before the program
-/// layer derives anything: one derivation is alive at a time.
-fn old_said(source: string) -> OldSaid {
-    let a = analyze_source(source)
-    let quiet = a.diagnostics.is_empty()
-    let ran = a.run()
-    let said = OldSaid {
-        said: if quiet { run_refusal(ran) } else { said_sorted(a.diagnostics) },
-        run: run_said(ran, quiet),
-        quiet: quiet,
-    }
-    one_shot_let_go()
-    said
-}
-
-/// What a run that refused says, as a diagnostic is said: the old path refuses at run what the layer
-/// refuses at build, so a refusal stands where it is said. Empty for a run that answers, and for a
-/// refusal no kind heads.
-fn run_refusal(r: Result<string, string>) -> string {
-    let e? = match r { .Err(e) -> e, .Ok(_) -> null } else { return "" }
-    let head = e.split("\n")[0]
-    if !head.starts_with("error[") { return "" }
-    let close = head.index_of("]: ")
-    if close < 0 { return "" }
-    "${head.substring(6, close)}: ${head.substring(close + 3, head.length)}"
-}
+export fn judged(source: string) -> Judged { held_alone(source).judged(entry_of("alone")) }
 
 /// A program's printed value, or "<refused>".
 export fn shown(source: string) -> string {
@@ -115,54 +70,11 @@ export fn refused_in(p: Judged, phrase: string) -> bool {
 }
 
 /// The program as IR, memory strategy applied.
-export fn ir_of(source: string) -> Lowered {
-    if !ir_differential() { return lowered_alone(source) }
-    let was = [unnamed(line) for line in render_ir(analyze_source(source).lowered()).split("\n")]
-    one_shot_let_go()
-    let j = held_alone(source).judged(entry_of("alone"))
-    ir_differ(source, was, j)
-    j.lowered()
-}
+export fn ir_of(source: string) -> Lowered { lowered_alone(source) }
 
 /// One source's IR on the program layer, the program never run: a source a spec lowers may be
 /// one that never ends.
 fn lowered_alone(source: string) -> Lowered { held_alone(source).judged(entry_of("alone")).lowered() }
-
-/// Where the program layer's IR of `source` differs from the old path's, printed as one block:
-/// whether the layer makes it, and the first line the two render apart.
-fn ir_differ(source: string, was: List<string>, j: Judged) {
-    let now = match j.made() {
-        .Ok(l) -> [unnamed(line) for line in render_ir(l).split("\n")],
-        .Err(why) -> ["<not made> ${why.split("\n").first() ?? ""}"],
-    }
-    let apart = (0..was.length).find(it >= now.length || was[it] != now[it]) ?? was.length
-    if apart == was.length && now.length == was.length { return }
-    println(
-        "=====IRDIFF\n--SRC\n${source}\n--LINES\n${was.length} ${now.length} ${apart}\n--OLD\n${line_at(was, apart)}\n--NEW\n${line_at(now, apart)}\n=====END",
-    )
-}
-
-/// A line of IR with what the two paths name apart left out: the file a symbol or a static is
-/// named under, a static's own digest, and the seats a signature spells.
-fn unnamed(line: string) -> string {
-    let plain = line
-        .replace("alone/src/main.av.", "")
-        .replace("alone/src/main.av\$", "\$")
-        .replace("<source>\$", "\$")
-    let signed = if plain.starts_with("fn ") && plain.contains("(") { plain.substring(0, plain.index_of("(")) } else { plain }
-    let parts = signed.split("\$lit")
-    [if k == 0 { part } else { undigested(part) } for k, part in parts].join("\$lit")
-}
-
-/// `part` past the digest it opens with.
-fn undigested(part: string) -> string {
-    let kept = (0..part.length).find((i) -> !"-0123456789abcdef".contains(part.substring(i, i + 1))) ?? part
-        .length
-    part.substring(kept, part.length)
-}
-
-/// The line at `i`, or that the text ended before it.
-fn line_at(lines: List<string>, i: int) -> string { if i < lines.length { lines[i] } else { "<end>" } }
 
 /// A present-maker and an absent-maker over `int?`.
 export const makers: string = "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"

@@ -8,6 +8,7 @@ use core.{
     NamesRead,
     ExprId,
     StmtId,
+    SignedType,
     SyntaxArena,
     TypeRef,
     UseParts,
@@ -376,7 +377,7 @@ export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileA
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return null }
     let stated = item_stated_bodies(engine, file, at, item)
-    let bodies = [b.typed.types for b in stated]
+    let bodies = [b.typed.types for b in stated].concat(entry_typed(engine, file, at))
     let reach = bodies.map(it.length).fold(0, (a, b) -> if a > b { a } else { b })
     let src = new_source_file(rule_named(file), item_under(engine, file, at).text)
     RuleFile {
@@ -399,6 +400,15 @@ export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileA
                 },
             ),
     }
+}
+
+/// The types the entry gives the item `at` of `file`'s own top-level nodes, read from the one query
+/// that types the entry (`entry_types`): its node `k` is the entry's node `k + base`. None where the
+/// item runs no statement.
+fn entry_typed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<List<SignedType?>> {
+    let entry = entry_types(engine, file)
+    let base? = entry.bases.find(it.at == at)?.base else { return [] }
+    [entry.types.slice(base, entry.types.length)]
 }
 
 /// Each fn a declaration of a file names in `@cycled_by` or `@scoped_by`.

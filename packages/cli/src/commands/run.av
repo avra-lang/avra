@@ -1,6 +1,6 @@
 //! `avra run` — evaluate a program and print its value.
 use @std.cli.{CliResult, Runnable, command, flag}
-use @std.avrac.compiler.{Program}
+
 use @std.avrac.compiler.host.{no_target}
 use @std.avrac.diagnostics.{render_among}
 use @std.avrac.compiler.backend.{Ended}
@@ -13,8 +13,7 @@ impl Runnable for RunCmd {
         // a wasm run builds the module, on the path the door chooses, and hands it to the host
         // runner; the program layer or the evaluator answers every other run
         if args.option("target") != "" { return run_wasm_command(args) }
-        if program_door() { return if args.has_flag("eval") { program_evaluated(args) } else { program_ran(args) } }
-        phased(args, "lower+run", ran)
+        if args.has_flag("eval") { program_evaluated(args) } else { program_ran(args) }
     }
 }
 
@@ -44,11 +43,6 @@ fn program_evaluated(args: CliResult) -> int {
         return 1
     }
     program_refuse_evaluated(root, joined_path(root, entry), live: true)
-}
-
-fn ran(p: Program) -> Result<int, string> {
-    warn(p)
-    ended_as(p.run_live()?)
 }
 
 /// AN EVALUATED RUN ENDS AS A NATIVE BINARY DOES, so the two engines

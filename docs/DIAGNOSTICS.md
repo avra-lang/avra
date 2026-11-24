@@ -18,7 +18,7 @@ let b = 2
 
 ```
 error[lex.error]: unexpected character `$`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ $
   · ┬
 ──╯
@@ -35,7 +35,7 @@ the parse needed a token that is not there
 
 ```
 error[parse.expected]: this cannot start or continue a `stmt`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ }
   · ┬
 ──╯
@@ -56,7 +56,7 @@ tally Span { n: 2 } { n: 3 }
 
 ```
 error[build.failed]: the brace after an instance's head opens the instance's block, so `Span { … }` is no record literal here — a record literal as the head stands in parentheses: `tally (Span { … })`
-  ╭─[witness.av:4:1]
+  ╭─[<source>:4:1]
 4 │ tally Span { n: 2 } { n: 3 }
   · ┬
 ──╯
@@ -109,7 +109,7 @@ alph()
 
 ```
 error[resolve.unresolved]: no `fn nope` is defined
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ nope(1)
   · ┬
   · ╰── called here
@@ -117,7 +117,7 @@ error[resolve.unresolved]: no `fn nope` is defined
 help: define it — `fn nope(…) { … }` — or import it — `use module.{nope}`
 
 error[resolve.unresolved]: no `fn alph` is defined
-  ╭─[witness.av:3:1]
+  ╭─[<source>:3:1]
 3 │ alph()
   · ┬
   · ╰── called here
@@ -138,12 +138,12 @@ let x = 1
 
 ```
 error[resolve.use_before_def]: `x` is used before its definition
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ x
   · ┬
   · ╰── used here
 ──╯
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ let x = 1
   · ┬
   · ╰── defined here
@@ -167,7 +167,7 @@ if()
 
 ```
 error[resolve.reserved]: `if` is a keyword
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ if()
   · ┬
   · ╰── cannot be a name
@@ -186,7 +186,7 @@ P { x: 1 }
 
 ```
 error[lower.no_projection]: a `P` has no text projection, so it cannot be the program's answer
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ P { x: 1 }
   · ┬
   · ╰── this is the answer
@@ -418,7 +418,7 @@ mut p = P
 
 ```
 error[type.type_value]: `P` is a type, not a value
-  ╭─[witness.av:2:9]
+  ╭─[<source>:2:9]
 2 │ mut p = P
   ·         ┬
   ·         ╰── used as a value here
@@ -442,7 +442,7 @@ f()
 
 ```
 error[resolve.nested_type]: type declarations live at the top level
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     enum E {
   ·     ┬
   ·     ╰── declared inside a block
@@ -462,7 +462,7 @@ enum bool {
 
 ```
 error[resolve.builtin_type]: `bool` is a built-in type
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ enum bool {
   · ┬
   · ╰── declared here
@@ -483,7 +483,7 @@ for i, i in [1] {
 
 ```
 error[resolve.paired]: `i` names both the index and the element
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ for i, i in [1] {
   · ┬
   · ╰── bound here
@@ -503,7 +503,7 @@ f()
 
 ```
 error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it
-  ╭─[witness.av:2:17]
+  ╭─[<source>:2:17]
 2 │ fn f() -> int { x }
   ·                 ┬
   ·                 ╰── read here
@@ -523,7 +523,7 @@ null()
 
 ```
 error[type.lambda]: this is not callable — it holds a `null`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ null()
   · ┬
   · ╰── this is `null`
@@ -545,7 +545,7 @@ handle { db, reqq -> "x" }
 
 ```
 error[type.not_offered]: `reqq` is not offered here — this seat offers `req`, `db`
-  ╭─[witness.av:5:8]
+  ╭─[<source>:5:8]
 5 │ handle { db, reqq -> "x" }
   ·        ┬
   ·        ╰── `reqq` asked for here
@@ -566,7 +566,7 @@ fn start() -> Task<int> {
 
 ```
 error[type.task_escape]: a task cannot outlive the block that spawned it
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn start() -> Task<int> {
   · ┬
   · ╰── `start` answers `Task<int>`
@@ -622,7 +622,7 @@ fn f() -> int {
 
 ```
 error[flow.yield]: `yield` sends into the producer it stands in, and no producer encloses it
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     yield 1
   ·     ┬
   ·     ╰── no producer here
@@ -641,7 +641,7 @@ let s = produce<int>(1) { yield 1 }
 
 ```
 error[flow.produce]: `produce` answers `@std.task.Source`, and this program loads no `@std/task`
-  ╭─[witness.av:1:9]
+  ╭─[<source>:1:9]
 1 │ let s = produce<int>(1) { yield 1 }
   ·         ┬
   ·         ╰── no `@std/task` here
@@ -660,7 +660,7 @@ channel<int>(2)
 
 ```
 error[flow.channel]: `channel` answers `@std.task.Channel`, and this program loads no `@std/task`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ channel<int>(2)
   · ┬
   · ╰── no `@std/task` here
@@ -692,7 +692,7 @@ let job = spawn one()
 
 ```
 error[flow.select]: `select` type-checks but lowers to nothing
-  ╭─[witness.av:7:1]
+  ╭─[<source>:7:1]
 7 │ @fair select {
   · ┬
   · ╰── `@fair` stands here
@@ -717,7 +717,7 @@ select {
 
 ```
 error[parse.select_catchall]: a `select` has no catch-all
-  ╭─[witness.av:6:5]
+  ╭─[<source>:6:5]
 6 │     _ -> 1
   ·     ┬
 ──╯
@@ -742,7 +742,7 @@ v
 
 ```
 error[parse.select_mark]: a `select` reads one mark, `@fair`
-  ╭─[witness.av:5:9]
+  ╭─[<source>:5:9]
 5 │ let v = @slow select {
   ·         ┬
 ──╯
@@ -761,7 +761,7 @@ select {
 
 ```
 error[flow.arm]: a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `int`
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     1 -> 2
   ·     ┬
   ·     ╰── this is `int`
@@ -785,7 +785,7 @@ select {
 
 ```
 error[flow.arm_binder]: `i` counts a list's members, and this arm waits on one task
-  ╭─[witness.av:6:5]
+  ╭─[<source>:6:5]
 6 │     i, r in job -> r
   ·     ┬
   ·     ╰── one task here
@@ -812,7 +812,7 @@ while n < 1 {
 
 ```
 error[flow.spent_arm]: a list arm is taken once, so no loop holds it
-  ╭─[witness.av:8:9]
+  ╭─[<source>:8:9]
 8 │         r in jobs -> r
   ·         ┬
   ·         ╰── waits on a list, inside a loop
@@ -836,7 +836,7 @@ select {
 
 ```
 error[flow.guard_binder]: a guard is read before its arm's head, so it reads no name the arm binds
-  ╭─[witness.av:6:17]
+  ╭─[<source>:6:17]
 6 │     r in job if r > 0 -> r
   ·                 ┬
   ·                 ╰── bound by this arm
@@ -1014,7 +1014,7 @@ component made {
 
 ```
 error[type.component_body]: a component is made of what its body holds, and nothing here says what `made`'s is
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ component made {
   · ┬
   · ╰── holds statements
@@ -1044,7 +1044,7 @@ let rs = ["a", "b"]
 
 ```
 error[type.component_row]: a repeated `tick` keeps state and wears no key, so its state stays with its place and lands on whichever row holds that place next
-  ╭─[witness.av:6:2]
+  ╭─[<source>:6:2]
 6 │ [tick r for r in rs].length
   ·  ┬
   ·  ╰── repeated here
@@ -1097,6 +1097,30 @@ error[flow.no_fate]: a handler that can fail must name a fate for its failure, a
 help: name the letter a failed item is buried in — `dead: <sink>`
 ```
 
+## type.component_named_head
+
+an instance writes its first head seat before its block
+
+```avra
+component chip(label: string) {
+    size: int = 1
+}
+
+fn f() -> int { chip { label: "x", size: 2 }.size }
+
+```
+
+```
+error[type.component_named_head]: `chip`'s first head seat, `label`, is written before its block, never set by name
+  ╭─[<source>:5:17]
+5 │ fn f() -> int { chip { label: "x", size: 2 }.size }
+  ·                 ┬
+──╯
+help: write `chip <label> { … }` — `avra fix --repair` moves it there
+fix (high): write `label` as `chip`'s head
+  "x" { 
+```
+
 ## type.applied
 
 a type applied to arguments it does not take
@@ -1108,7 +1132,7 @@ let m: Map<int, int> = {}
 
 ```
 error[type.applied]: a map's keys are strings, not `int`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ let m: Map<int, int> = {}
   · ┬
   · ╰── this type
@@ -1129,7 +1153,7 @@ g()
 
 ```
 error[annotation.callee]: an annotation names a fn over a declaration
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ @tag
   · ┬
   · ╰── `@tag` names no fn
@@ -1150,7 +1174,7 @@ P { x: 2 }.x
 
 ```
 error[annotation.receiver]: an annotation's first seat says what it takes
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ @tag
   · ┬
   · ╰── `tag` takes nothing
@@ -1432,11 +1456,11 @@ type T = { x: int }
 
 ```
 error[annotation.unplaceable]: a hole was filled with something no seat can hold
-   ╭─[/w/vendor/c/src/c.av:16:40]
-16 │         let rows: List<Decls> = [quote { enum E { A } }]
-   ·                                        ┬
-   ·                                        ╰── a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from /w/vendor/c/src/c.av:545 carries no fields
-───╯
+  ╭─[/w/src/main.av:3:1]
+3 │ @derive(Fields)
+  · ┬
+  · ╰── a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from @x/c:src/c.av carries no fields
+──╯
 help: a fill the compiler cannot place is spoken, never spliced
 ```
 
@@ -1452,7 +1476,7 @@ enum E {
 
 ```
 error[annotation.unread_mark]: every mark is read by something that claims it
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     @nobody A
   ·     ┬
   ·     ╰── `@nobody` — nothing on this declaration reads it
@@ -1649,7 +1673,7 @@ use util.{twice}
 
 ```
 error[resolve.unpackaged]: this file is not in a package — `use` needs a root
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ use util.{twice}
   · ┬
   · ╰── this use
@@ -1793,6 +1817,7 @@ error[resolve.private_apart]: `h` is private to each of `a.av` and `b.av` in `ut
   · ╰── in this use
 ──╯
 help: rename one declaration, or test each through a name its own file exports
+
 ```
 
 ## resolve.import_clash
@@ -2242,6 +2267,12 @@ No witness here: it is what `avra run` says of a package with no entry, which a 
 checking a root needs a `src/` directory or a program file directly in it
 
 No witness here: it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for.
+
+## manifest.no_manifest
+
+checking a directory needs it to be a package's root, the one its `avra.toml` stands in
+
+No witness here: it names a directory handed to `check` that holds no manifest — a directory's own shape, which no lone source text can stand in for.
 
 ## manifest.self_dependency
 
@@ -2901,7 +2932,7 @@ f()
 
 ```
 error[resolve.nested_spec]: spec blocks live at the top level
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     spec "s" { }
   ·     ┬
   ·     ╰── declared inside a block
@@ -2924,7 +2955,7 @@ spec "s" {
 
 ```
 error[resolve.duplicate_case]: `s / g` declares `t` more than once
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ spec "s" {
   · ┬
   · ╰── in this declaration
@@ -2946,7 +2977,7 @@ spec "s" {
 
 ```
 error[type.case]: a `then` answers a `bool`, this one answers `int`
-  ╭─[witness.av:3:20]
+  ╭─[<source>:3:20]
 3 │         then "t" { 1 }
   ·                    ┬
   ·                    ╰── the case's answer
@@ -2966,7 +2997,7 @@ collect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name
 
 ```
 error[collect.kind]: `spell` is not a declaration kind `collect` gathers yet
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name
   · ┬
   · ╰── in this collect
@@ -2986,7 +3017,7 @@ collect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.na
 
 ```
 error[collect.scope]: `everywhere` is not a collect scope
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.name
   · ┬
   · ╰── in this collect
@@ -3006,7 +3037,7 @@ collect xs: List<Entry> = @tag in self as Entry { name: it.name }
 
 ```
 error[collect.order]: a collection declares its order — `by …`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = @tag in self as Entry { name: it.name }
   · ┬
   · ╰── `xs` has none
@@ -3026,7 +3057,7 @@ collect xs: int = @tag in self as Entry { name: it.name } by it.name
 
 ```
 error[collect.not_a_list]: `collect xs` must declare a `List<T>`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: int = @tag in self as Entry { name: it.name } by it.name
   · ┬
   · ╰── declared here
@@ -3045,7 +3076,7 @@ collect xs: List<int> = @tag in self as int { name: it.name } by it.name
 
 ```
 error[collect.not_a_record]: `int` has no fields a projection can fill
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ collect xs: List<int> = @tag in self as int { name: it.name } by it.name
   · ┬
   · ╰── as this type
@@ -3066,7 +3097,7 @@ collect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name
 
 ```
 error[collect.proj_type]: `as Other` disagrees with the declared element `Entry`
-  ╭─[witness.av:3:1]
+  ╭─[<source>:3:1]
 3 │ collect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name
   · ┬
   · ╰── in this collect
@@ -3086,7 +3117,7 @@ collect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name
 
 ```
 error[collect.fields]: `Entry`'s fields are not each filled exactly once — missing module
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name
   · ┬
   · ╰── in this projection
@@ -3106,7 +3137,7 @@ collect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name
 
 ```
 error[collect.path]: `it.label` is not a field this kind's declarations answer
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name
   · ┬
   · ╰── in this collect
@@ -3126,7 +3157,7 @@ collect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope
 
 ```
 error[collect.order_key]: `it.nope` is not a field this kind's declarations answer
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope
   · ┬
   · ╰── in this collect's order
@@ -3146,7 +3177,7 @@ collect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark
 
 ```
 error[collect.order_uncomparable]: `it.mark` is not a value a `by` key can compare
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ collect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark
   · ┬
   · ╰── in this collect's order
@@ -3250,7 +3281,7 @@ export widget cyclic { n -> if xs.length > n { n } else { null } }
 
 ```
 error[collect.self_read]: `cyclic` is collected into `xs`, so it cannot read `xs` while compiling
-  ╭─[witness.av:6:8]
+  ╭─[<source>:6:8]
 6 │ export widget cyclic { n -> if xs.length > n { n } else { null } }
   ·        ┬
   ·        ╰── reads it here
@@ -3311,7 +3342,7 @@ collect enum Shape = @numbered in self by it.name
 
 ```
 error[collect_enum.empty]: `Shape` gathers no member, and an enum names at least one variant
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ collect enum Shape = @numbered in self by it.name
   · ┬
   · ╰── this gathering is empty
@@ -3366,7 +3397,7 @@ collect enum S = widget in closure by it.name
 
 ```
 error[collect_enum.scope]: an enum's variants are one set for every reader — `S` gathers `in closure`, which is what imports have reached so far
-  ╭─[witness.av:5:1]
+  ╭─[<source>:5:1]
 5 │ collect enum S = widget in closure by it.name
   · ┬
   · ╰── in this collect
@@ -3421,7 +3452,7 @@ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
 
 ```
 error[collect_enum.empty]: `Shape` gathers no member, and an enum names at least one variant
-  ╭─[witness.av:3:1]
+  ╭─[<source>:3:1]
 3 │ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
   · ┬
   · ╰── this gathering is empty
@@ -3429,7 +3460,7 @@ error[collect_enum.empty]: `Shape` gathers no member, and an enum names at least
 help: declare a member this `collect enum` gathers, or drop the enum
 
 error[collect_enum.trait]: every member of a `collect enum E: T` implements `T` — `Nope` names no trait here
-  ╭─[witness.av:3:21]
+  ╭─[<source>:3:21]
 3 │ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
   ·                     ┬
   ·                     ╰── `Shape` implements it over its members
@@ -3505,29 +3536,6 @@ a cached fn reads only a context that compares by value
 
 No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/ctx_cached_untold.
 
-## ctx.old_path
-
-`ctx` is built on the program layer
-
-```avra
-ctx depth: int = 0
-
-fn deep() -> int { ctx.depth }
-
-deep()
-
-```
-
-```
-error[ctx.old_path]: `ctx` is checked and built by the program layer
-  ╭─[witness.av:3:20]
-3 │ fn deep() -> int { ctx.depth }
-  ·                    ┬
-  ·                    ╰── a context's form
-──╯
-help: every command takes the program layer unless `AVRA_PROGRAM` is 0 in the environment — unset it
-```
-
 ## type.binding
 
 an annotated binding holds what it declares
@@ -3540,7 +3548,7 @@ x
 
 ```
 error[type.binding]: `x` declares `int`, this is `bool`
-  ╭─[witness.av:1:14]
+  ╭─[<source>:1:14]
 1 │ let x: int = true
   ·              ┬
   ·              ╰── this is `bool`
@@ -3548,7 +3556,7 @@ error[type.binding]: `x` declares `int`, this is `bool`
 help: make the value `int`, or change the declaration that wants it
 
 error[type.binding]: `y` declares `string`, this is `int`
-  ╭─[witness.av:2:17]
+  ╭─[<source>:2:17]
 2 │ let y: string = 5
   ·                 ┬
   ·                 ╰── this is `int`
@@ -3569,7 +3577,7 @@ let [q, ..] = [1] else { 1 }
 
 ```
 error[type.let_pattern]: a destructuring `let` takes the rest of a block as its scope, and a file's top level is no block
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ let [q, ..] = [1] else { 1 }
   · ┬
   · ╰── this `let`
@@ -3617,12 +3625,12 @@ n
 
 ```
 error[const.budget]: a const ran past its budget
-  ╭─[witness.av:1:16]
+  ╭─[<source>:1:16]
 1 │ const n: int = (0..99999999).fold(0, (a, b) -> a + b)
   ·                ┬
   ·                ╰── `n` took more than 600000 steps
 ──╯
-help: raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`
+help: raise `[lifted] steps = …` or `memory = …` (MiB) in alone's avra.toml — the package that declares it — or settle it at run time under `let`
 ```
 
 ## const.trap
@@ -3642,7 +3650,7 @@ twice() + Z
 
 ```
 error[const.trap]: a const trapped while settling
-  ╭─[witness.av:4:16]
+  ╭─[<source>:4:16]
 4 │ const Z: int = boom(1)
   ·                ┬
   ·                ╰── `Z` division by zero
@@ -3664,7 +3672,7 @@ g(1)
 
 ```
 error[const.param]: a const cannot read a run-time parameter
-  ╭─[witness.av:2:20]
+  ╭─[<source>:2:20]
 2 │     const k: int = x + 1
   ·                    ┬
   ·                    ╰── `k` reads `x`
@@ -3684,7 +3692,7 @@ f(1)
 
 ```
 error[const.form]: a computed const needs a compile-time value form
-  ╭─[witness.av:2:27]
+  ╭─[<source>:2:27]
 2 │ const f: fn(int) -> int = mk()
   ·                           ┬
   ·                           ╰── `f` declares `fn(int) -> int`
@@ -3703,7 +3711,7 @@ const a = a
 
 ```
 error[const.cycle]: a const's value asks for its own type
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ const a = a
   · ┬
   · ╰── `a` reads itself here
@@ -3722,7 +3730,7 @@ a method call resolves through the receiver's impl
 
 ```
 error[type.method]: `List<int>` has no method `reverse`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ [1].reverse()
   · ┬
   · ╰── this is `List<int>`
@@ -3730,7 +3738,7 @@ error[type.method]: `List<int>` has no method `reverse`
 help: `List<int>` has `map`, `filter`, `filter_map`, `flat_map`, `flatten`, `take`, `drop`, `take_while`, `drop_while`, `find` and 28 more
 
 error[type.method]: `List<int>` has no method `lenght`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ [1].lenght()
   · ┬
   · ╰── this is `List<int>`
@@ -3753,7 +3761,7 @@ impl Nope {
 
 ```
 error[type.impl]: `impl Nope` serves no declared type
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ impl Nope {
   · ┬
   · ╰── this impl
@@ -3774,7 +3782,7 @@ impl int {
 
 ```
 error[type.orphan]: `int` is the language's own type — a package adds to it only by implementing its own trait
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ impl int {
   · ┬
   · ╰── this impl
@@ -3798,7 +3806,7 @@ impl Sz for string {
 
 ```
 error[type.builtin_name]: `string` already answers `length` — an impl on a builtin type adds names, it never changes one
-  ╭─[witness.av:5:5]
+  ╭─[<source>:5:5]
 5 │     fn length() -> int { 0 }
   ·     ┬
   ·     ╰── this method
@@ -3824,7 +3832,7 @@ impl T for P {
 
 ```
 error[type.trait]: `extra` is not part of `T` — an impl-for holds only the trait's methods
-  ╭─[witness.av:7:5]
+  ╭─[<source>:7:5]
 7 │     fn extra() -> int { 2 }
   ·     ┬
   ·     ╰── declared here
@@ -3846,7 +3854,7 @@ trait T {
 
 ```
 error[type.trait_member]: `T.a` is declared twice
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     fn a() -> int
   ·     ┬
   ·     ╰── declared again here
@@ -3865,7 +3873,7 @@ f()
 
 ```
 error[type.mut_fn]: `mut fn` marks a method that writes its receiver — `f` has none
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ mut fn f() -> int { 1 }
   · ┬
   · ╰── declared here
@@ -3884,7 +3892,7 @@ f()
 
 ```
 error[type.static_fn]: `static fn` marks a method with no receiver — `f` is already a plain fn
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ static fn f() -> int { 1 }
   · ┬
   · ╰── declared here
@@ -3903,7 +3911,7 @@ self
 
 ```
 error[resolve.reserved]: `self` is a keyword
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ let self = 1
   · ┬
   · ╰── cannot be a name
@@ -3911,7 +3919,7 @@ error[resolve.reserved]: `self` is a keyword
 help: pick another name
 
 error[resolve.receiver]: `self` names a method's receiver — this is not a method
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ self
   · ┬
   · ╰── no receiver here
@@ -3935,7 +3943,7 @@ f()
 
 ```
 error[resolve.nested_impl]: impl and trait blocks live at the top level
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     impl X {
   ·     ┬
   ·     ╰── declared inside a block
@@ -3957,7 +3965,7 @@ impl C {
 
 ```
 error[resolve.impl_member]: an `impl` block holds `fn` declarations only
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     mut x = 1
   ·     ┬
   ·     ╰── not a `fn`
@@ -3981,7 +3989,7 @@ b.xs.length
 
 ```
 warning[type.receiver]: `b` is not `mut` — `put` writes through it
-  ╭─[witness.av:6:1]
+  ╭─[<source>:6:1]
 6 │ b.put(1)
   · ┬
   · ╰── aliased here
@@ -4007,7 +4015,7 @@ fn shadow(p: R) {
 
 ```
 warning[type.alias_copy]: `q` is a copy of `p` — a write through it will not reach `p`
-  ╭─[witness.av:7:5]
+  ╭─[<source>:7:5]
 7 │     q.bump()
   ·     ┬
   ·     ╰── a copy
@@ -4025,21 +4033,21 @@ f(1)
 ```
 
 ```
-warning[type.seat_unused]: `n` is a `mut` seat — `f` never writes through it
-  ╭─[witness.av:1:1]
-1 │ fn f(mut n: int) -> int { n }
-  · ┬
-  · ╰── declared `mut`
-──╯
-help: drop `mut`: the caller then hands a value
-
 error[type.seat]: seat 1 of `f` is `mut`, and this is a value
-  ╭─[witness.av:2:3]
+  ╭─[<source>:2:3]
 2 │ f(1)
   ·   ┬
   ·   ╰── a value
 ──╯
 help: bind it `mut` first — `mut x = …` — then hand `x`
+
+warning[type.seat_unused]: `n` is a `mut` seat — `f` never writes through it
+  ╭─[<source>:1:1]
+1 │ fn f(mut n: int) -> int { n }
+  · ┬
+  · ╰── declared `mut`
+──╯
+help: drop `mut`: the caller then hands a value
 ```
 
 ## type.contract_write
@@ -4062,7 +4070,7 @@ impl T for P {
 
 ```
 error[type.contract_write]: `a` writes through `self`, but `T.a` declares no `mut`
-  ╭─[witness.av:6:5]
+  ╭─[<source>:6:5]
 6 │     mut fn a() -> int {
   ·     ┬
   ·     ╰── writes here
@@ -4085,7 +4093,7 @@ c.get()
 
 ```
 warning[type.mut_fn_unused]: `mut fn` — `get` never writes through `self`
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     mut fn get() -> int { self.n }
   ·     ┬
   ·     ╰── declared `mut`
@@ -4107,7 +4115,7 @@ impl P {
 
 ```
 error[type.state_seat]: `state n` is a free fn's seat — a method has no caller's cell to reach
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     fn f(state n: int) -> int { n }
   ·     ┬
   ·     ╰── declared here
@@ -4127,7 +4135,7 @@ show(k)
 
 ```
 warning[type.seat_unused]: `n` is a `mut` seat — `show` never writes through it
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn show(mut n: int) -> int { n }
   · ┬
   · ╰── declared `mut`
@@ -4151,7 +4159,7 @@ impl E {
 
 ```
 error[type.static_name]: `E.a` is already a variant — a `static fn` of that name is uncallable
-  ╭─[witness.av:5:5]
+  ╭─[<source>:5:5]
 5 │     static fn a() -> int { 1 }
   ·     ┬
   ·     ╰── declared here
@@ -4172,7 +4180,7 @@ trait T {
 
 ```
 error[type.derive_contract]: a trait's `derive` answers the declarations it makes
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     static fn derive(n: int) -> int { n }
   ·     ┬
   ·     ╰── declared here
@@ -4198,7 +4206,7 @@ x
 
 ```
 error[resolve.immutable]: `x` is not `mut`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ x = 2
   · ┬
   · ╰── assigned here
@@ -4218,7 +4226,7 @@ a mutation lands on a place — a name, a field, or an index
 
 ```
 error[resolve.place]: a mutation lands on a place — a name, a field, or an index
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ 1 = 2
   · ┬
   · ╰── assigned here
@@ -4236,7 +4244,7 @@ break
 
 ```
 error[loop.jump]: `break` ends the turn of a loop around it, and no loop encloses it
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ break
   · ┬
   · ╰── no loop here
@@ -4257,7 +4265,7 @@ for x in [1] {
 
 ```
 error[loop.label]: `break` names a loop by its `for` binder, and `y` is no enclosing `for`'s name here
-  ╭─[witness.av:3:11]
+  ╭─[<source>:3:11]
 3 │     break y
   ·           ┬
   ·           ╰── not a loop's name
@@ -4306,7 +4314,7 @@ let q = quote { 1 }
 
 ```
 error[type.quote_meta]: a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`
-  ╭─[witness.av:1:15]
+  ╭─[<source>:1:15]
 1 │ let q = quote { 1 }
   ·               ┬
   ·               ╰── the quote
@@ -4325,7 +4333,7 @@ match 1 { quote { 1
 
 ```
 error[type.quote_pat_shape]: a `quote` pattern matches one node — one statement, no arms
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { 1
   ·           ┬
   ·           ╰── this pattern
@@ -4343,7 +4351,7 @@ match 1 { quote { 1 } -> true, _ -> false }
 
 ```
 error[type.quote_pat_subj]: a `quote` pattern reads code — this program does not load `@std/avrac`
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { 1 } -> true, _ -> false }
   ·           ┬
   ·           ╰── this pattern
@@ -4361,7 +4369,7 @@ match 1 { quote { ${1 + 1} } -> true, _ -> false }
 
 ```
 error[type.quote_pat_hole]: a hole in a pattern names a fresh variable — write a bare name
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { ${1 + 1} } -> true, _ -> false }
   ·           ┬
   ·           ╰── this pattern
@@ -4379,7 +4387,7 @@ match 1 { quote { let x: ${T}? = null } -> true, _ -> false }
 
 ```
 error[type.quote_pat_type]: a hole in type position binds only a lone `${T}` — at a `let`/`mut`/`const` annotation, a call's one pinned type argument, or a param's own type
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { let x: ${T}? = null } -> true, _ -> false }
   ·           ┬
   ·           ╰── this pattern
@@ -4397,7 +4405,7 @@ match 1 { quote { let l${x}_y = 1 } -> true, _ -> false }
 
 ```
 error[type.quote_pat_seat]: a hole in name position binds only a lone `${x}` — at a let/for/const binder, a bind pattern, a variant test, a callee, a method or a field name
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { let l${x}_y = 1 } -> true, _ -> false }
   ·           ┬
   ·           ╰── this pattern
@@ -4415,7 +4423,7 @@ match 1 { quote { ${x}(${x}) } -> true, _ -> false }
 
 ```
 error[type.quote_pat_mixed]: `x` binds code once and a name once — one binder answers one type
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { ${x}(${x}) } -> true, _ -> false }
   ·           ┬
   ·           ╰── this pattern
@@ -4433,7 +4441,7 @@ match 1 { quote { f(${..a}, ${..b}) } -> true, _ -> false }
 
 ```
 error[type.quote_pat_run]: two run holes with nothing between them — no scan can split them
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 1 { quote { f(${..a}, ${..b}) } -> true, _ -> false }
   ·           ┬
   ·           ╰── this pattern
@@ -4455,7 +4463,7 @@ grammar bad {
 
 ```
 error[type.syntax_action]: references undefined rule `nothing`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ grammar bad {
   · ┬
   · ╰── in this grammar
@@ -4504,7 +4512,7 @@ when { 1 < 2 -> 1 }
 
 ```
 error[type.when_arms]: a `when` needs its `_` arm
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ when { 1 < 2 -> 1 }
   · ┬
   · ╰── no arm here takes every value
@@ -4523,7 +4531,7 @@ let a = [..5]
 
 ```
 error[type.spread_list]: `..` in a list spreads a list, found `int`
-  ╭─[witness.av:1:10]
+  ╭─[<source>:1:10]
 1 │ let a = [..5]
   ·          ┬
   ·          ╰── spread here
@@ -4542,7 +4550,7 @@ let a = collect 1
 
 ```
 error[parse.blockless_collect]: `collect` gathers the values its block's statements leave
-  ╭─[witness.av:1:9]
+  ╭─[<source>:1:9]
 1 │ let a = collect 1
   ·         ┬
 ──╯
@@ -4563,7 +4571,7 @@ match n {
 
 ```
 error[type.list_pattern]: a list pattern matches a list, found `int`
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     [a, ..] -> a
   ·     ┬
   ·     ╰── this pattern
@@ -4582,7 +4590,7 @@ a list's elements share one type
 
 ```
 error[type.list_element]: a list's elements share one type — the first is `int`, this is `bool`
-  ╭─[witness.av:1:5]
+  ╭─[<source>:1:5]
 1 │ [1, true]
   ·     ┬
   ·     ╰── this is `bool`
@@ -4611,7 +4619,7 @@ xs.length
 
 ```
 error[type.kept_arm]: a kept arm answers one `int`, and this one answers `List<int>`
-  ╭─[witness.av:8:15]
+  ╭─[<source>:8:15]
 8 │         .A -> [1, 2]
   ·               ┬
   ·               ╰── this arm
@@ -4630,7 +4638,7 @@ let xs = [null, null]
 
 ```
 error[type.list_scalar]: a list element takes its type from its value, and `null` has none
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ let xs = [null, null]
   ·           ┬
   ·           ╰── this is `null`
@@ -4651,7 +4659,7 @@ v.length
 
 ```
 error[type.place]: `xs` is not `mut` — `push` mutates it
-  ╭─[witness.av:1:26]
+  ╭─[<source>:1:26]
 1 │ fn grow(xs: List<int>) { xs.push(1) }
   ·                          ┬
   ·                          ╰── mutated here
@@ -4669,7 +4677,7 @@ a comprehension walks a list
 
 ```
 error[type.list]: a comprehension walks a list, found `int`
-  ╭─[witness.av:1:13]
+  ╭─[<source>:1:13]
 1 │ [x for x in 1]
   ·             ┬
   ·             ╰── this is `int`
@@ -4709,7 +4717,7 @@ enum P {
 
 ```
 error[resolve.duplicate_type]: `P` is declared more than once
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ enum P {
   · ┬
   · ╰── redeclared here
@@ -4728,7 +4736,7 @@ type P = { x: void }
 
 ```
 error[type.struct_scalar]: a struct field cannot hold nothing
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ type P = { x: void }
   · ┬
   · ╰── field `x` is `void`
@@ -4748,7 +4756,7 @@ let p = P { x: 1 }
 
 ```
 error[type.duplicate_field]: `P` declares `x` more than once
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ type P = { x: int, x: bool }
   · ┬
   · ╰── in this declaration
@@ -4771,7 +4779,7 @@ match n {
 
 ```
 error[type.record_pattern]: `P { … }` matches a record, found `int`
-  ╭─[witness.av:4:5]
+  ╭─[<source>:4:5]
 4 │     P { x, .. } -> x
   ·     ┬
   ·     ╰── this pattern
@@ -4779,7 +4787,7 @@ error[type.record_pattern]: `P { … }` matches a record, found `int`
 help: match a record of that name, or the shape the value is
 
 warning[type.unreachable_arm]: this arm is never reached — the arm above takes every value
-  ╭─[witness.av:5:5]
+  ╭─[<source>:5:5]
 5 │     _ -> 0
   ·     ┬
   ·     ╰── never reached
@@ -4798,7 +4806,7 @@ type P = { ..P, a: int }
 
 ```
 error[type.spread]: `P` spreads itself
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ type P = { ..P, a: int }
   · ┬
   · ╰── declared here
@@ -4818,7 +4826,7 @@ let p = P { ..5, x: 1 }
 
 ```
 error[type.spread_value]: `..` spreads `int`, which has no fields
-  ╭─[witness.av:2:15]
+  ╭─[<source>:2:15]
 2 │ let p = P { ..5, x: 1 }
   ·               ┬
   ·               ╰── spread here
@@ -4839,7 +4847,7 @@ let p = P { ..a, x: 1 }
 
 ```
 error[type.spread_nullable]: `..` spreads `P?`, which may be null
-  ╭─[witness.av:3:15]
+  ╭─[<source>:3:15]
 3 │ let p = P { ..a, x: 1 }
   ·               ┬
   ·               ╰── spread here
@@ -4861,7 +4869,7 @@ let p = P { ..q }
 
 ```
 error[type.spread_field]: this spread carries `w`, and `P` declares no such field
-  ╭─[witness.av:4:15]
+  ╭─[<source>:4:15]
 4 │ let p = P { ..q }
   ·               ┬
   ·               ╰── spread here
@@ -4882,7 +4890,7 @@ let p = P { ..X { x: 1 } }
 
 ```
 error[type.spread_missing]: this `P` leaves field `y` unset
-  ╭─[witness.av:3:9]
+  ╭─[<source>:3:9]
 3 │ let p = P { ..X { x: 1 } }
   ·         ┬
   ·         ╰── this literal
@@ -4903,7 +4911,7 @@ let p = P { x: 2, ..a }
 
 ```
 warning[type.spread_dead]: field `x` is overwritten by a spread after it
-  ╭─[witness.av:3:16]
+  ╭─[<source>:3:16]
 3 │ let p = P { x: 2, ..a }
   ·                ┬
   ·                ╰── overwritten
@@ -4924,7 +4932,7 @@ let h = G { ..g }
 
 ```
 error[type.spread_generic]: `G` takes type parameters, and a literal that spreads builds only a record that takes none
-  ╭─[witness.av:3:9]
+  ╭─[<source>:3:9]
 3 │ let h = G { ..g }
   ·         ┬
   ·         ╰── this literal
@@ -4944,7 +4952,7 @@ let p = P { x: true, y: 5 }
 
 ```
 error[type.struct_fields]: field `x` is `int`, this is `bool`
-  ╭─[witness.av:2:16]
+  ╭─[<source>:2:16]
 2 │ let p = P { x: true, y: 5 }
   ·                ┬
   ·                ╰── this is `bool`
@@ -4952,7 +4960,7 @@ error[type.struct_fields]: field `x` is `int`, this is `bool`
 help: make the value `int`, or change the declaration that wants it
 
 error[type.struct_fields]: field `y` is `string`, this is `int`
-  ╭─[witness.av:2:25]
+  ╭─[<source>:2:25]
 2 │ let p = P { x: true, y: 5 }
   ·                         ┬
   ·                         ╰── this is `int`
@@ -4974,7 +4982,7 @@ let g = G<int, string> { v: 1 }
 
 ```
 error[type.struct_targs]: `G` takes 1 type argument, and this literal writes 2
-  ╭─[witness.av:2:9]
+  ╭─[<source>:2:9]
 2 │ let g = G<int, string> { v: 1 }
   ·         ┬
   ·         ╰── written here
@@ -4994,7 +5002,7 @@ let m = n with { x: 1 }
 
 ```
 error[type.with_struct]: `with` copies a struct, found `int`
-  ╭─[witness.av:2:9]
+  ╭─[<source>:2:9]
 2 │ let m = n with { x: 1 }
   ·         ┬
   ·         ╰── this is `int`
@@ -5013,7 +5021,7 @@ type X = X
 
 ```
 error[type.named]: `X` stands over itself
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ type X = X
   · ┬
   · ╰── declared here
@@ -5033,7 +5041,7 @@ let x: Box<void> = []
 
 ```
 error[type.alias]: `Box<...>` is given `void`, which is no value
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ let x: Box<void> = []
   · ┬
   · ╰── applied here
@@ -5052,7 +5060,7 @@ fn f<T, T>(x: T) -> T { x }
 
 ```
 error[type.tparam]: `f` declares `T` more than once
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn f<T, T>(x: T) -> T { x }
   · ┬
   · ╰── in this declaration
@@ -5118,7 +5126,7 @@ type A = { x: int, ..C = 1 }
 
 ```
 error[parse.spread]: a spread places a record's fields and takes no value
-  ╭─[witness.av:2:20]
+  ╭─[<source>:2:20]
 2 │ type A = { x: int, ..C = 1 }
   ·                    ┬
 ──╯
@@ -5135,7 +5143,7 @@ null ?? 1
 
 ```
 error[type.coalesce]: this is always absent, so `??` always answers with the right side
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ null ?? 1
   · ┬
   · ╰── always absent
@@ -5154,7 +5162,7 @@ n!
 
 ```
 error[type.force]: `!` insists on a nullable, this is `int`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ n!
   · ┬
   · ╰── this is `int`
@@ -5175,7 +5183,7 @@ match null {
 
 ```
 error[type.match_opt]: this is always absent, so `v?` can never bind
-  ╭─[witness.av:1:7]
+  ╭─[<source>:1:7]
 1 │ match null {
   ·       ┬
   ·       ╰── always absent
@@ -5194,7 +5202,7 @@ n?.x
 
 ```
 error[type.chain]: `?.` reaches into a nullable, this is `int`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ n?.x
   · ┬
   · ╰── this is `int`
@@ -5216,7 +5224,7 @@ f()
 
 ```
 error[type.propagate]: `?` propagates a nullable, this is `int`
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     n?
   ·     ┬
   ·     ╰── this is `int`
@@ -5235,7 +5243,7 @@ v
 
 ```
 error[type.let_else]: the `else` must LEAVE — control cannot fall through to `v`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ let v? = 1 else { 1 }
   · ┬
   · ╰── falls through
@@ -5243,7 +5251,7 @@ error[type.let_else]: the `else` must LEAVE — control cannot fall through to `
 help: end the else with `return`
 
 error[type.let_else]: `v?` asks a nullable, this is `int`
-  ╭─[witness.av:1:10]
+  ╭─[<source>:1:10]
 1 │ let v? = 1 else { 1 }
   ·          ┬
   ·          ╰── this is `int`
@@ -5261,7 +5269,7 @@ help: `int` is never absent — drop the null check
 
 ```
 warning[type.coalesce_never]: `??` never fires — `int` is never absent
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ 1 ?? 2
   · ┬
   · ╰── this is `int`
@@ -5282,7 +5290,7 @@ match 5 { "{a}b" -> 1
 
 ```
 error[type.format]: a format pattern reads text, found `int`
-  ╭─[witness.av:1:11]
+  ╭─[<source>:1:11]
 1 │ match 5 { "{a}b" -> 1
   ·           ┬
   ·           ╰── this is `int`
@@ -5301,7 +5309,7 @@ match "x" { "{a}z{a}" -> 1
 
 ```
 error[type.format_repeat]: `a` names two spans of this format
-  ╭─[witness.av:1:13]
+  ╭─[<source>:1:13]
 1 │ match "x" { "{a}z{a}" -> 1
   ·             ┬
   ·             ╰── written twice
@@ -5320,7 +5328,7 @@ match "x" { "{n: float}z" -> 1
 
 ```
 error[type.format_parse]: `{n: float}` reads its span as `float`, which crosses no text
-  ╭─[witness.av:1:13]
+  ╭─[<source>:1:13]
 1 │ match "x" { "{n: float}z" -> 1
   ·             ┬
   ·             ╰── here
@@ -5339,7 +5347,7 @@ match "x" { "{a}{b}" -> 1
 
 ```
 error[type.format_shape]: `{a}` and `{b}` have nothing between them
-  ╭─[witness.av:1:13]
+  ╭─[<source>:1:13]
 1 │ match "x" { "{a}{b}" -> 1
   ·             ┬
   ·             ╰── here
@@ -5360,7 +5368,7 @@ match 5 {
 
 ```
 error[type.narrow]: a type pattern narrows a `dyn` — this is `int`
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     c: int -> 1
   ·     ┬
   ·     ╰── this is `int`
@@ -5382,7 +5390,7 @@ match x {
 
 ```
 error[type.fraction_pattern]: `1.5` is no integer — a number pattern matches an `int`
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │     1.5 -> 1
   ·     ┬
   ·     ╰── a fraction
@@ -5401,7 +5409,7 @@ enum E { }
 
 ```
 error[type.enum_decl]: `E` declares no variants
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ enum E { }
   · ┬
   · ╰── this enum is empty
@@ -5422,7 +5430,7 @@ match n {
 
 ```
 error[type.match]: `match` chooses over an enum, found `int`
-  ╭─[witness.av:2:7]
+  ╭─[<source>:2:7]
 2 │ match n {
   ·       ┬
   ·       ╰── this is `int`
@@ -5445,7 +5453,7 @@ let x = S.a()
 
 ```
 error[type.variant_arity]: `S.a` carries `int`, given nothing
-  ╭─[witness.av:5:9]
+  ╭─[<source>:5:9]
 5 │ let x = S.a()
   ·         ┬
   ·         ╰── built empty here
@@ -5467,7 +5475,7 @@ let r = E.a(1) is .a(x)
 
 ```
 error[type.is_bind]: a payload `is` binds only in an `if` condition
-  ╭─[witness.av:4:9]
+  ╭─[<source>:4:9]
 4 │ let r = E.a(1) is .a(x)
   ·         ┬
   ·         ╰── this `is`
@@ -5489,7 +5497,7 @@ enum E {
 
 ```
 error[type.enum_payload]: an enum payload cannot hold nothing
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ enum E {
   · ┬
   · ╰── `.a` carries `void`
@@ -5513,7 +5521,7 @@ match E.a(1) {
 
 ```
 error[type.pattern]: `.x` tests a variant, but this is `int`
-  ╭─[witness.av:5:8]
+  ╭─[<source>:5:8]
 5 │     .a(.x) -> 1
   ·        ┬
   ·        ╰── this is `int`
@@ -5536,7 +5544,7 @@ match E.a(1) {
 
 ```
 error[type.member_pattern]: `as` takes a gathered variant whole, as its member's record
-  ╭─[witness.av:5:5]
+  ╭─[<source>:5:5]
 5 │     .a as x -> 1
   ·     ┬
   ·     ╰── `.a` of `E` is written, so it has no record
@@ -5560,7 +5568,7 @@ match E.a(1) {
 
 ```
 error[type.or_binds]: every alternative of an `or` arm binds the same names — the first binds `n`, alternative 2 binds nothing
-  ╭─[witness.av:6:20]
+  ╭─[<source>:6:20]
 6 │     .a(n) or .b -> n
   ·                    ┬
   ·                    ╰── this arm
@@ -5583,7 +5591,7 @@ match E.A(1, 2) {
 
 ```
 error[type.binds_twice]: this pattern binds `n` twice — a name binds one value
-  ╭─[witness.av:5:5]
+  ╭─[<source>:5:5]
 5 │     .A(n, n) -> n
   ·     ┬
   ·     ╰── this pattern
@@ -5613,7 +5621,7 @@ f(M.B)
 
 ```
 warning[type.const_pattern]: `a` is a const here, so this arm compares
-   ╭─[witness.av:10:9]
+   ╭─[<source>:10:9]
 10 │         a -> 3
    ·         ┬
    ·         ╰── compares to the const
@@ -5637,7 +5645,7 @@ f(9)
 
 ```
 warning[type.unreachable_arm]: this arm is never reached — `gone` above binds, and takes every value
-  ╭─[witness.av:4:9]
+  ╭─[<source>:4:9]
 4 │         _ -> 0
   ·         ┬
   ·         ╰── never reached
@@ -5665,7 +5673,7 @@ match Q.B {
 
 ```
 warning[type.registry_hole]: arms answer for several variants and this hole takes the rest: .C, .D
-   ╭─[witness.av:10:5]
+   ╭─[<source>:10:5]
 10 │     _ -> 0
    ·     ┬
    ·     ╰── matches them all
@@ -5684,7 +5692,7 @@ let x = .foo
 
 ```
 error[type.variant_lit]: `.foo` needs a known enum — nothing here says which
-  ╭─[witness.av:1:9]
+  ╭─[<source>:1:9]
 1 │ let x = .foo
   ·         ┬
   ·         ╰── built here
@@ -5706,7 +5714,7 @@ K.all()
 
 ```
 error[type.enum_all]: `all` lists an enum whose variants carry nothing, and `K.B` carries a payload
-  ╭─[witness.av:5:1]
+  ╭─[<source>:5:1]
 5 │ K.all()
   · ┬
   · ╰── listed here
@@ -5727,7 +5735,7 @@ f()
 
 ```
 error[type.fail]: `fail` raises on a `Result`'s failure channel, and this fn promises `int`
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     fail 1
   ·     ┬
   ·     ╰── raised here
@@ -5746,7 +5754,7 @@ n
 
 ```
 error[type.catch]: `catch` recovers a `Result`, this is `int`
-  ╭─[witness.av:1:9]
+  ╭─[<source>:1:9]
 1 │ let n = 1 catch 2
   ·         ┬
   ·         ╰── this is `int`
@@ -5767,20 +5775,12 @@ fn f() -> Result<int, _> {
 
 ```
 error[type.infer_result]: nothing here can fail — write the fn's true answer type, not `Result<T, _>`
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn f() -> Result<int, _> {
   · ┬
   · ╰── declared here
 ──╯
 help: a `fail` or a `?` site is what `_` infers from; with none, spell the answer this fn actually returns
-
-error[type.variant_lit]: `.Ok` builds a variant, and `<error>` has none
-  ╭─[witness.av:2:5]
-2 │     .Ok(1)
-  ·     ┬
-  ·     ╰── this is `<error>`
-──╯
-help: a bare `.Ok` takes the enum its seat names — qualify it (`Enum.Ok`), or declare the variant on an enum
 ```
 
 ## type.defer
@@ -5797,7 +5797,7 @@ defer f()
 
 ```
 error[type.defer]: `defer` drops what its body answers, and this one answers `Result<int, string>` — a failure nobody would hear
-  ╭─[witness.av:4:1]
+  ╭─[<source>:4:1]
 4 │ defer f()
   · ┬
   · ╰── deferred here
@@ -5815,7 +5815,7 @@ errdefer 1
 
 ```
 error[type.defer_inert]: `defer` runs its body later, and this one only names `int` — deferring a value does nothing
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ errdefer 1
   · ┬
   · ╰── deferred here
@@ -5833,16 +5833,8 @@ errdefer println("x")
 ```
 
 ```
-error[resolve.unresolved]: no `fn println` is defined
-  ╭─[witness.av:1:10]
-1 │ errdefer println("x")
-  ·          ┬
-  ·          ╰── called here
-──╯
-help: define it — `fn println(…) { … }` — or import it — `use module.{println}`
-
 error[type.errdefer]: an `errdefer` runs when the enclosing fn fails, and there is none enclosing
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ errdefer println("x")
   · ┬
   · ╰── deferred here
@@ -5864,7 +5856,7 @@ clean()
 
 ```
 error[flow.unbounded_cleanup]: this `defer`'s body waits, and no `within` it writes bounds the wait — it calls the runtime row `avra_fiber_sleep`
-  ╭─[witness.av:3:11]
+  ╭─[<source>:3:11]
 3 │     defer avra_fiber_sleep(1)
   ·           ┬
   ·           ╰── waits here
@@ -5883,7 +5875,7 @@ f(1, 2)
 
 ```
 error[type.duplicate_param]: `f` declares `a` more than once
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn f(a: int, a: int) -> int { a }
   · ┬
   · ╰── in this declaration
@@ -5902,7 +5894,7 @@ f(1)
 
 ```
 error[type.unknown]: `decimal` names no type
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn f(x: decimal) -> int { 1 }
   · ┬
   · ╰── in this signature
@@ -5922,7 +5914,7 @@ f(1)
 
 ```
 error[resolve.duplicate_fn]: `f` is defined more than once
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ fn f(y: int) -> int { y }
   · ┬
   · ╰── redefined here
@@ -5944,7 +5936,7 @@ f()
 
 ```
 error[resolve.nested_fn]: fn declarations live at the top level
-  ╭─[witness.av:2:5]
+  ╭─[<source>:2:5]
 2 │     fn g() -> int { 1 }
   ·     ┬
   ·     ╰── declared inside a block
@@ -5962,7 +5954,7 @@ return 1
 
 ```
 error[type.return]: a `return` answers a fn, and there is none enclosing
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ return 1
   · ┬
   · ╰── returned here
@@ -5981,7 +5973,7 @@ seed()
 
 ```
 error[type.once_fn]: `once fn seed` answers `int`, which the runtime cannot keep
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ once fn seed() -> int { 7 }
   · ┬
   · ╰── declared here
@@ -6003,7 +5995,7 @@ take(N + 1)
 
 ```
 error[type.const_seat]: `n` is a `const` seat — `take` settles it at compile time, and this is computed at run time
-  ╭─[witness.av:5:6]
+  ╭─[<source>:5:6]
 5 │ take(N + 1)
   ·      ┬
   ·      ╰── computed here
@@ -6023,7 +6015,7 @@ c_count(s)
 
 ```
 error[type.host_seat]: seat 1 of `c_count` is `mut` and wears `string` — a `mut` host seat hands C the ADDRESS of the caller's cell
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn c_count(mut out: string) -> int
   · ┬
   · ╰── declared here
@@ -6042,7 +6034,7 @@ extern fn avra_array_new(x: int) -> ptr
 
 ```
 error[type.row_shape]: `avra_array_new` is a runtime row of 0 seat(s), declared here with 1
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_array_new(x: int) -> ptr
   · ┬
   · ╰── this extern
@@ -6061,7 +6053,7 @@ extern fn avra_str_len(s: string?) -> int
 
 ```
 error[type.host_absence]: seat 1 of `avra_str_len` wears `string?`, and a runtime row's seat takes no absence
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_str_len(s: string?) -> int
   · ┬
   · ╰── declared here
@@ -6081,12 +6073,12 @@ f("corpus")
 
 ```
 error[type.extern_value]: an extern fn is not a value — it names a C symbol, not an Avra fn
-  ╭─[witness.av:2:9]
+  ╭─[<source>:2:9]
 2 │ let f = avra_host_is_dir
   ·         ┬
   ·         ╰── read as a value here
 ──╯
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_host_is_dir(path: string) -> int
   · ┬
   · ╰── declared here
@@ -6105,7 +6097,7 @@ extern fn avra_probe_cb(cb: fn(int) -> ptr) -> int
 
 ```
 error[type.host_seat]: seat 1 of `avra_probe_cb` wears `fn(int) -> ptr`, which cannot cross to C
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_probe_cb(cb: fn(int) -> ptr) -> int
   · ┬
   · ╰── declared here
@@ -6113,7 +6105,7 @@ error[type.host_seat]: seat 1 of `avra_probe_cb` wears `fn(int) -> ptr`, which c
 help: a host seat is a machine word or one pointer C reads — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those; any other box has an address C cannot follow. Pass its parts one at a time, or make the callee a runtime row
 
 error[flow.callback_pointer]: seat `cb` of `avra_probe_cb` is a callback under a cancel, and it answers a pointer the C would follow
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_probe_cb(cb: fn(int) -> ptr) -> int
   · ┬
   · ╰── declared here
@@ -6132,7 +6124,7 @@ extern fn avra_bool_text(b: bool) -> string { "x" }
 
 ```
 error[type.host_fn]: `avra_bool_text` is the runtime's own symbol — a host fn cannot define it again
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_bool_text(b: bool) -> string { "x" }
   · ┬
   · ╰── defined here
@@ -6140,7 +6132,7 @@ error[type.host_fn]: `avra_bool_text` is the runtime's own symbol — a host fn 
 help: name the host fn for what the host asks of this program
 
 error[type.host_fn]: seat `b` of the host fn `avra_bool_text` wears `bool`, which no host can hand over
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ extern fn avra_bool_text(b: bool) -> string { "x" }
   · ┬
   · ╰── declared here
@@ -6317,7 +6309,7 @@ sub(a: 1, c: 2)
 
 ```
 error[type.named_arg]: `sub` has no seat named `c`
-  ╭─[witness.av:2:11]
+  ╭─[<source>:2:11]
 2 │ sub(a: 1, c: 2)
   ·           ┬
   ·           ╰── named here
@@ -6336,7 +6328,7 @@ o(1, 2)
 
 ```
 error[type.param_default]: `b` has no default and follows `a`, which has one — defaulted seats come last
-  ╭─[witness.av:1:15]
+  ╭─[<source>:1:15]
 1 │ fn o(a: int = 1, b: int) -> int { b }
   ·               ┬
   ·               ╰── the first default
@@ -6355,7 +6347,7 @@ fn h(..r: List<int>, a: int) -> int { a }
 
 ```
 error[type.variadic]: `..r` takes the rest of `h`'s arguments, so it is the one seat that stands last
-  ╭─[witness.av:1:1]
+  ╭─[<source>:1:1]
 1 │ fn h(..r: List<int>, a: int) -> int { a }
   · ┬
   · ╰── this seat
@@ -6375,7 +6367,7 @@ c
 
 ```
 error[type.spread_seat]: `..` spreads into a seat that takes the rest of the arguments, and `g` declares none
-  ╭─[witness.av:2:14]
+  ╭─[<source>:2:14]
 2 │ let c = g(1, ..[2])
   ·              ┬
   ·              ╰── spread here
@@ -6395,7 +6387,7 @@ run(() -> c.get())
 
 ```
 error[type.isolated]: `make` of `run` is `isolated`, and this fn captures `c`, which is `Cell<int>` — an isolated fn shares nothing with its caller
-  ╭─[witness.av:3:5]
+  ╭─[<source>:3:5]
 3 │ run(() -> c.get())
   ·     ┬
   ·     ╰── captured here
@@ -6416,7 +6408,7 @@ f(v)
 
 ```
 error[type.mismatch]: `!` negates a `bool`, found `int`
-  ╭─[witness.av:1:10]
+  ╭─[<source>:1:10]
 1 │ let a = !5
   ·          ┬
   ·          ╰── this is `int`
@@ -6424,7 +6416,7 @@ error[type.mismatch]: `!` negates a `bool`, found `int`
 help: `!` negates a `bool` — test a nullable with `v != null`, a number with `n == 0`
 
 error[type.mismatch]: argument 1 of `f` wants `int`, found `int?`
-  ╭─[witness.av:4:3]
+  ╭─[<source>:4:3]
 4 │ f(v)
   ·   ┬
   ·   ╰── this is `int?`
@@ -6449,7 +6441,7 @@ ys.push
 
 ```
 error[type.unknown_prop]: no property `x` on `int`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ n.x
   · ┬
   · ╰── read here
@@ -6457,7 +6449,7 @@ error[type.unknown_prop]: no property `x` on `int`
 help: a property is a record's field, or a measure like `length` on the shapes that have one
 
 error[type.unknown_prop]: no property `lengt` on `List<int>`
-  ╭─[witness.av:4:1]
+  ╭─[<source>:4:1]
 4 │ xs.lengt
   · ┬
   · ╰── read here
@@ -6467,7 +6459,7 @@ fix (high): replace `lengt` with `length`
   length
 
 error[type.unknown_prop]: no property `push` on `List<int>`
-  ╭─[witness.av:6:1]
+  ╭─[<source>:6:1]
 6 │ ys.push
   · ┬
   · ╰── read here
@@ -6487,7 +6479,7 @@ a shift count is between 0 and 63
 
 ```
 error[type.shift_count]: a shift count must be between 0 and 63, this is 99
-  ╭─[witness.av:1:6]
+  ╭─[<source>:1:6]
 1 │ 1 << 99
   ·      ┬
   ·      ╰── shifted by this
@@ -6507,7 +6499,7 @@ a | b & 3
 
 ```
 error[type.mixed_bitwise]: `|` and `&` in one expression have no agreed order
-  ╭─[witness.av:3:1]
+  ╭─[<source>:3:1]
 3 │ a | b & 3
   · ┬
   · ╰── two bitwise operators in one run
@@ -6527,7 +6519,7 @@ let a = 1
 
 ```
 error[parse.leading_pipe]: a line never begins with `|>`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ |> f
   · ┬
 ──╯
@@ -6545,7 +6537,7 @@ let m = {1: 2}
 
 ```
 error[type.map_key]: a map's keys are strings, this is `int`
-  ╭─[witness.av:1:10]
+  ╭─[<source>:1:10]
 1 │ let m = {1: 2}
   ·          ┬
   ·          ╰── this is `int`
@@ -6564,7 +6556,7 @@ let m = { ..5 }
 
 ```
 error[type.spread_map]: `..` in a map spreads a map, found `int`
-  ╭─[witness.av:1:13]
+  ╭─[<source>:1:13]
 1 │ let m = { ..5 }
   ·             ┬
   ·             ╰── spread here
@@ -6583,7 +6575,7 @@ let m = {"a": 1, "b": true}
 
 ```
 error[type.map_value]: this map holds `int`, this is `bool`
-  ╭─[witness.av:1:23]
+  ╭─[<source>:1:23]
 1 │ let m = {"a": 1, "b": true}
   ·                       ┬
   ·                       ╰── this is `bool`
@@ -6602,7 +6594,7 @@ m.entries().length
 
 ```
 error[type.map_entry]: a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ m.entries().length
   · ┬
   · ╰── asked here
@@ -6621,7 +6613,7 @@ f.floor() catch _ -> 0
 
 ```
 error[type.to_int]: `float.floor` answers `Result<int, ToInt>`, and this program sees no `@std/prelude`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ f.floor() catch _ -> 0
   · ┬
   · ╰── rounded here
@@ -6641,7 +6633,7 @@ c.put("k", 1)
 
 ```
 error[type.cell_map]: `put` inserts into the map a cell holds, and this cell holds `int`
-  ╭─[witness.av:2:1]
+  ╭─[<source>:2:1]
 2 │ c.put("k", 1)
   · ┬
   · ╰── not a map
@@ -6659,7 +6651,7 @@ an interpolation hole prints as a scalar or string
 
 ```
 error[type.interp_hole]: an interpolation hole prints as a scalar or string, found `List<int>`
-  ╭─[witness.av:1:4]
+  ╭─[<source>:1:4]
 1 │ "${[1, 2]}"
   ·    ┬
   ·    ╰── this is `List<int>`

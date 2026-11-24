@@ -11,33 +11,6 @@ use @std.errors.{Loc}
 
 export type Finding = { rule: string, file: string, text: string }
 
-/// Every rule finding across `p`, found now — a program built outside a
-/// check. A check never asks: each file's rows are kept as it speaks
-/// (derive.av's `file_said`), and `Checked.findings` reads them back.
-export fn findings_of(p: Program) -> List<Finding> {
-    flatten(
-        [file_findings(p.ws.host, a, rule_findings(analysed(a), a.view.stmts)) for a in p.files],
-    )
-}
-
-/// One file's findings — the rows a held file answers with in place of
-/// its rules running again.
-export fn file_findings(host: Host, a: Analysis, found: List<Diag>) -> List<Finding> {
-    let src = current_source(host, a.view.source)
-    flatten([filed_finding(src, d) for d in found])
-}
-
-/// The file's line table over its CURRENT text — read through the
-/// host, never the parse's own copy, so a finding's trimmed line
-/// answers what the file holds now. A file that is gone, or that the
-/// host can no longer give as text, keeps what the parse held; an empty
-/// file is empty.
-fn current_source(host: Host, src: SourceFile) -> SourceFile {
-    // LICENSED compiler.host_asked_directly: a finding's line is shown as the file holds it at this instant, after the parse
-    let text? = host.spared_text(src.file).as_text() else { return src }
-    new_source_file(src.file, text)
-}
-
 // ── THE ROW AS TEXT: one `rule\tfile\ttext` line — the `Findings` row
 // (db.av), a file's kept row, and a baseline file all read this one codec.
 
@@ -58,16 +31,4 @@ fn finding_of_line(line: string) -> Finding? {
     let parts = line.split("\t")
     if parts.length < 2 { return null }
     Finding { rule: parts[0], file: parts[1], text: parts.slice(2, parts.length).join("\t") }
-}
-
-/// A finding with no place to point (a locationless `Say` voice) rows
-/// nothing — a baseline site is always a source line, never a bare
-/// claim.
-fn filed_finding(src: SourceFile, d: Diag) -> List<Finding> { finding_at(src, d.kind, d.primary.loc) }
-
-/// A rule's finding at its place, its line read from `src`.
-export fn finding_at(src: SourceFile, rule: string, at: Loc?) -> List<Finding> {
-    let loc? = at else { return [] }
-    let line = src.linecol(loc.lo).line
-    [Finding { rule: rule, file: loc.file ?? src.file, text: src.line_text(line).trim() }]
 }

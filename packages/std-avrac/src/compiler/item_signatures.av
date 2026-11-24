@@ -286,29 +286,76 @@ export type RecordSignature = { type_params: List<string>, fields: List<FieldSea
 
 /// The signature of the record (or component) `file` declares as `name`, absent when it declares
 /// none: a component holding a body carries what its composing trait names past its own fields.
-@query("summary")
+/// THE WRITTEN SIGNATURE, COMPLETED: a name resolves as the written stratum resolves it but where
+/// that finds none, so a written signature every type of which is named IS the signature, read
+/// once; one naming a type the written names don't is signed again over every name
+/// (`completed_signature`).
 export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? {
+    let written? = record_signature_written(engine, file, name) else { return null }
+    if signature_named(written) { return written }
+    completed_signature(engine, file, name)
+}
+
+/// The signature of the record (or component) `file` declares as `name`, its type names read over
+/// every name, what its module's generators make among them.
+@query("summary")
+export fn completed_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? { signature_built(engine, file, name, false) }
+
+/// Whether every type `sig` holds is named: no field's, bound's or default's type, nor any type
+/// inside one, is a name that names no type.
+fn signature_named(sig: RecordSignature) -> bool {
+    sig.fields.all(it.ty == null || every_type_named(it.ty!)) &&
+        sig.bounds.all(it == null || every_type_named(it!)) &&
+        sig.defaults.all(it == null || every_type_named(it!))
+}
+
+/// Whether `t`, and every type inside it, names a type.
+fn every_type_named(t: SignedType) -> bool {
+    !(t.head is .Unnamed) &&
+        t.args.all(every_type_named(it)) &&
+        t.seats.all(every_type_named(it.ty)) &&
+        (t.answer == null || every_type_named(t.answer!)) &&
+        t.alternatives.all(every_type_named(it)) &&
+        (t.under == null || every_type_named(t.under!))
+}
+
+/// The same signature among written names alone: what a generator is handed of the record it runs
+/// over. Generators stand in strata — what makes a module's generated names never reads them, so a
+/// name its module writes none of is a name the record doesn't stand on, never a question of what
+/// the module's generators make while they are being made.
+@query("summary")
+export fn record_signature_written(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? { signature_built(engine, file, name, true) }
+
+/// The signature of the record (or component) `file` declares as `name`, its type names read among
+/// written names alone where `written`.
+fn signature_built(engine: QueryEngine, file: SourceFileAddress, name: string, written: bool) -> RecordSignature? {
     let item? = record_item(engine, file, name) else { return null }
-    let s? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == name) else { return component_signature(engine, file, item, name) }
+    let s? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == name) else { return component_signature(engine, file, item, name, written) }
     let parts = item.store.struct_parts(s)!
-    let signing = signing_in(engine, file, parts.tparams)
+    let signing = signing_in(engine, file, parts.tparams) with { written_only: written }
     let placing = item.store.component_parts(s) != null
-    let written = [field_seat(engine, signing, f) with { placed: placing && f.state, made: placing && reads_self(item.store, f.default) } for f in parts.fields]
+    let fields = [field_seat(engine, signing, f) with { placed: placing && f.state, made: placing && reads_self(item.store, f.default) } for f in parts.fields]
     let home = declared_place(file, name)
-    let spread = (at: int) -> [g for x in parts.spreads if x.at == at && !spreads_home(engine, file, x.of.name, home) for g in spread_fields(engine, signing.signed(x.of))]
-    let own = [f for at in 0..written.length + 1 for f in spread(at).concat(if at < written.length { [written[at]] } else { [] })]
-    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
+    let spread = (at: int) -> [g for x in parts.spreads if x.at == at && !spreads_home(engine, file, x.of.name, home) for g in spread_fields(engine, signing.signed(x.of), written)]
+    let own = [f for at in 0..fields.length + 1 for f in spread(at).concat(if at < fields.length { [fields[at]] } else { [] })]
+    carrying(engine, file, item, name, parts.tparams, own, written) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
 }
 
 /// A component's signature as a record's: its type parameters with their bounds, and its fields — its head's, then each
 /// member as the field that holds it, an event's the nullable fn its handler is, in order, then what
 /// it carries.
-fn component_signature(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> RecordSignature? {
+fn component_signature(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    name: string,
+    written: bool,
+) -> RecordSignature? {
     let s? = item.stmts.find((s) -> item.store.component_parts(s)?.name == name) else { return null }
     let parts = item.store.component_parts(s)!
-    let signing = signing_in(engine, file, parts.tparams)
+    let signing = signing_in(engine, file, parts.tparams) with { written_only: written }
     let own = [field_seat(engine, signing, p) for p in parts.head.concat(parts.holders)]
-    carrying(engine, file, item, name, parts.tparams, own) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
+    carrying(engine, file, item, name, parts.tparams, own, written) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
 }
 
 /// The signature of `name` over `tparams`: its own fields `own`, then, where `item` declares it a
@@ -321,10 +368,11 @@ fn carrying(
     name: string,
     tparams: List<string>,
     own: List<FieldSeat>,
+    written: bool,
 ) -> RecordSignature {
     RecordSignature {
         type_params: tparams,
-        fields: own.concat(carried_past(engine, file, item, name, own)),
+        fields: own.concat(carried_past(engine, file, item, name, own, written)),
     }
 }
 
@@ -336,6 +384,7 @@ fn carried_past(
     item: ReadItem,
     name: string,
     own: List<FieldSeat>,
+    written: bool,
 ) -> List<FieldSeat> {
     if !item
         .stmts
@@ -343,25 +392,30 @@ fn carried_past(
             (s) -> item.store.component_parts(s)?.name == name &&
                 item.store.component_body(s) != null,
         ) { return [] }
-    let carried = carried_fields(engine, file)
+    let carried = carried_fields(engine, file, written)
     if carries_composed([f.name for f in own], [f.name for f in carried]) { carried } else { [] }
 }
 
 /// The fields a component of `file` holding a body carries: those of the record the one trait that
 /// composes it names; none where no one trait does.
-fn carried_fields(engine: QueryEngine, file: SourceFileAddress) -> List<FieldSeat> {
+fn carried_fields(engine: QueryEngine, file: SourceFileAddress, written: bool) -> List<FieldSeat> {
     let traits = composers(engine, file)
     if traits.length != 1 { return [] }
-    let record? = composed_record(engine, traits[0]) else { return [] }
-    record_signature(engine, record.file, record.name)?.fields ?? []
+    let record? = composed_record(engine, traits[0], written) else { return [] }
+    signature_of(engine, record.file, record.name, written)?.fields ?? []
+}
+
+/// `record_signature`, or among written names alone where `written`.
+fn signature_of(engine: QueryEngine, file: SourceFileAddress, name: string, written: bool) -> RecordSignature? {
+    if written { record_signature_written(engine, file, name) } else { record_signature(engine, file, name) }
 }
 
 /// The record the trait `t`'s `@composes(R)` names, read in the trait's own file.
-fn composed_record(engine: QueryEngine, t: TraitAt) -> DeclaredName? {
+fn composed_record(engine: QueryEngine, t: TraitAt, written: bool = false) -> DeclaredName? {
     let mark? = composes_mark(engine, t) else { return null }
     let item? = read_trait(engine, t) else { return null }
     let carried? = item.store.ident_name(mark.args[0]) else { return null }
-    resolved(engine, t.file, Space.Type, carried).named()
+    if written { written_resolution(engine, t.file, Space.Type, carried).named() } else { resolved(engine, t.file, Space.Type, carried).named() }
 }
 
 /// THE TRAITS THAT MAY COMPOSE A COMPONENT OF `file`, by what the file can name: the nearest files,
@@ -463,9 +517,9 @@ export fn declared_shapes(engine: QueryEngine) -> Shapes {
 }
 
 /// The fields a spread of `spread` brings, its record's own, bound to the arguments it's applied to.
-fn spread_fields(engine: QueryEngine, spread: SignedType) -> List<FieldSeat> {
+fn spread_fields(engine: QueryEngine, spread: SignedType, written: bool = false) -> List<FieldSeat> {
     let at? = declared_at(spread) else { return [] }
-    let record? = record_signature(engine, at.file, at.name) else { return [] }
+    let record? = signature_of(engine, at.file, at.name, written) else { return [] }
     [f with { ty: f.ty?.bound(spread.args) } for f in record.fields]
 }
 

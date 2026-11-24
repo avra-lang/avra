@@ -25,29 +25,6 @@ use diagnostics.{spliced, loc_at}
 use @std.errors.{Edit, Loc}
 use compiler.format.{import_item}
 
-impl Program {
-    /// A `Fix.Delete`'s own application — ONE edit transaction over
-    /// every target, guarded by the same remark/license doors a
-    /// rewrite answers to, then trusted on the rule's own `@law`
-    /// (`rule_proof.av`'s `law_proved`: the after-text still
-    /// type-checks) since no IR comparison applies to a removal.
-    fn delete_application(path: string, a: Analysed, text: string, c: Candidate, what: List<DeclId>) -> List<
-        Application,
-    > {
-        let edits? = delete_edits(a, text, what) else { return [] }
-        if edits
-            .any(
-                (e: Edit) -> holds_remark(a.view.store, e.loc) ||
-                    licensed_just_above(a.view.store, e.loc.lo),
-            ) {
-            return []
-        }
-        let after? = spliced(text, edits) else { return [] }
-        let by_law = self.law_proved(path, after, declared_law(c.owner))
-        [Application { kind: rule_id(c.owner), edits: edits, proved: false, by_law: by_law }]
-    }
-}
-
 /// `Fix.Delete`'s own targets, or `null` for any other fix — the
 /// harness's own door (`rule_examples.av`'s `checks_delete`) and
 /// `avra check`'s (`rule_pass.av`'s `delete_diag`) both read a
