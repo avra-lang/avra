@@ -24,7 +24,7 @@ use core.{
     some_list,
 }
 use @std.meta.{derive}
-use @std.program.address.{SourceFileAddress}
+use @std.program.address.{SourceFileAddress, source_file}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
@@ -95,7 +95,7 @@ fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerP
     mut by_type: Map<string, List<FiledImpl>> = {}
     let generators_declare = generated && generators_declare_any(engine, package)
     for path in package_sources(engine, package, "src") {
-        let f = SourceFileAddress { package_name: package, path_in_package: path }
+        let f = source_file(package, path)
         let by_item = if generated { generated_impls(engine, f) } else { written_impls(engine, f) }
         for k, held in by_item {
             for nth, i in held {
@@ -152,14 +152,7 @@ fn generators_declare_any(engine: QueryEngine, package: string) -> bool {
     depended_on(engine, [package], [])
         .any(
             (p) -> package_sources(engine, p, "src")
-                .any(
-                    (path) -> !generated_declares(
-                        engine,
-                        SourceFileAddress { package_name: p, path_in_package: path },
-                    )
-                        .names
-                        .is_empty(),
-                ),
+                .any((path) -> !generated_declares(engine, source_file(p, path)).names.is_empty()),
         )
 }
 
@@ -228,7 +221,7 @@ export fn declared_of(n: DeclaredName?) -> DeclaredAt? {
 }
 
 /// The prelude file the language's own type `word`'s verbs are written in.
-fn own_verbs_file(word: string) -> SourceFileAddress { SourceFileAddress { package_name: PRELUDE, path_in_package: "verbs/${word}.av" } }
+fn own_verbs_file(word: string) -> SourceFileAddress { source_file(PRELUDE, "verbs/${word}.av") }
 
 /// A receiver of the type `file` declares as `name`, over `params`: the language's own type where
 /// `file` is its verbs' file, else the declared one.
@@ -265,7 +258,7 @@ fn impls_of(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
 /// The impls a part files for the type `file` declares.
 fn impls_in(part: Bytes?, file: SourceFileAddress) -> List<FiledImpl> {
     let held? = part else { return [] }
-    [i for i in Filed.from_saved_bytes(held).impls if i.of.path_in_package == file.path_in_package && i.of.package_name == file.package_name]
+    [i for i in Filed.from_saved_bytes(held).impls if i.of.same_as(file)]
 }
 
 /// The impls the type `file` declares as `name` has in its package that write `method`, as a method
@@ -912,7 +905,7 @@ fn trait_declared(d: DeclaredName) -> TraitAt { TraitAt { file: d.file, name: d.
 /// The verb `name` the file at `path` in `@std/prelude` declares for a receiver of `subject`'s type:
 /// the first declared whose receiver seat takes it, or for a static (no subject) the one declared.
 fn own_verb(engine: QueryEngine, path: string, name: string, subject: SignedType?) -> SignedType? {
-    let file = SourceFileAddress { package_name: PRELUDE, path_in_package: path }
+    let file = source_file(PRELUDE, path)
     let typed = [f! for s in fn_signatures(engine, file, name) for f in [fn_typed([], s)] if f != null]
     let s? = subject else { return typed.first() }
     typed.find((f) -> takes_receiver(f, s))

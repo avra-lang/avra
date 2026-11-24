@@ -1,6 +1,6 @@
 // A question's identity, held by its arguments' keys: two argument lists a naive concatenation would
 // merge are two questions, each answered with its own arguments read back.
-use address.{SourceFileAddress}
+use address.{SourceFileAddress, source_file}
 use tests.support.store_in_memory.{store_in_memory}
 use query_engine.{QueryEngine, held_bool, held_file, held_int, held_key_of, held_text, query_engine}
 use @std.text.{from_codepoint}
@@ -42,12 +42,7 @@ fn truth_text_known(engine: QueryEngine, t: bool, a: string) -> string {
 
 fn file_known(engine: QueryEngine, package: string, path: string) -> string {
     one_file_definition()
-        .question_keyed(
-            one_file_arguments(
-                engine,
-                SourceFileAddress { package_name: package, path_in_package: path },
-            ),
-        )
+        .question_keyed(one_file_arguments(engine, source_file(package, path)))
         .known_as
         .held_key()
 }
@@ -103,7 +98,7 @@ spec "saved_query — a question's identity holds its arguments apart" {
     }
     then "a file reads back as asked" {
         let e = keyed_engine()
-        one_file(e, SourceFileAddress { package_name: "a/b", path_in_package: "c" }) == "a/b|c"
+        one_file(e, source_file("a/b", "c")) == "a/b|c"
     }
 }
 
@@ -114,16 +109,10 @@ spec "a key's spelling" {
     given "awkward arguments" {
         then "a file's key is its kind and its two texts' keys, whatever they hold" {
             let files = [
-                SourceFileAddress { package_name: "", path_in_package: "" },
-                SourceFileAddress { package_name: "s3:abc", path_in_package: "12:x:" },
-                SourceFileAddress {
-                    package_name: "@a/b",
-                    path_in_package: "src/${from_codepoint(0)}.av",
-                },
-                SourceFileAddress {
-                    package_name: "p",
-                    path_in_package: ["x" for _i in 0..300].join(""),
-                },
+                source_file("", ""),
+                source_file("s3:abc", "12:x:"),
+                source_file("@a/b", "src/${from_codepoint(0)}.av"),
+                source_file("p", ["x" for _i in 0..300].join("")),
             ]
             files.all((f) -> held_file(f) == file_key_spelled_apart(f))
         }

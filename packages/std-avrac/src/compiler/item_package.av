@@ -2,7 +2,7 @@
 //! question, so a process asking it of a package nobody edited checks one record of inputs.
 use core.{flatten, distinct, some_list}
 use @std.meta.{derive}
-use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.address.{DirectoryAddress, SourceFileAddress, source_file}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.worked_ahead.{WorkAhead, Worked, cores_online, engine_worked_ahead}
 use @std.program.saved_derive.{Saved}
@@ -81,10 +81,7 @@ type ClosureFiles = { files: List<SourceFileAddress> }
 
 @cut_query("summary")
 fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
-    closure_from(
-        engine,
-        [SourceFileAddress { package_name: package, path_in_package: p } for p in package_sources(engine, package, "src")],
-    )
+    closure_from(engine, [source_file(package, p) for p in package_sources(engine, package, "src")])
 }
 
 /// The files the program whose entry is `entry` reaches: the entry and every file of its own module,
@@ -174,4 +171,4 @@ export fn program_files(engine: QueryEngine, package: string) -> List<SourceFile
 export fn package_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_package_facts) }
 
 /// The source `path` of `package`.
-fn source_at(package: string, path: string) -> SourceFileAddress { SourceFileAddress { package_name: package, path_in_package: path } }
+fn source_at(package: string, path: string) -> SourceFileAddress { source_file(package, path) }

@@ -5,7 +5,7 @@
 //! node no rule lowers yet is named, never guessed at.
 use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
-use @std.program.address.{SourceFileAddress}
+use @std.program.address.{SourceFileAddress, source_file}
 
 /// What a lowering reads of the program: what the checked program answers, what a top-level name
 /// the body reads or calls is, the declared method a value of a type has by a name, and the static
@@ -1532,10 +1532,7 @@ export fn decl_keyed(key: string) -> DeclKeyed? {
     let head = if scoped { 2 } else { 1 }
     if parts.length <= head { return null }
     DeclKeyed {
-        file: SourceFileAddress {
-            package_name: parts.take(head).join("/"),
-            path_in_package: parts.drop(head).join("/"),
-        },
+        file: source_file(parts.take(head).join("/"), parts.drop(head).join("/")),
         name: dotted.last()!,
     }
 }
@@ -1565,10 +1562,7 @@ export fn template_home(file: SourceFileAddress) -> string { "${file.package_nam
 export fn template_file(home: string) -> SourceFileAddress? {
     let at = home.index_of(":")
     if at < 0 { return null }
-    SourceFileAddress {
-        package_name: home.substring(0, at),
-        path_in_package: home.substring(at + 1, home.length),
-    }
+    source_file(home.substring(0, at), home.substring(at + 1, home.length))
 }
 
 /// A const a body declares that settled, as a const after it that reads it is handed it: its name,

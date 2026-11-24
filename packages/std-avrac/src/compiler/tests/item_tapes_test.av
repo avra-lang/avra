@@ -17,7 +17,7 @@ use compiler.{
     written_key,
 }
 use @std.io.{make_dirs}
-use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.address.{DirectoryAddress, SourceFileAddress, source_file}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.tests.support.store_in_memory.{store_in_memory}
 use @std.program.query_engine.{QueryEngine, query_engine}
@@ -79,18 +79,18 @@ spec "a file's items on tapes" {
     }
     given "the key a read-back item is held under" {
         then "two texts at one place never share a key" {
-            let f = SourceFileAddress { package_name: "app", path_in_package: "src/main.av" }
+            let f = source_file("app", "src/main.av")
             written_key(f, 2, 10, "fn a() -> int { 1 }") != written_key(f, 2, 10, "fn b() -> int { 1 }")
         }
         then "a made item whose tape moved but means the same keys apart" {
-            let f = SourceFileAddress { package_name: "app", path_in_package: "src/main.av" }
+            let f = source_file("app", "src/main.av")
             let near = tape_of_source("fn a() -> int { 1 }")
             let far = tape_of_source("fn a() -> int {\n    1\n}")
             near.meaning_hash.high_word == far.meaning_hash.high_word &&
                 made_key(f, 3, near) != made_key(f, 3, far)
         }
         then "a made item whose tape means something else keys apart" {
-            let f = SourceFileAddress { package_name: "app", path_in_package: "src/main.av" }
+            let f = source_file("app", "src/main.av")
             made_key(f, 3, tape_of_source("fn a() -> int { 1 }")) != made_key(f, 3, tape_of_source("fn a() -> int { 2 }"))
         }
     }
