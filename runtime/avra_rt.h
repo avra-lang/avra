@@ -294,6 +294,7 @@ extern const char avra_rt_held_avra_ctx_frame __asm__(AVRA_RT_LABEL(avra_ctx_fra
 extern const char avra_rt_held_avra_ctx_enter __asm__(AVRA_RT_LABEL(avra_ctx_enter));
 extern const char avra_rt_held_avra_ctx_frame_pushed __asm__(AVRA_RT_LABEL(avra_ctx_frame_pushed));
 extern const char avra_rt_held_avra_ctx_reframed __asm__(AVRA_RT_LABEL(avra_ctx_reframed));
+extern const char avra_rt_held_avra_ctx_entry __asm__(AVRA_RT_LABEL(avra_ctx_entry));
 extern const char avra_rt_held_avra_ctx_heard __asm__(AVRA_RT_LABEL(avra_ctx_heard));
 extern const char avra_rt_held_avra_ctx_listen __asm__(AVRA_RT_LABEL(avra_ctx_listen));
 extern const char avra_rt_held_avra_ctx_listened __asm__(AVRA_RT_LABEL(avra_ctx_listened));
@@ -580,6 +581,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_ctx_enter,
     &avra_rt_held_avra_ctx_frame_pushed,
     &avra_rt_held_avra_ctx_reframed,
+    &avra_rt_held_avra_ctx_entry,
     &avra_rt_held_avra_ctx_heard,
     &avra_rt_held_avra_ctx_listen,
     &avra_rt_held_avra_ctx_listened,
@@ -1099,6 +1101,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_frame_pushed(AVR
     "avra_ctx_frame_pushed: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_ctx_reframed(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_ctx_reframed: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_entry(AVRA_RT_I64)), int64_t),
+    "avra_ctx_entry: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_heard(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), void),
     "avra_ctx_heard: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_listen()), void),

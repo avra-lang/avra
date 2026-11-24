@@ -7,10 +7,19 @@ use tree.node.{Node, Action, Said}
 use tree.seats.{Seat}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
-use realize.html.element.{Element, lowered}
+use realize.html.element.{Element, lowered, lowered_on}
 use realize.html.print.{kinds_of, print_of, words_of}
 use realize.dom.snapshot.{Page, said as said_page}
-use realize.html.css.{CssRule, distinct_rules, page_sheet, worn_by, rules_of}
+use realize.html.css.{
+    CssRule,
+    PageDrawn,
+    distinct_rules,
+    page_drawn,
+    page_sheet_of,
+    worn_by_page,
+    rules_of,
+    scopes_of,
+}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
 use realize.dom.wire.{frame}
@@ -113,7 +122,10 @@ impl Live {
     /// may still close over different values. A tree built anywhere but
     /// over this page's `stands` is a snapshot: it is painted whole and the
     /// page stops watching, so the exact path never answers for it.
-    fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+    fn patches(drawn: Node, notice: Node? = null) -> List<Patch> {
+        let p = page_drawn(drawn)
+        let root = p.root
+        let theme = p.theme
         self.take_handed(root, theme)
         let adopted = self.adopted(root, theme)
         let full = self.painted(root, theme, notice)
@@ -124,7 +136,10 @@ impl Live {
     /// `patches`, for a tree drawn by a walk over this page's `stands` — the
     /// walk an app opens, or `paint_view` — whose instances are the ones the
     /// page's readings watch. The exact path may answer for it.
-    fn patches_drawn(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+    fn patches_drawn(drawn: Node, notice: Node? = null) -> List<Patch> {
+        let p = page_drawn(drawn)
+        let root = p.root
+        let theme = p.theme
         self.take_handed(root, theme)
         let adopted = self.adopted(root, theme)
         adopted.concat(self.drawn_turn(root, theme, notice))
@@ -156,7 +171,7 @@ impl Live {
     /// capture is a reading, a cell or structural, so a read the walkers cannot
     /// see declines and no handler outlives the value it holds.
     fn exactly(root: Node, theme: Theme, notice: Node?) -> List<Patch> {
-        let said = if self.worn.get() == worn_by(theme) { self.exact_turn() } else { null }
+        let said = if self.worn.get() == worn_by_page(drawn_as(root, theme)) { self.exact_turn() } else { null }
         let mine? = said else {
             let full = self.painted(root, theme, notice)
             self.rewatched()
@@ -217,7 +232,8 @@ impl Live {
     fn adopt(root: Node, theme: Theme, print: int) {
         let run = lowered(root)
         let rules = distinct_rules(rules_of(root))
-        let css = page_sheet(rules, theme)
+        let drawn = drawn_as(root, theme)
+        let css = page_sheet_of(rules, drawn)
         if print_of(run, css) != print {
             self.adopting.set(Patch.Adopt([], 0))
             return
@@ -227,7 +243,7 @@ impl Live {
         self.page.set([unheard(e) for e in placed.page])
         self.next.set(placed.next)
         self.rules.set(rules)
-        self.worn.set(worn_by(theme))
+        self.worn.set(worn_by_page(drawn))
         self.adopting.set(Patch.Adopt(kinds_of(placed.page), words_of(placed.page)))
     }
 
@@ -247,9 +263,10 @@ impl Live {
         self.page.set([unheard(e) for e in left.elements])
         self.next.set(left.next)
         let rules = distinct_rules(rules_of(root))
-        if page_sheet(rules, theme) != left.sheet { return }
+        let drawn = drawn_as(root, theme)
+        if page_sheet_of(rules, drawn) != left.sheet { return }
         self.rules.set(rules)
-        self.worn.set(worn_by(theme))
+        self.worn.set(worn_by_page(drawn))
         self.sheet.set(left.sheet)
     }
 
@@ -265,7 +282,7 @@ impl Live {
         let restyled = self.restyled(root, theme, notice)
         let now = diff(
             self.page.get(),
-            lowered(root).concat(self.noticed(notice)),
+            lowered(root).concat(self.noticed(notice, root)),
             self.heard.get(),
             self.next.get(),
         )
@@ -285,9 +302,9 @@ impl Live {
 
     /// A notice stands BESIDE the view: after its elements, at the page's
     /// top, so nothing the view drew is displaced by it.
-    fn noticed(notice: Node?) -> List<Element> {
+    fn noticed(notice: Node?, root: Node) -> List<Element> {
         let node? = notice else { return [] }
-        lowered(node)
+        lowered_on(node, scopes_of(root))
     }
 
     /// Everything the page keeps of what a host holds: its elements, the
@@ -321,17 +338,18 @@ impl Live {
         let rules = distinct_rules(
             self.rules.get().concat(rules_of(root)).concat(rules_of_notice(notice)),
         )
-        let wears = worn_by(theme)
+        let drawn = drawn_as(root, theme)
+        let wears = worn_by_page(drawn)
         if rules.length == self.rules.get().length && self.worn.get() == wears { return [] }
         self.rules.set(rules)
         self.worn.set(wears)
-        let css = page_sheet(rules, theme)
+        let css = page_sheet_of(rules, drawn)
         self.sheet.set(css)
         [Patch.Style(css)]
     }
 
     /// `patches`, as the frame a host applies.
-    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme), self.told) }
+    fn paint(root: Node) -> Bytes { frame(self.patches(root), self.told) }
 
     /// `view` drawn on this page: the walk stands where the last paint's
     /// stood, so an instance the view reaches again keeps its state and a prop
@@ -345,10 +363,10 @@ impl Live {
 
     /// `view` painted on this page: drawn, then painted by the exact path or
     /// the full one.
-    fn paint_view(view: dyn View, theme: Theme) -> Bytes { self.paint_drawn(self.drawn(view), theme) }
+    fn paint_view(view: dyn View) -> Bytes { self.paint_drawn(self.drawn(view)) }
 
     /// A tree this page drew, painted as the frame a host applies.
-    fn paint_drawn(root: Node, theme: Theme) -> Bytes { frame(self.patches_drawn(root, theme), self.told) }
+    fn paint_drawn(root: Node) -> Bytes { frame(self.patches_drawn(root), self.told) }
 
     /// The host's echo: element `id` spoke `seat`, saying `said`. The
     /// handler the last paint bound there runs; false when nothing
@@ -377,3 +395,6 @@ impl Live {
         self.heard.set(others.concat([Heard { id: id, name: named, value: value }]))
     }
 }
+
+/// A page drawn: its root, drawn unscoped, and the theme the whole page wears.
+fn drawn_as(root: Node, theme: Theme) -> PageDrawn { PageDrawn { root: root, theme: theme } }

@@ -14,7 +14,7 @@ use tree.identity.{NodeId, Step, Stepped, root as root_step, stepped, unplaced}
 use tree.node.{Node, Attribute, Prim, Action, submits_among, masked_among}
 use realize.html.delivery.{always_seat_of, web_event}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
-use realize.html.css.{class_names, box_vars, drawn_box, CssVar}
+use realize.html.css.{class_names, box_vars, drawn_box, CssVar, scopes_of}
 use tree.sites.{Reading}
 use @std.meta.{Structural, Opaque}
 use @std.assets.{Picture}
@@ -169,18 +169,18 @@ fn element_attrs(n: Node) -> List<HtmlAttr> {
 
 // ── the class attribute ─────────────────────────────────────────
 
-fn class_attrs(n: Node) -> List<HtmlAttr> {
-    let names = class_names(n)
+fn class_attrs(n: Node, scopes: List<string>) -> List<HtmlAttr> {
+    let names = class_names(n, scopes)
     if names.is_empty() { [] } else { [HtmlAttr { name: .Class, value: names.join(" ") }] }
 }
 
 /// A node's own attributes: its identity, its classes, its box.
-fn node_attrs(n: Node) -> List<HtmlAttr> {
+fn node_attrs(n: Node, scopes: List<string>) -> List<HtmlAttr> {
     let keyed: List<HtmlAttr> = match n.box.key {
         k? -> [HtmlAttr { name: .DataKey, value: k.spoken() }]
         null -> []
     }
-    keyed.concat(class_attrs(n))
+    keyed.concat(class_attrs(n, scopes))
 }
 
 // ── the elements a node lowers to ───────────────────────────────
@@ -260,7 +260,7 @@ fn names_element(a: Attribute) -> bool {
 /// seat, its key and its classes — and the control inside it takes the
 /// node's attributes and hears its events. The control and its words
 /// stand in the order a reader expects of its kind.
-fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
+fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>) -> Element {
     let control = Element
         .Tag(
             Tagged {
@@ -278,7 +278,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
             Tagged {
                 seat: at.matched,
                 tag: .Label,
-                attrs: node_attrs(n),
+                attrs: node_attrs(n, scopes),
                 vars: box_vars(drawn_box(n)),
                 sites: n.sites,
                 says: words_attrs(n.attrs),
@@ -305,13 +305,13 @@ fn heard(n: Node) -> List<Action> {
 }
 
 /// The node itself as one element holding `kids`.
-fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
+fn element(n: Node, at: Seat, kids: List<Element>, scopes: List<string>) -> Element {
     Element
         .Tag(
             Tagged {
                 seat: at.matched,
                 tag: tag_of(n),
-                attrs: element_attrs(n).concat(node_attrs(n)),
+                attrs: element_attrs(n).concat(node_attrs(n, scopes)),
                 vars: box_vars(drawn_box(n)),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
@@ -329,18 +329,21 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
 /// for an element that holds nothing — that one and then its children,
 /// each standing under the node's seat so it is told from the node's own
 /// siblings.
-fn lower(n: Node, at: Seat) -> List<Element> {
+fn lower(n: Node, at: Seat, scopes: List<string>) -> List<Element> {
     let stands = stepped([c.box.stand() for c in n.children])
     match carries(tag_of(n)) {
         .Within -> [
             element(
                 n,
                 at,
-                said_of(n).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
+                said_of(n)
+                    .concat(headings(n))
+                    .concat(lower_each(n, stands, null, at.crowded, scopes)),
+                scopes,
             ),
         ],
-        .Never -> [element(n, at, [])].concat(lower_each(n, stands, at, at.crowded)),
-        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded))],
+        .Never -> [element(n, at, [], scopes)].concat(lower_each(n, stands, at, at.crowded, scopes)),
+        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded, scopes), scopes)],
     }
 }
 
@@ -348,9 +351,15 @@ fn lower(n: Node, at: Seat) -> List<Element> {
 /// children stand beside the node rather than inside it. A child is crowded
 /// when it, or what holds it, is told from a sibling by order alone. A key
 /// stands hidden and says its chord.
-fn lower_each(n: Node, stands: Stepped, seat: Seat?, above: bool) -> List<Element> {
-    [e for i, c in n.children for e in lower(c, seat_of(seat, stands.steps[i], above || c.drawn_by_order || stands.shared[i]))]
+fn lower_each(n: Node, stands: Stepped, seat: Seat?, above: bool, scopes: List<string>) -> List<
+    Element,
+> {
+    [e for i, c in n.children for e in lower(c, seat_of(seat, stands.steps[i], above || c.drawn_by_order || stands.shared[i]), scopes)]
 }
 
-/// The elements a tree lowers to, in page order.
-export fn lowered(root: Node) -> List<Element> { lower(root, seat_of(null, root_step(root.box.key))) }
+/// The elements a tree lowers to, in page order, its scopes named as its own page names them.
+export fn lowered(root: Node) -> List<Element> { lowered_on(root, scopes_of(root)) }
+
+/// The elements a tree lowers to on a page whose scopes are `scopes` (`scopes_of`): what stands
+/// beside a page's tree names a scope as the page does.
+export fn lowered_on(root: Node, scopes: List<string>) -> List<Element> { lower(root, seat_of(null, root_step(root.box.key)), scopes) }

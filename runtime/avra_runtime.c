@@ -5018,7 +5018,16 @@ static void* ctx_laid(void* under, AvraArray* over) {
 int64_t avra_ctx_enter(void* frame) {
     if (frame == avra_ctx_now) return 0;
     void* old = avra_task_local->slot[AVRA_SLOT_CTX];
-    ctx_made(ctx_laid(old, (AvraArray*)frame));
+    // Entered under the very frame `frame` was set over, the frame laid is
+    // `frame` itself: its first slot is the one in force, and it holds every
+    // context of that one it doesn't set. It is made current as it stands.
+    AvraArray* f = (AvraArray*)frame;
+    if (f && f->len > 0 && (void*)(uintptr_t)f->data[0] == old) {
+        avra_rc_retain(frame);
+        ctx_made(frame);
+        return 1;
+    }
+    ctx_made(ctx_laid(old, f));
     return 1;
 }
 
@@ -5103,6 +5112,17 @@ static AvraArray* ctx_recording(AvraArray* st, int64_t at) {
     st->data[at] = (int64_t)(uintptr_t)r;
     if (!avra_packed(st)) st->marks[at] |= MARK_OWNED;
     return r;
+}
+
+// The cell the running task's frame holds for `key`, as a word, 0 where
+// nothing set it: what tells two places apart by the set in force at
+// each, with no reference taken and no value read.
+int64_t avra_ctx_entry(int64_t key) {
+    AvraArray* frame = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
+    for (int64_t i = 1; frame && i + 1 < frame->len; i += 2) {
+        if (frame->data[i] == key) return frame->data[i + 1];
+    }
+    return 0;
 }
 
 // The word a task switched to reads: its stack where a query is open on it, else NULL.

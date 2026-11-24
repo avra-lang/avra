@@ -4,7 +4,7 @@
 // the same text at the same position in the list and belongs to a
 // different scope.
 use compiler.format.{lossless_defect, remarks_and_docs_defect}
-use compiler.{canon_defect, formatted_under, write_checked_under}
+use compiler.{Canonical, canon_defect, canonical_of, formatted_under, write_checked_under}
 use core.{ComponentWord, Instancing}
 use diagnostics.{new_source_file}
 use features.{BlockWords}
@@ -98,5 +98,47 @@ spec "the canon receipt reads a component's body by what it means" {
                 .Err(_) -> false,
             }
         }
+    }
+}
+
+/// A run hole spread into a record literal inside a quote, its list too long for a line: the
+/// shape a hole must print on one line in, since a hole never spans one.
+const SPREAD_HOLE: string = "fn draft_row(t: Type) -> Code {\n    quote { \${t} { ..\${[assigned_init(f) for f in t.fields if assigned(f)].concat([drafted_init(f) for f in drafted_fields(t)])} } }\n}\n"
+
+/// What a write of `text` answers, read under no words.
+fn written_of(text: string) -> Result<string, string> { write_checked_under(new_source_file("/w/src/main.av", text), BlockWords {}) }
+
+spec "a quote's hole prints on one line" {
+    given "a run hole spread into a record literal, its list too long for a line" {
+        then "the write is accepted, and it writes the text as it stands: fmt(x) == x" {
+            match written_of(SPREAD_HOLE) {
+                .Ok(text) -> "${text}\n" == SPREAD_HOLE,
+                .Err(_) -> false,
+            }
+        }
+        then "laid out otherwise, it is written back on one line, and that stands canonical" {
+            let loose = SPREAD_HOLE.replace("assigned_init(f) for", "assigned_init(f)   for")
+            match written_of(loose) {
+                .Ok(text) -> "${text}\n" == SPREAD_HOLE &&
+                    canonical_of(SPREAD_HOLE, written_of(SPREAD_HOLE)) is .Stands,
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
+spec "--check says of a file what --write would" {
+    given "what a write answers" {
+        then "a write refused is a refusal, said by its first line — never a file that differs" {
+            match canonical_of(
+                "x\n",
+                .Err("avra fmt: refusing to write — the token count moved: 2 -> 1\nmore"),
+            ) {
+                .Refused(why) -> why == "avra fmt: refusing to write — the token count moved: 2 -> 1",
+                .Stands or .Differs -> false,
+            }
+        }
+        then "the text a write would put back, as it stands, stands" { canonical_of("x\n", .Ok("x")) is .Stands }
+        then "any other text it would put back differs" { canonical_of("x \n", .Ok("x")) is .Differs }
     }
 }

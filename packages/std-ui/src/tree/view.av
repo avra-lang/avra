@@ -63,11 +63,12 @@ use @std.meta.{
     declares,
     placed,
     rehomed,
+    ctx_entry,
     as_code,
     int_node,
 }
 use @std.text.{parse_int}
-use tree.node.{Node, Prim, Attribute, Action, Handler}
+use tree.node.{Node, Prim, Attribute, Action, Handler, Stamp}
 use tree.seats.{SeatRow, seat, seat_named}
 use tree.lists.{flatten}
 // LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
@@ -75,6 +76,7 @@ use tree.sites.{sighted}
 use tree.identity.{Stand, Step, stand_of, stepped}
 use tree.standing.{Standing, Kept, standing, kept, stood}
 use style.box.{Box}
+use style.theme.{theme}
 use compose.{gathered}
 
 /// A component that projects to a neutral `Node`. A COMPONENT WITH A
@@ -109,6 +111,7 @@ export trait View {
                 children: ${held_by([c for p in parts for c in p.children])},
                 events: ${joined([c for p in parts for c in p.events])},
                 sites: ${sites_code(t)},
+                theme: drawn,
             }
         }
         let rows = [said.seat_row(t, f) for f in t.fields if f.says != null]
@@ -121,7 +124,13 @@ export trait View {
                             impl View for ${t} {
                                 fn stand() -> Stand { stand_of(self.key, self.site) }
 
-                                fn describe(at: Standing) -> List<Node> { [${node}] }
+                                fn describe(at: Standing) -> List<Node> {
+                                    let was = at.entry.get()
+                                    let drawn = drawn_in(at)
+                                    let made = [${node}]
+                                    at.entry.set(was)
+                                    made
+                                }
                             }
                         },
                     ),
@@ -142,7 +151,20 @@ export trait View {
                     t.at,
                     quote { once fn ${seat}() -> Kept<${t}> { kept(${literal(t.name)}) } },
                 ),
-                beside(t, quote { impl ${t} { fn ${drawn}(at: Standing) -> Node { ${node} } } }),
+                beside(
+                    t,
+                    quote {
+                        impl ${t} {
+                            fn ${drawn}(at: Standing) -> Node {
+                                let was = at.entry.get()
+                                let drawn = drawn_in(at)
+                                let made = ${node}
+                                at.entry.set(was)
+                                made
+                            }
+                        }
+                    },
+                ),
                 beside(
                     t,
                     quote {
@@ -183,6 +205,17 @@ fn refused_view(t: Type) -> Directive {
     )
 }
 
+/// The theme the node standing at `at` is drawn in, where it is another than the one the node drawn
+/// above it was: one compare of the frame's entry for `ctx theme`, the theme read only where it
+/// moved. The walk's cell holds the entry from now, so what the node draws under it compares with
+/// it; the node's describe gives the cell back once its own subtree is drawn.
+export fn drawn_in(at: Standing) -> Stamp? {
+    let entry = ctx_entry(ctx.theme)
+    if entry == at.entry.get() { return null }
+    at.entry.set(entry)
+    Stamp { theme: ctx.theme, entry: entry }
+}
+
 /// A view's tree standing ALONE: no paint came before it and none
 /// follows, so every instance in it is new.
 /// A page that persists paints through `Live.paint_view`.
@@ -193,7 +226,11 @@ export fn tree_of(v: dyn View) -> Node { rooted(v.describe(standing())) }
 /// them, a column of them.
 export fn rooted(drawn: List<Node>) -> Node {
     if drawn.length == 1 { return drawn[0] }
-    Node { prim: Prim.Column, attrs: [], box: Box {}, children: drawn }
+    // The column stands where its first node was drawn; a node beside it drawn under the same set
+    // carries nothing of its own.
+    let stamp = drawn.first()?.theme
+    let under = [if n.theme?.entry == stamp?.entry { n with { theme: null } } else { n } for n in drawn]
+    Node { prim: Prim.Column, attrs: [], box: Box {}, children: under, theme: stamp }
 }
 
 /// What `items` draw under the node standing at `at`, each standing

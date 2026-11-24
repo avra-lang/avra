@@ -1058,9 +1058,15 @@ impl Checking {
     /// that stands over a parameter a call fills, or one the body decides, is the seat law's under
     /// what fills it, not here — a seat written under its declaration's own parameters is judged, a
     /// concrete value never standing as a parameter; a seat answering nothing drops what it holds.
+    /// A value over the body's own parameters held to a seat over none is judged here: it stands
+    /// there for every instance or it is refused, since no instance is judged apart from its body. A
+    /// fn over parameters is a generic fn read bare, whose parameters are its own and no call fills:
+    /// that read is its own law's.
     mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
         let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
-        if found.generic() || want.inferred() || found.inferred() { return }
+        if found.generic() && (want.generic() || found.head is .Function) ||
+            want.inferred() ||
+            found.inferred() { return }
         if want.generic() && !self.seat_wanting(want).declared_under() { return }
         if want.unknown() || found.unknown() || self.misapplied(want) { return }
         if found.head is .Meta && self.seat_wanting(want) is .Binding { return }
@@ -4070,7 +4076,13 @@ impl Checking {
             .seats_settled(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         self
             .seats_isolated(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
-        let found? = filled else { return null }
+        // a call whose arguments fill no instance and said nothing of why — a block riding the
+        // seat's pronoun reads as no type of its own — is refused at its first type parameter
+        // nothing pinned, never left untyped for its lowering to find
+        let found? = filled else {
+            if self.refused.get().length == before { let _ = self.left_unpinned(declared, pinned, []) }
+            return null
+        }
         let found = defaulted(found, declared?.defaults ?? [])
         if !self.bounds_held(bounds, found) { return null }
         if self.refused.get().length == before &&

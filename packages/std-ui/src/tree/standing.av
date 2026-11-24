@@ -55,6 +55,10 @@ export type Standing = {
     pin_at: Cell<int>,
     reveal: Cell<string?>,
     honored: Cell<int>,
+    /// The frame entry of `ctx theme` the nearest node drawn above was drawn under, one cell the whole
+    /// walk shares: a node drawn under another carries its theme, and gives the cell back as it found
+    /// it once what stands under it is drawn. A root's is none of them, so a root always does.
+    entry: Cell<int>,
 }
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
@@ -67,11 +71,17 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false), Cell.new(0))
+    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false), Cell.new(0), Cell.new(0 - 1))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>, limit: Cell<int>) -> Standing {
+fn stands_in(
+    said: Cell<List<string>>,
+    counted: Cell<int>,
+    geometry: Cell<bool>,
+    limit: Cell<int>,
+    entry: Cell<int>,
+) -> Standing {
     let none: Hold? = null
     let unplaced: StepRows? = null
     let nowhere: string? = null
@@ -97,6 +107,7 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>,
         pin_at: Cell.new(-1),
         reveal: Cell.new(nowhere),
         honored: Cell.new(0),
+        entry: entry,
     }
 }
 
@@ -106,6 +117,8 @@ impl Standing {
     fn begun() {
         self.said.set([])
         self.counted.set(0)
+        // A paint's root is drawn under no node, so it always carries the theme it is drawn in.
+        self.entry.set(0 - 1)
         self.opened()
     }
 
@@ -138,7 +151,7 @@ impl Standing {
         let found = [stood.find(s) for s in steps]
         let now = [Under {
             step: s,
-            standing: if found[j] == null { stands_in(self.said, self.counted, self.geometry, self.limit) } else { was[found[j]!].standing },
+            standing: if found[j] == null { stands_in(self.said, self.counted, self.geometry, self.limit, self.entry) } else { was[found[j]!].standing },
         } for j, s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {

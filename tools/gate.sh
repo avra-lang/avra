@@ -491,6 +491,8 @@ findings_third() {
 witness_b_rows() {
     cat <<'EOF'
 row runs-witness sh tools/witness_program_runs.sh build/avra
+row page-closure-witness sh tools/witness_page_closure.sh build/avra
+row board-native-witness sh tools/witness_board_native.sh build/avra
 row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
 row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
 row beside-attack env BESIDE_ATTACK_AVRA="$root/build/avra" sh tools/beside_attack.sh

@@ -1,0 +1,28 @@
+//! proves: the board flipping `dark` is one write of `ctx theme` at its page,
+//! and every turn of it — the paint, the press that darkens it, the repaint,
+//! the press back and the repaint after — is the full paint's own: run under
+//! `AVRA_EXACT=check`, the exact path is compared with the full paint each
+//! turn and a disagreement traps, so this program printing at all is the
+//! comparison.
+use @ui.board.{view}
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.realize.tests.support.{named, seat_for}
+
+/// The page's theme control, pressed by its words; whether one answered.
+fn pressed(page: Live, words: string) -> bool {
+    let at = named(page, words)
+    !at.is_empty() && page.fire(at[0], seat_for(.Press), null)
+}
+
+let page = live()
+let first = page.paint_view(view())
+let still = page.paint_view(view())
+let darkened = pressed(page, "Dark mode")
+let dark = page.paint_view(view())
+let lightened = pressed(page, "Light mode")
+let light = page.paint_view(view())
+let again = page.paint_view(view())
+println(
+    "${first.length > 0} ${darkened} ${dark.length > still.length} ${lightened} ${light.length > 0} ${again.length == still.length}",
+)
+println(page.exact_counts())

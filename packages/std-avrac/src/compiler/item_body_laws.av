@@ -44,7 +44,7 @@ use features.nullable.{
     propagated_absent,
     propagated_present,
 }
-use features.results.{fail_unenclosed, fail_unfallible}
+use features.results.{fail_seat_unfallible, fail_unanswered, fail_unenclosed, fail_unfallible}
 use features.tasks.{yield_unenclosed}
 use features.defers.{
     deferred_inert,
@@ -109,6 +109,10 @@ enum Breach {
     FailUnenclosed
     /// A `fail` in a fn promising `promise`, which is no `Result`.
     FailUnfallible(promise: string)
+    /// A `fail` in a block whose seat gives it no answer yet.
+    FailUnanswered
+    /// A `fail` in a block whose seat answers `answer`, which is no `Result`.
+    FailSeatUnfallible(answer: string)
     /// A `yield` no producer encloses.
     YieldUnenclosed
     /// A list literal whose first element, of `named`, gives it no type.
@@ -907,23 +911,14 @@ fn enclosing_lambda(store: SyntaxArena, aside: List<ExprId>, e: ExprId) -> ExprI
     around.find((l) -> !around.any((o) -> o != l && store.every_expr(l).contains(o)))
 }
 
-/// What a `fail` the lambda `l` encloses lacks of a failure channel: the lambda answers itself, so
-/// one whose answer is only inferred — answering nothing, taking no seat, which hears none, or bound
-/// by a `let` that writes no type — promises none; one a seat gives an answer promises it, which
-/// must be a `Result`.
+/// What a `fail` the lambda `l` encloses lacks of a failure channel: the lambda answers for itself,
+/// so its failure raises to whoever calls it, through the answer its seat gives it — whether or not
+/// it takes seats of its own. One whose answer no seat gives yet — answering nothing, or bound by a
+/// `let` that writes no type — has no channel; one whose seat answers no `Result` has none either.
 fn lambda_channel(store: SyntaxArena, typing: ItemTyping, l: ExprId) -> Breach? {
-    let answer? = typing.type_at(l)?.answer else { return Breach.FailUnenclosed }
-    if answer.bottom() || seatless(store, l) || inferred_lambda(store, l) { return Breach.FailUnenclosed }
-    if answer.owns(OwnType.Result) { null } else { Breach.FailUnfallible(answer.spelled()) }
-}
-
-/// Whether the lambda `l` takes no seat: it writes none, and a block's body rides no pronoun.
-fn seatless(store: SyntaxArena, l: ExprId) -> bool {
-    match store.expr(l) {
-        .Lambda(params, _) -> params.is_empty(),
-        .BlockLambda(params, body) -> params.is_empty() && !store.pronoun_rides(body),
-        rest -> false,
-    }
+    let answer? = typing.type_at(l)?.answer else { return Breach.FailUnanswered }
+    if answer.bottom() || inferred_lambda(store, l) { return Breach.FailUnanswered }
+    if answer.owns(OwnType.Result) { null } else { Breach.FailSeatUnfallible(answer.spelled()) }
 }
 
 /// Whether the lambda `l` is the value a `let` binds without writing its type, so that only its body
@@ -1223,6 +1218,30 @@ export law fail_unenclosed_law {
 }
 
 fn fail_unenclosed_words(_a: List<string>) -> Voice { fail_unenclosed() }
+
+fn fails_unanswered(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .FailUnanswered)) }
+
+/// a `fail` in a block raises to the fn it answers for, which its seat must give
+export law fail_unanswered_law {
+    kind: "type.fail"
+    reads_view: fails_unanswered
+    voice: fail_unanswered_words
+    witness: "fn f() -> int {\n    let g = () -> {\n        fail 1\n    }\n    1\n}\n"
+}
+
+fn fail_unanswered_words(_a: List<string>) -> Voice { fail_unanswered() }
+
+fn fails_seat_unfallible(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .FailSeatUnfallible(answer) -> [answer], rest -> null }) }
+
+/// a `fail` in a block whose seat answers no `Result`
+export law fail_seat_unfallible_law {
+    kind: "type.fail"
+    reads_view: fails_seat_unfallible
+    voice: fail_seat_unfallible_words
+    witness: "fn run(f: fn() -> int) -> int { f() }\n\nfn g() -> int {\n    run(() -> {\n        fail 1\n    })\n}\n"
+}
+
+fn fail_seat_unfallible_words(a: List<string>) -> Voice { fail_seat_unfallible(a[0]) }
 
 fn fails_unfallible(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .FailUnfallible(promise) -> [promise], rest -> null }) }
 

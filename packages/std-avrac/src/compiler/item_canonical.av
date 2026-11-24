@@ -111,13 +111,21 @@ fn verbatim_stmts(e: Expr) -> List<StmtId> {
     match b.view { .Verbatim(stmts, _) -> stmts, rest -> [] }
 }
 
-/// WHETHER A FILE STANDS CANONICAL: its text printed back is its text, byte for byte. The answer is
-/// kept with what it read — the file's text and its words' shapes — so a file nobody edited, under
-/// providers nobody edited, is not parsed or printed again.
+/// WHETHER A FILE STANDS CANONICAL: its text printed back is its text, byte for byte — refused where
+/// a write of it would be (`file_write_checked`), so `--check` and `--write` say the same of a file.
+/// The answer is kept with what it read — the file's text and its words' shapes — so a file nobody
+/// edited, under providers nobody edited, is not parsed or printed again.
 @query
 export fn file_canonical(engine: QueryEngine, file: SourceFileAddress) -> Canonical {
-    match file_formatted(engine, file) {
-        .Ok(text) -> if "${text}\n" == source_text(engine, file) ?? "" { Canonical.Stands } else { Canonical.Differs },
+    canonical_of(source_text(engine, file) ?? "", file_write_checked(engine, file))
+}
+
+/// What a file holding `text` stands as, given what a write of it answers (`write_checked_under`):
+/// the text it would write, which stands where it is `text` and differs where it isn't, or the
+/// write's refusal — its parse's report, or the receipt it fails — said by its first line.
+export fn canonical_of(text: string, written: Result<string, string>) -> Canonical {
+    match written {
+        .Ok(canonical) -> if "${canonical}\n" == text { Canonical.Stands } else { Canonical.Differs },
         .Err(report) -> Canonical.Refused(report.split("\n").first() ?? report),
     }
 }

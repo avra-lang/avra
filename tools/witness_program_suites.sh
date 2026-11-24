@@ -55,5 +55,23 @@ cp "$tmp/new.said" "$tmp/warm.said"
 tested 1 cold edited
 cmp -s "$tmp/warm.said" "$tmp/cold.said" || { missed "the edited suite tested warm says otherwise than tested cold"; diff "$tmp/warm.said" "$tmp/cold.said" >&2; }
 
-[ "$failed" = 0 ] && echo "witness_program_suites: the old runner's words on the program layer; one case edited, one case lowered again"
+# A SUITE SAYS THE REFUSAL THE LAWS FOUND IN WHAT ITS CASES REACH, AS A RUN OF THEM DOES, NEVER A
+# GAP OF THE LAYER IN ITS PLACE: tools/program-suites/lib_refused's library chains `?.` onto a
+# `Result`, which a law refuses; `avra test` and `avra run` of it, each cold on the program layer,
+# exit 1 saying the same words.
+said_by() {
+    find "$tmp/lr-$1" "$tmp/lr-$1.machine" -depth -delete 2>/dev/null
+    mkdir -p "$tmp/lr-$1" "$tmp/lr-$1.machine"
+    cp -R "$root/tools/program-suites/lib_refused" "$tmp/lr-$1/"
+    (cd "$tmp/lr-$1" && AVRA_CACHE_DIR="$tmp/lr-$1.machine" AVRA_PROGRAM=1 "$avra" "$1" lib_refused >"$tmp/lr-$1.out" 2>&1
+        echo $? >"$tmp/lr-$1.code")
+    sed "s#$tmp/lr-$1#<w>#g" "$tmp/lr-$1.out" | grep -v '^watch:' >"$tmp/lr-$1.said"
+}
+said_by test
+said_by run
+[ "$(cat "$tmp/lr-test.code")" = 1 ] || missed "a suite whose library a law refuses exits $(cat "$tmp/lr-test.code"), not 1"
+grep -q 'error\[type.chain\]' "$tmp/lr-test.said" || { missed "a suite whose library a law refuses does not say the law's refusal"; cat "$tmp/lr-test.said" >&2; }
+cmp -s "$tmp/lr-test.said" "$tmp/lr-run.said" || { missed "the suite says otherwise than a run of it"; diff "$tmp/lr-run.said" "$tmp/lr-test.said" >&2; }
+
+[ "$failed" = 0 ] && echo "witness_program_suites: the old runner's words on the program layer; one case edited, one case lowered again; a refused library said as a run says it"
 [ "$failed" = 0 ]

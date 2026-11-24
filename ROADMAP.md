@@ -3728,6 +3728,20 @@ same way:
   `Callsite:` `packages/std-avrac/src/compiler/store/mapped.av`'s
   `mapped_at`, the store's whole in-place read.
 
+The ask a services lane raised stands in the same way, a language addition for the owner to take:
+
+- **`is_ok` and `is_err` as prelude verbs on `Result`.** The language gives `Result` no member of
+  its own, so the question "did it fail" is a `match` whose arms answer `true` and `false`. P1's
+  case: a writer who has met any other language reaches for the verb first — an LLM writes
+  `r.is_ok()` before it writes the `match` — and today that is refused at check ("`.is_ok(…)` calls
+  a method, and `Result<int, string>` has none"). As a prelude `verbs/Result.av` with bodies
+  (`match self { .Ok(_) -> true, .Err(_) -> false }`) they lower through the path every bodied
+  prelude verb takes, so the ask is the two verbs and their witness (eval == native), no lowering.
+  `Example: println("${source(1).run().is_ok()}")`.
+  `Callsite:` the services lead's `lambda_fail` repro (`src/main.av`, its last line), whose
+  workaround is a `match` in a helper fn (`said(r)` in
+  `tools/program-refusals/lambda_fail_seat_result`).
+
 ### Deadline — the change log watches cells, never a whole collection
 
 A box is logged when a slot of it is written in place; length changes

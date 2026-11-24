@@ -149,3 +149,36 @@ spec "avra fmt — what is written is what is printed" {
         then "its head prints as written: bare, called with nothing, called with a seat" { stands_written("fmt_piped_block", piped_block()) }
     }
 }
+
+/// A run hole spread into a record literal inside a quote, its list too long for a line.
+fn spread_hole() -> string {
+    "fn draft_row(t: Type) -> Code {\n    quote { \${t} { ..\${[assigned_init(f) for f in t.fields if assigned(f)].concat([drafted_init(f) for f in drafted_fields(t)])} } }\n}\n"
+}
+
+spec "avra fmt — a quote's hole stands on one line, and --check says what --write does" {
+    given "a run hole spread into a record literal, its list too long for a line" {
+        then "--check finds it canonical, nothing differing or refused" {
+            let path = fmt_fixture("fmt_spread_check", spread_hole())
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> exit_is_zero(o.exit) && o.out.stdout.contains("1 examined, 0 differing, 0 refused"),
+                .Err(_) -> false,
+            }
+        }
+        then "--write accepts it and leaves it byte for byte: fmt(x) == x" { stands_written("fmt_spread_write", spread_hole()) }
+        then "laid out otherwise, --check says it differs and --write writes it back, neither refusing" {
+            let loose = spread_hole().replace("assigned_init(f) for", "assigned_init(f)   for")
+            let checked = fmt_fixture("fmt_spread_loose_check", loose)
+            let written = fmt_fixture("fmt_spread_loose_write", loose)
+            match fmt_ran(["fmt", "--check", checked]) {
+                .Ok(c) -> c.out.stdout.contains("1 examined, 1 differing, 0 refused") &&
+                    match fmt_ran(["fmt", "--write", written]) {
+                        .Ok(w) -> exit_is_zero(w.exit) &&
+                            w.out.stdout.contains("1 examined, 1 written, 0 refused") &&
+                            on_disk(written) == spread_hole(),
+                        .Err(_) -> false,
+                    },
+                .Err(_) -> false,
+            }
+        }
+    }
+}

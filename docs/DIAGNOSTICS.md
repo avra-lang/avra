@@ -509,6 +509,8 @@ error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a
   ·                 ╰── read here
 ──╯
 help: pass `x` in as a parameter, or make it a fn
+fix (high): make `x` a `const`
+  const
 ```
 
 ## type.lambda
@@ -3673,15 +3675,15 @@ a method call resolves through the receiver's impl
 ```
 
 ```
-error[type.method]: `.reverse(…)` calls a method, and `List<int>` has none
+error[type.method]: `List<int>` has no method `reverse`
   ╭─[witness.av:1:1]
 1 │ [1].reverse()
   · ┬
   · ╰── this is `List<int>`
 ──╯
-help: methods live on lists, maps, and declared types with an `impl`
+help: `List<int>` has `map`, `filter`, `filter_map`, `flat_map`, `flatten`, `take`, `drop`, `take_while`, `drop_while`, `find` and 28 more
 
-error[type.method]: `.lenght(…)` calls a method, and `List<int>` has none
+error[type.method]: `List<int>` has no method `lenght`
   ╭─[witness.av:2:1]
 2 │ [1].lenght()
   · ┬
@@ -5271,13 +5273,13 @@ match "x" { "{n: float}z" -> 1
 ```
 
 ```
-error[type.format_parse]: `{n: float}` reads its span as `float`, and a hole reads text as `string` or `int`
+error[type.format_parse]: `{n: float}` reads its span as `float`, which crosses no text
   ╭─[witness.av:1:13]
 1 │ match "x" { "{n: float}z" -> 1
   ·             ┬
   ·             ╰── here
 ──╯
-help: take the span as text and convert it in the arm
+help: implement `@std/text`'s `TextForm` for `float`, or take the span as text and convert it
 ```
 
 ## type.format_shape

@@ -7,6 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
 use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
+    entry_files,
     program_new_only,
     default_opt,
     program_unset_holes,
@@ -3439,9 +3440,18 @@ fn suite_ran(
 }
 
 /// The suite of every case `files` write, made on the program layer and linked at `kept`, the one
-/// suite binary its directory keeps; absent when it was, else the exit its refusal spoke. A file of
-/// cases a law refuses is refused first, in the law's words, as a check of it says them: a case is
-/// judged before it is made.
+/// suite binary its directory keeps; absent when it was, else the exit its refusal spoke. A file the
+/// cases reach that a law refuses — a file of cases, or one they use — is refused first, in the law's
+/// words, as a run of them says them: a case is judged before it is made, and a refusal the laws
+/// found is never said as a body the layer can't make yet.
+/// The files the cases `files` write reach, each once: themselves, then what each uses, in the order
+/// the cases are read.
+fn suite_reach(engine: QueryEngine, files: List<SourceFileAddress>) -> List<SourceFileAddress> {
+    let all = [r for f in files for r in [f].concat(entry_files(engine, f))]
+    let spelled = [spelled_file(f) for f in all]
+    [f for j, f in all if spelled.index_of(spelled[j]) == j]
+}
+
 fn suite_made(
     engine: QueryEngine,
     disk: Disk,
@@ -3449,7 +3459,8 @@ fn suite_made(
     kept: string,
     packaged: Linking,
 ) -> int? {
-    let refusing = [f for f in files if file_law_diags(engine, program_file(disk, f)).any(refuses(it))]
+    let reached = suite_reach(engine, files)
+    let refusing = [f for f in reached if file_law_diags(engine, program_file(disk, f)).any(refuses(it))]
     if !refusing.is_empty() { return refusals_said(engine, disk, refusing, refusing[0]) }
     let made = match made_suite(
         engine,

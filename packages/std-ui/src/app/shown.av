@@ -5,9 +5,9 @@
 use tree.controls.{Control, controls, open_dialogs}
 use tree.identity.{Owner}
 use tree.outline.{outline}
-use tree.node.{Node}
+use tree.node.{Node, drawn_theme}
+use style.theme.{Theme, plain}
 use tree.view.{View}
-use style.theme.{Theme}
 
 /// An app and the tree its last paint showed.
 export type Shown = { app: App, tree: Cell<Node?> }
@@ -22,8 +22,7 @@ export fn shown<V: View>(view: fn() -> V, rows: int = 0, spaced: bool = false) -
     let made = Shown {
         app: owned_app(
             view,
-            plain,
-            (root: Node, _theme: Theme) -> {
+            (root: Node) -> {
                 tree.set(root)
                 standing.set([c.owner() for c in controls(root)])
             },
@@ -38,6 +37,13 @@ export fn shown<V: View>(view: fn() -> V, rows: int = 0, spaced: bool = false) -
 }
 
 impl Shown {
+    /// The theme the node wearing `words` was drawn in: the nearest stamp above it, the target's own
+    /// where none is — what a screen draws it in.
+    fn theme_of(words: string) -> Theme? {
+        let root? = self.tree.get() else { return null }
+        drawn_theme(root, words, plain())
+    }
+
     /// Every control on the screen, in reading order.
     fn controls() -> List<Control> {
         let root? = self.tree.get() else { return [] }

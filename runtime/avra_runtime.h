@@ -64,6 +64,7 @@ int64_t avra_ctx_enter(void* frame);
 void avra_ctx_frame_pushed(void* box);
 void* avra_ctx_reframed(void* box, int64_t at, void* frame);
 extern void* avra_ctx_now;
+int64_t avra_ctx_entry(int64_t key);
 void avra_ctx_heard(int64_t key, int64_t kind, void* cell);
 void avra_ctx_listen(void);
 void* avra_ctx_listened(void);

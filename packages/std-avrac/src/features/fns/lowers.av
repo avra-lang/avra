@@ -45,6 +45,7 @@ impl Lowers for Call {
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
+        if self.args.length == 1 && metas(cx, named, CTX_ENTRY) { return ctx_entry_read(cx, self.args[0]) }
         let reached? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
         let settled = settled_args(cx, reached, self.args, e)
         let callee = if settled == null { reached } else { settled_unit(reached, settled!) }
@@ -130,6 +131,9 @@ const CODE_HASH: string = "code_hash"
 /// `@std/meta`'s fn whose fn value runs under the frame of contexts in force where it is called.
 const REHOMED: string = "rehomed"
 
+/// `@std/meta`'s fn whose answer is the frame entry a context read reads.
+const CTX_ENTRY: string = "ctx_entry"
+
 /// `@std/meta`'s fn whose file's text a const reads.
 const EMBED: string = "embed"
 
@@ -203,6 +207,18 @@ fn rehomed_value(mut cx: Lowering, f: ExprId) -> Reg {
     let r = cx.lower(f)
     let ty? = cx.type_at(f) else { return r }
     if ty.callable() { cx.rehomed(r) } else { r }
+}
+
+/// `ctx_entry(ctx.name)`: the cell the frame in force holds for the context, as a word, 0 where its
+/// default stands — one scan of the frame, no read of the value, nothing retained. Any other
+/// argument is lowered for what it does and answers 0.
+fn ctx_entry_read(mut cx: Lowering, read: ExprId) -> Reg {
+    let name? = cx.store.ctx_read(read) else {
+        let _ = cx.lower(read)
+        return cx.const_int(0)
+    }
+    let c? = cx.context(name, read) else { return cx.unlowered(read) }
+    cx.call_row(Layout.Word, rt_sig_of("avra_ctx_entry")!, [cx.const_int(c.key)])
 }
 
 fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {

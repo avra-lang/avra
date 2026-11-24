@@ -13,6 +13,7 @@ use @std.ui.style.style.{Style}
 use @std.ui.style.tokens.{Tone, Ink}
 use @std.ui.style.theme.{Theme, default_theme}
 use @std.ui.realize.tests.support.{
+    stamped_with,
     served_at,
     leaf,
     boxed,
@@ -63,7 +64,7 @@ fn filled() -> Theme {
     default_theme with { look: default_theme.look with { button: Look { rest: Wear { ground: .Fill(.Accent, 0) }, acts: true, states: [focus] } } }
 }
 
-fn filled_sheet() -> string { css_of(render(tree(), Env { theme: filled() })) }
+fn filled_sheet() -> string { css_of(render(stamped_with(tree(), filled()), Env {})) }
 
 /// The default theme with a look on a row, which draws as a bare `div`.
 fn filled_row() -> Theme {
@@ -285,9 +286,9 @@ spec "std/ui html — primitives" {
         }
         then "the variables say which scheme the browser's own controls wear" {
             sheet().starts_with(":root{color-scheme:light dark;") &&
-                render(tree(), Env { theme: default_theme with { mode: .Dark } })
+                render(stamped_with(tree(), default_theme with { mode: .Dark }), Env {})
                     .contains(":root{color-scheme:dark;") &&
-                render(tree(), Env { theme: default_theme with { mode: .Light } })
+                render(stamped_with(tree(), default_theme with { mode: .Light }), Env {})
                     .contains(":root{color-scheme:light;")
         }
         then "a control wears the page's ink and face, never the browser's" {
@@ -348,7 +349,7 @@ spec "std/ui html — primitives" {
                 .contains("<html lang=\"ar\" dir=\"rtl\">")
         }
         then "its variables are the environment's theme" {
-            css_of(page(Page { title: "T", env: Env { theme: night() } }, tree()))
+            css_of(page(Page { title: "T" }, stamped_with(tree(), night())))
                 .contains("--tone-surface:light-dark(#FFFFFF,#123456)")
         }
         then "every colour carries its light and its dark value, once each" {
@@ -374,14 +375,14 @@ spec "std/ui html — primitives" {
                     )
         }
         then "a theme whose colours carry no stronger shade says nothing more" {
-            !css_of(page(Page { title: "T", env: Env { theme: unraised() } }, tree()))
+            !css_of(page(Page { title: "T" }, stamped_with(tree(), unraised())))
                 .contains("prefers-contrast")
         }
         then "a theme holding more contrast wears the stronger colours at rest, and asks nothing" {
             let css = css_of(
                 page(
-                    Page { title: "T", env: Env { theme: default_theme with { contrast: .More } } },
-                    tree(),
+                    Page { title: "T" },
+                    stamped_with(tree(), default_theme with { contrast: .More }),
                 ),
             )
             css.contains(":root{color-scheme:light dark;") &&
@@ -392,21 +393,15 @@ spec "std/ui html — primitives" {
         then "a theme holding standard contrast asks nothing" {
             !css_of(
                 page(
-                    Page {
-                        title: "T",
-                        env: Env { theme: default_theme with { contrast: .Standard } },
-                    },
-                    tree(),
+                    Page { title: "T" },
+                    stamped_with(tree(), default_theme with { contrast: .Standard }),
                 ),
             )
                 .contains("prefers-contrast")
         }
         then "a held mode rewrites the scheme and nothing else" {
             let held = css_of(
-                page(
-                    Page { title: "T", env: Env { theme: default_theme with { mode: .Dark } } },
-                    tree(),
-                ),
+                page(Page { title: "T" }, stamped_with(tree(), default_theme with { mode: .Dark })),
             )
             held == css_of(page(Page { title: "T" }, tree()))
                 .replace("color-scheme:light dark;", "color-scheme:dark;")

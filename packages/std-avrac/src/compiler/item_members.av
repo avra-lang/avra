@@ -5,6 +5,7 @@
 //! asks them; a node a template wrote, or a body an annotation wraps, is typed apart from the file's
 //! own nodes, so it has none here.
 use core.{
+    OwnType,
     ExprId,
     FnParts,
     Member,
@@ -113,8 +114,9 @@ enum Miss {
     Variant(owner: string, name: string, variants: List<string>)
     /// A method the declared type doesn't have.
     Method(owner: string, name: string)
-    /// A method called on a value of a type the language owns, which gives it none of that name.
-    OwnMethod(found: string, name: string)
+    /// A method called on a value of a type the language owns, which gives it none of that name,
+    /// beside the methods and the properties it has.
+    OwnMethod(found: string, name: string, methods: List<string>, properties: List<string>)
     /// A call of a member several impls of one generic trait give a type, none of which takes the
     /// arguments, beside each member as its trait's arguments key it.
     MembersUnfit(target: string, name: string, keys: List<string>)
@@ -866,22 +868,29 @@ fn call_spread_misses(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<Mis
 }
 
 /// What an argument of a call spreads: the fields of the record it is; none for an argument that
-/// spreads nothing; a miss where it spreads a value that may be null or has no fields; unknown
-/// where what it spreads is untyped, a list — the rest seat's law — or of a type nothing here reads.
+/// spreads nothing; a miss where it spreads a value that may be null or has no fields, a type
+/// parameter's among them, which has none for any instance; unknown where what it spreads is
+/// untyped, a list — the rest seat's law — or of a type nothing here reads.
 type SpreadRead = { fields: List<FieldSeat> = [], miss: List<MissPlaced> = [], unknown: bool = false }
 
 fn spread_read(engine: QueryEngine, t: TypedNodes, a: ExprId) -> SpreadRead {
     let operand? = t.store.spread_operand(a) else { return SpreadRead {} }
     let o? = (t.type_at)(operand.index) else { return SpreadRead { unknown: true } }
-    if o.dynamic || o.generic() || o.inferred() { return SpreadRead { unknown: true } }
     let at = t.store.expr_span(a)
+    if o.head is .Parameter && !o.dynamic && !o.nullable() {
+        return fieldless_spread(o, at)
+    }
+    if o.dynamic || o.generic() || o.inferred() { return SpreadRead { unknown: true } }
     if o.nullable() { return SpreadRead { miss: [MissPlaced { at: at, miss: Miss.ArgsAbsent(o.spelled()) }] } }
     if o.listed() != null { return SpreadRead { unknown: true } }
     let shape? = record_shape(engine, o) else {
-        return SpreadRead { miss: [MissPlaced { at: at, miss: Miss.ArgsFieldless(o.spelled()) }] }
+        return fieldless_spread(o, at)
     }
     SpreadRead { fields: shape.fields }
 }
+
+/// A spread at `at` of a value of `o`, which has no fields to spread.
+fn fieldless_spread(o: SignedType, at: Span?) -> SpreadRead { SpreadRead { miss: [MissPlaced { at: at, miss: Miss.ArgsFieldless(o.spelled()) }] } }
 
 /// What the field `f` a call of `callee` spreads at `at` breaks of the seat of its name among
 /// `params`: none of that name, or one wanting another type; a seat typed by a type parameter takes
@@ -1162,19 +1171,26 @@ fn own_prop_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Sp
 /// The shape a value of `s`, a type the language owns, has, as the language's rows take it: its
 /// arguments any type; absent for a type the language doesn't own.
 fn own_row_shape(s: SignedType) -> Type? {
+    let own? = s.own() else { return null }
+    rows_shape(own)
+}
+
+/// The shape the language's rows are keyed by for its own type `own`, every one named: absent for
+/// one no row takes, whose members are its prelude verbs alone.
+fn rows_shape(own: OwnType) -> Type? {
     let any = TypeId { index: 0 }
-    match s.owned() ?? "" {
-        "int" -> Type.Int,
-        "float" -> Type.Float,
-        "bool" -> Type.Bool,
-        "string" -> Type.Str,
-        "Bytes" -> Type.Bytes,
-        "ptr" -> Type.Ptr,
-        "List" -> Type.List(any),
-        "Map" -> Type.Map(any, any),
-        "Cell" -> Type.Cell(any),
-        "Range" -> Type.Range,
-        rest -> null,
+    match own {
+        .Int -> Type.Int,
+        .Float -> Type.Float,
+        .Bool -> Type.Bool,
+        .Str -> Type.Str,
+        .Bytes -> Type.Bytes,
+        .Ptr -> Type.Ptr,
+        .List -> Type.List(any),
+        .Map -> Type.Map(any, any),
+        .Cell -> Type.Cell(any),
+        .Range -> Type.Range,
+        .Result or .Task or .Tasks or .Void -> null,
     }
 }
 
@@ -1375,14 +1391,26 @@ fn method_miss(
     reader: string,
 ) -> List<MissPlaced> {
     let s? = subject else { return [] }
-    let none_of_its_own = [MissPlaced { at: value_at, miss: Miss.OwnMethod(s.spelled(), name) }]
-    if absent_known(s) { return none_of_its_own }
+    if absent_known(s) { return [MissPlaced { at: value_at, miss: Miss.OwnMethod(s.spelled(), name, [], []) }] }
     if !plain_known(s) || s.described() != null || member_answers(engine, s, name, reader) { return [] }
     if avra().keywords.contains(name) { return [MissPlaced { at: at, miss: Miss.Keyword(name) }] }
     match s.head {
         .Declared(_, owner) -> if (fields_of_record(engine, s) ?? []).contains(name) ||
             name == "all" && declares_enum(engine, s) { [] } else { [MissPlaced { at: at, miss: Miss.Method(owner, name) }] },
-        .Owned(word) -> if VERBED.contains(word) { [verb_unfit(engine, s, word, name, value_at) ?? none_of_its_own[0]] } else { [] },
+        .Owned(word) -> {
+            // every type the language owns is judged: its members are its rows, where any take it,
+            // and its prelude verbs
+            if s.own() == null { return [] }
+            // a verb the type declares that does not take this receiver is refused by its own law
+            // (a list's element, a cell's map), never as a method the type does not have
+            if own_verb(engine, "verbs/${word}.av", name, null) != null { return some_list(verb_unfit(engine, s, word, name, value_at)) }
+            [
+                MissPlaced {
+                    at: value_at,
+                    miss: own_method_missed(engine, s, word, name, own_row_shape(s)),
+                },
+            ]
+        },
         rest -> [],
     }
 }
@@ -1474,8 +1502,23 @@ fn declares_member(engine: QueryEngine, t: TraitAt, name: string) -> bool {
     trait_fns(item).any((s) -> item.store.fn_parts(s)?.name == name)
 }
 
-/// The types the language owns whose methods are its verbs alone, each declared in the prelude.
-const VERBED: List<string> = ["int", "float", "bool", "string", "Bytes", "List", "Map"]
+/// A method `name` no row and no verb gives `s`, a value of the type `word` the language owns, whose
+/// rows take `shape` where any do: beside the methods its rows and its prelude verbs give, and its
+/// properties.
+fn own_method_missed(engine: QueryEngine, s: SignedType, word: string, name: string, shape: Type?) -> Miss {
+    let methods = [r.name for r in avra().rows.methods if shape != null && r.takes(shape!)]
+        .concat(prelude_fns(engine, "verbs/${word}.av"))
+    let properties = [r.name for r in avra().rows.properties if shape != null && r.takes(shape!)]
+        .concat(prelude_fns(engine, "verbs/props/${word}.av"))
+    Miss.OwnMethod(s.spelled(), name, methods, properties)
+}
+
+/// The fns the prelude's file at `path` declares, in the order it writes them; none where it has no
+/// such file.
+fn prelude_fns(engine: QueryEngine, path: string) -> List<string> {
+    let file = SourceFileAddress { package_name: PRELUDE, path_in_package: path }
+    [d.name for d in file_declares(engine, file).names if d.kind == ItemKind.Fn]
+}
 
 /// Whether a trait the declared type `subject` implements, at whatever arguments, declares `name`.
 fn trait_gives(engine: QueryEngine, subject: SignedType, name: string) -> bool {
@@ -1961,7 +2004,10 @@ fn roundings_unseen(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Mi
 fn own_methods_missed(view: ItemView) -> List<Found> {
     misses_seen_in(
         view,
-        (m: Miss) -> match m { .OwnMethod(found, name) -> [found, name], rest -> [] },
+        (m: Miss) -> match m {
+            .OwnMethod(found, name, methods, properties) -> [found, name, "${methods.length}"].concat(methods).concat(properties),
+            rest -> [],
+        },
     )
 }
 
@@ -2479,7 +2525,10 @@ fn field_words(a: List<string>) -> Voice { no_field_on(a[0], a[1], a.drop(2)) }
 
 fn method_words(a: List<string>) -> Voice { no_method_on(a[0], a[1]) }
 
-fn own_method_words(a: List<string>) -> Voice { methodless(a[0], a[1]) }
+fn own_method_words(a: List<string>) -> Voice {
+    let methods = parse_int(a[2]) ?? 0
+    methodless(a[0], a[1], a.drop(3).take(methods), a.drop(3 + methods))
+}
 
 /// The misses where the list verb `verb` is called on a list whose elements it reads none of: the
 /// list's type, then its element's.
