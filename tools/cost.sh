@@ -216,6 +216,28 @@ warm() {
 # Each edit of the warm lane's table, over the store the cli check left. An edit undone is built back,
 # so the next edit stands on the store the check left; the share's last edit has no next, and its
 # undoing builds nothing.
+# THE NOOP CHECK: the cli's check again over the store its cold check left, nothing edited — what a
+# user's second `avra check` does, which the warm edits (`tapes --findings`) never ask. Counted as a
+# cold run is, its census the rows of `noop-check`. The store and the run's cache the cold check left
+# are kept aside as they stand (`noop_kept`), with the edited file as it stood, the warm edits run on
+# the store itself, and the noop check runs last, over what was kept: no edit stands on a store the
+# noop moved, and the noop meets no file an edit touched.
+noop_kept() {
+    [ ! -e "$place/noop-held" ] || find "$place/noop-held" -delete
+    mkdir -p "$place/noop-held"
+    cp -a "$src/packages/cli/.avra-cache" "$place/noop-held/store"
+    cp -a "$cache" "$place/noop-held/cache"
+    cp -a "$src/$edited" "$place/noop-held/edited"
+}
+noop_check() {
+    find "$src/packages/cli/.avra-cache" "$cache" -delete
+    mv "$place/noop-held/store" "$src/packages/cli/.avra-cache"
+    mv "$place/noop-held/cache" "$cache"
+    cp -a "$place/noop-held/edited" "$src/$edited"
+    find "$place/noop-held" -delete
+    counted noop-check check --counts packages/cli
+}
+
 warm_edits() {
     warm settle
     cp "$src/$edited" "$out/edited.orig"
@@ -323,6 +345,7 @@ measure() {
             lname=$name
         fi
         echo "$lname" >> "$out/workloads"
+        [ "$name" != check-cli ] || [ "$how" = ledgered ] || echo noop-check >> "$out/workloads"
         [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do
             if [ "$how" = ledgered ]; then echo "ledger-edit-$kind"; else echo "edit-$kind"; fi >> "$out/workloads"; done
         bare
@@ -333,7 +356,10 @@ measure() {
         # shellcheck disable=SC2086
         $how "$lname" $command
         [ "$how" = ledgered ] || [ "$census" = none ] || resolved "$name"
+        [ "$name" != check-cli ] || [ "$how" = ledgered ] || noop_kept
         [ "$name" != check-cli ] || warm_edits
+        # the warm edits' runs name themselves (`counted`), so the workload is known by `lname` after them
+        [ "$lname" != check-cli ] || noop_check
     done
 }
 # the ledger's markdown names the program it measured and the snapshot it measured over
