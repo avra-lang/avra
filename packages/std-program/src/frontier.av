@@ -435,6 +435,9 @@ impl Frontier {
 
     fn question_at(at: int) -> ContentHash { self.entry_at(at).question() }
 
+    /// Whether the place `at` stands no more, read off its overlay alone: no entry is made of it.
+    fn stale_at(at: int) -> bool { self.overlaid.get(place_key(at))?.stale ?? false }
+
     fn answer_at(at: int) -> ContentHash { self.entry_at(at).answer() }
 
     fn input_at(at: int) -> bool { self.entry_at(at).input() }
@@ -1033,7 +1036,7 @@ fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> Front
     )
     let fresh = closed.entries
     let existing_reads = [placed_reads(state, closed.places, h) for h in existing]
-    let placeable = [h for at, h in existing if existing_reads[at] != null]
+    let placeable = came_back_rooted(state, [h for at, h in existing if existing_reads[at] != null])
     let places = [place_in(state, h.question)! for h in placeable]
         .concat([before + at for at in 0..fresh.length])
     let extent = before + fresh.length
@@ -1336,6 +1339,16 @@ fn moved_from(state: Frontier?, h: HeldEntry) -> bool {
     if e.stale || !e.answer().same_as(h.answer) || e.input() != h.input || h.root && !e.root() { return true }
     let was? = e.reads() else { return true }
     !same_reads(f, was, h)
+}
+
+/// A PLACE THAT COMES BACK IS A ROOT: each of `placeable` laid over a place of `state` that stood no
+/// more is asked by nothing that recorded it as a read — a record checked read by read asks what it
+/// read before — which is what a root is, asked with nobody asking. As a root it is reached, as the
+/// walk from the cut holds every place it keeps standing is, and kept where a store compacts to what
+/// a frontier reaches: another package's check may ask it. A cold save, over no state, has none.
+fn came_back_rooted(state: Frontier?, placeable: List<HeldEntry>) -> List<HeldEntry> {
+    let s? = state else { return placeable }
+    [if s.stale_at(s.place_of(h.question) ?? -1) { h.rooted() } else { h } for h in placeable]
 }
 
 /// Whether the entry `h` moves stopped reading something its place in `f` read.
