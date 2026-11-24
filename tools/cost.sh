@@ -100,14 +100,27 @@ else
 fi
 [ -x "$compiler" ] || { echo "cost: no census compiler at $compiler"; exit 1; }
 
-src=$out/src
+# THE SNAPSHOT IS MEASURED WHERE NO CHECKOUT DECIDES: its sources, its stores and its HOME stand
+# under one absolute directory, whatever path this tree was cloned to. Paths are text the compiler
+# keeps and splits, so a checkout at another depth (a runner's /__w/avra/avra beside a sandbox's
+# /work/x) moves the counts. One run holds the directory at a time; a second refuses while the
+# first lives.
+place=/tmp/avra-cost
+if ! mkdir "$place.held" 2> /dev/null; then
+    holder=$(cat "$place.held/pid" 2> /dev/null || :)
+    if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then echo "cost: run $holder measures in $place"; exit 1; fi
+fi
+echo $$ > "$place.held/pid"
+trap 'find "$place.held" -delete 2> /dev/null || :' EXIT
+[ ! -e "$place" ] || find "$place" -delete
+src=$place/src
 mkdir -p "$src/build"
 git archive "$snapshot" | tar -x -C "$src"
 cp "$compiler" "$src/build/avra"
 find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name 'avra_hot.bc' -o -name 'avra_hot.inc' \) \
     -exec cp {} "$src/build/" \;
 printf '%s\n' "$snapshot" > "$out/snapshot"
-cache=$root/$out/cache
+cache=$place/cache
 
 # One run of the census compiler in the snapshot, once what it reads is older than the stamp window:
 # its census to <name>.out, what it printed to <name>.stdout. The machine's store is off unless the
@@ -193,4 +206,4 @@ done
 # THE CANDIDATES: every cold run's sites classified to the zero-cost technique that would remove their
 # cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md)
 "$src/build/avra" census --candidates --root "$src" "$out"/*.sites > "$out/candidates.txt"
-for made in "$out/cache" "$src" "$out/edited.orig"; do [ ! -e "$made" ] || find "$made" -delete; done
+for made in "$place" "$out/edited.orig"; do [ ! -e "$made" ] || find "$made" -delete; done
