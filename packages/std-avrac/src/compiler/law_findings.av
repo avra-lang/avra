@@ -1,7 +1,7 @@
 //! THE LAWS, gathered: every `law` the compiler declares, and what they find in an item, saved per
 //! item and cut off early; a finding is worded by its law's voice only as it's said.
 use core.{At, NodeKind, Span, flatten, some_list}
-use compiler.laws.{Aside, Found, Reach, Unread, law}
+use compiler.laws.{ItemAnalysis, Aside, Found, Reach, Unread, law}
 use @std.errors.{Confidence, Edit, Frame, Suggestion}
 use diagnostics.{Diag, Guess, Severity, Voice, error_at, guess_fix, loc_at, said_as, unread_behind}
 use @std.meta.{derive}
@@ -22,6 +22,8 @@ export type LawEntry = {
     reads: fn(QueryEngine, SourceFileAddress, ItemId) -> List<Found>,
     reads_view: fn(ItemView) -> List<Found>,
     on: List<NodeKind>,
+    needs: List<NodeKind>,
+    through: List<ItemAnalysis>,
     judge: fn(ItemView, At) -> List<Found>,
     reach: Reach,
     quotes: bool,
@@ -35,7 +37,7 @@ export type LawEntry = {
 }
 
 /// EVERY LAW, by name — gathered, never listed by hand.
-export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, reads_view: it.reads_view, on: it.on, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, judges_lost: it.judges_lost, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
+export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, reads_view: it.reads_view, on: it.on, needs: it.needs, through: it.through, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, judges_lost: it.judges_lost, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
 
 /// Every law, gathered once a process.
 once fn held_laws() -> List<LawEntry> { laws }
@@ -84,8 +86,11 @@ export type ItemFindings = { findings: List<LawFinding> }
 
 /// What every law finds in the item `at` of `file`, in the order the file says them: by where each
 /// stands, then law by law; one with no place last. A law that judges kinds of node is handed each
-/// node of them the item's one view holds; one that judges none reads the item whole. An item
-/// holding a declaration that lost its name is refused as a clash before any other law reads it.
+/// node of them the item's one view holds; one that judges none reads the item whole. A law is never
+/// asked of an item that holds none of the kinds it, or an analysis it reads through, needs
+/// (`reads_item`); a witness holds each law skipped so to finding nothing there
+/// (tools/witness_program_needs.sh). An item holding a declaration that lost its name is refused as
+/// a clash before any other law reads it.
 @query
 export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFindings {
     let view = if item_held(engine, file, at) { item_view(engine, file, at) } else { null }
@@ -94,12 +99,35 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId)
         view,
         () -> ItemFindings {
             findings: sorted_by(
-                [finding_of(l.name, s) for l in held_laws() if !lost || l.judges_lost for s in law_found(engine, file, at, view, l)],
+                [finding_of(g.entry.name, s) for g in gated_laws() if (!lost || g.entry.judges_lost) && (g.gates.is_empty() || reads_item(view, g.gates)) for s in law_found(engine, file, at, view, g.entry)],
                 stands_before,
             ),
         },
     )
 }
+
+/// Whether the law `l` reads the item `view` shows: an item the file doesn't hold is read by every
+/// law; one it holds, by a law where it holds a node of a kind of each of the law's gates
+/// (`law_gates`).
+fn reads_item(view: ItemView?, gates: List<List<NodeKind>>) -> bool {
+    let v? = view else { return true }
+    for g in gates { if !v.holds_any(g) { return false } }
+    true
+}
+
+/// The kinds the law `l` needs of an item, each list one an item must hold a kind of: its own, each
+/// analysis's it reads through, and those it judges — each where any is named. A law judging the
+/// nodes typing reads may be handed nodes the item's store doesn't hold, so its kinds don't gate it.
+fn law_gates(l: LawEntry) -> List<List<NodeKind>> {
+    let judged = if l.reach is .Typed { [] } else { l.on }
+    [g for g in [l.needs].concat([a.needs for a in l.through]).concat([judged]) if !g.is_empty()]
+}
+
+/// Every law beside its gates, worked out once a process.
+once fn gated_laws() -> List<GatedLaw> { [GatedLaw { entry: l, gates: law_gates(l) } for l in held_laws()] }
+
+/// A law, and the kinds an item must hold for it to be read (`law_gates`).
+type GatedLaw = { entry: LawEntry, gates: List<List<NodeKind>> }
 
 /// What the law named `by` found, as an item's findings keep it.
 fn finding_of(by: string, s: Found) -> LawFinding {
@@ -428,4 +456,29 @@ export fn law_fact_definitions() -> List<QueryDefinition> { definitions_of(liste
 export fn file_found_by(engine: QueryEngine, file: SourceFileAddress, laws: List<string>) -> bool {
     item_ids(engine, file)
         .any((at: ItemId) -> law_findings(engine, file, at).findings.any((f) -> laws.contains(f.by)))
+}
+
+/// An item some law skipped by the kinds it needs would have found something in: the item, and each
+/// such law — a `needs` declared wrong.
+export type NeedsApart = { at: ItemId, laws: List<string> }
+
+/// Each written item of `file` where a law `law_findings` skips by the kinds it needs finds something
+/// when asked: what every law finds there is then more than `law_findings` says. Every other law is
+/// asked alike either way, so only the skipped ones are asked here.
+export fn needs_held(engine: QueryEngine, file: SourceFileAddress) -> List<NeedsApart> {
+    [apart! for at in item_ids(engine, file) for apart in [needs_apart(engine, file, at)] if apart != null]
+}
+
+/// The laws `law_findings` skips in the item `at` of `file` that find something there when asked:
+/// absent where none does.
+fn needs_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> NeedsApart? {
+    if !item_held(engine, file, at) { return null }
+    let view = item_view(engine, file, at)
+    let lost = lost_a_name(engine, file, at)
+    let skipped = [g.entry for g in gated_laws() if (!lost || g.entry.judges_lost) && !g.gates.is_empty() && !reads_item(view, g.gates)]
+    let finding = pinned_while(
+        view,
+        () -> [l.name for l in skipped if !law_found(engine, file, at, view, l).is_empty()],
+    )
+    if finding.is_empty() { null } else { NeedsApart { at: at, laws: finding } }
 }

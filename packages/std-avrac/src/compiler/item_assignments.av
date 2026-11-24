@@ -7,6 +7,7 @@
 //! unless a step of the path is a `state` field, whose cell takes the write and asks nothing of the
 //! root — a path under the receiver or a `mut` seat is a place.
 use core.{
+    NodeKind,
     same_stmt,
     At,
     BindSite,
@@ -22,7 +23,7 @@ use core.{
     flatten,
     some_list,
 }
-use compiler.laws.{Found, FoundFix, law}
+use compiler.laws.{Found, FoundFix, ItemAnalysis, law}
 use diagnostics.{Voice}
 use features.{measured_slot, type_no_place}
 use features.mutation.{
@@ -350,16 +351,22 @@ fn measured(b: AssignedBody, e: ExprId, subject: ExprId, name: string) -> Found?
 export law assignment_names_a_slot {
     kind: "type.place"
     reads_view: unslotted
+    through: [ASSIGNMENTS]
     voice: unslotted_words
     witness: "fn f() -> int {\n    mut xs = [1]\n    xs.length = 3\n    2\n}\n"
 }
 
 fn unslotted_words(a: List<string>) -> Voice { if a.length == 1 { type_no_place(a[0]) } else { measured_slot(a[0], a[1]) } }
 
+/// The assignments an item's bodies write, every assignment law's reading: found only at an
+/// assignment statement.
+const ASSIGNMENTS: ItemAnalysis = ItemAnalysis { name: "assignments", needs: [NodeKind.StmtAssign] }
+
 /// an assignment lands on a place a write may replace
 export law assignment_lands {
     kind: "resolve.immutable"
     reads: unplaced
+    through: [ASSIGNMENTS]
     voice: unplaced_words
     witness: "let x = 1\nx = 2\nx\n"
 }

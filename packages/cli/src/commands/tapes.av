@@ -34,6 +34,7 @@ use @std.avrac.compiler.{
     file_rule_findings,
     waits_held,
     WaitsHeld,
+    needs_held,
     finding_diag,
     held_kinds,
     finding_line,
@@ -1206,6 +1207,7 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
     if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("findings") { return findings_said(engine, disk) }
     if args.has_flag("waits") { return waits_said(engine, disk, args.has_flag("left")) }
+    if args.has_flag("needs") { return needs_said(engine, disk) }
     if args.has_flag("new_only") { return new_only_said(engine, disk) }
     if args.has_flag("built") {
         return built_held(
@@ -1650,6 +1652,11 @@ export flag waits {
     aliases: ["--waits"]
 }
 
+export flag needs {
+    description: "ask each law the kinds it needs skip of each item of the files the package's program reads, and say each item where one finds something"
+    aliases: ["--needs"]
+}
+
 export flag new_only {
     description: "say each form only the program layer builds that the package's program uses, one per line: what the old path is never asked to judge"
     aliases: ["--new-only"]
@@ -1691,6 +1698,7 @@ export command tapes {
         link_words,
         findings,
         waits,
+        needs,
         new_only,
         law_witnesses,
         kinds,
@@ -1780,6 +1788,29 @@ fn waits_said(engine: QueryEngine, disk: Disk, left: bool) -> int {
 
 /// A fn held, and the file declaring it.
 type WaitsAt = { file: SourceFileAddress, held: WaitsHeld }
+
+/// Each item of every file the package's program reads where a law skipped by the kinds it needs
+/// finds something when asked, with those laws, one per line, then how many items were held and how
+/// many such: 0, or 1 where any is.
+fn needs_said(engine: QueryEngine, disk: Disk) -> int {
+    let files = sorted_by(
+        program_files(engine, disk.name),
+        (a, b) -> text_before(a.path_in_package, b.path_in_package),
+    )
+    mut held = 0
+    mut apart = 0
+    for f in files {
+        held = held + item_ids(engine, f).length
+        for n in needs_held(engine, f) {
+            apart = apart + 1
+            println(
+                "apart: ${f.package_name}:${f.path_in_package} item ${n.at.of} ${n.laws.join(" ")}",
+            )
+        }
+    }
+    println("needs: ${held} items held, ${apart} apart")
+    if apart == 0 { 0 } else { 1 }
+}
 
 /// The file `f` and where it stands on `disk`.
 fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {

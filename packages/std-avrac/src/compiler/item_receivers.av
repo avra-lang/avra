@@ -4,7 +4,7 @@
 //! own `self` are places. Read over the writes a written item's bodies make, as the copy laws read
 //! them; a root nothing in the fn binds is the program's, which other laws hold.
 use core.{ExprId, NodeKind, Param, PatId, StmtId}
-use compiler.laws.{Found, Reach, law}
+use compiler.laws.{Found, ItemAnalysis, Reach, law}
 use diagnostics.{Voice}
 use features.{chain_receiver_copied, receiver_a_value, receiver_captured, receiver_not_mut}
 use @std.meta.{derive}
@@ -179,6 +179,7 @@ fn lambda_since(cx: Copies, lo: int, at: ExprId, lambdas: List<ExprId>) -> bool 
 export law receiver_valued {
     kind: "type.receiver"
     reads: receivers_valued
+    through: [RECEIVERS]
     voice: valued_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f() { C { n: 0 }.bump() }\n"
@@ -188,6 +189,7 @@ export law receiver_valued {
 export law receiver_chained {
     kind: "type.receiver"
     reads: receivers_chained
+    through: [RECEIVERS]
     voice: chained_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f(c: C?) { c?.bump() }\n"
@@ -197,6 +199,7 @@ export law receiver_chained {
 export law receiver_captured_written {
     kind: "type.receiver"
     reads: receivers_captured
+    through: [RECEIVERS]
     voice: captured_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f(mut c: C) -> fn() {\n    () -> c.bump()\n}\n"
@@ -206,9 +209,17 @@ export law receiver_captured_written {
 export law receiver_unmarked {
     kind: "type.receiver"
     reads: receivers_unmarked
+    through: [RECEIVERS]
     voice: unmarked_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f(c: C) { c.bump() }\n"
+}
+
+/// The receivers a declared method writes that aren't places it may write, every receiver law's
+/// reading: a write is a method's, so only an item holding a method call, or a chained one, finds one.
+const RECEIVERS: ItemAnalysis = ItemAnalysis {
+    name: "receivers",
+    needs: [NodeKind.ExprMethodCall, NodeKind.ExprChainCall],
 }
 
 fn valued_words(a: List<string>) -> Voice { receiver_a_value(a[1]) }

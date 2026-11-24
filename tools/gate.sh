@@ -94,6 +94,7 @@ edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone o
 cli|6|test packages/cli, its tests dealt in turn, failing names held to tools/gate/cli.names
 program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-ns and each runtime test (runtime/tests/*.c) — dealt in turn
 refusal|8|witness_program_refusal over its cases, dealt in turn
+needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
 EOF
@@ -570,6 +571,7 @@ part_of() {
             rows_dealt program_rows "$2" "$3"
             ;;
         refusal) row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$(($2 - 1))" "$3") ;;
+        needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
     esac
