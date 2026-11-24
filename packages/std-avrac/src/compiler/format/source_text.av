@@ -1396,7 +1396,7 @@ impl SourceText {
                 atom_tier,
                 parent,
             ),
-            .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
+            .Binary(op, left, right) -> self.binary(id, op, left, right, parent, depth, c),
             .LetPattern(pat, subject, otherwise, held) -> grouped(
                 self.let_pattern_text(pat, subject, otherwise, held, depth),
                 loosest_tier,
@@ -1925,27 +1925,29 @@ impl SourceText {
         }
     }
 
-    mut fn binary(op: BinOp, left: ExprId, right: ExprId, parent: int, depth: int, col: int = -1) -> string {
+    mut fn binary(
+        e: ExprId,
+        op: BinOp,
+        left: ExprId,
+        right: ExprId,
+        parent: int,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         let p = binary_precedence(op)
         if chainable(op) { return self.chain_grouped(op, left, right, p, parent, depth, col) }
         // Comparisons do not chain. The bitwise band does, but the
         // language deliberately refuses a run mixing operators; a
-        // mixed left child therefore needs its group even though a
-        // conventional precedence table would drop it.
-        let lp = if comparison(op) || self.mixed_bitwise(op, left) { p + 1 } else { p }
+        // mixed left child WRITTEN in parentheses keeps its group even
+        // though a conventional precedence table would drop it. One
+        // written flat prints flat: the printer never chooses a grouping
+        // the checker refuses.
+        let lp = if comparison(op) || mixed_grouped(self.store, e, op, left) { p + 1 } else { p }
         grouped(
             "${self.expression(left, lp, depth, col)} ${op_symbol(op)} ${self.expression(right, p + 1, depth)}",
             p,
             parent,
         )
-    }
-
-    fn mixed_bitwise(op: BinOp, left: ExprId) -> bool {
-        if !bitwise(op) { return false }
-        match self.store.expr(left) {
-            .Binary(held, _, _) -> bitwise(held) && op_symbol(held) != op_symbol(op),
-            rest -> false,
-        }
     }
 
     mut fn comprehension(elem: ExprId, clauses: List<CompClause>, parent: int, depth: int) -> string {
@@ -2696,6 +2698,54 @@ fn comparison(op: BinOp) -> bool {
         .Add or .Sub or .Mul or .Div or .Mod or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> false,
     }
 }
+
+/// The other operator of a bitwise run that `e`, of `op` over `left`, mixes; absent where it mixes
+/// none. The band groups left, so a run's earlier operator is the left operand's.
+fn mixed_with(store: SyntaxArena, op: BinOp, left: ExprId) -> BinOp? {
+    if !bitwise(op) { return null }
+    match store.expr(left) {
+        .Binary(held, _, _) -> if bitwise(held) && op_symbol(held) != op_symbol(op) { held } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether `e`, of `op` over `left`, mixes a bitwise run whose left operand was WRITTEN in
+/// parentheses: as the checker reads it, a left operand beginning where its parent begins was
+/// written in the same run. A node no text spans (a generated one) keeps its group.
+fn mixed_grouped(store: SyntaxArena, e: ExprId, op: BinOp, left: ExprId) -> bool {
+    if mixed_with(store, op, left) == null { return false }
+    let at? = store.expr_span(e) else { return true }
+    let left_at? = store.expr_span(left) else { return true }
+    left_at.lo != at.lo
+}
+
+/// THE FIRST RUN OF `store` MIXING TWO BITWISE OPERATORS AS WRITTEN — flat, with no parentheses
+/// saying which applies first: its two operators and where it begins. A text holding one is one the
+/// checker refuses (`type.mixed_bitwise`), and the formatter never chooses its grouping.
+export fn flat_mixed_run(store: SyntaxArena) -> FlatRun? {
+    for i in 0..store.expr_count() {
+        let e = ExprId { index: i }
+        let run = match store.expr(e) {
+            .Binary(op, left, _) -> flat_run_at(store, e, op, left),
+            rest -> null,
+        }
+        if run != null { return run }
+    }
+    null
+}
+
+/// `e`, of `op` over `left`, as a flat mixed run; absent where it mixes none, or its left operand
+/// was written in parentheses.
+fn flat_run_at(store: SyntaxArena, e: ExprId, op: BinOp, left: ExprId) -> FlatRun? {
+    let held? = mixed_with(store, op, left) else { return null }
+    let at? = store.expr_span(e) else { return null }
+    let left_at? = store.expr_span(left) else { return null }
+    if left_at.lo != at.lo { return null }
+    FlatRun { first: op_symbol(held), next: op_symbol(op), at: at.lo }
+}
+
+/// A flat run mixing two bitwise operators: the first and the next, and the offset it begins at.
+export type FlatRun = { first: string, next: string, at: int }
 
 fn bitwise(op: BinOp) -> bool {
     match op {

@@ -479,6 +479,7 @@ slice_ui_browser() {
     row ui-board sh tools/ui_board.sh
     judged ui-board-ran "$(grep -c 'SKIPPED' "$out/ui-board.log")"
     row ui-browser env CI=true sh tools/ui_board_browser.sh
+    row board-dev env CI=true sh tools/witness_board_dev.sh build/avra
 }
 
 # each package named: tapes --findings with no refusal; built — a library stops at "declares no entry

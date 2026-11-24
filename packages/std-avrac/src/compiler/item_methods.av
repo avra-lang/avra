@@ -328,6 +328,30 @@ export fn impls_given(
         .first() ?? []
 }
 
+/// Whether an impl a generator made of the type `file` declares as `name` gives it `member`, as a
+/// static where `statics`.
+export fn generated_gives(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    member: string,
+    statics: bool,
+) -> bool {
+    impls_in(package_generated_impls_part(engine, file.package_name, name), file)
+        .any(gives(it, member, statics))
+}
+
+/// The methods the impls of the type `file` declares as `name` give it in its package, written and
+/// generated, each once, in the order they are filed: what a call of a method it lacks is offered.
+export fn methods_given(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    let parts = [
+        package_impls_part(engine, file.package_name, name),
+        package_generated_impls_part(engine, file.package_name, name),
+    ]
+    let all = [m for part in parts for i in impls_in(part, file) for m in i.methods]
+    [m for j, m in all if all.index_of(m) == j]
+}
+
 /// The written impls the package `package` holds of the type `file` declares as `name` that write
 /// `method`, impls written alike once, as `impls_with` keeps its own.
 fn foreign_impls(

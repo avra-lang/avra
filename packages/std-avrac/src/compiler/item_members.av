@@ -113,8 +113,9 @@ enum Miss {
     Uncalled(found: string, name: string)
     /// A variant read off an enum's name that the enum doesn't declare, beside the ones it does.
     Variant(owner: string, name: string, variants: List<string>)
-    /// A method the declared type doesn't have.
-    Method(owner: string, name: string)
+    /// A method the declared type doesn't have, beside the methods its impls give it, and where its
+    /// name stands in the call (-1 where the text there isn't the name).
+    Method(owner: string, name: string, methods: List<string>, lo: int)
     /// A method called on a value of a type the language owns, which gives it none of that name,
     /// beside the methods and the properties it has.
     OwnMethod(found: string, name: string, methods: List<string>, properties: List<string>)
@@ -446,6 +447,7 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
             t.store.expr_span(e),
             t.store.expr_span(subject),
             t.reader,
+            name_after(t.text, t.store.expr_span(subject), name.of),
         )
             .concat(type_named_miss(engine, t, subject, name.of, true, t.store.expr_span(e)))
             .concat(
@@ -1270,7 +1272,7 @@ fn field_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Span?
 > {
     let s? = declared_value(subject) else { return [] }
     let fields? = fields_of_record(engine, s) else { return [] }
-    if fields.contains(name) || property_type(engine, s, name) != null || home_unsettled(engine, s) { return [] }
+    if fields.contains(name) || property_type(engine, s, name) != null || home_unread(engine, s) { return [] }
     [MissPlaced { at: at, miss: Miss.Field(s.spelled(), name, fields) }]
 }
 
@@ -1358,7 +1360,7 @@ fn interned_answers(
 }
 
 /// Whether the type `described`, named outright, answers a static `name`: one it's given, one a trait
-/// it implements may declare, or one its file may give it unwritten.
+/// it implements may declare, or one its file gives it.
 fn static_answers(engine: QueryEngine, described: SignedType, name: string) -> bool {
     static_type(engine, described, name) != null ||
         home_gives(engine, described, name, true) ||
@@ -1512,14 +1514,24 @@ fn method_miss(
     at: Span?,
     value_at: Span?,
     reader: string,
+    name_lo: int = -1,
 ) -> List<MissPlaced> {
     let s? = subject else { return [] }
     if absent_known(s) { return [MissPlaced { at: value_at, miss: Miss.OwnMethod(s.spelled(), name, [], []) }] }
     if !plain_known(s) || s.described() != null || member_answers(engine, s, name, reader) { return [] }
     if avra().keywords.contains(name) { return [MissPlaced { at: at, miss: Miss.Keyword(name) }] }
     match s.head {
-        .Declared(_, owner) -> if (fields_of_record(engine, s) ?? []).contains(name) ||
-            name == "all" && declares_enum(engine, s) { [] } else { [MissPlaced { at: at, miss: Miss.Method(owner, name) }] },
+        .Declared(file, owner) -> if (fields_of_record(engine, s) ?? []).contains(name) ||
+            name == "all" && declares_enum(engine, s) {
+            []
+        } else {
+            [
+                MissPlaced {
+                    at: at,
+                    miss: Miss.Method(owner, name, methods_given(engine, file, owner), name_lo),
+                },
+            ]
+        },
         .Owned(word) -> {
             // every type the language owns is judged: its members are its rows, where any take it,
             // and its prelude verbs
@@ -1567,17 +1579,16 @@ fn member_answers(engine: QueryEngine, subject: SignedType, name: string, reader
         trait_gives(engine, subject, name)
 }
 
-/// Whether what the file declaring `subject`'s type gives it isn't all written: a generator runs
-/// there, or the file reads as no items here.
-fn home_unsettled(engine: QueryEngine, subject: SignedType) -> bool {
-    match subject.head {
-        .Declared(file, _) -> !holds_items(engine, file) || !generator_sites(engine, file).is_empty(),
-        rest -> false,
-    }
+/// Whether the file declaring `subject`'s type reads as no items here, so what it gives the type is
+/// unread. A generator running there is no such file: the fields a generator gives are those of a
+/// record it makes, which that record's signature reads, and the impls it makes give methods and
+/// statics, which no field read reaches.
+fn home_unread(engine: QueryEngine, subject: SignedType) -> bool {
+    match subject.head { .Declared(file, _) -> !holds_items(engine, file), rest -> false }
 }
 
-/// Whether the file declaring `subject`'s type gives it `name` as written — an impl there writes
-/// it, as a static where `statics` — or may give it unwritten: a generator runs there, or the file
+/// Whether the file declaring `subject`'s type gives it `name` — an impl there writes it, as a static
+/// where `statics`, or a generator there made one that does — or may give it unwritten: the file
 /// reads as no items here.
 fn home_gives(engine: QueryEngine, subject: SignedType, name: string, statics: bool = false) -> bool {
     match subject.head {
@@ -1586,9 +1597,10 @@ fn home_gives(engine: QueryEngine, subject: SignedType, name: string, statics: b
     }
 }
 
-/// Whether `file`, declaring `declared`, gives it `name` as written, as a static where `statics`, or
-/// may give it unwritten: one answer per name, which an item added elsewhere in the file leaves
-/// standing.
+/// Whether `file`, declaring `declared`, gives it `name`, as a static where `statics`: written, or
+/// in an impl a generator there made — what the generators gave, never every name a generator might
+/// — or unread, the file holding no items here. One answer per name, which an item added elsewhere in
+/// the file leaves standing.
 @cut_query
 fn home_gives_named(
     engine: QueryEngine,
@@ -1598,8 +1610,9 @@ fn home_gives_named(
     statics: bool,
 ) -> bool {
     !holds_items(engine, file) ||
-        !generator_sites(engine, file).is_empty() ||
-        item_ids(engine, file).any(writes_member(engine, file, it, declared, name, statics))
+        item_ids(engine, file).any(writes_member(engine, file, it, declared, name, statics)) ||
+        !generator_sites(engine, file).is_empty() &&
+            generated_gives(engine, file, declared, name, statics)
 }
 
 /// Whether an impl of `declared` the written item `at` of `file` holds writes a static `name`, or
@@ -1769,14 +1782,30 @@ fn end_place(at: FindingAt?) -> Span? {
     Span { lo: held.hi, hi: held.hi }
 }
 
+/// Where the name a method call is written with stands: just past its receiver and the `.` or `?.`
+/// after it; -1 where the text there isn't the name.
+fn name_after(text: string, subject: Span?, name: string) -> int {
+    let held? = subject else { return -1 }
+    [held.hi + 1, held.hi + 2]
+        .find((k) -> k + name.length <= text.length && text.substring(k, k + name.length) == name) ?? -1
+}
+
 fn methods_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
-        (m: Miss) -> match m { .Method(owner, name) -> [owner, name], rest -> [] },
-    )
+    [f! for r in item_misses(engine, file, at).rows for f in [method_found(r)] if f != null]
         .concat([f for r in item_misses(engine, file, at).rows for f in chain_method_found(r.at, r.miss)])
+}
+
+/// A call of a method a declared type lacks, as its law finds it: the type, the name and the methods
+/// it has, the name's place beside, where a guess respells it.
+fn method_found(r: MissAt) -> Found? {
+    match r.miss {
+        .Method(owner, name, methods, lo) -> Found {
+            at: span_of(r.at),
+            args: [owner, name].concat(methods),
+            named: if lo < 0 { null } else { spanned(lo, lo + name.length) },
+        },
+        rest -> null,
+    }
 }
 
 /// A `?.` call of a method a nullable's declared type lacks, as its law finds it, what the call
@@ -2690,7 +2719,7 @@ fn uncalled_words(a: List<string>) -> Voice { uncalled_method(a[0], a[1]) }
 
 fn field_words(a: List<string>) -> Voice { no_field_on(a[0], a[1], a.drop(2)) }
 
-fn method_words(a: List<string>) -> Voice { no_method_on(a[0], a[1]) }
+fn method_words(a: List<string>) -> Voice { no_method_on(a[0], a[1], a.drop(2)) }
 
 fn own_method_words(a: List<string>) -> Voice {
     let methods = parse_int(a[2]) ?? 0

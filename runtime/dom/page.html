@@ -9,19 +9,49 @@
 <body>
 <div id="app"></div>
 <script type="module">
-// A page that cannot start, or that hits an error after it has, says why on the page itself.
+// A page that cannot start, or stops working once it has, says so in plain words. Under `avra dev`
+// (the page names its module) the error's own words and stack follow; a built page offers a reload
+// and leaves them to the console.
 let started = false;
+const dev = document.querySelector('meta[name="avra-module"]') !== null;
+// Each failure, for the dev relay: held here until `dev.js` takes them and posts every one after.
+const relay = (globalThis.avraRelay ??= { held: [], post: null });
+const relayed = (line) => (relay.post ? relay.post(line) : relay.held.push(line));
 const told = (e) => {
-  const words = document.createElement("pre");
-  words.setAttribute("role", "alert");
-  words.style.cssText = "white-space:pre-wrap;color:#b00020;font:14px/1.4 monospace;padding:16px";
+  const plain = started ? "This page stopped working." : "This page could not start.";
   // What went wrong first, then where: a stack names frames and carries no
   // message line outside V8, so both are said.
-  const said = [e?.message, e?.stack].filter((part) => typeof part === "string" && part !== "").join("\n");
-  words.textContent = `${started ? "The page hit an error:" : "The page did not start:"}\n${said || String(e)}`;
-  document.body.prepend(words);
+  const detail = [e?.message, e?.stack].filter((part) => typeof part === "string" && part !== "").join("\n") || String(e);
+  console.error(`${plain}\n${detail}`);
+  relayed(`${plain} ${detail}`);
+  const shown = document.createElement("div");
+  shown.setAttribute("role", "alert");
+  shown.style.cssText = "padding:16px;font:16px/1.5 system-ui,sans-serif;color:#b00020";
+  const words = document.createElement("p");
+  words.textContent = plain;
+  shown.append(words);
+  if (dev) {
+    const said = document.createElement("pre");
+    said.style.cssText = "white-space:pre-wrap;font:13px/1.4 ui-monospace,monospace;color:inherit";
+    said.textContent = detail;
+    shown.append(said);
+  } else {
+    const again = document.createElement("button");
+    again.textContent = "Reload";
+    again.addEventListener("click", () => location.reload());
+    shown.append(again);
+  }
+  document.body.prepend(shown);
 };
-addEventListener("error", (ev) => told(ev.error ?? `${ev.message} (${ev.filename}:${ev.lineno}:${ev.colno})`));
+// An error with no error object and no file is the browser's masked form: a script the page does
+// not own (an extension's, an in-app browser's) failed. It is never drawn over the app: the console
+// hears it, and the dev relay carries it with the browser that ran it.
+const masked = (ev) => !ev.error && !ev.filename;
+addEventListener("error", (ev) => {
+  if (!masked(ev)) return told(ev.error ?? `${ev.message} (${ev.filename}:${ev.lineno}:${ev.colno})`);
+  console.warn(`a script this page does not own failed: ${ev.message}`);
+  relayed(`a script this page does not own failed (no error, no file): ${ev.message} — ${globalThis.navigator?.userAgent ?? "an unknown browser"}`);
+});
 addEventListener("unhandledrejection", (ev) => told(ev.reason));
 try {
   const { run } = await import("./bootstrap.js");

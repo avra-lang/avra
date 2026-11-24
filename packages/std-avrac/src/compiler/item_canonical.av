@@ -3,7 +3,13 @@
 //! decides, so nothing here types: a file is asked for its text and its words' shapes, and no more.
 //! The same whole read says which of its `// LICENSED` citations name nothing.
 use core.{Expr, ExprId, StmtId, SyntaxArena, flatten, joined}
-use compiler.format.{lossless_defect, remarks_and_docs_defect, render_source_of}
+use compiler.format.{
+    FlatRun,
+    flat_mixed_run,
+    lossless_defect,
+    remarks_and_docs_defect,
+    render_source_of,
+}
 use diagnostics.{SourceFile, has_errors, new_source_file, render_among}
 use features.{BlockWords}
 use @std.meta.{derive}
@@ -45,11 +51,20 @@ export fn file_write_checked(engine: QueryEngine, file: SourceFileAddress) -> Re
 /// A TEXT AS CANONICAL AVRA, read under `words`, without its closing newline — or its parse's
 /// report. It prints the text AS WRITTEN, never a generated declaration; and it refuses one whose
 /// parse speaks, since a tree with holes prints those regions back as nothing. A text that doesn't
-/// type is no bar.
+/// type is no bar, with one exception: a run mixing two bitwise operators as written, which the
+/// checker refuses for having no agreed order. Printing it would choose a grouping and turn a refused
+/// program into a wrong one, so it is refused here and the text stands as it was.
 export fn formatted_under(src: SourceFile, words: BlockWords) -> Result<string, string> {
     let parsed = parse_program(avra(), src, words)
-    if !has_errors(parsed.voices.list) { return .Ok(render_source_of(parsed.store, parsed.stmts, src.text)) }
-    .Err(joined([render_among(d, [src]) for d in parsed.voices.list], "\n\n"))
+    if has_errors(parsed.voices.list) { return .Err(joined([render_among(d, [src]) for d in parsed.voices.list], "\n\n")) }
+    let run? = flat_mixed_run(parsed.store) else { return .Ok(render_source_of(parsed.store, parsed.stmts, src.text)) }
+    .Err(run_unordered(src, run))
+}
+
+/// A text refused for a run mixing two bitwise operators as written, said where it begins.
+fn run_unordered(src: SourceFile, run: FlatRun) -> string {
+    let line = src.text.substring(0, run.at).split("\n").length
+    "${src.file}:${line}: `${run.first}` and `${run.next}` in one run have no agreed order — fmt never chooses its grouping; parenthesise it as you mean it"
 }
 
 /// `formatted_under`, gated for a write: the LOSSLESS receipt must hold — the same significant

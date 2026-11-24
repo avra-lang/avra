@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, StmtId, Type, TypeId, DeclId, closest, same_type, counted}
+use core.{ExprId, StmtId, Type, TypeId, DeclId, closest, edit_distance, same_type, counted}
 use features.{
     TypeCx,
     FnSig,
@@ -15,7 +15,7 @@ use features.{
     tparams_refused,
     method_row,
 }
-use diagnostics.{Guess, Voice, refusal, said_as}
+use diagnostics.{Guess, Voice, guess_fix, refusal, said_as}
 use features.maps.{map_unknowable}
 use @std.errors.{Loc}
 
@@ -558,13 +558,19 @@ fn offered(names: List<string>) -> string {
     if each.length > 10 { "${listed} and ${each.length - 10} more" } else { listed }
 }
 
-/// A method call naming a method the declared type `target` doesn't have.
-export fn no_method_on(target: string, name: string) -> Voice {
-    Voice {
+/// A method call naming a method the declared type `target` doesn't have, beside the `methods` it
+/// has: the one nearest by name where one is near, else the impl to declare it in.
+export fn no_method_on(target: string, name: string, methods: List<string> = []) -> Voice {
+    let v = Voice {
         message: "`${target}` has no method `${name}`",
         label: "called here",
         help: "declare it — `impl ${target} { fn ${name}(…) -> … }`",
     }
+    let n? = closest(name, methods) else { return v }
+    // a short name one letter off is a typo; two off is a different word
+    if name.length <= 4 && n.distance > 1 { return v }
+    let near = [m for j, m in methods if methods.index_of(m) == j && edit_distance(name, m) == n.distance]
+    v with { help: "did you mean `${n.name}`?", guess: Guess { written: name, meant: n.name, distance: n.distance, tied: near.length > 1 } }
 }
 
 /// The names a declared type's impls give it.
@@ -573,16 +579,13 @@ fn members_of(cx: TypeCx, decl: DeclId) -> List<string> {
 }
 
 fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string, near: List<string>) -> TypeId {
-    cx
-        .spoken(
-            cx
-                .nearest(
-                    said_as("type.method", cx.loc_of(e), no_method_on(target, name)),
-                    cx.receiver_of(e),
-                    name,
-                    near,
-                ),
-        )
+    let v = no_method_on(target, name, near)
+    let d = said_as("type.method", cx.loc_of(e), v)
+    let subject = cx.receiver_of(e)
+    let at: Loc? = if subject == null { null } else { cx.name_after(subject!, name) }
+    let g? = v.guess else { return cx.spoken(d) }
+    let named? = at else { return cx.spoken(d) }
+    cx.spoken(d with { suggestions: [guess_fix(g, named)] })
 }
 
 /// A dot-call named by a KEYWORD is a grammar form that did not match

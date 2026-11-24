@@ -419,6 +419,29 @@ if (tampered) {
   claim("and it answers a press", await torn.read(`document.querySelector('[aria-label="Dark mode"]') !== null`));
   await torn.close();
 }
+// THE PAGE'S OWN FAILURES, as a user meets them, on a page of their own so no claim above sees
+// them: a masked error (the browser's "Script error.", no error and no file: an extension's or an
+// in-app browser's script) is not the page's and draws nothing; a throw inside a handler is the
+// page's, told first in plain words and, on the page `avra dev` serves, in its own words after.
+{
+  const shell = await opened(url);
+  await standing(shell);
+  const alerts = `[...document.querySelectorAll('[role="alert"]')].map((a) => [a.firstElementChild ? a.firstElementChild.textContent : "", a.textContent])`;
+  const before = (await shell.read(alerts)).length;
+  await shell.read(`(dispatchEvent(new ErrorEvent("error", { message: "Script error." })), true)`);
+  await pause(200);
+  claim("a masked error (\"Script error.\", no error, no file) draws nothing over the app", (await shell.read(alerts)).length === before, await shell.read(alerts));
+  await shell.read(`(() => { const b = document.createElement("button"); b.addEventListener("click", () => { throw new Error("thrown inside a handler"); }); document.body.append(b); b.click(); b.remove(); return true; })()`);
+  const told = await (async () => { for (let i = 0; i < 40; i++) { const now = await shell.read(alerts); if (now.length > before) return now; await pause(50); } return await shell.read(alerts); })();
+  const plain = told.filter(([first]) => first === "This page stopped working.");
+  claim("a throw inside a handler is told first in plain words: the page stopped working", plain.length === 1, told);
+  if (await shell.read(`document.querySelector('meta[name="avra-module"]') !== null`)) {
+    claim("and on dev's page its own words follow the plain line", plain.length === 1 && plain[0][1].includes("thrown inside a handler"), told);
+  } else {
+    claim("and a built page shows no engine text, and offers a reload", plain.length === 1 && !plain[0][1].includes("thrown inside a handler") && await shell.read(`[...document.querySelectorAll('[role="alert"] button')].some((b) => b.textContent === "Reload")`), told);
+  }
+  await shell.close();
+}
 console.log(failed === 0 ? `ui-browser: every claim holds in ${engine}` : `ui-browser: ${failed} claim(s) FAILED in ${engine}`);
 await launched?.browser.close();
 process.exit(failed === 0 ? 0 : 1);

@@ -1,0 +1,68 @@
+// The formatter never chooses a grouping the checker refuses. A run mixing two bitwise operators
+// as written (`m ^ m >> 29`) has no agreed order, and the checker refuses it (`type.mixed_bitwise`).
+// Printing it with either grouping would turn a refused program into a wrong one, so the formatter
+// refuses the text instead, a check and a write alike, and the text stands as written. A run whose
+// grouping is written in parentheses prints with it kept.
+use compiler.{Canonical, canonical_of, formatted_under, write_checked_under}
+use diagnostics.{new_source_file}
+use features.{BlockWords}
+
+/// The bitwise band's operators.
+const band: List<string> = ["&", "|", "^", "<<", ">>"]
+
+/// Every ordered pair of two different operators of the band.
+fn pairs() -> List<List<string>> { [[a, b] for a in band for b in band if a != b] }
+
+/// A fn whose one expression is `body`.
+fn of_body(body: string) -> string { "fn f(m: int) -> int { ${body} }\n" }
+
+/// What the formatter does with `text`: its canonical text, or why it refuses it.
+fn formatted(text: string) -> Result<string, string> { formatted_under(new_source_file("/w/src/main.av", text), BlockWords {}) }
+
+/// What a write of `text` answers: the text it would write, or its refusal.
+fn written(text: string) -> Result<string, string> { write_checked_under(new_source_file("/w/src/main.av", text), BlockWords {}) }
+
+/// Whether `r` is a refusal.
+fn refused(r: Result<string, string>) -> bool { r is .Err }
+
+/// Whether `text` prints back as itself.
+fn stands(text: string) -> bool {
+    match formatted(text) { .Ok(t) -> "${t}\n" == text, .Err(_) -> false }
+}
+
+spec "fmt and a bitwise run mixing two operators" {
+    given "each ordered pair of the band's operators, written flat" {
+        then "the formatter refuses every one, printing no grouping for it" {
+            pairs().all((p) -> refused(formatted(of_body("m ${p[0]} m ${p[1]} 3"))))
+        }
+        then "a write refuses every one, and a check says it refused, so the two agree" {
+            pairs()
+                .all(
+                    (p) -> {
+                        let text = of_body("m ${p[0]} m ${p[1]} 3")
+                        refused(written(text)) && canonical_of(text, written(text)) is .Refused
+                    },
+                )
+        }
+        then "the refusal names both operators and asks for parentheses" {
+            match formatted(of_body("m ^ m >> 29")) {
+                .Ok(_) -> false,
+                .Err(why) -> why.contains("`^` and `>>`") && why.contains("parenthesise"),
+            }
+        }
+    }
+    given "each pair with its grouping written in parentheses" {
+        then "either grouping prints back as written, its parentheses kept" {
+            pairs()
+                .all(
+                    (p) -> stands(of_body("(m ${p[0]} m) ${p[1]} 3")) &&
+                        stands(of_body("m ${p[0]} (m ${p[1]} 3)")),
+                )
+        }
+    }
+    given "a run of one operator" {
+        then "it is no mix, and prints as written" {
+            band.all((o) -> stands(of_body("m ${o} m ${o} 3")))
+        }
+    }
+}
