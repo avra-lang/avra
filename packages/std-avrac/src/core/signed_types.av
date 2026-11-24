@@ -520,12 +520,19 @@ impl SignedType {
     }
 
     fn parameters() -> List<int> {
-        let own = match self.head { .Parameter(index, _) -> [index], rest -> [] }
-        let parts = self
-            .args
-            .concat([s.ty for s in self.seats])
-            .concat(if self.answer == null { [] } else { [self.answer!] })
-        own.concat(flatten([p.parameters() for p in parts]))
+        mut found: List<int> = []
+        self.parameters_into(found)
+        found
+    }
+
+    /// Each type parameter place this type names pushed onto `found`, its own first, then its
+    /// arguments', its seats' and its answer's, in that order: one list filled, none joined.
+    fn parameters_into(mut found: List<int>) {
+        let own: int? = match self.head { .Parameter(index, _) -> index, rest -> null }
+        if own != null { found.push(own!) }
+        for a in self.args { a.parameters_into(found) }
+        for s in self.seats { s.ty.parameters_into(found) }
+        if self.answer != null { self.answer!.parameters_into(found) }
     }
 
     /// One past the highest type parameter place this type names.
