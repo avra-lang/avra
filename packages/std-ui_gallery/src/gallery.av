@@ -2,8 +2,8 @@
 //! a view's name and its `Case`s (`@std.ui.tree.story`'s: a story derives
 //! them from the component's members, or the author supplies them). The gallery is
 //! one page for the web, one listing for the terminal, and a list of
-//! semantic `Snapshot`s: what a case says (its HTML, its outline) and a
-//! digest of both, never pixels. `changed` compares two
+//! semantic `Snapshot`s: what a case says on each target (its HTML, its
+//! outline, its terminal drawing) and a digest of all three, never pixels. `changed` compares two
 //! snapshot lists by digest, so only what differs is looked at.
 //!
 //!     let entries = [Entry { view: "greeting", cases: [Case { name: "one", view: hello("Ada") }] }]
@@ -22,8 +22,12 @@ use @std.ui.style.layout.{Layout, around}
 /// A view under a name, with its states.
 export type Entry = { view: string, cases: List<Case> }
 
-/// What a case says, and the digest of it.
-export type Snapshot = { view: string, case: string, html: string, outline: string, digest: string }
+/// What a case says on each target — the web's HTML, the headless outline, the terminal's drawing
+/// at `terminal_width` columns — and the digest of the three.
+export type Snapshot = { view: string, case: string, html: string, outline: string, terminal: string, digest: string }
+
+/// The columns a snapshot's terminal drawing is made at.
+export const terminal_width: int = 80
 
 export enum ChangeKind { Added, Removed, Changed }
 
@@ -60,13 +64,14 @@ fn snapshot(view: string, c: Case) -> Snapshot {
     let n = tree_of(c.view)
     let h = fragment(n)
     let s = outline(n)
-    Snapshot { view: view, case: c.name, html: h, outline: s, digest: digest_of(h, s) }
+    let r = render(n, Env {}, terminal_width)
+    Snapshot { view: view, case: c.name, html: h, outline: s, terminal: r, digest: digest_of([h, s, r]) }
 }
 
-/// The digest of a snapshot's two texts; the first's length leads so
-/// no split of the same bytes collides.
-fn digest_of(h: string, s: string) -> string {
-    hex(fnv1a("${h.length}:${h}${s}"))
+/// The digest of a snapshot's texts; each text's length leads it, so no
+/// split of the same bytes collides.
+fn digest_of(texts: List<string>) -> string {
+    hex(fnv1a([t for x in texts for t in ["${x.length}:", x]].join("")))
 }
 
 /// FNV-1a over the bytes, 64 bits, wrapping.
