@@ -1,5 +1,5 @@
 #!/bin/sh
-# tool-witness: run by keepers
+# tool-witness: run by make gate-keepers (tools/gate.sh, a planted row per keepers slice)
 # A KEEPER SHOWN TO REFUSE: the keeper a plant names, run over a copy of this tree (HEAD, as a
 # worktree of its own) with that one fault planted in what the keeper judges. It holds — exit 0 —
 # only where the keeper refuses AND its words name the plant; a keeper that passes over its fault,
