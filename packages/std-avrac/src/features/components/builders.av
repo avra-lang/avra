@@ -42,6 +42,9 @@ fn component_decl_written(s: dyn Slots) -> Result<Built, string> {
     if s.present_of("third")? { return .Err(three_dots()) }
     let members = s.params_of("members")?
     let written = s.params_of("head")?
+    if written.first()?.default != null { return .Err(first_defaulted(written[0].name.of)) }
+    let placed = written.find(it.state && it.default != null)
+    if placed != null { return .Err(state_defaulted(placed!.name.of)) }
     let head = if members.any(it.state) { [propped_param(p) for p in written] } else { written }
     let decl = Stmt
         .ComponentDecl(
@@ -220,8 +223,28 @@ fn keyed_binder(word: string) -> string {
     "a keyed `${word}`'s body binds its element — write `name -> …`"
 }
 
-fn head_count(word: string, n: int) -> string {
-    "`${word}` declares ${n} head fields, and its instance writes one value"
+fn first_defaulted(seat: string) -> string {
+    "a component's first head seat, `${seat}`, is what every instance writes before its block, so it takes no default"
+}
+
+fn state_defaulted(seat: string) -> string {
+    "the head seat `${seat}` is `state`: every instance hands it a place of its own, so it takes no default"
+}
+
+fn first_head(word: string, first: string) -> string {
+    "`${word}` writes its first head seat, `${first}`, before its block: `${word} <${first}> { … }`"
+}
+
+fn later_head_missing(word: string, seat: string) -> string {
+    "`${word}` takes `${seat}` by name in its block, after its head value — write `${seat}: …`"
+}
+
+fn head_set_twice(word: string, seat: string) -> string {
+    "`${seat}` is `${word}`'s head value here, written before the block — a setting sets it twice"
+}
+
+fn later_set_twice(word: string, seat: string) -> string {
+    "`${word}`'s block sets its head seat `${seat}` twice"
 }
 
 /// A TEMPLATE's instance writing type arguments: a template copies its

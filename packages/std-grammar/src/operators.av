@@ -1,6 +1,6 @@
 //! The climb's tables, read off a branch's tiers once.
 
-use util.{flatten, distinct}
+use util.{distinct}
 use ast.{Tier, Suffix, OpEntry, Operators, Prim}
 use diagnostics.{Want}
 
@@ -9,14 +9,14 @@ use diagnostics.{Want}
 /// that shares its first (`>` `>` over `>`) is tried at its own tier
 /// before a looser one.
 export fn operators_of(tiers: List<Tier>) -> Operators {
-    let entries = flatten([tier_entries(tiers[i], i) for i in tightest_first(tiers)])
+    let entries = [tier_entries(tiers[i], i) for i in tightest_first(tiers)].flatten()
     Operators {
         tiers: tiers,
         entries: entries,
         by_first: keyed_by_first(entries),
         expects: [tier_expects(l) for l in tiers],
-        reach: [flatten([tier_expects(tiers[i]) for i in tightest_first(tiers) if i >= m]) for m in 0..tiers.length + 1],
-        lits: distinct(flatten([tier_lits(l) for l in tiers])),
+        reach: [[tier_expects(tiers[i]) for i in tightest_first(tiers) if i >= m].flatten() for m in 0..tiers.length + 1],
+        lits: distinct([tier_lits(l) for l in tiers].flatten()),
     }
 }
 
@@ -43,5 +43,5 @@ fn tier_expects(l: Tier) -> Want {
 }
 
 fn tier_lits(l: Tier) -> List<string> {
-    flatten(l.words).concat([x.word for x in l.suffixes])
+    l.words.flatten().concat([x.word for x in l.suffixes])
 }

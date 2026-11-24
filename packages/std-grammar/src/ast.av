@@ -24,7 +24,7 @@
 
 use @std.meta.{derive}
 use fielded_derive.{Fielded}
-use util.{flatten, distinct, is_name_start}
+use util.{distinct, is_name_start}
 use diagnostics.{Want}
 /// A named bag of rules and which one parsing begins at. `start` always
 /// names a rule in `rules`.
@@ -36,13 +36,14 @@ impl Grammar {
     /// first-appearance order — the words this grammar claims, which
     /// a language refuses as names.
     fn keywords() -> List<string> {
-        distinct(flatten([alt_words(r.body) for r in self.rules]))
+        distinct([alt_words(r.body) for r in self.rules].flatten())
     }
 }
 
 fn alt_words(a: Alt) -> List<string> {
-    flatten([item_words(x) for x in a.items()])
-        .concat(flatten([operator_words(s) for s in a.seqs()]))
+    [item_words(x) for x in a.items()]
+        .flatten()
+        .concat([operator_words(s) for s in a.seqs()].flatten())
 }
 
 fn operator_words(s: Seq) -> List<string> {
@@ -360,12 +361,12 @@ impl Seq {
 
     /// This branch, then every branch nested in its groups.
     fn seqs() -> List<Seq> {
-        [self].concat(flatten([group_seqs(m.prim) for m in self.items]))
+        [self].concat([group_seqs(m.prim) for m in self.items].flatten())
     }
 
     /// This branch's items, nested groups opened.
     fn deep_items() -> List<Item> {
-        flatten([s.items for s in self.seqs()])
+        [s.items for s in self.seqs()].flatten()
     }
 
     /// The branch whose labels this one is judged by: itself when it
@@ -378,12 +379,12 @@ impl Seq {
 impl Alt {
     /// Every branch under this alternation, nested groups opened.
     fn seqs() -> List<Seq> {
-        flatten([s.seqs() for s in self.branches])
+        [s.seqs() for s in self.branches].flatten()
     }
 
     /// Every item under this alternation, nested groups opened.
     fn items() -> List<Item> {
-        flatten([s.deep_items() for s in self.branches])
+        [s.deep_items() for s in self.branches].flatten()
     }
 }
 

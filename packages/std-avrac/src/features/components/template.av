@@ -110,6 +110,7 @@ fn instancing(store: SyntaxArena, c: ComponentParts, components: List<string>) -
         .Template(
             Template {
                 head: head,
+                defaults: [p.default for p in c.head],
                 block: block,
                 reads: reads,
                 stmts: verbatim(body.view),
@@ -143,6 +144,15 @@ export fn read_twice(store: SyntaxArena, body: BodyParts, values: List<string>) 
 /// The head fields a component declares as PATTERNS.
 export fn formats_of(c: ComponentParts) -> List<string> {
     [p.name.of for p in c.head if p.ty?.name == "Format"]
+}
+
+/// The one expression a `quote` holds; absent for any other expression.
+export fn quoted_value(store: SyntaxArena, e: ExprId) -> ExprId? {
+    let body? = store.expr(e).body_of() else { return null }
+    if !(body_behavior(body.word) is .Quote) { return null }
+    let stmts = verbatim(body.view)
+    if stmts.length != 1 { return null }
+    store.answer_of(stmts[0])
 }
 
 /// A quote's body as written.

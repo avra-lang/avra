@@ -939,8 +939,27 @@ impl SourceText {
             let first = unpadded(all[0], depth + 1)
             return if head.is_empty() { "{ ${first} }" } else { "{ ${head} ${first} }" }
         }
+        if one_line && value == null && self.settings_alone(stmts, all) {
+            let line = joined([unpadded(l, depth + 1) for l in all], ", ")
+            return if head.is_empty() { "{ ${line} }" } else { "{ ${head} ${line} }" }
+        }
         let opening = if head.is_empty() { "{" } else { "{ ${head}" }
         "${opening}\n${joined(all, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// Whether a block written on one line holds plain settings alone, each printed on one line and
+    /// nothing between them: such a block stays on its line, its settings parted by commas.
+    fn settings_alone(stmts: List<StmtId>, lines: List<string>) -> bool {
+        lines.length > 1 &&
+            lines.length == stmts.length &&
+            lines.all(!it.contains("\n")) &&
+            stmts.all((s) -> self.plain_setting(s))
+    }
+
+    /// Whether a statement sets a member by name to a value, no handler.
+    fn plain_setting(s: StmtId) -> bool {
+        let st? = self.store.setting_parts(s) else { return false }
+        self.store.on_handler_kind(st.value) == null
     }
 
     mut fn statement_block(head: string, stmts: List<StmtId>, end: int, one_line: bool, depth: int) -> string {

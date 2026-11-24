@@ -64,9 +64,10 @@ the body exists, answer:
 
 1. Is any loop a MAP/FILTER/FLAT-MAP? Comprehension (`?` works in
    element and iterable; predicates hoist into named fns).
-2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`
-   (core's FREE fn — `flatten(xs)`, never `xs.flatten()`), never
-   push-ceremony.
+2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`:
+   in std-avrac, core's FREE fn `flatten(xs)`; in any other package,
+   the prelude's List verb `xs.flatten()`, never a private copy;
+   never push-ceremony.
 3. Is a projection being spelled twice? The second spelling names a
    verb (`cx.int_at`, `expr_fps`) or uses the existing one.
 4. Does absence read straight? (`?? `, `?.`, if-null early return —

@@ -1,7 +1,10 @@
 //! Components — a record type with defaults that a block instantiates.
 //! `component Name(head: T) { field: T = default … fn … }` declares
-//! it: the head's fields are filled by position, the rest by name,
-//! and the fns are its methods. A `state` field is a place each
+//! it: the head's first seat is filled by position, a later head seat
+//! by its name in the block — `tab "All" { chosen: filter }` — or
+//! by its default, the other fields by name, and the fns are its methods.
+//! A record's instance evaluates its settings in the order they are
+//! written; a template's head seats are code, run where its quote splices them. A `state` field is a place each
 //! instance holds, as a record's is. A component whose `expand` is ONE
 //! `quote` reading only `self` is a TEMPLATE: an importing file's
 //! `within ms(5) { … }` is that quote, copied where the instance
@@ -23,7 +26,7 @@
 //! as a head stands in parentheses.
 use features.{LanguageFeature}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use diagnostics.{DiagCode}
+use diagnostics.{DiagCode, Remedy}
 
 export fn components() -> LanguageFeature {
     let codes = table<DiagCode> {
@@ -41,15 +44,24 @@ export fn components() -> LanguageFeature {
         "type.slot_shadows"       | "an instance's block names its component's slot before a component of that name"
         "flow.no_fate"            | "a handler that can fail must name a fate for its failure"
     }
+        .concat(
+            [
+                DiagCode {
+                    kind: "type.component_named_head",
+                    summary: "an instance writes its first head seat before its block",
+                    remedy: Remedy.Fix,
+                },
+            ],
+        )
     LanguageFeature components {
         gram: grammar {
             stmt = "component" name:NAME ( "<" tparams:tparam ( "," tparams:tparam )* ","? ">" )? ( "(" ( head:hseat ( "," head:hseat )* ","? )? ")" )? "{" ( members:cfield | members:cevent | ".." ( third:"." )? spreads:type | body:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.ComponentDecl by component_decl_written
-            hseat = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type -> Record.ParamSyntax
+            hseat = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax
             cfield = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax
             cevent = ( marks:mark )* ON name:NAME ( "(" ( says:eseat ( "," says:eseat )* ","? )? ")" )? -> Record.ParamSyntax by event_written
             eseat = name:NAME ":" ty:type -> Record.ParamSyntax
             stmt = word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? name:NAME ( body:named_inst_body )? END -> Stmt.Let by named_written
-            setting = name:NAME ":" value:expression END -> Stmt.Setting | heard:ON name:NAME "{" BREAK* ( seats:handler_seat ( "," seats:handler_seat )* ","? "->" )? ( stmts:stmt | BREAK )* "}" -> Stmt.Setting(value = Expr.Lambda(params = seats, body = Expr.Block(stmts = stmts))) | heard:ON name:NAME ":" value:expression END -> Stmt.Setting
+            setting = name:NAME ":" value:expression ( "," | END ) -> Stmt.Setting | heard:ON name:NAME "{" BREAK* ( seats:handler_seat ( "," seats:handler_seat )* ","? "->" )? ( stmts:stmt | BREAK )* "}" -> Stmt.Setting(value = Expr.Lambda(params = seats, body = Expr.Block(stmts = stmts))) | heard:ON name:NAME ":" value:expression END -> Stmt.Setting
             head_arm = pats:nonbind_pattern ( "if" guard:expression )? "->" value:expression -> Record.Arm
             named_inst_body = "{" BREAK* arms:head_arm ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> Expr.ArmsBody
                 | b:instance_body -> b

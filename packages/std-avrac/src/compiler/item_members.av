@@ -6,6 +6,7 @@
 //! own nodes, so it has none here.
 use core.{
     OwnType,
+    Expr,
     ExprId,
     FnParts,
     Member,
@@ -210,6 +211,10 @@ enum Miss {
     /// A record literal naming a type the language owns; where a sugar minted it, what the sugar
     /// means, said where the sugar stands, `lo` up to `hi`.
     OwnedBuilt(name: string, means: string?, lo: int, hi: int)
+    /// A record literal of a component whose head has seats, setting by name the first seat an
+    /// instance writes before its block: the text `fix` over `[lo, hi)` writes it as the head, none
+    /// where its value can't stand there.
+    NamedHead(record: string, seat: string, lo: int, hi: int, fix: string)
     /// A type the language owns, read where a value stands.
     OwnedAsValue(name: string)
     /// A read or a call through the name of the declared type `owner`, which answers no `name`:
@@ -413,6 +418,7 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
         .concat(call_spread_misses(engine, t, e))
         .concat(empty_map_miss(engine, t, e))
         .concat(owned_literal_miss(engine, t, e))
+        .concat(named_head_miss(engine, t, e))
         .concat(prelude_verb_miss(engine, t, e))
         .concat(literal_param_miss(t.store, e, scope.generic))
         .concat(variant_read_miss(engine, t, e))
@@ -634,6 +640,123 @@ fn owned_literal_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<Mis
         },
     ]
 }
+
+/// A record literal, or an instance written with no head value, of a component whose head has
+/// seats, that sets the first seat by name: an instance writes it before its block, and the miss
+/// carries the edit that moves the setting there; nothing for any other node.
+fn named_head_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
+    let named? = named_entries(t, e) else { return [] }
+    if !braced_after(t.text, t.store.expr_span(e), named.word) { return [] }
+    let d? = resolved(engine, t.file, Space.Type, named.word).named() else { return [] }
+    if d.kind != ItemKind.Component { return [] }
+    let seat? = component_head(engine, d.file, d.name).first() else { return [] }
+    let j? = named.names.find_index(it == seat) else { return [] }
+    let moved = head_moved(t, e, named, j)
+    [
+        MissPlaced {
+            at: t.store.expr_span(e),
+            miss: Miss
+                .NamedHead(named.word, seat, moved?.at?.lo ?? 0, moved?.at?.hi ?? 0, moved?.text ?? ""),
+        },
+    ]
+}
+
+/// Whether the text at `at` is `word` written with its brace straight after it, or its type
+/// arguments: how a literal or an instance with no head value is written, never a literal an
+/// instance with a head value minted, which stands at the instance.
+fn braced_after(text: string, at: Span?, word: string) -> bool {
+    let held? = at else { return false }
+    if held.lo + word.length > text.length || text.substring(held.lo, held.lo + word.length) != word { return false }
+    mut i = held.lo + word.length
+    while i < text.length && spaced(text.char_code(i)) { i = i + 1 }
+    i < text.length && (text.char_code(i) == 123 || text.char_code(i) == 60)
+}
+
+/// The head seats the component `file` declares as `name`, in order.
+fn component_head(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    let item? = record_item(engine, file, name) else { return [] }
+    let parts? = [p! for s in item.stmts for p in [item.store.component_parts(s)] if p != null && p!.name == name]
+        .first() else { return [] }
+    [p.name.of for p in parts.head]
+}
+
+/// What a component's word is written with by name at `e`: a record literal's fields, or the
+/// statements of an instance's block written with no head value, each with where it starts and
+/// ends and, for a setting, its name and value; absent for any other node.
+fn named_entries(t: TypedNodes, e: ExprId) -> Named? {
+    match t.store.expr(e) {
+        .StructLit(name, fields, values) -> Named {
+            word: name.of,
+            names: [f.of for f in fields],
+            values: [v for v in values],
+            starts: [key_before(t.text, t.store.expr_span(v)?.lo ?? 0, fields[k].of) ?? 0 - 1 for k, v in values],
+            ends: [t.store.expr_span(v)?.hi ?? 0 - 1 for v in values],
+        },
+        .Component(word, _, heads, body, _, _) -> if heads.is_empty() && body != null { block_entries(t, word, body!) } else { null },
+        rest -> null,
+    }
+}
+
+fn block_entries(t: TypedNodes, word: string, body: ExprId) -> Named? {
+    let stmts? = t.store.block_stmts(body) else { return null }
+    let set = [t.store.setting_parts(s) for s in stmts]
+    Named {
+        word: word,
+        names: [st?.name ?? "" for st in set],
+        values: [st?.value for st in set],
+        starts: [t.store.stmt_span(s)?.lo ?? 0 - 1 for s in stmts],
+        ends: [t.store.stmt_span(s)?.hi ?? 0 - 1 for s in stmts],
+    }
+}
+
+/// A component's word and the entries written under it by name, in order: each one's name (empty
+/// for a statement that sets nothing), value, start and end.
+type Named = { word: string, names: List<string>, values: List<ExprId?>, starts: List<int>, ends: List<int> }
+
+/// The edit that writes entry `j` as the head: its value before the brace, the entry cut with what
+/// parts it from its neighbour, or the whole block emptied where it is alone; absent where the value
+/// can't stand there or an entry's place isn't found as written.
+fn head_moved(t: TypedNodes, e: ExprId, named: Named, j: int) -> Respelled? {
+    let at? = t.store.expr_span(e) else { return null }
+    let v? = named.values[j] else { return null }
+    let vs? = t.store.expr_span(v) else { return null }
+    let shown? = as_head(t.store.expr(v), t.text.substring(vs.lo, vs.hi)) else { return null }
+    if named.starts.any(it < 0) || named.ends.any(it < 0) { return null }
+    let brace = at.lo + t.text.substring(at.lo, named.starts[0]).index_of("{")
+    let n = named.starts.length
+    if n == 1 { return Respelled { at: Span { lo: brace, hi: at.hi }, text: "${shown} {}" } }
+    let lo = if j + 1 < n || j == 0 { named.starts[j] } else { named.ends[j - 1] }
+    let hi = if j + 1 < n { named.starts[j + 1] } else { vs.hi }
+    Respelled { at: Span { lo: brace, hi: hi }, text: "${shown} ${t.text.substring(brace, lo)}" }
+}
+
+/// A value as an instance's head writes it: bare where it is one term, a record literal in
+/// parentheses; absent for any other, which a head can't spell without a binding.
+fn as_head(e: Expr, text: string) -> string? {
+    match e {
+        .StrLit(_) or .Body(_, _, _, _) or .IntLit(_) or .FloatLit(_) or .BoolLit(_) or .Ident(_) or .Prop(_, _) or .Call(_, _, _) or .MethodCall(_, _, _) or .VariantLit(_, _) -> text,
+        .StructLit(_, _, _) -> "(${text})",
+        rest -> null,
+    }
+}
+
+/// Where the key `name` that a value at `at` is written after starts: back over the space and the
+/// colon between them; absent where the text there is no such key.
+fn key_before(text: string, at: int, name: string) -> int? {
+    mut i = at - 1
+    while i >= 0 && spaced(text.char_code(i)) { i = i - 1 }
+    if i < 0 || text.char_code(i) != 58 { return null }
+    i = i - 1
+    while i >= 0 && spaced(text.char_code(i)) { i = i - 1 }
+    let start = i + 1 - name.length
+    if start < 0 || text.substring(start, i + 1) != name { return null }
+    start
+}
+
+fn spaced(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
+
+/// A respelling: the text written over a span of the item.
+type Respelled = { at: Span, text: string }
 
 /// Whether typing read the name at `e` as a type standing as a value, no binding of it in reach.
 fn read_as_type(t: TypedNodes, e: ExprId) -> bool { (t.type_at)(e.index)?.described() != null }
@@ -1957,11 +2080,7 @@ fn chain_found(at: FindingAt?, c: ChainCalled) -> Found { said_beside(at, [c.fou
 /// A finding at `at`, its voice handed `args`, what its node means said beside it where the node
 /// stands, `lo` up to `hi`.
 fn said_beside(at: FindingAt?, args: List<string>, means: string, lo: int, hi: int) -> Found {
-    Found {
-        at: span_of(at),
-        args: args,
-        aside: Aside { label: means, at: Span { lo: lo, hi: hi } },
-    }
+    Found { at: span_of(at), args: args, aside: Aside { label: means, at: spanned(lo, hi) } }
 }
 
 fn members_unfitting(view: ItemView) -> List<Found> {
@@ -1994,6 +2113,54 @@ fn owned_found(at: FindingAt?, m: Miss) -> List<Found> {
             if means == null { Found { at: span_of(at), args: [name] } } else { said_beside(at, [name], means!, lo, hi) },
         ],
         rest -> [],
+    }
+}
+
+/// Every record literal in the written item `at` of `file` that sets by name the first head seat of
+/// its component: handed the record and the seat, and the sure edit that writes it as the head.
+fn named_heads(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [f! for r in item_misses(engine, file, at).rows for f in [named_head_found(r)] if f != null]
+}
+
+fn named_head_found(r: MissAt) -> Found? {
+    match r.miss {
+        .NamedHead(record, seat, lo, hi, fix) -> Found {
+            at: span_of(r.at),
+            args: [record, seat],
+            fixes: if fix.is_empty() {
+                []
+            } else {
+                [
+                    FoundFix {
+                        description: head_moved_said(record, seat),
+                        at: spanned(lo, hi),
+                        replacement: fix,
+                        sure: true,
+                    },
+                ]
+            },
+        },
+        rest -> null,
+    }
+}
+
+/// The span from `lo` to `hi` of an item.
+fn spanned(lo: int, hi: int) -> Span { Span { lo: lo, hi: hi } }
+
+fn head_moved_said(record: string, seat: string) -> string { "write `${seat}` as `${record}`'s head" }
+
+/// an instance writes its component's first head seat before its block, never as a record literal's field
+export law named_head {
+    kind: "type.component_named_head"
+    reads: named_heads
+    voice: named_head_words
+    witness: "component chip(label: string) {\n    size: int = 1\n}\n\nfn f() -> int { chip { label: \"x\", size: 2 }.size }\n"
+}
+
+fn named_head_words(a: List<string>) -> Voice {
+    Voice {
+        message: "`${a[0]}`'s first head seat, `${a[1]}`, is written before its block, never set by name",
+        help: "write `${a[0]} <${a[1]}> { … }` — `avra fix --repair` moves it there",
     }
 }
 

@@ -19,7 +19,7 @@ use ast.{
 }
 use executor.{Ready}
 use render.{render_build, render_grammar}
-use util.{flatten, distinct, filled, is_end, some_list}
+use util.{distinct, filled, is_end, some_list}
 
 /// What the generated source names: its fns' prefix, the token and node types and the lines
 /// that bring them into scope, and the print of the grammar it was made from.
@@ -384,14 +384,13 @@ impl Gen {
     mut fn guard(start: BranchStart?, at: string) -> string? {
         let st? = start else { return null }
         if st.nullable { return null }
-        let slots = flatten([lit_slot_of(t) for t in st.terminals])
-        let parts = flatten(
-            [
-                if st.kinds != 0 { ["(u.mask[${at}] & ${st.kinds}) != 0"] } else { [] },
-                if slots.is_empty() { [] } else { ["${self.slot_test(slots)}(u.lit[${at}])"] },
-                [self.asked(t, at) for t in st.asked],
-            ],
-        )
+        let slots = [lit_slot_of(t) for t in st.terminals].flatten()
+        let parts = [
+            if st.kinds != 0 { ["(u.mask[${at}] & ${st.kinds}) != 0"] } else { [] },
+            if slots.is_empty() { [] } else { ["${self.slot_test(slots)}(u.lit[${at}])"] },
+            [self.asked(t, at) for t in st.asked],
+        ]
+            .flatten()
         if parts.is_empty() { "false" } else { parts.join(" || ") }
     }
 
@@ -1016,16 +1015,16 @@ impl Gen {
 /// Every build an operator branch's pairs may call: each tier's, a suffix's own first.
 fn pair_builds(s: Seq) -> List<Build?> {
     let ops = s.operators!
-    flatten(
-        [[x.build for x in t.suffixes if x.build != null].concat([t.build ?? s.build]) for t in ops.tiers],
-    )
+    [[x.build for x in t.suffixes if x.build != null].concat([t.build ?? s.build]) for t in ops.tiers]
+        .flatten()
 }
 
 /// What a pair's builds read of `left`, `op`, `right` and the range `loc`.
 fn pair_reads(s: Seq) -> List<string> {
     let builds = pair_builds(s)
     distinct(
-        flatten([build_reads(b) for b in builds])
+        [build_reads(b) for b in builds]
+            .flatten()
             .concat(if builds.any(needs_loc(it)) { ["loc"] } else { [] }),
     )
 }
@@ -1050,7 +1049,7 @@ fn build_reads(b: Build?) -> List<string> {
     match d {
         .Var(name) -> [name],
         .Call(_, args) -> args,
-        .Node(_, _, _, slots) or .Computed(_, _, _, slots) -> flatten([slot_reads(x) for x in slots ?? []]),
+        .Node(_, _, _, slots) or .Computed(_, _, _, slots) -> [slot_reads(x) for x in slots ?? []].flatten(),
     }
 }
 
@@ -1058,7 +1057,7 @@ fn slot_reads(s: Slot) -> List<string> {
     match s {
         .Label(name) -> [name],
         .Nested(inner) -> build_reads(inner),
-        .Items(parts) -> flatten([slot_reads(x) for x in parts]),
+        .Items(parts) -> [slot_reads(x) for x in parts].flatten(),
         .Fixed(_) or .Empty -> [],
     }
 }
@@ -1120,7 +1119,8 @@ fn lit_slot_of(t: StartTerm) -> List<int> {
 /// at a cursor — memoized or by this same law. A rule an operator's climb names is asked again
 /// for each operator tried at one cursor, and the start rule by the run.
 fn unremembered(rd: Ready) -> List<bool> {
-    let sites = flatten([rule_sites(r.body) for r in rd.g.rules])
+    let sites = [rule_sites(r.body) for r in rd.g.rules]
+        .flatten()
         .concat([Site { rule: rd.g.start, head: false }])
     [sites.filter(it.rule == r.name).length == 1 && sites.any(it.rule == r.name && it.head) for r in rd.g.rules]
 }
@@ -1130,14 +1130,13 @@ type Site = { rule: string, head: bool }
 
 /// Every place a rule's body names a rule.
 fn rule_sites(body: Alt) -> List<Site> {
-    flatten([branch_sites(s) for s in body.branches])
+    [branch_sites(s) for s in body.branches].flatten()
 }
 
 fn branch_sites(s: Seq) -> List<Site> {
     // a head capped by its own mark is asked alike by a capped and an open ask of its rule
-    let items = flatten(
-        [item_sites(m, i == 0 && !m.head && (m.rep == Rep.One || m.rep == Rep.Opt)) for i, m in s.items],
-    )
+    let items = [item_sites(m, i == 0 && !m.head && (m.rep == Rep.One || m.rep == Rep.Opt)) for i, m in s.items]
+        .flatten()
     let climbs = if s.operators == null { [] } else { climb_sites(s) }
     items.concat(climbs)
 }
@@ -1145,14 +1144,15 @@ fn branch_sites(s: Seq) -> List<Site> {
 fn item_sites(m: Item, head: bool) -> List<Site> {
     match m.prim {
         .Ref(target) -> [Site { rule: target, head: head }],
-        .Group(inner) -> flatten([nested_sites(x) for x in inner.branches]),
+        .Group(inner) -> [nested_sites(x) for x in inner.branches].flatten(),
         .Lit(_) or .Named(_) or .NotChar(_) -> [],
     }
 }
 
 /// A group's branch: no place in it is a rule's own head.
 fn nested_sites(s: Seq) -> List<Site> {
-    flatten([item_sites(m, false) for m in s.items])
+    [item_sites(m, false) for m in s.items]
+        .flatten()
         .concat(if s.operators == null { [] } else { climb_sites(s) })
 }
 

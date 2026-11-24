@@ -21,7 +21,6 @@ use parser.{
     OverClause,
 }
 use @std.meta.{Type, Field}
-use @std.grammar.{flatten}
 
 /// One column reference found while walking an expression —
 /// `qualifier` is the table alias/name a dotted read named, absent
@@ -47,7 +46,7 @@ fn column_refs(e: SqlExpr) -> List<ColumnRef> {
         .Star -> [],
         .Not(inner) -> column_refs(inner),
         .BinOp(op, lhs, rhs) -> column_refs(lhs).concat(column_refs(rhs)),
-        .Call(fn_name, args) -> flatten([column_refs(a) for a in args]),
+        .Call(fn_name, args) -> [column_refs(a) for a in args].flatten(),
         .IsNull(inner, negated) -> column_refs(inner),
         .Between(inner, lo, hi, negated) -> column_refs(inner).concat(column_refs(lo)).concat(column_refs(hi)),
         .In(inner, source, negated) -> column_refs(inner).concat(in_source_refs(source)),
@@ -59,19 +58,19 @@ fn column_refs(e: SqlExpr) -> List<ColumnRef> {
 }
 
 fn in_source_refs(source: InSource) -> List<ColumnRef> {
-    match source { .Values(items) -> flatten([column_refs(e) for e in items]), .Subquery(s) -> [] }
+    match source { .Values(items) -> [column_refs(e) for e in items].flatten(), .Subquery(s) -> [] }
 }
 
 fn case_refs(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> List<ColumnRef> {
     let operand_refs = if operand == null { [] } else { column_refs(operand!) }
-    let when_refs = flatten([column_refs(w.cond).concat(column_refs(w.result)) for w in whens])
+    let when_refs = [column_refs(w.cond).concat(column_refs(w.result)) for w in whens].flatten()
     let else_refs = if else_branch == null { [] } else { column_refs(else_branch!) }
     operand_refs.concat(when_refs).concat(else_refs)
 }
 
 fn over_refs(over: OverClause) -> List<ColumnRef> {
-    let pb = flatten([column_refs(e) for e in over.partition_by])
-    let ob = flatten([column_refs(o.expr) for o in over.order_by])
+    let pb = [column_refs(e) for e in over.partition_by].flatten()
+    let ob = [column_refs(o.expr) for o in over.order_by].flatten()
     pb.concat(ob)
 }
 
@@ -83,7 +82,7 @@ fn nested_selects(e: SqlExpr) -> List<SqlSelect> {
         .Subquery(s) or .Exists(s) -> [s],
         .Not(inner) -> nested_selects(inner),
         .BinOp(op, lhs, rhs) -> nested_selects(lhs).concat(nested_selects(rhs)),
-        .Call(fn_name, args) -> flatten([nested_selects(a) for a in args]),
+        .Call(fn_name, args) -> [nested_selects(a) for a in args].flatten(),
         .IsNull(inner, negated) -> nested_selects(inner),
         .Between(inner, lo, hi, negated) -> nested_selects(inner).concat(nested_selects(lo)).concat(nested_selects(hi)),
         .In(inner, source, negated) -> nested_selects(inner).concat(in_source_selects(source)),
@@ -97,7 +96,7 @@ fn nested_selects(e: SqlExpr) -> List<SqlSelect> {
 
 fn in_source_selects(source: InSource) -> List<SqlSelect> {
     match source {
-        .Values(items) -> flatten([nested_selects(e) for e in items]),
+        .Values(items) -> [nested_selects(e) for e in items].flatten(),
         .Subquery(s) -> [s],
     }
 }
@@ -106,9 +105,8 @@ fn case_selects(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr
     SqlSelect,
 > {
     let operand_sels = if operand == null { [] } else { nested_selects(operand!) }
-    let when_sels = flatten(
-        [nested_selects(w.cond).concat(nested_selects(w.result)) for w in whens],
-    )
+    let when_sels = [nested_selects(w.cond).concat(nested_selects(w.result)) for w in whens]
+        .flatten()
     let else_sels = if else_branch == null { [] } else { nested_selects(else_branch!) }
     operand_sels.concat(when_sels).concat(else_sels)
 }
@@ -151,7 +149,7 @@ fn table_ref_display_alias(t: TableRef) -> string? {
 /// if any, already came from `resolve_table_ref`).
 fn from_scope(f: FromClause, lookup: fn(string) -> Type?) -> List<ResolvedTable> {
     let refs = [f.first].concat([j.other for j in f.joins])
-    flatten([want_scope(t, lookup) for t in refs])
+    [want_scope(t, lookup) for t in refs].flatten()
 }
 
 fn want_scope(t: TableRef, lookup: fn(string) -> Type?) -> List<ResolvedTable> {
@@ -162,7 +160,7 @@ fn want_scope(t: TableRef, lookup: fn(string) -> Type?) -> List<ResolvedTable> {
 
 fn from_diags(f: FromClause, lookup: fn(string) -> Type?) -> List<ResolveDiag> {
     let refs = [f.first].concat([j.other for j in f.joins])
-    flatten([one_diag(resolve_table_ref(t, lookup)) for t in refs])
+    [one_diag(resolve_table_ref(t, lookup)) for t in refs].flatten()
 }
 
 fn one_diag(d: ResolveDiag?) -> List<ResolveDiag> {
@@ -217,11 +215,10 @@ fn select_exprs(s: SqlSelect) -> List<SqlExpr> {
 export fn resolve_select(s: SqlSelect, lookup: fn(string) -> Type?) -> List<ResolveDiag> {
     let scope = from_scope(s.from, lookup)
     let exprs = select_exprs(s)
-    let column_diags = flatten(
-        [one_diag(column_diag(c, scope)) for c in flatten([column_refs(e) for e in exprs])],
-    )
-    let nested = flatten([nested_selects(e) for e in exprs])
-    let nested_diags = flatten([resolve_select(sub, lookup) for sub in nested])
-    let cte_diags = flatten([resolve_select(c.query, lookup) for c in s.ctes])
+    let column_diags = [one_diag(column_diag(c, scope)) for c in [column_refs(e) for e in exprs].flatten()]
+        .flatten()
+    let nested = [nested_selects(e) for e in exprs].flatten()
+    let nested_diags = [resolve_select(sub, lookup) for sub in nested].flatten()
+    let cte_diags = [resolve_select(c.query, lookup) for c in s.ctes].flatten()
     from_diags(s.from, lookup).concat(column_diags).concat(nested_diags).concat(cte_diags)
 }

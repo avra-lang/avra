@@ -508,14 +508,15 @@ fn form_wire(r: RecordForm?) -> string {
             bit_word(f.fn_optional),
             packed([packed([e.name, list_field(e.says), bit_word(e.default)]) for e in f.events]),
             bit_word(f.words),
+            list_field(f.defaulted),
         ],
     )
 }
 
-/// The inverse: none for the empty wire, and none for one that is not eight parts.
+/// The inverse: none for the empty wire, and none for one that is not nine parts.
 fn form_of_wire(wire: string) -> RecordForm? {
     let p = unpacked(wire)
-    if p.length != 8 { return null }
+    if p.length != 9 { return null }
     RecordForm {
         head: read_list(p[0]),
         slots: [ChildSlot { name: q[0], of: q[1], gathers: q[2] == "1", default: q[3] == "1" } for x in unpacked(p[1]) for q in [unpacked(x)] if q.length == 4],
@@ -525,6 +526,7 @@ fn form_of_wire(wire: string) -> RecordForm? {
         fn_optional: p[5] == "1",
         events: [ComponentEvent { name: q[0], says: read_list(q[1]), default: q[2] == "1" } for x in unpacked(p[6]) for q in [unpacked(x)] if q.length == 3],
         words: p[7] == "1",
+        defaulted: read_list(p[8]),
     }
 }
 

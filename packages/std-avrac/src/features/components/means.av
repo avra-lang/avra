@@ -127,21 +127,71 @@ impl Mint {
     ) -> Result<Expansion, string> {
         if !targs.is_empty() { return .Err(template_targs(word.word)) }
         if heads.is_empty() { return .Err(headless(word.word)) }
-        if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
         if body == null { return .Err(blockless(word.word)) }
-        let stmts = self.written(body)
-        if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
-        let block = self.filled_body(body!, stmts)
-        let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
+        let headed = self
+            .headed(
+                word.word,
+                t.head,
+                [h for j, h in t.head if t.defaults[j] != null],
+                heads,
+                self.written(body),
+            )?
+        if headed.rest.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
+        let block = self.filled_body(body!, headed.rest)
+        let values = [v ?? self.default_copied(word, t, t.defaults[j]!) for j, v in headed.values]
+        let minted = [self.minted_format(word, t, h, values[j])? for j, h in t.head]
         .Ok(
             Expansion {
-                literal: self.store.instantiated(t, word, heads, block, minted, self.door),
+                literal: self.store.instantiated(t, word, values, block, minted, self.door),
                 check: null,
             },
         )
     }
 
-    /// A record's instance: the head by position, each setting by name,
+    /// A template's head default, copied in as its code is: the provider's, so it reads the names
+    /// the provider's file sees. A `Code` seat's default is the code its `quote` holds.
+    fn default_copied(word: ComponentWord, t: Template, default: ExprId) -> ExprId {
+        mut copying = copier(t.store, self.store, [], [], self.door)
+        let copy = copying.expr(quoted_value(t.store, default) ?? default)
+        self.store.note_copied(copying.made_nodes(), word.origin)
+        copy
+    }
+
+    /// An instance's head values in its head's order: the value written before the block fills the
+    /// first seat, a later seat takes the setting that names it, wherever it stands in the block, and
+    /// one with a default that no setting names is absent — a block setting the first seat itself
+    /// means what its head would, and the `named_head` law refuses it; with the block's statements left once its
+    /// head settings are taken out. An instance so written means what every head value written in
+    /// order would.
+    fn headed(
+        word: string,
+        head: List<string>,
+        defaulted: List<string>,
+        heads: List<ExprId>,
+        stmts: List<StmtId>,
+    ) -> Result<Headed, string> {
+        if heads.length > head.length { return .Err(record_heads(word, head.length, heads.length)) }
+        let settings = [self.store.setting_parts(s) for s in stmts]
+        let named = [st! for st in settings if head.contains(st?.name ?? "")]
+        if heads.is_empty() && !head.is_empty() && !named.any(it.name == head[0]) { return .Err(first_head(word, head[0])) }
+        let positional = head.take(heads.length)
+        let twice = named.find((st) -> positional.contains(st.name))
+        if twice != null { return .Err(head_set_twice(word, twice!.name)) }
+        let again = named.find([n for n in named if n.name == it.name].length > 1)
+        if again != null { return .Err(later_set_twice(word, again!.name)) }
+        let missing = [h for k, h in head if k >= heads.length && !named.any(it.name == h) && !defaulted.contains(h)]
+        if !missing.is_empty() { return .Err(later_head_missing(word, missing[0])) }
+        .Ok(
+            Headed {
+                values: [if k < heads.length { heads[k] } else { named.find(it.name == h)?.value } for k, h in head],
+                rest: [st for k, st in stmts if !head.contains(settings[k]?.name ?? "")],
+            },
+        )
+    }
+
+    /// A record's instance: its head value in its first seat, each setting by name in the order it
+    /// is written — a later head seat's too, which `headed` judges — so the literal evaluates them
+    /// as they are written,
     /// the `name` a statement gave it unless a setting writes one, and
     /// the body's other statements
     /// `collect`ed into its one open `List` field — or, for a body
@@ -154,11 +204,11 @@ impl Mint {
         body: ExprId?,
         name: string?,
     ) -> Result<Expansion, string> {
-        if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
         let written_fn: ExprId? = if body != null && self.store.body_fn(body!) != null { self.tailed(self.store.body_fn(body!)!, r.fn_optional) } else { null }
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
         if written_fn != null && r.fn_field == null { return .Err(record_fn_body(word)) }
         let stmts = if written_fn == null { self.written(body) } else { [] }
+        let headed = self.headed(word, r.head, r.defaulted, heads, stmts)?
         let blocks = [self.slot_block(r, s) for s in stmts]
         let loose = [s for j, s in stmts if self.store.setting_parts(s) == null && blocks[j] == null]
         let written = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
@@ -172,7 +222,7 @@ impl Mint {
         let set = flatten(
             [self.set(r, st, settings)? for st in settings if !placed_in.contains(st.name)],
         )
-        let filled = [Field { name: f, value: heads[j] } for j, f in r.head]
+        let filled = [Field { name: f, value: headed.values[j]! } for j, f in r.head if j < heads.length]
             .concat(fn_filled)
             .concat(set)
             .concat(named)
@@ -467,6 +517,10 @@ type Placed = { slot: string, stmts: List<StmtId> }
 
 /// One field of a record literal an instance builds.
 type Field = { name: string, value: ExprId }
+
+/// An instance's head values in its head's order, absent for a seat its default fills, and the
+/// block's statements left once its head settings are taken out.
+type Headed = { values: List<ExprId?>, rest: List<StmtId> }
 
 impl SyntaxArena {
     /// A template copied in: each hole filled with the head value or

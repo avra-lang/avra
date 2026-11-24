@@ -11,7 +11,6 @@ use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout, around}
 use style.theme.{Theme, Mode, Contrast, Dial, Shades, plain}
 use style.look.{Ground, Measure, Wear, worn}
-use tree.lists.{flatten}
 use tree.node.{Node, Prim, Attribute, own_axis, gap_between}
 use style.tokens.{Size, Tone, Ink, Font, Level, TypeSize, LineHeight, Tracking}
 use realize.html.tags.{HtmlTag}
@@ -277,37 +276,35 @@ fn margin_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
 }
 
 fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
-    flatten(
-        [
-            axis_rule(l.direction, state),
-            gap_rule(l.gap, state),
-            pad_rules(l.pad, state),
-            align_rule(l.align, state),
-            distribute_rule(l.distribute, state),
-            sizing_rule(.Row, "w", "width", "min-width", l.width, state),
-            sizing_rule(.Column, "h", "height", "min-height", l.height, state),
-            wrap_rule(l.wrap, state),
-            margin_rules(l.margin, state),
-            grow_rule(l.grow, state),
-            order_rule(l.order, state),
-        ],
-    )
+    [
+        axis_rule(l.direction, state),
+        gap_rule(l.gap, state),
+        pad_rules(l.pad, state),
+        align_rule(l.align, state),
+        distribute_rule(l.distribute, state),
+        sizing_rule(.Row, "w", "width", "min-width", l.width, state),
+        sizing_rule(.Column, "h", "height", "min-height", l.height, state),
+        wrap_rule(l.wrap, state),
+        margin_rules(l.margin, state),
+        grow_rule(l.grow, state),
+        order_rule(l.order, state),
+    ]
+        .flatten()
 }
 
 // ── appearance ──────────────────────────────────────────────────
 
 fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
-    flatten(
-        [
-            surface_rule(s, state),
-            ink_rule(s, state),
-            radius_rule(s.radius, state),
-            face_rule(s.face, state),
-            text_size_rule(s.text_size, state),
-            line_height_rule(s.line_height, state),
-            tracking_rule(s.tracking, state),
-        ],
-    )
+    [
+        surface_rule(s, state),
+        ink_rule(s, state),
+        radius_rule(s.radius, state),
+        face_rule(s.face, state),
+        text_size_rule(s.text_size, state),
+        line_height_rule(s.line_height, state),
+        tracking_rule(s.tracking, state),
+    ]
+        .flatten()
 }
 
 // ── the rules a box names ───────────────────────────────────────
@@ -344,14 +341,13 @@ fn size_var(name: string, s: Sizing?) -> List<CssVar> {
 /// and its order — the values its `w-fixed`, `h-fixed`, `grow` and `order`
 /// classes read.
 export fn box_vars(box: Box) -> List<CssVar> {
-    flatten(
-        [
-            size_var("w", box.layout.width),
-            size_var("h", box.layout.height),
-            if box.layout.grow > 0 { [CssVar { name: "grow", value: "${box.layout.grow}" }] } else { [] },
-            if box.layout.order != 0 { [CssVar { name: "order", value: "${box.layout.order}" }] } else { [] },
-        ],
-    )
+    [
+        size_var("w", box.layout.width),
+        size_var("h", box.layout.height),
+        if box.layout.grow > 0 { [CssVar { name: "grow", value: "${box.layout.grow}" }] } else { [] },
+        if box.layout.order != 0 { [CssVar { name: "order", value: "${box.layout.order}" }] } else { [] },
+    ]
+        .flatten()
 }
 
 /// Every rule a node names: its primitive's own axis unless its layout
@@ -424,43 +420,41 @@ fn states() -> List<Interaction?> {
 /// Every layout rule a token can name. A size, a growth and an order ride a
 /// custom property, so each is ONE rule here whatever its value.
 fn layout_vocabulary() -> List<CssRule> {
-    flatten(
-        [
-            flatten([axis_rule(a, null) for a in axes]),
-            flatten([gap_rule(z, null) for z in Size.every()]),
-            flatten([pad_rules(around(z), null) for z in Size.every()]),
-            flatten([margin_rules(around(z), null) for z in Size.every()]),
-            flatten([align_rule(a, null) for a in aligns]),
-            flatten([distribute_rule(d, null) for d in distributions]),
-            flatten([wrap_rule(w, null) for w in wraps]),
-            sizing_rule(.Row, "w", "width", "min-width", Sizing.Fill, null),
-            sizing_rule(.Row, "w", "width", "min-width", Sizing.Fixed(0), null),
-            sizing_rule(.Row, "w", "width", "min-width", Sizing.Percent(0.0), null),
-            sizing_rule(.Column, "h", "height", "min-height", Sizing.Fill, null),
-            sizing_rule(.Column, "h", "height", "min-height", Sizing.Fixed(0), null),
-            sizing_rule(.Column, "h", "height", "min-height", Sizing.Percent(0.0), null),
-            grow_rule(1, null),
-            order_rule(1, null),
-        ],
-    )
+    [
+        [axis_rule(a, null) for a in axes].flatten(),
+        [gap_rule(z, null) for z in Size.every()].flatten(),
+        [pad_rules(around(z), null) for z in Size.every()].flatten(),
+        [margin_rules(around(z), null) for z in Size.every()].flatten(),
+        [align_rule(a, null) for a in aligns].flatten(),
+        [distribute_rule(d, null) for d in distributions].flatten(),
+        [wrap_rule(w, null) for w in wraps].flatten(),
+        sizing_rule(.Row, "w", "width", "min-width", Sizing.Fill, null),
+        sizing_rule(.Row, "w", "width", "min-width", Sizing.Fixed(0), null),
+        sizing_rule(.Row, "w", "width", "min-width", Sizing.Percent(0.0), null),
+        sizing_rule(.Column, "h", "height", "min-height", Sizing.Fill, null),
+        sizing_rule(.Column, "h", "height", "min-height", Sizing.Fixed(0), null),
+        sizing_rule(.Column, "h", "height", "min-height", Sizing.Percent(0.0), null),
+        grow_rule(1, null),
+        order_rule(1, null),
+    ]
+        .flatten()
 }
 
 /// Every appearance rule a token can name, at rest and in each state.
 fn appearance_vocabulary() -> List<CssRule> {
-    flatten(
-        [
-            flatten([color_rule(c, s) for s in states() for c in Ink.every()]),
-            flatten([on_rule(t, s) for s in states() for t in Tone.every()]),
-            flatten([fill_rule(t, s) for s in states() for t in Tone.every()]),
-            flatten([level_rule(l, s) for s in states() for l in Level.every()]),
-            flatten([level_on_rule(l, s) for s in states() for l in Level.every()]),
-            flatten([radius_rule(z, s) for s in states() for z in Size.every()]),
-            flatten([face_rule(f, s) for s in states() for f in Font.every()]),
-            flatten([text_size_rule(z, s) for s in states() for z in TypeSize.every()]),
-            flatten([line_height_rule(h, s) for s in states() for h in LineHeight.every()]),
-            flatten([tracking_rule(t, s) for s in states() for t in Tracking.every()]),
-        ],
-    )
+    [
+        [color_rule(c, s) for s in states() for c in Ink.every()].flatten(),
+        [on_rule(t, s) for s in states() for t in Tone.every()].flatten(),
+        [fill_rule(t, s) for s in states() for t in Tone.every()].flatten(),
+        [level_rule(l, s) for s in states() for l in Level.every()].flatten(),
+        [level_on_rule(l, s) for s in states() for l in Level.every()].flatten(),
+        [radius_rule(z, s) for s in states() for z in Size.every()].flatten(),
+        [face_rule(f, s) for s in states() for f in Font.every()].flatten(),
+        [text_size_rule(z, s) for s in states() for z in TypeSize.every()].flatten(),
+        [line_height_rule(h, s) for s in states() for h in LineHeight.every()].flatten(),
+        [tracking_rule(t, s) for s in states() for t in Tracking.every()].flatten(),
+    ]
+        .flatten()
 }
 
 /// EVERY RULE THE VOCABULARY CAN NAME, once, in a fixed order: no value ever
@@ -488,12 +482,11 @@ type ColourVar = { name: string, dial: Dial }
 /// Every colour the theme names: each surface's fill and what sits on it,
 /// then each ink.
 fn colour_vars(t: Theme) -> List<ColourVar> {
-    flatten(
-        [[
-            ColourVar { name: "tone-${c.word()}", dial: t.tone.at(c).fill },
-            ColourVar { name: "on-${c.word()}", dial: t.tone.at(c).on },
-        ] for c in Tone.every()],
-    )
+    [[
+        ColourVar { name: "tone-${c.word()}", dial: t.tone.at(c).fill },
+        ColourVar { name: "on-${c.word()}", dial: t.tone.at(c).on },
+    ] for c in Tone.every()]
+        .flatten()
         .concat([ColourVar { name: "ink-${c.word()}", dial: t.ink.at(c) } for c in Ink.every()])
 }
 
@@ -688,16 +681,15 @@ fn pad_decls(w: Wear) -> List<string> {
 
 /// What a wear declares on the web.
 fn wear_decls(w: Wear) -> string {
-    flatten(
-        [
-            ground_decls(w.ground),
-            ink_decls(w),
-            ["border:1px solid var(--ink-${i.word()})" for i in present(w.line)],
-            [radius_word(z).decl for z in present(w.radius)],
-            ["min-height:${measured(m)}" for m in present(w.least)],
-            pad_decls(w),
-        ],
-    )
+    [
+        ground_decls(w.ground),
+        ink_decls(w),
+        ["border:1px solid var(--ink-${i.word()})" for i in present(w.line)],
+        [radius_word(z).decl for z in present(w.radius)],
+        ["min-height:${measured(m)}" for m in present(w.least)],
+        pad_decls(w),
+    ]
+        .flatten()
         .join(";")
 }
 
@@ -725,7 +717,7 @@ fn alike(a: LookRule, b: LookRule) -> bool { a.state == b.state && a.decls == b.
 /// every primitive drawn as it is in the set, else each one's kinds.
 fn parts(prims: List<Prim>) -> List<string> {
     let ps = [pl for p in prims for pl in present(placed(p))]
-    flatten([tag_parts(k, ps) for k in names_once([pl.tags.join(",") for pl in ps])])
+    [tag_parts(k, ps) for k in names_once([pl.tags.join(",") for pl in ps])].flatten()
 }
 
 fn tag_parts(key: string, ps: List<Placed>) -> List<string> {
@@ -820,9 +812,9 @@ fn stamped_under(n: Node) -> bool {
 /// The chains of themes the stamped nodes of `n` are drawn under, `above` being the stamps over it,
 /// in the order they stand, outer first.
 fn scope_chains(n: Node, above: List<Theme>) -> List<List<Theme>> {
-    let stamp? = n.theme else { return flatten([scope_chains(c, above) for c in n.children]) }
+    let stamp? = n.theme else { return [scope_chains(c, above) for c in n.children].flatten() }
     let here = above.concat([stamp.theme])
-    [here].concat(flatten([scope_chains(c, here) for c in n.children]))
+    [here].concat([scope_chains(c, here) for c in n.children].flatten())
 }
 
 /// A tree as a page draws it: the theme its root was drawn in (the target's own where it carries
