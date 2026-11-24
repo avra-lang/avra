@@ -216,9 +216,13 @@ type Deferral = { stmt: StmtId, body: ExprId, errs: bool }
 /// nothing.
 fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBreaches {
     if !item_held(engine, file, at) { return breaches_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    breaches_seen(item_view(engine, file, at))
+}
+
+/// What `item_breaches` answers through the item's `view`, made the first time it is asked.
+fn breaches_seen(view: ItemView) -> ItemBreaches {
     let held? = view.breaches.get() else {
-        let made = breaches_made(engine, file, at)
+        let made = breaches_made(view.engine, view.file, view.at)
         view.breaches.set(made)
         return made
     }
@@ -1042,7 +1046,15 @@ fn breaches_said(
     at: ItemId,
     words: fn(Breach) -> List<string>?,
 ) -> List<Found> {
-    [Found { at: span_of(r.at), args: w } for r in item_breaches(engine, file, at).rows for w in some_list(words(r.breach))]
+    found_breaching(item_breaches(engine, file, at), words)
+}
+
+/// Each breach of the item `view` shows that `words` says, found where it stands: what a law that
+/// judges through the view its judging holds asks, looking no item up again.
+fn breaches_seen_in(view: ItemView, words: fn(Breach) -> List<string>?) -> List<Found> { found_breaching(breaches_seen(view), words) }
+
+fn found_breaching(breaches: ItemBreaches, words: fn(Breach) -> List<string>?) -> List<Found> {
+    [Found { at: span_of(r.at), args: w } for r in breaches.rows for w in some_list(words(r.breach))]
 }
 
 /// No words where `held`, a breach whose voice takes none; absent otherwise.
@@ -1051,11 +1063,9 @@ fn wordless(held: bool) -> List<string>? {
     []
 }
 
-fn bitwise_runs(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
+fn bitwise_runs(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
         (b) -> match b { .Bitwise(first, second) -> [first, second], rest -> null },
     )
 }
@@ -1063,267 +1073,208 @@ fn bitwise_runs(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Lis
 /// a run of bitwise operators mixing two of them
 export law bitwise_mixed_law {
     kind: "type.mixed_bitwise"
-    reads: bitwise_runs
+    reads_view: bitwise_runs
     voice: bitwise_words
     witness: "fn f(a: int, b: int) -> int { a | b & 3 }\n"
 }
 
 fn bitwise_words(a: List<string>) -> Voice { bitwise_mixed(a[0], a[1]) }
 
-fn defers_inert(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Inert(named) -> [named], rest -> null })
-}
+fn defers_inert(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Inert(named) -> [named], rest -> null }) }
 
 /// a `defer` whose body only names a value
 export law defer_inert {
     kind: "type.defer_inert"
-    reads: defers_inert
+    reads_view: defers_inert
     voice: inert_words
     witness: "fn f() -> int {\n    defer 1\n    2\n}\n"
 }
 
 fn inert_words(a: List<string>) -> Voice { deferred_inert(a[0]) }
 
-fn defers_unheard(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Unheard(answer) -> [answer], rest -> null })
-}
+fn defers_unheard(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Unheard(answer) -> [answer], rest -> null }) }
 
 /// a `defer` whose body answers a `Result` it drops
 export law defer_unheard {
     kind: "type.defer"
-    reads: defers_unheard
+    reads_view: defers_unheard
     voice: unheard_words
     witness: "fn g() -> Result<int, string> { .Ok(1) }\n\nfn f() -> int {\n    defer g()\n    2\n}\n"
 }
 
 fn unheard_words(a: List<string>) -> Voice { deferred_unheard(a[0]) }
 
-fn errdefers_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .Unenclosed))
-}
+fn errdefers_unenclosed(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .Unenclosed)) }
 
 /// an `errdefer` no fn encloses
 export law errdefer_unenclosed_law {
     kind: "type.errdefer"
-    reads: errdefers_unenclosed
+    reads_view: errdefers_unenclosed
     voice: unenclosed_words
     witness: "errdefer println(\"x\")\n1\n"
 }
 
 fn unenclosed_words(_a: List<string>) -> Voice { errdefer_unenclosed() }
 
-fn errdefers_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .InLambda))
-}
+fn errdefers_in_lambda(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .InLambda)) }
 
 /// an `errdefer` a lambda encloses
 export law errdefer_lambda {
     kind: "type.errdefer"
-    reads: errdefers_in_lambda
+    reads_view: errdefers_in_lambda
     voice: lambda_words
     witness: "fn f() -> Result<int, string> {\n    let g = () -> {\n        errdefer println(\"x\")\n        1\n    }\n    .Ok(g())\n}\n"
 }
 
 fn lambda_words(_a: List<string>) -> Voice { errdefer_in_lambda() }
 
-fn errdefers_unfailing(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
-        (b) -> match b { .Unfailing(promise) -> [promise], rest -> null },
-    )
-}
+fn errdefers_unfailing(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Unfailing(promise) -> [promise], rest -> null }) }
 
 /// an `errdefer` in a fn that never fails
 export law errdefer_unfailing_law {
     kind: "type.errdefer"
-    reads: errdefers_unfailing
+    reads_view: errdefers_unfailing
     voice: unfailing_words
     witness: "fn f() -> int {\n    errdefer println(\"x\")\n    1\n}\n"
 }
 
 fn unfailing_words(a: List<string>) -> Voice { errdefer_unfailing(a[0]) }
 
-fn tasks_escaping(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Escaping(label) -> [label], rest -> null })
-}
+fn tasks_escaping(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Escaping(label) -> [label], rest -> null }) }
 
 /// a task a signature lets outlive the block that spawned it
 export law task_escape {
     kind: "type.task_escape"
-    reads: tasks_escaping
+    reads_view: tasks_escaping
     voice: escape_words
     witness: "fn start() -> Task<int> {\n    spawn 1\n}\n"
 }
 
 fn escape_words(a: List<string>) -> Voice { task_outlives(a[0]) }
 
-fn shifts_wide(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
-        (b) -> match b { .Shifted(count) -> ["${count}"], rest -> null },
-    )
-}
+fn shifts_wide(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Shifted(count) -> ["${count}"], rest -> null }) }
 
 /// a literal shift count past an `int`'s width
 export law shift_count {
     kind: "type.shift_count"
-    reads: shifts_wide
+    reads_view: shifts_wide
     voice: shift_words
     witness: "fn f(a: int) -> int { a << 99 }\n"
 }
 
 fn shift_words(a: List<string>) -> Voice { shift_out_of_range(parse_int(a[0]) ?? 0) }
 
-fn forces_present(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Forced(named) -> [named], rest -> null })
-}
+fn forces_present(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Forced(named) -> [named], rest -> null }) }
 
 /// `!` on a value never absent
 export law force_present {
     kind: "type.force"
-    reads: forces_present
+    reads_view: forces_present
     voice: forced_words
     witness: "fn f(n: int) -> int { n! }\n"
 }
 
 fn forced_words(a: List<string>) -> Voice { forced_present(a[0]) }
 
-fn forces_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .ForcedAbsent))
-}
+fn forces_absent(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .ForcedAbsent)) }
 
 /// `!` on a value always absent
 export law force_absent {
     kind: "type.force"
-    reads: forces_absent
+    reads_view: forces_absent
     voice: forced_absent_words
     witness: "fn f() -> int {\n    let n = null\n    n!\n}\n"
 }
 
 fn forced_absent_words(_a: List<string>) -> Voice { forced_absent() }
 
-fn propagates_present(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Propagated(named) -> [named], rest -> null })
-}
+fn propagates_present(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Propagated(named) -> [named], rest -> null }) }
 
 /// `?` on a value never absent and no `Result`
 export law propagate_present {
     kind: "type.propagate"
-    reads: propagates_present
+    reads_view: propagates_present
     voice: propagated_words
     witness: "fn f(n: int) -> int? { n? }\n"
 }
 
 fn propagated_words(a: List<string>) -> Voice { propagated_present(a[0]) }
 
-fn propagates_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .PropagatedAbsent))
-}
+fn propagates_absent(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .PropagatedAbsent)) }
 
 /// `?` on a value always absent
 export law propagate_absent {
     kind: "type.propagate"
-    reads: propagates_absent
+    reads_view: propagates_absent
     voice: propagated_absent_words
     witness: "fn f() -> int? {\n    let n = null\n    n?\n}\n"
 }
 
 fn propagated_absent_words(_a: List<string>) -> Voice { propagated_absent() }
 
-fn fails_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .FailUnenclosed))
-}
+fn fails_unenclosed(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .FailUnenclosed)) }
 
 /// a `fail` no fn encloses
 export law fail_unenclosed_law {
     kind: "type.fail"
-    reads: fails_unenclosed
+    reads_view: fails_unenclosed
     voice: fail_unenclosed_words
     witness: "fail 1\n"
 }
 
 fn fail_unenclosed_words(_a: List<string>) -> Voice { fail_unenclosed() }
 
-fn fails_unfallible(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
-        (b) -> match b { .FailUnfallible(promise) -> [promise], rest -> null },
-    )
-}
+fn fails_unfallible(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .FailUnfallible(promise) -> [promise], rest -> null }) }
 
 /// a `fail` in a fn promising no `Result`
 export law fail_unfallible_law {
     kind: "type.fail"
-    reads: fails_unfallible
+    reads_view: fails_unfallible
     voice: fail_unfallible_words
     witness: "fn f() -> int {\n    fail 1\n}\n"
 }
 
 fn fail_unfallible_words(a: List<string>) -> Voice { fail_unfallible(a[0]) }
 
-fn yields_unenclosed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .YieldUnenclosed))
-}
+fn yields_unenclosed(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .YieldUnenclosed)) }
 
 /// a `yield` no producer encloses
 export law yield_unenclosed_law {
     kind: "flow.yield"
-    reads: yields_unenclosed
+    reads_view: yields_unenclosed
     voice: yield_words
     witness: "fn f() -> int {\n    yield 1\n    1\n}\n"
 }
 
 fn yield_words(_a: List<string>) -> Voice { yield_unenclosed() }
 
-fn elements_untyped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
-        (b) -> match b { .ElementUntyped(named) -> [named], rest -> null },
-    )
-}
+fn elements_untyped(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .ElementUntyped(named) -> [named], rest -> null }) }
 
 /// a list literal whose elements give it no type
 export law element_untyped {
     kind: "type.list_scalar"
-    reads: elements_untyped
+    reads_view: elements_untyped
     voice: untyped_words
     witness: "fn f() -> int {\n    let xs = [null, null]\n    xs.length\n}\n"
 }
 
 fn untyped_words(a: List<string>) -> Voice { list_element_untyped(a[0]) }
 
-fn map_values_untyped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
-        (b) -> match b { .MapValueUntyped(named) -> [named], rest -> null },
-    )
-}
+fn map_values_untyped(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .MapValueUntyped(named) -> [named], rest -> null }) }
 
 /// a map literal whose values give it no type
 export law map_value_untyped_law {
     kind: "type.list_scalar"
-    reads: map_values_untyped
+    reads_view: map_values_untyped
     voice: map_untyped_words
     witness: "fn f() -> int {\n    let m = { \"a\": null }\n    1\n}\n"
 }
 
 fn map_untyped_words(a: List<string>) -> Voice { map_value_untyped(a[0]) }
 
-fn coalesces_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
+fn coalesces_apart(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
         (b) -> match b { .CoalesceApart(carried, found) -> [carried, found], rest -> null },
     )
 }
@@ -1331,18 +1282,16 @@ fn coalesces_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 /// `??` answers what its left side carries
 export law coalesce_answers_carried {
     kind: "type.coalesce"
-    reads: coalesces_apart
+    reads_view: coalesces_apart
     voice: coalesce_apart_words
     witness: "fn f(n: int?) -> int {\n    let v = n ?? \"s\"\n    1\n}\n"
 }
 
 fn coalesce_apart_words(a: List<string>) -> Voice { coalesce_answers(a[0], a[1]) }
 
-fn presences_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
+fn presences_apart(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
         (b) -> match b { .PresenceApart(present, absent) -> [present, absent], rest -> null },
     )
 }
@@ -1350,32 +1299,28 @@ fn presences_apart(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 /// a presence match's arms answer one type
 export law presence_arms_agree {
     kind: "type.match_opt"
-    reads: presences_apart
+    reads_view: presences_apart
     voice: presence_apart_words
     witness: "fn f(n: int?) -> int {\n    let v = match n {\n        x? -> x\n        null -> \"s\"\n    }\n    1\n}\n"
 }
 
 fn presence_apart_words(a: List<string>) -> Voice { presence_arms_apart(a[0], a[1]) }
 
-fn elements_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .ElementVoid))
-}
+fn elements_void(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .ElementVoid)) }
 
 /// a list literal whose elements answer no value
 export law element_void {
     kind: "type.list_scalar"
-    reads: elements_void
+    reads_view: elements_void
     voice: void_words
     witness: "fn f() -> int {\n    let xs = [println(\"x\")]\n    1\n}\n"
 }
 
 fn void_words(_a: List<string>) -> Voice { list_element_void() }
 
-fn fields_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
+fn fields_void(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
         (b) -> match b { .FieldVoid(field, spelled) -> [field, spelled], rest -> null },
     )
 }
@@ -1383,18 +1328,16 @@ fn fields_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List
 /// a record field that holds no value
 export law field_void {
     kind: "type.struct_scalar"
-    reads: fields_void
+    reads_view: fields_void
     voice: field_void_words
     witness: "type P = { x: void }\n"
 }
 
 fn field_void_words(a: List<string>) -> Voice { field_unslotted(a[0], a[1]) }
 
-fn payloads_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
+fn payloads_void(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
         (b) -> match b {
             .PayloadVoid(variant, payload, spelled) -> [variant, payload, spelled],
             rest -> null,
@@ -1405,82 +1348,67 @@ fn payloads_void(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Li
 /// a variant's payload that holds no value
 export law payload_void {
     kind: "type.enum_payload"
-    reads: payloads_void
+    reads_view: payloads_void
     voice: payload_void_words
     witness: "enum E {\n    a(void)\n    b\n}\n"
 }
 
 fn payload_void_words(a: List<string>) -> Voice { payload_unslotted(a[0], a[1], a[2]) }
 
-fn tasks_overwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .Overwritten))
-}
+fn tasks_overwritten(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .Overwritten)) }
 
 /// a write over a place holding a task, which leaves it unjoined
 export law task_overwritten_law {
     kind: "type.task_escape"
-    reads: tasks_overwritten
+    reads_view: tasks_overwritten
     voice: overwritten_words
     witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    mut t = spawn one()\n    t = spawn one()\n    t.await\n}\n"
 }
 
 fn overwritten_words(_a: List<string>) -> Voice { task_overwritten() }
 
-fn tasks_unheld(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Unheld(spelled) -> [spelled], rest -> null })
-}
+fn tasks_unheld(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Unheld(spelled) -> [spelled], rest -> null }) }
 
 /// a value holding a task that its type can't own
 export law task_unheld_law {
     kind: "type.task_escape"
-    reads: tasks_unheld
+    reads_view: tasks_unheld
     voice: unheld_words
     witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    let m = {\"a\": spawn one()}\n    m.length\n}\n"
 }
 
 fn unheld_words(a: List<string>) -> Voice { task_unheld(a[0]) }
 
-fn jumps_unlooped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .Unlooped(word) -> [word], rest -> null })
-}
+fn jumps_unlooped(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Unlooped(word) -> [word], rest -> null }) }
 
 /// a `break` or a `continue` no loop encloses
 export law jump_unlooped_law {
     kind: "loop.jump"
-    reads: jumps_unlooped
+    reads_view: jumps_unlooped
     voice: unlooped_words
     witness: "fn f() -> int {\n    break\n    1\n}\n"
 }
 
 fn unlooped_words(a: List<string>) -> Voice { jump_unlooped(a[0]) }
 
-fn jumps_in_lambda(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> match b { .JumpInLambda(word) -> [word], rest -> null })
-}
+fn jumps_in_lambda(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .JumpInLambda(word) -> [word], rest -> null }) }
 
 /// a `break` or a `continue` a lambda's body holds apart from its loop
 export law jump_in_lambda_law {
     kind: "loop.jump"
-    reads: jumps_in_lambda
+    reads_view: jumps_in_lambda
     voice: jump_lambda_words
     witness: "fn f(xs: List<int>) {\n    for x in xs {\n        let g = () -> {\n            break\n        }\n        g()\n    }\n}\n"
 }
 
 fn jump_lambda_words(a: List<string>) -> Voice { jump_behind_lambda(a[0]) }
 
-fn jumps_in_comprehension(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
-        (b) -> match b { .JumpInComprehension(word) -> [word], rest -> null },
-    )
-}
+fn jumps_in_comprehension(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .JumpInComprehension(word) -> [word], rest -> null }) }
 
 /// a `break` or a `continue` a comprehension holds
 export law jump_in_comprehension_law {
     kind: "loop.jump"
-    reads: jumps_in_comprehension
+    reads_view: jumps_in_comprehension
     voice: jump_comprehension_words
     witness: "fn f(xs: List<int>) -> List<int> {\n    [{\n        if x > 1 { break }\n        x\n    } for x in xs]\n}\n"
 }
@@ -1511,25 +1439,21 @@ export law jump_unaimed_law {
 
 fn unaimed_words(a: List<string>) -> Voice { jump_unaimed(a[0], a[1]) }
 
-fn guards_reading_binders(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(engine, file, at, (b) -> wordless(b is .GuardReadsBinder))
-}
+fn guards_reading_binders(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .GuardReadsBinder)) }
 
 /// a select arm's guard reading a name its own arm binds
 export law guard_binder_law {
     kind: "flow.guard_binder"
-    reads: guards_reading_binders
+    reads_view: guards_reading_binders
     voice: guard_words
     witness: "fn one() -> int {\n    1\n}\n\nfn f() -> int {\n    let job = spawn one()\n    select {\n        r in job if r > 0 -> r\n    }\n}\n"
 }
 
 fn guard_words(_a: List<string>) -> Voice { guard_reads_binder() }
 
-fn cleanups_unbounded(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    breaches_said(
-        engine,
-        file,
-        at,
+fn cleanups_unbounded(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
         (b) -> match b { .CleanupUnbounded(word, wait) -> [word, wait], rest -> null },
     )
 }
@@ -1537,7 +1461,7 @@ fn cleanups_unbounded(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
 /// a `defer` whose body waits, bounded by no `within` it writes
 export law cleanup_unbounded_law {
     kind: "flow.unbounded_cleanup"
-    reads: cleanups_unbounded
+    reads_view: cleanups_unbounded
     voice: cleanup_words
     witness: "extern fn avra_fiber_sleep(ms: int)\n\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\n"
 }

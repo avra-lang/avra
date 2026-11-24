@@ -255,9 +255,13 @@ type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int
 /// An item that didn't parse misses nothing.
 fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemMisses {
     if !item_held(engine, file, at) { return ItemMisses { rows: [] } }
-    let view = item_view(engine, file, at)
+    misses_seen(item_view(engine, file, at))
+}
+
+/// What `item_misses` answers through the item's `view`, made the first time it is asked.
+fn misses_seen(view: ItemView) -> ItemMisses {
     let held? = view.misses.get() else {
-        let made = misses_made(engine, file, at, view.item)
+        let made = misses_made(view.engine, view.file, view.at, view.item)
         view.misses.set(made)
         return made
     }
@@ -1531,14 +1535,20 @@ fn misses_of(
     at: ItemId,
     pick: fn(Miss) -> List<string>,
 ) -> List<Found> {
-    [Found { at: span_of(r.at), args: a } for r in item_misses(engine, file, at).rows for a in [pick(r.miss)] if !a.is_empty()]
+    found_missing(item_misses(engine, file, at), pick)
 }
 
-fn fields_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+/// Each miss of the item `view` shows that `pick` hands words, found where it stands: what a law
+/// that judges through the view its judging holds asks, looking no item up again.
+fn misses_seen_in(view: ItemView, pick: fn(Miss) -> List<string>) -> List<Found> { found_missing(misses_seen(view), pick) }
+
+fn found_missing(misses: ItemMisses, pick: fn(Miss) -> List<string>) -> List<Found> {
+    [Found { at: span_of(r.at), args: a } for r in misses.rows for a in [pick(r.miss)] if !a.is_empty()]
+}
+
+fn fields_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .Field(record, name, fields) -> [record, name].concat(fields),
             rest -> [],
@@ -1612,28 +1622,20 @@ fn chain_method_found(at: FindingAt?, m: Miss) -> List<Found> {
     }
 }
 
-fn indexes_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .Index(found) -> [found], rest -> [] })
-}
+fn indexes_missed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .Index(found) -> [found], rest -> [] }) }
 
-fn texts_indexed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .Text -> ["string"], rest -> [] })
-}
+fn texts_indexed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .Text -> ["string"], rest -> [] }) }
 
-fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn fields_unwritten(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .Unwritten(record, field) -> [record, field], rest -> [] },
     )
 }
 
-fn fields_carried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn fields_carried(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .Carried(record, field, fields) -> ["", record, field].concat(fields),
             .CarriedAs(record, field, have, want) -> ["as", record, field, have, want],
@@ -1642,20 +1644,16 @@ fn fields_carried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
     )
 }
 
-fn fields_unset(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn fields_unset(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .Unset(record, field) -> [record, field], rest -> [] },
     )
 }
 
-fn arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn arities_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .Arity(callee, want, found) -> [callee, "${want}", "${found}"],
             rest -> [],
@@ -1663,11 +1661,9 @@ fn arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
     )
 }
 
-fn defaulted_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn defaulted_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .Defaulted(callee, least, most, found) -> [callee, "${least}", "${most}", "${found}"],
             rest -> [],
@@ -1675,11 +1671,9 @@ fn defaulted_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) ->
     )
 }
 
-fn shorts_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn shorts_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .Short(callee, k, found) -> [callee, "${k}", "${found}"],
             rest -> [],
@@ -1687,28 +1681,15 @@ fn shorts_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Li
     )
 }
 
-fn spreads_overwriting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .SpreadDead(field) -> [field], rest -> [] })
-}
+fn spreads_overwriting(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .SpreadDead(field) -> [field], rest -> [] }) }
 
-fn args_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .ArgsAbsent(found) -> [found], rest -> [] })
-}
+fn args_absent(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .ArgsAbsent(found) -> [found], rest -> [] }) }
 
-fn args_fieldless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
-        (m: Miss) -> match m { .ArgsFieldless(found) -> [found], rest -> [] },
-    )
-}
+fn args_fieldless(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .ArgsFieldless(found) -> [found], rest -> [] }) }
 
-fn seats_carried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn seats_carried(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .SeatCarried(callee, field) -> [callee, field],
             .SeatCarriedAs(callee, field, have, want) -> [callee, field, have, want],
@@ -1717,18 +1698,14 @@ fn seats_carried(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Li
     )
 }
 
-fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn seats_unwritten(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .SeatUnwritten(callee, seat) -> [callee, seat], rest -> [] },
     )
 }
 
-fn arguments_dead(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .ArgumentDead(seat) -> [seat], rest -> [] })
-}
+fn arguments_dead(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .ArgumentDead(seat) -> [seat], rest -> [] }) }
 
 fn literals_uninterned(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [f for r in item_misses(engine, file, at).rows for f in uninterned_found(r.at, r.miss)]
@@ -1749,11 +1726,9 @@ fn empty_walks(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List
     misses_of(engine, file, at, (m: Miss) -> match m { .EmptyWalked(name) -> [name], rest -> [] })
 }
 
-fn list_verbs_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn list_verbs_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .ScannedUnvalued(name, held) -> ["scan", name, held],
             .EnumerateUnpaired -> ["enumerate"],
@@ -1762,15 +1737,11 @@ fn list_verbs_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -
     )
 }
 
-fn hashes_unnamed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .HashedUnnamed -> ["hashed"], rest -> [] })
-}
+fn hashes_unnamed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .HashedUnnamed -> ["hashed"], rest -> [] }) }
 
-fn method_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn method_arities_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .MethodArity(target, name, wants, found) -> [target, name, "${wants}", "${found}"],
             rest -> [],
@@ -1778,11 +1749,9 @@ fn method_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemI
     )
 }
 
-fn static_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn static_arities_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .StaticArity(target, name, wants, found) -> [target, name, "${wants}", "${found}"],
             rest -> [],
@@ -1790,57 +1759,26 @@ fn static_arities_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemI
     )
 }
 
-fn withs_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
-        (m: Miss) -> match m { .WithUnstructured(found) -> [found], rest -> [] },
-    )
-}
+fn withs_missed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WithUnstructured(found) -> [found], rest -> [] }) }
 
-fn chains_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn chains_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .ChainedPresent(found, name) -> [found, name], rest -> [] },
     )
 }
 
-fn whens_untotal(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .WhenUntotal -> ["_"], rest -> [] })
-}
+fn whens_untotal(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WhenUntotal -> ["_"], rest -> [] }) }
 
-fn whens_total_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .WhenTotalTwice -> ["_"], rest -> [] })
-}
+fn whens_total_twice(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WhenTotalTwice -> ["_"], rest -> [] }) }
 
-fn spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
-        (m: Miss) -> match m { .SpreadAbsent(found) -> [found], rest -> [] },
-    )
-}
+fn spreads_absent(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .SpreadAbsent(found) -> [found], rest -> [] }) }
 
-fn spreads_fieldless(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
-        (m: Miss) -> match m { .SpreadFieldless(found) -> [found], rest -> [] },
-    )
-}
+fn spreads_fieldless(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .SpreadFieldless(found) -> [found], rest -> [] }) }
 
-fn spreads_generic(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .SpreadGeneric(name) -> [name], rest -> [] })
-}
+fn spreads_generic(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .SpreadGeneric(name) -> [name], rest -> [] }) }
 
-fn uncallables(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .Uncallable(found) -> [found], rest -> [] })
-}
+fn uncallables(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .Uncallable(found) -> [found], rest -> [] }) }
 
 /// Each bare variant literal of the written item `at` of `file` built where nothing names its enum.
 fn variants_unenumed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
@@ -1871,9 +1809,7 @@ fn unenumed_of(seat: Seating) -> UnenumedIn? {
     }
 }
 
-fn lets_unblocked(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .LetUnblocked -> ["let"], rest -> [] })
-}
+fn lets_unblocked(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .LetUnblocked -> ["let"], rest -> [] }) }
 
 /// Every read or call through a type's name that the type doesn't answer `how`: its voice handed the
 /// type, the name, then what the type holds.
@@ -1899,24 +1835,18 @@ fn doors_uncalled(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
 
 fn statics_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { types_named(engine, file, at, "static_read") }
 
-fn params_as_values(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .ParamAsValue(name) -> [name], rest -> [] })
-}
+fn params_as_values(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .ParamAsValue(name) -> [name], rest -> [] }) }
 
-fn literal_spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn literal_spreads_absent(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .LiteralSpreadAbsent(of, found) -> [of, found], rest -> [] },
     )
 }
 
-fn types_as_values(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn types_as_values(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .TypeAsValue(name) -> [name],
             .OwnedAsValue(name) -> [name, OWNED],
@@ -1991,11 +1921,9 @@ fn said_beside(at: FindingAt?, args: List<string>, means: string, lo: int, hi: i
     }
 }
 
-fn members_unfitting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn members_unfitting(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .MembersUnfit(target, name, keys) -> [target, name].concat(keys),
             rest -> [],
@@ -2003,18 +1931,14 @@ fn members_unfitting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -
     )
 }
 
-fn contract_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn contract_methods_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .ContractMethod(contract, name) -> [contract, name], rest -> [] },
     )
 }
 
-fn maps_unknowable(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .MapUnknowable(name) -> [name], rest -> [] })
-}
+fn maps_unknowable(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .MapUnknowable(name) -> [name], rest -> [] }) }
 
 fn owned_literals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     [f for r in item_misses(engine, file, at).rows for f in owned_found(r.at, r.miss)]
@@ -2030,28 +1954,20 @@ fn owned_found(at: FindingAt?, m: Miss) -> List<Found> {
     }
 }
 
-fn entries_unseen(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .EntryUnseen -> ["-"], rest -> [] })
-}
+fn entries_unseen(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .EntryUnseen -> ["-"], rest -> [] }) }
 
-fn roundings_unseen(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .ToIntUnseen(name) -> [name], rest -> [] })
-}
+fn roundings_unseen(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .ToIntUnseen(name) -> [name], rest -> [] }) }
 
-fn own_methods_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn own_methods_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m { .OwnMethod(found, name) -> [found, name], rest -> [] },
     )
 }
 
-fn variants_read_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(
-        engine,
-        file,
-        at,
+fn variants_read_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
         (m: Miss) -> match m {
             .Variant(owner, name, variants) -> [owner, name].concat(variants),
             rest -> [],
@@ -2062,7 +1978,7 @@ fn variants_read_missed(engine: QueryEngine, file: SourceFileAddress, at: ItemId
 /// a variant read off an enum's name is one the enum declares
 export law variant_read_unknown {
     kind: "type.unknown_prop"
-    reads: variants_read_missed
+    reads_view: variants_read_missed
     voice: variant_read_words
     witness: "enum E {\n    A\n    B\n}\n\nfn f() -> E { E.C }\n"
 }
@@ -2086,7 +2002,7 @@ export law method_read_uncalled {
 /// a field read names a field the record declares
 export law field_unknown {
     kind: "type.unknown_prop"
-    reads: fields_missed
+    reads_view: fields_missed
     voice: field_words
     witness: "type P = { x: int }\n\nfn g(p: P) -> int { p.y }\n"
 }
@@ -2102,7 +2018,7 @@ export law method_unknown {
 /// a method call on a value of a type the language owns names a method it gives
 export law own_method_unknown {
     kind: "type.method"
-    reads: own_methods_missed
+    reads_view: own_methods_missed
     voice: own_method_words
     witness: "fn g(s: string) -> int { s.nope() }\n"
 }
@@ -2110,7 +2026,7 @@ export law own_method_unknown {
 /// a call of a member several impls of one generic trait give a type takes the arguments of one
 export law member_fits {
     kind: "type.method"
-    reads: members_unfitting
+    reads_view: members_unfitting
     voice: unfit_words
     witness: "trait From<T> {\n    static fn from(t: T) -> Self\n}\n\ntype C = { d: int }\n\nimpl From<int> for C {\n    static fn from(t: int) -> C { C { d: t } }\n}\n\nimpl From<bool> for C {\n    static fn from(t: bool) -> C { C { d: 0 } }\n}\n\nfn f() -> int { C.from(\"x\").d }\n"
 }
@@ -2120,7 +2036,7 @@ fn unfit_words(a: List<string>) -> Voice { no_member_takes(a[0], a[1], a.slice(2
 /// a method called on a `dyn` value is one its trait declares
 export law contract_method_unknown {
     kind: "type.method"
-    reads: contract_methods_missed
+    reads_view: contract_methods_missed
     voice: contract_method_words
     witness: "trait Show {\n    fn show() -> int\n}\n\nfn g(d: dyn Show) -> int { d.volume() }\n"
 }
@@ -2130,7 +2046,7 @@ fn contract_method_words(a: List<string>) -> Voice { contract_lacks(a[0], a[1]) 
 /// a map's verb reads a map whose values something says
 export law map_verb_knows_its_values {
     kind: "type.map_value"
-    reads: maps_unknowable
+    reads_view: maps_unknowable
     voice: unknowable_words
     witness: "fn g() -> int {\n    let m = {}\n    m.keys().length\n}\n"
 }
@@ -2150,7 +2066,7 @@ fn owned_literal_words(a: List<string>) -> Voice { literal_fault(LiteralFault.Ow
 /// a map's entries are asked for where the prelude, whose `Entry` they are, is seen
 export law entries_need_the_prelude {
     kind: "type.map_entry"
-    reads: entries_unseen
+    reads_view: entries_unseen
     voice: entry_unseen_words
     witness: "let m = { \"a\": 1 }\nm.entries().length\n"
 }
@@ -2160,7 +2076,7 @@ fn entry_unseen_words(_a: List<string>) -> Voice { entry_unseen() }
 /// a float is rounded where the prelude, whose `ToInt` its failure is, is seen
 export law rounding_needs_the_prelude {
     kind: "type.to_int"
-    reads: roundings_unseen
+    reads_view: roundings_unseen
     voice: rounding_unseen_words
     witness: "let f = 1.5\nlet r = f.floor()\n1\n"
 }
@@ -2168,14 +2084,12 @@ export law rounding_needs_the_prelude {
 fn rounding_unseen_words(a: List<string>) -> Voice { to_int_unseen(a[0]) }
 
 /// A dot-call named by a keyword.
-fn keywords_called(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .Keyword(name) -> [name], rest -> [] })
-}
+fn keywords_called(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .Keyword(name) -> [name], rest -> [] }) }
 
 /// a dot-call names a method, never a keyword
 export law keyword_call {
     kind: "type.method"
-    reads: keywords_called
+    reads_view: keywords_called
     voice: keyword_words
     witness: "fn g(n: int) -> int { n.type() }\n"
 }
@@ -2184,7 +2098,7 @@ fn keyword_words(a: List<string>) -> Voice { keyword_called(a[0]) }
 /// a call writes as many arguments as its fn's seats take
 export law arity_mismatch {
     kind: "type.mismatch"
-    reads: arities_missed
+    reads_view: arities_missed
     voice: arity_words
     witness: "fn two(a: int, b: int) -> List<int> { [a, b] }\n\nfn g() -> int { two(1).length }\n"
 }
@@ -2192,7 +2106,7 @@ export law arity_mismatch {
 /// a call writes as many arguments as its fn's seats take, its defaulted ones left or written
 export law defaulted_arity_mismatch {
     kind: "type.mismatch"
-    reads: defaulted_missed
+    reads_view: defaulted_missed
     voice: defaulted_words
     witness: "fn d(a: int, b: int = 2) -> int { a + b }\n\nfn g() -> int { d(1, 2, 3) }\n"
 }
@@ -2200,7 +2114,7 @@ export law defaulted_arity_mismatch {
 /// a call writes every seat before its fn's `..` seat
 export law variadic_short {
     kind: "type.variadic"
-    reads: shorts_missed
+    reads_view: shorts_missed
     voice: short_words
     witness: "fn r(a: int, b: int, ..rest: List<int>) -> int { a + b + rest.length }\n\nfn g() -> int { r(1) }\n"
 }
@@ -2208,7 +2122,7 @@ export law variadic_short {
 /// a method call writes as many arguments as the method's seats beside `self` take
 export law method_arity_mismatch {
     kind: "type.method"
-    reads: method_arities_missed
+    reads_view: method_arities_missed
     voice: method_arity_words
     witness: "type P = { n: int }\n\nimpl P {\n    fn add(k: int) -> int { self.n + k }\n}\n\nfn g(p: P) -> int { p.add(1, 2) }\n"
 }
@@ -2216,7 +2130,7 @@ export law method_arity_mismatch {
 /// a static's call writes as many arguments as its seats take
 export law static_arity_mismatch {
     kind: "type.method"
-    reads: static_arities_missed
+    reads_view: static_arities_missed
     voice: static_arity_words
     witness: "type P = { n: int }\n\nimpl P {\n    static fn make(n: int) -> P { P { n: n } }\n}\n\nfn g() -> int { P.make().n }\n"
 }
@@ -2224,7 +2138,7 @@ export law static_arity_mismatch {
 /// a record literal's field a spread after it overwrites
 export law spread_overwrites_field {
     kind: "type.spread_dead"
-    reads: spreads_overwriting
+    reads_view: spreads_overwriting
     voice: dead_field_words
     warns: true
     witness: "type P = { x: int }\n\nfn f(a: P) -> P { P { x: 2, ..a } }\n"
@@ -2235,7 +2149,7 @@ fn dead_field_words(a: List<string>) -> Voice { field_overwritten(a[0]) }
 /// a call's argument a spread after it overwrites
 export law spread_overwrites_argument {
     kind: "type.spread_dead"
-    reads: arguments_dead
+    reads_view: arguments_dead
     voice: dead_argument_words
     warns: true
     witness: "type O = { w: int, h: int }\n\nfn area(w: int, h: int = 1) -> int { w * h }\n\nfn f(o: O) -> int { area(2, ..o) }\n"
@@ -2246,7 +2160,7 @@ fn dead_argument_words(a: List<string>) -> Voice { argument_overwritten(a[0]) }
 /// a call's spread carries the callee's seats, each at its seat's type
 export law spread_fills_seats {
     kind: "type.spread_field"
-    reads: seats_carried
+    reads_view: seats_carried
     voice: seat_carried_words
     witness: "type Z = { w: int, z: int }\n\nfn g(w: int) -> int { w }\n\nfn f(z: Z) -> int { g(..z) }\n"
 }
@@ -2256,7 +2170,7 @@ fn seat_carried_words(a: List<string>) -> Voice { if a.length == 2 { spread_seat
 /// a call that spreads writes every seat no default fills
 export law spread_writes_every_seat {
     kind: "type.named_arg"
-    reads: seats_unwritten
+    reads_view: seats_unwritten
     voice: seat_unwritten_words
     witness: "type W = { w: int }\n\nfn g(w: int, h: int) -> int { w + h }\n\nfn f(x: W) -> int { g(..x) }\n"
 }
@@ -2266,7 +2180,7 @@ fn seat_unwritten_words(a: List<string>) -> Voice { seat_named_unwritten(a[0], a
 /// a call's `..` spreads what is never absent
 export law call_spread_present {
     kind: "type.spread_nullable"
-    reads: args_absent
+    reads_view: args_absent
     voice: args_absent_words
     witness: "type O = { w: int }\n\nfn g(w: int) -> int { w }\n\nfn f(o: O?) -> int { g(..o) }\n"
 }
@@ -2276,7 +2190,7 @@ fn args_absent_words(a: List<string>) -> Voice { call_spreads_absent(a[0]) }
 /// a call's `..` spreads a record
 export law call_spreads_a_record {
     kind: "type.spread_value"
-    reads: args_fieldless
+    reads_view: args_fieldless
     voice: args_fieldless_words
     witness: "fn g(w: int) -> int { w }\n\nfn f() -> int { g(..5) }\n"
 }
@@ -2296,7 +2210,7 @@ fn uninterned_words(a: List<string>) -> Voice { literal_uninterned(a[0]) }
 /// a list's verb reads elements it knows: it scans elements that compare by value, and pairs only under a paired head (a walk on `[]` is `walk_knows_elements`'s)
 export law list_verb_reads_its_elements {
     kind: "type.list_element"
-    reads: list_verbs_missed
+    reads_view: list_verbs_missed
     voice: list_verb_words
     witness: "fn f() -> int { [1].enumerate().length }\n"
 }
@@ -2308,7 +2222,7 @@ fn list_verb_words(a: List<string>) -> Voice {
 /// `code_hash` hashes a fn named where it is called
 export law code_hash_names_a_fn {
     kind: "type.code_hash_named"
-    reads: hashes_unnamed
+    reads_view: hashes_unnamed
     voice: hash_words
     witness: "use @std.meta.{code_hash}\n\nfn f() -> string? { code_hash(1) }\n"
 }
@@ -2318,7 +2232,7 @@ fn hash_words(_a: List<string>) -> Voice { hashed_unnamed() }
 /// a record literal's spread carrying a field the record lacks, or at another type
 export law spread_carries_otherwise {
     kind: "type.spread_field"
-    reads: fields_carried
+    reads_view: fields_carried
     voice: carried_words
     witness: "type P = { x: int }\n\ntype Q = { x: int, w: int }\n\nfn g(q: Q) -> int { P { ..q }.x }\n"
 }
@@ -2330,7 +2244,7 @@ fn carried_words(a: List<string>) -> Voice {
 /// `with` copies a struct
 export law with_struct {
     kind: "type.with_struct"
-    reads: withs_missed
+    reads_view: withs_missed
     voice: with_words
     witness: "fn g(n: int) -> int { (n with { x: 1 }).x }\n"
 }
@@ -2338,7 +2252,7 @@ export law with_struct {
 /// `?.` reaches into a nullable
 export law chain_present {
     kind: "type.chain"
-    reads: chains_missed
+    reads_view: chains_missed
     voice: chain_words
     witness: "type P = { x: int }\n\nfn g(p: P) -> int { p?.x ?? 0 }\n"
 }
@@ -2346,7 +2260,7 @@ export law chain_present {
 /// a `when` takes every value in its one `_` arm
 export law when_total {
     kind: "type.when_arms"
-    reads: whens_untotal
+    reads_view: whens_untotal
     voice: untotal_words
     witness: "fn g() -> int {\n    when { 1 < 2 -> 1 }\n}\n"
 }
@@ -2354,21 +2268,19 @@ export law when_total {
 /// a `when`'s `_` arm is its last
 export law when_total_last {
     kind: "type.when_arms"
-    reads: whens_total_early
+    reads_view: whens_total_early
     voice: early_words
     witness: "fn g() -> int {\n    when {\n        _ -> 2\n        1 < 2 -> 1\n    }\n}\n"
 }
 
-fn whens_total_early(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    misses_of(engine, file, at, (m: Miss) -> match m { .WhenTotalEarly -> ["_"], rest -> [] })
-}
+fn whens_total_early(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WhenTotalEarly -> ["_"], rest -> [] }) }
 
 fn early_words(_a: List<string>) -> Voice { when_total_early() }
 
 /// a `when` has one `_` arm
 export law when_total_once {
     kind: "type.when_arms"
-    reads: whens_total_twice
+    reads_view: whens_total_twice
     voice: twice_words
     witness: "fn g() -> int {\n    when {\n        1 < 2 -> 1\n        _ -> 2\n        _ -> 3\n    }\n}\n"
 }
@@ -2376,7 +2288,7 @@ export law when_total_once {
 /// `..` spreads what is never absent
 export law spread_present {
     kind: "type.spread_nullable"
-    reads: spreads_absent
+    reads_view: spreads_absent
     voice: absent_words
     witness: "type P = { x: int }\n\nfn g(a: P?) -> P { P { ..a, x: 1 } }\n"
 }
@@ -2384,7 +2296,7 @@ export law spread_present {
 /// `..` spreads a record
 export law spread_spreads_a_record {
     kind: "type.spread_value"
-    reads: spreads_fieldless
+    reads_view: spreads_fieldless
     voice: fieldless_words
     witness: "type P = { x: int }\n\nfn g() -> P { P { ..5, x: 1 } }\n"
 }
@@ -2392,7 +2304,7 @@ export law spread_spreads_a_record {
 /// a literal that spreads builds a record that takes no type parameters
 export law spread_generic {
     kind: "type.spread_generic"
-    reads: spreads_generic
+    reads_view: spreads_generic
     voice: generic_words
     witness: "type G<T> = { v: T }\n\nfn g(a: G<int>) -> G<int> { G { ..a } }\n"
 }
@@ -2400,7 +2312,7 @@ export law spread_generic {
 /// a literal that spreads still writes every field no default fills
 export law spread_leaves_unset {
     kind: "type.spread_missing"
-    reads: fields_unset
+    reads_view: fields_unset
     voice: unset_words
     witness: "type P = { x: int, y: int }\n\ntype X = { x: int }\n\nfn g(a: X) -> int { P { ..a }.x }\n"
 }
@@ -2424,7 +2336,7 @@ export law chain_call_present {
 /// only fns and fn-typed values take arguments
 export law value_callable {
     kind: "type.lambda"
-    reads: uncallables
+    reads_view: uncallables
     voice: uncallable_words
     witness: "fn g(n: int) -> int { n(1) }\n"
 }
@@ -2456,7 +2368,7 @@ export law variant_seat_enumed {
 /// a destructuring `let` stands in a block
 export law let_in_block {
     kind: "type.let_pattern"
-    reads: lets_unblocked
+    reads_view: lets_unblocked
     voice: unblocked_words
     witness: "let [q, ..] = [1] else { 1 }\n2\n"
 }
@@ -2514,7 +2426,7 @@ fn static_unvalued_words(a: List<string>) -> Voice { static_unvalued(a[0], a[1],
 /// a type parameter is no value
 export law type_param_no_value {
     kind: "type.type_value"
-    reads: params_as_values
+    reads_view: params_as_values
     voice: param_value_words
     witness: "fn g<T>(x: int) -> int {\n    let y = T\n    x\n}\n"
 }
@@ -2522,7 +2434,7 @@ export law type_param_no_value {
 /// a list's or a map's spread source is never null
 export law literal_spread_present {
     kind: "type.spread_nullable"
-    reads: literal_spreads_absent
+    reads_view: literal_spreads_absent
     voice: literal_absent_words
     witness: "fn f(xs: List<int>?) -> int {\n    let a = [..xs]\n    a.length\n}\n"
 }
@@ -2530,7 +2442,7 @@ export law literal_spread_present {
 /// a type is no value
 export law type_no_value {
     kind: "type.type_value"
-    reads: types_as_values
+    reads_view: types_as_values
     voice: type_value_words
     witness: "type P = { x: int }\n\nfn g() -> int {\n    mut p = P\n    1\n}\n"
 }
@@ -2538,7 +2450,7 @@ export law type_no_value {
 /// a record literal writes every field no default fills
 export law field_unwritten {
     kind: "type.struct_fields"
-    reads: fields_unwritten
+    reads_view: fields_unwritten
     voice: unwritten_words
     witness: "type Box = { n: int, m: int }\n\nfn g() -> Box { Box { n: 1 } }\n"
 }
@@ -2546,7 +2458,7 @@ export law field_unwritten {
 /// `[…]` reads a list
 export law index_not_list {
     kind: "type.mismatch"
-    reads: indexes_missed
+    reads_view: indexes_missed
     voice: index_words
     witness: "fn g(n: int) -> int { n[0] }\n"
 }
@@ -2554,7 +2466,7 @@ export law index_not_list {
 /// `[…]` names no place in a `string`
 export law index_text {
     kind: "type.mismatch"
-    reads: texts_indexed
+    reads_view: texts_indexed
     voice: text_words
     witness: "fn g(s: string) -> int { s[0] }\n"
 }
