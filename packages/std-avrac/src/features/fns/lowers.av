@@ -217,18 +217,20 @@ fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
 fn marks_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
     let target = cx.store.unnamed(args[1])
     let name? = cx.store.ident_name(target) else { return cx.missed_as(unmarked()) }
-    let named? = cx.named(target, name) else { return cx.missed_as(unmarked()) }
-    let marked? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unmarked()) }
+    let key? = marked_key(cx, target, name) else { return cx.missed_as(unmarked()) }
     let by? = (cx.program.toolchain_fn)(META_MODULE, MARKED_BY) else { return cx.missed_as(unmarked()) }
     let mark = cx.handing_mark()
     let r = cx
-        .call_fn(
-            cx.layout_at(e),
-            by,
-            [cx.lower(cx.store.unnamed(args[0])), cx.const_str(decl_key(marked.file, marked.name))],
-        )
+        .call_fn(cx.layout_at(e), by, [cx.lower(cx.store.unnamed(args[0])), cx.const_str(key)])
     cx.handed_back(mark)
     r
+}
+
+/// The identity of what `marks`' second argument `target` names as `name`: the fn, or else the trait
+/// whose derive an annotation is.
+fn marked_key(cx: Lowering, target: ExprId, name: string) -> string? {
+    let named? = cx.named(target, name) else { return (cx.program.trait_key)(name, cx.store.home_of(target)) }
+    match named { .Fn(c) -> decl_key(c.file, c.name), _ -> null }
 }
 
 /// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on

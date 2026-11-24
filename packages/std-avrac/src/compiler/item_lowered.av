@@ -5,6 +5,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
     scoped,
+    decl_key,
     NodeNotes,
     node_notes,
     CostRemark,
@@ -518,6 +519,8 @@ fn lowered_program(
             () -> read_from(engine, file, home).find_map((f) -> named_value(engine, f, n)),
             named_said,
         ),
+        trait_key: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> trait_key_in(engine, f, n)),
         method: (ty: SignedType, m: string) -> kept_by_key(
             memos,
             memos.methods,
@@ -668,6 +671,12 @@ fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> s
 
 /// What a top-level value's name is from `file`, as code reads it: a fn the program declares, or a
 /// `const` as written or as it settles. Absent for any other name.
+/// The identity of the trait `file` reads as `name`; absent where it reads no trait.
+fn trait_key_in(engine: QueryEngine, file: SourceFileAddress, name: string) -> string? {
+    let d? = resolved(engine, file, Space.Type, name).named() else { return null }
+    if d.kind == ItemKind.Trait { decl_key(d.file, d.name) } else { null }
+}
+
 fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamedValue? {
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
     match d.kind {

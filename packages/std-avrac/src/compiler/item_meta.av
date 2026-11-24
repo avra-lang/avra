@@ -165,7 +165,7 @@ fn fn_meta(
         at: meta_place(engine, file, item, store.stmt_span(s)),
         doc: doc_text(store, s),
         answers: signed_kind(sig.answer),
-        annotations: [annotation_meta(engine, file, item, a) for a in store.annotations_of(s)],
+        annotations: flatten([annotation_metas(engine, file, item, a) for a in store.annotations_of(s)]),
     }
 }
 
@@ -242,7 +242,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         variants: [],
         at: meta_place(engine, d.file, item, item.store.stmt_span(s)),
         doc: doc_text(item.store, s),
-        annotations: [annotation_meta(engine, d.file, item, a) for a in item.store.annotations_of(s)],
+        annotations: flatten([annotation_metas(engine, d.file, item, a) for a in item.store.annotations_of(s)]),
         module: dotted_module(d.file),
         impls: written_traits(engine, d.file, d.name),
     }
@@ -532,7 +532,9 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
             field_cell(engine, signed, p),
         ) for p in fields],
         marks: [annotated_mark(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
-        annotations: [annotation_meta(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s)],
+        annotations: flatten(
+            [annotation_metas(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s)],
+        ),
         impls: distinct(written_traits(engine, m.file, m.name).concat(derived)),
     }
 }
@@ -698,8 +700,57 @@ fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadIt
 /// An annotation a statement of `file` wears as an `Annotation`: each argument as the literal it
 /// writes, the call a rule splices where it is one, and the identity of the fn its name resolves to.
 fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaAnnotation {
+    annotation_meta_of(engine, file, item, a, named_decl(engine, file, a.name))
+}
+
+/// An annotation a statement of `file` wears as the `Annotation`s a derive reads, by what its word
+/// names: a fn's annotation as itself, a trait's derive keyed by the trait, and `@derive(A, B)` as
+/// `@A @B`, each keyed by its trait, so a derive asks `marks(a, A)` of either spelling.
+fn annotation_metas(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> List<
+    MetaAnnotation,
+> {
+    let scope? = file_scope(engine, file) else { return [annotation_meta_of(engine, file, item, a, null)] }
+    match annotation_meant(engine, scope, file, a.name) {
+        .Fn(d) -> if d.file.package_name == META && d.name == DERIVE && d.kind == ItemKind.Fn {
+            [derive_meta(engine, scope, file, item, arg_lit(item.store, e).text, a.span) for e in a.args]
+        } else {
+            [annotation_meta_of(engine, file, item, a, d)]
+        },
+        .Derive(t) -> [derive_meta(engine, scope, file, item, t.name, a.span)],
+        .Nothing -> [annotation_meta_of(engine, file, item, a, null)],
+    }
+}
+
+/// The derive of the trait `file` writes as `name`, worn at `at`, as an `Annotation` keyed by the
+/// trait: no arguments, no call.
+fn derive_meta(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    item: ReadItem,
+    name: string,
+    at: Span?,
+) -> MetaAnnotation {
+    let t = stratum_resolved(engine, scope, file, Space.Type, name).named()
+    MetaAnnotation {
+        name: name,
+        key: if t == null { "" } else { decl_key(t!.file, t!.name) },
+        call: null,
+        args: [],
+        at: meta_place(engine, file, item, at),
+        named: [],
+    }
+}
+
+/// `annotation_meta` over the declaration `named` its word resolves to, already read.
+fn annotation_meta_of(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    a: Annotation,
+    named: DeclaredName?,
+) -> MetaAnnotation {
     let store = item.store
-    let named = named_decl(engine, file, a.name)
     MetaAnnotation {
         name: a.name,
         key: key_of(named),
