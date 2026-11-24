@@ -1600,3 +1600,21 @@ export fn reached_at_rest(f: Frontier) -> List<bool>? {
     }
     reached
 }
+
+/// `f` FOLDED INTO ONE BASE by the fold a write makes, and read back: what a reader of the base
+/// alone finds. Absent when `f`'s reads don't lie within it, or the fold doesn't read.
+export fn frontier_folded(f: Frontier) -> Frontier? {
+    let change? = change_of(f, [], []) else { return null }
+    let write? = folded(change, f.generation()) else { return null }
+    let octets = write.runs.fold("".bytes(), (all, run) -> all.concat(run))
+    frontier_over(
+        [
+            FrontierFile {
+                kind: write.kind,
+                id: write.id,
+                source: SavedSource.InMemory(octets),
+                length: octets.length,
+            },
+        ],
+    )
+}
