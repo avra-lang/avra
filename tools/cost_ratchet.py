@@ -75,9 +75,11 @@ PRINTED = (
 QUERIES = re.compile(r"^counts: .*\bqueries_computed=(\d+)", re.M)
 WORKED = re.compile(r"^worked: (\d+) answers here", re.M)
 # THE PASS LEDGER's deterministic columns (`--passes --passes-rows`, std-program/src/pass_ledger.av):
-# each pass's asks, its asks per unit and per item an edit moved, in thousandths — a pass whose work
-# per unit rises is over its row as any counter is. Its times are shown, never rows.
-PASS_ROW = re.compile(r"^pass-row\t([a-z-]+)\t(\d+)\t(\d+)\t(\d+)$", re.M)
+# each pass's asks, its asks per unit and per item an edit moved, in thousandths, then its re-checks
+# (answers checked against a kept record and kept) and re-checks per item moved — a pass whose work
+# per unit rises is over its row as any counter is. Its times are shown, never rows. Six fields: a
+# field added here is added to ledger_rows (std-program/src/pass_ledger.av) and the self-test together.
+PASS_ROW = re.compile(r"^pass-row\t([a-z-]+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)$", re.M)
 CENSUS = tuple(c for _, names in PRINTED for c in names)
 COUNTERS = CENSUS + ("queries_computed", "worked")
 # A fall this small is the build's own: a file it writes and reads back within the stamp window.
@@ -98,11 +100,13 @@ def counts_of(text):
         m = line.search(text)
         if m:
             got[counter] = int(m[1])
-    for p, asks, per_unit, per_moved in PASS_ROW.findall(text):
+    for p, asks, per_unit, per_moved, rechecks, rechecks_per_moved in PASS_ROW.findall(text):
         name = "pass_" + p.replace("-", "_")
         got[name + "_asks"] = int(asks)
         got[name + "_per_unit"] = int(per_unit)
         got[name + "_per_moved"] = int(per_moved)
+        got[name + "_rechecks"] = int(rechecks)
+        got[name + "_rechecks_per_moved"] = int(rechecks_per_moved)
     return got
 
 
@@ -412,7 +416,10 @@ def self_test():
     assert unprinted({("check-cli", "queries_computed"): 3})[0] == "cost: check-cli printed no retains"
     # a ledger's run owes no census counter; its pass rows are its rows
     assert unprinted({("ledger-edit-body", "pass_tape_asks"): 4}) == []
-    assert counts_of("pass-row\ttape\t12\t3000\t0\n") == {"pass_tape_asks": 12, "pass_tape_per_unit": 3000, "pass_tape_per_moved": 0}
+    assert counts_of("pass-row\ttape\t12\t3000\t0\t5\t2500\n") == {"pass_tape_asks": 12, "pass_tape_per_unit": 3000, "pass_tape_per_moved": 0,
+                                                              "pass_tape_rechecks": 5, "pass_tape_rechecks_per_moved": 2500}
+    # a row of the old four fields binds nothing: a ledger and its ratchet move together
+    assert counts_of("pass-row\ttape\t12\t3000\t0\n") == {}
     # a candidate is keyed by its technique and fn; one the record lacks is said, by its line
     found = candidates_of("candidate: reuse-in-place 40 f packages/x.av:3\ncandidate: strided-list 9 g packages/y.av\n")
     assert set(found) == {("reuse-in-place", "f"), ("strided-list", "g")}

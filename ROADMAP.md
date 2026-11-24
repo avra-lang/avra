@@ -3246,6 +3246,19 @@ queries and moves 118: 482 call sites go through a box the lowering notes no typ
 lambdas are taken into boxes typed by the generic seat rather than the instantiated type. Noting the
 instantiated type at those sites brings an editor's rebuild down to the true dependents.
 
+### A frontier holds which places a read named, never which part (measured 2026-11-24)
+
+A frontier keeps each answer's reads as places, so a warm open's walk from what an edit changed meets
+every reader of a place that moved, whatever part of it the reader read. A reader of a part that held
+is now met only where its one record's reads of that place no longer hold (`QueryEngine.meets`, by
+`stands_now`'s rule): a signature edit to one fn of the cli's `commands` module re-checks 61 `resolved`
+answers where it re-checked 5,999, and its check takes 0.29-0.35 s against a body edit's 0.20-0.24 s.
+PART COLUMNS IN THE FRONTIER WERE MEASURED AND GAVE NOTHING OVER THE PART-AWARE MEET: keeping each
+read's part name beside its place (sparse columns, a seal bump) took the record read out of each meet,
+left the checks at 0.26-0.39 s and the same 61 re-checks, and grew the cli's frontier bases from some
+63-81 MB to 96-114 MB (branch `avra-lane-replay-wrong-answers-partb-unlanded`, never landed). The gap
+between signature and body edits is elsewhere.
+
 ### A program-layer object is keyed by its answers, and two conditions hold the key up
 
 `keyed_objects` (compiler/item_program.av) keys each bucket's object by its bodies' answer hashes, what

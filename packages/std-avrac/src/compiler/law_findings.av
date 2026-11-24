@@ -326,7 +326,76 @@ export fn program_erring(engine: QueryEngine, package: string, vouched: List<str
 > {
     let manifests = manifests_refused(engine, package)
     if !manifests.is_empty() { return manifests }
-    [f for f in program_files(engine, package) if program_file_errors(engine, f, package, vouched.contains(spelled_file(f))) > 0]
+    let files = program_files(engine, package)
+    // each file's package, numbered in the order the program first reads one of its files
+    mut numbered: Map<string, int> = {}
+    mut of_file: List<int> = []
+    for f in files {
+        let known = numbered.get(f.package_name)
+        let n = known ?? numbered.length
+        if known == null { numbered.set(f.package_name, n) }
+        of_file.push(n)
+    }
+    // the files of each package together, in the program's order within it
+    mut counts = [0 for _p in 0..numbered.length + 1]
+    for n in of_file { counts.set(n + 1, counts[n + 1] + 1) }
+    for n in 0..numbered.length { counts.set(n + 1, counts[n + 1] + counts[n]) }
+    mut next = [c for c in counts]
+    mut grouped = [0 for _f in 0..files.length]
+    for at, n in of_file {
+        grouped.set(next[n], at)
+        next.set(n, next[n] + 1)
+    }
+    let vouched_in = vouched_by_package(vouched, numbered)
+    mut erring = [false for _f in 0..files.length]
+    for n in 0..numbered.length {
+        let own = [grouped[k] for k in counts[n]..counts[n + 1]]
+        // whether a verdict vouches for each file, by its own address: none where it vouches for none
+        let marked = if vouched.is_empty() { [] } else { [vouched_in[n].has(files[at].path_in_package) for at in own] }
+        let held = if marked.any(it) { marked } else { [] }
+        for i in package_erring(engine, package, [files[at] for at in own], held) { erring.set(own[i], true) }
+    }
+    [f for at, f in files if erring[at]]
+}
+
+/// THE FILES `vouched` SPELLS (`spelled_file`), BY THEIR PACKAGE'S NUMBER AMONG `packages` AND THEIR
+/// PATH: each spelling read once, its package the longest of them it begins with, each package's
+/// paths kept in one table made once, so a file is found by its own address and no spelling is made
+/// of it.
+fn vouched_by_package(vouched: List<string>, packages: Map<string, int>) -> List<Map<string, bool>> {
+    let count = packages.length
+    if vouched.is_empty() { return [] }
+    let names = sorted_by([p for p, _n in packages], (a, b) -> a.length > b.length)
+    let prefixes = ["${p}/" for p in names]
+    // each spelling's package, by its place among `names`, -1 for one no package of the program holds
+    let owner = [[k for k in 0..names.length if v.starts_with(prefixes[k])].first() ?? -1 for v in vouched]
+    let number = [packages.get(p) ?? -1 for p in names]
+    mut tables: List<Map<string, bool>> = []
+    for n in 0..count {
+        mut paths: Map<string, bool> = {}
+        for i, v in vouched {
+            let k = owner[i]
+            if k < 0 || number[k] != n { continue }
+            paths.set(v.substring(prefixes[k].length, v.length), true)
+        }
+        tables.push(paths)
+    }
+    tables
+}
+
+/// WHICH OF ONE PACKAGE'S FILES IN THE PROGRAM ROOTED AT `program` FAIL ITS BUILD, by their places
+/// among `files` — that package's files, in the order the program reads them — each file `vouched`
+/// marks, at its place, standing on its verdict; `vouched` empty where nothing is. One answer a
+/// package, asked by the files it judges, so a check after an edit reads each package nothing moved
+/// as one answer, not each of its files'.
+@query("laws")
+fn package_erring(
+    engine: QueryEngine,
+    program: string,
+    files: List<SourceFileAddress>,
+    vouched: List<bool>,
+) -> List<int> {
+    [at for at, f in files if program_file_errors(engine, f, program, !vouched.is_empty() && vouched[at]) > 0]
 }
 
 /// What the laws that warn find in one file's written items, each site once, in the order the file

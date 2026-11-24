@@ -7,7 +7,7 @@ use answer_parts.{AnswerParts, part_hash_seen, part_in_parts, part_in_saved_part
 use @std.io.{env, exists, stamp}
 use @std.path.{dir_of}
 use @std.time.{now_ms}
-use pass.{Pass}
+use pass.{Pass, every_pass, pass_index}
 use sorted.{sorted_by}
 use @std.text.{from_codepoints, parse_int, text_before}
 use address.{SourceFileAddress}
@@ -280,6 +280,9 @@ export type QueryEngine = {
     folded: Cell<List<string>>,
     /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
     records_checked: Cell<int>,
+    /// The answers this engine checked against a kept record and kept, by the pass of their family,
+    /// as `pass_index` numbers the passes: what a warm run verified rather than worked out.
+    rechecked: Cell<List<int>>,
     /// What this process knows of its binary's frontier.
     frontier: Cell<FrontierState>,
     /// Whether the answers the other processes of this build learned are this process's, found
@@ -366,6 +369,7 @@ export fn query_engine(
         computed: computed,
         folded: folded,
         records_checked: Cell.new(0),
+        rechecked: Cell.new([0 for _p in 0..every_pass().length]),
         frontier: Cell.new(FrontierState.Unread),
         asked_alone: asked_alone,
         verifying: verifying,
@@ -452,6 +456,13 @@ impl QueryEngine {
         if timed != null { timed!.opened(asked.query_name, TimedSide.Reused, self.definition_of(asked).pass) }
         let answer = self.standing_answer(asked)
         self.times.get()?.closed()
+        if answer != null {
+            let pass = definition.pass
+            if pass != null {
+                let at = pass_index(pass!)
+                self.rechecked.set_at(at, self.rechecked.get()[at] + 1)
+            }
+        }
         answer
     }
 
@@ -472,9 +483,46 @@ impl QueryEngine {
         self.records_checked.set(self.records_checked.get() + 1)
         record
             .every_read(
-                (question, seen) -> self.answer_holds(question, seen),
-                (question, seen, part_name, part_hash) -> self.answer_holds(question, seen) ||
-                    self.part_holds(question, part_name, part_hash),
+                (question, seen) -> self.whole_read_holds(question, seen),
+                (question, seen, part_name, part_hash) -> self
+                    .part_read_holds(question, seen, part_name, part_hash),
+            )
+    }
+
+    /// Whether a whole read of `question` still sees the answer `seen`.
+    fn whole_read_holds(question: ContentHash, seen: ContentHash) -> bool { self.answer_holds(question, seen) }
+
+    /// Whether a part read of `question` still sees what it saw: the whole answer `seen`, or the part
+    /// named `part_name` hashing `part_hash`, absence included.
+    fn part_read_holds(
+        question: ContentHash,
+        seen: ContentHash,
+        part_name: ContentHash,
+        part_hash: ContentHash,
+    ) -> bool {
+        self.answer_holds(question, seen) || self.part_holds(question, part_name, part_hash)
+    }
+
+    /// WHETHER A CHANGE THAT REACHED THE PLACE `by` MEETS ITS READER AT `reader`: unless the one
+    /// record the frontier's answer at `reader` stands on reads `by`'s question, and every read it
+    /// made of it still sees what it saw — the rule `stands_now` holds every read to — so a reader of
+    /// one part of an answer is met only where that part moved, or appeared. Met wherever that can't
+    /// be told: no record, or several standing on that answer. A READER THAT NO LONGER STANDS IS MET
+    /// WITHOUT ASKING: what it read is asked by nothing standing, and asking it would write an answer
+    /// back no root reaches.
+    fn meets(f: Frontier, reader: int, by: int) -> bool {
+        if !f.stands(reader) { return true }
+        let answer = f.answer_at(reader)
+        let held = self.store.records_of(f.question_at(reader)).filter(it.answer.same_as(answer))
+        if held.length != 1 { return true }
+        let record = held[0]
+        let of = f.question_at(by)
+        if !record.read_questions().any(it.same_as(of)) { return true }
+        !record
+            .every_read(
+                (question, seen) -> !question.same_as(of) || self.whole_read_holds(question, seen),
+                (question, seen, part_name, part_hash) -> !question.same_as(of) ||
+                    self.part_read_holds(question, seen, part_name, part_hash),
             )
     }
 
@@ -580,7 +628,7 @@ impl QueryEngine {
         let holds = [self.input_holds(f, at) for at in inputs]
         let changed = [at for i, at in inputs if !holds[i]]
         let reach? = f.reach_of(changed) else { return self.frontier.set(FrontierState.Unusable) }
-        let all? = f.settled(reach, (_at) -> NOT_CUT) else { return self.frontier.set(FrontierState.Unusable) }
+        let all? = f.settled(reach, (_at) -> NOT_CUT, (_reader, _by) -> true) else { return self.frontier.set(FrontierState.Unusable) }
         let stale = f.stale_places()
         self
             .frontier
@@ -639,7 +687,8 @@ impl QueryEngine {
     fn suspects_of(f: Frontier, reach: FrontierReach) -> List<bool>? {
         if reach.changed.is_empty() { return [false for _i in 0..f.length()] }
         let decided: HashKeyedTable<int> = hash_keyed_table()
-        f.settled(reach, (at) -> self.cut_at(f, at, decided))
+        f
+            .settled(reach, (at) -> self.cut_at(f, at, decided), (reader, by) -> self.meets(f, reader, by))
     }
 
     /// How the answer at `at` meets a change: a cutting query's that comes out the same now, which
@@ -847,6 +896,9 @@ impl QueryEngine {
 
     /// How many kept records this process checked.
     fn records_checked_count() -> int { self.records_checked.get() }
+
+    /// How many answers of the pass `p`'s families this engine checked against a kept record and kept.
+    fn rechecked_in(p: Pass) -> int { self.rechecked.get()[pass_index(p)] }
 
     /// The query of each question this process computed, in the order they ran.
     fn computed_queries() -> List<string> { self.computed.get() }
