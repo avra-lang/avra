@@ -2,6 +2,7 @@
 //! rules' findings read off saved per-file answers instead of a whole package typed again. A law
 //! that refuses the program refuses the check, as a derivation's error would; `--baseline <file>`
 //! holds the rule sites to a ratchet, a site the baseline doesn't list refusing it.
+use @std.program.pass.{Pass}
 use @std.avrac.compiler.{
     program_new_only,
     Finding,
@@ -20,6 +21,10 @@ use @std.avrac.compiler.{
     WorkCounts,
     counts_said,
     item_count,
+    file_items_question,
+    file_declares,
+    file_impls,
+    ItemKind,
     said_diag,
     StaleCitation,
     stale_citations,
@@ -29,7 +34,9 @@ use @std.avrac.compiler.memory.{sound_checked}
 use @std.avrac.diagnostics.{Diag, SourceFile, defect_kind, new_source_file, render, rendered_among}
 use @std.io.{env, write_text}
 use @std.path.{joined_path, relative_path, under_dir}
+use @std.program.address.{SourceFileAddress}
 use @std.program.layered_store.{program_store_at}
+use @std.program.pass_ledger.{PassUnits, ledger_rows, ledger_table, pass_ledger}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.sorted.{sorted_by}
 use @std.text.{text_before}
@@ -53,6 +60,7 @@ fn disk_checked(
     net: NetSaid,
     counted: bool = false,
     read_listed: bool = false,
+    ledger: LedgerSaid = LedgerSaid.Unsaid,
 ) -> int {
     // LICENSED input.clock: a check's duration is timing, never an input of what is found
     let t0 = now_ns()
@@ -60,7 +68,7 @@ fn disk_checked(
     let store = program_store_at(joined_path(root, checks_kept_at()))
     let engine = query_engine(store, avra_fact_definitions(), disk.name)
     // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
+    if timed || env("AVRA_QUERY_TIMES") == "1" || !(ledger is .Unsaid) { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return refused! }
     let stopped = net_stops(net, () -> program_new_only(engine, disk.name))
@@ -72,23 +80,30 @@ fn disk_checked(
     let own = [h for h in files if h.file.package_name == disk.name]
     let apart = distinct([h.file.package_name for h in files if disk.deps.has(h.file.package_name)])
     let vouched = vouched_files(engine, disk)
-    let erring = phased(engine, "the refusals", () -> program_erring(engine, disk.name, vouched))
-    let strays = if erring.is_empty() { phased(engine, "the strays", () -> entry_strays(engine, disk)) } else { "" }
+    let erring = phased(
+        engine,
+        "the refusals",
+        Pass.Laws,
+        () -> program_erring(engine, disk.name, vouched),
+    )
+    let strays = if erring.is_empty() { phased(engine, "the strays", Pass.Laws, () -> entry_strays(engine, disk)) } else { "" }
     let found = phased(
         engine,
         "the warnings",
+        Pass.Laws,
         () -> if erring.is_empty() { [file_found(engine, disk.name, h) for h in own] } else { [] },
     )
     let stale = phased(
         engine,
         "the citations",
+        Pass.Laws,
         () -> if erring.is_empty() { [citation_said(h, c) for h in own for c in stale_citations(engine, h.file)] } else { [] },
     )
     let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
     let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
-    let proved = if erring.is_empty() && strays == "" && sound_checked() { phased(engine, "the proof", () -> program_proved(engine, disk)) } else { [] }
-    phased(engine, "the frontier kept", () -> engine.frontier_kept())
-    let saved = phased(engine, "the store saved", () -> store.saved())
+    let proved = if erring.is_empty() && strays == "" && sound_checked() { phased(engine, "the proof", Pass.Laws, () -> program_proved(engine, disk)) } else { [] }
+    phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
+    let saved = phased(engine, "the store saved", Pass.StoreSave, () -> store.saved())
     let unsaved = unsaved_said(store, saved)
     times_said(engine)
     if unsaved != null { eprintln("avra: ${unsaved!}") }
@@ -97,6 +112,7 @@ fn disk_checked(
         eprintln(time_rows_said(engine, CHECK_ROWS))
     }
     if counted { eprintln(counts_said(layer_counts(engine, files))) }
+    ledger_said(engine, ledger, () -> program_units(engine, [h.file for h in files], 0))
     if read_listed { for r in engine.read_lists() { eprintln("read-list ${r.query} ${r.answers} ${r.longest}") } }
     if !erring.is_empty() {
         if net_vouches(net, () -> program_new_only(engine, disk.name)) { println(false_refusal_header()) }
@@ -201,6 +217,47 @@ fn layer_counts(engine: QueryEngine, files: List<ProgramFile>) -> WorkCounts {
         program_decls: [item_count(engine, h.file) for h in files].fold(0, (sum, n) -> sum + n),
         spell_lookups: 0,
     }
+}
+
+/// Whether a run says its pass ledger, and how: as a table, or the table and its rows for a ratchet.
+export enum LedgerSaid {
+    Unsaid
+    Table
+    Rows
+}
+
+/// The pass ledger of the run `engine` made, said on stderr as `said` asks, its units counted by
+/// `units` once its asks are taken.
+fn ledger_said(engine: QueryEngine, said: LedgerSaid, units: fn() -> PassUnits) {
+    if said is .Unsaid { return }
+    let computed = engine.computed_queries()
+    let counted = units()
+    let rows = pass_ledger(engine, computed, counted)
+    eprintln(ledger_table(rows, counted))
+    if said is .Rows { for line in ledger_rows(rows, counted).split("\n") { eprintln("pass-row\t${line}") } }
+}
+
+/// What the run over `files` worked over, by unit: the files, their written items, the bodies their
+/// fns and impls declare, the `objects` a build emitted and those it `linked`, and the items of each file whose items were
+/// read anew — what an edit moved.
+fn program_units(engine: QueryEngine, files: List<SourceFileAddress>, objects: int, linked: int = 0) -> PassUnits {
+    let moved = [item_count(engine, f) for f in files if engine.worked_here(file_items_question(engine, f))]
+        .fold(0, (sum, n) -> sum + n)
+    PassUnits {
+        files: files.length,
+        items: [item_count(engine, f) for f in files].fold(0, (sum, n) -> sum + n),
+        bodies: [bodies_declared(engine, f) for f in files].fold(0, (sum, n) -> sum + n),
+        objects: objects,
+        linked: linked,
+        moved: moved,
+    }
+}
+
+/// The bodies `file` declares: each fn's, and each method's and static's its impls give.
+fn bodies_declared(engine: QueryEngine, file: SourceFileAddress) -> int {
+    let fns = [d for d in file_declares(engine, file).names if d.kind == ItemKind.Fn].length
+    let impls = [i.methods.length + i.statics.length for item in file_impls(engine, file) for i in item]
+    fns + impls.fold(0, (sum, n) -> sum + n)
 }
 
 /// The order `check` says files in: the root package's first, then by path.

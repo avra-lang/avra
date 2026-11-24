@@ -71,7 +71,7 @@ export type NameOver = { type_params: List<string>, of: SignedType }
 /// The signature of the fn `file` declares as `name`, absent when it declares none: the answer its
 /// declaration's face gives, kept under the name it's asked by, so `avra explain @name` shows it and
 /// an edit inside its body asks nothing again.
-@cut_query
+@cut_query("summary")
 export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
     let declared? = declaration_of(engine, file, name, ItemKind.Fn) else { return null }
     faced_signature(engine, file, declared.item, name, declared.face)
@@ -84,7 +84,7 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
 /// signature's types resolve through is. A body edited leaves the face, and so this question,
 /// standing. An unrecorded read is sound only while its key covers what it read; where the read
 /// misses, the answer records the read.
-@query
+@query("summary")
 fn faced_signature(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -106,7 +106,7 @@ fn faced_signature(
 
 /// The signature of the fn `file` declares as `name` as a generator running it reads it: its types
 /// resolved among written names alone, since what generators make can't decide how one runs.
-@query
+@query("summary")
 export fn generator_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
     let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
     let written? = written_fn(item.store, item.stmts, name) else { return null }
@@ -117,7 +117,7 @@ export fn generator_signature(engine: QueryEngine, file: SourceFileAddress, name
 /// with, resolved where it's written: a generated one's in the generator's file. Absent when it
 /// declares none or writes no type — a named instance writes none, its written type arguments a
 /// prefix its fields finish.
-@query
+@query("summary")
 export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let item? = [ItemKind.Const, ItemKind.Collect, ItemKind.State]
         .find_map((k) -> declaring_item(engine, file, name, k)) else { return null }
@@ -134,7 +134,7 @@ export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: strin
 
 /// Every fn `file` declares as `name`, signed, in the order they're declared: a verb file may
 /// declare one name over several receivers.
-@query
+@query("summary")
 export fn fn_signatures(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
     FnSignature,
 > {
@@ -179,7 +179,7 @@ fn signing_in(engine: QueryEngine, file: SourceFileAddress, type_params: List<st
 }
 
 /// What the alias `file` declares as `name` stands for, absent when it declares none or names itself.
-@query
+@query("summary")
 export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: string) -> NameOver? {
     let parts? = alias_written(engine, file, name) else { return null }
     let home = declared_place(file, name)
@@ -231,7 +231,7 @@ fn types_written(t: TypeRef) -> List<TypeRef> {
 }
 
 /// The shape the named type `file` declares as `name` stands over, absent when it declares none.
-@query
+@query("summary")
 export fn named_shape(engine: QueryEngine, file: SourceFileAddress, name: string) -> NameOver? {
     let parts? = named_written(engine, file, name) else { return null }
     name_over(engine, file, parts)
@@ -286,7 +286,7 @@ export type RecordSignature = { type_params: List<string>, fields: List<FieldSea
 
 /// The signature of the record (or component) `file` declares as `name`, absent when it declares
 /// none: a component holding a body carries what its composing trait names past its own fields.
-@query
+@query("summary")
 export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? {
     let item? = record_item(engine, file, name) else { return null }
     let s? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == name) else { return component_signature(engine, file, item, name) }
@@ -368,7 +368,7 @@ fn composed_record(engine: QueryEngine, t: TraitAt) -> DeclaredName? {
 /// walking out along what each one names, that declare a trait wearing `@std/meta`'s `@composes`.
 /// A file names where each declaration it imports is written, and each file of its own module that
 /// declares a component.
-@query
+@query("summary")
 export fn composers(engine: QueryEngine, file: SourceFileAddress) -> List<TraitAt> {
     mut seen = [file_key(file)]
     mut ring = [file]
@@ -540,7 +540,7 @@ export type EnumSignature = { type_params: List<string>, variants: List<VariantS
 
 /// The signature of the enum `file` declares as `name`, written or gathered; absent when it declares
 /// none.
-@query
+@query("summary")
 export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
     let item? = declaring_item(engine, file, name, ItemKind.Enum) else { return gathered_signature(engine, file, name) }
     let parts? = [p! for s in item.stmts for p in [item.store.enum_parts(s)] if p != null]
@@ -566,7 +566,7 @@ type Members = { known: bool, members: List<DeclaredName>, why: string? = null }
 /// The members the `collect` or `collect enum` `file` declares as `name` gathers, what generators make
 /// among them when `made`, read for the package `program` (empty: its own): `gathered` asked once per
 /// declaration.
-@query
+@query("summary")
 fn collect_members(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -1047,7 +1047,7 @@ impl WrittenSite {
 
 /// Where each expression of the kind `kind` that the items of `file` write stands, item by item, each
 /// item's in its nodes' order.
-@query
+@query("summary")
 export fn written_sites(engine: QueryEngine, file: SourceFileAddress, kind: int) -> List<
     WrittenSite,
 > {
@@ -1073,7 +1073,7 @@ export type LiteralPrint = { print: int, item: ItemId, lo: int }
 
 /// Where each record literal the items of `file` hold stands, with the shape its site folds: each
 /// literal that stands somewhere, item by item.
-@query
+@query("summary")
 export fn literal_prints(engine: QueryEngine, file: SourceFileAddress) -> List<LiteralPrint> {
     flatten([item_literal_prints(read_item(engine, file, at), at) for at in item_ids(engine, file)])
 }

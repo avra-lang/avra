@@ -14,7 +14,7 @@ use @std.path.{dir_of, stem_of}
 @derive(Saved)
 export type PackageRead = { files: List<string>, items: int, clashes: int }
 
-@query
+@query("summary")
 export fn package_read(engine: QueryEngine, package: string) -> PackageRead {
     let files = package_sources(engine, package, "src")
     let reads = [file_tally(engine, source_at(package, f)) for f in files]
@@ -29,7 +29,7 @@ export fn package_read(engine: QueryEngine, package: string) -> PackageRead {
 @derive(Saved)
 export type FileTally = { items: int, clashes: int }
 
-@query
+@query("summary")
 export fn file_tally(engine: QueryEngine, file: SourceFileAddress) -> FileTally {
     FileTally {
         items: file_items_saved(engine, file).node.length,
@@ -79,7 +79,7 @@ export fn marked_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
 @derive(Saved)
 type ClosureFiles = { files: List<SourceFileAddress> }
 
-@cut_query
+@cut_query("summary")
 fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
     closure_from(
         engine,
@@ -90,7 +90,7 @@ fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
 /// The files the program whose entry is `entry` reaches: the entry and every file of its own module,
 /// then each file of every module one of them imports, and so on, each once — what its build reads,
 /// and never a file of another module of its package nothing it reaches imports.
-@cut_query
+@cut_query("summary")
 fn entry_closure(engine: QueryEngine, entry: SourceFileAddress) -> ClosureFiles {
     closure_from(engine, [entry].concat(module_mates(engine, entry)))
 }
@@ -135,7 +135,7 @@ fn closure_from(engine: QueryEngine, roots: List<SourceFileAddress>) -> ClosureF
 @derive(Saved)
 export type ReachedPackages = { packages: List<string> }
 
-@query
+@query("summary")
 export fn package_reach(engine: QueryEngine, package: string) -> ReachedPackages {
     ReachedPackages {
         packages: distinct([f.package_name for f in package_closure(engine, package).files]),
@@ -146,7 +146,7 @@ export fn package_reach(engine: QueryEngine, package: string) -> ReachedPackages
 /// each once, widened until a step adds none — asked once a package, as a re-export's cycle law
 /// asks it of each package it re-exports from. A package is its library: what its tests use is no
 /// edge of it.
-@query
+@query("summary")
 export fn package_uses_reached(engine: QueryEngine, package: string) -> List<string> { uses_widened(engine, [package]) }
 
 /// `keys` and every package they reach through `use` lines, widened until a step adds none.
@@ -157,7 +157,7 @@ fn uses_widened(engine: QueryEngine, keys: List<string>) -> List<string> {
 
 /// The std packages the library of `package` names in its `use` lines, itself aside: what a
 /// re-export's cycle can close through, where no manifest row stands between them.
-@query
+@query("summary")
 fn package_uses(engine: QueryEngine, package: string) -> List<string> {
     let files = [source_at(package, p) for p in package_source_paths(engine, package).paths]
     distinct(

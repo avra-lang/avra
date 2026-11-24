@@ -2,6 +2,7 @@
 //! it reaches, each lowered here, as the bodies the evaluator and the backend consume. Each body is
 //! read by its registers' layouts alone: it carries no registry type, and the program's registry is
 //! empty. A program not made yet says why, by the first thing it met.
+use @std.program.pass.{Pass}
 use core.{
     SettledSeat,
     Slot,
@@ -145,7 +146,7 @@ export fn made_program(
 /// lowering query's answer (`BodyAsked`) and is never held here, so an edit that moves no fact a
 /// body reads of another leaves this answer where it stood; one that moves only a body's own tests
 /// or what it sees is folded forward (`program_reached_again`).
-@folded_query(program_reached_again)
+@folded_query(program_reached_again, "lower")
 export fn program_reached(engine: QueryEngine, file: SourceFileAddress) -> ProgramReach {
     let entry? = entry_lowered(engine, file) else { return ProgramReach.Unmade(runs_nothing(), spelled_file(file)) }
     if !entry.whole() { return ProgramReach.Unmade(entry.missing[0], "the entry") }
@@ -252,7 +253,7 @@ export enum ProgramWalk {
 /// so it stands wherever every met body's facts do, and a process that holds it knows each body's
 /// placement before any is placed. An edit that moves a body's facts is folded forward
 /// (`program_walked_again`).
-@folded_query(program_walked_again)
+@folded_query(program_walked_again, "lower")
 export fn program_walked(engine: QueryEngine, file: SourceFileAddress) -> ProgramWalk {
     let entry? = entry_lowered(engine, file) else { return ProgramWalk.Unmade(runs_nothing(), spelled_file(file)) }
     if !entry.whole() { return ProgramWalk.Unmade(entry.missing[0], "the entry") }
@@ -833,7 +834,7 @@ fn distinct_files(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
 /// file is answered on its own (`file_refused`) over the shape's bodies by file (`refusal_shape`), so
 /// an edit to one body re-asks its file alone, and this stands wherever every file's answer does. A
 /// file `vouched` names stands on the verdict that vouches for it: no law is asked of it.
-@query
+@query("laws")
 export fn program_refused(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -955,7 +956,7 @@ export type FileUnits = {
 }
 
 /// The bodies of the shape of the program `file` by file; absent where it isn't made.
-@query
+@query("laws")
 export fn refusal_shape(engine: QueryEngine, file: SourceFileAddress) -> RefusalShape? {
     let shape = match program_reached(engine, file) {
         .Program(s) -> s,
@@ -1025,7 +1026,7 @@ export type FileRefusal = { body: int, missed: int, reached: int, law: bool }
 /// `unlowered` not yet, and whether it is the entry's: a file is reached where it is the entry's, a
 /// body of it with facts is reached, or one is not lowered yet. A file a verdict vouches for (`vouched`)
 /// is asked no law over the whole file.
-@query
+@query("laws")
 export fn file_refused(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -1083,7 +1084,7 @@ fn in_name_order(w: Walked) -> Walked {
 @derive(Saved)
 export type ProgramCalls = { calls: List<WasmCall> }
 
-@query
+@query("lower")
 export fn program_calls(engine: QueryEngine, file: SourceFileAddress) -> ProgramCalls {
     let none = ProgramCalls { calls: [] }
     let reached = match program_reached(engine, file) {
@@ -1413,7 +1414,7 @@ export type TestHeld = { site: TestSite, noted: Noted }
 
 /// The facts of the body a call of `c` runs, lowered with its tests held; absent where its declaration
 /// gives none.
-@query
+@query("lower")
 export fn unit_facts(engine: QueryEngine, c: CalledFn) -> UnitFacts? { facts_read(engine, c) }
 
 /// The facts of the body a call of `c` runs, read where a walk or a survey reads them: the body's
@@ -1428,7 +1429,7 @@ export fn facts_read(engine: QueryEngine, c: CalledFn) -> UnitFacts? {
 /// runs the body, its own declaration unnamed, since a call names it. The process that lowers a
 /// body asks this of it while it holds the lowering, so a walk reads a body's facts and never its
 /// code; absent where the query gives no body.
-@query
+@query("lower")
 fn body_facts(engine: QueryEngine, asked: BodyAsked) -> UnitFacts? {
     let f? = asked_body(engine, asked) else { return null }
     UnitFacts {
@@ -1491,7 +1492,7 @@ once fn units_worked() -> Cell<Map<string, bool>> {
 
 /// Every name the body a call of `c` runs names, its tests placed as `kept` says: what it, its
 /// lambdas and its data name, in name order.
-@query
+@query("lower")
 export fn placed_names(engine: QueryEngine, c: CalledFn, kept: TestsKept) -> List<string> {
     let f? = placed_body(engine, c, kept) else { return [] }
     lowered_names(f)
@@ -1706,7 +1707,7 @@ fn hash_text(h: ContentHash) -> string { "${h.high_word}_${h.low_word}" }
 fn content_text(bytes: Bytes) -> string { hash_text(content_hash(bytes)) }
 
 /// The statements of `file` that run, lowered as its entry, its tests held; absent where it runs none.
-@query
+@query("lower")
 export fn entry_lowered(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? { lowered_entry(engine, file) }
 
 /// THE KEY OF EACH OF A PROGRAM'S BUCKETS, by the answers its bodies are made of: its index, `salt`
@@ -2006,7 +2007,7 @@ fn bucket_made(b: int, key: string, dir: string) -> Made { Made { which: Owned.B
 /// A body's code as the code graph reads it, its tests placed as `kept` says: its and its lambdas'
 /// nodes, its data's, and the fn addresses they take, as `code_facts_wire` writes them; empty where
 /// the call runs no body.
-@query
+@query("lower")
 export fn placed_code(engine: QueryEngine, c: CalledFn, kept: TestsKept) -> string {
     let placed? = placed_body(engine, c, kept) else { return "" }
     code_wire(unit_bodies(c, placed), placed.statics)
@@ -2070,7 +2071,7 @@ fn reach_covers(outer: List<int>, inner: List<int>) -> bool { [w for k, w in inn
 /// THE SHAPE AS THE CODE HASHES READ IT: `program_reached`'s, with what each body sees, the bodies'
 /// declarations and the bodies gone past left out, so a change to those alone leaves the hashes
 /// standing.
-@query
+@query("lower")
 export fn program_code_shape(engine: QueryEngine, file: SourceFileAddress) -> ProgramReach {
     match program_reached(engine, file) {
         .Program(s) -> ProgramReach
@@ -2092,7 +2093,7 @@ export fn program_externs(engine: QueryEngine, file: SourceFileAddress) -> List<
 /// The name of every row a body of `file`'s program may name: the runtime's, then each its externs
 /// answer by; absent where the program isn't made. Kept apart from the shape, so a fold that wants
 /// only these reads no body of it; the shape's externs are read where they lie.
-@query
+@query("lower")
 fn program_row_names(engine: QueryEngine, file: SourceFileAddress) -> List<string>? {
     let reach = program_code_shape_saved(engine, file)
     if reach.node.variant_within(2) != 0 { return null }
@@ -2103,7 +2104,7 @@ fn program_row_names(engine: QueryEngine, file: SourceFileAddress) -> List<strin
 /// THE PROGRAM'S CODE HASHES: each code hash `file`'s program calls, answered over the code graph its
 /// bodies' saved facts make with its entry's, wrappers' and stand-ins'. An edit that moves only bodies'
 /// code is folded forward (`program_code_hashes_again`).
-@folded_query(program_code_hashes_again)
+@folded_query(program_code_hashes_again, "lower")
 export fn program_code_hashes(engine: QueryEngine, file: SourceFileAddress) -> CodeHashes {
     let none = CodeHashes { hashes: [], owns: [], sums: [], nodes: [], reaching: [] }
     let shape = match program_code_shape(engine, file) {
@@ -2659,7 +2660,7 @@ fn walked(
     mut bodiless: Map<string, bool> = {}
     let least = CallsHeld { texts: map_cell(), calls: map_cell() }
     mut stretch = 0
-    engine.kept_times()?.opened("the walk", TimedSide.Outside)
+    engine.kept_times()?.opened("the walk", TimedSide.Outside, Pass.Lower)
     while stretch < queue.length {
         let calls = queue[stretch]
         stretch = stretch + 1
@@ -2822,9 +2823,11 @@ fn made_walked(
     let hashed = match phased(
         engine,
         "the code hashes",
+        Pass.Codegen,
         () -> hashes_answering(closed, unhashed_absent),
     ) { .Ok(h) -> h, .Err(target) -> { return MadeProgram.Unmade(unhashed(), target) } }
-    unanswered(hashed) ?? MadeProgram.Made(phased(engine, "the memory pass", () -> memory(hashed)))
+    unanswered(hashed) ?? MadeProgram
+        .Made(phased(engine, "the memory pass", Pass.Memory, () -> memory(hashed)))
 }
 
 /// The bodies, wrappers, data and externs a walk from `root` met, as one program, `root` its entry
@@ -2857,7 +2860,12 @@ fn walk_closed(
     if trapped == null { return lowered }
     mut unlowered: Map<string, string> = {}
     for x in walk.unlowered { unlowered.set(x.symbol, x.why) }
-    phased(engine, "the trap closing", () -> traps_answering(engine, trapped!, lowered, unlowered))
+    phased(
+        engine,
+        "the trap closing",
+        Pass.Lower,
+        () -> traps_answering(engine, trapped!, lowered, unlowered),
+    )
 }
 
 /// The bodies a walk took, each beside its lambdas, after `fns`; the data and the wrappers they hold,
@@ -3133,8 +3141,8 @@ fn unanswered_name() -> string { "a name no lowered body, row or extern answers"
 export fn unhashed() -> string { "a query whose code hash reaches a name no lowered body, row or extern answers, so its answers would key nothing" }
 
 /// `run`'s answer, timed as the phase `name` outside every query where `engine` times its asks.
-export fn phased<T>(engine: QueryEngine, name: string, run: fn() -> T) -> T {
-    engine.kept_times()?.opened(name, TimedSide.Outside)
+export fn phased<T>(engine: QueryEngine, name: string, pass: Pass, run: fn() -> T) -> T {
+    engine.kept_times()?.opened(name, TimedSide.Outside, pass)
     let answer = run()
     engine.kept_times()?.closed()
     answer

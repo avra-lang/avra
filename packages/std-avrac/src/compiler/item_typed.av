@@ -128,7 +128,7 @@ fn unread_kept(cx: Checking) -> List<UnreadAt> {
 }
 
 /// The body of the fn `file` declares as `name`, typed; absent when it declares none with a body.
-@query
+@query("typing")
 export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> TypedBody? {
     let signed? = signed_body(engine, file, name) else { return null }
     typed_under(engine, file, signed)
@@ -457,7 +457,7 @@ fn named_from(signing: Signing, home: string?, name: string) -> SignedType {
 
 /// The type the const `file` declares as `name` written with no type has: its value's, checked as
 /// any body is. Absent when it declares no such const, or its value's type isn't known.
-@query
+@query("typing")
 export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let item? = declaring_item(engine, file, name, ItemKind.Const) else { return null }
     let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
@@ -771,7 +771,7 @@ fn names_extern(engine: QueryEngine, file: SourceFileAddress, name: string) -> b
 
 /// Whether the item `at` of `file` declares `name` as an `extern fn`: one answer per name, which a
 /// new body for any fn leaves standing.
-@cut_query
+@cut_query("summary")
 fn declares_extern(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
     let item = read_item(engine, file, at)
     item.stmts.any((s) -> item.store.extern_parts(s)?.name == name)
@@ -813,7 +813,7 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
 
 /// The type the toolchain's module `module` (`@std.grammar`) declares as `name`, absent when it
 /// declares none.
-@query
+@query("summary")
 fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> SignedType? {
     let m = module_path(module.split("."))
     let package? = m.package() else { return null }
@@ -825,7 +825,7 @@ fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> Sign
 /// THE META DOOR on the program layer: where the `@std/meta` this engine loads parts from the shapes
 /// this compiler was built against, the first shape that moved — the old path's own question
 /// (`meta_moved_from`), asked of the records and the `Node` the program reads; null where none does.
-@query
+@query("typing")
 export fn meta_moved(engine: QueryEngine) -> string? {
     meta_moved_from(
         (pkg: string, name: string) -> loaded_fields(engine, pkg, name),

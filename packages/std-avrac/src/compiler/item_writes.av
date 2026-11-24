@@ -64,7 +64,7 @@ fn method_key(m: MethodAt) -> string {
 
 /// What the method `method` of the type `file` declares as `owner` does to its receiver: each method
 /// it reaches through its receiver surveyed once, in one walk, so a recursion asks nothing twice.
-@query
+@query("typing")
 export fn receiver_use(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -121,7 +121,7 @@ fn chain_from(engine: QueryEngine, start: MethodAt) -> List<string>? {
 type OwnersOf = { names: List<string> }
 
 /// The types `file` declares that write a method `name`, in the order they're declared.
-@cut_query
+@cut_query("typing")
 fn method_owners(engine: QueryEngine, file: SourceFileAddress, name: string) -> OwnersOf {
     OwnersOf {
         names: [d.name for d in file_declares(engine, file).names if !impls_with(engine, file, d.name, name, false).is_empty()],
@@ -169,7 +169,7 @@ type Surveyed = { name: string, evidence: Evidence }
 /// The evidence of the method `m`: the one impl's that gives it, or every impl's where several give
 /// it, a call reaching any one of them; else the one default body of a trait its type implements.
 /// One no body gives is unproved.
-@query
+@query("typing")
 fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
     let impls = impls_given(engine, m.file, m.owner, m.name, false, m.reader)
     if impls.length > 1 {
@@ -210,7 +210,7 @@ export fn body_receiver_use(
 
 /// The evidence of each method the impl at `at` writes, its receiver the type `file` declares as
 /// `owner`, read from the impl read back once.
-@query
+@query("typing")
 fn impl_evidence(engine: QueryEngine, at: ImplAt, file: SourceFileAddress, owner: string) -> List<
     Surveyed,
 > {
@@ -232,7 +232,7 @@ fn impl_evidence(engine: QueryEngine, at: ImplAt, file: SourceFileAddress, owner
 /// The body of the method, or when `statics` the static, `name` the impl at `at` gives, typed: each
 /// node's type by its index in the item read back, and what its seats refused; none where it gives
 /// none. The door and the lowering both read this one typing.
-@query
+@query("typing")
 fn method_body_typed(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> TypedBody {
     let method? = signed_method(engine, at, name, statics) else { return TypedBody { types: [] } }
     typed_under(engine, at.file, method.signed)
@@ -735,7 +735,7 @@ fn seat_names(engine: QueryEngine, d: DeclaredName) -> List<string?> { [n for n 
 
 /// The names of the seats of the fn the item `at` of `file` declares as `name`, in order: one answer
 /// per name, which a new body for it leaves standing.
-@cut_query
+@cut_query("typing")
 fn seats_named(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> List<
     string,
 >? {

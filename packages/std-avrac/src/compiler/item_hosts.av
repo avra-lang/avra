@@ -38,7 +38,7 @@ type BoundFns = { fns: List<ReadFn> }
 
 /// Every host fn of the files a build of the package `package` reads, its own tests aside, that owes
 /// the program what it doesn't pay.
-@query
+@query("link")
 export fn program_hosts_owed(engine: QueryEngine, package: string) -> HostsOwed {
     let read = [f for f in package_closure(engine, package).files if !(f.package_name == package && in_tests(f.path_in_package))]
     let fns = flatten([file_bound_fns(engine, f).fns for f in read])
@@ -134,7 +134,7 @@ export fn package_hosted(engine: QueryEngine, program: string?, home: SourceFile
 /// The host fns `package`'s sources declare, its tests aside, each file's read through its own
 /// question, over the sources' paths alone (`package_source_paths`): a file that is no source, or a
 /// source edited without moving what it declares as a host fn, moves nothing that reads this.
-@query
+@query("summary")
 fn package_host_fns(engine: QueryEngine, package: string) -> HostFns {
     HostFns {
         fns: [h for p in package_source_paths(engine, package).paths for h in file_host_fns(engine, SourceFileAddress { package_name: package, path_in_package: p }).fns],
@@ -143,7 +143,7 @@ fn package_host_fns(engine: QueryEngine, package: string) -> HostFns {
 
 /// The paths of `package`'s sources, its tests aside: its listings settled on the names of its sources,
 /// so a name a listing gains that is no source — a binary placed beside them, an asset — moves no reader.
-@cut_query
+@cut_query("summary")
 export fn package_source_paths(engine: QueryEngine, package: string) -> SourcePaths {
     SourcePaths {
         paths: [p for p in package_listed_sources(engine, package).paths if !in_tests(p)],
@@ -154,7 +154,7 @@ export fn package_source_paths(engine: QueryEngine, package: string) -> SourcePa
 /// listing read once a process, for every reader that asks what files a package holds — an `in package`
 /// gathering, the laws over a package's gatherings and its `use` lines — settled on the names of its
 /// sources, so a name a listing gains that is no source moves no reader.
-@cut_query
+@cut_query("summary")
 export fn package_listed_sources(engine: QueryEngine, package: string) -> SourcePaths {
     SourcePaths { paths: package_sources(engine, package, "src") }
 }
@@ -167,7 +167,7 @@ export type SourcePaths = { paths: List<string> }
 /// each one's host: each hosted body its reach holds that its own package declares, and each another
 /// package declares naming a host the target stands beside. One answer, which stands where the
 /// program's reach and its files' host fns do, so a build reads the reach back only where it moved.
-@query
+@query("summary")
 fn speaking_host_fns(engine: QueryEngine, file: SourceFileAddress, target: string) -> HostFns {
     let reached = match program_reached(engine, file) {
         .Program(p) -> p,
@@ -216,7 +216,7 @@ type HostFns = { fns: List<HostFn> }
 /// Every fn `file` declares that C defines or a host answers, read from its own items alone: what a
 /// program's host fns are judged against, which an edit to another file, or to a body here, leaves
 /// standing.
-@cut_query
+@cut_query("summary")
 fn file_bound_fns(engine: QueryEngine, file: SourceFileAddress) -> BoundFns {
     BoundFns {
         fns: [ReadFn { declared: d, called: c } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in some_list(callee_of(engine, d)) if c.external || c.hosted],
@@ -224,7 +224,7 @@ fn file_bound_fns(engine: QueryEngine, file: SourceFileAddress) -> BoundFns {
 }
 
 /// Every host fn `file` declares, read from its own items alone.
-@cut_query
+@cut_query("summary")
 fn file_host_fns(engine: QueryEngine, file: SourceFileAddress) -> HostFns {
     HostFns {
         fns: [HostFn { called: c!, host: host_mark(read_item(engine, d.file, d.item), d.name) } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in [callee_of(engine, d)] if c?.hosted ?? false],

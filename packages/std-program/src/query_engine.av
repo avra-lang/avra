@@ -62,8 +62,9 @@ export type QueryDefinition = {
     /// it reads moved. Where a change reaches it, it is worked out as the frontier opens, and where
     /// it comes out the same, the change reaches nothing past it.
     cuts: bool = false,
-    /// The pass its work belongs to, as its annotation names it; absent for one that names none yet,
-    /// and for a definition written by hand, as an engine's own tests write them.
+    /// The pass its work belongs to: every query an annotation declares names one, since the
+    /// annotation's seat is required; absent only for a definition written by hand, as an engine's
+    /// own tests write them.
     pass: Pass? = null,
 }
 
@@ -447,7 +448,8 @@ impl QueryEngine {
     fn reused_answer(asked: Question) -> ContentHash? {
         let definition = self.definition_of(asked)
         if definition.is_input || definition.code_hash.is_empty() { return null }
-        self.times.get()?.opened(asked.query_name, TimedSide.Reused)
+        let timed = self.times.get()
+        if timed != null { timed!.opened(asked.query_name, TimedSide.Reused, self.definition_of(asked).pass) }
         let answer = self.standing_answer(asked)
         self.times.get()?.closed()
         answer
@@ -828,6 +830,12 @@ impl QueryEngine {
     /// Where this process's asks spent their time, absent while they aren't timed.
     fn kept_times() -> QueryTimes? { self.times.get() }
 
+    /// Whether this process worked the question `asked` out while its asks were timed.
+    fn worked_here(asked: Question) -> bool {
+        let times? = self.times.get() else { return false }
+        times.worked.get(asked.known_as) != null
+    }
+
     /// The query of each answer this process folded forward, in the order they were folded.
     fn folded_queries() -> List<string> { self.folded.get() }
 
@@ -842,6 +850,10 @@ impl QueryEngine {
 
     /// The query of each question this process computed, in the order they ran.
     fn computed_queries() -> List<string> { self.computed.get() }
+
+    /// The pass the query named `query_name` belongs to, as its definition names it; absent for one
+    /// this engine doesn't define, or a definition written by hand.
+    fn pass_named(query_name: string) -> Pass? { self.definitions.get().get(query_name)?.pass }
 
     /// HOW LONG THE READ LISTS ARE that the answers this process settled stand on, by query: how many
     /// answers, and the most questions any one of them read — what asking whether it stands costs.
@@ -889,7 +901,11 @@ impl QueryEngine {
                 holder = self.store.claimed(asked.known_as)
             }
         }
-        self.times.get()?.opened(asked.query_name, TimedSide.Query)
+        let timed = self.times.get()
+        if timed != null {
+            timed!.opened(asked.query_name, TimedSide.Query, self.definition_of(asked).pass)
+            timed!.worked.put(asked.known_as, true)
+        }
         let answer = self.worked_out(asked)
         self.times.get()?.closed()
         self.store.claim_let_go(asked.known_as)
@@ -1045,7 +1061,11 @@ impl QueryEngine {
             reads.whole(f.question_at(r), now[i]!)
         }
         let outer = self.opened(asked, reads)
-        self.times.get()?.opened(asked.query_name, TimedSide.Folded)
+        let timed = self.times.get()
+        if timed != null {
+            timed!.opened(asked.query_name, TimedSide.Folded, self.definition_of(asked).pass)
+            timed!.worked.put(asked.known_as, true)
+        }
         let bytes = step(self, asked.arguments, last, [m! for m in moved])
         self.times.get()?.closed()
         self.open_questions.set(outer)

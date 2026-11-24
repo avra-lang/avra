@@ -98,7 +98,7 @@ export type KeptDiag = {
 /// What every rule the program layer runs finds in `file`: those that read syntax alone over the
 /// whole file and each item's fact rules over the item, in the order one walk of the file finds
 /// them — each node after the nodes under it.
-@query
+@query("laws")
 export fn file_rule_rows(engine: QueryEngine, program: string, file: SourceFileAddress) -> FileRuleRows {
     let src = rule_source(engine, file)
     let facts = flatten(
@@ -150,7 +150,7 @@ fn item_syntax_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId
 type ItemAlone = { text: string, tape: SyntaxTape }
 
 /// The item `at` of `file` as the rules that read it alone see it.
-@cut_query
+@cut_query("laws")
 fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemAlone {
     let item = item_under(engine, file, at)
     ItemAlone { text: item.text, tape: placed_item(engine, file, item, 0).tape }
@@ -158,7 +158,7 @@ fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemA
 
 /// What every rule that reads its item alone finds in the item `at` of `file`, each beside the node
 /// it fired at — every place counted from the item's own start.
-@query
+@query("laws")
 export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFound {
     let alone = item_alone(engine, file, at)
     let source = new_source_file(rule_named(file), alone.text)
@@ -224,7 +224,7 @@ export type EntryRanFound = { items: List<ItemRanFound> }
 /// What every fact rule finds in the statements `file` runs, typed as one body — its entry — once for
 /// all of its items: each local such a statement binds read through the entry's own reads; each
 /// item's statements walked over that item's own text.
-@query
+@query("laws")
 export fn entry_fact_found(engine: QueryEngine, file: SourceFileAddress) -> EntryRanFound {
     let read = entry_read(engine, file)
     let signed? = entry_signed(read) else { return EntryRanFound { items: [] } }
@@ -357,7 +357,7 @@ fn kept_loc(p: KeptPlace, path: string) -> Loc { Loc { file: path, lo: p.lo, hi:
 
 /// What every fact rule the program layer runs finds in the item `at` of `file`, over its bodies as
 /// typing found them; an item whose parse refused holds no finding.
-@query
+@query("laws")
 export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFileAddress, at: ItemId) -> ItemFound {
     let facts? = item_rule_file(engine, program, file, at) else { return ItemFound { found: [] } }
     let store = facts.view.store
@@ -406,7 +406,7 @@ export type SeatFns = { names: List<string> }
 
 /// Each fn the declarations of `file` name in `@cycled_by` or `@scoped_by`, over every item it
 /// writes.
-@query
+@query("laws")
 export fn file_seat_fns(engine: QueryEngine, file: SourceFileAddress) -> SeatFns {
     SeatFns {
         names: flatten(
@@ -486,7 +486,7 @@ export type DeclKeys = { keys: List<string> }
 /// Each declaration the written items of `file` read by name, resolved from its top level: a name
 /// read or called, a record's or a type's name, a written type, an impl's trait and target, and a
 /// field's mark. A `use` line's own names are no read.
-@query
+@query("laws")
 export fn file_reads(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
     let read = [r for at in every_item_id(engine, file) for r in names_read(read_item(engine, file, at).store)]
     DeclKeys {
@@ -508,7 +508,7 @@ fn read_declaration(engine: QueryEngine, file: SourceFileAddress, r: ReadName) -
 
 /// Each call the written items of `file` make by name of a fn the program declares, its callee's
 /// key once a call.
-@query
+@query("laws")
 export fn file_calls(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
     let calls = [r for at in every_item_id(engine, file) for r in calls_written(read_item(engine, file, at).store)]
     DeclKeys {
@@ -537,7 +537,7 @@ fn callers_of(engine: QueryEngine, program: string, file: SourceFileAddress, nam
 }
 
 /// Each declaration the files of the program `package` read by name.
-@query
+@query("laws")
 export fn program_reads(engine: QueryEngine, package: string) -> DeclKeys {
     DeclKeys {
         keys: distinct(flatten([file_reads(engine, f).keys for f in program_files(engine, package)])),

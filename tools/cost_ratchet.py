@@ -72,6 +72,10 @@ PRINTED = (
 # and the answers a warm run worked out again, from its `worked:` line.
 QUERIES = re.compile(r"^counts: .*\bqueries_computed=(\d+)", re.M)
 WORKED = re.compile(r"^worked: (\d+) answers here", re.M)
+# THE PASS LEDGER's deterministic columns (`--passes --passes-rows`, std-program/src/pass_ledger.av):
+# each pass's asks, its asks per unit and per item an edit moved, in thousandths — a pass whose work
+# per unit rises is over its row as any counter is. Its times are shown, never rows.
+PASS_ROW = re.compile(r"^pass-row\t([a-z-]+)\t(\d+)\t(\d+)\t(\d+)$", re.M)
 CENSUS = tuple(c for _, names in PRINTED for c in names)
 COUNTERS = CENSUS + ("queries_computed", "worked")
 # A fall this small is the build's own: a file it writes and reads back within the stamp window.
@@ -91,6 +95,11 @@ def counts_of(text):
         m = line.search(text)
         if m:
             got[counter] = int(m[1])
+    for p, asks, per_unit, per_moved in PASS_ROW.findall(text):
+        name = "pass_" + p.replace("-", "_")
+        got[name + "_asks"] = int(asks)
+        got[name + "_per_unit"] = int(per_unit)
+        got[name + "_per_moved"] = int(per_moved)
     return got
 
 
@@ -127,7 +136,7 @@ def measured(run_dir):
         elif f.startswith("edit-") and f.endswith(".census"):
             name = f[: -len(".census")]
             got = counts_of(open(os.path.join(run_dir, f), errors="replace").read())
-            rows.update({(name, c): got[c] for c in WARM_COUNTERS if c in got})
+            rows.update({(name, c): got[c] for c in got if c in WARM_COUNTERS or c.startswith("pass_")})
     return rows
 
 
@@ -144,10 +153,14 @@ def run_part(run_dir):
 
 def unprinted(now):
     """Each counter a run owed and printed no count for: every census counter of a cold workload, and
-    the answers an edit's warm run worked out again."""
+    the answers an edit's warm run worked out again; a ledger's run (`ledger-<workload>`) is counted by
+    no census, and owes only the pass rows it printed."""
     owed = {}
     for workload, _ in now:
-        owed[workload] = ("worked",) + WARM_COUNTERS if workload.startswith("edit-") else CENSUS
+        if workload.startswith("ledger-"):
+            owed[workload] = ()
+        else:
+            owed[workload] = ("worked",) + WARM_COUNTERS if workload.startswith("edit-") else CENSUS
     return ["cost: %s printed no %s" % (w, c) for w in sorted(owed) for c in owed[w] if (w, c) not in now]
 
 
@@ -378,6 +391,9 @@ def self_test():
                        ("edit-body", "releases"): 6, ("edit-body", "list_writes"): 200}, got
         assert same_warm(d, d) == 0
     assert unprinted({("check-cli", "queries_computed"): 3})[0] == "cost: check-cli printed no retains"
+    # a ledger's run owes no census counter; its pass rows are its rows
+    assert unprinted({("ledger-edit-body", "pass_tape_asks"): 4}) == []
+    assert counts_of("pass-row\ttape\t12\t3000\t0\n") == {"pass_tape_asks": 12, "pass_tape_per_unit": 3000, "pass_tape_per_moved": 0}
     # a candidate is keyed by its technique and fn; one the record lacks is said, by its line
     found = candidates_of("candidate: reuse-in-place 40 f packages/x.av:3\ncandidate: strided-list 9 g packages/y.av\n")
     assert set(found) == {("reuse-in-place", "f"), ("strided-list", "g")}

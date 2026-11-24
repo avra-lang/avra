@@ -43,9 +43,10 @@ command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to on
 
 # The cold workloads: a name, the part it is measured in, the machine's store it runs over, the census
 # tables it takes, then the command the census compiler runs in the snapshot. PARTS, each a gate slice
-# of its own (COST_PART=cold-a|cold-b|laid|warm; all by default): `warm` is the cli's cold check and the
-# warm edits it leaves a store for — COST_EDITS=<k>/<n> deals them, the k-th share of n, the noop in
-# every share — and the cold runs are two. A STORE IS NOT THE COMPILER: every run but one has
+# of its own (COST_PART=cold-a|cold-b|laid|warm|ledger-cold|ledger-warm; all by default): `warm` is the
+# cli's cold check and the warm edits it leaves a store for — COST_EDITS=<k>/<n> deals them, the k-th
+# share of n, the noop in every share — the cold runs are two, and the pass ledger's are two more
+# (`ledgered`, below). A STORE IS NOT THE COMPILER: every run but one has
 # the machine's store off, so its rows are what the compiler does, whatever a store holds;
 # `cold-with-store-fill` is the cli's cold check over an empty store, which it fills — the store's own
 # price, ratcheted apart, its sites the check's own and so read once, from check-cli;
@@ -163,8 +164,42 @@ counted() {
     echo "cost: $name $(($(date +%s) - started)) s"
 }
 
-# One warm findings run of the cli, its `worked:` line kept as <name>.out, its census beside it.
+# THE PASS LEDGER IS MEASURED APART FROM THE COUNTS, which an instrument must not move: no counted run
+# keeps a ledger, and the ledger's parts (`ledger-cold`, the cold runs of `cold-a` and `cold-b`;
+# `ledger-warm`, the cli's cold check and the warm edits) make the same runs again, each its own slice
+# beside the counted ones, over the same snapshot by the same census compiler, uncounted, with
+# `--passes --passes-rows`. ledgered <name> <command…>: one such run, its `pass-row` lines the rows of
+# the workload <name> (tools/cost_ratchet.py), its table the step's summary.
+ledgered() {
+    ran=$1; sub=$2; shift 2
+    machine=0
+    [ "${store:-off}" = off ] || machine=1
+    # as a counted run is made, past the stamp window and on one core, so its asks are the same
+    sleep 3
+    mkdir -p "$cache/home"
+    started=$(date +%s)
+    (cd "$src" && unset AVRA_MACHINE_STORE_DIR && \
+        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
+        taskset -c 0 build/avra "$sub" --passes --passes-rows "$@" > /dev/null 2> "$root/$out/$ran.ledger") || {
+        tail -20 "$out/$ran.ledger"; echo "cost: $ran's ledger run failed"; exit 1; }
+    grep '^pass-row' "$out/$ran.ledger" > "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
+    ledger_summary "$ran" "$out/$ran.ledger"
+    rm -f "$out/$ran.ledger"
+    echo "cost: $ran $(($(date +%s) - started)) s"
+}
+
+# THE PASS LEDGER OF EVERY RUN, where the gate shows a step's summary: the table `--passes` printed,
+# its times the census compiler's own — shown, never a row; its asks and asks per unit are rows.
+ledger_summary() {
+    [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+    grep -q '^passes:' "$2" || return 0
+    { echo "#### passes — $1"; echo '```'; awk '/^passes:/ { p = 1 } p && /^pass-row/ { exit } p' "$2"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+}
+
+# One warm findings run of the cli: counted (`$how` counted), its `worked:` line kept as <name>.out,
+# its census beside it; or the ledger's (`$how` ledgered), its pass rows as ledger-<name>.out.
 warm() {
+    if [ "$how" = ledgered ]; then ledgered "ledger-$1" tapes --findings packages/cli; return; fi
     counted "$1" tapes --findings packages/cli
     mv "$out/$1.out" "$out/$1.census"
     grep '^worked: ' "$out/$1.census" > "$out/$1.out" || { echo "cost: $1 printed no worked line"; exit 1; }
@@ -185,7 +220,7 @@ warm_edits() {
             [ "$kind" = "$last" ] || warm "back-$kind"
         fi
     done
-    find "$out" -maxdepth 1 \( -name settle.out -o -name 'back-*.out' \) -delete
+    find "$out" -maxdepth 1 \( -name settle.out -o -name 'back-*.out' -o -name ledger-settle.out -o -name 'ledger-back-*.out' \) -delete
 }
 
 # A cold run's site lines with every address its census binary's symbol: <name>.sites, which
@@ -252,20 +287,41 @@ reached() {
 
 # the part this run measures, and every workload it measures — what tools/cost_ratchet.py judges
 part=${COST_PART:-all}
-case $part in all | cold-a | cold-b | laid | warm) ;; *) echo "cost: COST_PART is all, cold-a, cold-b, laid or warm, never $part"; exit 2 ;; esac
+case $part in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-warm) ;;
+    *) echo "cost: COST_PART is all, cold-a, cold-b, laid, warm, ledger-cold or ledger-warm, never $part"; exit 2 ;; esac
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
-workloads | while read -r name in_part store census command; do
-    [ "$part" = all ] || [ "$part" = "$in_part" ] || continue
-    echo "$name" >> "$out/workloads"
-    [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do echo "edit-$kind" >> "$out/workloads"; done
-    bare
-    [ "$store" != laid ] || laid
-    # shellcheck disable=SC2086
-    counted "$name" $command
-    [ "$census" = none ] || resolved "$name"
-    [ "$name" != check-cli ] || warm_edits
-done
+# measure <how> <part>: each workload of the part, counted, or its ledger's run (the ledger of the laid
+# check is not kept: its passes are the cli check's, over answers it reads)
+measure() {
+    how=$1
+    workloads | while read -r name in_part store census command; do
+        if [ "$how" = ledgered ]; then
+            case $2:$in_part in all:laid) continue ;; all:* | ledger-cold:cold-a | ledger-cold:cold-b | ledger-warm:warm) ;; *) continue ;; esac
+            lname=ledger-$name
+        else
+            [ "$2" = all ] || [ "$2" = "$in_part" ] || continue
+            lname=$name
+        fi
+        echo "$lname" >> "$out/workloads"
+        [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do
+            if [ "$how" = ledgered ]; then echo "ledger-edit-$kind"; else echo "edit-$kind"; fi >> "$out/workloads"; done
+        bare
+        [ "$store" != laid ] || laid
+        # shellcheck disable=SC2086
+        $how "$lname" $command
+        [ "$how" = ledgered ] || [ "$census" = none ] || resolved "$name"
+        [ "$name" != check-cli ] || warm_edits
+    done
+}
+case $part in
+    ledger-*) measure ledgered "$part" ;;
+    all)
+        measure counted all
+        measure ledgered all
+        ;;
+    *) measure counted "$part" ;;
+esac
 # THE CANDIDATES: every cold run's sites classified to the zero-cost technique that would remove their
 # cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md); a part whose runs
 # take no site tables (laid) has none

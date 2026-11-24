@@ -95,13 +95,13 @@ export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<Item
 }
 
 /// How many items a file has.
-@cut_query
+@cut_query("tape")
 export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { item_ids(engine, file).length }
 
 /// THE ITEMS OF A FILE BY IDENTITY: each written item's id, in the order the file holds them. An
 /// item's id is its own (`item_id_of`), never its place, so an item added or taken away renumbers
 /// nothing else, and every question asked of an item by its id stands across it.
-@cut_query
+@cut_query("tape")
 export fn item_ids(engine: QueryEngine, file: SourceFileAddress) -> List<ItemId> {
     let part? = item_parts_part(engine, file, IDS_PART) else { return [] }
     [ItemId(i) for i in ItemIds.from_saved_bytes(part).ids]
@@ -120,12 +120,12 @@ type ItemIds = { ids: List<int> }
 /// standing. An answer of its own, as in 57, so its part's name is spelled and read once an item in
 /// an engine, and each ask after is its held question's two folded words: as a part read at every
 /// ask, it spelled its name (held_part, 12.5M boxes on a cold build-cli) and read its part.
-@cut_query
+@cut_query("tape")
 export fn item_held(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool { item_parts_part(engine, file, held_part(at)) != null }
 
 /// Whether `file` holds a written item at all: what an item added or taken away beside another
 /// leaves standing.
-@cut_query
+@cut_query("tape")
 export fn holds_items(engine: QueryEngine, file: SourceFileAddress) -> bool { !file_items(engine, file).is_empty() }
 
 /// Where the ids of a file's generated items start: past every written item's (`item_id_of`).
@@ -145,7 +145,7 @@ export fn nth_item_id(engine: QueryEngine, file: SourceFileAddress, generated: b
 
 /// A file's item `at`, with the context it reads under; past the file's items, no text. A saved
 /// answer is asked again with the place it was asked at, which an edit may have taken away.
-@cut_query
+@cut_query("tape")
 export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnder {
     let part = item_parts_part(engine, file, text_part(at))
     let item = if part == null { ItemPart { text: "", print: fp_str("") } } else { ItemPart.from_saved_bytes(part!) }
@@ -172,7 +172,7 @@ type ItemStands = { offset: int, length: int }
 /// A file's items as parts, each by its id: its text, apart from it where it starts, and apart from
 /// both that the file holds it — so an edit inside one item moves that item's text and the starts
 /// after it, and no other item's text, and only an item added or taken away moves what is held.
-@cut_parted_query
+@cut_parted_query("summary")
 fn item_parts(engine: QueryEngine, file: SourceFileAddress) -> AnswerParts {
     let items = file_items(engine, file)
     answer_parts(
@@ -282,14 +282,14 @@ fn word_shapes(engine: QueryEngine, file: SourceFileAddress) -> WordShapes {
 
 /// The words that open a block in `file`: a component another module declares, and a sublanguage it
 /// imports. One answer a file, cut off where it comes out the same.
-@cut_query
+@cut_query("tape")
 export fn file_block_words(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
     [c.word for c in word_shapes(engine, file).components if !c.own]
         .concat([g.word for g in file_grammars(engine, file)])
 }
 
 /// The sublanguages a file's `use` lines import, each by the word it's imported as.
-@query
+@query("tape")
 export fn file_grammars(engine: QueryEngine, file: SourceFileAddress) -> List<GrammarWord> {
     flatten([line_shapes(engine, file, u).grammars for u in file_words(engine, file).uses])
 }
@@ -434,7 +434,7 @@ export fn item_start(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -
 
 /// Where each item of `file` starts in its text, in order: what moves when an edit lengthens an item
 /// above another, and nothing else does.
-@cut_query
+@cut_query("tape")
 export fn item_starts(engine: QueryEngine, file: SourceFileAddress) -> List<int> { [item_start(engine, file, at) for at in item_ids(engine, file)] }
 
 /// THE ONE PLACE AN ITEM'S OWN PLACE BECOMES ITS FILE'S: `place`, counted from the start of the
@@ -490,7 +490,7 @@ export fn span_in_file(engine: QueryEngine, file: SourceFileAddress, item: ReadI
 
 /// A file's items (`item_spans`), each as its text, with its id; a file with no text has none. Its
 /// text is lexed here alone.
-@cut_query
+@cut_query("tape")
 export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemText> {
     let text? = source_text(engine, file) else { return [] }
     let texts = [ItemText { start: span.start, text: t, print: fp_str(t) } for span in item_spans(avra_columns(text), text.length) for t in [text.substring(span.start, span.end)]]
@@ -540,7 +540,7 @@ fn earlier_cut(a: int, b: int) -> int { if b >= 0 && b < a { b } else { a } }
 
 /// What each item of a file keeps for its words, read with no words of its own: what an edit inside
 /// a body leaves as it was.
-@cut_query
+@cut_query("summary")
 fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
     [about_of(item_parts_part(engine, file, about_part(at))) for at in item_ids(engine, file)]
 }
@@ -559,12 +559,12 @@ type ItemSaid = { runs: bool, builds: bool = false, worn: List<NameWorn>, declar
 
 /// The names the `use` lines of `file` bind that nothing answers (`refused_imports`), worked out once
 /// for the file however many of its items ask.
-@query
+@query("summary")
 export fn imports_refused(engine: QueryEngine, file: SourceFileAddress) -> List<string> { refused_imports(engine, file) }
 
 /// What each written item of `file` says of itself, by place: read from each item's tape where it
 /// lies, once for the file.
-@query
+@query("summary")
 fn file_said_of_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemSaid> {
     [item_said(engine, file, at) for at in item_ids(engine, file)]
 }
@@ -588,7 +588,7 @@ type FrontUse = { path: List<string>, items: List<string>, bound: List<string>, 
 /// writes that the items after it read (`front`), whether a builder refused what it read
 /// (`refused`), and for each fn it declares, which of its seats are `mut` (`w<name>`). One answer
 /// per item, read back once, cut part by part, so a new body for a fn moves none of its parts.
-@cut_parted_query
+@cut_parted_query("tape")
 fn item_read_parts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> AnswerParts {
     let item = read_item(engine, file, at)
     let front = ItemFront {
@@ -629,7 +629,7 @@ fn item_read_parts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 /// What the written item `at` of `file` says of how its fns, methods and records may switch the task
 /// out (`item_waits.av`), a part each, read off its text alone: a new body for one moves its own
 /// part and no other.
-@cut_parted_query
+@cut_parted_query("summary")
 fn item_wait_parts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> AnswerParts {
     let item = read_item(engine, file, at)
     answer_parts(
@@ -724,7 +724,7 @@ type RunsBefore = { runs: bool }
 /// What each written item of `file` reads of the items before it, a part per item: whether one of
 /// them runs a statement, and what they write that it reads. An item added moves the parts of the
 /// items after it alone, and only where it runs or writes something they read.
-@cut_parted_query
+@cut_parted_query("summary")
 fn before_parts(engine: QueryEngine, file: SourceFileAddress) -> AnswerParts {
     let ids = item_ids(engine, file)
     let fronts = [item_front(engine, file, i) for i in ids]
@@ -763,7 +763,7 @@ type ItemDeclares = { names: List<TapeName> }
 /// what it says of itself (`said`), and each name it declares with its face (`declares`). One
 /// answer per item, cut part by part where each comes out the same, so a new body for one of its
 /// fns moves no reader of it, and a signature moves no reader of what the item says of itself.
-@cut_parted_query
+@cut_parted_query("summary")
 fn item_summary(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> AnswerParts {
     let tape = meant_tape(engine, file, item_under(engine, file, at))
     let about = about_of(tape_about(tape))
@@ -880,7 +880,7 @@ impl UseLine {
 }
 
 /// What a file declares of block words and imports, read once, off its items' tapes.
-@query
+@query("tape")
 fn file_words(engine: QueryEngine, file: SourceFileAddress) -> FileWords {
     let abouts = file_abouts(engine, file)
     FileWords {
@@ -913,7 +913,7 @@ type ComponentHomes = { homes: List<ComponentHome> }
 /// The components every module of `package` and of each package its manifest depends on exports,
 /// tests aside — every package a `use` of it may name, imported yet or not — each file's words read
 /// once for every lookup.
-@query
+@query("summary")
 fn component_homes(engine: QueryEngine, package: string) -> ComponentHomes {
     let packages = depended_on(engine, [package], [])
     ComponentHomes {
@@ -1002,7 +1002,7 @@ fn shapes_taken(u: UseLine, exports: ModuleExports) -> LineShapes {
 
 /// The named instances a file's bodies may list by name alone: its own top-level ones, read off its
 /// tokens against its words, then those each `use` line imports.
-@cut_query
+@cut_query("summary")
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
     let own = [i.listed() for item in items_under(engine, file) for i in about_of(tape_about(item_tape_saved(engine, item.text, item.context))).instances]
     own
@@ -1034,7 +1034,7 @@ fn own_module_words(engine: QueryEngine, file: SourceFileAddress) -> List<Declar
 @derive(Saved)
 type ModuleWords = { files: List<string>, components: List<DeclaredWord> }
 
-@cut_query
+@cut_query("summary")
 fn module_declared(engine: QueryEngine, package: string, local: List<string>) -> ModuleWords {
     let files = module_files(engine, package, local, true)
     ModuleWords {
@@ -1053,7 +1053,7 @@ type ModuleExports = {
 
 /// What a module puts on its surface of block words: what its files declare, then what each `export
 /// use` of theirs takes of the block words its module declares.
-@query
+@query("summary")
 fn module_exports(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleExports {
     mut exports = module_own_exports(engine, package, local, as_root)
     for f in module_files(engine, package, local, as_root) {
@@ -1076,7 +1076,7 @@ impl ModuleExports {
 }
 
 /// What the files of a module declare of block words, each kept by the name it's declared by.
-@query
+@query("summary")
 fn module_own_exports(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleExports {
     let files = module_files(engine, package, local, as_root)
     mut components: Map<string, List<WordShape>> = {}
@@ -1142,7 +1142,7 @@ fn rooted(engine: QueryEngine, package: string) -> bool { holds_manifest(engine,
 /// whenever a build writes beside its sources — `build/` and `.avra-cache` at a package's root, a
 /// program test's binary beside its source — and what reads this asks only whether the manifest
 /// stands there.
-@cut_query
+@cut_query("summary")
 fn holds_manifest(engine: QueryEngine, package: string, dir: string) -> bool {
     (dir_listed(engine, package, dir) ?? []).contains(MANIFEST)
 }
@@ -1168,7 +1168,7 @@ const DEFAULT_PROGRAM: string = "src/main.av"
 @derive(Saved)
 type PackageFacts = { excludes: List<string>, bin: string?, lib: string?, depends_on: List<string> }
 
-@query
+@query("summary")
 fn package_facts(engine: QueryEngine, package: string) -> PackageFacts {
     let text? = source_text(
         engine,

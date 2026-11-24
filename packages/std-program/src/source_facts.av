@@ -71,11 +71,11 @@ export fn package_lies(package: string) -> string? {
     normalized((places.directory)(DirectoryAddress { package_name: package, path_in_package: "" }))
 }
 
-@input
+@input("tape")
 fn language_print(_engine: QueryEngine) -> string { current_world().language_print }
 
 /// A file's text, absent when there's none.
-@input
+@input("tape")
 export fn source_text(engine: QueryEngine, file: SourceFileAddress) -> string? {
     let world = current_world()
     let places? = world.places else { return (world.read_file)(file) }
@@ -83,7 +83,7 @@ export fn source_text(engine: QueryEngine, file: SourceFileAddress) -> string? {
 }
 
 /// A file's octets, read whatever they hold: a file a build reads as data rather than source.
-@input
+@input("tape")
 export fn source_octets(engine: QueryEngine, file: SourceFileAddress) -> FileOctets {
     let world = current_world()
     let places? = world.places else { return (world.read_octets)(file) }
@@ -100,7 +100,7 @@ fn unread_octets(_file: SourceFileAddress) -> FileOctets { FileOctets.Missing }
 
 /// The names in a directory, absent when there's none, in one order whatever order the host
 /// lists them in.
-@input
+@input("tape")
 export fn listed(engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
     let world = current_world()
     let places? = world.places else { return names_in(world, dir) }
@@ -126,7 +126,7 @@ export type ItemPlace = { part_name: string, start: int, end: int, body_start: i
 type ReadItems = { items: List<WrittenItem>, places: List<ItemPlace> }
 
 /// One read: projected below, so a change this answer carries reaches only who it concerns.
-@query
+@query("tape")
 fn read_items(engine: QueryEngine, file: SourceFileAddress) -> ReadItems {
     let _ = language_print(engine)
     let text? = source_text(engine, file) else { return ReadItems { items: [], places: [] } }
@@ -200,7 +200,7 @@ impl ItemAspect {
 }
 
 /// Every item's hashes, one part per item and aspect. An item with no body has no such part.
-@parted_query
+@parted_query("tape")
 fn written_items(engine: QueryEngine, file: SourceFileAddress) -> AnswerParts {
     answer_parts([value for item in read_items(engine, file).items for value in aspects_of(item)])
 }
@@ -240,7 +240,7 @@ export fn item_hash(
 }
 
 /// What reading a file's items depends on besides their text, as its language says it.
-@query
+@query("summary")
 export fn file_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes {
     let _ = language_print(engine)
     (current_world().context_of)(engine, file)
@@ -248,7 +248,7 @@ export fn file_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes {
 
 /// An item's tape, keyed by its exact bytes and the context it's read under, so an item that
 /// reads the same under the same context, in any file, is read once.
-@query
+@query("tape")
 export fn item_tape(engine: QueryEngine, item_text: string, context: Bytes) -> SyntaxTape {
     let _ = language_print(engine)
     (current_world().item_tape)(item_text, context)
@@ -278,7 +278,7 @@ export fn item_spans(columns: TokenColumns, text_length: int) -> List<ItemSpan> 
 /// The tape of each item of a file, in order, under the file's context (`item_spans`). An
 /// unchanged file answers with no reading at all; an edited one is lexed again, and only the items
 /// whose bytes moved are read.
-@query
+@query("tape")
 export fn file_tapes(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
     let text? = source_text(engine, file) else { return [] }
     let context = file_context(engine, file)
@@ -289,13 +289,13 @@ export fn file_tapes(engine: QueryEngine, file: SourceFileAddress) -> List<Place
 }
 
 /// What a file declares, each as the name of its part. Moves only when one is added, removed or renamed.
-@query
+@query("summary")
 export fn declared_part_names(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
     [item.part_name for item in read_items(engine, file).items]
 }
 
 /// Where a file's items sit. Moves with anything above them.
-@query
+@query("summary")
 export fn item_places(engine: QueryEngine, file: SourceFileAddress) -> List<ItemPlace> { read_items(engine, file).places }
 
 collect listed_source_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

@@ -1,5 +1,8 @@
 //! WHERE A PROCESS'S TIME GOES: each family of asks, its CPU time inside them with and without the
 //! asks it makes in turn. A family is a query's name, or a phase a caller names outside every query.
+use pass.{Pass}
+use answer_record.{ContentHash}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use sorted.{sorted_by}
 use @std.time.{now_ns}
 
@@ -20,12 +23,12 @@ export enum TimedSide {
 
 /// An ask being timed: its family as spoken, its side, when it began and the time its nested asks
 /// took, on the process's CPU clock and on the wall's.
-type OpenAsk = { family: string, side: TimedSide, began: int, nested: int, began_wall: int = 0 }
+type OpenAsk = { family: string, side: TimedSide, began: int, nested: int, began_wall: int = 0, pass: Pass? = null }
 
 /// One family's time, summed over its asks: inside them less their nested asks, and inside them
 /// whole, counted once while it stands open under itself — on the process's CPU clock; and inside them
 /// whole on the wall's, which counts the work they wait on in other processes too.
-export type FamilyTime = { family: string, side: TimedSide, own: int, whole: int, asks: int, whole_wall: int = 0 }
+export type FamilyTime = { family: string, side: TimedSide, own: int, whole: int, asks: int, whole_wall: int = 0, pass: Pass? = null }
 
 /// The time of each family this process timed, from the process's start: what it spent before the
 /// clock was made is the family `START_UP`. An identity: every holder times through one.
@@ -33,6 +36,9 @@ export type QueryTimes = {
     began: int,
     open: Cell<List<OpenAsk>>,
     families: Cell<Map<string, FamilyTime>>,
+    /// Each question this process worked out while timed, by what it is known as: what a ledger
+    /// reads to count the units a run moved.
+    worked: HashKeyedTable<bool>,
 }
 
 export fn query_times() -> QueryTimes {
@@ -49,9 +55,11 @@ export fn query_times() -> QueryTimes {
                 own: before,
                 whole: before,
                 asks: 1,
+                pass: Pass.StoreOpen,
             },
         )
-    QueryTimes { began: 0, open: open, families: families }
+    let worked: HashKeyedTable<bool> = hash_keyed_table()
+    QueryTimes { began: 0, open: open, families: families, worked: worked }
 }
 
 /// The family of what a process spent before its clock was made, since the process began: its
@@ -60,8 +68,8 @@ export fn query_times() -> QueryTimes {
 export const START_UP: string = "the process before this clock"
 
 impl QueryTimes {
-    /// Opens an ask of `family`.
-    fn opened(family: string, side: TimedSide) {
+    /// Opens an ask of `family`, of the pass `pass`.
+    fn opened(family: string, side: TimedSide, pass: Pass?) {
         self
             .open
             .push(
@@ -73,6 +81,7 @@ impl QueryTimes {
                     nested: 0,
                     // LICENSED input.clock: a timing reads the clock, never an input of what is built
                     began_wall: now_ns(),
+                    pass: pass,
                 },
             )
     }
@@ -94,6 +103,7 @@ impl QueryTimes {
             own: 0,
             whole: 0,
             asks: 0,
+            pass: ask.pass,
         }
         self
             .families

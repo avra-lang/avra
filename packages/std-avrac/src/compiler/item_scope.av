@@ -87,7 +87,7 @@ export type NameClash = { lost: DeclaredName, holder: DeclaredName, imported: bo
 @derive(Saved)
 export type ModuleBindings = { shared: Bound, apart: List<DeclaredName>, clashes: List<NameClash> }
 
-@cut_query
+@cut_query("resolve")
 export fn module_bindings(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleBindings {
     mut held = nothing_bound()
     mut apart: List<DeclaredName> = []
@@ -137,7 +137,7 @@ fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
 
 /// A module's shared winners, one part per name, each holding that name's winner in every space it
 /// binds in, so a reader of one name stands when another moves.
-@parted_query
+@parted_query("resolve")
 export fn module_winners(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
     parts_by_name(module_bindings(engine, package, local, as_root).shared.declarations())
 }
@@ -155,7 +155,7 @@ fn winner(engine: QueryEngine, file: SourceFileAddress, space: Space, name: stri
 @derive(Saved)
 type ModuleKept = { apart: List<DeclaredName>, clashes: List<NameClash> }
 
-@query
+@query("resolve")
 fn module_kept(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleKept {
     let bindings = module_bindings(engine, package, local, as_root)
     ModuleKept { apart: bindings.apart, clashes: bindings.clashes }
@@ -170,7 +170,7 @@ fn module_kept(engine: QueryEngine, package: string, local: List<string>, as_roo
 export type FileScope = { own: Bound, siblings: List<DeclaredName>, siblings_named: Map<string, List<DeclaredName>>, clashes: List<NameClash> }
 
 /// What is `file`'s own at its top level; absent for a file that isn't there.
-@cut_query
+@cut_query("resolve")
 export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
     if !file_present(engine, file) { return null }
     let module = module_kept(engine, file.package_name, module_segments(file), true)
@@ -317,7 +317,7 @@ impl Resolution {
 /// they leave it unbound, what its module's generators declare. A file that isn't there names
 /// nothing. One question per name, so what reads a name depends on that name alone, and a name
 /// something writes never asks what generators make.
-@cut_query
+@cut_query("resolve")
 export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
     let scope? = file_scope(engine, file) else { return Resolution.Unbound }
     let written = resolved_in(engine, scope, file, space, name)

@@ -459,7 +459,7 @@ export fn entry_contexts(engine: QueryEngine, entry: SourceFileAddress) -> List<
 
 /// Each context the files the program `package` reaches declare, as each file's `file_contexts`
 /// says: one answer a package, which an edit that declares no context leaves standing.
-@cut_query
+@cut_query("summary")
 fn package_contexts(engine: QueryEngine, package: string) -> FileContexts {
     FileContexts {
         contexts: flatten([file_contexts(engine, f).contexts for f in program_files(engine, package)]),
@@ -469,7 +469,7 @@ fn package_contexts(engine: QueryEngine, package: string) -> FileContexts {
 /// Each context the files the program `package` reaches declare outside a module's tests: all a
 /// file outside them can reach, since nothing imports a test. A package whose tests alone declare a
 /// context — the compiler's own — builds no file's closure for one of its other files.
-@cut_query
+@cut_query("summary")
 fn library_contexts(engine: QueryEngine, package: string) -> FileContexts {
     FileContexts {
         contexts: flatten(
@@ -484,7 +484,7 @@ fn in_tests(file: SourceFileAddress) -> bool { module_segments(file).contains(TE
 /// Each context the files the source `file` reaches declare, as each file's `file_contexts` says:
 /// none, read of no file, where its package's program declares none. One answer a file, which an
 /// edit that declares no context leaves standing, so the laws that read it are not asked again.
-@cut_query
+@cut_query("summary")
 fn closure_contexts(engine: QueryEngine, file: SourceFileAddress) -> FileContexts {
     let held = if in_tests(file) { package_contexts(engine, file.package_name) } else { library_contexts(engine, file.package_name) }
     if held.contexts.is_empty() { return FileContexts { contexts: [] } }
@@ -504,7 +504,7 @@ type FileContexts = { contexts: List<ContextDeclared> }
 type ContextDeclared = { key: int, name: string, required: bool }
 
 /// The contexts the file `file` declares.
-@cut_query
+@cut_query("summary")
 fn file_contexts(engine: QueryEngine, file: SourceFileAddress) -> FileContexts {
     FileContexts {
         contexts: [ContextDeclared {

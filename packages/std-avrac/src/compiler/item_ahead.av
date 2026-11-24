@@ -5,6 +5,7 @@
 //! bodies in one process, which then finds what every law finds in the file, reached or not, so a
 //! build fails on any error. A body the walk never reaches is lowered for nothing,
 //! and a generic one waits for the walk, which alone knows its layouts.
+use @std.program.pass.{Pass}
 use core.{some_list}
 use @std.program.address.{SourceFileAddress}
 use @std.program.layered_store.{LayeredStore}
@@ -58,10 +59,10 @@ export fn program_worked(
     let stands = vouched(alone.engine)
     let _ = alone.store.saved()
     let clock = query_times()
-    clock.opened("files parsed", TimedSide.Outside)
+    clock.opened("files parsed", TimedSide.Outside, Pass.Tape)
     let parsed = files_parsed(at, package)
     clock.closed()
-    clock.opened("generators run", TimedSide.Outside)
+    clock.opened("generators run", TimedSide.Outside, Pass.Generate)
     let _ = parsed.worked.store.saved()
     let generated = ahead(
         at,
@@ -70,11 +71,11 @@ export fn program_worked(
         generators_run,
     )
     clock.closed()
-    clock.opened("impls filed", TimedSide.Outside)
+    clock.opened("impls filed", TimedSide.Outside, Pass.Summary)
     let filed = impls_filed_for(generated.engine, package)
     let _ = generated.store.saved()
     clock.closed()
-    clock.opened("bodies lowered", TimedSide.Outside)
+    clock.opened("bodies lowered", TimedSide.Outside, Pass.Lower)
     let lowered = ahead(
         at,
         (_engine: QueryEngine) -> parsed.program,

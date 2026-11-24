@@ -231,7 +231,7 @@ export type GeneratorPrint = { print: ContentHash?, unmade: string }
 
 /// The generator `g` as the content of the program made of it: the hash of its printed IR, the
 /// program kept for this process under that hash.
-@query
+@query("generate")
 export fn generator_print(engine: QueryEngine, g: GeneratorAt) -> GeneratorPrint {
     let m? = made_generator(engine, g) else { return GeneratorPrint { print: null, unmade: "`${g.name}` writes no generator" } }
     match m {
@@ -362,7 +362,7 @@ export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: strin
 /// it's one — hands a generator whose first seat is `first`, past it `handed`. An answer of its own,
 /// so a site whose declaration and arguments cross as they did runs its generator no more: an edit
 /// elsewhere in the file moves what the file declares, never this.
-@query
+@query("generate")
 export fn handed_values(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -700,7 +700,7 @@ type DerivedGatherings = { each: List<DerivedGathering>, owed: Map<string, List<
 
 /// The gatherings a package's written `collect enum`s make, each read where it's written, read once a
 /// package: the derives a member takes, and the impls the member law asks of each item.
-@cut_query
+@cut_query("generate")
 export fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
     let enums = [d for p in package_listed_sources(engine, package).paths for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
     mut owed: Map<string, List<OwedImpl>> = {}
@@ -738,7 +738,7 @@ export fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGat
 /// Whether a member of `package` owes an impl of a trait its `collect enum` is written over: one
 /// word, read once a package, so the member law reads no gathering for an item of a package that
 /// owes none — as most packages, declaring no `collect enum`, do.
-@cut_query
+@cut_query("generate")
 export fn owes_impls(engine: QueryEngine, package: string) -> bool { !package_gatherings(engine, package).owed.is_empty() }
 
 /// A member a package's `collect enum` gathers over a trait that derives nothing: the enum, the
@@ -1193,7 +1193,7 @@ export type TraitClaims = { claims: List<string>? }
 /// The trait `t`'s own `static fn marks` run over the declaration `file` writes as `name`, as its
 /// `derive` is run: the marks it claims; none where it declares no `marks`, absent where it doesn't
 /// run.
-@query
+@query("generate")
 export fn trait_claims(engine: QueryEngine, t: TraitAt, file: SourceFileAddress, name: string) -> TraitClaims {
     let unknown = TraitClaims { claims: null }
     let body? = trait_static_body(engine, t, CLAIMS) else { return TraitClaims { claims: [] } }

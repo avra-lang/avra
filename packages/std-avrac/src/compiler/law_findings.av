@@ -91,7 +91,7 @@ export type ItemFindings = { findings: List<LawFinding> }
 /// (`reads_item`); a witness holds each law skipped so to finding nothing there
 /// (tools/witness_program_needs.sh). An item holding a declaration that lost its name is refused as
 /// a clash before any other law reads it.
-@query
+@query("laws")
 export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFindings {
     let view = if item_held(engine, file, at) { item_view(engine, file, at) } else { null }
     let lost = lost_a_name(engine, file, at)
@@ -157,7 +157,7 @@ fn finding_of(by: string, s: Found) -> LawFinding {
 /// that run broke a settlement's law — the law's finding, each place counted from the file's start.
 /// A file no program reads such a const of finds nothing, and only the items that declare one are
 /// read.
-@query
+@query("laws")
 export fn program_gathered(engine: QueryEngine, file: SourceFileAddress, program: string) -> ItemFindings {
     ItemFindings {
         findings: [finding_in_file(engine, file, at, finding_of(b.by, b.found)) for at in per_program_items(engine, file) for b in gathered_broken_found(engine, file, at, program)],
@@ -237,7 +237,7 @@ export type FileErring = { errors: int }
 
 /// How many findings in the written items of `file` fail a build: each of a law that refuses rather
 /// than warns, and a source that holds no text.
-@query
+@query("laws")
 export fn file_erring(engine: QueryEngine, file: SourceFileAddress) -> FileErring {
     let absent = if standing_of(engine, file) is .Text { 0 } else { 1 }
     FileErring {
@@ -268,7 +268,7 @@ export fn standing_of(engine: QueryEngine, file: SourceFileAddress) -> SourceSta
 }
 
 /// What the source `file` holds.
-@query
+@query("laws")
 export fn source_standing(engine: QueryEngine, file: SourceFileAddress) -> SourceStanding {
     if source_text(engine, file) != null { return SourceStanding.Text }
     match source_octets(engine, file) {
@@ -319,7 +319,7 @@ export fn program_erring(engine: QueryEngine, package: string, vouched: List<str
 export type FileWarned = { file: SourceFileAddress, findings: List<LawFinding> }
 
 /// What every law that warns finds in the written items of `file`, each site of one kind once.
-@query
+@query("laws")
 export fn file_warned(engine: QueryEngine, file: SourceFileAddress) -> FileWarned {
     let found = [f for at in item_ids(engine, file) for f in findings_in_file(engine, file, at) if !fails_build(f)]
     FileWarned {
@@ -337,7 +337,7 @@ fn kind_of(f: LawFinding) -> string { held_laws().find(it.name == f.by)?.kind ??
 /// THE WARNINGS A BUILD OF THE PROGRAM ROOTED AT `package` SAYS: each of the package's own files a
 /// law warns of, with what it finds there; a dependency's warnings are its own check's. Kept as one
 /// answer, so a build nothing moved reads no file's findings.
-@query
+@query("laws")
 export fn program_warned(engine: QueryEngine, package: string) -> List<FileWarned> {
     [w for f in program_files(engine, package) if f.package_name == package for w in [file_warned(engine, f)] if !w.findings.is_empty()]
 }

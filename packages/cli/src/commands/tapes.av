@@ -3,6 +3,7 @@
 //! every node where it was; and what its top level sees held to what the workspace's namespace
 //! binds, name for name, wherever the workspace's declaration was written. Says each file that
 //! differs and how many it read.
+use @std.program.pass.{Pass}
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
 use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
@@ -291,10 +292,16 @@ impl Runnable for TapesCmd {
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions(), disk.name)
+        let ledger = if args.has_flag("passes_shown") { if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table } } else { LedgerSaid.Unsaid }
         // LICENSED input.timing: a phase timing is reported, never an input of what is found
-        if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
+        if env("AVRA_QUERY_TIMES") == "1" || !(ledger is .Unsaid) { engine.time_queries() }
         if args.option("share") != "" { return share_said(store, engine, disk, args.option("share")) }
         let code = held(engine, disk, args, root, argued)
+        ledger_said(
+            engine,
+            ledger,
+            () -> program_units(engine, program_files(engine, disk.name), 0, 0),
+        )
         engine.frontier_kept()
         let _ = store.saved()
         eprintln("worked: ${engine.worked_count()} answers here; ${worked_by_query(engine)}")
@@ -488,7 +495,7 @@ fn disk_built(
     let store = worked.store
     let engine = worked.engine
     // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
+    if timed || env("AVRA_QUERY_TIMES") == "1" || !(ledger_asked().get() is .Unsaid) { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return .Err(refused!) }
     let stopped = net_stops(net, () -> program_new_only(engine, disk.name))
@@ -505,6 +512,7 @@ fn disk_built(
             let refusing = phased(
                 engine,
                 "the refusals",
+                Pass.Laws,
                 () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
             )
             found.set(refusing)
@@ -514,6 +522,7 @@ fn disk_built(
     let refusing = found.get() ?? phased(
         engine,
         "the refusals",
+        Pass.Laws,
         () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
     )
     if !refusing.is_empty() {
@@ -527,7 +536,12 @@ fn disk_built(
         store_left_kept(engine, store)
         return .Err(said)
     }
-    let owed = phased(engine, "the host fns", () -> program_hosts_owed(engine, disk.name).rows)
+    let owed = phased(
+        engine,
+        "the host fns",
+        Pass.Link,
+        () -> program_hosts_owed(engine, disk.name).rows,
+    )
     if !owed.is_empty() {
         let said = hosts_owed_said(disk, owed)
         store_left_kept(engine, store)
@@ -544,8 +558,8 @@ fn disk_built(
             return .Err(1)
         }
     }
-    let warned = phased(engine, "the warnings", () -> program_warned(engine, disk.name))
-    let built = phased(engine, "the program built", () -> standing_binary(engine, asked))
+    let warned = phased(engine, "the warnings", Pass.Laws, () -> program_warned(engine, disk.name))
+    let built = phased(engine, "the program built", Pass.Link, () -> standing_binary(engine, asked))
     let stood = build_stood(engine, asked)
     let _ = write_text(joined_path(asked.dir, REBUILT), rebuilt_said(engine, asked))
     let reasons = rc_reasons_said()
@@ -563,11 +577,18 @@ fn disk_built(
     let placed = phased(
         engine,
         "place",
+        Pass.Link,
         () -> binary_placed(kept_of(built), stem) ?? fallback_placed(kept_of(built), stem),
     )
     if place_kill_hook() == "1" { exit(.Code(137)) }
     store_left_kept(engine, store)
     times_said(engine)
+    let counted = objects_counted().get()
+    ledger_said(
+        engine,
+        ledger_asked().get(),
+        () -> program_units(engine, program_files(engine, disk.name), counted[0], counted[1]),
+    )
     if placed != null {
         eprintln("avra: ${placed!}")
         return .Err(1)
@@ -580,6 +601,13 @@ fn disk_built(
     }
     .Ok(stem)
 }
+
+/// Whether this process's build says its pass ledger, and how: what `build --passes` asks.
+export once fn ledger_asked() -> Cell<LedgerSaid> { Cell.new(LedgerSaid.Unsaid) }
+
+/// How many objects this process's build emitted, and how many it linked: the units its ledger reads
+/// codegen and the link by.
+once fn objects_counted() -> Cell<List<int>> { Cell.new([0, 0]) }
 
 /// THE ROWS `--time` SPEAKS, by the names the old path's derivation gave its phases, each the wall time
 /// of the program layer's own phases that do that work (none of them runs inside another):
@@ -662,7 +690,12 @@ fn binary_asked(
     tools: Toolchain?,
 ) -> BinaryAsked {
     let t? = tools else { return native_asked(engine, disk, bin, stem, mode) }
-    let words = phased(engine, "link words", () -> linked_words(engine, disk, false, t.target))
+    let words = phased(
+        engine,
+        "link words",
+        Pass.Link,
+        () -> linked_words(engine, disk, false, t.target),
+    )
     BinaryAsked {
         entry: disk.file_at(bin),
         compiler: compiler_identity(),
@@ -689,7 +722,12 @@ const BUILD_DIR: string = ".avra-cache/tapes-build"
 /// that defines a host fn links whole whatever its mode: a host calls it by the bare symbol in the
 /// binary it loads, and a layered binary holds none of the program's code.
 fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode: BuildMode) -> BinaryAsked {
-    let words = phased(engine, "link words", () -> linked_words(engine, disk, mode.shared))
+    let words = phased(
+        engine,
+        "link words",
+        Pass.Link,
+        () -> linked_words(engine, disk, mode.shared),
+    )
         .concat(stack_words(mode.opt))
     let hosted = program_host_symbols(engine, disk.file_at(bin), "")
     BinaryAsked {
@@ -765,8 +803,8 @@ fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
 /// The store kept by an heir, and with `AVRA_QUERY_TIMES` where the keeping's time went: why it
 /// kept nothing, absent where it kept all.
 fn kept_and_said(engine: QueryEngine, store: LayeredStore) -> string? {
-    phased(engine, "the frontier kept", () -> engine.frontier_kept())
-    let saved = phased(engine, "the store saved", () -> store.saved())
+    phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
+    let saved = phased(engine, "the store saved", Pass.StoreSave, () -> store.saved())
     // LICENSED input.timing: a phase timing is reported, never an input of what is found
     if env("AVRA_QUERY_TIMES") == "1" { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
     unsaved_cause(store, saved)
@@ -780,10 +818,11 @@ once fn kept_here() -> string? {
 
 /// The engine's frontier and its store, kept for the next build to read.
 fn store_kept(engine: QueryEngine, store: LayeredStore) {
-    phased(engine, "the frontier kept", () -> engine.frontier_kept())
+    phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
     let saved = phased(
         engine,
         if store.compacts_on_saving() { "the store compacted" } else { "the store saved" },
+        Pass.StoreSave,
         () -> store.saved(),
     )
     let why? = unsaved_said(store, saved) else { return }
@@ -908,7 +947,7 @@ enum BuiltBinary {
 /// objects emitted at `opt` and its binary kept in `dir` (named from its package) and placed in `placed` from it, linked with
 /// `head` and `words`. A build nothing it reads has moved is this answer standing, so nothing is
 /// walked, emitted or linked; one an edit reaches is worked out again.
-@query
+@query("link")
 fn program_binary(
     engine: QueryEngine,
     entry: SourceFileAddress,
@@ -1006,13 +1045,16 @@ export fn last_rebuild_said(root: string) -> string? { text_at(joined_path(root,
 /// The program `asked` names made, its objects and binary kept: its shape, then each bucket keyed
 /// by the answers it's made of, the program made again only where an object isn't kept.
 fn binary_made(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
-    let shape = match phased(engine, "the shape", () -> shape_reached(engine, asked.entry)) {
-        .At(s) -> s,
-        .Unmade(why, at) -> { return BuiltBinary.Unmade(why, at) },
-    }
+    let shape = match phased(
+        engine,
+        "the shape",
+        Pass.Lower,
+        () -> shape_reached(engine, asked.entry),
+    ) { .At(s) -> s, .Unmade(why, at) -> { return BuiltBinary.Unmade(why, at) } }
     let hashes = phased(
         engine,
         "the code hashes",
+        Pass.Codegen,
         () -> program_code_hashes(engine, asked.entry).hashes,
     )
     let absent = hashes.find(it.hash == null)
@@ -1020,6 +1062,7 @@ fn binary_made(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
     let made = phased(
         engine,
         "the keys",
+        Pass.Codegen,
         () -> keyed_objects(
             engine,
             asked.entry,
@@ -1187,7 +1230,7 @@ fn new_only_said(engine: QueryEngine, disk: Disk) -> int {
 
 /// The workspace's lowering of the want `w`, timed as its own phase.
 fn unit_timed(engine: QueryEngine, ws: Workspace, w: Wanted) -> Unit {
-    phased(engine, "workspace lowering", () -> lowered_unit_of(ws, w))
+    phased(engine, "workspace lowering", Pass.Lower, () -> lowered_unit_of(ws, w))
 }
 
 /// How many answers `engine` worked out here, by the query that asked each, inputs aside.
@@ -1217,12 +1260,13 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
             args.has_flag("left"),
         )
     }
-    let ws = phased(engine, "workspace opened", () -> root_workspace(root))
+    let ws = phased(engine, "workspace opened", Pass.StoreOpen, () -> root_workspace(root))
     // every file the receipt reads is the workspace's before any is held to it
     let sources = package_sources(engine, disk.name, "src")
     let _ = phased(
         engine,
         "workspace files named",
+        Pass.Tape,
         () -> [ws.file_id(joined_path(disk.root, f)) for f in sources],
     )
     if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
@@ -1685,6 +1729,8 @@ export flag built {
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
     flags: [
+        passes_shown,
+        passes_rows,
         program_only,
         signatures,
         left,
@@ -2102,9 +2148,14 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     mut methods = HeldUnits {}
     let paths = disk.held(engine)
     let ids = [ws.file_id(joined_path(disk.root, p)) for p in paths]
-    let _ = phased(engine, "workspace parse", () -> [ws.parsed(id) for id in ids])
-    let scopes = phased(engine, "workspace names", () -> [ws.visible(id) for id in ids])
-    let _ = phased(engine, "workspace settled", () -> workspace_settled(ws))
+    let _ = phased(engine, "workspace parse", Pass.Tape, () -> [ws.parsed(id) for id in ids])
+    let scopes = phased(
+        engine,
+        "workspace names",
+        Pass.Resolve,
+        () -> [ws.visible(id) for id in ids],
+    )
+    let _ = phased(engine, "workspace settled", Pass.Generate, () -> workspace_settled(ws))
     mut wants: List<Wanted> = []
     for at, path in paths {
         let file = disk.file_at(path)
@@ -3806,6 +3857,7 @@ fn bucket_kept(
     let kept = joined_path(asked.dir, "${digest_of(linking.join("\n"))}.bin")
     if exists_at(kept) { return BuiltBinary.Linked(kept, shape.unlowered()) }
     let owed = [o for o in made if !exists_at(o.obj)]
+    objects_counted().set([owed.length, made.length])
     if traced() {
         qtrace("Q\tobjects\t${owed.length}\t${made.length}\n")
         for o in owed { qtrace("Q\towed\t${owed_said(shape, o)}\n") }
@@ -3816,6 +3868,7 @@ fn bucket_kept(
         let emitted = timed_phase(
             engine,
             "emit",
+            Pass.Codegen,
             () -> written_across(
                 (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i], seen),
                 owed,
@@ -3833,6 +3886,7 @@ fn bucket_kept(
     let linked = timed_phase(
         engine,
         "link",
+        Pass.Link,
         () -> when {
             asked.target != "" -> target_refused(asked, [o.obj for o in made], staged)
             asked.layered -> layered_refused(asked, made, staged)
@@ -4036,10 +4090,10 @@ fn ran_clean(c: Command) -> bool {
     match c.outcome() { .Ok(o) -> clean(o.exit), .Err(_) -> false }
 }
 
-/// `run`'s answer, timed as the phase `name` where an engine times its asks.
-fn timed_phase<T>(engine: QueryEngine?, name: string, run: fn() -> T) -> T {
+/// `run`'s answer, timed as the phase `name` of the pass `pass` where an engine times its asks.
+fn timed_phase<T>(engine: QueryEngine?, name: string, pass: Pass, run: fn() -> T) -> T {
     let e? = engine else { return run() }
-    phased(e, name, run)
+    phased(e, name, pass, run)
 }
 
 /// The bodies a build of the package on `disk` stood traps in for that its tree's trap baseline

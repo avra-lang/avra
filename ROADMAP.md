@@ -3765,6 +3765,17 @@ The ask a services lane raised stands in the same way, a language addition for t
   `Callsite:` the services lead's `lambda_fail` repro (`src/main.av`, its last line), whose
   workaround is a `match` in a helper fn (`said(r)` in
   `tools/program-refusals/lambda_fail_seat_result`).
+- **An annotation argument may be an enum variant.** A generator's arguments come from the source
+  alone, and today `@query(Pass.Typing)` is refused as a computed argument ("its arguments come from
+  the source alone"), so a query names its pass by its word, `@query("typing")`, and the generator
+  maps the word back to `Pass` and refuses one no pass wears: a string tag standing in for the
+  variant. A variant path written in the source is source-alone, not computed, so the generator
+  can take the variant itself and the word goes.
+  `Example: @query(Pass.Typing)` over `fn typed_fn(engine: QueryEngine, …)`.
+  `Callsite:` the 220 query annotations that name their pass (`@query`, `@cut_query`, `@input`,
+  `@parted_query`, `@cut_parted_query`, `@folded_query`, across std-avrac's compiler, std-program
+  and the cli), whose seat is `pass: string` in std-program/src/saved_query.av, read by
+  `pass_named` (std-program/src/pass.av).
 
 ### Deadline — the change log watches cells, never a whole collection
 
