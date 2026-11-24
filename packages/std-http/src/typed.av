@@ -1,12 +1,90 @@
-//! TYPED ANSWERS — one verb per outcome a handler answers with.
+//! TYPED READS AND ANSWERS — a handler reads its body and its query as
+//! the records it declares, a capture as the text it encodes, and answers
+//! through one verb per outcome:
+//!
+//!     post "/ideas" { req -> either(added(req.body_as())) }
+//!
+//!     fn added(asked: Result<Idea, Response>) -> Result<Response, Response> {
+//!         let idea = asked?
+//!         let at = ideas.add(idea)?
+//!         created(idea.json(), "/ideas/${at}")
+//!     }
+//!
+//! `?` hands any refusal straight back, and `either` makes whichever side
+//! came back the reply.
 //!
 //! A RECORD THAT DOES NOT VALIDATE IS ONE 422, `application/problem+json`
 //! (RFC 9457), listing EVERY issue at its path — `problem`, the one
-//! encoder every door that judges a record answers with.
+//! encoder every door that judges a record answers with. A body that is
+//! not JSON, or not said to be, keeps `json()`'s 400 and 415: those are
+//! the request's framing, not the record's.
+//!
+//! THE QUERY IS DECODED ONCE, AFTER THE SPLIT, NAMES AND VALUES ALIKE —
+//! an escaped `&` or `=` never moves where a field begins (query.av) —
+//! and read under `Coercion.Lax` through `from_keyed`: absent takes the
+//! field's default, a bare key reads `true`, an empty value is text, and
+//! a scalar sent twice is refused, never a side picked. A key the record
+//! does not name is passed by. An escape that decodes to no text, or to a
+//! NUL, is a 400: it is no field's value to judge.
+//!
+//! A CAPTURE STAYS RAW in `params` (route.av); `captured` is the typed
+//! read of one, decoded once under the same law.
 use @std.http_message.message.{Header}
 use @std.json.{Json, field, to_text}
-use @std.validate.{Issue, Issues}
-use http.{Response}
+use @std.text.{has_nul}
+use @std.url.{decoded}
+use @std.validate.{Coercion, Decode, Issue, Issues, Keyed, from_keyed}
+use http.{Request, Response, status, text, body_json}
+use query.{Pair, Query}
+
+impl Request {
+    /// THE BODY AS A `T`, or the response refusing it: `json_text`'s 415
+    /// and 400, a 400 for text that is not JSON, and a 422 naming every
+    /// issue for JSON that is not a `T`.
+    fn body_as<T: Decode>() -> Result<T, Response> {
+        let doc = self.json_text()?
+        match T.from_json(doc) {
+            .Ok(v) -> v,
+            .Err(issues) -> {
+                let _ = body_json(doc)?
+                fail problem(issues)
+            },
+        }
+    }
+
+    /// THE QUERY AS A `Q`, or the response refusing it: a 400 for a name
+    /// or value that decodes to no text, a 422 naming every issue for
+    /// fields that are not a `Q`.
+    fn query_as<Q: Decode>() -> Result<Q, Response> {
+        let fields = keyed(self.query())?
+        match Q.decode(from_keyed(fields), Coercion.Lax) {
+            .Ok(q) -> q,
+            .Err(issues) -> { fail problem(issues) },
+        }
+    }
+}
+
+/// A capture as the text it encodes, decoded once, or the 400 refusing
+/// it: an escape that is malformed, decodes to no text, or to a NUL.
+export fn captured(raw: string) -> Result<string, Response> {
+    let s? = plain_text(raw.bytes()) else { fail text(400, not_a_segment(raw)) }
+    s
+}
+
+// ── Answers ─────────────────────────────────────────────────────
+
+/// A handler's answer when either side is the reply: what `?` refused
+/// with, or what it built.
+export fn either(r: Result<Response, Response>) -> Response {
+    match r { .Ok(answer) -> answer, .Err(refusal) -> refusal }
+}
+
+/// 200 carrying `v` as JSON by `show`, or `missing` — a bare 404 unless
+/// it says more — when there is none.
+export fn found<T>(v: T?, show: fn(T) -> Json, missing: Response = status(404)) -> Response {
+    let there? = v else { return missing }
+    Response.json(show(there))
+}
 
 /// 201 carrying `j`, its `location` the address it now stands at.
 export fn created(j: Json, at: string) -> Response {
@@ -46,6 +124,33 @@ fn issue_json(i: Issue) -> Json {
         )
 }
 
+// ── The query, decoded ──────────────────────────────────────────
+
+/// Every pair of `q`, each side decoded once, or the 400 naming the
+/// first that decodes to no text.
+fn keyed(q: Query) -> Result<List<Keyed>, Response> {
+    [keyed_pair(q.raw, p)? for p in q.pairs]
+}
+
+fn keyed_pair(raw: Bytes, p: Pair) -> Result<Keyed, Response> {
+    let name = raw.slice(p.name.lo, p.name.hi)
+    let key? = plain_text(name) else { fail text(400, not_a_name(name.text() ?? "")) }
+    let v? = p.value else { return Keyed { key: key, text: null } }
+    let said = raw.slice(v.lo, v.hi)
+    let value? = plain_text(said) else { fail text(400, not_a_value(key)) }
+    Keyed { key: key, text: value }
+}
+
+/// Octets percent-decoded once into text holding no NUL.
+fn plain_text(b: Bytes) -> string? {
+    let s? = decoded(b)?.text() else { return null }
+    if has_nul(s) { return null }
+    s
+}
+
 // ── voices ──────────────────────────────────────────────────────
 
 fn unvalidated() -> string { "the request does not validate" }
+fn not_a_segment(raw: string) -> string { "the segment `${raw}` is not percent-encoded text" }
+fn not_a_name(raw: string) -> string { "the query name `${raw}` is not percent-encoded text" }
+fn not_a_value(key: string) -> string { "the query's `${key}` is not percent-encoded text" }
