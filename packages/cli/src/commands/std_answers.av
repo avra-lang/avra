@@ -74,6 +74,7 @@ fn machine_store_stands(directory: string) -> bool {
 fn std_answers_laid(directory: string, print: string) {
     let mark = joined_path(directory, "${MARK}${print}")
     // a mark stands for packs the store still holds: once its eviction took them, they're laid in again
+    // LICENSED input.store_io: the store's own mark that the toolchain's packs were laid
     if exists(mark) && !packs_answering(directory, print).is_empty() { return }
     marks_swept(directory)
     let shipped? = shipped_answers() else { return }
@@ -106,11 +107,13 @@ fn marks_swept(directory: string) {
 
 /// The pack at `from` laid at `to`, unless one stands there: by a second name where it can be.
 fn pack_laid(from: string, to: string) -> Result<string, IoError> {
+    // LICENSED input.store_io: a pack already laid in the store, named by its octets
     if exists(to) { return .Ok(to) }
     // a pack is named by its octets and never written again, so a second name for it is exact and
     // costs no copy; across volumes, or where another process laid it first, the bytes are copied
     match link(from, to) {
         .Ok(_) -> .Ok(to),
+        // LICENSED input.store_io: the toolchain's shipped pack, copied into the store where a second name can't be made
         .Err(_) -> if exists(to) { .Ok(to) } else { file_laid(to, read_bytes(from)?) },
     }
 }
@@ -154,6 +157,7 @@ fn verdict_at(dir: string, print: string) -> string { joined_path(dir, "verdict-
 fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
     let shipped? = shipped_answers() else { return [] }
     let print? = own_print() else { return [] }
+    // LICENSED input.store_io: the toolchain's shipped verdict for its own print, fixed with the binary that reads it
     let verdict = read_text(verdict_at(shipped, print)) catch ""
     let lines = [line for line in verdict.split("\n") if !line.is_empty()]
     let judged = [vouched_line(engine, disk, line) for line in lines]
