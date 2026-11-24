@@ -21,7 +21,11 @@ impl Lowers for MapLit {
         if !map_spreads(self.entries).is_empty() { return spread_lowered(cx, e, self.entries) }
         let keys = [cx.lower(k) for k in map_keys(self.entries)]
         let values = [cx.lower(v) for v in map_values(self.entries)]
-        let dst = cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
+        let dst = if keys.is_empty() {
+            cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
+        } else {
+            cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_sized")!, [cx.const_int(keys.length)])
+        }
         for at, k in keys { cx.map_written(dst, k, values[at]) }
         dst
     }

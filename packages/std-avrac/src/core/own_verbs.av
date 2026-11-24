@@ -264,7 +264,8 @@ impl Lowering {
     }
 
     /// The value the map `subject` held under `key`, read where its probe finds it, then the key taken
-    /// out of the map, opened for the write in place.
+    /// out of the map at the slot that probe named, opened for the write in place — one probe, and
+    /// nothing to remove where it missed.
     mut fn removed(e: ExprId, subject: ExprId, key: ExprId) -> Reg {
         let held? = self.held_of(e) else { return self.unlowered(e) }
         let m = self.opened_place(subject)
@@ -275,8 +276,8 @@ impl Lowering {
         self
             .void_region(self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))) { cx ->
                 cx.stored(cell, cx.lifted(cx.map_value(held.l, m, probe), held.ty, held.opt))
+                cx.run_row(rt_sig_of("avra_map_remove_at")!, [m, k, probe])
             }
-        self.run_row(rt_sig_of("avra_map_remove")!, [m, k])
         self.loaded(l, cell)
     }
 
