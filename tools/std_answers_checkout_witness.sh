@@ -15,7 +15,9 @@
 #       moment, after the last package and after the first and last, the check over each works out
 #       the same;
 #   (7) a store that compacts once they're laid in keeps them: the check after it works out what
-#       the check with none does.
+#       the check with none does;
+#   (8) on the volume the answers stand on, each is laid in by a second name, never a copy: every
+#       pack and kept file the store holds of them is the shipped file itself.
 #   sh tools/std_answers_checkout_witness.sh [compiler]     (default build/avra)
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -143,4 +145,12 @@ held "(6) written three times, compacted at three moments: ${work0} answers work
 compacted=$(worked "$w/m7")
 [ "$compacted" = "$work2" ] || fail "(7) a store compacted once the answers were laid in worked out ${compacted:-none}, against ${work2}"
 held "(7) the store compacted once they're laid in: ${compacted} answers worked out, as without"
+
+# (8)
+worked "$w/m8" >/dev/null
+for n in $(ls "$fresh/build/answers" | grep -E '^(pack|kept)-'); do
+    [ "$(stat -c %i "$fresh/build/answers/$n")" = "$(stat -c %i "$w/m8/tapes/$n" 2>/dev/null)" ] ||
+        fail "(8) $n was laid in as a copy, or not at all, on the volume its answers stand on"
+done
+held "(8) laid in by a second name: $(ls "$fresh/build/answers" | grep -cE '^(pack|kept)-') files, no copy"
 echo "std_answers_checkout_witness: held"

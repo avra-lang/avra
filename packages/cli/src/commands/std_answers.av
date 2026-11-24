@@ -20,7 +20,18 @@ use @std.avrac.compiler.{
     spelled_file,
 }
 use @std.avrac.core.{digest_of}
-use @std.io.{IoError, append_bytes, drafted, env, exists, make_dirs, read_bytes, read_text, remove}
+use @std.io.{
+    IoError,
+    append_bytes,
+    drafted,
+    env,
+    exists,
+    link,
+    make_dirs,
+    read_bytes,
+    read_text,
+    remove,
+}
 use @std.path.{joined_path}
 use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{packs_answering}
@@ -93,10 +104,15 @@ fn marks_swept(directory: string) {
     }
 }
 
-/// The pack at `from` laid at `to`, unless one stands there.
+/// The pack at `from` laid at `to`, unless one stands there: by a second name where it can be.
 fn pack_laid(from: string, to: string) -> Result<string, IoError> {
     if exists(to) { return .Ok(to) }
-    file_laid(to, read_bytes(from)?)
+    // a pack is named by its octets and never written again, so a second name for it is exact and
+    // costs no copy; across volumes, or where another process laid it first, the bytes are copied
+    match link(from, to) {
+        .Ok(_) -> .Ok(to),
+        .Err(_) -> if exists(to) { .Ok(to) } else { file_laid(to, read_bytes(from)?) },
+    }
 }
 
 /// `bytes` published whole at `to`: a reader sees the file or none.
