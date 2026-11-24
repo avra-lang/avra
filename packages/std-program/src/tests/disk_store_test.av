@@ -4,7 +4,7 @@
 use @std.io.{exists, list_dir, make_dirs, read_bytes, remove, write_bytes}
 use @std.time.{stamp}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
-use answer_record.{question}
+use answer_record.{question, words_of}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
 use answer_record.{ContentHash}
 use frontier.{FrontierLearned, HeldEntry}
@@ -373,6 +373,67 @@ spec "disk_store — answers outlive the process" {
             let read? = disk_store_at(directory).frontier_of("orphans") else { return false }
             let moved? = read.place_of(hash_of(3)) else { return false }
             read.answer_at(moved).same_as(hash_of(1001)) && read.place_of(hash_of(500)) == null
+        }
+    }
+    given "an answer lost from the frontier and written back with nothing reading it" {
+        then "the frontier read back holds it a root, standing and reached: a place that comes back is a root" {
+            let directory = fresh_directory("back")
+            let _ = make_dirs(directory) catch ""
+            let root = HeldEntry {
+                question: hash_of(100),
+                answer: hash_of(101),
+                reads: words_of([hash_of(200)]),
+                input: false,
+                root: true,
+            }
+            let read = HeldEntry {
+                question: hash_of(200),
+                answer: hash_of(201),
+                reads: [],
+                input: false,
+                root: false,
+            }
+            let first = disk_store_at(directory)
+            first
+                .keep_frontier(
+                    "back",
+                    FrontierLearned {
+                        on: null,
+                        entries: [rooted_entry(i, 0) for i in 0..20].concat([root, read]),
+                        stale: [],
+                    },
+                )
+            let _ = first.saved()
+            // the root stops reading it: it is lost
+            let second = disk_store_at(directory)
+            let on = second.frontier_of("back")
+            second
+                .keep_frontier(
+                    "back",
+                    FrontierLearned {
+                        on: on,
+                        entries: [root with { answer: hash_of(102), reads: [] }],
+                        stale: [],
+                    },
+                )
+            let _ = second.saved()
+            // a check that asks works it out again, and nothing reads what it worked out
+            let third = disk_store_at(directory)
+            let later = third.frontier_of("back")
+            third
+                .keep_frontier(
+                    "back",
+                    FrontierLearned {
+                        on: later,
+                        entries: [read with { answer: hash_of(202) }],
+                        stale: [],
+                    },
+                )
+            let _ = third.saved()
+            let back? = disk_store_at(directory).frontier_of("back") else { return false }
+            let at? = back.place_of(hash_of(200)) else { return false }
+            let reached? = reached_at_rest(back) else { return false }
+            back.stands(at) && back.root_at(at) && reached[at]
         }
     }
     given "a compaction" {
