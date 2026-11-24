@@ -10,12 +10,13 @@
 //! A view no story tells stands on the index in the danger ink. A case that draws exactly what
 //! its base draws is set aside by name, never drawn twice.
 use @std.text.{ascii_lower}
-use @std.ui.components.{button, card, column, field, heading, key, row, surface, text}
+use @std.ui.components.{button, card, checkbox, column, field, heading, key, row, surface, text}
 use @std.ui.realize.html.html.{fragment}
-use @std.ui.style.layout.{Layout, around}
+use @std.ui.realize.html.css.{worn_by}
+use @std.ui.style.layout.{Layout, Sizing, around}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{Mode, theme}
-use @std.ui.style.tokens.{Ink}
+use @std.ui.style.theme.{Mode, Contrast, Theme, plain, theme}
+use @std.ui.style.tokens.{Ink, TypeSizes}
 use @std.ui.tree.node.{Node}
 use @std.ui.tree.outline.{outline}
 use @std.ui.tree.story.{Case, Story, Told}
@@ -83,73 +84,181 @@ fn names(s: Shelf, q: string) -> bool { said(s.viewed.name, q) || s.cases.any(sa
 /// Whether `words` hold `q`, a query already lowered.
 fn said(words: string, q: string) -> bool { ascii_lower(words).contains(q) }
 
+// ── The dials and the snapshots ─────────────────────────────────
+
+/// One setting of the dials a case is drawn under: the scheme, the contrast and the text size (a
+/// percent of the theme's own) the reader's system turns, and the width of the frame — one that
+/// grows to the room the page gives it (`Fill`), never past it, or one held narrow, where an
+/// overflow is real. A dial varies one from the first
+/// row, as a case varies one member from its base.
+export type Dialed = { name: string, mode: Mode, contrast: Contrast, text_size: int, width: Sizing }
+
+/// The dials every case is drawn under.
+export const dials = table<Dialed> {
+    name     | mode       | contrast          | text_size | width
+    "light"  | Mode.Light | Contrast.Standard | 100       | Sizing.Fill
+    "dark"   | Mode.Dark  | Contrast.Standard | 100       | Sizing.Fill
+    "more"   | Mode.Light | Contrast.More     | 100       | Sizing.Fill
+    "large"  | Mode.Light | Contrast.Standard | 200       | Sizing.Fill
+    "narrow" | Mode.Light | Contrast.Standard | 100       | Sizing.Fixed(320)
+}
+
+/// The dials the page shows until the reader chooses others.
+const shown_first: List<string> = ["light", "dark"]
+
+/// The theme a dial draws in: the one in force, under the dial's scheme, contrast and text size.
+fn dialed(t: Theme, d: Dialed) -> Theme { t with { mode: d.mode, contrast: d.contrast, text_size: scaled(t.text_size, d.text_size) } }
+
+fn scaled(s: TypeSizes<int>, percent: int) -> TypeSizes<int> {
+    TypeSizes {
+        display: s.display * percent / 100,
+        headline: s.headline * percent / 100,
+        title: s.title * percent / 100,
+        body: s.body * percent / 100,
+        label: s.label * percent / 100,
+    }
+}
+
+/// Every case of every shelf, snapshot on each target.
+export fn shelf_snapshots(shelves: List<Shelf>) -> List<Snapshot> {
+    snapshots([Entry { view: s.viewed.name, cases: s.cases } for s in shelves])
+}
+
+/// The sheet a page wears under each dial: what a dial changes is the sheet, never a case's HTML.
+export fn sheet_snapshots() -> List<Snapshot> { [sheet_snapshot(d) for d in dials] }
+
+fn sheet_snapshot(d: Dialed) -> Snapshot {
+    let sheet = worn_by(dialed(plain(), d))
+    Snapshot {
+        view: "sheet",
+        case: d.name,
+        html: sheet,
+        outline: "",
+        terminal: "",
+        digest: digest_of([sheet]),
+    }
+}
+
 // ── The page ────────────────────────────────────────────────────
 
-/// The whole board: a count, a filter, the index, and a shelf per view the filter admits.
+/// The whole board: a count, the dials to draw under, a filter, the index, and a shelf per view
+/// the filter admits. An entry of the index is pressed to show its view alone, under the index, so
+/// the index is never far on a phone. Frames stand one a row until the reader asks for them side
+/// by side: a frame cannot know the page is narrow, and two frames on a phone leave a field's input
+/// wider than its frame.
 export component storyboard(shelves: List<Shelf>) {
     state query: string = ""
+    state picked: string = ""
+    state chosen: List<string> = shown_first
+    state stacked: bool = true
     column {
-        layout: Layout { gap: .L, pad: around(.L) }
+        layout: Layout { gap: .L, pad: around(.M) }
         heading "Storyboard" { rank: 1 }
         text tally(self.shelves) { style: Style { color: .Muted } }
+        row {
+            layout: wrapping()
+            for d in dials {
+                checkbox d.name {
+                    key: d.name
+                    shown: self.chosen.contains(d.name)
+                    on change { on -> self.chosen = toggled(self.chosen, d.name, on) }
+                }
+            }
+        }
+        checkbox "one frame a row" {
+            shown: self.stacked
+            on change { on -> self.stacked = on }
+        }
         field "Filter" {
             value: self.query
             placeholder: "a view or a case"
         }
-        index self.shelves {}
-        for s in matching(self.shelves, self.query) { shelf_view s {} }
+        row {
+            layout: Layout { gap: .S, wrap: .Wrap }
+            button "All" {
+                on press {
+                    self.query = ""
+                    self.picked = ""
+                }
+            }
+            for s in self.shelves {
+                button index_words(s) {
+                    on press { self.picked = s.viewed.name }
+                    style: Style { color: count_ink(s) }
+                }
+            }
+        }
+        for s in picked_out(matching(self.shelves, self.query), self.picked) { shelf_view s { dials: [d for d in dials if self.chosen.contains(d.name)], stacked: self.stacked } }
     }
 }
 
-/// How many views, cases and untold views there are, in words.
+/// A run of things side by side that wraps where the page is narrower than they are.
+fn wrapping() -> Layout { Layout { gap: .M, wrap: .Wrap } }
+
+/// The one shelf the index picked, or every shelf while it picks none.
+fn picked_out(shelves: List<Shelf>, picked: string) -> List<Shelf> {
+    if picked.is_empty() { shelves } else { [s for s in shelves if s.viewed.name == picked] }
+}
+
+/// The chosen dials, with `name` on or off, in the table's order.
+fn toggled(chosen: List<string>, name: string, on: bool) -> List<string> {
+    [d.name for d in dials if if d.name == name { on } else { chosen.contains(d.name) }]
+}
+
+/// How many views and cases there are, how many are set aside and why, and how many views no
+/// story tells, in words.
 fn tally(shelves: List<Shelf>) -> string {
     let cases = [s.cases.length for s in shelves].fold(0, (a, n) -> a + n)
+    let aside = [s.alike.length for s in shelves].fold(0, (a, n) -> a + n)
     let none = untold(shelves).length
-    "${shelves.length} views · ${cases} cases · ${none} with no story"
+    "${shelves.length} views · ${cases} cases drawn · ${aside} set aside, drawing exactly what their base draws · ${none} with no story"
 }
 
-/// Every view and its count of cases; a view no story tells wears the danger ink.
-component index(shelves: List<Shelf>) {
-    row {
-        layout: Layout { gap: .S, wrap: .Wrap }
-        for s in self.shelves { text "${s.viewed.name} ${s.cases.length}" { style: Style { color: count_ink(s) } } }
-    }
+/// A view's entry on the index: its name, its count of cases, and its set-aside ones.
+fn index_words(s: Shelf) -> string {
+    if s.alike.is_empty() { "${s.viewed.name} ${s.cases.length}" } else { "${s.viewed.name} ${s.cases.length} +${s.alike.length} aside" }
 }
 
-fn count_ink(s: Shelf) -> Ink { if s.cases.is_empty() { .Danger } else { .Muted } }
+/// A view no story tells wears the danger ink.
+fn count_ink(s: Shelf) -> Ink { if s.cases.is_empty() { .Danger } else { .Text } }
 
 /// One view: its name, what its story says, each case, and the cases that drew as the base did.
 component shelf_view(shelf: Shelf) {
+    dials: List<Dialed>
+    stacked: bool
     card self.shelf.viewed.name {
         layout: Layout { gap: .M, pad: around(.M) }
         text self.shelf.doc
-        for c in self.shelf.cases { case_view self.shelf.viewed.name { case: c } }
+        for c in self.shelf.cases { case_view self.shelf.viewed.name { case: c, dials: self.dials, stacked: self.stacked } }
         if !self.shelf.alike.is_empty() {
-            text "drawn as the base: ${self.shelf.alike.join(", ")}" { style: Style { color: .Muted } }
+            text "set aside, drawing exactly what the base draws: ${self.shelf.alike.join(", ")}" { style: Style { color: .Muted } }
         }
     }
 }
 
 /// The one layer the page raises: a case that opens a layer (an open dialog) takes the focus and
-/// stands over the page while it is drawn, so it is drawn when asked for, one at a time, in one
-/// scheme. Empty while none is.
+/// stands over the page while it is drawn, so it is drawn when asked for, one at a time, under one
+/// dial. Empty while none is.
 state raised: string = ""
 
-/// One case: its name, its spelling, and its view in the light and the dark scheme side by side.
+/// One case: its name, its spelling, and a frame of its view under each dial chosen, side by side
+/// where they fit and one under another where they do not.
 component case_view(owner: string, case: Case) {
+    dials: List<Dialed>
+    stacked: bool
     column {
         layout: Layout { gap: .S }
         heading self.case.name { rank: 3 }
         text self.case.spelling { style: Style { face: .Mono, color: .Muted } }
         row {
-            layout: Layout { gap: .M, wrap: .Wrap }
-            for m in [Mode.Light, Mode.Dark] {
+            layout: wrapping()
+            for d in self.dials {
                 if !layered(tree_of(self.case.view)) ||
-                    raised == raise_key(self.owner, self.case, m) {
-                    scheme_pane m { shows: self.case.view }
+                    raised == raise_key(self.owner, self.case, d) {
+                    frame d { shows: self.case.view, width: if self.stacked { Sizing.Percent(100.0) } else { d.width } }
                 } else {
-                    button "Raise in ${mode_word(m)}" {
-                        on press { raised = raise_key(self.owner, self.case, m) }
+                    button "Raise under ${d.name}" {
+                        on press { raised = raise_key(self.owner, self.case, d) }
                     }
                 }
             }
@@ -163,20 +272,33 @@ component case_view(owner: string, case: Case) {
 /// Whether a tree opens a layer anywhere in it.
 fn layered(n: Node) -> bool { n.open() || n.children.any(layered(it)) }
 
-/// What names one case raised in one scheme.
-fn raise_key(owner: string, c: Case, m: Mode) -> string { "${owner}/${c.name}/${mode_word(m)}" }
+/// What names one case raised under one dial.
+fn raise_key(owner: string, c: Case, d: Dialed) -> string { "${owner}/${c.name}/${d.name}" }
 
-fn mode_word(m: Mode) -> string {
-    match m { .System -> "system", .Light -> "light", .Dark -> "dark" }
+/// A view drawn under one dial, named by it: an edge in the dial's neutral tone around the dial's
+/// canvas, so the frame's extent shows on a page of the same colour. `width` is how wide it stands
+/// among its siblings: the dial's own, or the whole row's when frames stand one a row.
+component frame(dial: Dialed) {
+    shows: dyn View
+    width: Sizing
+    column {
+        layout: Layout { gap: .Xs, width: self.width }
+        text self.dial.name { style: Style { color: .Muted, text_size: .Label } }
+        dialed_frame self.dial { shows: self.shows }
+    }
 }
 
-/// A view drawn on the canvas of one scheme, whatever the page's.
-component scheme_pane(mode: Mode) {
+/// The frame itself, in the dial's own theme.
+component dialed_frame(dial: Dialed) {
     shows: dyn View
-    ctx theme = ctx.theme with { mode: self.mode }
+    ctx theme = dialed(ctx.theme, self.dial)
     surface {
-        style: Style { fill: .Canvas, radius: .M }
-        layout: Layout { pad: around(.M) }
-        [self.shows]
+        style: Style { fill: .Neutral, radius: .M }
+        layout: Layout { pad: around(.Xs) }
+        surface {
+            style: Style { fill: .Canvas, radius: .S }
+            layout: Layout { pad: around(.M) }
+            [self.shows]
+        }
     }
 }
