@@ -1,0 +1,73 @@
+//! `model_form<T>` over a `@model` type: the model's own field rules are the
+//! form's, the issue each refusal shows is the one the database write would
+//! name, and what a submit hands over is a row the database takes.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+use @std.validate.{range, length}
+use @std.ui.forms.{model_form}
+use @std.ui.headless.{Screen, headless}
+
+@model
+type Member = {
+    id: int = 0,
+    @unique @length(min: 3) email: string,
+    @range(13, 130) age: int,
+    nick: string? = null,
+}
+
+fn page(got: Cell<List<Member>>) -> Screen {
+    headless(() -> model_form<Member> { on submit { m -> got.set(got.get().concat([m])) } })
+}
+
+/// Every issue the database write names, as `path rule`.
+fn refused_by_insert(m: Member) -> Result<string, ModelError> {
+    let db = modeled(Db.memory())?
+    modeled(Member.create_table(db))?
+    match m.insert(db) {
+        .Ok(_) -> "landed",
+        .Err(e) -> [i.path.text() + " " + i.rule for i in e.issues().all].join(", "),
+    }
+}
+
+/// The handed row, stored: its key as the database named it.
+fn stored(m: Member) -> Result<int, ModelError> {
+    let db = modeled(Db.memory())?
+    modeled(Member.create_table(db))?
+    (m.insert(db)?).id
+}
+
+spec "std/ui model_form over a @model" {
+    given "a model whose fields carry rules" {
+        then "a refused field shows its rule's words beside it, and nothing is handed" {
+            let got: Cell<List<Member>> = Cell.new([])
+            let p = page(got)
+            p.fill("email", "ab") &&
+                p.fill("age", "9") &&
+                p.submit("email") &&
+                got.get().is_empty() &&
+                p
+                    .text()
+                    .contains(
+                        "field \"email\" value=\"ab\" placeholder=\"\" invalid\n      text \"must be at least 3 characters\"",
+                    ) &&
+                p
+                    .text()
+                    .contains(
+                        "field \"age\" value=\"9\" placeholder=\"\" invalid\n      text \"must be between 13 and 130\"",
+                    )
+        }
+        then "the rules the form refuses by are the ones the database write refuses by" {
+            (refused_by_insert(Member { email: "ab", age: 9 }) catch _ -> "") == "email length, age range"
+        }
+        then "a submit hands over a row the database stores" {
+            let got: Cell<List<Member>> = Cell.new([])
+            let p = page(got)
+            let handed = p.fill("email", "ada@x") && p.fill("age", "36") && p.submit("email")
+            handed &&
+                got.get().length == 1 &&
+                got.get()[0].nick == null &&
+                (stored(got.get()[0]) catch _ -> 0) == 1
+        }
+    }
+}
