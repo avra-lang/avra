@@ -84,6 +84,44 @@ fn names(s: Shelf, q: string) -> bool { said(s.viewed.name, q) || s.cases.any(sa
 /// Whether `words` hold `q`, a query already lowered.
 fn said(words: string, q: string) -> bool { ascii_lower(words).contains(q) }
 
+// ── The pins ────────────────────────────────────────────────────
+
+/// A failure a ruling still owes, as the claims' baseline names it: the claim family, the view and
+/// the case it fails on (every dial, or the one named), why, and what ends it.
+export type Pin = { family: string, view: string, case: string, dial: string, why: string, waits: string }
+
+/// The pins a baseline's text holds: `<family> <view>/<case>/[dial] — <why> — waits on: <ruling>` a
+/// line, `#` lines aside; a line of any other shape is no pin.
+export fn pins_of(baseline: string) -> List<Pin> { [p for l in baseline.split("\n") for p in pin_of(l)] }
+
+fn pin_of(line: string) -> List<Pin> {
+    let parts = line.split(" — ")
+    if line.starts_with("#") || parts.length != 3 || !parts[2].starts_with("waits on: ") { return [] }
+    let gap = parts[0].index_of(" ")
+    if gap < 1 { return [] }
+    let path = parts[0].substring(gap + 1, parts[0].length).split("/")
+    if path.length < 2 { return [] }
+    [
+        Pin {
+            family: parts[0].substring(0, gap),
+            view: path[0],
+            case: path[1],
+            dial: if path.length > 2 { path[2] } else { "" },
+            why: parts[1],
+            waits: parts[2].substring(10, parts[2].length),
+        },
+    ]
+}
+
+/// The pins on one case of one view.
+fn pins_on(pins: List<Pin>, view: string, c: Case) -> List<Pin> { [p for p in pins if p.view == view && p.case == c.name] }
+
+/// A pin in words, as the page shows it under its case.
+fn pin_words(p: Pin) -> string {
+    let under = if p.dial.is_empty() { "" } else { " under ${p.dial}" }
+    "pinned: ${p.family}${under} — ${p.why} — waits on ${p.waits}"
+}
+
 // ── The dials and the snapshots ─────────────────────────────────
 
 /// One setting of the dials a case is drawn under: the scheme, the contrast and the text size (a
@@ -147,6 +185,7 @@ fn sheet_snapshot(d: Dialed) -> Snapshot {
 /// by side: a frame cannot know the page is narrow, and two frames on a phone leave a field's input
 /// wider than its frame.
 export component storyboard(shelves: List<Shelf>) {
+    pins: List<Pin> = []
     state query: string = ""
     state picked: string = ""
     state chosen: List<string> = shown_first
@@ -189,7 +228,7 @@ export component storyboard(shelves: List<Shelf>) {
                 }
             }
         }
-        for s in picked_out(matching(self.shelves, self.query), self.picked) { shelf_view s { dials: [d for d in dials if self.chosen.contains(d.name)], stacked: self.stacked } }
+        for s in picked_out(matching(self.shelves, self.query), self.picked) { shelf_view s { dials: [d for d in dials if self.chosen.contains(d.name)], stacked: self.stacked, pins: self.pins } }
     }
 }
 
@@ -234,10 +273,11 @@ fn count_ink(s: Shelf) -> Ink { if s.cases.is_empty() { .Danger } else { .Text }
 component shelf_view(shelf: Shelf) {
     dials: List<Dialed>
     stacked: bool
+    pins: List<Pin>
     card self.shelf.viewed.name {
         layout: Layout { gap: .M, pad: around(.M) }
         text self.shelf.doc
-        for c in self.shelf.cases { case_view self.shelf.viewed.name { case: c, dials: self.dials, stacked: self.stacked } }
+        for c in self.shelf.cases { case_view self.shelf.viewed.name { case: c, dials: self.dials, stacked: self.stacked, pins: pins_on(self.pins, self.shelf.viewed.name, c) } }
         if !self.shelf.alike.is_empty() {
             text "set aside, drawing exactly what the base draws: ${self.shelf.alike.join(", ")}" { style: Style { color: .Muted } }
         }
@@ -249,15 +289,17 @@ component shelf_view(shelf: Shelf) {
 /// dial. Empty while none is.
 state raised: string = ""
 
-/// One case: its name, its spelling, and a frame of its view under each dial chosen, side by side
+/// One case: its name, its spelling, what of it a ruling still owes, and a frame of its view under each dial chosen, side by side
 /// where they fit and one under another where they do not.
 component case_view(owner: string, case: Case) {
     dials: List<Dialed>
     stacked: bool
+    pins: List<Pin>
     column {
         layout: Layout { gap: .S }
         heading self.case.name { rank: 3 }
         text self.case.spelling { style: Style { face: .Mono, color: .Muted } }
+        for p in self.pins { text pin_words(p) { style: Style { color: .Warning } } }
         row {
             layout: wrapping()
             for d in self.dials {

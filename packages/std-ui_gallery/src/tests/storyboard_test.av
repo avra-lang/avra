@@ -4,7 +4,7 @@ use @std.ui.components.{button, text}
 use @std.ui.tree.story.{Case, Story, Told}
 use @std.ui.tree.viewed.{ViewRow, Viewed, views}
 use @std.ui.tree.story.{stories}
-use @std.ui_gallery.{Shelf, shelves, untold, matching}
+use @std.ui_gallery.{Shelf, Pin, shelves, untold, matching, pins_of}
 
 fn all() -> List<Shelf> { shelves(views, stories) }
 
@@ -39,6 +39,8 @@ fn count(s: Shelf?) -> int {
     held.cases.length
 }
 
+fn pin_said(pins: List<Pin>) -> string { [[p.family, p.view, p.case, p.dial, p.why, p.waits].join(" ") for p in pins].join(" | ") }
+
 fn says_unbroken(s: Shelf) -> bool { s.cases.all(it.name.contains("unbroken")) }
 
 spec "@std/ui_gallery storyboard" {
@@ -59,6 +61,16 @@ spec "@std/ui_gallery storyboard" {
     }
     given "a view no story tells" {
         then "is named as untold" { untold(shelves([row("lone")], [])).join(", ") == "lone" }
+    }
+    given "the claims' baseline" {
+        then "a pin line names its family, view, case, dial, why and what ends it" {
+            pin_said(pins_of("named button/label empty/ — no name — waits on: ruling (1)")) == "named button label empty  no name ruling (1)"
+        }
+        then "a pin under one dial names it" { pin_said(pins_of("contained field/base/narrow — past — waits on: ruling 2")) == "contained field base narrow past ruling 2" }
+        then "a comment, a line with no ruling and a path with no case are no pins" {
+            pins_of("# at most 3\nnamed button/x/ — why\nnamed button — why — waits on: y")
+                .is_empty()
+        }
     }
     given "the filter" {
         then "an empty query keeps every shelf" { matching(all(), "").length == all().length }
