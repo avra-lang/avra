@@ -1,0 +1,182 @@
+//! `storyboard.av` — THE STORYBOARD: every view a program declares, in every case its stories
+//! tell, each drawn in the light and the dark scheme side by side. Both lists are the compiler's:
+//! the views are what the View derive made (`@std.ui.tree.viewed`), the cases what each `@story`
+//! and `@case` derived (`@std.ui.tree.story`). A program shows its own with three lines:
+//!
+//!     use @std.ui.tree.viewed.{views}
+//!     use @std.ui.tree.story.{stories}
+//!     mount(() -> storyboard shelves(views, stories))
+//!
+//! A view no story tells stands on the index in the danger ink. A case that draws exactly what
+//! its base draws is set aside by name, never drawn twice.
+use @std.text.{ascii_lower}
+use @std.ui.components.{button, card, column, field, heading, key, row, surface, text}
+use @std.ui.realize.html.html.{fragment}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{Mode, theme}
+use @std.ui.style.tokens.{Ink}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.outline.{outline}
+use @std.ui.tree.story.{Case, Story, Told}
+use @std.ui.tree.view.{View, tree_of}
+use @std.ui.tree.viewed.{ViewRow, Viewed}
+
+/// A view, what its stories say of it, the cases they draw, and the names of the cases that draw
+/// exactly what the base does.
+export type Shelf = { viewed: ViewRow, doc: string, cases: List<Case>, alike: List<string> }
+
+/// Every view, in the views' order, with the cases its stories tell.
+export fn shelves(views: List<Viewed>, stories: List<Told>) -> List<Shelf> {
+    let told = [t.tell() for t in stories]
+    let ordered = [s for s in told if s.based].concat([s for s in told if !s.based])
+    [shelf(v.row, [s for s in ordered if tells(s, v.row)]) for v in views]
+}
+
+/// The views no story tells.
+export fn untold(shelves: List<Shelf>) -> List<string> { [s.viewed.name for s in shelves if s.cases.is_empty()] }
+
+fn tells(s: Story, r: ViewRow) -> bool { s.owner == r.name && s.module == r.module }
+
+/// One view's shelf: what its stories (never its lone cases) say of it, every story's cases under names unique on the view, a varied case that draws
+/// what its own base draws named among the alike and not drawn.
+fn shelf(r: ViewRow, told: List<Story>) -> Shelf {
+    let named = [s with { cases: renamed(s, told.slice(0, j)) } for j, s in told]
+    Shelf {
+        viewed: r,
+        doc: [s.doc for s in told if s.based && !s.doc.is_empty()].join(" "),
+        cases: [c for s in named for c in unlike(s, true)],
+        alike: [c.name for s in named for c in unlike(s, false)],
+    }
+}
+
+/// A story's cases, each a name an earlier story on the view already took wearing its fn's name.
+fn renamed(s: Story, earlier: List<Story>) -> List<Case> {
+    let taken = [c.name for e in earlier for c in e.cases]
+    [if taken.contains(c.name) { c with { name: "${s.told_by}: ${c.name}" } } else { c } for c in s.cases]
+}
+
+/// A story's cases that draw other than its base (`kept`), or the varied ones that draw the same
+/// (not `kept`). A lone `@case` has no base, so all of it is kept.
+fn unlike(s: Story, kept: bool) -> List<Case> {
+    if !s.based { return if kept { s.cases } else { [] } }
+    let base = drawn(s.cases[0].view)
+    [c for k, c in s.cases if (k == 0 || drawn(c.view) != base) == kept]
+}
+
+/// What a view draws, as the web and an outline say it.
+fn drawn(v: dyn View) -> string {
+    let n = tree_of(v)
+    "${fragment(n)}\n${outline(n)}"
+}
+
+/// The shelves whose view or a case of it names `query`, whatever the ASCII letters' case, each
+/// holding the cases that do.
+export fn matching(shelves: List<Shelf>, query: string) -> List<Shelf> {
+    if query.is_empty() { return shelves }
+    let q = ascii_lower(query)
+    [s with { cases: [c for c in s.cases if said(s.viewed.name, q) || said(c.name, q)] } for s in shelves if names(s, q)]
+}
+
+fn names(s: Shelf, q: string) -> bool { said(s.viewed.name, q) || s.cases.any(said(it.name, q)) }
+
+/// Whether `words` hold `q`, a query already lowered.
+fn said(words: string, q: string) -> bool { ascii_lower(words).contains(q) }
+
+// ── The page ────────────────────────────────────────────────────
+
+/// The whole board: a count, a filter, the index, and a shelf per view the filter admits.
+export component storyboard(shelves: List<Shelf>) {
+    state query: string = ""
+    column {
+        layout: Layout { gap: .L, pad: around(.L) }
+        heading "Storyboard" { rank: 1 }
+        text tally(self.shelves) { style: Style { color: .Muted } }
+        field "Filter" {
+            value: self.query
+            placeholder: "a view or a case"
+        }
+        index self.shelves {}
+        for s in matching(self.shelves, self.query) { shelf_view s {} }
+    }
+}
+
+/// How many views, cases and untold views there are, in words.
+fn tally(shelves: List<Shelf>) -> string {
+    let cases = [s.cases.length for s in shelves].fold(0, (a, n) -> a + n)
+    let none = untold(shelves).length
+    "${shelves.length} views · ${cases} cases · ${none} with no story"
+}
+
+/// Every view and its count of cases; a view no story tells wears the danger ink.
+component index(shelves: List<Shelf>) {
+    row {
+        layout: Layout { gap: .S, wrap: .Wrap }
+        for s in self.shelves { text "${s.viewed.name} ${s.cases.length}" { style: Style { color: count_ink(s) } } }
+    }
+}
+
+fn count_ink(s: Shelf) -> Ink { if s.cases.is_empty() { .Danger } else { .Muted } }
+
+/// One view: its name, what its story says, each case, and the cases that drew as the base did.
+component shelf_view(shelf: Shelf) {
+    card self.shelf.viewed.name {
+        layout: Layout { gap: .M, pad: around(.M) }
+        text self.shelf.doc
+        for c in self.shelf.cases { case_view self.shelf.viewed.name { case: c } }
+        if !self.shelf.alike.is_empty() {
+            text "drawn as the base: ${self.shelf.alike.join(", ")}" { style: Style { color: .Muted } }
+        }
+    }
+}
+
+/// The one layer the page raises: a case that opens a layer (an open dialog) takes the focus and
+/// stands over the page while it is drawn, so it is drawn when asked for, one at a time, in one
+/// scheme. Empty while none is.
+state raised: string = ""
+
+/// One case: its name, its spelling, and its view in the light and the dark scheme side by side.
+component case_view(owner: string, case: Case) {
+    column {
+        layout: Layout { gap: .S }
+        heading self.case.name { rank: 3 }
+        text self.case.spelling { style: Style { face: .Mono, color: .Muted } }
+        row {
+            layout: Layout { gap: .M, wrap: .Wrap }
+            for m in [Mode.Light, Mode.Dark] {
+                if !layered(tree_of(self.case.view)) ||
+                    raised == raise_key(self.owner, self.case, m) {
+                    scheme_pane m { shows: self.case.view }
+                } else {
+                    button "Raise in ${mode_word(m)}" {
+                        on press { raised = raise_key(self.owner, self.case, m) }
+                    }
+                }
+            }
+        }
+        key "escape" {
+            on press { raised = "" }
+        }
+    }
+}
+
+/// Whether a tree opens a layer anywhere in it.
+fn layered(n: Node) -> bool { n.open() || n.children.any(layered(it)) }
+
+/// What names one case raised in one scheme.
+fn raise_key(owner: string, c: Case, m: Mode) -> string { "${owner}/${c.name}/${mode_word(m)}" }
+
+fn mode_word(m: Mode) -> string {
+    match m { .System -> "system", .Light -> "light", .Dark -> "dark" }
+}
+
+/// A view drawn on the canvas of one scheme, whatever the page's.
+component scheme_pane(mode: Mode) {
+    shows: dyn View
+    ctx theme = ctx.theme with { mode: self.mode }
+    surface {
+        style: Style { fill: .Canvas, radius: .M }
+        layout: Layout { pad: around(.M) }
+        [self.shows]
+    }
+}
