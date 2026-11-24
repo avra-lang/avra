@@ -3704,6 +3704,28 @@ import the verb), `std-ui`'s `exact.av` index and `cli`'s `fmt.av` grouping.
 
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
+### Interim record — the config component's asks
+
+Filed here because this session's tasks server holds no `avra-8sb5.10`;
+each moves to that epic as its own ticket. The wanting site of all three
+is the `config` component, `docs/2026_11_24_CONFIG.md` §2.0; probes Q2,
+Q3 and Q5 (§13) give the refusals, on the committed seed.
+
+- **A1 — a component instance that DECLARES a type.**
+  `Example: config App { port: int = 8080 }` then `fn f(a: App)`.
+  Today: `type.unknown: App names no type` — `Instancing` has only
+  `Record` and `Template`, so an instance is a value or an expression;
+  the want is a declaring `expand` (`-> Decls`).
+  `Callsite:` `config App { … }`, §2.0.
+- **A2 — field lines in an instance block.**
+  `Example: config App { port: int = 8080 }`.
+  Today: `parse.expected: expected BREAK` at the field line.
+  `Callsite:` the same block's fields.
+- **A3 — annotations on those field lines.**
+  `Example: config App { @secret password: string = "" }`.
+  Today: `expected BREAK` at the `@`.
+  `Callsite:` `@range`, `@env` and `@secret` on config fields, §2.0.
+
 ### Interim record — the tasks server was unreachable at landing
 
 The two asks of `docs/2026_10_01_FIRST_OF_AND_IS_BINDING.md`
