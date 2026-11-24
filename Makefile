@@ -526,10 +526,10 @@ avra: $(COMPILER_OBJS)
 	@# THE CHECKOUT'S STD ANSWERS, made as `make install` makes an install's: the binary's packs over
 	@# this tree's std and its verdict, beside it in build/answers, so a check here reads std as a
 	@# user's does — the compiler's own package among them, cli's import. Kept as they stand where
-	@# neither the binary nor std moved; a std refused by its own compiler ships none, and the binary
-	@# works std out itself. AVRA_STD_ANSWERS=0 makes none: the gate's compilers, whose slices never
-	@# read them.
-	@[ "$${AVRA_STD_ANSWERS:-1}" = 0 ] || STD_ANSWERS_COMPILER=1 sh tools/std_answers.sh $(CURDIR)/build/avra $(CURDIR)/packages $(CURDIR)/build/answers || find $(CURDIR)/build/answers -delete 2>/dev/null || true
+	@# neither the binary nor std moved; a std package its own compiler refuses (a std mid-edit) ships
+	@# its answers and no verdict, so a check here judges its files. AVRA_STD_ANSWERS=0 makes none:
+	@# the gate's compilers, whose slices never read them.
+	@[ "$${AVRA_STD_ANSWERS:-1}" = 0 ] || STD_ANSWERS_COMPILER=1 STD_ANSWERS_REFUSED=skip sh tools/std_answers.sh $(CURDIR)/build/avra $(CURDIR)/packages $(CURDIR)/build/answers || find $(CURDIR)/build/answers -delete 2>/dev/null || true
 	@echo "avra: build/avra"
 
 # WHAT A COMPILER BUILD LEAVES, one path a line: the binary, its hot leaves

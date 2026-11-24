@@ -95,9 +95,8 @@ export type Rebuilder = {
     // the holes whose fill no seat can hold, each with the words the
     // splice speaks — a LAW the writer broke, not a defect
     unplaceable: List<Unplaced>,
-    // the open nodes, innermost last: whether a name of each came
-    // through a hole
-    holed: List<bool>,
+    // the open nodes, innermost last: what each is, and whether a name of it came through a hole
+    open: List<OpenNode>,
     // how a copied sugar's meaning is minted anew beside the copy
     door: Means,
     // the copy of each source expression reached so far, by its index: a node
@@ -125,6 +124,12 @@ export type CopiedNodes = { exprs: List<ExprId>, holed_exprs: List<ExprId>, stmt
 
 /// A copied statement's name seats a hole filled.
 export type LandedAt = { stmt: StmtId, seats: List<LandedSeat> }
+
+/// A node a rebuild has open: what it is, and whether a name of it came through a hole.
+type OpenNode = { holed: bool, kind: OpenKind }
+
+/// What an open node is: an expression, a block a lone hole ends, a statement, a pattern.
+enum OpenKind { Expr, Tail, Stmt, Pat }
 
 impl Rebuilder {
     fn made_nodes() -> CopiedNodes {
@@ -164,7 +169,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         landed: [],
         misfits: [],
         unplaceable: [],
-        holed: [],
+        open: [],
         door: no_door,
         copies: list_cell(),
     }
@@ -201,7 +206,7 @@ export fn copier(
         landed: [],
         misfits: [],
         unplaceable: [],
-        holed: [],
+        open: [],
         door: door,
         copies: list_cell(),
     }
@@ -277,9 +282,9 @@ impl Rebuilder {
 
     /// The copy of `e`, kept so a second reach of the same node answers it.
     mut fn rebuilt_expr(e: ExprId, x: Expr) -> ExprId {
-        self.holed.push(false)
+        self.opened(OpenKind.Expr)
         let rebuilt = x.rebuilt(self)
-        let holed = self.holed.pop()
+        let holed = self.closed()
         if !self.copying { return e }
         let copy = self.minted_expr(e, rebuilt, holed)
         self.remember(e, copy)
@@ -299,9 +304,9 @@ impl Rebuilder {
     mut fn tail_block(e: ExprId, k: int) -> ExprId {
         self.classify(k, HoleKind.Tail)
         let init = self.src.block_stmts(e)!
-        self.holed.push(false)
+        self.opened(OpenKind.Tail)
         let kept = self.stmts(init.slice(0, init.length - 1))
-        let holed = self.holed.pop()
+        let holed = self.closed()
         if !self.copying { return e }
         self.minted_expr(e, Expr.Block(kept.concat(self.fill_tail(k))), holed)
     }
@@ -348,9 +353,9 @@ impl Rebuilder {
             return self.worn(self.src.annotations_of(s), self.fill_stmts(k!))
         }
         let annotations = [self.annotation(a) for a in self.src.annotations_of(s)]
-        self.holed.push(false)
+        self.opened(OpenKind.Stmt)
         let rebuilt = self.src.stmt(s).rebuilt(self)
-        let holed = self.holed.pop()
+        let holed = self.closed()
         if !self.copying { return [s] }
         [self.minted_stmt(s, rebuilt, holed, annotations)]
     }
@@ -387,9 +392,9 @@ impl Rebuilder {
             if !self.copying { return p }
             return self.fill_pat(k!)
         }
-        self.holed.push(false)
+        self.opened(OpenKind.Pat)
         let rebuilt = self.src.pat(p).rebuilt(self)
-        let holed = self.holed.pop()
+        let holed = self.closed()
         if !self.copying { return p }
         let id = self.dst.alloc_pat(rebuilt, self.src.pat_span(p))
         if holed { self.holed_pats.push(id) } else { self.made_pat(id, p) }
@@ -459,9 +464,13 @@ impl Rebuilder {
     mut fn type_name(text: Nominal) -> Nominal {
         let k? = self.lone_hole(text.of) else {
             // a woven name is read where the code lands, as a scoped one is
-            if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+            if !self.verbatim && hole_name(text.of) != null { self.holed_here() }
             return Nominal(self.rewritten(text.of))
         }
+        // a lone one in an expression is too (`${t} { … }`): the type it fills is the landing's, never
+        // one the template's file sees; a statement says which of its seats landed by `landed`
+        let top = self.open.last()
+        if !self.verbatim && top != null && top!.kind is .Expr { self.holed_here() }
         self.classify(k, HoleKind.Type)
         if !self.copying { return text }
         Nominal(self.fill_type(k).name)
@@ -472,7 +481,7 @@ impl Rebuilder {
     /// one the template's file can see.
     mut fn type_name_opt(text: Nominal?) -> Nominal? {
         if text == null { return null }
-        if !self.verbatim && self.lone_hole(text!.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+        if !self.verbatim && self.lone_hole(text!.of) != null { self.holed_here() }
         self.type_name(text!)
     }
 
@@ -480,7 +489,7 @@ impl Rebuilder {
     /// wearing the target's origin, since the filled name resolves
     /// where the code lands.
     mut fn scoped_name(text: Scoped) -> Scoped {
-        if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+        if !self.verbatim && hole_name(text.of) != null { self.holed_here() }
         let named = self.rewritten(text.of)
         let mark? = self.fresh else { return Scoped(named) }
         if self.copying &&
@@ -603,7 +612,7 @@ impl Rebuilder {
         match v {
             .None -> .None,
             .Verbatim(ss, arms) -> {
-                mut sub = self with { verbatim: true, holed: [] }
+                mut sub = self with { verbatim: true, open: [] }
                 let copied = BodyView.Verbatim(sub.stmts(ss), sub.arms(arms))
                 self.made_exprs = self.made_exprs.concat(sub.made_exprs)
                 self.made_from = self.made_from.concat(sub.made_from)
@@ -627,6 +636,18 @@ impl Rebuilder {
     }
 
     mut fn rebuilt_parts(parts: List<FormatPart>) -> List<FormatPart> { [self.rebuilt_part(p) for p in parts] }
+
+    /// A node of `kind` opens, no name of it yet through a hole.
+    mut fn opened(kind: OpenKind) { self.open.push(OpenNode { holed: false, kind: kind }) }
+
+    /// The innermost open node closes: whether a name of it came through a hole.
+    mut fn closed() -> bool { self.open.pop().holed }
+
+    /// A name of the innermost open node came through a hole.
+    mut fn holed_here() {
+        let top? = self.open.last() else { return }
+        self.open.set(self.open.length - 1, top with { holed: true })
+    }
 
     // ── minting ──
 

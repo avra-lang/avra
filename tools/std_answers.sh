@@ -15,6 +15,9 @@
 # file of the packages judged. Where `out` holds answers of that key, they stand as they are and
 # nothing is worked out; any of it moved, and every package is judged again, since a package's
 # verdict reads the packages it uses.
+# A PACKAGE ITS OWN COMPILER REFUSES fails an install; STD_ANSWERS_REFUSED=skip (a checkout, whose std
+# may be mid-edit) keeps its answers, which are held to what they read, and leaves it no verdict, so a
+# program judges its files.
 #   sh tools/std_answers.sh <avra> <std> <out> [package…]   (default every std package but those)
 set -u
 [ $# -ge 3 ] || { sed -n 2,10p "$0"; exit 2; }
@@ -58,14 +61,24 @@ find "$out" -mindepth 1 -delete
 n=0
 for p in $(judged); do
     # the verdict: the package's own check, its answers kept apart and let go
-    AVRA_CACHE_DIR="$scratch" AVRA_MACHINE_STORE_DIR="$scratch/judged" AVRA_VERDICT_DIR="$out" AVRA_PROGRAM_NET=0 "$avra" check "$p" >/dev/null 2>"$scratch/said" ||
-        { echo "std_answers: $(basename "$p") is refused by its own compiler:" >&2; cat "$scratch/said" >&2; exit 1; }
+    if ! AVRA_CACHE_DIR="$scratch" AVRA_MACHINE_STORE_DIR="$scratch/judged" AVRA_VERDICT_DIR="$out" AVRA_PROGRAM_NET=0 "$avra" check "$p" >"$scratch/said" 2>&1; then
+        echo "std_answers: $(basename "$p") is refused by its own compiler:" >&2
+        head -40 "$scratch/said" >&2
+        [ "${STD_ANSWERS_REFUSED:-fail}" = skip ] || exit 1
+        echo "std_answers: $(basename "$p") ships its answers and no verdict: a program judges its files" >&2
+    fi
     # the answers: what a program over the package reads of it
     AVRA_CACHE_DIR="$scratch" AVRA_MACHINE_STORE_DIR="$out" AVRA_PROGRAM_NET=0 "$avra" cache dependents "$p" >/dev/null 2>"$scratch/said" ||
         { echo "std_answers: what a program reads of $(basename "$p") was not worked out:" >&2; cat "$scratch/said" >&2; exit 1; }
     find "$p" -name .avra-cache -type d -prune -exec find {} -delete \;
+    # a witness's moment: the store compacted after the packages STD_ANSWERS_COMPACT_AFTER names
+    case " ${STD_ANSWERS_COMPACT_AFTER:-} " in
+        *" $(basename "$p") "*) (cd "$scratch" && AVRA_CACHE_DIR="$scratch" AVRA_MACHINE_STORE_DIR="$out" "$avra" cache clean >/dev/null 2>&1) ;;
+    esac
     n=$((n + 1))
 done
-find "$out" -mindepth 1 ! -name 'pack-*' ! -name 'verdict-*' -delete
+# the packs, the kept files naming every question in them (so a store's compaction keeps them), the
+# verdict
+find "$out" -mindepth 1 ! -name 'pack-*' ! -name 'kept-*' ! -name 'verdict-*' -delete
 echo "$key" > "$out/inputs"
 echo "std answers: $n packages, $(ls "$out" | wc -l | tr -d ' ') packs, $(du -sk "$out" | cut -f1) KB in $out"

@@ -10,7 +10,12 @@
 #       and the check refuses it, as a check with no store does;
 #   (4) a std file edited so another std file it serves no longer resolves: the verdict stands for
 #       neither, and the check refuses the dependent, as a check with no store does;
-#   (5) the packs the machine store evicted are laid in again, their mark notwithstanding.
+#   (5) the packs the machine store evicted are laid in again, their mark notwithstanding;
+#   (6) the answers are complete by construction: written three times, the store compacted at no
+#       moment, after the last package and after the first and last, the check over each works out
+#       the same;
+#   (7) a store that compacts once they're laid in keeps them: the check after it works out what
+#       the check with none does.
 #   sh tools/std_answers_checkout_witness.sh [compiler]     (default build/avra)
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -56,7 +61,12 @@ checked() {
     sed -e "s#$w/p#<p>#g" -e "s#$tree#<tree>#g" -e "s#$bare#<tree>#g" "$said.raw" > "$said"
     echo "exit $code" >> "$said"
 }
-kb() { du -sk "$1/tapes" | cut -f1; }
+# `counted <compiler> <cache>`: how many answers the program's check works out, cold in its own
+# store, under the machine cache `<cache>` — what a store serves, whatever its files' bytes
+counted() {
+    find "$w/p" -name .avra-cache -prune -exec find {} -delete \;
+    env AVRA_CACHE_DIR="$2" "$1" check --counts "$w/p" 2>&1 >/dev/null | grep -o ' queries_computed=[0-9]*' | cut -d= -f2
+}
 # `edited <file> <sed script>`: the same file in both checkouts, edited alike
 edited() {
     for t in "$tree" "$bare"; do sed -i.was "$2" "$t/packages/$1" && find "$t/packages/$1.was" -delete; done
@@ -70,26 +80,23 @@ as_unstored() {
 }
 
 # (1)
-checked "$bare/build/avra" "$w/m0" "$w/unshipped"
-unshipped_kb=$(kb "$w/m0")
+unshipped=$(counted "$bare/build/avra" "$w/m0")
 as_unstored "(1)" laid
 [ ! -s "$w/laid.err" ] || fail "(1) a first check said: $(cat "$w/laid.err")"
-shipped_kb=$(du -sk "$tree/build/answers" | cut -f1)
-laid_kb=$(kb "$w/m1")
-gained_kb=$((laid_kb - shipped_kb))
-[ $((gained_kb * 2)) -lt "$unshipped_kb" ] ||
-    fail "(1) the machine store gained ${gained_kb} KB past the ${shipped_kb} KB laid in, against ${unshipped_kb} KB with nothing shipped: the checkout's answers didn't serve"
-held "(1) a checkout's first check: the same words, ${gained_kb} KB worked out past the ${shipped_kb} KB laid in, against ${unshipped_kb} KB with nothing shipped"
+laid=$(counted "$tree/build/avra" "$w/m1a")
+[ $((laid * 2)) -lt "$unshipped" ] ||
+    fail "(1) over the checkout's answers the check worked out ${laid} answers, against ${unshipped} with nothing shipped: they didn't serve"
+held "(1) a checkout's first check: the same words, ${laid} answers worked out, against ${unshipped} with nothing shipped"
 
 # (2)
 edited std-text/src/text.av 's|^    if !avra_str_parses_int(s) { return null }$|    if !avra_str_parses_int(s) { return null }\n    let _edited = 0|'
 grep -q '_edited' "$tree/packages/std-text/src/text.av" || fail "(2) the body edit missed"
 as_unstored "(2)" body
 grep -q '^exit 0$' "$w/body" || fail "(2) a body edit is refused: $(cat "$w/body")"
-regained_kb=$(($(kb "$w/m1") - laid_kb))
-[ $((regained_kb * 2)) -lt $((unshipped_kb - gained_kb)) ] ||
-    fail "(2) a body edit worked out ${regained_kb} KB, against the $((unshipped_kb - gained_kb)) KB the answers spared"
-held "(2) a std body edited: the same words, ${regained_kb} KB worked out again"
+again=$(counted "$tree/build/avra" "$w/m1a")
+[ $(((again - laid) * 2)) -lt $((unshipped - laid)) ] ||
+    fail "(2) a body edit worked out ${again} answers, against ${laid} before it and ${unshipped} with nothing shipped"
+held "(2) a std body edited: the same words, $((again - laid)) answers more worked out again"
 
 # (3)
 edited std-text/src/text.av 's|^export fn parse_int(s: string) -> int? {$|export fn parse_int(s: string) -> string? {|'
@@ -106,10 +113,34 @@ grep -q '^exit 1$' "$w/served" && grep -q 'std-text' "$w/served" ||
 held "(4) a std dependency edited: the dependent judged again, refused as with no store"
 
 # (5)
-shipped=$(ls "$tree/build/answers" | grep -c '^pack-')
-find "$w/m1/tapes" -name 'pack-*' -delete
-checked "$tree/build/avra" "$w/m1" "$w/evicted"
-[ "$(ls "$w/m1/tapes" | grep -c '^pack-')" -ge "$shipped" ] ||
-    fail "(5) answers the store evicted were not laid in again: $(ls "$w/m1/tapes")"
-held "(5) answers the store evicted: laid in again"
+whole=$(counted "$tree/build/avra" "$w/m5")
+find "$w/m5/tapes" -name 'pack-*' -delete
+evicted=$(counted "$tree/build/avra" "$w/m5")
+[ "$evicted" = "$whole" ] || fail "(5) after the store evicted the answers, the check worked out ${evicted:-none}, against ${whole:-none} when they first stood"
+held "(5) answers the store evicted: laid in again, ${evicted} answers worked out as when they first stood"
+
+# `worked <cache>`: how many answers the fresh checkout's check of the program works out, cold in its
+# own store, under the machine cache `<cache>`
+fresh="$w/fresh"
+checkout "$fresh"
+worked() { counted "$fresh/build/avra" "$1"; }
+# (6)
+k=0
+for moment in "" "std-text" "std-meta std-text"; do
+    # each write made whole: answers of the same key would stand as they are, written once
+    find "$fresh/build/answers" -delete 2>/dev/null
+    STD_ANSWERS_COMPACT_AFTER="$moment" sh "$root/tools/std_answers.sh" "$fresh/build/avra" "$fresh/packages" "$fresh/build/answers" std-text std-prelude std-meta >/dev/null ||
+        fail "(6) the answers were not made, compacted after '$moment'"
+    eval "work$k=\$(worked \"\$w/m6-$k\")"
+    k=$((k + 1))
+done
+[ -n "$work0" ] && [ "$work0" = "$work1" ] && [ "$work0" = "$work2" ] ||
+    fail "(6) the shipped answers hang on when the store compacted: ${work0:-none}, ${work1:-none} and ${work2:-none} worked out"
+held "(6) written three times, compacted at three moments: ${work0} answers worked out over each"
+
+# (7)
+(cd "$w" && AVRA_CACHE_DIR="$w/m7" "$fresh/build/avra" cache clean >/dev/null 2>&1) || fail "(7) the store was not compacted"
+compacted=$(worked "$w/m7")
+[ "$compacted" = "$work2" ] || fail "(7) a store compacted once the answers were laid in worked out ${compacted:-none}, against ${work2}"
+held "(7) the store compacted once they're laid in: ${compacted} answers worked out, as without"
 echo "std_answers_checkout_witness: held"

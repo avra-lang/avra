@@ -39,7 +39,7 @@ restore() {
     make --no-print-directory build/libavra_runtime.a > /dev/null 2>&1 || \
         echo "census: the shipping runtime did NOT rebuild — run \`make build/libavra_runtime.a\`"
     rm -f packages/cli/src/main packages/cli/src/main.av.ll
-    for n in $(ls "$laid" 2>/dev/null | grep -E '^(pack|verdict)-'); do rm -f "build/answers/$n"; done
+    for n in $(ls "$laid" 2>/dev/null | grep -E '^(pack|kept|verdict)-'); do rm -f "build/answers/$n"; done
     if [ -d "$stores" ]; then rm -rf .avra-cache; mv "$stores" .avra-cache; fi
     for d in $named; do
         if [ -d "$d/.avra-cache$suffix" ]; then rm -rf "$d/.avra-cache"; mv "$d/.avra-cache$suffix" "$d/.avra-cache"; fi
@@ -53,9 +53,9 @@ sh tools/census_compiler.sh "$census"
 # THE CENSUS COMPILER READS STD AS THE TREE'S OWN DOES: its answers over the tree's std, made by the
 # writer `make avra` runs, stand beside build/avra's in build/answers while it counts, and leave at exit;
 # they're kept in build/answers.census, keyed as the writer keys them, for the next census of this tree.
-STD_ANSWERS_COMPILER=1 sh tools/std_answers.sh "$PWD/$census" "$PWD/packages" "$PWD/$laid" > /dev/null || { echo "census: the census compiler's std answers were not made"; exit 1; }
+STD_ANSWERS_COMPILER=1 STD_ANSWERS_REFUSED=skip sh tools/std_answers.sh "$PWD/$census" "$PWD/packages" "$PWD/$laid" > /dev/null || { echo "census: the census compiler's std answers were not made"; exit 1; }
 mkdir -p build/answers
-for n in $(ls "$laid" | grep -E '^(pack|verdict)-'); do [ -e "build/answers/$n" ] || ln "$laid/$n" "build/answers/$n" 2>/dev/null || cp "$laid/$n" "build/answers/$n"; done
+for n in $(ls "$laid" | grep -E '^(pack|kept|verdict)-'); do [ -e "build/answers/$n" ] || ln "$laid/$n" "build/answers/$n" 2>/dev/null || cp "$laid/$n" "build/answers/$n"; done
 
 # THE MEASURED RUN STARTS COLD: the census compiler's store is its own
 # and was never filled, and the tree's stores stand aside until exit.

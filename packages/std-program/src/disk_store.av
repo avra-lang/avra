@@ -35,6 +35,7 @@ use answer_record.{
     AnswerRecord,
     binary_of,
     ContentHash,
+    content_hash,
     KeptRecord,
     Question,
     place_keyed_by,
@@ -937,6 +938,55 @@ export fn heavier(a: FamilyWeight, b: FamilyWeight) -> bool { a.question_octets 
 /// How many binaries' frontiers a store keeps.
 const KEPT_FRONTIERS: int = 2
 
+/// What every kept file's name begins and ends with: the questions a save put in a store whose
+/// frontiers stand elsewhere, for its compaction to keep.
+const KEPT_PREFIX: string = "kept-"
+const KEPT_SUFFIX: string = ".keep"
+
+/// A kept file's last line: a file without it was never written whole, and names nothing.
+const KEPT_SEAL: string = "sealed"
+
+/// Every kept file in `directory`, of any binary, by its name.
+fn kept_names_in(directory: string) -> List<string> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    [n for n in list_dir(directory) catch [] if n.starts_with(KEPT_PREFIX) && n.ends_with(KEPT_SUFFIX)]
+}
+
+/// The print a kept file's name says it is of.
+fn kept_print(name: string) -> string { name.substring(KEPT_PREFIX.length, name.length).split(".")[0] }
+
+/// The questions the kept file at `path` names; none for a file not sealed.
+fn kept_questions_in(path: string) -> List<ContentHash> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    let lines = [line for line in (read_text(path) catch "").split("\n") if !line.is_empty()]
+    if lines.last() != KEPT_SEAL { return [] }
+    [h! for line in lines for h in [hash_named(line)] if h != null]
+}
+
+/// Every question a kept file of the binary printed `binary` in `directory` names.
+fn kept_of_binary(directory: string, binary: string) -> List<ContentHash> {
+    [q for n in kept_names_in(directory) if binary_of(kept_print(n)) == binary for q in kept_questions_in("${directory}/${n}")]
+}
+
+/// `questions` written as one kept file of `binary` in `directory`, each once, in order, sealed, by a
+/// draft and one rename: its path, or none where it couldn't be.
+fn kept_written(directory: string, binary: string, questions: List<ContentHash>) -> string? {
+    mut seen: Map<string, bool> = {}
+    for q in questions { seen.set("${q.high_word}_${q.low_word}", true) }
+    let lines = sorted_by([k for k, _v in seen], text_before)
+    let bytes = "${lines.join("\n")}\n${KEPT_SEAL}\n".bytes()
+    let id = content_hash(bytes)
+    let path = "${directory}/${KEPT_PREFIX}${binary}.${id.high_word}_${id.low_word}${KEPT_SUFFIX}"
+    if exists(path) { return path }
+    let draft? = match drafted("${directory}/kept") { .Ok(d) -> d, .Err(_) -> null } else { return null }
+    if (draft.write(bytes) catch -1) < 0 {
+        draft.dropped()
+        return null
+    }
+    let published = draft.published(path) catch ""
+    if published == "" { null } else { path }
+}
+
 /// What every frontier file's name begins with.
 const FRONTIER_PREFIX: string = "frontier-"
 
@@ -1133,11 +1183,42 @@ fn named_from(dir: string, path: string) -> string {
 const STAMPS_FILE: string = "inputs.stamps"
 
 impl DiskStore {
+    /// Every question this process put in this store's draft.
+    fn questions_learned() -> List<ContentHash> {
+        let segment? = self.segment.get().first() else { return [] }
+        [span.key for span in segment.questions.spans.values()]
+    }
+
+    /// `questions` named in a kept file of the binary this store answers for: what a compaction here
+    /// keeps, where no frontier names them — a shared store's, whose frontiers stand in each
+    /// package's own. One file a save, sealed, named by its octets, and none for no question.
+    fn questions_kept(questions: List<ContentHash>) {
+        let print? = self.print.get() else { return }
+        if questions.is_empty() { return }
+        let _ = kept_written(self.directory, binary_of(print), questions)
+    }
+
+    /// The binary printed `binary`'s kept files folded into one, the files read removed: a store
+    /// compacting keeps their questions, and a file written meanwhile stands beside the fold.
+    fn kept_folded(binary: string) {
+        let names = [n for n in kept_names_in(self.directory) if binary_of(kept_print(n)) == binary]
+        if names.length < 2 { return }
+        let questions = [q for n in names for q in kept_questions_in("${self.directory}/${n}")]
+        let folded? = kept_written(self.directory, binary, questions) else { return }
+        for n in names { if "${self.directory}/${n}" != folded { let _ = remove("${self.directory}/${n}") } }
+    }
+
     /// What a compaction keeps alive: every question each frontier of its binary holds, one for each
-    /// program it's scoped to, and what this process learned for it.
+    /// program it's scoped to, every question its kept files name, and what this process learned for
+    /// it.
     fn frontier_seeds() -> List<ContentHash> {
         let own = self.pending_frontier.get()?.print ?? self.print.get()
-        let held = if own == null { [] } else { questions_of_binary(self.directory, binary_of(own!)) }
+        let held = if own == null {
+            []
+        } else {
+            questions_of_binary(self.directory, binary_of(own!))
+                .concat(kept_of_binary(self.directory, binary_of(own!)))
+        }
         let pending? = self.pending_frontier.get() else { return held }
         let read = pending.learned.on?.questions() ?? []
         held.concat(read).concat([h.question for h in pending.learned.entries])
@@ -1168,6 +1249,9 @@ impl DiskStore {
         for name in unnamed_packs_in(self.directory) { let _ = remove("${self.directory}/${name}") }
         for f in frontier_names_in(self.directory) {
             if !kept.contains(binary_of(f.print)) { let _ = remove(f.path) }
+        }
+        for name in kept_names_in(self.directory) {
+            if !kept.contains(binary_of(kept_print(name))) { let _ = remove("${self.directory}/${name}") }
         }
     }
 
@@ -1286,6 +1370,7 @@ impl DiskStore {
         let own? = self.print.get() else { return self.each_kept(it.compacted()) }
         let written = if self.packs.get().is_empty() && !self.has_news() { 0 } else { self.published(self.packs.get(), true)? }
         for pack in self.foreign.get() { let _ = remove(pack.path) }
+        self.kept_folded(binary_of(own))
         self.frontier_published(true)
         self.prints_evicted(own)
         self.frontier_tidied(own)

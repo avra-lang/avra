@@ -1,7 +1,8 @@
 //! THE TOOLCHAIN'S STD ANSWERS: an installed toolchain ships, beside its std, the packs its own
 //! binary kept over that std (`make install`), so a program's first build works out none of std.
-//! They are laid into the machine's store once per binary, each pack published whole, so a reader
-//! sees a pack or none; a binary of another print never reads them, and every answer is held to the
+//! They are laid into the machine's store once per binary with the kept files naming every question
+//! in them (layered_store's shared save writes one), each file published whole, so a reader sees a
+//! pack or none and the store's compaction keeps them whenever it runs; a binary of another print never reads them, and every answer is held to the
 //! inputs it read wherever it was kept. A machine store that can't take them, or can't stand at
 //! all, is said once, and the build works without it.
 //! BESIDE THEM, THE INSTALL'S VERDICT: each std file its own check found nothing refusing, by its
@@ -67,7 +68,9 @@ fn std_answers_laid(directory: string, print: string) {
     let shipped? = shipped_answers() else { return }
     let packs = packs_answering(shipped, print)
     if packs.is_empty() { return }
-    for name in packs {
+    // the kept files naming every question in them, so the store's compaction keeps what they answer
+    let kept = [n for n in names_at(shipped) ?? [] if n.starts_with("kept-${print}.")]
+    for name in packs.concat(kept) {
         match pack_laid(joined_path(shipped, name), joined_path(directory, name)) {
             .Ok(_) -> {},
             .Err(e) -> {

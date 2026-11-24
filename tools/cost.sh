@@ -30,12 +30,15 @@ command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to on
 
 # The cold workloads: a name, the part it is measured in, the machine's store it runs over, the census
 # tables it takes, then the command the census compiler runs in the snapshot. PARTS, each a gate slice
-# of its own (COST_PART=cold-a|cold-b|warm; all by default): `warm` is the cli's cold check and the
+# of its own (COST_PART=cold-a|cold-b|laid|warm; all by default): `warm` is the cli's cold check and the
 # warm edits it leaves a store for — COST_EDITS=<k>/<n> deals them, the k-th share of n, the noop in
 # every share — and the cold runs are two. A STORE IS NOT THE COMPILER: every run but one has
 # the machine's store off, so its rows are what the compiler does, whatever a store holds;
 # `cold-with-store-fill` is the cli's cold check over an empty store, which it fills — the store's own
-# price, ratcheted apart, its sites the check's own and so read once, from check-cli. The death
+# price, ratcheted apart, its sites the check's own and so read once, from check-cli;
+# `check-cli-laid` is the cli's cold check over the std answers the census compiler made of the
+# snapshot's std (tools/std_answers.sh, as `make avra` makes a checkout's), laid into an empty store —
+# a user's cold check, ratcheted beside the worst case the others measure. The death
 # census stamps a word per 16 bytes of slab, half again the memory a run holds, so the build — the
 # largest run, its fns the check's own — takes the site tables alone, under the cap.
 workloads() {
@@ -44,6 +47,7 @@ check-cli warm off deaths check --counts packages/cli
 build-cli cold-a off sites build packages/cli
 check-program cold-b off deaths check --counts packages/std-program
 cold-with-store-fill cold-b filled none check --counts packages/cli
+check-cli-laid laid laid none check --counts packages/cli
 EOF
 }
 
@@ -124,11 +128,12 @@ cache=$place/cache
 
 # One run of the census compiler in the snapshot, once what it reads is older than the stamp window:
 # its census to <name>.out, what it printed to <name>.stdout. The machine's store is off unless the
-# workload's `store` is `filled`: then on, in the run's own cache, which every cold run starts bare.
+# workload's `store` is `filled` or `laid`: then on, in the run's own cache, which every cold run
+# starts bare.
 counted() {
     name=$1; shift
     machine=0
-    [ "${store:-off}" != filled ] || machine=1
+    [ "${store:-off}" = off ] || machine=1
     sleep 3
     started=$(date +%s)
     # the census reports at exit only where the run accounts (AVRA_MEM_STATS), and the tables the
@@ -188,9 +193,38 @@ bare() {
     find "$cache" -mindepth 1 -delete
 }
 
+# the snapshot's std answers beside the census compiler, made once a run by the writer `make avra`
+# runs, as it runs, outside any count: a package the compiler refuses (the snapshot's own compiler,
+# under today's laws) ships its answers and no verdict. Only the std packages the cli's sources reach
+# are written: the others the check never reads, and writing them is most of the slice's wall
+laid() {
+    [ ! -f "$src/build/answers/inputs" ] || return 0
+    # shellcheck disable=SC2046
+    (unset AVRA_MACHINE_STORE_DIR && HOME="$cache/home" STD_ANSWERS_REFUSED=skip \
+        sh "$root/tools/std_answers.sh" "$src/build/avra" "$src/packages" "$src/build/answers" $(reached packages/cli)) ||
+        { echo "cost: the snapshot's std answers were not made"; exit 1; }
+    bare
+}
+
+# the std packages the package at `$1` in the snapshot reaches, its `use @std.<name>` lines closed over
+# the packages they name, the prelude always, one a line
+reached() {
+    todo=$1; seen=" std-prelude "
+    while [ -n "$todo" ]; do
+        # shellcheck disable=SC2086
+        set -- $todo; at=$1; shift; todo="$*"
+        for n in $(grep -rhoE '@std\.[a-z_]+' "$src/$at/src" --include='*.av' 2> /dev/null | sed 's/@std\.//' | sort -u); do
+            [ -d "$src/packages/std-$n" ] || continue
+            case "$seen" in *" std-$n "*) continue ;; esac
+            seen="$seen std-$n "; todo="$todo packages/std-$n"
+        done
+    done
+    printf '%s\n' $seen
+}
+
 # the part this run measures, and every workload it measures — what tools/cost_ratchet.py judges
 part=${COST_PART:-all}
-case $part in all | cold-a | cold-b | warm) ;; *) echo "cost: COST_PART is all, cold-a, cold-b or warm, never $part"; exit 2 ;; esac
+case $part in all | cold-a | cold-b | laid | warm) ;; *) echo "cost: COST_PART is all, cold-a, cold-b, laid or warm, never $part"; exit 2 ;; esac
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
 workloads | while read -r name in_part store census command; do
@@ -198,12 +232,18 @@ workloads | while read -r name in_part store census command; do
     echo "$name" >> "$out/workloads"
     [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do echo "edit-$kind" >> "$out/workloads"; done
     bare
+    [ "$store" != laid ] || laid
     # shellcheck disable=SC2086
     counted "$name" $command
     [ "$census" = none ] || resolved "$name"
     [ "$name" != check-cli ] || warm_edits
 done
 # THE CANDIDATES: every cold run's sites classified to the zero-cost technique that would remove their
-# cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md)
-"$src/build/avra" census --candidates --root "$src" "$out"/*.sites > "$out/candidates.txt"
+# cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md); a part whose runs
+# take no site tables (laid) has none
+if ls "$out"/*.sites > /dev/null 2>&1; then
+    "$src/build/avra" census --candidates --root "$src" "$out"/*.sites > "$out/candidates.txt"
+else
+    : > "$out/candidates.txt"
+fi
 for made in "$place" "$out/edited.orig"; do [ ! -e "$made" ] || find "$made" -delete; done

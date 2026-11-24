@@ -55,6 +55,7 @@ fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_chan
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
 cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
 cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
+cost-laid  make cost, COST_PART=laid: the cli's cold check over the std answers the census compiler makes of the snapshot's std, laid into an empty store
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
@@ -635,6 +636,7 @@ if compiler; then
         edit-e) edit_part rename ;;
         cost-cold-a) slice_cost cold-a ;;
         cost-cold-b) slice_cost cold-b ;;
+        cost-laid) slice_cost laid ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac
 fi
