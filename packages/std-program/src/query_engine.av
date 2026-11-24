@@ -10,7 +10,16 @@ use @std.time.{now_ms}
 use sorted.{sorted_by}
 use @std.text.{from_codepoints, parse_int, text_before}
 use address.{SourceFileAddress}
-use frontier.{CUT_MOVED, CUT_STANDS, EntryAt, Frontier, FrontierLearned, HeldEntry, NOT_CUT}
+use frontier.{
+    CUT_MOVED,
+    CUT_STANDS,
+    EntryAt,
+    Frontier,
+    FrontierLearned,
+    HeldEntry,
+    NOT_CUT,
+    place_key,
+}
 use package_sets.{NO_NAMES, NameSets, name_sets}
 use input_stamps.{InputStamp, places_held}
 use defect.{defect}
@@ -564,7 +573,8 @@ impl QueryEngine {
         let inputs = f.standing_inputs()
         let holds = [self.input_holds(f, at) for at in inputs]
         let changed = [at for i, at in inputs if !holds[i]]
-        let all? = f.readers_of(changed, (_at) -> NOT_CUT) else { return self.frontier.set(FrontierState.Unusable) }
+        let reach? = f.reach_of(changed) else { return self.frontier.set(FrontierState.Unusable) }
+        let all? = f.settled(reach, (_at) -> NOT_CUT) else { return self.frontier.set(FrontierState.Unusable) }
         let stale = f.stale_places()
         self
             .frontier
@@ -573,7 +583,7 @@ impl QueryEngine {
                     .Open(OpenFrontier { frontier: f, changed: changed, suspects: all, stale: stale }),
             )
         for i, at in inputs { if holds[i] { let _ = self.stood(f, at) } }
-        let suspects? = self.suspects_of(f, changed) else { return self.frontier.set(FrontierState.Unusable) }
+        let suspects? = self.suspects_of(f, reach) else { return self.frontier.set(FrontierState.Unusable) }
         self.reached.set(suspects.filter(it).length)
         self.held.set(f.length())
         self
@@ -620,20 +630,21 @@ impl QueryEngine {
 
     /// Whether a change in `changed` reaches each answer of `f`; absent when its reads don't lie
     /// within it.
-    fn suspects_of(f: Frontier, changed: List<int>) -> List<bool>? {
-        if changed.is_empty() { return [false for _i in 0..f.length()] }
-        let decided: Cell<List<int>> = Cell.new([0 for _i in 0..f.length()])
-        f.readers_of(changed, (at) -> self.cut_at(f, at, decided))
+    fn suspects_of(f: Frontier, reach: FrontierReach) -> List<bool>? {
+        if reach.changed.is_empty() { return [false for _i in 0..f.length()] }
+        let decided: HashKeyedTable<int> = hash_keyed_table()
+        f.settled(reach, (at) -> self.cut_at(f, at, decided))
     }
 
     /// How the answer at `at` meets a change: a cutting query's that comes out the same now, which
     /// cuts the change off; one that moved; or one whose query doesn't cut. Each place is decided once.
-    fn cut_at(f: Frontier, at: int, decided: Cell<List<int>>) -> int {
-        let known = decided.get()[at]
-        if known != 0 { return known }
-        let found = self.cut_found(f, at)
-        decided.set_at(at, found)
-        found
+    fn cut_at(f: Frontier, at: int, decided: HashKeyedTable<int>) -> int {
+        let known? = decided.get(place_key(at)) else {
+            let found = self.cut_found(f, at)
+            decided.put(place_key(at), found)
+            return found
+        }
+        known
     }
 
     fn cut_found(f: Frontier, at: int) -> int {
