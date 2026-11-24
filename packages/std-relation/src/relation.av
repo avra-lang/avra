@@ -65,8 +65,6 @@ use @std.meta.{
     Arms,
     literal,
     name,
-    as_code,
-    Node as MetaNode,
     refuse_as_at,
     beside,
 }
@@ -91,9 +89,13 @@ use shape.{
     ShapeSlot,
     apart,
     shape_fold,
+    reach_undeclared,
+    reach_told,
+    reach_again,
+    reach_coded,
     descriptor_filled,
     reach_described,
-    reach_unspelled,
+    reach_declared,
     reaches_met,
     reaches_spelled,
 }
@@ -1842,40 +1844,35 @@ const stored_format: int = 3
 /// type spells only itself here and a type that moves under a reached one moves too.
 fn shape_folded(s: Stored) -> Code {
     let parts = [reach_print(s, k) for k in s.reached]
-    quote { shape_fold(${text_hash(stable_name(s.t))}, ${stored_format}, [${..parts}]) }
+    quote { shape_fold(text_hash(${literal(stable_name(s.t))}), ${stored_format}, [${..parts}]) }
 }
 
-/// One reached kind as one value: its spelling and which it is, then its declaration's
-/// spelling, or for another type that wears its own codec, that codec's fold — its name alone
-/// when `seen` holds it. A codec none of `seen` is within folds alike under any `seen`, so its
-/// own held fold stands in.
+/// One reached kind as one value, folded by the run: its spelling, then its declaration's, or
+/// for another type that wears its own codec, that codec's fold — its name alone when `seen`
+/// holds it. A codec none of `seen` is within folds alike under any `seen`, so its own held
+/// fold stands in.
 fn reach_print(s: Stored, k: Kind) -> Code {
-    let named = stable_hasher(text_hash(k.spelled()))
+    let spelled = literal(k.spelled())
     let base = named_base(k).first() ?? ""
-    let text? = s.texts.get(base) else { return int_code(named.int(0).finish()) }
-    if !s.owner.codes(k) { return int_code(named.int(1).text(text).finish()) }
+    let text? = s.texts.get(base) else { return quote { reach_undeclared(${spelled}) } }
+    if !s.owner.codes(k) { return quote { reach_told(${spelled}, ${literal(text)}) } }
     let n = literal(base)
     let other = name(base)
     quote {
         if seen.contains(${n}) {
-            ${named.int(2).finish()}
+            reach_again(${spelled})
         } else {
-            stable_hasher(${text_hash(k.spelled())})
-                .int(3)
-                .int(
-                    if apart(${other}.codec_within(), seen) {
-                        ${other}.codec_shape()
-                    } else {
-                        ${other}.codec_shape_under(seen.concat([${n}]))
-                    },
-                )
-                .finish()
+            reach_coded(
+                ${spelled},
+                if apart(${other}.codec_within(), seen) {
+                    ${other}.codec_shape()
+                } else {
+                    ${other}.codec_shape_under(seen.concat([${n}]))
+                },
+            )
         }
     }
 }
-
-/// An int as an expression.
-fn int_code(v: int) -> Code { as_code(MetaNode.Int(v)) }
 
 /// Whether a stored type's fold reaches another type that wears its own codec, so it reads
 /// `seen`.
@@ -1922,8 +1919,9 @@ fn held_names(t: Type) -> CodecHolds {
     }
 }
 
-/// A declaration's file as a part of a name: its path's fingerprint, its sign spelled out.
-fn file_mark(t: Type) -> string { "${text_hash(t.at?.file ?? "")}".replace("-", "n") }
+/// A declaration's file as a part of a name: its file name's fingerprint, its sign spelled out —
+/// a module is one directory, so its files' names tell them apart.
+fn file_mark(t: Type) -> string { "${text_hash((t.at?.file ?? "").split("/").last() ?? "")}".replace("-", "n") }
 
 /// A declaration's spelling: its name, then each field or variant with each field's shape and marks.
 fn described(ty: Type) -> string {
@@ -1999,7 +1997,7 @@ fn stored_generated(s: Stored) -> Decls {
             ${told_member(s)}
 
             static fn codec_reach() -> ShapeReach {
-                reach_described(${own}, ${text_hash(s.texts.get(t.name)!)}, ${shape})
+                reach_described(${own}, text_hash(${literal(s.texts.get(t.name)!)}), ${shape})
             }
 
             ${reaches_into_member(s, inner)}
@@ -2106,11 +2104,9 @@ fn own_descriptor(s: Stored) -> Descriptor {
 /// another coded type is met so; any other answers its coded reach, never asked.
 fn told_member(s: Stored) -> Decls {
     if !s.t.variants.is_empty() || !folds_coded(s) { return quote { static fn codec_told() -> ShapeReach { ${name(s.t.name)}.codec_reach() } } }
-    let told = described_reach(
-        ShapeReach { name: s.t.name, shape: text_hash(s.texts.get(s.t.name)!) },
-        shape_of(s.t),
-    )
-    quote { static fn codec_told() -> ShapeReach { reach_unspelled(${literal(reaches_spelled([told]))}) } }
+    let told = described_reach(ShapeReach { name: s.t.name, shape: 0 }, shape_of(s.t))
+    let run = literal(reaches_spelled([told]))
+    quote { static fn codec_told() -> ShapeReach { reach_declared(${run}, ${literal(s.texts.get(s.t.name)!)}) } }
 }
 
 /// The once fn that spells the descriptor: every type the wire reaches, each named once in
@@ -2158,17 +2154,15 @@ fn reach_steps(s: Stored, inner: List<Kind>) -> List<Stmts> {
 /// The run of told reaches between two coded ones, then the coded one that ends it.
 fn run_steps(s: Stored, met: List<Kind>, from: int, to: int) -> List<Stmts> {
     let told = [told_reach(s, met[i]) for i in from..to]
-    let run: List<Stmts> = if told.is_empty() { [] } else { [quote { reaches_met(met, ${literal(reaches_spelled(told))}) }] }
+    let declared = [literal(s.texts.get(named_base(met[i])[0])!) for i in from..to]
+    let run: List<Stmts> = if told.is_empty() { [] } else { [quote { reaches_met(met, ${literal(reaches_spelled(told))}, [${..declared}]) }] }
     if to == met.length { return run }
     run.concat([met_coded(named_base(met[to])[0])])
 }
 
-/// A reached kind crossed by helpers, described.
+/// A reached kind crossed by helpers, described; the run fills its declaration's fingerprint.
 fn told_reach(s: Stored, k: Kind) -> ShapeReach {
-    described_reach(
-        ShapeReach { name: k.spelled(), shape: text_hash(s.texts.get(named_base(k)[0])!) },
-        reach_shape(s, k),
-    )
+    described_reach(ShapeReach { name: k.spelled(), shape: 0 }, reach_shape(s, k))
 }
 
 fn met_coded(n: string) -> Stmts {

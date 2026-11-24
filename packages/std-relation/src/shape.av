@@ -8,7 +8,7 @@
 //! variants. A record crosses by POSITION and an enum by its variant's
 //! PLACE, so either may grow at its end and nowhere else.
 use @std.text.{parse_int}
-use stable.{StableHasher, stable_hasher}
+use stable.{StableHasher, stable_hasher, text_hash}
 
 /// One slot: a record's field or an enum's variant. `ty` spells what
 /// it carries, marks included; `defaulted` says a reader may fill it
@@ -131,18 +131,21 @@ export fn reaches_spelled(rs: List<ShapeReach>) -> string {
     ["${rs.length}"].concat([p for r in rs for p in reach_spelled(r)]).join("|")
 }
 
-/// Each reach a spelled run holds that `met` has none of that name for, kept in order.
-export fn reaches_met(mut met: Map<string, ShapeReach>, run: string) {
+/// Each reach a spelled run holds that `met` has none of that name for, kept in order, each the
+/// fingerprint of its declaration's spelling in `declared`.
+export fn reaches_met(mut met: Map<string, ShapeReach>, run: string, declared: List<string>) {
     let c = Parts { all: run.split("|"), at: Cell.new(0) }
     let n = c.count(reach_width) ?? 0
-    for _i in 0..n {
+    for i in 0..n {
         let r? = c.reach() else { return }
-        if !met.has(r.name) { met.set(r.name, r) }
+        if !met.has(r.name) { met.set(r.name, r with { shape: text_hash(declared[i]) }) }
     }
 }
 
-/// A reach spelled as a run of one.
-export fn reach_unspelled(run: string) -> ShapeReach { Parts { all: run.split("|"), at: Cell.new(1) }.reach()! }
+/// A reach spelled as a run of one, the fingerprint of its declaration's spelling `declared`.
+export fn reach_declared(run: string, declared: string) -> ShapeReach {
+    Parts { all: run.split("|"), at: Cell.new(1) }.reach()! with { shape: text_hash(declared) }
+}
 
 /// A coded type as a reach of a type that wears it, read from its own descriptor `own`: its
 /// declaration's fingerprint `shape`, its codec's header `hash`, its texts' crossing and its
@@ -163,6 +166,22 @@ export fn shape_fold(seed: int, format: int, parts: List<int>) -> int {
     parts
         .fold(stable_hasher(seed).int(format).count(parts.length), (h: StableHasher, p: int) -> h.int(p))
         .finish()
+}
+
+/// A reach with no declaration here, as a fold's part: its spelling.
+export fn reach_undeclared(spelled: string) -> int { stable_hasher(text_hash(spelled)).int(0).finish() }
+
+/// A reach crossed by helpers: its spelling, then its declaration's.
+export fn reach_told(spelled: string, declared: string) -> int {
+    stable_hasher(text_hash(spelled)).int(1).text(declared).finish()
+}
+
+/// A coded reach whose fold is already under way: its spelling alone.
+export fn reach_again(spelled: string) -> int { stable_hasher(text_hash(spelled)).int(2).finish() }
+
+/// A coded reach: its spelling, then its codec's fold.
+export fn reach_coded(spelled: string, fold: int) -> int {
+    stable_hasher(text_hash(spelled)).int(3).int(fold).finish()
 }
 
 /// Whether no name of `a` is among `b`.
