@@ -76,11 +76,26 @@ impl Checks for Binary {
         match self.op {
             .Eq or .Ne -> compared(cx, e, self.op == BinOp.Ne, self.left, self.right),
             .And or .Or or .Lt or .Le or .Gt or .Ge or .Add or .Sub or .Mul or .Div or .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> {
-                let both? = operands(cx, self.op, self.left, self.right) else { return null }
-                if answers_truth(self.op) { owned_type("bool") } else { both.answer() }
+                let both = operands(cx, self.op, self.left, self.right)
+                if both != null { return if answers_truth(self.op) { owned_type("bool") } else { both!.answer() } }
+                // a side refused: what the operation answers whatever it holds, where both sides are known
+                if cx.type_of(self.left) == null || cx.type_of(self.right) == null { return null }
+                if answers_truth(self.op) { owned_type("bool") } else { refused_answer(cx, self.op, self.left) }
             },
         }
     }
+}
+
+/// What an operation whose right side alone was refused answers: the type its left side is and the
+/// operator needs, which the right side's value leaves known; none where the left is unknown, wears
+/// a name, or is refused itself, so what the operation answers depends on the refused value.
+fn refused_answer(cx: Checking, op: BinOp, left: ExprId) -> SignedType? {
+    let lt? = cx.type_of(left) else { return null }
+    if cx.named_over(lt) != null { return null }
+    let own = plain_owned(unnamed_shape(cx, lt))
+    let want = wanted(op, own)
+    if own != want { return null }
+    owned_type(want)
 }
 
 /// Whether `op` answers a `bool` whatever its operands are.

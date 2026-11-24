@@ -229,6 +229,11 @@ export type Checking = {
     /// The seats being checked in, innermost last, each beside the type it wants: a node checked
     /// against that same type, passed down from it, fills that seat.
     seated: Cell<List<SeatWant>>,
+    /// Each refusal a seat's want made, as the seat it judged: how many seats stood open, and what it
+    /// wanted.
+    agreements: Cell<List<SeatJudged>?>,
+    /// How many refusals a seat's want has made: what a check compares before it reads them.
+    agreed_count: Cell<int>,
     /// Each name read that nothing binds and the program gives no type, in the order met: a name
     /// nothing declares among them.
     unread: Cell<List<Unread>>,
@@ -350,6 +355,9 @@ type NamedPattern = { name: string, args: List<PatId> }
 
 /// A seat being checked in, and the type it wants, spelled.
 type SeatWant = { seat: Seating, want: string }
+
+/// A refusal a seat's want made: how many seats stood open when it judged, and what it wanted.
+type SeatJudged = { depth: int, want: string }
 
 /// A node its seat refused: the node, what the seat wants, what the node is, and the seat.
 /// A refusal of a pattern stands at the node that holds it, and is said at the pattern `pat`.
@@ -989,6 +997,8 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let seats: Cell<Map<string, SignedType>> = Cell.new({})
     let refused: Cell<List<Refused>> = Cell.new([])
     let seated: Cell<List<SeatWant>> = Cell.new([])
+    let agreements: Cell<List<SeatJudged>?> = Cell.new(null)
+    let agreed_count: Cell<int> = Cell.new(0)
     let unread: Cell<List<Unread>> = Cell.new([])
     let silenced: Cell<List<Refused>> = Cell.new([])
     let consting: Cell<List<int>> = Cell.new([])
@@ -1007,6 +1017,8 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
         seats: seats,
         refused: refused,
         seated: seated,
+        agreements: agreements,
+        agreed_count: agreed_count,
         store: store,
         program: program,
         answer: answer,
@@ -1021,15 +1033,24 @@ impl Checking {
     mut fn check(e: ExprId, expected: Expected) -> SignedType? {
         let outer = self.site
         self.site = BindSite.Expr(e.index)
-        let refused_before = self.refused.get().length
         let meant = if self.meanings { self.store.meant(e) } else { null }
         self.seat_kept(e, expected)
+        let judged_before = self.agreed_count.get()
+        let refused_before = self.refused.get().length
         let made = if meant != null { self.meaning_checked(e, meant!, expected) } else { self.store.expr(e).checked(self, e, expected) }
         // a type the body decides is known only once typing infers it
         let ty = if made != null && made!.inferred() { null } else { made }
         if ty != null {
             self.types.set_at(e.index, ty)
-            if self.refused.get().length == refused_before || fnless_wanted(expected, ty!) { self.agreed(e, expected, ty!) }
+            // a refusal under `e` poisons what depends on the refused value — its node answers no
+            // type — never a type `e` knows without it, which its seat still judges; a value under
+            // `e` its seat already refused, as a block's tail, is that seat's one refusal; and a
+            // check under `e` that took back refusals made before it re-judged what it holds, as a
+            // generic call pins its parameters, so `e` stands as that re-judging left it
+            let retracted = self.refused.get().length < refused_before
+            if !retracted &&
+                (self.agreed_count.get() == judged_before ||
+                    !self.judged_under(judged_before, expected)) { self.agreed(e, expected, ty!) }
         }
         self.site = outer
         ty
@@ -1068,6 +1089,17 @@ impl Checking {
     /// there for every instance or it is refused, since no instance is judged apart from its body. A
     /// fn over parameters is a generic fn read bare, whose parameters are its own and no call fills:
     /// that read is its own law's.
+    /// Whether a value checked since `before` was refused by the seat `expected` names, standing
+    /// where it stands now: the one seat a block hands its tail.
+    fn judged_under(before: int, expected: Expected) -> bool {
+        let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return false }
+        let depth = self.seated.get().length
+        let spelled = want.spelled()
+        let all? = self.agreements.get() else { return false }
+        for k in before..all.length { if all[k].depth == depth && all[k].want == spelled { return true } }
+        false
+    }
+
     mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
         let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
         if found.generic() && (want.generic() || found.head is .Function) ||
@@ -1081,6 +1113,9 @@ impl Checking {
             if !found.reaches(want) && self.store.expr(e).literal_form() { self.seals_filled(e, want) }
             return
         }
+        let judged = SeatJudged { depth: self.seated.get().length, want: want.spelled() }
+        self.agreements.set((self.agreements.get() ?? []).concat([judged]))
+        self.agreed_count.set(self.agreed_count.get() + 1)
         self
             .refused
             .push(
@@ -4612,11 +4647,6 @@ fn fnless(want: SignedType, found: SignedType) -> bool {
         !found.dynamic &&
         !found.generic() &&
         !found.inferred()
-}
-
-/// Whether `expected` wants a fn and `found` is none.
-fn fnless_wanted(expected: Expected, found: SignedType) -> bool {
-    match expected { .Exactly(want) -> fnless(want, found), rest -> false }
 }
 
 /// Whether the fn type `f`'s seats past its first `skip` take values of the types `typed`, one each.
