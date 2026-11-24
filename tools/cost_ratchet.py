@@ -3,7 +3,9 @@
 
     cost_ratchet.py --judge <dir>      judge a `tools/cost.sh` run against tools/cost.baseline
     cost_ratchet.py --accept <dir>     record a run: rows fall to what it measured; a run over another
-                                       snapshot records that snapshot and every row as measured
+                                       snapshot records that snapshot and every row as measured; a
+                                       part's run, over the pinned snapshot, records its own rows alone
+    cost_ratchet.py --rows <dir>       a run's rows, as tools/cost.baseline writes them
     cost_ratchet.py --edit <file> <kind> <text> <becomes>
                                        make one edit of tools/cost.sh's set: the text, which stands in
                                        the file once, becomes what follows (`\\n` a line break); a
@@ -80,7 +82,8 @@ CENSUS = tuple(c for _, names in PRINTED for c in names)
 COUNTERS = CENSUS + ("queries_computed", "worked")
 # A fall this small is the build's own: a file it writes and reads back within the stamp window.
 FALL_PPM = 50
-ROW = re.compile(r"^(?P<w>[a-z][a-z0-9-]*) (?P<c>[a-z_]+) (?P<n>\d+)$")
+# a workload's name may hold an underscore, as an edit's kind does (`edit-added_after`)
+ROW = re.compile(r"^(?P<w>[a-z][a-z0-9_-]*) (?P<c>[a-z_]+) (?P<n>\d+)$")
 SNAPSHOT = re.compile(r"^snapshot ([0-9a-f]{40})$", re.M)
 
 
@@ -181,6 +184,13 @@ def percent(old, new):
     return "%+.3f%%" % (100.0 * (new - old) / old) if old else "new"
 
 
+def rows_said(run_dir):
+    """A run's rows, as tools/cost.baseline writes them, over the snapshot it measured: what a gate's
+    verdict carries, so a row is read off the run that measured it. -> 0."""
+    print(render(open(os.path.join(run_dir, "snapshot")).read().strip(), measured(run_dir)), end="")
+    return 0
+
+
 def judge(now, base):
     """-> (failures, lowered) lines: each baseline row a run printed no count for, or measured past
     the tolerance; and each row a run measured under."""
@@ -253,6 +263,8 @@ def main(argv):
         return 0
     if len(argv) == 4 and argv[1] == "--same":
         return same_warm(argv[2], argv[3])
+    if len(argv) == 3 and argv[1] == "--rows":
+        return rows_said(argv[2])
     if len(argv) != 3 or argv[1] not in ("--judge", "--accept"):
         print(__doc__)
         return 2
@@ -265,9 +277,12 @@ def main(argv):
         print("cost: the run printed no counts — refusing to judge")
         return 1
     part, ran_workloads = run_part(run_dir)
-    if argv[1] == "--accept" and part != "all":
-        print("cost: an accept records every row, and this run measured the %s part alone" % part)
+    # A PART IS ACCEPTED OVER THE PINNED SNAPSHOT ALONE: its workloads' rows are recorded and every
+    # other row stands as it was; a new snapshot records every row, so only the whole run moves it
+    if argv[1] == "--accept" and part != "all" and ran != pinned:
+        print("cost: an accept over another snapshot records every row, and this run measured the %s part alone" % part)
         return 1
+    others = {k: n for k, n in base.items() if k[0] not in ran_workloads}
     base = {k: n for k, n in base.items() if k[0] in ran_workloads}
     missing = unprinted(now) + ["cost: %s printed no counts" % w for w in sorted(ran_workloads) if not any(k[0] == w for k in now)]
     if missing:
@@ -287,11 +302,12 @@ def main(argv):
                 print("\n".join(failed))
                 print("cost: an accept never raises a row over the same snapshot")
                 return 1
-        open(BASELINE, "w").write(render(ran, accepted(now, base, same)))
+        open(BASELINE, "w").write(render(ran, {**others, **accepted(now, base, same)}))
         made = os.path.join(run_dir, "verdicts")
         if os.path.exists(made):
             open(VERDICTS, "w").write("# the std packages the snapshot's answers ship a verdict for (tools/cost_ratchet.py)\n" + open(made).read())
-        candidates_said(run_dir, True)
+        # a part's run classifies only its own sites, and a ledger's none: the record is the whole run's
+        candidates_said(run_dir, part == "all")
         print("cost: tools/cost.baseline recorded (snapshot %s)" % ran)
         return 0
     if ran != pinned:
@@ -362,6 +378,9 @@ def self_test():
     sha = "a" * 40
     snap, rows = read_baseline(render(sha, {("w", "boxes"): 1000, ("w", "retains"): 10}))
     assert snap == sha and rows == {("w", "boxes"): 1000, ("w", "retains"): 10}
+    # every row a run measures reads back, an edit's kind with an underscore among them
+    every = {("edit-added_after", "worked"): 42, ("ledger-edit-added_after", "pass_tape_asks"): 7}
+    assert read_baseline(render(sha, every))[1] == every
     # within the tolerance passes; one box past it fails, naming both numbers
     assert judge({("w", "boxes"): 100_050}, {("w", "boxes"): 100_000}) == ([], [])
     failed, _ = judge({("w", "boxes"): 100_051}, {("w", "boxes"): 100_000})

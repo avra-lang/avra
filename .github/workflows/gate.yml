@@ -117,6 +117,12 @@ jobs:
           [ -n "$line" ] || line="GATE ${{ matrix.slice }} ${{ needs.seed.outputs.sha8 }} FAIL rows=0 failed=0 0s (no GATE line, exit $st)"
           echo "$line" > "verdict/${{ matrix.slice }}"
           echo "$line"
+          # THE PASS LEDGER TRAVELS WITH THE VERDICT: its rows exactly as the run measured them, and its
+          # tables as markdown a landing posts
+          case "${{ matrix.slice }}" in cost-ledger-*)
+              [ ! -f build/cost/ledger.md ] || cp build/cost/ledger.md "verdict/${{ matrix.slice }}.md"
+              [ ! -f build/cost/snapshot ] || python3 tools/cost_ratchet.py --rows build/cost > "verdict/${{ matrix.slice }}.rows" || : ;;
+          esac
           exit "$st"
       - if: always() && matrix.slice == 'cost-laid' && hashFiles('build/cost-answers.fresh') != ''
         uses: actions/cache/save@v4

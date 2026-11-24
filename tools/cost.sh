@@ -183,17 +183,21 @@ ledgered() {
         taskset -c 0 build/avra "$sub" --passes --passes-rows "$@" > /dev/null 2> "$root/$out/$ran.ledger") || {
         tail -20 "$out/$ran.ledger"; echo "cost: $ran's ledger run failed"; exit 1; }
     grep '^pass-row' "$out/$ran.ledger" > "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
-    ledger_summary "$ran" "$out/$ran.ledger"
+    # the settle and each edit undone are no rows, and no table of the ledger
+    case $ran in ledger-settle | ledger-back-*) ;; *) ledger_summary "$ran" "$out/$ran.ledger" ;; esac
     rm -f "$out/$ran.ledger"
     echo "cost: $ran $(($(date +%s) - started)) s"
 }
 
-# THE PASS LEDGER OF EVERY RUN, where the gate shows a step's summary: the table `--passes` printed,
-# its times the census compiler's own — shown, never a row; its asks and asks per unit are rows.
+# THE PASS LEDGER OF EVERY RUN, as markdown a landing posts: the table `--passes` printed, its times
+# the census compiler's own — shown, never a row; its asks and asks per unit are rows. It is kept as
+# ledger.md beside the rows, and shown where the gate keeps a step's summary.
 ledger_summary() {
-    [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
     grep -q '^passes:' "$2" || return 0
-    { echo "#### passes — $1"; echo '```'; awk '/^passes:/ { p = 1 } p && /^pass-row/ { exit } p' "$2"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+    { echo "#### passes — $1"; echo '```'; awk '/^passes:/ { p = 1 } p && /^pass-row/ { exit } p' "$2"; echo '```'; } > "$out/$1.md"
+    cat "$out/$1.md" >> "$out/ledger.md"
+    [ -z "${GITHUB_STEP_SUMMARY:-}" ] || cat "$out/$1.md" >> "$GITHUB_STEP_SUMMARY"
+    rm -f "$out/$1.md"
 }
 
 # One warm findings run of the cli: counted (`$how` counted), its `worked:` line kept as <name>.out,
@@ -314,6 +318,10 @@ measure() {
         [ "$name" != check-cli ] || warm_edits
     done
 }
+# the ledger's markdown names the program it measured and the snapshot it measured over
+[ "$part" = cold-a ] || [ "$part" = cold-b ] || [ "$part" = laid ] || [ "$part" = warm ] ||
+    printf '### The pass ledger — %s\n\nprogram `%s`, over the snapshot `%s`%s\n\n' "$part" \
+        "$(git rev-parse --short=8 HEAD)" "$(printf '%.8s' "$snapshot")" "${COST_EDITS:+, edits $COST_EDITS}" > "$out/ledger.md"
 case $part in
     ledger-*) measure ledgered "$part" ;;
     all)
