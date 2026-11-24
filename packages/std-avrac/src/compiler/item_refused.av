@@ -249,7 +249,7 @@ type StoredBody = { store: SyntaxArena, typed: TypedBody }
 /// an entry. A body that didn't parse refuses nothing.
 @query("laws")
 fn item_refusals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemRefusals {
-    if !item_held(engine, file, at) { return ItemRefusals { rows: [] } }
+    if !item_judged(engine, file, at) { return ItemRefusals { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemRefusals { rows: [] } }
     let bodies = [StoredBody { store: item.store, typed: b } for b in item_bodies(engine, file, at, item)]
@@ -465,8 +465,7 @@ fn default_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item
     let consts = [b for d in names if d.kind == ItemKind.Const for b in some_list(const_body_of(engine, d))]
     let states = [b for d in names if d.kind == ItemKind.State for b in some_list(state_body(engine, d))]
     let contexts = [b for d in names if d.kind == ItemKind.Ctx for b in some_list(context_body(engine, d))]
-    let traits = [b for d in names if d.kind == ItemKind.Trait for b in trait_bodies(engine, TraitAt { file: file, name: d.name })]
-    seats.concat(fields).concat(consts).concat(states).concat(contexts).concat(traits)
+    seats.concat(fields).concat(consts).concat(states).concat(contexts)
 }
 
 /// The callee and each argument of every annotation a declaration of `item` wears, each a body of

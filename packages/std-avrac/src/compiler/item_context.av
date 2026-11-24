@@ -103,8 +103,8 @@ export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { item
 /// nothing else, and every question asked of an item by its id stands across it.
 @cut_query("tape")
 export fn item_ids(engine: QueryEngine, file: SourceFileAddress) -> List<ItemId> {
-    let part? = item_parts_part(engine, file, IDS_PART) else { return [] }
-    [ItemId(i) for i in ItemIds.from_saved_bytes(part).ids]
+    let part? = item_parts_part_kept(engine, file, IDS_PART) else { return [] }
+    [ItemId(i) for i in ItemIds.from_saved_held(part.value, part.hash).ids]
 }
 
 /// AN ITEM OF A FILE, BY ITS ID: never its place among the file's items. A name of its own, so a
@@ -122,6 +122,20 @@ type ItemIds = { ids: List<int> }
 /// ask, it spelled its name (held_part, 12.5M boxes on a cold build-cli) and read its part.
 @cut_query("tape")
 export fn item_held(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool { item_parts_part(engine, file, held_part(at)) != null }
+
+/// Whether the laws judge the item `at` of `file`: a written item it holds, or one its generators make,
+/// whose every body runs as a written one's does — but a wrap's, whose wrapper is typed as the
+/// written fn it wraps, under that fn's name.
+export fn item_judged(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool {
+    if item_held(engine, file, at) { return true }
+    let g? = generated_at(engine, file, at) else { return false }
+    if g.wraps { return false }
+    // what a generator its own file refuses made is said there, never again where it lands
+    if g.from != null && !same_file(g.from!, file) && file_erring(engine, g.from!).errors > 0 { return false }
+    // what is made of a declaration that refuses is said at the declaration, never again in what was made
+    let site? = g.site else { return true }
+    !law_findings(engine, file, site).findings.any(fails_build(it))
+}
 
 /// Whether `file` holds a written item at all: what an item added or taken away beside another
 /// leaves standing.
@@ -147,8 +161,8 @@ export fn nth_item_id(engine: QueryEngine, file: SourceFileAddress, generated: b
 /// answer is asked again with the place it was asked at, which an edit may have taken away.
 @cut_query("tape")
 export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnder {
-    let part = item_parts_part(engine, file, text_part(at))
-    let item = if part == null { ItemPart { text: "", print: fp_str("") } } else { ItemPart.from_saved_bytes(part!) }
+    let part = item_parts_part_kept(engine, file, text_part(at))
+    let item = if part == null { ItemPart { text: "", print: fp_str("") } } else { ItemPart.from_saved_held(part!.value, part!.hash) }
     ItemUnder {
         text: item.text,
         context: WordShapes.from_saved_bytes(file_context(engine, file)).named_in(item.text),
@@ -220,8 +234,8 @@ type FilePresent = { present: bool }
 
 /// Whether `file` is there, whatever it holds: a part of its items, which an edit leaves standing.
 export fn file_present(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    let part? = item_parts_part(engine, file, PRESENT_PART) else { return false }
-    FilePresent.from_saved_bytes(part).present
+    let part? = item_parts_part_kept(engine, file, PRESENT_PART) else { return false }
+    FilePresent.from_saved_held(part.value, part.hash).present
 }
 
 /// The part of `item_parts` holding its written items' ids, in order: what an edit inside an item
@@ -428,8 +442,8 @@ export type ItemText = { start: int, text: string, print: int, id: ItemId = Item
 /// off its part where it is asked: what asks it is a file's placing, worked out again when any start
 /// moves.
 export fn item_start(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> int {
-    let part = item_parts_part(engine, file, start_part(at))
-    if part == null { 0 } else { ItemStands.from_saved_bytes(part!).offset }
+    let part = item_parts_part_kept(engine, file, start_part(at))
+    if part == null { 0 } else { ItemStands.from_saved_held(part!.value, part!.hash).offset }
 }
 
 /// Where each item of `file` starts in its text, in order: what moves when an edit lengthens an item
@@ -659,8 +673,8 @@ type ItemLets = { names: List<string> }
 /// The names the written item `at` of `file` binds at its top level, statement by statement, as its
 /// read parts hold them: what a new body for anything in it leaves standing.
 fn item_lets(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<string> {
-    let part? = item_read_parts_part(engine, file, at, LETS_PART) else { return [] }
-    ItemLets.from_saved_bytes(part).names
+    let part? = item_read_parts_part_kept(engine, file, at, LETS_PART) else { return [] }
+    ItemLets.from_saved_held(part.value, part.hash).names
 }
 
 /// The part of `item_read_parts` holding which seats of the fn `name` its item declares are `mut`.
@@ -677,20 +691,20 @@ type SeatsMarked = { mutable: List<bool> }
 /// What the written item `at` of `file` writes that the items after it read, as its read parts hold
 /// it: what a new body for a fn leaves standing.
 fn item_front(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFront {
-    let part? = item_read_parts_part(engine, file, at, FRONT_PART) else {
+    let part? = item_read_parts_part_kept(engine, file, at, FRONT_PART) else {
         defect(summary_unparted())
         return ItemFront { binds: [], uses: [] }
     }
-    ItemFront.from_saved_bytes(part)
+    ItemFront.from_saved_held(part.value, part.hash)
 }
 
 /// Whether a builder refused what the written item `at` of `file` read, as its read parts hold it.
 fn item_read_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool {
-    let part? = item_read_parts_part(engine, file, at, REFUSED_PART) else {
+    let part? = item_read_parts_part_kept(engine, file, at, REFUSED_PART) else {
         defect(summary_unparted())
         return false
     }
-    ReadRefused.from_saved_bytes(part).refused
+    ReadRefused.from_saved_held(part.value, part.hash).refused
 }
 
 /// Which seats of the fn the written item `at` of `file` declares as `name` are `mut`; absent where
@@ -698,23 +712,23 @@ fn item_read_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -
 fn item_seats_marked(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> List<
     bool,
 >? {
-    let part? = item_read_parts_part(engine, file, at, seats_part(name)) else { return null }
-    SeatsMarked.from_saved_bytes(part).mutable
+    let part? = item_read_parts_part_kept(engine, file, at, seats_part(name)) else { return null }
+    SeatsMarked.from_saved_held(part.value, part.hash).mutable
 }
 
 /// What the items of `file` before the item `at` write that it reads, gathered in order: a written
 /// item's own part of `before_parts`, which an item added after it, or before it writing nothing,
 /// leaves standing; any other item gathers the items before it.
 fn front_before(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFront {
-    let part? = before_parts_part(engine, file, front_part(at)) else { return fronts_gathered(engine, file, items_before(engine, file, at)) }
-    ItemFront.from_saved_bytes(part)
+    let part? = before_parts_part_kept(engine, file, front_part(at)) else { return fronts_gathered(engine, file, items_before(engine, file, at)) }
+    ItemFront.from_saved_held(part.value, part.hash)
 }
 
 /// Whether a statement of an item of `file` before the item `at` runs: a written item's own part of
 /// `before_parts`, which an item added beside it that runs nothing leaves standing.
 fn runs_before(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool {
-    let part? = before_parts_part(engine, file, runs_part(at)) else { return items_before(engine, file, at).any(item_said(engine, file, it).runs) }
-    RunsBefore.from_saved_bytes(part).runs
+    let part? = before_parts_part_kept(engine, file, runs_part(at)) else { return items_before(engine, file, at).any(item_said(engine, file, it).runs) }
+    RunsBefore.from_saved_held(part.value, part.hash).runs
 }
 
 /// Whether a statement of an item before one runs.
@@ -797,20 +811,20 @@ const DECLARES_PART: string = "declares"
 
 /// What the written item `at` of `file` says of itself, as its summary holds it.
 fn item_said(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemSaid {
-    let part? = item_summary_part(engine, file, at, SAID_PART) else {
+    let part? = item_summary_part_kept(engine, file, at, SAID_PART) else {
         defect(summary_unparted())
         return ItemSaid { runs: false, worn: [] }
     }
-    ItemSaid.from_saved_bytes(part)
+    ItemSaid.from_saved_held(part.value, part.hash)
 }
 
 /// The names the written item `at` of `file` declares, as its summary holds them.
 fn item_declares(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<TapeName> {
-    let part? = item_summary_part(engine, file, at, DECLARES_PART) else {
+    let part? = item_summary_part_kept(engine, file, at, DECLARES_PART) else {
         defect(summary_unparted())
         return []
     }
-    ItemDeclares.from_saved_bytes(part).names
+    ItemDeclares.from_saved_held(part.value, part.hash).names
 }
 
 fn summary_unparted() -> string { "an item's summary lacks one of the parts it always writes" }

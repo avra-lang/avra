@@ -28,12 +28,14 @@ use @std.program.query_engine.{QueryEngine}
 
 /// What the records `file` declares with a grammar are given, each one's `impl` an item of the file.
 fn format_generated(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratedItems> {
-    [items_spliced(engine, file, f.name, [format_directive(file, f)]) for f in format_records(engine, file)]
+    // each item a grammar makes stands beside the record that declares it: a mistake of the record's is
+    // said there, and what was made of it is never judged again (item_judged)
+    [kept with { items: [g with { site: f.item, owner: f.name } for g in kept.items] } for f in format_records(engine, file) for kept in [items_spliced(engine, file, f.name, [format_directive(file, f)])]]
 }
 
 /// A record a grammar reads: its name, the format, where it's declared, and how each hole reads its
 /// span, its written type resolved in the record's file.
-type FormatRecord = { name: string, format: GrammarSpec, at: int, readings: List<HoleReading> }
+type FormatRecord = { name: string, item: ItemId, format: GrammarSpec, at: int, readings: List<HoleReading> }
 
 /// Each record `file` declares with a grammar, in the order declared.
 fn format_records(engine: QueryEngine, file: SourceFileAddress) -> List<FormatRecord> {
@@ -49,6 +51,7 @@ fn format_record(engine: QueryEngine, d: DeclaredName) -> FormatRecord? {
     let signing = signing_in(engine, d.file, [])
     FormatRecord {
         name: d.name,
+        item: d.item,
         format: format,
         at: span_in_file(engine, d.file, item, written).lo,
         readings: readings_of(format, signing),

@@ -16,6 +16,7 @@ use @std.meta.{
     Variant as MetaVariant,
     as_code,
     beside,
+    declares,
     int_node,
     name,
     refuse,
@@ -34,7 +35,9 @@ use saved_layout.{
     saved_map,
     saved_root_record,
 }
+use answer_record.{ContentHash, content_hash}
 use defect.{defect}
+use held_values.{HeldValues, held_values}
 use interned.{KeyLane}
 use value_shapes.{FieldRole, Reading, ValueShape, Wrapper, tag_made, tag_number}
 
@@ -86,7 +89,17 @@ export trait Saved {
     static fn derive(t: MetaType) -> Declared {
         let problems = [no_bytes(t.name, f) for f in every_field(t) if saved_shape(f.kind) == null]
         if !problems.is_empty() { return nothing_made(problems) }
-        Declared { made: [beside(t, quote { impl ${t} { ${saved_methods(t)} } })] }
+        if !held_once(t) {
+            return Declared {
+                made: [beside(t, quote { impl ${t} { ${saved_methods(t, false)} } })],
+            }
+        }
+        Declared {
+            made: [
+                beside(t, quote { impl ${t} { ${saved_methods(t, true)} } }),
+                declares(held_decodes_door(t), t.at, held_decodes(t)),
+            ],
+        }
     }
 }
 
@@ -98,18 +111,62 @@ fn every_field(t: MetaType) -> List<Field> {
 /// A field's shape, once `Saved` has refused every field without one.
 fn shape_of_field(f: Field) -> ValueShape { saved_shape(f.kind)! }
 
-/// The generated methods: a value to and from its bytes, and in place inside a bigger answer.
-fn saved_methods(t: MetaType) -> Decls {
+/// Whether what a value of `t` reads back as is held for the process by its bytes' hash: a value
+/// holding no cell, which never changes once read, so the same bytes are the same value.
+fn held_once(t: MetaType) -> bool { !every_field(t).any(cell_in(shape_of_field(it))) }
+
+/// Whether a shape holds a cell anywhere in it.
+fn cell_in(shape: ValueShape) -> bool {
+    match shape {
+        .Celled(_) -> true,
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> shape.children().any((child) -> cell_in(child)),
+    }
+}
+
+/// `<type>_held_decodes()`: what each bytes a value of `t` was read from read back as, by their hash.
+fn held_decodes_door(t: MetaType) -> string { "${t.name}_held_decodes" }
+
+fn held_decodes(t: MetaType) -> Decls {
+    quote {
+        once fn ${held_decodes_door(t)}() -> HeldValues<${t}> { held_values() }
+    }
+}
+
+/// The generated methods: a value to and from its bytes, and in place inside a bigger answer. Where
+/// `held`, a value read from bytes is held by their hash for the process (`held_values`), so the same
+/// bytes read again decode nothing; `from_saved_held` takes the hash where the reader has it (a
+/// part's, `KeptPart.hash`), so the bytes aren't hashed again.
+fn saved_methods(t: MetaType, held: bool) -> Decls {
+    let read = if held {
+        quote {
+            static fn from_saved_bytes(bytes: Bytes) -> ${t} { ${name(t.name)}.from_saved_held(bytes, content_hash(bytes)) }
+
+            static fn from_saved_held(bytes: Bytes, key: ContentHash) -> ${t} {
+                let kept = ${held_decodes_door(t)}().get(key)
+                if kept != null { return kept! }
+                let ${SOURCE_NAME} = SavedSource.InMemory(bytes)
+                let value = ${name(t.name)}.read_from(${source_code()}, saved_root_record(${source_code()}, bytes.length))
+                ${held_decodes_door(t)}().put(key, value, bytes.length)
+                value
+            }
+        }
+    } else {
+        quote {
+            static fn from_saved_bytes(bytes: Bytes) -> ${t} {
+                let ${SOURCE_NAME} = SavedSource.InMemory(bytes)
+                ${name(t.name)}.read_from(${source_code()}, saved_root_record(${source_code()}, bytes.length))
+            }
+
+            static fn from_saved_held(bytes: Bytes, _key: ContentHash) -> ${t} { ${name(t.name)}.from_saved_bytes(bytes) }
+        }
+    }
     quote {
         fn saved_bytes() -> Bytes {
             let writer = saved_layout_writer()
             writer.finished(self.written_into(writer))
         }
 
-        static fn from_saved_bytes(bytes: Bytes) -> ${t} {
-            let ${SOURCE_NAME} = SavedSource.InMemory(bytes)
-            ${name(t.name)}.read_from(${source_code()}, saved_root_record(${source_code()}, bytes.length))
-        }
+        ${read}
 
         fn written_into(${WRITER_NAME}: SavedLayoutWriter) -> int { ${written_body(t)} }
 

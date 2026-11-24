@@ -91,15 +91,19 @@ export type ItemFindings = { findings: List<LawFinding> }
 /// (`reads_item`); a witness holds each law skipped so to finding nothing there
 /// (tools/witness_program_needs.sh). An item holding a declaration that lost its name is refused as
 /// a clash before any other law reads it.
+/// A generated item is judged by the laws that refuse: a warning is said to whoever can edit what it
+/// warns of, and no one edits what a generator makes.
 @query("laws")
 export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFindings {
-    let view = if item_held(engine, file, at) { item_view(engine, file, at) } else { null }
+    let view = if item_judged(engine, file, at) { item_view(engine, file, at) } else { null }
     let lost = lost_a_name(engine, file, at)
     pinned_while(
         view,
         () -> ItemFindings {
             findings: sorted_by(
-                [finding_of(g.entry.name, s) for g in gated_laws() if (!lost || g.entry.judges_lost) && (g.gates.is_empty() || reads_item(view, g.gates)) for s in law_found(engine, file, at, view, g.entry)],
+                [finding_of(g.entry.name, s) for g in gated_laws() if (generated_rank(at) == null || !g.entry.warns) &&
+                    (!lost || g.entry.judges_lost) &&
+                    (g.gates.is_empty() || reads_item(view, g.gates)) for s in law_found(engine, file, at, view, g.entry)],
                 stands_before,
             ),
         },
@@ -235,15 +239,27 @@ fn stands_before(a: LawFinding, b: LawFinding) -> bool {
 @derive(Saved)
 export type FileErring = { errors: int }
 
-/// How many findings in the written items of `file` fail a build: each of a law that refuses rather
-/// than warns, and a source that holds no text.
+/// What every law finds in `file`'s items, written and generated, each place counted from the file's
+/// start: one answer a file, so whatever reads a whole file's findings reads it once, and each
+/// item's own findings are read only where they changed.
+@query("laws")
+export fn file_found(engine: QueryEngine, file: SourceFileAddress) -> FileFound {
+    FileFound {
+        findings: [f for at in swept_item_ids(engine, file) for f in findings_in_file(engine, file, at)],
+    }
+}
+
+/// What `file_found` answers.
+@derive(Saved)
+export type FileFound = { findings: List<LawFinding> }
+
+/// How many findings in the items of `file`, written and generated, fail a build: each of a law that
+/// refuses rather than warns, and a source that holds no text.
 @query("laws")
 export fn file_erring(engine: QueryEngine, file: SourceFileAddress) -> FileErring {
     let absent = if standing_of(engine, file) is .Text { 0 } else { 1 }
     FileErring {
-        errors: absent +
-            [f for at in item_ids(engine, file) for f in law_findings(engine, file, at).findings if fails_build(f)]
-                .length,
+        errors: absent + [f for f in file_found(engine, file).findings if fails_build(f)].length,
     }
 }
 
@@ -321,7 +337,7 @@ export type FileWarned = { file: SourceFileAddress, findings: List<LawFinding> }
 /// What every law that warns finds in the written items of `file`, each site of one kind once.
 @query("laws")
 export fn file_warned(engine: QueryEngine, file: SourceFileAddress) -> FileWarned {
-    let found = [f for at in item_ids(engine, file) for f in findings_in_file(engine, file, at) if !fails_build(f)]
+    let found = [f for f in file_found(engine, file).findings if !fails_build(f)]
     FileWarned {
         file: file,
         findings: [f for i, f in found if !found.take(i).any((g) -> same_site(g, f))],
@@ -359,8 +375,17 @@ export fn findings_in_file(engine: QueryEngine, file: SourceFileAddress, at: Ite
 /// item's where it stands in another.
 fn finding_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId, f: LawFinding) -> LawFinding {
     let home = f.item ?? at
+    // a generated item's places are its template's: what it holds is said at the annotation that made it
+    let mark = generated_mark(engine, file, home)
+    if mark != null { return f with { at: mark, named: null, fixes: [], aside: made_aside(engine, file, home), item: null } }
     let placed = (p: FindingAt?) -> if p == null { null } else { file_placed(engine, file, home, p!) }
     f with { at: placed(f.at), named: placed(f.named), fixes: [fix_in_file(engine, file, home, x) for x in f.fixes], aside: aside_in_file(engine, file, at, f.aside), item: null }
+}
+
+/// What a finding in the generated item `at` of `file` says beside it: the annotation whose code it is.
+fn made_aside(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> AsideAt? {
+    let g? = generated_at(engine, file, at) else { return null }
+    AsideAt { label: "in the code `@${g.by}` generates over `${g.owner}`", at: null }
 }
 
 /// An edit a finding the item `home` of `file` offers, counted from the file's start: one in another

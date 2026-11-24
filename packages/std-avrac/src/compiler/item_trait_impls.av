@@ -3,7 +3,7 @@
 //! writes for it, and writes no default the trait writes already; it lands for the whole generic it
 //! is written for, on the type itself and never an alias; and a bound names its trait at every
 //! parameter too. Read off the written item's impls and the trait each names, as each is written.
-use core.{StmtId, SyntaxArena, TypeRef, flatten, some_list, spelled}
+use core.{LandedSeat, StmtId, SyntaxArena, TypeRef, flatten, some_list, spelled}
 use compiler.laws.{Found, law}
 use compiler.typing.{
     bound_miscounts_trait,
@@ -79,7 +79,11 @@ fn impls_untraited(view: ItemView) -> List<Found> {
     let engine = view.engine
     let file = view.file
     let item? = parsed_view(view) else { return [] }
-    let untraited = [Found { at: item.store.stmt_span(s), args: [p!.of!] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null && trait_read(engine, file, p!.of!) == null]
+    // a trait's name is read where it was written: a template's, as an impl a generator made writes it, in the template's file
+    let untraited = [Found { at: item.store.stmt_span(s), args: [p!.of!] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null &&
+        p!.of != null &&
+        read_from(engine, file, item.store.seat_home(s, LandedSeat.Trait))
+            .all((f) -> trait_read(engine, f, p!.of!) == null)]
     if untraited.is_empty() { return [] }
     let refused = imports_refused(engine, file)
     [f with { unread: unread_here(engine, file, f.args[0]) } for f in untraited if !refused.contains(f.args[0])]

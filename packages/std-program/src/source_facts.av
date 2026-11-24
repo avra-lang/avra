@@ -107,10 +107,17 @@ export fn listed(engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
     read_stamped(engine, (places.directory)(dir), () -> names_in(world, dir))
 }
 
-/// The names `world` lists in `dir`, in text order; absent when there's no such directory.
+/// The name of the directory a package's store stands in, beside its sources.
+export const STORE_DIR: string = ".avra-cache"
+
+/// The names `world` lists in `dir`, in text order, but the store's own directory; absent when
+/// there's no such directory. A STORE IS NO SOURCE: it comes and goes as processes save, so a
+/// listing that held it would be an answer moved by whatever saved last — a build of one package
+/// re-worked because another saved beside it, and the std answers a toolchain writes package by
+/// package, at once, holding what each job happened to see of the others'.
 fn names_in(world: SourceWorld, dir: DirectoryAddress) -> List<string>? {
     let names? = (world.list_directory)(dir) else { return null }
-    sorted_by(names, text_before)
+    sorted_by([n for n in names if n != STORE_DIR], text_before)
 }
 
 /// One item: what its part is called, and the hashes of what it says.

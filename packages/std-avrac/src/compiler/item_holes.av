@@ -126,7 +126,9 @@ fn stated_bodies_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, 
     StatedBody,
 > {
     let fns = [StatedBody { stmt: s, typed: b! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [written_typed(engine, file, p!.name)] if b != null]
-    fns.concat([b for a in impls_at(engine, file, at) for b in typed_impl_bodies(engine, a)])
+    fns
+        .concat([b for a in impls_at(engine, file, at) for b in typed_impl_bodies(engine, a)])
+        .concat(item_trait_bodies(engine, file, item))
 }
 
 /// The body the fn `file` declares as `name` writes, typed as it is written: an annotation that wraps
@@ -155,7 +157,7 @@ fn first_typed(bodies: List<List<SignedType?>>, k: int) -> SignedType? {
 /// The impls the written item `at` of `file` holds, each as a method's typing reaches it, each query
 /// they stand on asked.
 fn item_impls_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ImplAt> {
-    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in item_impls(engine, file, at) for d in [impl_target(engine, file, i)] if d != null]
+    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in impls_of_item(engine, file, at) for d in [impl_target(engine, file, i)] if d != null]
 }
 
 /// Each method's and static's body an impl writes, typed, beside its statement.

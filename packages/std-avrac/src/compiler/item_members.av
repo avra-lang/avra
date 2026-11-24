@@ -262,7 +262,7 @@ type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int
 /// Every miss in the written item `at` of `file`, in node order: the asker's view of them, made once.
 /// An item that didn't parse misses nothing.
 fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemMisses {
-    if !item_held(engine, file, at) { return ItemMisses { rows: [] } }
+    if !item_judged(engine, file, at) { return ItemMisses { rows: [] } }
     misses_seen(item_view(engine, file, at))
 }
 
@@ -320,6 +320,7 @@ fn written_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item:
                 },
             ] if !wraps_body(engine, file, m.name, MethodSite { at: a, statics: m.statics })],
         )
+        .concat([t.typed.types for t in item_trait_bodies(engine, file, item)])
 }
 
 /// The statements the written item `at` of `file` runs where its file is an entry, typed; absent
@@ -745,6 +746,8 @@ fn as_head(e: Expr, text: string) -> string? {
 /// Where the key `name` that a value at `at` is written after starts: back over the space and the
 /// colon between them; absent where the text there is no such key.
 fn key_before(text: string, at: int, name: string) -> int? {
+    // a place no text holds, as a generated item's (its places are its template's), has no key written before it
+    if at > text.length { return null }
     mut i = at - 1
     while i >= 0 && spaced(text.char_code(i)) { i = i - 1 }
     if i < 0 || text.char_code(i) != 58 { return null }

@@ -17,7 +17,9 @@
 #   (7) a store that compacts once they're laid in keeps them: the check after it works out what
 #       the check with none does;
 #   (8) on the volume the answers stand on, each is laid in by a second name, never a copy: every
-#       pack and kept file the store holds of them is the shipped file itself.
+#       pack and kept file the store holds of them is the shipped file itself;
+#   (9) the answers are the same however the writer's jobs meet: written with its jobs one at a time
+#       and all at once, the check over each works out the same.
 #   sh tools/std_answers_checkout_witness.sh [compiler]     (default build/avra)
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -153,4 +155,17 @@ for n in $(ls "$fresh/build/answers" | grep -E '^(pack|kept)-'); do
         fail "(8) $n was laid in as a copy, or not at all, on the volume its answers stand on"
 done
 held "(8) laid in by a second name: $(ls "$fresh/build/answers" | grep -cE '^(pack|kept)-') files, no copy"
+
+# (9)
+k=0
+for jobs in 1 3; do
+    find "$fresh/build/answers" -delete 2>/dev/null
+    STD_ANSWERS_JOBS=$jobs sh "$root/tools/std_answers.sh" "$fresh/build/avra" "$fresh/packages" "$fresh/build/answers" std-text std-prelude std-meta >/dev/null ||
+        fail "(9) the answers were not made, $jobs job(s) at a time"
+    eval "met$k=\$(worked \"\$w/m9-$k\")"
+    k=$((k + 1))
+done
+[ -n "$met0" ] && [ "$met0" = "$met1" ] ||
+    fail "(9) the shipped answers hang on how the writer's jobs met: ${met0:-none} one at a time, ${met1:-none} at once"
+held "(9) written one job at a time and all at once: ${met0} answers worked out over each"
 echo "std_answers_checkout_witness: held"

@@ -134,6 +134,32 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
     typed_under(engine, file, signed)
 }
 
+/// The bodies the trait `file` declares as `owner` writes for its own members, typed once a trait:
+/// a static's with no `Self`, a method's as the first type of its package that leaves it to the
+/// trait answers it. Each stands beside its statement, so a body no impl takes is judged where it's
+/// written all the same.
+@query("typing")
+export fn typed_trait_bodies(engine: QueryEngine, file: SourceFileAddress, owner: string) -> TraitBodiesTyped {
+    let signed = trait_bodies(engine, TraitAt { file: file, name: owner })
+    TraitBodiesTyped {
+        stmts: [b.stmt.index for b in signed],
+        bodies: [typed_under(engine, file, b) for b in signed],
+    }
+}
+
+/// What `typed_trait_bodies` answers: each body's statement, by index, and the body typed.
+@derive(Saved)
+export type TraitBodiesTyped = { stmts: List<int>, bodies: List<TypedBody> }
+
+/// The bodies each trait the written item `item` of `file` declares writes for its own members,
+/// typed, each beside its statement: read off the item in hand, so an item declaring no trait asks
+/// nothing.
+export fn item_trait_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem) -> List<
+    StatedBody,
+> {
+    [StatedBody { stmt: StmtId { index: t.stmts[j] }, typed: b } for s in item.stmts for p in [item.store.trait_parts(s)] if p != null for t in [typed_trait_bodies(engine, file, p!.name)] for j, b in t.bodies]
+}
+
 /// `signed`'s body in `file`, typed under its signature, with the bounds its type parameters carry.
 fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> TypedBody {
     let cx = body_checked(engine, file, signed, false)
