@@ -238,6 +238,9 @@ resolved() {
     find "$out/$1.raw" "$out/$1.addrs" "$out/$1.names" -delete
 }
 
+# no std answers beside the census compiler: what a run reads of std it works out itself
+unlaid() { [ ! -e "$src/build/answers" ] || find "$src/build/answers" -delete; }
+
 bare() {
     find "$src" -path '*/.avra-cache*' -delete
     find "$src/packages" \( -path '*/src/main' -o -name '*.av.ll' \) -type f -delete
@@ -289,10 +292,14 @@ reached() {
     printf '%s\n' $seen
 }
 
-# the part this run measures, and every workload it measures — what tools/cost_ratchet.py judges
+# the parts this run measures, in the order named, and every workload they measure — what
+# tools/cost_ratchet.py judges. Several parts in one run (`COST_PART="laid ledger-cold"`) meet in one
+# measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
-case $part in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-warm) ;;
-    *) echo "cost: COST_PART is all, cold-a, cold-b, laid, warm, ledger-cold or ledger-warm, never $part"; exit 2 ;; esac
+for p in $part; do
+    case $p in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-warm) ;;
+        *) echo "cost: COST_PART names all, cold-a, cold-b, laid, warm, ledger-cold or ledger-warm, never $p"; exit 2 ;; esac
+done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
 # measure <how> <part>: each workload of the part, counted, or its ledger's run (the ledger of the laid
@@ -311,7 +318,10 @@ measure() {
         [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do
             if [ "$how" = ledgered ]; then echo "ledger-edit-$kind"; else echo "edit-$kind"; fi >> "$out/workloads"; done
         bare
-        [ "$store" != laid ] || laid
+        # THE LAID ANSWERS ARE THE LAID WORKLOAD'S ALONE: the compiler reads std answers beside it, so
+        # those a laid check leaves would answer every run after it in the same measurement — a run is
+        # the same whichever part, or which run before it, the measurement holds
+        if [ "$store" = laid ]; then laid; else unlaid; fi
         # shellcheck disable=SC2086
         $how "$lname" $command
         [ "$how" = ledgered ] || [ "$census" = none ] || resolved "$name"
@@ -319,17 +329,19 @@ measure() {
     done
 }
 # the ledger's markdown names the program it measured and the snapshot it measured over
-[ "$part" = cold-a ] || [ "$part" = cold-b ] || [ "$part" = laid ] || [ "$part" = warm ] ||
+case " $part " in *" all "* | *" ledger-"*) ;; *) false ;; esac &&
     printf '### The pass ledger — %s\n\nprogram `%s`, over the snapshot `%s`%s\n\n' "$part" \
         "$(git rev-parse --short=8 HEAD)" "$(printf '%.8s' "$snapshot")" "${COST_EDITS:+, edits $COST_EDITS}" > "$out/ledger.md"
-case $part in
-    ledger-*) measure ledgered "$part" ;;
-    all)
-        measure counted all
-        measure ledgered all
-        ;;
-    *) measure counted "$part" ;;
-esac
+for p in $part; do
+    case $p in
+        ledger-*) measure ledgered "$p" ;;
+        all)
+            measure counted all
+            measure ledgered all
+            ;;
+        *) measure counted "$p" ;;
+    esac
+done
 # THE CANDIDATES: every cold run's sites classified to the zero-cost technique that would remove their
 # cost, the top of each named where the snapshot declares it (docs/ZERO_COST.md); a part whose runs
 # take no site tables (laid) has none
