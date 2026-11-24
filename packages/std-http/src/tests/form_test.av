@@ -380,6 +380,7 @@ spec "std/http — a form read as a record" {
         }
         then "what may be absent takes its default" { signed_up("email=e&age=1") == "e 1 -1.0 - false  0" }
         then "an empty text is text" { signed_up("email=e&age=1&plan=") == "e 1 -1.0  false  0" }
+        then "a number or a checkbox left blank is absent" { signed_up("email=e&age=1&height=&agree=") == "e 1 -1.0 - false  0" }
         then "a checkbox's spellings" {
             signed_up("email=e&age=1&agree=true") == "e 1 -1.0 - true  0" &&
                 signed_up("email=e&age=1&agree=0") == "e 1 -1.0 - false  0" &&
@@ -395,7 +396,7 @@ spec "std/http — a form read as a record" {
     given "refusals are one 422 naming every field" {
         then "a missing field" { signed_up("age=1") == "422 email required" }
         then "every issue at once" { signed_up("age=old&height=tall&agree=maybe") == "422 email required, age type, height type, agree type" }
-        then "an empty number is refused, never defaulted" { signed_up("email=e&age=1&height=") == "422 height type" }
+        then "an empty required number is required" { signed_up("email=e&age=") == "422 age required" }
         then "a field sent twice" { signed_up("email=a&email=b&age=1") == "422 email type" }
         then "a list element" { signed_up("email=e&age=1&scores=1&scores=x") == "422 scores[1] type" }
         then "a body that is no form keeps the form's refusal" {
