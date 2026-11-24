@@ -672,6 +672,8 @@ export type DiskStore = {
     /// What this process learned for its binary's frontier, written once the pack holding its
     /// answers is.
     pending_frontier: Cell<PendingFrontier?>,
+    /// The frontier this store last read, and the names of the files it read it from.
+    read_frontier: Cell<ReadFrontier?>,
     /// The packs other processes published as shares of the packs this store read, once it took
     /// them in their place.
     taken_shares: Cell<List<string>>,
@@ -680,6 +682,10 @@ export type DiskStore = {
 /// What a process learned for its binary's frontier, waiting for its answers to be published:
 /// whose it is, and what it learned.
 type PendingFrontier = { print: string, learned: FrontierLearned }
+
+/// A frontier as one binary's files held it, and those files' names. A file is named by the hash of
+/// its octets, so while a binary's frontier files bear the same names its frontier is this one.
+type ReadFrontier = { print: string, names: List<string>, frontier: Frontier? }
 
 /// A pack this store can't read, and its size: it counts against the store's room, and goes when
 /// the store compacts. A binary that wrote it only ever loses work.
@@ -710,6 +716,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
     let segment: Cell<List<Segment>> = Cell.new([])
     let pending: Cell<PendingFrontier?> = Cell.new(null)
     let taken_shares: Cell<List<string>> = Cell.new([])
+    let read_frontier: Cell<ReadFrontier?> = Cell.new(null)
     DiskStore {
         directory: directory,
         print: print,
@@ -719,6 +726,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
         held_questions: held_questions,
         foreign: foreign,
         pending_frontier: pending,
+        read_frontier: read_frontier,
         taken_shares: taken_shares,
         generation: Cell.new(1 + pack_names_in(directory).fold(0, (newest, p) -> max_of(newest, p.generation))),
     }
@@ -1029,9 +1037,18 @@ fn questions_of_binary(directory: string, binary: string) -> List<ContentHash> {
 
 /// Every frontier file of the binary printed `print` in `directory` that can be mapped.
 fn frontiers_of(directory: string, print: string) -> List<FoundFrontier> {
-    // LICENSED input.store_io: the store's own files, never an input of what is answered
-    [found! for name in list_dir(directory) catch [] if name.starts_with("${FRONTIER_PREFIX}${print}.") for found in [found_frontier(directory, name)] if found != null]
+    [found! for name in frontier_file_names(directory, print) for found in [found_frontier(directory, name)] if found != null]
 }
+
+/// The names of the binary printed `print`'s frontier files in `directory`.
+fn frontier_file_names(directory: string, print: string) -> List<string> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    [name for name in list_dir(directory) catch [] if name.starts_with("${FRONTIER_PREFIX}${print}.")]
+}
+
+/// Whether two listings of a directory name the same files: names are distinct, and a binary keeps
+/// a few frontier files.
+fn same_names(a: List<string>, b: List<string>) -> bool { a.length == b.length && a.all((name) -> b.contains(name)) }
 
 /// The frontier file `name` in `directory`, absent when the name isn't a frontier file's or it
 /// can't be mapped.
@@ -1150,8 +1167,14 @@ impl AnswerStore for DiskStore {
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.held_answers.put(answer, bytes) }
 
-    /// The frontier the files of the binary printed `print` hold, read where they lie.
-    fn frontier_of(print: string) -> Frontier? { frontier_over([f.file for f in frontiers_of(self.directory, print)]) }
+    /// The frontier the files of the binary printed `print` hold, read where they lie: the one read
+    /// last, while those files bear the names they did, since a name is the hash of its octets.
+    fn frontier_of(print: string) -> Frontier? {
+        let names = frontier_file_names(self.directory, print)
+        let read? = self.read_frontier.get() else { return self.frontier_read(print, names) }
+        if read.print == print && same_names(read.names, names) { return read.frontier }
+        self.frontier_read(print, names)
+    }
 
     /// Holds what this process learned for its binary's frontier, written once the pack holding its
     /// answers is.
@@ -1332,6 +1355,16 @@ impl DiskStore {
         let segment = segment_of(draft)
         self.segment.set([segment])
         segment
+    }
+
+    /// The frontier the files named `names` hold for the binary printed `print`, read where they lie
+    /// and kept as the one read last.
+    fn frontier_read(print: string, names: List<string>) -> Frontier? {
+        let frontier = frontier_over(
+            [found!.file for name in names for found in [found_frontier(self.directory, name)] if found != null],
+        )
+        self.read_frontier.set(ReadFrontier { print: print, names: names, frontier: frontier })
+        frontier
     }
 
     /// Whether this process has learned anything it hasn't published.

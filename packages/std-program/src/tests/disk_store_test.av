@@ -114,6 +114,14 @@ fn three_binaries_compacted(directory: string) -> QueryEngine {
     oldest
 }
 
+/// The newest file of the frontier `store` reads for the binary printed `print`, by its name; empty
+/// when it reads none.
+fn frontier_named(store: DiskStore, print: string) -> string {
+    let frontier? = store.frontier_of(print) else { return "" }
+    let id = frontier.id()
+    "${id.high_word}_${id.low_word}"
+}
+
 fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
 
 fn frontier_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.starts_with("frontier-")) }
@@ -219,6 +227,24 @@ spec "disk_store — answers outlive the process" {
             let _ = other.saved()
             process_over(directory, "e.av", "alpha").worked_count() == 0 &&
                 process_over(directory, "f.av", "beta").worked_count() == 0
+        }
+    }
+    given "a store that read its frontier" {
+        then "it reads the same one again while no other process writes one, and another's once it does" {
+            let directory = fresh_directory("frontier-again")
+            disk_world().put("g.av", "alpha")
+            let _ = process_over(directory, "g.av", "alpha")
+            let store = disk_store_at(directory)
+            let print = engine_over(store).frontier_print()
+            let first = frontier_named(store, print)
+            let again = frontier_named(store, print)
+            disk_world().put("g.av", "alpha beta")
+            let _ = process_over(directory, "g.av", "beta")
+            let after = frontier_named(store, print)
+            first != "" &&
+                again == first &&
+                after != first &&
+                after == frontier_named(disk_store_at(directory), print)
         }
     }
     given "a compaction" {

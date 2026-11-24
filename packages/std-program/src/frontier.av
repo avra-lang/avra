@@ -350,6 +350,10 @@ impl EntryAt {
 /// Each place's readers a delta wrote: `readers` from `starts[at]` up to `starts[at + 1]`.
 type WrittenReaders = { starts: List<int>, readers: List<int> }
 
+/// The readers a chain's deltas wrote, turned round over the chain of `links` deltas and `extent`
+/// places they were turned round for.
+type HeldReaders = { links: int, extent: int, readers: WrittenReaders }
+
 export const CUT_STANDS: int = 1
 export const CUT_MOVED: int = 2
 export const NOT_CUT: int = 3
@@ -366,6 +370,9 @@ export type Frontier = {
     extent: int,
     /// Whether more than one delta extends its newest state, so the next write folds.
     forked: bool,
+    /// The readers its chain's deltas wrote, once they were asked for: the open asks, and the save
+    /// over the same frontier reads them again.
+    readers_held: Cell<List<HeldReaders>>,
 }
 
 impl Frontier {
@@ -508,8 +515,25 @@ impl Frontier {
 
     /// THE READERS DELTAS WROTE, laid flat: the places each delta's entry reads, turned round into
     /// each place's readers, two lists of numbers however many places there are. Absent when a delta's
-    /// entry's reads don't lie within the frontier.
+    /// entry's reads don't lie within the frontier. Turned round once for a chain and held, so what a
+    /// save asks of the frontier its process opened costs what the save changed.
     fn written_readers() -> WrittenReaders? {
+        let held? = self.readers_held.get().first() else { return self.readers_kept() }
+        if held.links == self.chain.length && held.extent == self.extent { return held.readers }
+        self.readers_kept()
+    }
+
+    /// The readers deltas wrote, turned round and held.
+    fn readers_kept() -> WrittenReaders? {
+        let turned? = self.readers_turned() else { return null }
+        self
+            .readers_held
+            .set([HeldReaders { links: self.chain.length, extent: self.extent, readers: turned }])
+        turned
+    }
+
+    /// The readers deltas wrote, turned round.
+    fn readers_turned() -> WrittenReaders? {
         mut count = [0 for _i in 0..self.extent + 1]
         mut wrote: List<int> = []
         mut read: List<int> = []
@@ -628,6 +652,7 @@ fn based_on(base: BaseLayer) -> Frontier {
             .put(place_key(place), Overlaid { place: place, delta: null, index: place, stale: true })
     }
     let placed: HashKeyedTable<int> = hash_keyed_table()
+    let readers_held: Cell<List<HeldReaders>> = Cell.new([])
     Frontier {
         base: base,
         chain: [],
@@ -635,6 +660,7 @@ fn based_on(base: BaseLayer) -> Frontier {
         placed: placed,
         extent: base.columns.length(),
         forked: false,
+        readers_held: readers_held,
     }
 }
 
@@ -1026,26 +1052,37 @@ fn whole_lost(change: FrontierChange) -> List<bool>? {
 /// Whether the place `at` stood before `change`: then a root reached it.
 fn stood_before(s: Frontier, change: FrontierChange, at: int) -> bool { at < change.before() && s.stands(at) }
 
-/// The places whose entries a delta of `s`'s chain or `change` wrote that read each place, as they
-/// read once `change` is laid over `s`: the readers the base's turned-round columns don't hold.
-/// Absent when such an entry's reads don't lie within the frontier.
-fn readers_beside(s: Frontier, change: FrontierChange) -> List<List<int>>? {
-    mut readers: List<List<int>> = [[] for _i in 0..change.extent]
-    for o in s.overlaid.values() {
-        if o.delta == null || change.written_at[o.place] != 0 { continue }
-        let reads? = s.reads_at(o.place) else { return null }
-        for r in reads { if place_below(r, change.extent) { readers[r].push(o.place) } }
-    }
+/// The readers of each place a delta of `s`'s chain or `change` wrote, as they read once `change` is
+/// laid over `s`: the readers the base's turned-round columns don't hold. The chain's are the ones
+/// `s` turned round and holds, less each entry `change` rewrites; `change`'s are its own.
+type Beside = { written: WrittenReaders, changed: HashKeyedTable<List<int>> }
+
+/// What `change` and `s`'s chain wrote that reads each place. Absent when a chain's entry's reads
+/// don't lie within the frontier.
+fn readers_beside(s: Frontier, change: FrontierChange) -> Beside? {
+    let written? = s.written_readers() else { return null }
+    let changed: HashKeyedTable<List<int>> = hash_keyed_table()
     for index, place in change.places {
-        for r in change.written_reads[index] { if place_below(r, change.extent) { readers[r].push(place) } }
+        for r in change.written_reads[index] {
+            if place_below(r, change.extent) { changed.put(place_key(r), (changed.get(place_key(r)) ?? []).concat([place])) }
+        }
     }
-    readers
+    Beside { written: written, changed: changed }
 }
 
-/// The places that read `at` once `change` is laid over `s`: the base's readers whose reads still
-/// name it, then those `beside` holds.
-fn readers_now(s: Frontier, change: FrontierChange, beside: List<List<int>>, at: int) -> List<int>? {
-    mut now = [r for r in beside[at]]
+/// The places that read `at` once `change` is laid over `s`: those a delta of the chain wrote that
+/// `change` doesn't rewrite, those `change` wrote, then the base's readers whose reads still name
+/// it.
+fn readers_now(s: Frontier, change: FrontierChange, beside: Beside, at: int) -> List<int>? {
+    mut now: List<int> = []
+    let starts = beside.written.starts
+    if at + 1 < starts.length {
+        for i in starts[at]..starts[at + 1] {
+            let r = beside.written.readers[i]
+            if change.written_at[r] == 0 { now.push(r) }
+        }
+    }
+    now = now.concat(beside.changed.get(place_key(at)) ?? [])
     if at >= s.base_length() { return now }
     for r in s.base.columns.readers_at(at) {
         if change.written_at[r] != 0 || s.overlaid.get(place_key(r))?.delta != null { continue }
@@ -1060,7 +1097,7 @@ fn readers_now(s: Frontier, change: FrontierChange, beside: List<List<int>>, at:
 fn holders_of(
     s: Frontier,
     change: FrontierChange,
-    beside: List<List<int>>,
+    beside: Beside,
     lost: List<bool>,
     at: int,
     budget: Cell<int>,
@@ -1087,7 +1124,7 @@ fn holders_of(
 fn reached_above(
     s: Frontier,
     change: FrontierChange,
-    beside: List<List<int>>,
+    beside: Beside,
     lost: List<bool>,
     from: int,
     budget: Cell<int>,

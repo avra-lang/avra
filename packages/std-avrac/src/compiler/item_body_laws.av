@@ -33,6 +33,7 @@ use features.{task_outlives, task_overwritten, task_unheld}
 use features.closures.{capture_named, captured_label, lambda_answer_label}
 use features.lists.{list_element_untyped, list_element_void}
 use features.maps.{map_value_untyped}
+use features.checks.{slot_answers_nothing, slot_untyped}
 use features.select_expr.{guard_reads_binder}
 use compiler.{called_wait_said, cleanup_unbounded, row_wait_said, spawn_wait_said}
 use features.loops.{jump_behind_lambda, jump_in_comprehension, jump_unaimed, jump_unlooped}
@@ -125,6 +126,10 @@ enum Breach {
     PresenceApart(present: string, absent: string)
     /// A list literal whose first element answers no value.
     ElementVoid
+    /// A `Cell.new` whose value, of `named`, gives the cell no type, and no seat gives it one.
+    CellUntyped(named: string)
+    /// A `Cell.new` whose value answers nothing.
+    CellVoid
     /// The record field `field` of `spelled`, which holds no value.
     FieldVoid(field: string, spelled: string)
     /// A payload of the variant `variant`, named `payload` where it is, of `spelled`, which holds no
@@ -455,7 +460,7 @@ fn typed_law_reads(store: SyntaxArena, e: ExprId) -> bool {
     if store.home_of(e) != null { return false }
     match store.expr(e) {
         .Force(_) or .Propagate(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) -> true,
-        .MethodCall(_, name, _) -> name.of == SET_VERB,
+        .MethodCall(_, name, _) -> name.of == SET_VERB || name.of == NEW_VERB,
         rest -> false,
     }
 }
@@ -471,7 +476,7 @@ fn typed_breach(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, e: 
         .MapLit(entries) -> untyped_map(store, typing, e, entries),
         .Coalesce(left, right) -> coalesce_apart(engine, store, typing, left, right),
         .MatchOpt(_, _, present, absent) -> presence_apart(engine, store, typing, present, absent),
-        .MethodCall(subject, _, _) -> overwritten_element(store, typing, e, subject),
+        .MethodCall(subject, name, args) -> if name.of == NEW_VERB { untyped_cell(store, typing, e, subject, args) } else { overwritten_element(store, typing, e, subject) },
         rest -> null,
     }
 }
@@ -719,6 +724,40 @@ fn defaults_typed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item
 
 /// The verb that writes over one element of a list.
 const SET_VERB: string = "set"
+
+/// The verb a `Cell` is made by.
+const NEW_VERB: string = "new"
+
+/// What `Cell.new(value)` breaks where nothing gave the cell a type: typing typed no cell there,
+/// since no seat named one, and its value — `null`, `[]` or `{}` — names none; or a cell whose value
+/// answers nothing. A cell a seat typed — a declared binding, an answer, a field — breaks nothing.
+fn untyped_cell(
+    store: SyntaxArena,
+    typing: ItemTyping,
+    e: ExprId,
+    subject: ExprId,
+    args: List<ExprId>,
+) -> BreachAt? {
+    if store.ident_name(subject) != "Cell" || args.length != 1 { return null }
+    let value = args[0]
+    let place = kept_at(store.expr_span(value))
+    if typing.type_at(value)?.owns(OwnType.Void) ?? false { return BreachAt { at: place, breach: Breach.CellVoid } }
+    // a value typing typed says its body was typed: a cell left untyped there had no seat
+    if typing.type_at(e) != null || typing.type_at(value) == null { return null }
+    let named? = nameless_value(store, value) else { return null }
+    BreachAt { at: place, breach: Breach.CellUntyped(named) }
+}
+
+/// How the old path names a value that names no type: `null`, an empty list, an empty map; absent
+/// for any other.
+fn nameless_value(store: SyntaxArena, value: ExprId) -> string? {
+    if store.null_literal(value) { return "null" }
+    match store.expr(value) {
+        .ListLit(elems) -> if elems.is_empty() { "[]" } else { null },
+        .MapLit(entries) -> if entries.is_empty() { "{}" } else { null },
+        rest -> null,
+    }
+}
 
 /// What the `set` `e` over the list `subject` breaks: an element holding a task, which it leaves
 /// unjoined.
@@ -1343,6 +1382,33 @@ export law element_void {
 }
 
 fn void_words(_a: List<string>) -> Voice { list_element_void() }
+
+fn cells_untyped(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .CellUntyped(named) -> [named], rest -> null }) }
+
+/// a cell whose value, and no seat, gives it a type
+export law cell_untyped {
+    kind: "type.list_scalar"
+    reads_view: cells_untyped
+    voice: cell_untyped_words
+    witness: "fn f() -> int {\n    let c = Cell.new(null)\n    1\n}\n"
+}
+
+fn cell_untyped_words(a: List<string>) -> Voice { slot_untyped(A_CELL, a[0]) }
+
+fn cells_void(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .CellVoid)) }
+
+/// a cell whose value answers nothing
+export law cell_void {
+    kind: "type.list_scalar"
+    reads_view: cells_void
+    voice: cell_void_words
+    witness: "fn f() -> int {\n    let c = Cell.new(println(\"x\"))\n    1\n}\n"
+}
+
+fn cell_void_words(_a: List<string>) -> Voice { slot_answers_nothing(A_CELL) }
+
+/// What the old path's cell words name the slot.
+const A_CELL: string = "a cell"
 
 fn fields_void(view: ItemView) -> List<Found> {
     breaches_seen_in(

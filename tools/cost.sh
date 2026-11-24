@@ -196,13 +196,25 @@ bare() {
 # the snapshot's std answers beside the census compiler, made once a run by the writer `make avra`
 # runs, as it runs, outside any count: a package the compiler refuses (the snapshot's own compiler,
 # under today's laws) ships its answers and no verdict. Only the std packages the cli's sources reach
-# are written: the others the check never reads, and writing them is most of the slice's wall
+# are written: the others the check never reads, and writing them is most of the slice's wall.
+# THEY ARE KEPT ACROSS RUNS at COST_ANSWERS_KEPT (a runner's cache restores and saves it): laid beside
+# the census compiler first, they stand where the writer's key (the compiler's bytes, the paths, every
+# file judged) is theirs, and are written again only where it isn't — then kept again, with
+# `<kept>.fresh` beside them saying so.
 laid() {
     [ ! -f "$src/build/answers/inputs" ] || return 0
+    kept=${COST_ANSWERS_KEPT:-$root/build/cost-answers}
+    if [ -f "$kept/inputs" ]; then mkdir -p "$src/build/answers" && cp -R "$kept/." "$src/build/answers/"; fi
+    started=$(date +%s)
     # shellcheck disable=SC2046
     (unset AVRA_MACHINE_STORE_DIR && HOME="$cache/home" STD_ANSWERS_REFUSED=skip \
         sh "$root/tools/std_answers.sh" "$src/build/avra" "$src/packages" "$src/build/answers" $(reached packages/cli)) ||
         { echo "cost: the snapshot's std answers were not made"; exit 1; }
+    echo "cost: the snapshot's std answers $(($(date +%s) - started)) s"
+    if ! cmp -s "$src/build/answers/inputs" "$kept/inputs" 2> /dev/null; then
+        [ ! -e "$kept" ] || find "$kept" -delete
+        mkdir -p "$kept" && cp -R "$src/build/answers/." "$kept/" && : > "$kept.fresh"
+    fi
     bare
 }
 

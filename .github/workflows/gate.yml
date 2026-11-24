@@ -91,6 +91,20 @@ jobs:
         with: { name: gate-pack, path: pack }
       - name: unpack
         run: sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz
+      # THE SNAPSHOT'S STD ANSWERS, KEPT ACROSS GATE RUNS for the cost-laid slice (tools/cost.sh `laid`):
+      # keyed by the compiler source its census compiler is built from and the snapshot it measures. An
+      # older key's answers are restored too; the writer's own key says whether they stand, and writes
+      # them again where they don't, and only then are they saved.
+      - name: cost answers key
+        id: cost-answers
+        if: matrix.slice == 'cost-laid'
+        run: echo "key=cost-answers-$(sh tools/work built-from . | cut -d' ' -f1)-$(awk '$1 == "snapshot" { print $2 }' tools/cost.baseline)" >> "$GITHUB_OUTPUT"
+      - if: matrix.slice == 'cost-laid'
+        uses: actions/cache/restore@v4
+        with:
+          path: build/cost-answers
+          key: ${{ steps.cost-answers.outputs.key }}
+          restore-keys: cost-answers-
       - name: ${{ matrix.slice }}
         timeout-minutes: 16
         run: |
@@ -104,6 +118,11 @@ jobs:
           echo "$line" > "verdict/${{ matrix.slice }}"
           echo "$line"
           exit "$st"
+      - if: always() && matrix.slice == 'cost-laid' && hashFiles('build/cost-answers.fresh') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: build/cost-answers
+          key: ${{ steps.cost-answers.outputs.key }}
       - if: always()
         uses: actions/upload-artifact@v4
         with:

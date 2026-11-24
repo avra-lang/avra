@@ -56,6 +56,19 @@ spec "hash_keyed_table — values under content hashes" {
                 table_here.values()[4999] == "4999"
         }
     }
+    given "keys counted up, as places and ids are, past where the slots wrap" {
+        then "a search, found or not, steps past a few slots, not a run as long as the keys" {
+            let table_here: HashKeyedTable<int> = hash_keyed_table()
+            let count = 50000
+            for i in 0..count { table_here.put(key(1000000 + i, 1000000 + i), i) }
+            let found = (0..count)
+                .fold(0, (sum, i) -> sum + table_here.steps_to(key(1000000 + i, 1000000 + i)))
+            let missed = (0..count).fold(0, (sum, i) -> sum + table_here.steps_to(key(i, i)))
+            found < 2 * count &&
+                missed < 2 * count &&
+                table_here.get(key(1000000 + 7, 1000000 + 7)) == 7
+        }
+    }
     given "two holders of one table" {
         then "a write through one reads through the other" {
             let one = text_table()
