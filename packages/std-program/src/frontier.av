@@ -880,7 +880,8 @@ fn chain_rebased(s: Frontier, change: FrontierChange, generation: int) -> Fronti
         places.push(o.place)
     }
     for index, h in change.written {
-        written.push(h)
+        // a root stays one: laid over the base alone, a root the chain made would be lost
+        written.push(h with { root: change.root_at(change.places[index]) })
         reads.push(change.written_reads[index])
         places.push(change.places[index])
     }
@@ -1577,4 +1578,23 @@ fn way_forth(read_by: List<int>, from: int) -> List<int> {
         way.push(at)
     }
     way
+}
+
+/// WHETHER A ROOT REACHES EACH PLACE OF `f` AT REST, through what every entry read, stale or not, as
+/// the whole walk a write checks itself against does. Absent when an entry's reads don't lie within
+/// `f`.
+export fn reached_at_rest(f: Frontier) -> List<bool>? {
+    mut reached = [false for _i in 0..f.length()]
+    mut pending = [at for at in 0..f.length() if f.root_at(at)]
+    while !pending.is_empty() {
+        let at = pending.pop()
+        if reached[at] { continue }
+        reached.set(at, true)
+        let reads? = f.reads_at(at) else { return null }
+        for r in reads {
+            if !place_below(r, f.length()) { return null }
+            if !reached[r] { pending.push(r) }
+        }
+    }
+    reached
 }
