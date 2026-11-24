@@ -252,7 +252,7 @@ exactly what its base draws is set aside by NAME on the page (`drawn as the base
 place's seed (`initial`) given after the base was built does not reseed it.
 
 **Counts.** 32 stories (29 bases + `button busy`, `text scripts`, `field scripts`), 124 cases
-before the page sets aside the ones drawn as the base. The page says `29 views · 122 cases · 0 with no
+before the page sets aside the ones drawn as the base. The page says `29 views · 119 cases · 0 with no
 story` for std-ui's own stories.
 
 **Refusals**, each spoken once, where the story stands, under the library's kind (fixture
