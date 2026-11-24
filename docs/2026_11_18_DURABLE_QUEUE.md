@@ -149,7 +149,6 @@ Where it still differs from §1, and what closes each gap:
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
 | `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
-| `q.send(self.item, id: …)` in a component method | the id passed by position (`schedule.sent_for`) | `avra test`'s program layer making a method that hands `self`'s field beside a named argument (it refuses to test the suite, naming the method) |
 
 Delayed and recurring work (Q5):
 
