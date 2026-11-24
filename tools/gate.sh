@@ -59,7 +59,7 @@ cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's 
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
-storyboard test std-ui_gallery: every view std-ui declares told by a story, every case's semantic snapshot on each target held to its golden
+storyboard test std-ui_gallery: every view std-ui declares told by a story, every case's semantic snapshot on each target held to its golden; then every case under every dial judged in headless Firefox (tools/storyboard_browser.sh)
 findings-a tapes --findings on std-avrac and cli, 0 refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
@@ -532,6 +532,7 @@ slice_ui_browser() {
 slice_storyboard() {
     cold std-ui_gallery
     tested test-std-ui_gallery packages/std-ui_gallery
+    row storyboard-browser env CI=true sh tools/storyboard_browser.sh
 }
 
 # each package named: tapes --findings with no refusal

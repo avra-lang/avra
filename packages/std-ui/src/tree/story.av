@@ -42,6 +42,18 @@ use tree.story_text.{long_text, unbroken_text, sample_text}
 /// One drawn state of a view: what it is called, the view, and the spelling that made it.
 export type Case = { name: string, view: dyn View, spelling: string = "" }
 
+/// How many times each event a story's view tells was heard, by `owner.event`.
+state heard_counts: Map<string, int> = {}
+
+/// The event `key` (`owner.event`) was heard once more.
+export fn heard(key: string) { heard_counts = {..heard_counts, "${key}": (heard_counts.get(key) ?? 0) + 1} }
+
+/// How many times the event `key` was heard.
+export fn heard_count(key: string) -> int { heard_counts.get(key) ?? 0 }
+
+/// Every event heard so far and how often, in the order first heard.
+export fn heard_all() -> List<Entry<string, int>> { heard_counts.entries() }
+
 /// A view's cases, as one story or one named case tells them: the component they draw, the module
 /// that declares it, the fn that tells them, whether they open on a base (`@story`) or stand alone
 /// (`@case`), and the story's own doc.
@@ -105,7 +117,7 @@ fn told(f: Fn, t: Type, based: bool, cases: List<Code>) -> Directive {
         quote {
             @case_of
             export fn ${made}() -> Story {
-                let b = ${f.name}()
+                let b = ${heard_by(f.name, t)}
                 Story {
                     owner: ${literal(t.name)},
                     module: ${literal(t.module)},
@@ -117,6 +129,27 @@ fn told(f: Fn, t: Type, based: bool, cases: List<Code>) -> Directive {
             }
         },
     )
+}
+
+/// The base, every event its component declares heard: each one counted under `owner.event`, so a
+/// page that draws a case can say how many times a reader's gesture reached it. An event whose
+/// seats name a type parameter is left as the base has it.
+fn heard_by(base: string, t: Type) -> Code {
+    [m for m in t.fields if hearable(m)]
+        .fold(quote { ${base}() }, (code, m) -> quote { ${code} with { ${m.name}: ${hearing(t, m)} } })
+}
+
+/// Whether a member is an event whose every seat names a type this file can spell.
+fn hearable(m: Field) -> bool {
+    let seats? = m.says else { return false }
+    seats.length <= 1 && !seats.any(it.kind is .Var)
+}
+
+/// A handler that counts the event it hears.
+fn hearing(t: Type, m: Field) -> Code {
+    let key = literal("${t.name}.${m.name}")
+    let seat? = (m.says ?? []).first() else { return quote { () -> heard(${key}) } }
+    quote { (_said: ${seat.ty}) -> heard(${key}) }
 }
 
 /// One case as the generated fn spells it: its name, its view, its spelling, and whether it draws
