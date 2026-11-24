@@ -24,6 +24,38 @@ to add a benchmark or a language.
 | Python (threads, GIL-bound) | `Python 3.13.7` |
 | Avra | `avra 0.0.1` |
 
+### `maps/strings` — String-keyed map
+
+**Invariant.** n keys `key<i>` map to i; every hit answers its own i, so one pass of hits sums to n(n-1)/2; no `nokey<i>` is found; a walk visits n entries; removing every key leaves the map empty
+
+**Row.** wall-clock nanoseconds per operation for build (per key inserted), hit, miss, walk (per entry) and remove (per key), at 8, 1000 and 100000 keys; small maps repeat until each round covers about 100000 operations
+
+**Workload.** `sizes=[8, 1000, 100000]`, `ops_per_round=100000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — a plain open-addressing table over a text hash (wyhash's mix), linear probing at most half full, tombstones on remove — the floor; **Rust** — std::collections::HashMap<String, u64> with its default hasher (SipHash-1-3), as a Rust program gets it; **Go** — map[string]int (Swiss tables since Go 1.24); **Python (threads, GIL-bound)** — dict, insertion-ordered as Avra's map is; **Avra** — Map<string, int>: insertion-ordered, a chunked index over dense entries
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `maps_build_8_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_hit_8_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_miss_8_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_walk_8_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_remove_8_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_build_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_hit_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_miss_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_walk_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_remove_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_build_100k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_hit_100k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_miss_100k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_walk_100k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_remove_100k_ns_per_op` (ns) | — | — | — | — | — |
+| `maps_hit_sum` (ops) | — | — | — | — | — |
+| `maps_left` (ops) | — | — | — | — | — |
+
+_Rows:_ `maps_build_8_ns_per_op` (ns) — nanoseconds per key building a map of 8 keys, the map made fresh each time; `maps_hit_8_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 8; `maps_miss_8_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 8; `maps_walk_8_ns_per_op` (ns) — nanoseconds per entry walking a map of 8, key and value; `maps_remove_8_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 8, in insertion order; `maps_build_1k_ns_per_op` (ns) — nanoseconds per key building a map of 1000 keys; `maps_hit_1k_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 1000; `maps_miss_1k_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 1000; `maps_walk_1k_ns_per_op` (ns) — nanoseconds per entry walking a map of 1000; `maps_remove_1k_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 1000 — a remove that shifts and rebuilds costs microseconds here; `maps_build_100k_ns_per_op` (ns) — nanoseconds per key building a map of 100000 keys; `maps_hit_100k_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 100000; `maps_miss_100k_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 100000; `maps_walk_100k_ns_per_op` (ns) — nanoseconds per entry walking a map of 100000; `maps_remove_100k_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 100000 — the row an O(n) remove cannot hide; `maps_hit_sum` (ops) — the sum of every hit's value in one pass over 100000 keys — a witness each key answers its own value; `maps_left` (ops) — the entries left after every key of the 100000 was removed — a witness the remove removes.
+
 ### `tasks/drain` — Channel drain
 
 **Invariant.** a producer pushes n items into a channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped. cap = 64 is the bounded row; cap = -1 is the unbounded row, and both must hold the same invariant
@@ -120,4 +152,280 @@ _Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds`
 
 _Rows:_ `spawn_thread` (ns) — create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread); `spawn_thread_alive` (ns) — create n OS threads alive at once, then join every one; `spawn_fiber` (ns) — create and join one user-space task at a time, n times (ucontext / goroutine / Avra task); `spawn_fiber_alive` (ns) — create n user-space tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness every task ran and was joined once.
 
-_Projected from 25 stored row(s)._
+## Machine `linux-x86_64: Intel(R) Xeon(R) Processor @ 2.10GHz, 4 cores, Linux 6.18.44-fc-v880`
+
+| language | version |
+|---|---|
+| C (the floor) | `Ubuntu clang version 22.1.8 (++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80)` |
+| Rust | `rustc 1.97.0 (2d8144b78 2026-07-07)` |
+| Go | `go version go1.24.7 linux/amd64` |
+| Python (threads, GIL-bound) | `Python 3.13.18` |
+| Avra | `avra 0.0.1` |
+
+### `maps/strings` — String-keyed map
+
+**Invariant.** n keys `key<i>` map to i; every hit answers its own i, so one pass of hits sums to n(n-1)/2; no `nokey<i>` is found; a walk visits n entries; removing every key leaves the map empty
+
+**Row.** wall-clock nanoseconds per operation for build (per key inserted), hit, miss, walk (per entry) and remove (per key), at 8, 1000 and 100000 keys; small maps repeat until each round covers about 100000 operations
+
+**Workload.** `sizes=[8, 1000, 100000]`, `ops_per_round=100000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — a plain open-addressing table over a text hash (wyhash's mix), linear probing at most half full, tombstones on remove — the floor; **Rust** — std::collections::HashMap<String, u64> with its default hasher (SipHash-1-3), as a Rust program gets it; **Go** — map[string]int (Swiss tables since Go 1.24); **Python (threads, GIL-bound)** — dict, insertion-ordered as Avra's map is; **Avra** — Map<string, int>: insertion-ordered, a chunked index over dense entries
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `maps_build_8_ns_per_op` (ns) | 37.0 ns (5) | 90.9 ns (5) | 28.7 ns (5) | 58.7 ns (5) | 20.8 ns (5) |
+| `maps_hit_8_ns_per_op` (ns) | 15.2 ns (5) | 12.2 ns (5) | 9.1 ns (5) | 36.3 ns (5) | 8.2 ns (5) |
+| `maps_miss_8_ns_per_op` (ns) | 12.8 ns (5) | 10.5 ns (5) | 10.9 ns (5) | 23.2 ns (5) | 6.7 ns (5) |
+| `maps_walk_8_ns_per_op` (ns) | 0.5 ns (5) | 0.6 ns (5) | 7.5 ns (5) | 39.3 ns (5) | 2.4 ns (5) |
+| `maps_remove_8_ns_per_op` (ns) | 24.1 ns (5) | 36.6 ns (5) | 20.7 ns (5) | 21.8 ns (5) | 32.4 ns (5) |
+| `maps_build_1k_ns_per_op` (ns) | 66.5 ns (5) | 99.7 ns (5) | 99.9 ns (5) | 51.8 ns (5) | 46.6 ns (5) |
+| `maps_hit_1k_ns_per_op` (ns) | 19.6 ns (5) | 14.4 ns (5) | 8.6 ns (5) | 35.3 ns (5) | 16.3 ns (5) |
+| `maps_miss_1k_ns_per_op` (ns) | 7.0 ns (5) | 12.7 ns (5) | 9.0 ns (5) | 25.3 ns (5) | 14.4 ns (5) |
+| `maps_walk_1k_ns_per_op` (ns) | 1.3 ns (5) | 0.8 ns (5) | 8.7 ns (5) | 30.3 ns (5) | 2.3 ns (5) |
+| `maps_remove_1k_ns_per_op` (ns) | 48.4 ns (5) | 49.8 ns (5) | 40.2 ns (5) | 31.0 ns (5) | 71.4 ns (5) |
+| `maps_build_100k_ns_per_op` (ns) | 205.4 ns (5) | 150.5 ns (5) | 116.3 ns (5) | 113.9 ns (5) | 80.4 ns (5) |
+| `maps_hit_100k_ns_per_op` (ns) | 42.0 ns (5) | 61.3 ns (5) | 29.6 ns (5) | 67.0 ns (5) | 30.4 ns (5) |
+| `maps_miss_100k_ns_per_op` (ns) | 95.4 ns (5) | 24.7 ns (5) | 33.7 ns (5) | 72.9 ns (5) | 20.7 ns (5) |
+| `maps_walk_100k_ns_per_op` (ns) | 12.8 ns (5) | 2.7 ns (5) | 8.1 ns (5) | 28.9 ns (5) | 2.6 ns (5) |
+| `maps_remove_100k_ns_per_op` (ns) | 39.3 ns (5) | 77.2 ns (5) | 57.3 ns (5) | 43.4 ns (5) | 63.2 ns (5) |
+| `maps_hit_sum` (ops) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) |
+| `maps_left` (ops) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) |
+
+_Rows:_ `maps_build_8_ns_per_op` (ns) — nanoseconds per key building a map of 8 keys, the map made fresh each time; `maps_hit_8_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 8; `maps_miss_8_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 8; `maps_walk_8_ns_per_op` (ns) — nanoseconds per entry walking a map of 8, key and value; `maps_remove_8_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 8, in insertion order; `maps_build_1k_ns_per_op` (ns) — nanoseconds per key building a map of 1000 keys; `maps_hit_1k_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 1000; `maps_miss_1k_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 1000; `maps_walk_1k_ns_per_op` (ns) — nanoseconds per entry walking a map of 1000; `maps_remove_1k_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 1000 — a remove that shifts and rebuilds costs microseconds here; `maps_build_100k_ns_per_op` (ns) — nanoseconds per key building a map of 100000 keys; `maps_hit_100k_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 100000; `maps_miss_100k_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 100000; `maps_walk_100k_ns_per_op` (ns) — nanoseconds per entry walking a map of 100000; `maps_remove_100k_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 100000 — the row an O(n) remove cannot hide; `maps_hit_sum` (ops) — the sum of every hit's value in one pass over 100000 keys — a witness each key answers its own value; `maps_left` (ops) — the entries left after every key of the 100000 was removed — a witness the remove removes.
+
+### `tasks/drain` — Channel drain
+
+**Invariant.** a producer pushes n items into a channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped. cap = 64 is the bounded row; cap = -1 is the unbounded row, and both must hold the same invariant
+
+**Row.** wall-clock nanoseconds per item for the bounded and the unbounded drain, at two sizes, plus the ratio of the large per-item cost to the small one for each
+
+**Workload.** `small=1000`, `n=10000`, `cap=64`, `rounds=5`
+
+**Analogues.** **C (the floor)** — an OS thread producer (pthread) pushing into a ring buffer; **Rust** — an OS thread producer (std::thread) pushing into a sync_channel; **Python (threads, GIL-bound)** — an OS thread producer (threading.Thread) pushing into a queue.Queue; **Go** — a goroutine producer pushing into a buffered channel; **Avra** — a user-space task producer (`produce<T>(cap)`) drained with `for x in source`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `drain_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_10k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_scale` (x) | — | — | — | — | — |
+| `drain_unbounded_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_unbounded_10k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_unbounded_scale` (x) | — | — | — | — | — |
+| `drain_ops_per_s` (ops) | — | — | — | — | — |
+| `drain_bytes` (bytes) | — | — | — | — | — |
+| `drain_sum` (ops) | — | — | — | — | — |
+
+_Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through a capacity-64 channel; `drain_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through a capacity-64 channel; `drain_scale` (x) — the bounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); `drain_unbounded_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through an unbounded channel; `drain_unbounded_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through an unbounded channel; `drain_unbounded_scale` (x) — the unbounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); this is the row a small fixed cap cannot hide; `drain_ops_per_s` (ops) — items drained per second at 10000 items — the throughput; `drain_bytes` (bytes) — payload bytes moved at 10000 items (8 per item); `drain_sum` (ops) — the sum of every drained item — a witness every item arrived exactly once.
+
+### `tasks/fanin` — Fan-in over N producers
+
+**Invariant.** each of n_producers tasks sends n_per values to one consumer; every value sent arrives exactly once, none is dropped or duplicated, so the received count is n_producers*n_per
+
+**Row.** wall-clock nanoseconds per value received
+
+**Workload.** `producers=8`, `per=6250`, `cap=64`, `rounds=5`
+
+**Analogues.** **C (the floor)** — OS threads (one producer per pthread), one bounded channel; **Rust** — OS threads (one producer per std::thread), one bounded sync_channel; **Python (threads, GIL-bound)** — OS threads (one producer per threading.Thread), one bounded queue; **Go** — goroutines (one producer each), one buffered channel; **Avra** — user-space tasks (one channel each), a single `select` over 8 sources
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `fanin_ns_per_op` (ns) | — | — | — | — | — |
+| `fanin_received` (ops) | — | — | — | — | — |
+| `fanin_dropped` (ops) | — | — | — | — | — |
+
+_Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to the last receive; `fanin_received` (ops) — values the consumer received — must equal n_producers*per; `fanin_dropped` (ops) — sent minus received — must be 0.
+
+### `tasks/parked` — Memory per parked task
+
+**Invariant.** n tasks are spawned and blocked on a channel, then released; every one runs and its answer is joined, so the sum is 0+1+...+(n-1)
+
+**Row.** resident bytes the process holds per parked task (read from the process's own status before and after)
+
+**Workload.** `n=10000`, `rounds=3`
+
+**Analogues.** **C (the floor)** — OS threads blocked on one condition variable; **Rust** — OS threads blocked on a rendezvous sync_channel; **Go** — goroutines blocked on one channel; **Avra** — user-space tasks blocked on a rendezvous channel
+
+| row (unit) | C (the floor) | Rust | Go | Avra |
+|---|---|---|---|---|
+| `parked_bytes` (bytes) | — | — | — | — |
+| `parked_n` (ops) | — | — | — | — |
+
+_Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's growth over the parked run; `parked_n` (ops) — tasks parked — a witness the whole set was alive.
+
+### `tasks/pingpong` — Ping-pong latency
+
+**Invariant.** two tasks alternate n round trips over a rendezvous; every send is received exactly once and in order, so the exchange count is 2n at the end
+
+**Row.** wall-clock nanoseconds per round trip: one task signals, the other answers
+
+**Workload.** `n=100000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — OS threads, a mutex and condition variable rendezvous on both legs; **Rust** — OS threads, two rendezvous sync_channels; **Python (threads, GIL-bound)** — OS threads, two one-slot queues; **Go** — goroutines, two unbuffered channels; **Avra** — user-space tasks, two rendezvous channels (`open_channel<int>(0)`)
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `pingpong_ns` (ns) | — | — | — | — | — |
+| `pingpong_rounds` (ops) | — | — | — | — | — |
+
+_Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds` rallies; `pingpong_rounds` (ops) — the round trips run — a witness the rally was not cut short.
+
+### `tasks/spawn` — Spawn cost
+
+**Invariant.** every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0^2+1^2+...+(n-1)^2
+
+**Row.** wall-clock nanoseconds per task to create and join, for the thread analogue and the fiber analogue, one at a time and all alive at once
+
+**Workload.** `n=10000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — both analogues: OS threads (pthread) and user-space fibers (ucontext/makecontext); **Rust** — OS threads (std::thread) — Rust's std has no fiber runtime; **Go** — user-space fibers (goroutines); **Python (threads, GIL-bound)** — OS threads (threading.Thread) — GIL-bound; **Avra** — user-space tasks (the scheduler's `spawn`)
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `spawn_thread` (ns) | — | — | — | — | — |
+| `spawn_thread_alive` (ns) | — | — | — | — | — |
+| `spawn_fiber` (ns) | — | — | — | — | — |
+| `spawn_fiber_alive` (ns) | — | — | — | — | — |
+| `spawn_sum` (ops) | — | — | — | — | — |
+
+_Rows:_ `spawn_thread` (ns) — create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread); `spawn_thread_alive` (ns) — create n OS threads alive at once, then join every one; `spawn_fiber` (ns) — create and join one user-space task at a time, n times (ucontext / goroutine / Avra task); `spawn_fiber_alive` (ns) — create n user-space tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness every task ran and was joined once.
+
+## Machine `linux-x86_64: Intel(R) Xeon(R) Processor @ 2.30GHz, 4 cores, Linux 6.18.44-fc-v819`
+
+| language | version |
+|---|---|
+| C (the floor) | `Ubuntu clang version 22.1.8 (++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80)` |
+| Rust | `rustc 1.97.0 (2d8144b78 2026-07-07)` |
+| Go | `go version go1.24.7 linux/amd64` |
+| Python (threads, GIL-bound) | `Python 3.13.18` |
+| Avra | `avra 0.0.1` |
+
+### `maps/strings` — String-keyed map
+
+**Invariant.** n keys `key<i>` map to i; every hit answers its own i, so one pass of hits sums to n(n-1)/2; no `nokey<i>` is found; a walk visits n entries; removing every key leaves the map empty
+
+**Row.** wall-clock nanoseconds per operation for build (per key inserted), hit, miss, walk (per entry) and remove (per key), at 8, 1000 and 100000 keys; small maps repeat until each round covers about 100000 operations
+
+**Workload.** `sizes=[8, 1000, 100000]`, `ops_per_round=100000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — a plain open-addressing table over a text hash (wyhash's mix), linear probing at most half full, tombstones on remove — the floor; **Rust** — std::collections::HashMap<String, u64> with its default hasher (SipHash-1-3), as a Rust program gets it; **Go** — map[string]int (Swiss tables since Go 1.24); **Python (threads, GIL-bound)** — dict, insertion-ordered as Avra's map is; **Avra** — Map<string, int>: insertion-ordered, a chunked index over dense entries
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `maps_build_8_ns_per_op` (ns) | 33.1 ns (5) | 87.5 ns (5) | 24.9 ns (5) | 44.5 ns (5) | 29.7 ns (5) |
+| `maps_hit_8_ns_per_op` (ns) | 16.0 ns (5) | 13.3 ns (5) | 9.1 ns (5) | 27.7 ns (5) | 13.6 ns (5) |
+| `maps_miss_8_ns_per_op` (ns) | 12.8 ns (5) | 11.2 ns (5) | 11.2 ns (5) | 18.1 ns (5) | 8.4 ns (5) |
+| `maps_walk_8_ns_per_op` (ns) | 1.1 ns (5) | 0.7 ns (5) | 6.7 ns (5) | 36.0 ns (5) | 8.1 ns (5) |
+| `maps_remove_8_ns_per_op` (ns) | 21.4 ns (5) | 28.4 ns (5) | 23.0 ns (5) | 22.2 ns (5) | 31.4 ns (5) |
+| `maps_build_1k_ns_per_op` (ns) | 59.5 ns (5) | 95.9 ns (5) | 93.1 ns (5) | 40.9 ns (5) | 45.1 ns (5) |
+| `maps_hit_1k_ns_per_op` (ns) | 19.1 ns (5) | 15.1 ns (5) | 9.3 ns (5) | 32.8 ns (5) | 13.6 ns (5) |
+| `maps_miss_1k_ns_per_op` (ns) | 7.8 ns (5) | 13.3 ns (5) | 9.2 ns (5) | 21.1 ns (5) | 10.3 ns (5) |
+| `maps_walk_1k_ns_per_op` (ns) | 1.2 ns (5) | 0.8 ns (5) | 8.2 ns (5) | 27.3 ns (5) | 5.6 ns (5) |
+| `maps_remove_1k_ns_per_op` (ns) | 31.3 ns (5) | 33.1 ns (5) | 33.4 ns (5) | 28.7 ns (5) | 43.7 ns (5) |
+| `maps_build_100k_ns_per_op` (ns) | 140.6 ns (5) | 96.7 ns (5) | 88.4 ns (5) | 79.9 ns (5) | 64.5 ns (5) |
+| `maps_hit_100k_ns_per_op` (ns) | 21.2 ns (5) | 35.1 ns (5) | 23.1 ns (5) | 52.4 ns (5) | 21.8 ns (5) |
+| `maps_miss_100k_ns_per_op` (ns) | 63.9 ns (5) | 22.1 ns (5) | 29.7 ns (5) | 47.8 ns (5) | 15.5 ns (5) |
+| `maps_walk_100k_ns_per_op` (ns) | 10.5 ns (5) | 1.7 ns (5) | 7.9 ns (5) | 29.7 ns (5) | 5.8 ns (5) |
+| `maps_remove_100k_ns_per_op` (ns) | 23.1 ns (5) | 53.4 ns (5) | 46.8 ns (5) | 45.9 ns (5) | 57.7 ns (5) |
+| `maps_hit_sum` (ops) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) | 4,999,950,000 ops (5) |
+| `maps_left` (ops) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) |
+
+_Rows:_ `maps_build_8_ns_per_op` (ns) — nanoseconds per key building a map of 8 keys, the map made fresh each time; `maps_hit_8_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 8; `maps_miss_8_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 8; `maps_walk_8_ns_per_op` (ns) — nanoseconds per entry walking a map of 8, key and value; `maps_remove_8_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 8, in insertion order; `maps_build_1k_ns_per_op` (ns) — nanoseconds per key building a map of 1000 keys; `maps_hit_1k_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 1000; `maps_miss_1k_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 1000; `maps_walk_1k_ns_per_op` (ns) — nanoseconds per entry walking a map of 1000; `maps_remove_1k_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 1000 — a remove that shifts and rebuilds costs microseconds here; `maps_build_100k_ns_per_op` (ns) — nanoseconds per key building a map of 100000 keys; `maps_hit_100k_ns_per_op` (ns) — nanoseconds per lookup of a present key in a map of 100000; `maps_miss_100k_ns_per_op` (ns) — nanoseconds per lookup of an absent key in a map of 100000; `maps_walk_100k_ns_per_op` (ns) — nanoseconds per entry walking a map of 100000; `maps_remove_100k_ns_per_op` (ns) — nanoseconds per key removing every key of a map of 100000 — the row an O(n) remove cannot hide; `maps_hit_sum` (ops) — the sum of every hit's value in one pass over 100000 keys — a witness each key answers its own value; `maps_left` (ops) — the entries left after every key of the 100000 was removed — a witness the remove removes.
+
+### `tasks/drain` — Channel drain
+
+**Invariant.** a producer pushes n items into a channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped. cap = 64 is the bounded row; cap = -1 is the unbounded row, and both must hold the same invariant
+
+**Row.** wall-clock nanoseconds per item for the bounded and the unbounded drain, at two sizes, plus the ratio of the large per-item cost to the small one for each
+
+**Workload.** `small=1000`, `n=10000`, `cap=64`, `rounds=5`
+
+**Analogues.** **C (the floor)** — an OS thread producer (pthread) pushing into a ring buffer; **Rust** — an OS thread producer (std::thread) pushing into a sync_channel; **Python (threads, GIL-bound)** — an OS thread producer (threading.Thread) pushing into a queue.Queue; **Go** — a goroutine producer pushing into a buffered channel; **Avra** — a user-space task producer (`produce<T>(cap)`) drained with `for x in source`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `drain_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_10k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_scale` (x) | — | — | — | — | — |
+| `drain_unbounded_1k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_unbounded_10k_ns_per_op` (ns) | — | — | — | — | — |
+| `drain_unbounded_scale` (x) | — | — | — | — | — |
+| `drain_ops_per_s` (ops) | — | — | — | — | — |
+| `drain_bytes` (bytes) | — | — | — | — | — |
+| `drain_sum` (ops) | — | — | — | — | — |
+
+_Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through a capacity-64 channel; `drain_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through a capacity-64 channel; `drain_scale` (x) — the bounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); `drain_unbounded_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through an unbounded channel; `drain_unbounded_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through an unbounded channel; `drain_unbounded_scale` (x) — the unbounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); this is the row a small fixed cap cannot hide; `drain_ops_per_s` (ops) — items drained per second at 10000 items — the throughput; `drain_bytes` (bytes) — payload bytes moved at 10000 items (8 per item); `drain_sum` (ops) — the sum of every drained item — a witness every item arrived exactly once.
+
+### `tasks/fanin` — Fan-in over N producers
+
+**Invariant.** each of n_producers tasks sends n_per values to one consumer; every value sent arrives exactly once, none is dropped or duplicated, so the received count is n_producers*n_per
+
+**Row.** wall-clock nanoseconds per value received
+
+**Workload.** `producers=8`, `per=6250`, `cap=64`, `rounds=5`
+
+**Analogues.** **C (the floor)** — OS threads (one producer per pthread), one bounded channel; **Rust** — OS threads (one producer per std::thread), one bounded sync_channel; **Python (threads, GIL-bound)** — OS threads (one producer per threading.Thread), one bounded queue; **Go** — goroutines (one producer each), one buffered channel; **Avra** — user-space tasks (one channel each), a single `select` over 8 sources
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `fanin_ns_per_op` (ns) | — | — | — | — | — |
+| `fanin_received` (ops) | — | — | — | — | — |
+| `fanin_dropped` (ops) | — | — | — | — | — |
+
+_Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to the last receive; `fanin_received` (ops) — values the consumer received — must equal n_producers*per; `fanin_dropped` (ops) — sent minus received — must be 0.
+
+### `tasks/parked` — Memory per parked task
+
+**Invariant.** n tasks are spawned and blocked on a channel, then released; every one runs and its answer is joined, so the sum is 0+1+...+(n-1)
+
+**Row.** resident bytes the process holds per parked task (read from the process's own status before and after)
+
+**Workload.** `n=10000`, `rounds=3`
+
+**Analogues.** **C (the floor)** — OS threads blocked on one condition variable; **Rust** — OS threads blocked on a rendezvous sync_channel; **Go** — goroutines blocked on one channel; **Avra** — user-space tasks blocked on a rendezvous channel
+
+| row (unit) | C (the floor) | Rust | Go | Avra |
+|---|---|---|---|---|
+| `parked_bytes` (bytes) | — | — | — | — |
+| `parked_n` (ops) | — | — | — | — |
+
+_Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's growth over the parked run; `parked_n` (ops) — tasks parked — a witness the whole set was alive.
+
+### `tasks/pingpong` — Ping-pong latency
+
+**Invariant.** two tasks alternate n round trips over a rendezvous; every send is received exactly once and in order, so the exchange count is 2n at the end
+
+**Row.** wall-clock nanoseconds per round trip: one task signals, the other answers
+
+**Workload.** `n=100000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — OS threads, a mutex and condition variable rendezvous on both legs; **Rust** — OS threads, two rendezvous sync_channels; **Python (threads, GIL-bound)** — OS threads, two one-slot queues; **Go** — goroutines, two unbuffered channels; **Avra** — user-space tasks, two rendezvous channels (`open_channel<int>(0)`)
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `pingpong_ns` (ns) | — | — | — | — | — |
+| `pingpong_rounds` (ops) | — | — | — | — | — |
+
+_Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds` rallies; `pingpong_rounds` (ops) — the round trips run — a witness the rally was not cut short.
+
+### `tasks/spawn` — Spawn cost
+
+**Invariant.** every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0^2+1^2+...+(n-1)^2
+
+**Row.** wall-clock nanoseconds per task to create and join, for the thread analogue and the fiber analogue, one at a time and all alive at once
+
+**Workload.** `n=10000`, `rounds=5`
+
+**Analogues.** **C (the floor)** — both analogues: OS threads (pthread) and user-space fibers (ucontext/makecontext); **Rust** — OS threads (std::thread) — Rust's std has no fiber runtime; **Go** — user-space fibers (goroutines); **Python (threads, GIL-bound)** — OS threads (threading.Thread) — GIL-bound; **Avra** — user-space tasks (the scheduler's `spawn`)
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `spawn_thread` (ns) | — | — | — | — | — |
+| `spawn_thread_alive` (ns) | — | — | — | — | — |
+| `spawn_fiber` (ns) | — | — | — | — | — |
+| `spawn_fiber_alive` (ns) | — | — | — | — | — |
+| `spawn_sum` (ops) | — | — | — | — | — |
+
+_Rows:_ `spawn_thread` (ns) — create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread); `spawn_thread_alive` (ns) — create n OS threads alive at once, then join every one; `spawn_fiber` (ns) — create and join one user-space task at a time, n times (ucontext / goroutine / Avra task); `spawn_fiber_alive` (ns) — create n user-space tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness every task ran and was joined once.
+
+_Projected from 35 stored row(s)._
