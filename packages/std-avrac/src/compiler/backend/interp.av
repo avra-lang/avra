@@ -129,6 +129,9 @@ impl Spares {
 /// The machine: the program, its heaps, the register frame stack
 /// (innermost last — mutated through element aliases), its output,
 /// and its refusal.
+/// A declaration a run named, and the value it crossed as.
+type NamedVal = { name: string, val: Val }
+
 type Machine = {
     l: Lowered,
     // the runtime's rows by name, built once per machine — the
@@ -206,6 +209,10 @@ type Machine = {
     onces: Map<string, Val>,
     // a static's value, built once per run under its name
     statics: Map<string, Val>,
+    // each declaration `type_named` answered in this run, crossed once under its name and held by
+    // the run, each later ask a reference more: the workspace answers one name alike all run, and a
+    // generator asks the same names again and again
+    named_types: List<NamedVal> = [],
     // the array and map handles a static's boxes were built as
     frozen: Map<string, bool> = {},
     // the boxes a site watches, each with the turn it last logged under
@@ -1291,9 +1298,16 @@ impl Machine {
     /// `type_named`: the workspace's own answer, crossed straight
     /// into this run's values — the door every OTHER row reaches C
     /// through, reached here into the compiler instead.
-    fn type_named_val(name: string) -> Val {
-        let r = self.named_door(name)
-        self.val_of(r.heap, r.answer)
+    mut fn type_named_val(name: string) -> Val {
+        let held? = self.named_types.find(it.name == name) else {
+            let r = self.named_door(name)
+            let v = self.val_of(r.heap, r.answer)
+            self.retains(v)
+            self.named_types.push(NamedVal { name: name, val: v })
+            return v
+        }
+        self.retains(held.val)
+        held.val
     }
 
     /// EVERY CALL OUT OF A RUN INTO THE COMPILER IS A `*_door` VERB, and a door
