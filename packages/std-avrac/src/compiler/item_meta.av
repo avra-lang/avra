@@ -29,8 +29,19 @@ use core.{
     headed_type,
     sorted_by,
     spelled,
+    decl_keyed,
 }
-use features.{Lifted, MetaHeap, MetaVal, arg_lit, meta_of_named, meta_of_type, new_meta_heap}
+use features.{
+    Lifted,
+    MetaHeap,
+    MetaVal,
+    arg_lit,
+    meta_of_fn,
+    meta_of_named,
+    meta_of_type,
+    new_meta_heap,
+    written_slots,
+}
 use @std.errors.{Loc}
 use @std.meta.{
     derive,
@@ -825,6 +836,15 @@ export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: strin
     let scope? = file_scope(engine, reader) else { return absent_lifted() }
     let d? = resolved_in(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
     lifted_decl(engine, d.file, d.name)
+}
+
+/// What `decl` answers a derive's run: the fn the key names, as `@std/meta`'s `Fn`, crossed into a
+/// heap of its own; absent where it names none. Made only when a derive asks.
+export fn declared_lifted(engine: QueryEngine, key: string) -> Lifted {
+    let at? = decl_keyed(key) else { return absent_lifted() }
+    let f? = meta_of_fn_decl(engine, at.file, at.name) else { return absent_lifted() }
+    mut heap = new_meta_heap()
+    Lifted { answer: meta_of_fn(f, written_slots("Fn"), heap), heap: heap }
 }
 
 /// The type `file` declares as `name`, crossed into a heap of its own; absent for none.

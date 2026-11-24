@@ -1518,6 +1518,31 @@ fn wider_than_a_word(row: RtSig) -> string { "a value wider than a word crossing
 /// An enum's spare tag: the one no variant has, which its nullable spends on absence.
 export const ABSENT_TAG: int = -1
 
+/// THE IDENTITY A DECLARED FN IS ASKED AFTER BY, the key an annotation naming it carries: the file
+/// that declares it, spelled by package and path, and its name.
+export fn decl_key(file: SourceFileAddress, name: string) -> string { "${file.package_name}/${file.path_in_package}.${name}" }
+
+/// The file and name a `decl_key` spells, absent where it spells none: a scoped package's name holds
+/// one `/` of its own, a path ends in `.av`, and a name holds no `.`.
+export fn decl_keyed(key: string) -> DeclKeyed? {
+    let dotted = key.split(".")
+    if dotted.length < 2 { return null }
+    let parts = dotted.take(dotted.length - 1).join(".").split("/")
+    let scoped = parts.first()?.starts_with("@") ?? false
+    let head = if scoped { 2 } else { 1 }
+    if parts.length <= head { return null }
+    DeclKeyed {
+        file: SourceFileAddress {
+            package_name: parts.take(head).join("/"),
+            path_in_package: parts.drop(head).join("/"),
+        },
+        name: dotted.last()!,
+    }
+}
+
+/// A declared fn's file and name, as its key spells them.
+export type DeclKeyed = { file: SourceFileAddress, name: string }
+
 /// The symbol of the body that answers `target`'s code hash.
 export fn code_hash_symbol(target: string) -> string { "${CODE_HASH_PREFIX}${target}" }
 

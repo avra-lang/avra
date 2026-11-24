@@ -6212,6 +6212,14 @@ void* avra_type_named(const char* name) {
     return NULL;
 }
 
+/* `avra_fn_declared` is answered by the compiler's declaration table too,
+   reached only by the interpreter's arm. */
+void* avra_fn_declared(const char* key) {
+    (void)key;
+    avra_trap("`decl` reads a declaration at compile time — this program reached it at run time");
+    return NULL;
+}
+
 static int by_text(const void* a, const void* b) {
     return strcmp((const char*)(uintptr_t)*(const int64_t*)a, (const char*)(uintptr_t)*(const int64_t*)b);
 }

@@ -263,6 +263,9 @@ type Machine = {
     // stands — an ordinary program run carries the one that always
     // answers absent, since it has no workspace to stand in
     named: fn(string) -> Lifted,
+    // `decl`'s door back to the workspace: the fn an annotation names, by the identity it carries,
+    // made only when a run asks; one outside a derive's run answers absent
+    declared: fn(string) -> Lifted,
     /// THE DOOR A LAZILY MADE PROGRAM GROWS BY: the piece the program as it stands lacks to run the
     /// fn it defers under a name, absent where none is made; an ordinary run's answers none.
     late: fn(Lowered, string) -> Lowered?,
@@ -358,6 +361,9 @@ fn opened(stem: string) -> int {
 /// program, or a run nobody armed the door for.
 fn no_named_type(_name: string) -> Lifted { crossed_answer(MetaVal.Absent, new_meta_heap()) }
 
+/// `decl` outside a derive's run, which stands in no workspace: absent.
+fn nothing_declared(_key: string) -> Lifted { crossed_answer(MetaVal.Absent, new_meta_heap()) }
+
 /// The door of a program made whole: no body is made late.
 fn made_nothing(_have: Lowered, _name: string) -> Lowered? { null }
 
@@ -408,6 +414,7 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type, plan: 
         libs: opened_libraries(l),
         symbols: {},
         named: named,
+        declared: nothing_declared,
         late: made_nothing,
         awaited: {},
         embeddable: false,
@@ -654,6 +661,7 @@ export fn run_lifted(
     spelled: fn(string) -> string = as_symbolled,
     late: fn(Lowered, string) -> Lowered? = made_nothing,
     settled_as: string = "",
+    declared: fn(string) -> Lifted = nothing_declared,
 ) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, embeds != null, spelled)
     if world != null { return .Err(Unsettled.Reach(world!)) }
@@ -661,6 +669,7 @@ export fn run_lifted(
     mut m = budgeted_machine(l, budgets, named, plan)
     if embeds != null { m.embed = embeds!.read }
     m.late = late
+    m.declared = declared
     m.embeddable = embeds != null
     let vals = [m.val_of(heap, a) for a in args]
     let answer: Val? = m.run_body(target, vals)
@@ -1317,6 +1326,18 @@ impl Machine {
         let r = self.named(name)
         self.past_door(Billing.Unbilled, before)
         r
+    }
+
+    fn declared_door(key: string) -> Lifted {
+        let before = avra_mem_live()
+        let r = self.declared(key)
+        self.past_door(Billing.Unbilled, before)
+        r
+    }
+
+    fn fn_declared_val(key: string) -> Val {
+        let r = self.declared_door(key)
+        self.val_of(r.heap, r.answer)
     }
 
     fn embed_door(path: string, kind: EmbedKind) -> Result<Bytes, string> {
@@ -2072,6 +2093,7 @@ impl Machine {
             .SpawnStatus -> self.spawn_status_val(vals),
             .SpawnIn -> self.spawn_in_val(vals),
             .TypeNamed -> self.type_named_val(self.text_val(vals[0])),
+            .FnDeclared -> self.fn_declared_val(self.text_val(vals[0])),
             // no arm of its own: the row's C body, called by name through
             // the uniform frame, the row its witness — the host holds
             // every row (runtime/avra_rt.h), so the symbol is there
