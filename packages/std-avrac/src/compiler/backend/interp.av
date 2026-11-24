@@ -640,7 +640,8 @@ export type EmbedReader = { read: fn(string, EmbedKind) -> Result<Bytes, string>
 /// A fn run at compile time over crossing values: the body under its
 /// arguments, its answer crossed back. The reach law holds here — no
 /// world, and no embed unless `embeds` reads them — and names each body
-/// as `spelled` names it to its reader.
+/// as `spelled` names it to its reader, and the run on the settle line as
+/// `settled_as` where the symbol alone doesn't say what it ran over.
 export fn run_lifted(
     l: Lowered,
     symbol: string,
@@ -652,6 +653,7 @@ export fn run_lifted(
     plan: EvalPlan? = null,
     spelled: fn(string) -> string = as_symbolled,
     late: fn(Lowered, string) -> Lowered? = made_nothing,
+    settled_as: string = "",
 ) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, embeds != null, spelled)
     if world != null { return .Err(Unsettled.Reach(world!)) }
@@ -662,7 +664,7 @@ export fn run_lifted(
     m.embeddable = embeds != null
     let vals = [m.val_of(heap, a) for a in args]
     let answer: Val? = m.run_body(target, vals)
-    m.spent(symbol, budgets)
+    m.spent(if settled_as.is_empty() { symbol } else { settled_as }, budgets)
     if m.unmade != null { return .Err(Unsettled.Reach(m.unmade!)) }
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }

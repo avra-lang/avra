@@ -21,8 +21,6 @@
 #
 # A test row runs every suite (AVRA_SUITE_ALL=1), so it names every failing case, never only the first.
 #
-# GATE_OLD_PATH=0 drops every row that compares against the old path (they read AVRA_PROGRAM=0);
-# when the old path goes, its default goes to 0 and those rows go with one line each.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
@@ -36,7 +34,6 @@ export AVRA_SUITE_ALL=1
 # user meets through a child build/avra. `tapes --findings` passes no door, so the net never stood in it.
 export AVRA_PROGRAM_NET=0
 
-OLD_PATH=${GATE_OLD_PATH:-1}
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
 # every `test` row's failing NAMES are held to tools/gate/<package>.names, the cases a sandbox fails
@@ -64,8 +61,8 @@ findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
 findings-d the last third
-warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
-warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
+warnings-a witness_program_warnings — the cli built cold and again with no change
+warnings-b witness_program_warnings — the cases under tools/program-warnings/, against their frozen warnings
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
 edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived"
 edit-b     witness_program_edit, WITNESS_ONLY=1
@@ -228,7 +225,6 @@ judged() {
 }
 
 # a row that compares against the old path: run only while the old path stands
-old_row() { [ "$OLD_PATH" = 1 ] || return 0; row "$@"; }
 
 # every store under the packages named emptied — a nested package's and a program test's too — so the
 # rows after read them cold
@@ -512,20 +508,20 @@ row closure-gather-attack sh tools/closure_gather_attack.sh
 row store-bound-attack sh tools/store_bound_attack.sh
 row path-leak-attack sh tools/path_leak_attack.sh
 row case-leftover-attack sh tools/case_leftover_attack.sh
-old_row fixes-witness sh tools/witness_program_fixes.sh build/avra
+row fixes-witness sh tools/witness_program_fixes.sh build/avra
 row root-listing-attack sh tools/root_listing_attack.sh
 row two-compilers-attack sh tools/two_compilers_attack.sh
 row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
 row queue-witness build/avra run tools/queue-witness
 row std-answers-attack sh tools/std_answers_attack.sh build/avra
 row carried-store-attack env CARRIED_ATTACK_AVRA="$root/build/avra" sh tools/carried_store_attack.sh
-row derive-members-witness env WITNESS_NET_ONLY=1 sh tools/derive_members_witness.sh build/avra
-old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
-old_row suites-witness sh tools/witness_program_suites.sh build/avra
-old_row differential-witness sh tools/witness_program_differential.sh build/avra
+row derive-members-witness sh tools/derive_members_witness.sh build/avra
+row ledger-witness sh tools/witness_program_ledger.sh build/avra
+row suites-witness sh tools/witness_program_suites.sh build/avra
+row differential-witness sh tools/witness_program_differential.sh build/avra
 EOF
     # the doors witness a row for each of its cases, so a part holds a share of the doors
-    sh tools/witness_program_doors.sh --cases | while read -r c; do echo "old_row doors-witness-$c sh tools/witness_program_doors.sh build/avra $c"; done
+    sh tools/witness_program_doors.sh --cases | while read -r c; do echo "row doors-witness-$c sh tools/witness_program_doors.sh build/avra $c"; done
 }
 
 # THE PART `$2` OF `$3` OF A LIST OF ROWS `$1` NAMES, each line a row as the script would write it: read
@@ -554,14 +550,14 @@ part_of() {
             cold std-program std-relation
             rows_dealt program_rows "$2" "$3"
             ;;
-        refusal) old_row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$(($2 - 1))" "$3") ;;
+        refusal) row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
     esac
 }
 
 # the warnings witness's part `$1`
-warnings_part() { old_row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
+warnings_part() { row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
 
 # the edit witness's edits `$1`
 edit_part() { row edit-witness env WITNESS_ONLY="$1" sh tools/witness_program_edit.sh build/avra; }
@@ -613,7 +609,7 @@ if compiler; then
         findings-c) findings_third 1 ;;
         findings-d) findings_third 2 ;;
         warnings-a) warnings_part cold ;;
-        warnings-b) warnings_part "check cases" ;;
+        warnings-b) warnings_part cases ;;
         warnings-c) warnings_part edit ;;
         edit-a) edit_part "embed infer composed gathered check lawed derived" ;;
         edit-b) edit_part 1 ;;

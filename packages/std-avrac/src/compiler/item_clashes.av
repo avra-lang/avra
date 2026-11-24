@@ -31,6 +31,9 @@ fn module_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Lis
 /// A declaration that lost its name, found where it's written, its voice handed the name.
 fn named_lost(engine: QueryEngine, c: NameClash) -> Found { Found { at: declaration_span(engine, c.lost), args: [c.lost.name] } }
 
+/// Whether the written item `at` of `file` holds a declaration that lost its name to another.
+export fn lost_a_name(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool { !lost_in(engine, file, at).is_empty() }
+
 /// The clashes of the module's own declarations whose loser the written item `at` of `file` holds.
 fn lost_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<NameClash> {
     if !item_held(engine, file, at) { return [] }
@@ -63,6 +66,7 @@ fn below_root(path: string) -> string {
 export law value_twice {
     kind: "resolve.duplicate_fn"
     reads: values_twice
+    judges_lost: true
     voice: defined_twice
     witness: "fn f(x: int) -> int { x }\n\nfn f(y: int) -> int { y }\n"
 }
@@ -71,6 +75,7 @@ export law value_twice {
 export law type_twice {
     kind: "resolve.duplicate_type"
     reads: types_twice
+    judges_lost: true
     voice: redeclared
     witness: "type P = { x: int }\n\nenum P {\n    a\n}\n"
 }
@@ -79,6 +84,7 @@ export law type_twice {
 export law name_twice_in_module {
     kind: "resolve.duplicate_in_module"
     reads: module_twice
+    judges_lost: true
     voice: declared_twice_in_module
     witness: "export fn f() -> int { 1 }\n"
     witness_files: {"src/also.av": "export fn f() -> int { 2 }\n"}

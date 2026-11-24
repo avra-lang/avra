@@ -2941,13 +2941,15 @@ int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
     // A CANCEL IS HEARD BEFORE THE TURN IS COUNTED: a schedule decides who
     // runs next, never whether a request is heard, and a task that
-    // unwinds draws nothing from it.
+    // unwinds draws nothing from it. A CHECKED BACK-EDGE IN A SHIELDED TASK
+    // RAISES NOTHING, as the compiled one's (`avra_tick_cold`): a deferred
+    // call that loops runs to its end under a cancel.
     if (g_seeded) {
-        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }
+        if (!f->shield_depth && f->cancel_by != 0) { f->unwinding = 1; return 0; }
         return tick_turn_comes(f);
     }
     if (g_timers_len > 0) fire_due_timers(now_ns());
-    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
+    if (!f->shield_depth && (deadline_passed(f) || f->cancel_by != 0)) f->unwinding = 1;
     return g_ready_head != NULL;
 }
 

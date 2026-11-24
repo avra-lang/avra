@@ -26,6 +26,7 @@ export type LawEntry = {
     reach: Reach,
     quotes: bool,
     judged_if: fn(ItemView) -> bool,
+    judges_lost: bool,
     voice: fn(List<string>) -> Voice,
     warns: bool,
     witness: string,
@@ -34,7 +35,7 @@ export type LawEntry = {
 }
 
 /// EVERY LAW, by name — gathered, never listed by hand.
-export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, reads_view: it.reads_view, on: it.on, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
+export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, reads_view: it.reads_view, on: it.on, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, judges_lost: it.judges_lost, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
 
 /// Every law, gathered once a process.
 once fn held_laws() -> List<LawEntry> { laws }
@@ -83,15 +84,17 @@ export type ItemFindings = { findings: List<LawFinding> }
 
 /// What every law finds in the item `at` of `file`, in the order the file says them: by where each
 /// stands, then law by law; one with no place last. A law that judges kinds of node is handed each
-/// node of them the item's one view holds; one that judges none reads the item whole.
+/// node of them the item's one view holds; one that judges none reads the item whole. An item
+/// holding a declaration that lost its name is refused as a clash before any other law reads it.
 @query
 export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFindings {
     let view = if item_held(engine, file, at) { item_view(engine, file, at) } else { null }
+    let lost = lost_a_name(engine, file, at)
     pinned_while(
         view,
         () -> ItemFindings {
             findings: sorted_by(
-                [finding_of(l.name, s) for l in held_laws() for s in law_found(engine, file, at, view, l)],
+                [finding_of(l.name, s) for l in held_laws() if !lost || l.judges_lost for s in law_found(engine, file, at, view, l)],
                 stands_before,
             ),
         },

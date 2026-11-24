@@ -2,13 +2,7 @@
 # A DERIVE'S NEW MEMBERS ARE SEEN ON THE NEXT CHECK. A package's own trait derives `first` beside a
 # type, through `beside(t, quote { impl ${t} { … } })`; a test of that package passes; a second member
 # is added inside the quoted impl, and the test calling it is run again over the same machine cache:
-#   (1) the program layer alone (AVRA_PROGRAM_NET=0) sees `second`;
-#   (2) the default path (the program layer, the old path judging beside it) sees `second`;
-#   (3) the old path alone (AVRA_PROGRAM=0) sees `second`.
-# (2) and (3) fail while the old store stands: its machine pack (`prints/<print>/store` under the
-# machine cache) keeps the deriving module's record, and a member added inside a quoted impl moves
-# nothing its runs' reads are judged by. They are the witness the old store's deletion carries: owed
-# until then, so this is no gate row. `WITNESS_NET_ONLY=1` holds (1) alone.
+# the program layer sees `second`.
 #   sh tools/derive_members_witness.sh [compiler]     (default build/avra)
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -83,11 +77,5 @@ seen() {
     env AVRA_CACHE_DIR="$w/$name-cache" "$@" "$avra" test "$w/$name" > "$w/$name.grown" 2>&1
 }
 
-seen net AVRA_PROGRAM_NET=0 || fail "(1) the program layer alone missed the new member: $(grep -m1 'error\[' "$w/net.grown")"
-held "(1) the program layer alone sees a derive's new member"
-[ "${WITNESS_NET_ONLY:-0}" = 1 ] && exit 0
-seen default X=1 || fail "(2) the default path missed the new member: $(grep -m1 'error\[' "$w/default.grown")"
-held "(2) the default path sees a derive's new member"
-seen old AVRA_PROGRAM=0 || fail "(3) the old path missed the new member: $(grep -m1 'error\[' "$w/old.grown")"
-held "(3) the old path sees a derive's new member"
-echo "derive_members_witness: held"
+seen layer X=1 || fail "the program layer missed the new member: $(grep -m1 'error\[' "$w/layer.grown")"
+held "the program layer sees a derive's new member"
