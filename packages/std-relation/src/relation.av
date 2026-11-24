@@ -498,20 +498,36 @@ impl Owner {
     /// The name a helper of `spelled` is written under.
     fn id_of(spelled: string) -> string { self.ids.get(spelled) ?? helper_id(spelled) }
 
-    /// Whether a kind's subtree is written by a helper of this owner's.
-    fn needs(k: Kind) -> bool { !self.places(k) && !self.codes(k) && kind_needs_in(k, [], self.all, self.shapes) }
+    /// How a named kind crosses for this owner, read from one spelling of it.
+    fn crossing(k: Kind, n: string, args: List<Kind>) -> Crossing {
+        let spelled = k.spelled()
+        if self.coded.contains(spelled) { return Crossing.Coded }
+        let shape = self.shapes.get(spelled) ?? instance_shape(n, args)
+        if self.places_shape(shape) || !shape_needs(n, shape, [], self.all, self.shapes) { return Crossing.Inline(shape) }
+        Crossing.Helper(self.id_of(spelled))
+    }
 
     /// Whether a kind is a type written by its own codec.
     fn codes(k: Kind) -> bool { self.coded.contains(named_spelled(k) ?? "") }
 
     /// Whether a kind is a place this owner hands to its scope.
     fn places(k: Kind) -> bool {
-        if !self.scoped { return false }
-        match k {
-            .Named(n, args) -> match self.shape(n, args) { .Placed(_) -> true, rest -> false },
-            rest -> false,
-        }
+        match k { .Named(n, args) -> self.places_shape(self.shape(n, args)), rest -> false }
     }
+
+    /// Whether a named type's shape is a place this owner hands to its scope.
+    fn places_shape(shape: NamedShape) -> bool {
+        if !self.scoped { return false }
+        match shape { .Placed(_) -> true, rest -> false }
+    }
+}
+
+/// How a named kind crosses: by its own codec, by a helper of its owner's under the helper's
+/// name, or inline by its shape.
+enum Crossing {
+    Coded
+    Helper(id: string)
+    Inline(shape: NamedShape)
 }
 
 fn row_owner(t: Type) -> Owner {
@@ -541,16 +557,27 @@ fn kind_needs_in(k: Kind, seen: List<string>, all: bool, shapes: Map<string, Nam
         .Opt(inner) -> kind_needs_in(inner, seen, all, shapes),
         .List(elem) -> kind_needs_in(elem, seen, all, shapes),
         .Map(_, value) -> kind_needs_in(value, seen, all, shapes),
-        .Named(n, args) -> match shapes.get(k.spelled()) ?? instance_shape(n, args) {
-            .Payload(_) -> true,
-            .Record(fs) or .Placed(fs) -> if all || seen.contains(n) {
-                true
-            } else {
-                columns(fs).any((f: Field) -> kind_needs_in(f.kind, seen.concat([n]), all, shapes))
-            },
-            .Tagged(_) or .Dense(_) or .Over(_) or .Plain -> false,
-        },
+        .Named(n, args) -> shape_needs(n, shapes.get(k.spelled()) ?? instance_shape(n, args), seen, all, shapes),
         rest -> false,
+    }
+}
+
+/// `kind_needs_in` for a named type `n` of the shape already read.
+fn shape_needs(
+    n: string,
+    shape: NamedShape,
+    seen: List<string>,
+    all: bool,
+    shapes: Map<string, NamedShape>,
+) -> bool {
+    match shape {
+        .Payload(_) -> true,
+        .Record(fs) or .Placed(fs) -> if all || seen.contains(n) {
+            true
+        } else {
+            columns(fs).any((f: Field) -> kind_needs_in(f.kind, seen.concat([n]), all, shapes))
+        },
+        .Tagged(_) or .Dense(_) or .Over(_) or .Plain -> false,
     }
 }
 
@@ -1272,10 +1299,10 @@ fn hashed(acc: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem, owner)}) },
         .Bytes -> quote { ${acc}.octets(${e}) },
-        .Named(n, args) -> when {
-            owner.codes(k) -> quote { ${acc}.int(${name(n)}.digest_in(scope, ${e})) }
-            owner.needs(k) -> quote { ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(${acc}, ${e}) }
-            _ -> match owner.shape(n, args) {
+        .Named(n, args) -> match owner.crossing(k, n, args) {
+            .Coded -> quote { ${acc}.int(${name(n)}.digest_in(scope, ${e})) },
+            .Helper(id) -> quote { ${name(owner.name)}.hash_${id}(${acc}, ${e}) },
+            .Inline(shape) -> match shape {
                 .Record(fs) or .Placed(fs) -> folded_record(acc, e, fs, owner),
                 .Over(shape) -> hashed(acc, quote { ${e}.of }, shape, owner),
                 .Tagged(_) -> quote { ${acc}.text(${tag_of(e, k)}) },
@@ -1285,7 +1312,7 @@ fn hashed(acc: Code, e: Code, k: Kind, owner: Owner) -> Code {
                     quote { ${acc}.int(${e}.${field}) }
                 },
                 .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
-            }
+            },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -1309,10 +1336,10 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem, owner)}) },
         .Bytes -> quote { (h: StableHasher, v: Bytes) -> h.octets(v) },
-        .Named(n, args) -> when {
-            owner.codes(k) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(${name(n)}.digest_in(scope, v)) }
-            owner.needs(k) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(h, v) }
-            _ -> match owner.shape(n, args) {
+        .Named(n, args) -> match owner.crossing(k, n, args) {
+            .Coded -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(${name(n)}.digest_in(scope, v)) },
+            .Helper(id) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${id}(h, v) },
+            .Inline(shape) -> match shape {
                 .Record(fs) or .Placed(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs, owner)} },
                 .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape, owner)} },
                 .Tagged(_) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
@@ -1322,7 +1349,7 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
                     quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(v.${field}) }
                 },
                 .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
-            }
+            },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -1422,17 +1449,17 @@ fn read_value(k: Kind, owner: Owner) -> Code {
         .List(elem) -> quote { read_list(rd, ${read_each(elem, owner)})? },
         .Map(_, value) -> quote { read_map(rd, ${read_each(value, owner)})? },
         .Bytes -> quote { rd.octets()? },
-        .Named(n, args) -> when {
-            owner.codes(k) -> quote { ${name(n)}.read_by(rd, scope)? }
-            owner.needs(k) -> quote { ${read_helper(quote { rd }, k.spelled(), owner)}? }
-            _ -> match owner.shape(n, args) {
+        .Named(n, args) -> match owner.crossing(k, n, args) {
+            .Coded -> quote { ${name(n)}.read_by(rd, scope)? },
+            .Helper(id) -> quote { ${read_helper(quote { rd }, id, owner)}? },
+            .Inline(shape) -> match shape {
                 .Dense(field) -> quote { ${read_dense_at(quote { rd }, n, field, owner)}? },
                 .Tagged(_) -> quote { ${tag_reader(quote { rd }, k, owner)}? },
                 .Record(fs) -> record_read(n, fs, owner),
                 .Placed(fs) -> if owner.scoped { quote { place_read(rd, scope)? } } else { record_read(n, fs, owner) },
                 .Over(shape) -> quote { ${n}(${read_value(shape, owner)}) },
                 .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
-            }
+            },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -1504,10 +1531,10 @@ fn read_each(k: Kind, owner: Owner) -> Code {
         .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem, owner)}) },
         .Map(_, value) -> quote { (r: Reader) -> read_map(r, ${read_each(value, owner)}) },
         .Bytes -> quote { (r: Reader) -> r.octets() },
-        .Named(n, args) -> when {
-            owner.codes(k) -> quote { (r: Reader) -> ${name(n)}.read_by(r, scope) }
-            owner.needs(k) -> quote { (r: Reader) -> ${read_helper(quote { r }, k.spelled(), owner)} }
-            _ -> match owner.shape(n, args) {
+        .Named(n, args) -> match owner.crossing(k, n, args) {
+            .Coded -> quote { (r: Reader) -> ${name(n)}.read_by(r, scope) },
+            .Helper(id) -> quote { (r: Reader) -> ${read_helper(quote { r }, id, owner)} },
+            .Inline(shape) -> match shape {
                 .Dense(field) -> quote { (r: Reader) -> ${read_dense_at(quote { r }, n, field, owner)} },
                 .Tagged(_) -> quote { (r: Reader) -> ${tag_reader(quote { r }, k, owner)} },
                 .Over(shape) -> quote { (r: Reader) -> read_over(r, ${read_each(shape, owner)}, (x: ${shape.spelled()}) -> ${n}(x)) },
@@ -1517,7 +1544,7 @@ fn read_each(k: Kind, owner: Owner) -> Code {
                     quote { a_relation_field_kind_with_no_stable_encoding() }
                 },
                 .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
-            }
+            },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -1533,17 +1560,17 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { written_map(${w}, ${e}, ${write_each(value, owner)}) },
         .Bytes -> quote { ${w}.octets(${e}) },
-        .Named(n, args) -> when {
-            owner.codes(k) -> quote { ${name(n)}.written_by(${w}, scope, ${e}) }
-            owner.needs(k) -> write_helper(w, k.spelled(), e, owner)
-            _ -> match owner.shape(n, args) {
+        .Named(n, args) -> match owner.crossing(k, n, args) {
+            .Coded -> quote { ${name(n)}.written_by(${w}, scope, ${e}) },
+            .Helper(id) -> write_helper(w, id, e, owner),
+            .Inline(shape) -> match shape {
                 .Record(fs) -> record_written(w, e, k, fs, owner),
                 .Placed(fs) -> if owner.scoped { quote { written_place(${w}, scope, ${e}) } } else { record_written(w, e, k, fs, owner) },
                 .Over(shape) -> written(w, quote { ${e}.of }, shape, owner),
                 .Dense(field) -> write_dense_at(w, n, quote { ${e}.${field} }, owner),
                 .Tagged(_) or .Plain -> tag_written(w, e, k, owner),
                 .Payload(_) -> quote { a_relation_field_kind_with_no_stable_encoding() },
-            }
+            },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -1555,20 +1582,21 @@ fn record_written(w: Code, e: Code, k: Kind, fs: List<Field>, owner: Owner) -> C
     quote { written_all(${w}, ${e}, [${..writers}]) }
 }
 
-/// A helper call: the owner's own `static`, handed the scope when its codec reads dense ids.
-fn write_helper(w: Code, spelled: string, e: Code, owner: Owner) -> Code {
+/// A helper call: the owner's own `static` of helper name `id`, handed the scope when its codec
+/// reads dense ids.
+fn write_helper(w: Code, id: string, e: Code, owner: Owner) -> Code {
     if owner.scoped {
-        return quote { ${name(owner.name)}.write_${owner.id_of(spelled)}(${w}, scope, ${e}) }
+        return quote { ${name(owner.name)}.write_${id}(${w}, scope, ${e}) }
     }
-    quote { ${name(owner.name)}.write_${owner.id_of(spelled)}(${w}, ${e}) }
+    quote { ${name(owner.name)}.write_${id}(${w}, ${e}) }
 }
 
 /// The same call on the read side, its `?` left to the seat that takes the value.
-fn read_helper(r: Code, spelled: string, owner: Owner) -> Code {
+fn read_helper(r: Code, id: string, owner: Owner) -> Code {
     if owner.scoped {
-        return quote { ${name(owner.name)}.read_${owner.id_of(spelled)}(${r}, scope) }
+        return quote { ${name(owner.name)}.read_${id}(${r}, scope) }
     }
-    quote { ${name(owner.name)}.read_${owner.id_of(spelled)}(${r}) }
+    quote { ${name(owner.name)}.read_${id}(${r}) }
 }
 
 /// A dense id written as `scope` spells it, and read back through the same. A relation's
@@ -1624,16 +1652,16 @@ fn write_each(k: Kind, owner: Owner) -> Code {
         .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { (w: Writer, v: ${k.spelled()}) -> written_map(w, v, ${write_each(value, owner)}) },
         .Bytes -> quote { (w: Writer, v: Bytes) -> w.octets(v) },
-        .Named(n, args) -> when {
-            owner.codes(k) -> quote { (w: Writer, v: ${k.spelled()}) -> ${name(n)}.written_by(w, scope, v) }
-            owner.needs(k) -> quote { (w: Writer, v: ${k.spelled()}) -> ${write_helper(quote { w }, k.spelled(), quote { v }, owner)} }
-            _ -> match owner.shape(n, args) {
+        .Named(n, args) -> match owner.crossing(k, n, args) {
+            .Coded -> quote { (w: Writer, v: ${k.spelled()}) -> ${name(n)}.written_by(w, scope, v) },
+            .Helper(id) -> quote { (w: Writer, v: ${k.spelled()}) -> ${write_helper(quote { w }, id, quote { v }, owner)} },
+            .Inline(shape) -> match shape {
                 .Record(fs) or .Placed(fs) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v }, k, owner)} },
                 .Over(shape) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.of }, shape, owner)} },
                 .Dense(field) -> quote { (w: Writer, v: ${k.spelled()}) -> ${write_dense_at(quote { w }, n, quote { v.${field} }, owner)} },
                 .Tagged(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> ${tag_written(quote { w }, quote { v }, k, owner)} },
                 .Payload(_) -> quote { a_relation_field_kind_with_no_stable_encoding() },
-            }
+            },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -2025,7 +2053,7 @@ fn stored_generated(s: Stored) -> Decls {
 /// one as the tag a column of its kind is, a record column by column.
 fn stored_write(s: Stored) -> List<Code> {
     let t = s.t
-    if carries_payload(t) { return [write_helper(name("w"), t.name, quote { v }, s.owner)] }
+    if carries_payload(t) { return [write_helper(name("w"), s.owner.id_of(t.name), quote { v }, s.owner)] }
     if !t.variants.is_empty() { return [written(name("w"), quote { v }, Kind.Named(t.name, []), s.owner)] }
     [written(name("w"), quote { v.${f.name} }, f.kind, s.owner) for f in s.wire]
 }
@@ -2033,7 +2061,7 @@ fn stored_write(s: Stored) -> List<Code> {
 /// The expression that reads one back.
 fn stored_read(s: Stored) -> Code {
     let t = s.t
-    if carries_payload(t) { return quote { ${read_helper(quote { rd }, t.name, s.owner)}? } }
+    if carries_payload(t) { return quote { ${read_helper(quote { rd }, s.owner.id_of(t.name), s.owner)}? } }
     if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), s.owner) }
     let inits = [quote { W { ${f.name}: ${field_value(f, s.owner)} } } for f in t.fields]
     quote { ${t} { ..${inits} } }
@@ -2276,16 +2304,16 @@ fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> 
     }
     match shape {
         .Record(fs) or .Placed(fs) -> {
-            let writers = column_writers(n, fs, owner)
+            let writes = [field_written(f, owner) for f in columns(fs)]
             let reads = [quote { W { ${f.name}: ${field_value(f, owner)} } } for f in fs]
             [
                 if owner.scoped {
                     quote {
-                    static fn write_${id}(w: Writer, scope: dyn Scope, v: ${n}) -> void { written_all(w, v, [${..writers}]) }
+                    static fn write_${id}(w: Writer, scope: dyn Scope, v: ${n}) -> void { ${writes} }
                 }
                 } else {
                     quote {
-                    static fn write_${id}(w: Writer, v: ${n}) -> void { written_all(w, v, [${..writers}]) }
+                    static fn write_${id}(w: Writer, v: ${n}) -> void { ${writes} }
                 }
                 },
                 if owner.scoped {
