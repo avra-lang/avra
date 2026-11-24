@@ -7,7 +7,7 @@ use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{question, words_of}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
 use answer_record.{ContentHash}
-use frontier.{FrontierLearned, HeldEntry}
+use frontier.{FrontierLearned, HeldEntry, reached_at_rest}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use worked_ahead.{WorkAhead, asked_across_while, engine_worked_ahead}
 use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
@@ -191,6 +191,17 @@ fn rooted_entry(n: int, version: int) -> HeldEntry {
         input: false,
         root: true,
     }
+}
+
+/// A process over the store at `directory` that learned `entries`, kept over the frontier it read.
+fn learned_over(directory: string, entries: List<HeldEntry>) {
+    let store = disk_store_at(directory)
+    store
+        .keep_frontier(
+            "rebased",
+            FrontierLearned { on: store.frontier_of("rebased"), entries: entries, stale: [] },
+        )
+    let _ = store.saved()
 }
 
 fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
@@ -434,6 +445,38 @@ spec "disk_store — answers outlive the process" {
             let at? = back.place_of(hash_of(200)) else { return false }
             let reached? = reached_at_rest(back) else { return false }
             back.stands(at) && back.root_at(at) && reached[at]
+        }
+    }
+    given "a root a delta made, rewritten as no root when the chain is rebased" {
+        then "it is still a root read back: a rebased chain keeps the roots its deltas made" {
+            let directory = fresh_directory("rebased-root")
+            let _ = make_dirs(directory) catch ""
+            let root = HeldEntry {
+                question: hash_of(100),
+                answer: hash_of(101),
+                reads: words_of([hash_of(300)]),
+                input: false,
+                root: true,
+            }
+            let made = HeldEntry {
+                question: hash_of(300),
+                answer: hash_of(301),
+                reads: [],
+                input: false,
+                root: false,
+            }
+            learned_over(directory, [rooted_entry(i, 0) for i in 0..40].concat([root, made]))
+            // a delta makes it a root; the root that read it stops reading it
+            learned_over(directory, [made.rooted()])
+            learned_over(directory, [root with { answer: hash_of(102), reads: [] }])
+            // the chain filled to its last link, so the next write rebases it
+            learned_over(directory, [rooted_entry(1, 1)])
+            learned_over(directory, [rooted_entry(2, 1)])
+            learned_over(directory, [made with { answer: hash_of(302) }])
+            let f? = disk_store_at(directory).frontier_of("rebased") else { return false }
+            let at? = f.place_of(hash_of(300)) else { return false }
+            let reached? = reached_at_rest(f) else { return false }
+            f.answer_at(at).same_as(hash_of(302)) && f.root_at(at) && reached[at]
         }
     }
     given "a compaction" {
