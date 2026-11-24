@@ -288,7 +288,72 @@ forms module is not reached, so it is not counted).
   `icon` and `image` draw no picture under `avra dev`. Their semantic cases are whole.
 - A literal instance refuses a value for a place (`type.seat`: "takes a place, and this is a
   value"), while `with` on an instance sets it: the derived `given` cases draw the value given.
-- `avra fmt` drops the parentheses in `(a ?? 0) == (b ?? -1)`, and the result parses differently. A
-  `then` that typed clean before formatting is refused after it. Not fixed here.
+- `avra fmt` drops the parentheses in `(a ?? 0) == (b ?? -1)`. That is no parse change: `??` binds
+  tighter than `==`, so `a ?? 0 == b ?? -1` reads back as the same expression, the same IR and the
+  same answer (`a() ?? 0 == b() ?? -1` over `null` and `0` answers `true`). It is a legibility
+  question, since a reader who assumes C#'s precedence would misread it. The refusal first blamed
+  on it was the `.length` read through `x?.cases`, which is refused before formatting too.
 - Two `std-ui_gallery` tests were red on `69ff97e` (theming added `th-1` to every html); they are
   updated here.
+
+### Slice 1, the UI lead's page fixes
+
+| Ask | Done |
+|---|---|
+| 1. every frame named and bounded | each frame carries its dial's name over it, and a 4 px band in the dial's `Neutral` tone around the dial's `Canvas`, both in the dial's own theme |
+| 2. a narrow frame | the dial table has a `width` column: `Sizing.Fill` (grows to the room the page gives, never past it) and a `narrow` row at `Sizing.Fixed(320)` |
+| 3. the page on a phone | an index entry is a button that shows its view alone, under the index; frames stand one a row by default; iPhone 13 (390 px): `scrollWidth == innerWidth` (390) on the page as it opens and with every dial chosen |
+| 4. dials choosable | a checkbox per row of the table, `light` and `dark` first |
+| 5. set-aside cases | the index says `dialog 7 +1 aside`, and the tally says `29 views · 119 cases drawn · 5 set aside, drawing exactly what their base draws · 0 with no story` |
+
+**What an alert with no words draws.** Its node is `alert polite` with no text, so its HTML is
+`<div aria-live="polite" class="th-1"></div>`. The theme gives `alert` no look (`unstyled`), so it
+draws no surface and is zero high. That is right for a live region with nothing to say. The dark
+block in the first screenshots was the pane's own padding.
+
+**What the phone needed of the library, and what it still lacks.**
+- **A word too long for its line.** `body{overflow-wrap:break-word}` does not lower a box's
+  min-content width, so a flex item holding `unbroken_text` stood 474 px wide on a 390 px page. This
+  slice changes it to `overflow-wrap:anywhere` (realize/html/css.av, one word). That is a realizer
+  decision for the UI lead: the first frame of a mounted page shrinks by 2 octets (wire test
+  3539 → 3537), and the layout oracle, which needs Firefox, was not run here.
+- **Two frames side by side on a phone.** These leave a field's `<input>` (248 px intrinsic) wider
+  than a 175 px frame. Only `input{width:100%}` contains it, which changes how every field looks, so it
+  is not done. Frames stand one a row by default instead.
+- **Stacking under 600 px** needs a box's LEAST width: a size a wrapping row moves to a line of its
+  own. `Layout` has `Hug`, `Fill`, `Fixed` and `Percent` and no such size, so "one frame a row" is a
+  reader's choice (a checkbox), not a width.
+
+**A place's seed via `with` (finding 4).** The program and its output, on `69ff97e`:
+
+```avra
+use @std.ui.components.{checkbox}
+use @std.ui.tree.view.{tree_of}
+use @std.ui.tree.outline.{outline}
+fn base() -> checkbox { checkbox "Remember me" }
+"with:    ${outline(tree_of(base() with { initial: true }))}\nwritten: ${outline(tree_of(checkbox "Remember me" { initial: true }))}\nfield:   ${(base() with { initial: true }).checked}"
+```
+```
+with:    checkbox "Remember me"
+written: checkbox "Remember me" checked
+field:   false
+```
+The place is seeded when the VALUE is built: `checked`'s default `self.initial` is read at
+construction, so the field already holds `false`, and `with` changes `initial` beside it. By the UI
+lead's law (seeded when MOUNTED), this is a model defect. The page still sets such a case aside by
+name until the ruling.
+
+### Slice 2 — semantic snapshots and coverage, in the gate
+
+| Piece | Where |
+|---|---|
+| a `Snapshot` per case on three targets: `html` (web), `outline` (headless), `terminal` (80 columns) | `std-ui_gallery/src/gallery.av` (`terminal`, `terminal_width`; the digest folds all three, each text's length leading it) |
+| the dial table, as data | `std-ui_gallery/src/storyboard.av`'s `dials`: light, dark, more, large (200 %), narrow (320 px) |
+| a sheet snapshot per dial | `sheet_snapshots()`: `worn_by` of the theme under the dial |
+| the golden | `src/tests/storyboard_snapshots/`: 124 lines (`view/case digest`, 119 cases + 5 sheets), and two runs give 0 `changed` |
+| coverage | `storyboard_test.av`: `untold(shelves(views, stories))` is empty, so a view with no story is named |
+| the gate | `tools/gate.sh`'s slice `storyboard`: `test std-ui_gallery`, cold |
+
+Cost: `build/avra test packages/std-ui_gallery`, cold, takes **22 s** here: 47 cases, plus the golden's
+program run in both engines (17.8 s of that). That is well under the slice budget. The browser row
+(slice 3) joins this slice.
