@@ -32,7 +32,9 @@ uint64_t avra_sip_hash_keyed(uint64_t k0, uint64_t k1, const char* s, int64_t n)
 static int g_checks = 0, g_fails = 0;
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "map_hash_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
 
-enum { N = 100000, PROBE_BOUND = 128 };
+// The bound is in chunks a probe steps past its home — a cache line
+// each — and an honest table walks under a fifth of it at a million keys.
+enum { N = 100000, PROBE_BOUND = 64 };
 static const double BUDGET_S = 2.0;
 
 static double now_s(void) {

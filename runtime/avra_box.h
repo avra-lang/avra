@@ -115,15 +115,16 @@ static inline uint8_t avra_mark_at(const AvraArray* a, int64_t i) {
 }
 
 // A string-keyed, insertion-ordered map: keys and values as two
-// arrays, and an open-addressing index over key hashes. An index of
-// ZERO capacity is UNBUILT — static data arrives so, and the first
-// lookup builds it. The word BEFORE a built index says which hash
-// filed it (nonzero: the keyed fallback).
+// arrays, and an index over key hashes. An index of ZERO capacity is
+// UNBUILT — static data arrives so, and the first lookup builds it.
+// The runtime alone reads a built index (runtime/avra_runtime.c, "The
+// index"): a SMALL map's tags at capacity -1, else a table's words and
+// control bytes, a head before either.
 typedef struct {
     AvraArray* keys;
     AvraArray* vals;
-    int64_t* index;   // slot + 1 in the low half, 0 when empty; the hash's high half above
-    int64_t icap;
+    int64_t* index;   // the block past its head: a table's words, or a small map's tags
+    int64_t icap;     // 0 unbuilt, -1 small, else the table's size
 } AvraMap;
 
 // A TASK BODY'S SITE is a row of the program's site table: the body's

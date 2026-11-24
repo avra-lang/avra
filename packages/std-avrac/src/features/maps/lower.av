@@ -1,5 +1,5 @@
-//! A map lowers as the runtime aggregate: one `avra_map_new`, then
-//! a set per pair — the memory pass marks managed values owned; the
+//! A map lowers as the runtime aggregate: one `avra_map_sized` for its
+//! count of pairs (`avra_map_new` for none), then a set per pair — the memory pass marks managed values owned; the
 //! runtime keeps its own reference to every key.
 use core.{ExprId, Reg, MapEntry, map_keys, map_values, map_spreads}
 use features.{LowerCx, Pipeline, Clause, Source, Sink}
@@ -10,7 +10,7 @@ fn map_reg(mut cx: LowerCx, e: ExprId, entries: List<MapEntry>) -> Reg {
     if !map_spreads(entries).is_empty() { return spread_reg(cx, e, entries) }
     let ks = [cx.reg_of(k) for k in map_keys(entries)]
     let vs = [cx.reg_of(v) for v in map_values(entries)]
-    let dst = cx.map_new(cx.shape_at(e))
+    let dst = if ks.is_empty() { cx.map_new(cx.shape_at(e)) } else { cx.map_sized(cx.shape_at(e), cx.const_int(ks.length)) }
     for j, k in ks {
         cx.map_write(dst, k, vs[j])
     }
