@@ -77,12 +77,16 @@ fn item_kind(store: SyntaxArena, s: StmtId) -> ItemKind? {
     }
 }
 
-/// Writes what `s` declares on `tape`, if anything: its name, kind and face.
-export fn declare_on(store: SyntaxArena, mut tape: TapeWriter, s: StmtId) {
+/// Writes what `s` declares on `tape`, if anything: its name, kind and face. The face is all
+/// reading the declaration back can tell its readers, so a declaration whose item does not read
+/// back whole — its parse found errors (`misparsed`), or `store` holds a refusal — wears another
+/// face than the same words in an item that does.
+export fn declare_on(store: SyntaxArena, mut tape: TapeWriter, s: StmtId, misparsed: bool = false) {
     let kind? = item_kind(store, s) else { return }
     let name? = store.declared_name(s) ?? store.let_name(s) else { return }
     mut face = face_writer()
     Stmt.taped_id(store, face, s)
+    if misparsed || !store.refusals().is_empty() { face.count(1) }
     let number = ITEM_KINDS.index_of(kind)
     if number < 0 { defect(kind_unnumbered()) }
     tape.declared(name, number, store.is_exported(s), face.face())

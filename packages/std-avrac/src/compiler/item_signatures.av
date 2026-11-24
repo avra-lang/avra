@@ -79,9 +79,11 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
 
 /// The signature of the fn `name` the item `at` of `file` declares with the face `_face`, which the
 /// question is keyed by and the body never reads. The face is the declaration written with every
-/// body left out, so it says all reading the item back can
-/// tell a signature: that read is none of this answer's reads, and only what the signature's types
-/// resolve through is. A body edited leaves the face, and so this question, standing.
+/// body left out, and whether its item reads back whole (`declare_on`), so it says all reading the
+/// item back can tell a signature: that read is none of this answer's reads, and only what the
+/// signature's types resolve through is. A body edited leaves the face, and so this question,
+/// standing. An unrecorded read is sound only while its key covers what it read; where the read
+/// misses, the answer records the read.
 @query
 fn faced_signature(
     engine: QueryEngine,
@@ -93,7 +95,12 @@ fn faced_signature(
     engine.unrecorded_begun()
     let item = read_item(engine, file, at)
     engine.recorded_again()
-    let written? = written_fn(item.store, item.stmts, name) else { return null }
+    // Where the item read back holds no fn of the name (gone from its file, or another standing
+    // at its id), the answer rests on that read: whether the item stands, and what it declares.
+    let written? = written_fn(item.store, item.stmts, name) else {
+        if item_held(engine, file, at) { let _ = file_declares_at(engine, file, at) }
+        return null
+    }
     declared_signature(engine, file, written)
 }
 

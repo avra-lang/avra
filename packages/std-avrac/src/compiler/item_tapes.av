@@ -2,7 +2,7 @@
 //! own text, its refusals among what it keeps, and a file's tree put back together from its items'
 //! tapes.
 use core.{ForeignOrigin, ParseRefusal, SyntaxArena, Stmt, StmtId, new_node_store}
-use diagnostics.{new_source_file}
+use diagnostics.{has_errors, new_source_file}
 use grammar.{avra_lexeme, lex_source}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.answer_record.{content_hash}
@@ -102,17 +102,21 @@ export fn avra_columns(text: string) -> TokenColumns { token_columns(text, lex_s
 /// what its file keeps of it, its refusals among them.
 export fn avra_item_tape(item_text: string, context: Bytes) -> SyntaxTape {
     let parsed = parse_program(avra(), new_source_file("<item>", item_text), context_words(context))
-    tape_of_item(parsed.store, [s for s in parsed.stmts if !parsed.store.is_hoisted(s)])
+    tape_of_item(
+        parsed.store,
+        [s for s in parsed.stmts if !parsed.store.is_hoisted(s)],
+        has_errors(parsed.voices.list),
+    )
 }
 
 /// An item's tape: its statements, what its file keeps of it, and every name it declares, what it
 /// hoisted among them, each with its face.
-export fn tape_of_item(store: SyntaxArena, stmts: List<StmtId>) -> SyntaxTape {
+export fn tape_of_item(store: SyntaxArena, stmts: List<StmtId>, misparsed: bool = false) -> SyntaxTape {
     mut tape = tape_writer()
     tape.count(stmts.length)
     for s in stmts { Stmt.taped_id(store, tape, s) }
     SyntaxArena.tape_item_tables(store, tape)
-    for s in stmts.concat(store.hoisted_decls()) { declare_on(store, tape, s) }
+    for s in stmts.concat(store.hoisted_decls()) { declare_on(store, tape, s, misparsed) }
     tape.said_about(item_about(store, stmts))
     tape.finished()
 }

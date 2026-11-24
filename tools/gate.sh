@@ -507,6 +507,7 @@ witness_b_rows() {
 row runs-witness sh tools/witness_program_runs.sh build/avra
 row page-closure-witness sh tools/witness_page_closure.sh build/avra
 row board-native-witness sh tools/witness_board_native.sh build/avra
+row store-broken-edit-witness sh tools/witness_store_broken_edit.sh build/avra
 row waits-witness sh tools/witness_program_waits.sh build/avra
 row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
 row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
