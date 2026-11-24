@@ -74,6 +74,9 @@ edit-b     witness_program_edit, WITNESS_ONLY=1, the frontier walk checked
 edit-c     witness_program_edit, WITNESS_ONLY=5, the frontier walk checked
 edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
 edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
+keepers-mutations  make runtime-mutations alone: every scheduler break some runtime test must fail; then a planted fault
+keepers-warm  make warm-edit alone: the warm edits' work held to its ceilings; then a planted fault
+keepers-try   make try, then the keepers that read its compiler and warm store (speed-ratchet, tool-witnesses); then a planted fault
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
@@ -100,6 +103,7 @@ refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
+keepers|4|every other keeper of the Makefile's groups (make keepers-listed) a row of its own, dealt in turn, a planted fault last
 EOF
 }
 
@@ -673,6 +677,64 @@ EOF
     sh tools/witness_program_doors.sh --cases | while read -r c; do echo "row doors-witness-$c sh tools/witness_program_doors.sh build/avra $c"; done
 }
 
+# EVERY KEEPER RUNS ON EVERY GATE: each keeper the Makefile's groups name (`make keepers-listed`, never a
+# second list kept here) is a row of a keepers slice, or of the slice named beside it below that runs it
+# already — a keeper no gate ran sat red for weeks unseen. The long ones run alone, each a slice of its
+# own; the rest are dealt across the `keepers` parts.
+# the keepers each a slice of its own, or of `keepers-try` (they read `make try`'s compiler and store)
+KEEPERS_ALONE_SLICES="runtime-mutations warm-edit speed-ratchet tool-witnesses"
+# the keepers another slice's row runs already: cost (cost-*), runtime-tests (program, a row per test),
+# flow-trace and the four store attacks (witness-b), rt-header and rt-ns (program), ui-host and
+# ui-host-test (doors-b), ui-board and ui-browser (ui-browser)
+KEEPERS_ROWED="cost runtime-tests flow-trace heir-save-attack share-merge-attack wave-share-attack beside-attack rt-header rt-ns ui-host ui-host-test ui-board ui-browser"
+
+# the keepers a `keepers` part deals: every keeper but those run alone or rowed elsewhere, one a line
+keepers_dealt() {
+    make -s keepers-listed | grep -vxF -e "$(printf '%s\n' $KEEPERS_ALONE_SLICES $KEEPERS_ROWED)"
+}
+
+# A KEEPER'S ROW: `make <keeper>`, bounded, its words at $out/keeper-<k>.log. A keeper PINNED in
+# tools/gate/keepers.pinned (its owner and why, a line each) is red and owned: it runs, its refusal is
+# said and not failed — and once it passes it FAILS, until its pin goes. A keeper that ran nothing says
+# so and refuses (a SKIPPED tool is no pass): the row fails on its exit like any other.
+keeper_row() {
+    k=$1
+    if listed tools/gate/keepers.pinned | cut -d' ' -f1 | grep -qxF "$k"; then
+        rows=$((rows + 1))
+        if sh tools/bounded.sh "$ROW_SECS" make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
+            failed=$((failed + 1))
+            failures="$failures keeper-$k"
+            echo "row keeper-$k FAIL — pinned in tools/gate/keepers.pinned, and it passes: take its pin away" >>"$out/rows"
+        else
+            echo "row keeper-$k pinned — red and owned: $(grep -m1 "^$k " tools/gate/keepers.pinned | cut -d' ' -f2-)" >>"$out/rows"
+        fi
+        return
+    fi
+    row "keeper-$k" make -s -o avra "$k"
+}
+
+# A PART'S PLANTED FAULT: a keeper over a copy of the tree with one fault planted in what it judges
+# (tools/keeper_planted.sh), the plant the part's number deals; it holds only where the keeper refuses,
+# naming the plant — a part whose rows can't fail proves nothing.
+planted_row() {
+    plants=$(sh tools/keeper_planted.sh --list)
+    n=$(printf '%s\n' $plants | wc -l | tr -d ' ')
+    p=$(printf '%s\n' $plants | sed -n "$(( ($1 - 1) % n + 1 ))p")
+    row "planted-$p" sh tools/keeper_planted.sh "$p"
+}
+
+# the `keepers` part `$1` of `$2`: its share of the keepers, then its plant; the first part also holds
+# that every keeper named as rowed elsewhere is a keeper at all
+keepers_part() {
+    if [ "$1" = 1 ]; then
+        stray=$(for k in $KEEPERS_ALONE_SLICES $KEEPERS_ROWED; do make -s keepers-listed | grep -qxF "$k" || echo "$k"; done)
+        [ -z "$stray" ] || echo "keepers: named here but no keeper of the Makefile's: $stray" >>"$out/rows"
+        judged keepers-named "$([ -z "$stray" ] && echo 0 || echo 1)"
+    fi
+    for k in $(keepers_dealt | dealt "$(($1 - 1))" "$2"); do keeper_row "$k"; done
+    planted_row "$1"
+}
+
 # THE PART `$2` OF `$3` OF A LIST OF ROWS `$1` NAMES, each line a row as the script would write it: read
 # from a file, in this shell, so every row is counted, and handed no input of the list's
 rows_dealt() {
@@ -702,6 +764,7 @@ part_of() {
         refusal) row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
+        keepers) keepers_part "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
     esac
 }
@@ -817,6 +880,14 @@ if compiler; then
         cost-ledger-cold-a) slice_cost ledger-cold-a ;;
         cost-ledger-cold-b) slice_cost ledger-cold-b ;;
         cost-ledger-warm) slice_cost ledger-warm ;;
+        keepers-mutations) keeper_row runtime-mutations; planted_row 1 ;;
+        keepers-warm) keeper_row warm-edit; planted_row 2 ;;
+        keepers-try)
+            row try make -s -o avra try
+            keeper_row speed-ratchet
+            keeper_row tool-witnesses
+            planted_row 3
+            ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac
 fi
