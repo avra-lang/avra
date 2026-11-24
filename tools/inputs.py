@@ -137,10 +137,12 @@ SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 # An INERT package reads nothing: the rows it may declare, and the one
 # name of it that does read. Held to the package's own source.
 INERT = {
-    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named"}, "world": {"embed": "read"}},
+    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named", "avra_fn_declared"}, "world": {"embed": "read"}},
     "relation": {"rows": {"avra_trap", "avra_qtrace", "avra_cores_group", "avra_cores_fork",
                           "avra_cores_end_fd", "avra_cores_heard", "avra_cores_leave",
-                          "avra_cores_result", "avra_fiber_park_fd"}, "world": {}},
+                          "avra_cores_result", "avra_fiber_park_fd", "avra_ctx_listen",
+                          "avra_ctx_listened", "avra_ctx_holds", "avra_ctx_heard_drop",
+                          "avra_ctx_reheard"}, "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
                  "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room",
@@ -742,11 +744,34 @@ def query_selftest():
         sys.exit("inputs: query self-test failed — the engine's members are read from its source")
 
 
-def main():
+# THE KEEPER REFUSES ON THE TREE ITSELF: two reads planted beside the real scope, each a fault it
+# exists to find — an env read outside the door, unlicensed, and a licensed one inside a query's
+# body. `--planted` passes only where the whole run, every table and baseline as they stand, refuses
+# both; a keeper that stopped refusing fails it, so a gate that runs it holds the instrument too.
+PLANTED = [
+    ("packages/std-avrac/src/compiler/planted_read.av",
+     "use @std.io.{env}\nfn planted() -> string { env(\"AVRA_PLANTED\") ?? \"\" }\n"),
+    ("packages/std-avrac/src/compiler/planted_query.av",
+     "use @std.io.{env}\n@query(\"x\")\nfn planted_query(engine: QueryEngine) -> string {\n"
+     "    // LICENSED input.debug_flag: a licence is no door inside a query body\n"
+     "    env(\"AVRA_PLANTED\") ?? \"\"\n}\n"),
+]
+
+
+def planted_witness():
+    new, qnew = main(planted=PLANTED)
+    found = {s.file for s in new} | {q.file for q in qnew}
+    missed = [f for f, _ in PLANTED if f not in found]
+    if missed:
+        sys.exit(f"inputs: --planted — the keeper let a planted read stand: {', '.join(missed)}")
+    print(f"inputs: --planted — both planted reads refused ({len(new)} outside the door, {len(qnew)} inside a query body)")
+
+
+def main(planted=()):
     selftest()
     query_selftest()
     files = scope_files()
-    texts = [(f, open(f).read()) for f in files]
+    texts = [(f, open(f).read()) for f in files] + list(planted)
     faults = [u for f, t in texts for u in unclassified(f, t)]
     used = {p for _, t in texts for p in packages_used(t)}
     for pkg in sorted(used & set(INERT)):
@@ -784,6 +809,8 @@ def main():
             qleft[query_key(q)] -= 1
         else:
             qnew.append(q)
+    if planted:
+        return new, qnew
     by = collections.Counter((group_of(s.file, s.kind, s.verb.startswith("host.")), s.kind)
                              for s in sites if s.state == "outside")
     states = collections.Counter(s.state for s in sites)
@@ -815,4 +842,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    planted_witness() if "--planted" in sys.argv else main()

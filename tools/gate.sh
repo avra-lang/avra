@@ -50,6 +50,7 @@ avrac-f    test packages/std-avrac — src/features' own files, and every dir of
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
+inputs     make inputs, every world read through the input door and every read a query body reaches held; and inputs.py --planted, two planted reads refused on the tree itself
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
 cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
@@ -553,6 +554,13 @@ fmt_on() {
     row fmt-changed env AVRA=build/avra sh tools/fmt_changed.sh "$1" HEAD
 }
 
+# THE INPUT KEEPER, HELD AND ITS REFUSAL WITNESSED: it ran in no slice for at least two weeks and
+# stood red meanwhile, so it runs here, and `--planted` proves on this tree that it still refuses.
+slice_inputs() {
+    row inputs make -s inputs
+    row inputs-planted python3 tools/inputs.py --planted
+}
+
 slice_sound() {
     row sound-check-run env AVRA_SOUND_CHECK=1 build/avra check packages/cli
     cold cli
@@ -865,6 +873,7 @@ if compiler; then
         idioms-cli) idioms_on "${1:-}" keep cli ;;
         idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
         fmt) fmt_on "${1:-}" ;;
+        inputs) slice_inputs ;;
         sound) slice_sound ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
