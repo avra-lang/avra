@@ -1,15 +1,15 @@
 //! Parse-time lowering: an impl whose target's arguments may each write a bound after a colon
-//! (`impl Respond for Created<T: Shown>`), the bounds kept beside the statement in the store.
-use core.{Built, Stmt, TypeRef, Nominal, Slots, computed}
+//! (`impl Respond for Created<T: Shown>`), the bounds kept on the statement.
+use core.{Built, Param, Span, Stmt, TypeRef, Nominal, Slots, computed}
 
-/// `impl Tr for G<T: B> { … }` — the impl, its target's arguments as written and each one's bound
-/// kept in the store's column for them. A bound stands on a type parameter alone: an argument
-/// written as an applied, optional, `dyn` or fn type takes none.
+/// `impl Tr for G<T: B> { … }` — the impl, its target's arguments as written and, where any writes
+/// a bound, each one as a seat: a bounded argument `T: B` is the seat named `T` typed by `B`, the type
+/// its parameter is held to; a bare argument is a seat with neither.
 @computed
 fn impl_written(s: dyn Slots) -> Result<Built, string> {
     let store = s.arena()
     let args = s.params_of("target_args")?
-    if args.any((a) -> a.bound != null && !plainly_named(a.ty)) { return .Err(bound_on_type()) }
+    let bounded = args.any(!it.name.text().is_empty())
     let made = store
         .alloc_stmt(
             Stmt
@@ -17,20 +17,25 @@ fn impl_written(s: dyn Slots) -> Result<Built, string> {
                     [Nominal(t) for t in s.texts_of("of")?].first(),
                     s.types_of("of_args")?,
                     Nominal(s.text_of("target")?),
-                    [a.ty! for a in args],
+                    [written_arg(store.param_id_span(a.id), a) for a in args],
                     s.stmts_of("fns")?,
+                    if bounded { [if a.name.text().is_empty() { a with { ty: null } } else { a } for a in args] } else { null },
                 ),
             s.built_at(),
         )
-    let bounds: List<TypeRef?> = [a.bound for a in args]
-    if bounds.any(it != null) { store.mark_impl_bounds(made, bounds) }
     .Ok(Built.Stmt(made))
 }
 
-/// Whether a written type is a bare name, as a type parameter is written.
-fn plainly_named(ty: TypeRef?) -> bool {
-    let t? = ty else { return false }
-    t.applied.is_empty() && !t.optional && !t.dynamic && !t.arrow && t.alternatives.is_empty()
+/// The type an argument of the target writes: a bounded one's parameter by its name, a bare one's
+/// type as written.
+fn written_arg(at: Span?, a: Param) -> TypeRef {
+    if a.name.text().is_empty() { return a.ty! }
+    TypeRef {
+        name: a.name.text(),
+        applied: [],
+        optional: false,
+        dynamic: false,
+        arrow: false,
+        span: at,
+    }
 }
-
-fn bound_on_type() -> string { "a bound stands on a type parameter of the impl — `G<T: Bound>`, never on a written type" }
