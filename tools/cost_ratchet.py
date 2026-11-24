@@ -30,6 +30,22 @@ import ratchet_rows as rows_lib
 BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost.baseline")
 # THE CANDIDATES THE LAST ACCEPT SAW (`avra census --candidates`), so a run can name the new ones. A
 # candidate is work, never a regression: a new one is said, never failed on.
+# THE STD PACKAGES THE SNAPSHOT'S ANSWERS SHIP A VERDICT FOR, as the baseline's run found them: a run
+# whose list lacks one fails, naming it, since a package that loses its verdict is one today's
+# compiler refuses over the snapshot, and the laid row then measures laws the user's never asks.
+VERDICTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost.verdicts")
+
+
+def verdicts_lost(run_dir):
+    """The packages the baseline's verdicts name that this run's don't, where the run made answers."""
+    path = os.path.join(run_dir, "verdicts")
+    if not os.path.exists(path) or not os.path.exists(VERDICTS):
+        return []
+    now = set(open(path).read().split())
+    then = set(l for l in open(VERDICTS).read().split("\n") if l and not l.startswith("#"))
+    return sorted(then - now)
+
+
 CANDIDATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost.candidates")
 CANDIDATES_HEAD = """\
 # THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its
@@ -244,6 +260,12 @@ def main(argv):
     if missing:
         print("\n".join(missing))
         return 1
+    lost = verdicts_lost(run_dir)
+    if lost and not (argv[1] == "--accept" and ran != pinned):
+        for name in lost:
+            print("cost: the snapshot's %s ships no verdict, as it did when the baseline was recorded: "
+                  "today's compiler refuses it over the snapshot — move the snapshot" % name)
+        return 1
     if argv[1] == "--accept":
         same = ran == pinned
         if same:
@@ -253,6 +275,9 @@ def main(argv):
                 print("cost: an accept never raises a row over the same snapshot")
                 return 1
         open(BASELINE, "w").write(render(ran, accepted(now, base, same)))
+        made = os.path.join(run_dir, "verdicts")
+        if os.path.exists(made):
+            open(VERDICTS, "w").write("# the std packages the snapshot's answers ship a verdict for (tools/cost_ratchet.py)\n" + open(made).read())
         candidates_said(run_dir, True)
         print("cost: tools/cost.baseline recorded (snapshot %s)" % ran)
         return 0

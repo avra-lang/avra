@@ -211,6 +211,9 @@ laid() {
         sh "$root/tools/std_answers.sh" "$src/build/avra" "$src/packages" "$src/build/answers" $(reached packages/cli)) ||
         { echo "cost: the snapshot's std answers were not made"; exit 1; }
     echo "cost: the snapshot's std answers $(($(date +%s) - started)) s"
+    # the std packages a verdict stands for, which the ratchet holds to the baseline's
+    # (tools/cost.verdicts): one losing its verdict means today's compiler refuses the snapshot's
+    cat "$src/build/answers"/verdict-* 2> /dev/null | cut -f1 | sort -u > "$root/$out/verdicts"
     if ! cmp -s "$src/build/answers/inputs" "$kept/inputs" 2> /dev/null; then
         [ ! -e "$kept" ] || find "$kept" -delete
         mkdir -p "$kept" && cp -R "$src/build/answers/." "$kept/" && : > "$kept.fresh"
