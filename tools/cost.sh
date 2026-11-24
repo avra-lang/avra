@@ -26,6 +26,19 @@ snapshot=${COST_SNAPSHOT:-$(awk '$1 == "snapshot" { print $2 }' tools/cost.basel
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
     echo "cost: snapshot $snapshot is not in this clone and could not be fetched"; exit 1; }
+# AN ACCEPT PINS ONLY WHAT THE GATE CAN FETCH (`make cost-accept` sets COST_ACCEPTING): the gate's clone
+# fetches the snapshot from origin by its sha, so a commit only this clone holds — a local one, or a
+# branch's own sha where origin holds its mirror — passes here and reds every gate. It is asked of
+# origin in a scratch repository, so this clone never turns shallow.
+if [ "${COST_ACCEPTING:-0}" = 1 ]; then
+    probe=$(mktemp -d)
+    if ! { git init -q "$probe" && git -C "$probe" fetch -q --depth=1 "$(git remote get-url origin)" "$snapshot"; } 2> /dev/null; then
+        find "$probe" -delete
+        echo "cost: snapshot $snapshot can't be fetched from origin ($(git remote get-url origin 2> /dev/null || echo 'no origin')): the gate's clone could not measure it — name the commit by the sha origin holds"
+        exit 1
+    fi
+    find "$probe" -delete
+fi
 command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to one core"; exit 1; }
 
 # The cold workloads: a name, the part it is measured in, the machine's store it runs over, the census

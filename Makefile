@@ -1086,7 +1086,7 @@ cost:
 	@sh tools/cost.sh
 	@python3 tools/cost_ratchet.py --judge build/cost
 cost-accept:
-	@sh tools/cost.sh
+	@COST_ACCEPTING=1 sh tools/cost.sh
 	@python3 tools/cost_ratchet.py --accept build/cost
 
 warm-edit:
