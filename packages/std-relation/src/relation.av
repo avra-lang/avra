@@ -82,7 +82,7 @@ use rows.{
     bool_part,
 }
 use db.{Db, Stores, stores}
-use shape.{Descriptor, ShapeReach, ShapeSlot}
+use shape.{Descriptor, Form, ShapeReach, ShapeSlot}
 use refused.{InsertRefused, unheld, int_text, bool_text}
 use stable.{
     Scope,
@@ -1842,7 +1842,7 @@ fn stored_generated(s: Stored) -> Decls {
         impl Storable for ${t} {
             static fn codec_shape() -> int { ${shape} }
 
-            static fn codec_descriptor() -> string { ${literal(stored_descriptor(s, shape, inner).spelled())} }
+            static fn codec_descriptor() -> string { ${literal(stored_descriptor(s, shape).spelled())} }
 
             fn encoded_in(scope: dyn Scope) -> Bytes {
                 let ${w} = writer()
@@ -1947,22 +1947,47 @@ fn variant_slot(v: Variant) -> ShapeSlot {
 fn slot_spelled(f: Field) -> string { "${f.ty}${[" @${m.name}" for m in f.marks].join("")}" }
 
 /// A stored type's shape as data. A record's own declaration is among the reached only when
-/// its wire reaches it: a nested one is read whole, so it cannot grow.
-fn stored_descriptor(s: Stored, shape: int, inner: List<Kind>) -> Descriptor {
-    let nested = if s.t.variants.is_empty() { inner } else { s.reached.drop(1) }
+/// its wire reaches it: a nested one is read whole, so it cannot grow. Every type its wire
+/// reaches is described, through the types that wear their own codec too, so a reader with
+/// no program follows each.
+fn stored_descriptor(s: Stored, shape: int) -> Descriptor {
+    let seed = if s.t.variants.is_empty() { [] } else { [Kind.Named(s.t.name, [])] }
     Descriptor {
         hash: shape,
         format: stored_format,
         tagged: !s.t.variants.is_empty(),
         slots: stored_slots(s),
-        reached: [reach for k in nested for reach in reach_of(s.t, k)],
+        reached: [reach for k in reached_kinds(s.wire, seed, false).drop(seed.length) for reach in reach_of(s.t, k)],
+        name: s.t.name,
+        scoped: s.owner.scoped,
     }
 }
 
-/// A reached kind's declaration, fingerprinted; none for a kind that names none.
+/// A reached kind's declaration, fingerprinted and described; none for a kind that names none.
 fn reach_of(t: Type, k: Kind) -> List<ShapeReach> {
     let ty? = stored_type_of(t, k) else { return [] }
-    [ShapeReach { name: k.spelled(), shape: text_hash(described(ty)) }]
+    let n = match k { .Named(b, _) -> b, rest -> k.spelled() }
+    let args = match k { .Named(_, a) -> a, rest -> [] }
+    let reach = ShapeReach { name: k.spelled(), shape: text_hash(described(ty)) }
+    if n != t.name && wears_codec(n) { return [coded_reach(reach, stored(ty))] }
+    [described_reach(reach, if n == t.name { shape_of(t) } else { instance_shape(n, args) })]
+}
+
+/// A reach that wears its own codec: its header, its texts' crossing and its own slots.
+fn coded_reach(reach: ShapeReach, s: Stored) -> ShapeReach {
+    reach with { form: Form.Coded(stored_shape(s), s.owner.scoped, !s.t.variants.is_empty()), slots: stored_slots(s) }
+}
+
+/// A reach crossed by its owner's helpers, as its shape says.
+fn described_reach(reach: ShapeReach, shape: NamedShape) -> ShapeReach {
+    match shape {
+        .Record(fs) -> reach with { form: Form.Record, slots: [ShapeSlot { name: f.name, ty: f.kind.spelled() } for f in columns(fs)] },
+        .Payload(vs) -> reach with { form: Form.Variants, slots: [ShapeSlot { name: v.name, ty: [f.kind.spelled() for f in v.fields].join(",") } for v in vs] },
+        .Tagged(names) -> reach with { form: Form.Variants, slots: [ShapeSlot { name: v, ty: "" } for v in names] },
+        .Over(inner) -> reach with { form: Form.Over, slots: [ShapeSlot { name: "", ty: inner.spelled() }] },
+        .Dense(_) -> reach with { form: Form.Dense },
+        .Placed(_) or .Plain -> reach,
+    }
 }
 
 /// Whether an enum has a variant that carries a payload, so its codec is a helper.

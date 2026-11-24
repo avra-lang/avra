@@ -258,10 +258,22 @@ server app { group "/admin/queues" { queue_admin(ctx.db, operator) } }
   and a letter's descriptor holds its item's and its error's. A database describes its own queues with no program.
 - `@std.queue_store.operate`: `queues`, `queue_named`, `letters`, `peek` (items as JSON records, each
   read through the descriptor of the shape its row was written under, so another build's rows read
-  too; a nested type is not followed and reads as none: a descriptor names each type it reaches and
-  its fingerprint, never its slots), `retry` (a live item due now; a letter's item
+  too), `retry` (a live item due now; a letter's item
   back to the queue it was buried out of, as a fresh item) and `discard` (the item and its name). A
   live lease wins over both. Reads write nothing.
+- Paid (was owed): `peek` follows nested types. A descriptor (`avra.shape.2`, `@std.relation.shape`)
+  names its type and says whether its texts cross through a scope; each type its wire reaches is a
+  reach of its own — name, fingerprint, FORM (`Record`, `Variants`, `Over`, `Dense`, or
+  `Coded(hash, scoped, tagged)` for one that wears its own codec) and its slots — and a slot names a
+  type by its reach, so a type that reaches itself is one reach, never inlined. Every variable run
+  is counted, so no boundary moves. `verdict` still judges by fingerprints: a nested record that
+  grew is `Moved` (it is read whole), as before. An item that cannot be read is `item: null` with
+  `unread:` saying why; the walk is bounded at 64 levels and `64 × octets + 4096` values, so a
+  corrupt, cyclic or doubling descriptor answers a reason, never a trap. A descriptor an earlier
+  build wrote (`avra.shape.1`: names and fingerprints only) still reads and is still judged; its
+  nested items read as none until a home of this build opens, whose `know_shape` writes its own
+  spelling over a different one of the same hash. The codec's hashes and its encode/decode are
+  unchanged; only the `codec_descriptor()` text grew, and it is read on the open path only.
 - `@std.queue_store.admin.queue_admin(db, allowed, clock)`: those verbs as routes, JSON out, each a 403
   to a request `allowed` refuses; nothing serves until a program mounts it. `@std/crud` does not fit:
   its doors are row edits, and these are laws (a lease check, a move across queues, a name freed).
