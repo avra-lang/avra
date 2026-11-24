@@ -626,6 +626,20 @@ fn item_read_parts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
     )
 }
 
+/// What the written item `at` of `file` says of how its fns, methods and records may switch the task
+/// out (`item_waits.av`), a part each, read off its text alone: a new body for one moves its own
+/// part and no other.
+@cut_parted_query
+fn item_wait_parts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> AnswerParts {
+    let item = read_item(engine, file, at)
+    answer_parts(
+        [NamedValue { name: s.name, value: s.waits.saved_bytes() } for s in wait_parts_of(item)]
+            .concat(
+                [NamedValue { name: r.name, value: r.waits.saved_bytes() } for r in record_parts_of(item)],
+            ),
+    )
+}
+
 /// The part of `item_read_parts` holding what its item writes that the items after it read.
 const FRONT_PART: string = "front"
 

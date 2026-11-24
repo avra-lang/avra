@@ -188,6 +188,25 @@ observed_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/observed.out"
 node "$here/ui-board/observed.mjs" "$observed_url" >"$work/observed.node" 2>&1 || { cat "$work/observed.node" "$work/observed.out"; echo "ui-browser: the observation page's claims did not hold"; exit 1; }
 sed 's/^/ui-browser: observation page: /' "$work/observed.node"
 
+# A BOX AND A FIELD HELD TO WHAT THE PROGRAM SHOWS: a page whose checkbox is `shown: false` and whose
+# field is `shown: "abc"`, each gesture heard and dropped, is served by `avra dev` and opened in
+# Firefox; after a click the box must read unticked and after typing the field must read "abc" — the
+# page writes the program's word back after the gesture, which the board (whose box foresees) can't prove.
+cp -R "$tree/tools/ui-shown" "$work/ui-shown"
+"$avra" dev --target "$target" --port 0 "$work/ui-shown" >"$work/shown.out" 2>"$work/shown.err" &
+shown=$!
+trap 'kill "$dev" "$warns" "$observed" "$shown" $servers 2>/dev/null || true' EXIT
+tries=0
+until grep -q '^dev: .* at http' "$work/shown.out" 2>/dev/null; do
+    kill -0 "$shown" 2>/dev/null || { cat "$work/shown.err" "$work/shown.out"; echo "ui-browser: \`avra dev\` ended before it served the shown page"; exit 1; }
+    tries=$((tries + 1))
+    [ "$tries" -lt 600 ] || { cat "$work/shown.err"; echo "ui-browser: \`avra dev\` never served the shown page"; exit 1; }
+    sleep 0.1
+done
+shown_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/shown.out" | head -1)
+node "$here/ui-board/shown.mjs" "$shown_url" >"$work/shown.node" 2>&1 || { cat "$work/shown.node" "$work/shown.out"; echo "ui-browser: the shown page's claims did not hold"; exit 1; }
+sed 's/^/ui-browser: shown page: /' "$work/shown.node"
+
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do
     status=0

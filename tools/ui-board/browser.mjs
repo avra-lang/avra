@@ -164,16 +164,25 @@ await press(named("Done", 1));
 claim("Done shows the done tasks", (await keys()).join() === [k1, k2, k4].join(), await keys());
 await press(named("All"));
 claim("All shows every task", (await keys()).join() === [k1, k2, k4, k5].join(), await keys());
-// ── a box held to what the program shows ────────────────────────
-// UNRUN in the sandbox that wrote it (no Firefox there): first run on the lead's machine.
-// A task's box is `shown: task.done`, the server's word. With the page's requests held, a tick is
-// heard and asked of the server, and the box is drawn back unticked: the page is held to what the
-// program shows, not to what the click did. Once the requests go, the server's answer ticks it.
-await read(`(() => { window.__held = []; window.__fetch = window.fetch; window.fetch = (...a) => new Promise((go) => window.__held.push(() => go(window.__fetch(...a)))); return 1; })()`);
+// ── a box the program foresees ──────────────────────────────────
+// A task's box is `shown: task.done`, and `mark` sends its write with `foresee`: the row the server
+// will make, done, is drawn the moment the box is ticked. With the page's requests held, the tick is
+// heard and asked of the server, and the box shows the foreseen row, ticked. A server that refuses
+// the write drops the overlay, and the box is drawn back unticked; one that answers keeps it ticked.
+// A held request is its arguments and the answer it waits for: a refused write is answered 500
+// here, and every read the page makes meanwhile goes on to the server.
+const hold = `(() => { window.__held = []; window.__fetch = window.fetch; window.fetch = (...a) => new Promise((go) => window.__held.push({ a, go })); return 1; })()`;
+const writing = `((h) => ((h.a[1] && h.a[1].method) || (h.a[0] && h.a[0].method) || "GET").toUpperCase() !== "GET")`;
+await read(hold);
 await press(named("ShipX it"));
-claim("a ticked box the server has not answered is drawn back unticked", await until(`window.__held.length > 0`) && await read(`${named("ShipX it")}.checked`) === false, await read(`${named("ShipX it")}.checked`));
-await read(`(() => { window.fetch = window.__fetch; window.__held.splice(0).forEach((go) => go()); return 1; })()`);
-claim("and the server's answer ticks it", await until(`${named("ShipX it")}.checked === true`), await read(`${named("ShipX it")}.checked`));
+claim("a ticked box the server has not answered shows the foreseen row, ticked", await until(`window.__held.some(${writing})`) && await until(`${named("ShipX it")}.checked === true`), [await read(`window.__held.length`), await read(`${named("ShipX it")}.checked`)]);
+await read(`(() => { window.fetch = window.__fetch; window.__held.splice(0).forEach((h) => h.go(${writing}(h) ? new Response("refused", { status: 500 }) : window.__fetch(...h.a))); return 1; })()`);
+claim("a write the server refuses drops the overlay, and the box is drawn back unticked", await until(`${named("ShipX it")}.checked === false`) && !(await rows()).at(-1).done, [await read(`${named("ShipX it")}.checked`), await rows()]);
+await read(hold);
+await press(named("ShipX it"));
+await until(`window.__held.some(${writing})`);
+await read(`(() => { window.__answered = false; window.fetch = window.__fetch; window.__held.splice(0).forEach((h) => h.go(window.__fetch(...h.a).then((r) => { if (${writing}(h)) window.__answered = true; return r; }))); return 1; })()`);
+claim("and the server's answer keeps it ticked", await until(`window.__answered`) && await read(`new Promise((done) => setTimeout(() => done(1), 300))`) && await read(`${named("ShipX it")}.checked`) === true, [await read(`window.__answered`), await read(`${named("ShipX it")}.checked`)]);
 // The task goes back open, as the claims below it count on.
 await press(named("ShipX it"));
 claim("unticked again once the server has answered, as the rest of the tour counts on", await until(`${named("ShipX it")}.checked === false`) && !(await rows()).at(-1).done, await rows());

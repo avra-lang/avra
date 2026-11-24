@@ -75,8 +75,10 @@ fn impls_read(engine: QueryEngine, file: SourceFileAddress, item: ReadItem) -> L
 /// Every impl-for the written item `at` of `file` writes whose trait names no trait, behind the parse
 /// refusal of a file of its module where one holds; a name a refused `use` binds answers to that
 /// `use` alone.
-fn impls_untraited(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn impls_untraited(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     let untraited = [Found { at: item.store.stmt_span(s), args: [p!.of!] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null && trait_read(engine, file, p!.of!) == null]
     if untraited.is_empty() { return [] }
     let refused = imports_refused(engine, file)
@@ -84,15 +86,25 @@ fn impls_untraited(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> 
 }
 
 /// The written item `at` of `file`, read where it parsed; absent otherwise.
+/// The item `view` shows, where it reads back with no refusal.
+fn parsed_view(view: ItemView) -> ReadItem? { if view.item.store.refusals().is_empty() { view.item } else { null } }
+
 fn parsed_item(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadItem? {
     if !item_held(engine, file, at) { return null }
-    let item = read_item(engine, file, at)
+    parsed_item_viewed(item_view(engine, file, at))
+}
+
+/// `parsed_item` through the view its law's judging holds, looking no item up again.
+fn parsed_item_viewed(view: ItemView) -> ReadItem? {
+    let item = view.item
     if item.store.refusals().is_empty() { item } else { null }
 }
 
 /// Every impl naming its trait at another count of type arguments than the trait takes.
-fn impls_miscounting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn impls_miscounting(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     [Found { at: item.store.stmt_span(i.stmt), args: [i.of, "${i.tr.takes()}", "${i.gave}"] } for i in impls_read(engine, file, item) if i.gave != i.tr.takes()]
 }
 
@@ -101,15 +113,19 @@ fn member_found(item: ReadItem, i: ImplRead, mn: string) -> Found { Found { at: 
 
 /// Every member an impl that names its trait rightly leaves unanswered: the trait writes it no body
 /// and the impl no method.
-fn members_unanswered(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn members_unanswered(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     [member_found(item, i, mn) for i in impls_read(engine, file, item) if i.gave == i.tr.takes() for m in i.tr.members() for mn in some_list(i.tr.item.store.fn_parts(m)?.name) if !written_body(i.tr.item, m) && !i.fns.any((f) -> item.store.fn_parts(f)?.name == mn)]
 }
 
 /// Every method an impl writes under another signature than its trait writes for the member: another
 /// count of seats, or, where the member reads alike wherever it's written, another type.
-fn signatures_unworn(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn signatures_unworn(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     [member_found(item, i, mn) for i in impls_read(engine, file, item) if i.gave == i.tr.takes() for m in i.tr.members() for mn in some_list(i.tr.item.store.fn_parts(m)?.name) for f in i.fns if item.store.fn_parts(f)?.name == mn && !wears(i, m, item.store, f)]
 }
 
@@ -151,8 +167,10 @@ fn defaults_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
 }
 
 /// Every impl written on an alias, beside what the alias names.
-fn impls_on_aliases(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn impls_on_aliases(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     [Found { at: item.store.stmt_span(s), args: [p!.target, of] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null for of in some_list(alias_named(engine, file, p!.target))]
 }
 
@@ -168,8 +186,10 @@ fn alias_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> st
 /// Every impl-for written for one instantiation of a generic type: of one the program declares, its
 /// target's arguments aren't the type's own parameters, by name; of one the language owns, whose
 /// parameters are ordinal, an argument names a type.
-fn impls_of_instantiations(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn impls_of_instantiations(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     let declared_ones = [Found { at: item.store.stmt_span(s), args: [p!.of!, p!.target, declared.join(", ")] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null for written in [[w.of for w in item.store.impl_tparams_of(s)?.target ?? []]] if !written.is_empty() for declared in some_list(declared_tparams(engine, file, p!.target)) if written.join(",") != declared.join(",")]
     let owned_ones = [Found {
         at: item.store.stmt_span(s),
@@ -201,8 +221,10 @@ fn declared_tparams(engine: QueryEngine, file: SourceFileAddress, name: string) 
 }
 
 /// Every bound naming its trait at another count of type arguments than the trait takes.
-fn bounds_miscounting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    let item? = parsed_item(engine, file, at) else { return [] }
+fn bounds_miscounting(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item? = parsed_view(view) else { return [] }
     [Found {
         at: item.store.stmt_span(s),
         args: [b.name, "${tr!.takes()}", "${b.type_args().length}"],
@@ -212,7 +234,7 @@ fn bounds_miscounting(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
 /// an impl-for names a trait
 export law impl_names_a_trait {
     kind: "type.trait"
-    reads: impls_untraited
+    reads_view: impls_untraited
     voice: impl_untraited_words
     witness: "type P = { x: int }\n\nimpl Nope for P {\n}\n"
 }
@@ -222,7 +244,7 @@ fn impl_untraited_words(a: List<string>) -> Voice { impl_no_trait(a[0]) }
 /// an impl names its trait at every parameter the trait declares
 export law impl_names_its_trait_whole {
     kind: "type.trait"
-    reads: impls_miscounting
+    reads_view: impls_miscounting
     voice: impl_count_words
     witness: "trait R<T> {\n    fn draw(t: T) -> int\n}\n\ntype P = { x: int }\n\nimpl R for P {\n    fn draw(t: int) -> int { t }\n}\n"
 }
@@ -230,7 +252,7 @@ export law impl_names_its_trait_whole {
 /// an impl answers every member its trait leaves unwritten
 export law impl_answers_its_trait {
     kind: "type.trait"
-    reads: members_unanswered
+    reads_view: members_unanswered
     voice: unanswered_words
     witness: "trait T {\n    fn m() -> int\n}\n\ntype P = { x: int }\n\nimpl T for P {\n}\n"
 }
@@ -238,7 +260,7 @@ export law impl_answers_its_trait {
 /// an impl's method wears the signature its trait writes for it
 export law impl_wears_its_trait {
     kind: "type.trait"
-    reads: signatures_unworn
+    reads_view: signatures_unworn
     voice: unworn_words
     witness: "trait T {\n    fn m() -> int\n}\n\ntype P = { x: int }\n\nimpl T for P {\n    fn m() -> bool { true }\n}\n"
 }
@@ -254,7 +276,7 @@ export law impl_default_is_its_traits {
 /// an impl is written on the type itself
 export law impl_on_the_type {
     kind: "type.impl"
-    reads: impls_on_aliases
+    reads_view: impls_on_aliases
     voice: alias_words
     witness: "type P = { x: int }\n\nalias Q = P\n\nimpl Q {\n    fn dbl() -> int { self.x * 2 }\n}\n"
 }
@@ -262,7 +284,7 @@ export law impl_on_the_type {
 /// a trait impl lands for the whole generic
 export law impl_for_the_whole_generic {
     kind: "type.impl"
-    reads: impls_of_instantiations
+    reads_view: impls_of_instantiations
     voice: instantiation_words
     witness: "trait S {\n    fn s() -> int\n}\n\ntype B<T> = { v: T }\n\nimpl S for B<int> {\n    fn s() -> int { 1 }\n}\n"
 }
@@ -270,7 +292,7 @@ export law impl_for_the_whole_generic {
 /// a bound names its trait at every parameter the trait declares
 export law bound_names_its_trait_whole {
     kind: "type.trait"
-    reads: bounds_miscounting
+    reads_view: bounds_miscounting
     voice: bound_count_words
     witness: "trait R<T> {\n    fn draw(t: T) -> int\n}\n\nfn f<X: R>(x: X) -> int { 1 }\n"
 }

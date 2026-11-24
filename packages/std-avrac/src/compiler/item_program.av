@@ -80,6 +80,7 @@ use compiler.backend.{
     WasmCall,
     body_lines,
     in_symbol_order,
+    opens_among,
     program_closed,
     program_opens,
     symbol_bucket,
@@ -2953,8 +2954,8 @@ export fn made_late(
         )
     let rows = flatten([some_list(declared_row(survey.engine, c)) for c in walk.externs])
     let grown = have with { fns: have.fns.concat(fresh), statics: distinct_statics(have.statics.concat(taken.statics)), externs: have.externs.concat([r for r in rows if !have.externs.any(it.name == r.name)]), deferred: [x for x in have.deferred if x.callee.symbol != d.callee.symbol].concat(waiting) }
-    if [o for o in program_opens(grown) if code_hash_target(o) != null].length > 0 ||
-        program_closed(grown) != null { return null }
+    // `have` was closed, so the grown program is closed once what it added is: the new bodies and data
+    if !opens_among(grown, fresh, taken.statics).is_empty() { return null }
     grown with { fns: memory_late(made, fresh), statics: [s for s in grown.statics if !have.statics.any(it.name == s.name)], externs: [r for r in grown.externs if !have.externs.any(it.name == r.name)] }
 }
 

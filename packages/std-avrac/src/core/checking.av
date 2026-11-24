@@ -232,6 +232,10 @@ export type Checking = {
     /// Each name read that nothing binds and the program gives no type, in the order met: a name
     /// nothing declares among them.
     unread: Cell<List<Unread>>,
+    /// Each argument a seat could not take whose type it could not name — a block riding the seat's
+    /// pronoun reads as no type of its own — so it was refused by nothing, newest last: what a call
+    /// its template wrote says it of, in the instance's words.
+    silenced: Cell<List<Refused>>,
     /// The body consts being checked, innermost last, each by its statement's index.
     consting: Cell<List<int>>,
     /// Each body const whose value reads a seat of its fn that no run settles: the first such read.
@@ -986,6 +990,7 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let refused: Cell<List<Refused>> = Cell.new([])
     let seated: Cell<List<SeatWant>> = Cell.new([])
     let unread: Cell<List<Unread>> = Cell.new([])
+    let silenced: Cell<List<Refused>> = Cell.new([])
     let consting: Cell<List<int>> = Cell.new([])
     let seat_reads: Cell<List<SeatRead>> = Cell.new([])
     let conditions: Cell<List<int>> = Cell.new([])
@@ -993,6 +998,7 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let names_bound: Cell<List<NameBound>> = Cell.new([])
     Checking {
         unread: unread,
+        silenced: silenced,
         names_read: names_read,
         names_bound: names_bound,
         consting: consting,
@@ -1101,7 +1107,11 @@ impl Checking {
     /// `v`, of type `read`, refused by the generic `seat` it doesn't unify with, where its type is
     /// known and nothing inside it was refused since `before`.
     mut fn unmet(v: ExprId, seat: SignedType, read: SignedType?, at: Seating, before: int) {
-        let found? = read else { return }
+        let found? = read else {
+            if !seat.unknown() { self.silence(v, seat, owned_type("void"), at) }
+            return
+        }
+        if found.inferred() && !seat.unknown() { self.silence(v, seat, found, at) }
         if found.inferred() || found.unknown() || seat.unknown() { return }
         if self.refused.get().length != before && !fnless(seat, found) { return }
         self
@@ -3636,6 +3646,39 @@ impl Checking {
     /// parameter nothing filled, a bare variant no enum was named for.
     fn seat_wanted_only(from: int, to: int) -> bool { self.refused.get().slice(from, to).all(it.seat is .Unpinned || it.seat is .Unenumed) }
 
+    /// The argument `v` a seat of `seat` refused by nothing, read as `found`, kept for a call its
+    /// template wrote to say in the instance's words.
+    mut fn silence(v: ExprId, seat: SignedType, found: SignedType, at: Seating) {
+        self
+            .silenced
+            .set(self.silenced.get().concat([Refused { at: v, want: seat, found: found, seat: at }]))
+    }
+
+    /// Whether a call a component's template wrote, which its arguments fill no instance of, hands a
+    /// value the program wrote to a seat naming a type parameter: refused at that value, the seat's
+    /// type wanted and the value's found, where the program wrote it, since it wrote the instance and
+    /// never the call.
+    mut fn handed_unfilled(values: List<ExprId>) -> bool {
+        if self.meanings { return false }
+        let at? = self.site_node() else { return false }
+        if !self.store.spanned_elsewhere(at) { return false }
+        let silent? = [r for r in self.silenced.get() if values.contains(r.at)].last() else { return false }
+        let v? = self.written_within(silent.at) else { return false }
+        // a block riding the seat's pronoun answers its value: that is what the program wrote
+        let found = if silent.found.head is .Function &&
+            silent.found.answer != null &&
+            silent.found.answer!.head is .Function { silent.found.answer! } else { silent.found }
+        self.refused.push(silent with { at: v, found: found })
+        true
+    }
+
+    /// What the program wrote that `v` holds: `v` itself where no template wrote it, else the first
+    /// node within it a hole filled from the program; absent where a template wrote it whole.
+    fn written_within(v: ExprId) -> ExprId? {
+        if !self.store.spanned_elsewhere(v) { return v }
+        self.store.every_expr(v).find((x) -> !self.store.spanned_elsewhere(x))
+    }
+
     /// Whether the call of the fn `declared` names leaves one of its type parameters filled by
     /// nothing: refused at the first that none of `fillers` names — the seats, whose arguments say
     /// their own refusals, and the answer under a seat that wants a type.
@@ -4080,7 +4123,9 @@ impl Checking {
         // seat's pronoun reads as no type of its own — is refused at its first type parameter
         // nothing pinned, never left untyped for its lowering to find
         let found? = filled else {
-            if self.refused.get().length == before { let _ = self.left_unpinned(declared, pinned, []) }
+            if self.refused.get().length == before && !self.handed_unfilled(fill.values) {
+                let _ = self.left_unpinned(declared, pinned, [])
+            }
             return null
         }
         let found = defaulted(found, declared?.defaults ?? [])

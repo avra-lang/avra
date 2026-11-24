@@ -32,6 +32,8 @@ use @std.avrac.compiler.{
     SuiteProgram,
     Workspace,
     file_rule_findings,
+    waits_held,
+    WaitsHeld,
     finding_diag,
     held_kinds,
     finding_line,
@@ -1203,6 +1205,7 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
     if args.has_flag("link_words") { return link_words_held(engine, disk) }
     if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("findings") { return findings_said(engine, disk) }
+    if args.has_flag("waits") { return waits_said(engine, disk, args.has_flag("left")) }
     if args.has_flag("new_only") { return new_only_said(engine, disk) }
     if args.has_flag("built") {
         return built_held(
@@ -1603,7 +1606,7 @@ export flag signatures {
 }
 
 export flag left {
-    description: "with --signatures, --core, --lowered or --ran, show where what doesn't agree stands"
+    description: "with --signatures, --core, --lowered or --ran, show where what doesn't agree stands; with --waits, each fn the summaries leave unsaid"
     aliases: ["--left"]
 }
 
@@ -1640,6 +1643,11 @@ export flag entry_run {
 export flag findings {
     description: "say what every law, then every rule that reads syntax alone, finds in each file the package's program reads, rendered as `check` renders it"
     aliases: ["--findings"]
+}
+
+export flag waits {
+    description: "hold what the items' summaries say of whether each fn the package's program reads may switch the task out to what the task survey says reading its lowered bodies"
+    aliases: ["--waits"]
 }
 
 export flag new_only {
@@ -1682,6 +1690,7 @@ export command tapes {
         entry_run,
         link_words,
         findings,
+        waits,
         new_only,
         law_witnesses,
         kinds,
@@ -1739,6 +1748,38 @@ fn findings_said(engine: QueryEngine, disk: Disk) -> int {
     if !said.is_empty() { println([s! for s in said].join("\n\n")) }
     0
 }
+
+/// Each fn of every file the package's program reads whose summaries say otherwise than the task
+/// survey, one per line — with `left`, each they leave unsaid too — then how many were held, how
+/// many the summaries answered, and how many disagree: 0, or 1 where any does.
+fn waits_said(engine: QueryEngine, disk: Disk, left: bool) -> int {
+    let files = sorted_by(
+        program_files(engine, disk.name),
+        (a, b) -> text_before(a.path_in_package, b.path_in_package),
+    )
+    let held = [WaitsAt { file: f, held: h } for f in files for h in waits_held(engine, f)]
+    let answered = [w for w in held if w.held.summary != null]
+    let apart = [w for w in answered if w.held.summary! != w.held.survey]
+    if left {
+        for w in [h for h in held if h.held.summary == null] {
+            println(
+                "unsaid: ${w.file.package_name}:${w.file.path_in_package} ${w.held.name} survey=${w.held.survey}",
+            )
+        }
+    }
+    for w in apart {
+        println(
+            "apart: ${w.file.package_name}:${w.file.path_in_package} ${w.held.name} summary=${w.held.summary!} survey=${w.held.survey}",
+        )
+    }
+    println(
+        "waits: ${held.length} held, ${answered.length} answered by the summaries, ${apart.length} apart",
+    )
+    if apart.is_empty() { 0 } else { 1 }
+}
+
+/// A fn held, and the file declaring it.
+type WaitsAt = { file: SourceFileAddress, held: WaitsHeld }
 
 /// The file `f` and where it stands on `disk`.
 fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {

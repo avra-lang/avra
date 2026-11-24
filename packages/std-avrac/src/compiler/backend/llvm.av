@@ -667,7 +667,11 @@ export fn program_closed(l: Lowered) -> string? { program_opens(l).first() }
 /// Every name `l`'s steps call and every code address its data holds that the module won't declare,
 /// each once, in the order first met: the data's, then the steps'. A fn the program defers, and its
 /// wrapper, is answered: made the first time a run calls it.
-export fn program_opens(l: Lowered) -> List<string> {
+export fn program_opens(l: Lowered) -> List<string> { opens_among(l, l.fns.concat([l.entry]), l.statics) }
+
+/// What `bodies` call and `statics` hold that `l` won't declare, as `program_opens` says it of `l`'s
+/// own: a program grown from a closed one is closed once what it added is, so only that is read.
+export fn opens_among(l: Lowered, bodies: List<Body>, statics: List<Static>) -> List<string> {
     mut declared: Map<string, bool> = {}
     for bd in l.fns.concat([l.entry]) { declared.set(bd.name, true) }
     for d in l.deferred {
@@ -676,13 +680,13 @@ export fn program_opens(l: Lowered) -> List<string> {
     }
     for row in rt_sigs().concat(l.externs) { declared.set(row.name, true) }
     mut opens: List<string> = []
-    for s in flatten([static_code_syms(st.boxes) for st in l.statics]) {
+    for s in flatten([static_code_syms(st.boxes) for st in statics]) {
         if declared.get(s) == null {
             declared.set(s, true)
             opens.push(s)
         }
     }
-    for bd in l.fns.concat([l.entry]) {
+    for bd in bodies {
         for i in bd.ins {
             for named in some_list(body_symbol(i)).concat(some_list(hosted_symbol(i))) {
                 if declared.get(named) == null {

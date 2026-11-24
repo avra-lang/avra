@@ -95,9 +95,13 @@ type ItemExterns = { rows: List<ExternFinding> }
 /// declares, and each host fn.
 fn item_externs(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemExterns {
     if !item_held(engine, file, at) { return externs_made(engine, file, at) }
-    let view = item_view(engine, file, at)
+    item_externs_viewed(item_view(engine, file, at))
+}
+
+/// `item_externs` through the view its law's judging holds, looking no item up again.
+fn item_externs_viewed(view: ItemView) -> ItemExterns {
     let held? = view.externs.get() else {
-        let made = externs_made(engine, file, at)
+        let made = externs_made_viewed(view)
         view.externs.set(made)
         return made
     }
@@ -107,7 +111,14 @@ fn item_externs(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Ite
 /// What `item_externs` answers, made.
 fn externs_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemExterns {
     if !item_held(engine, file, at) { return ItemExterns { rows: [] } }
-    let item = read_item(engine, file, at)
+    externs_made_viewed(item_view(engine, file, at))
+}
+
+/// `externs_made` through the view its law's judging holds, looking no item up again.
+fn externs_made_viewed(view: ItemView) -> ItemExterns {
+    let engine = view.engine
+    let file = view.file
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemExterns { rows: [] } }
     ItemExterns { rows: flatten([declaration_findings(engine, file, item, s) for s in item.stmts]) }
 }
@@ -292,7 +303,14 @@ fn kind_of(t: SignedType) -> RtKind {
 fn found_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId, kind: ExternLaw) -> List<
     Found,
 > {
-    [Found { at: span_of_finding(r.at), args: r.args } for r in item_externs(engine, file, at).rows if r.kind == kind]
+    if !item_held(engine, file, at) { return [] }
+    found_of_viewed(item_view(engine, file, at), kind)
+}
+
+/// `found_of` through the view its law's judging holds, looking no item up again.
+fn found_of_viewed(view: ItemView, kind: ExternLaw) -> List<Found> {
+    let at = view.at
+    [Found { at: span_of_finding(r.at), args: r.args } for r in item_externs_viewed(view).rows if r.kind == kind]
 }
 
 /// A kept place as a span.
@@ -304,36 +322,56 @@ fn span_of_finding(at: FindingAt?) -> Span? {
 /// The seat's place a finding's words spell.
 fn place(spelled: string) -> int { parse_int(spelled) ?? 0 }
 
-fn inouts(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.Inout) }
+fn inouts(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.Inout)
+}
 
 fn crossings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.Crossing) }
 
-fn answers_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.Answer) }
+fn answers_found(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.Answer)
+}
 
 fn callbacks(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.Callback) }
 
 fn absences(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.Absence) }
 
-fn row_arities(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.RowArity) }
+fn row_arities(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.RowArity)
+}
 
-fn row_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.RowSeat) }
+fn row_seats(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.RowSeat)
+}
 
-fn row_answers(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.RowAnswer) }
+fn row_answers(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.RowAnswer)
+}
 
-fn row_answer_boxes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.RowAnswerBox) }
+fn row_answer_boxes(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.RowAnswerBox)
+}
 
-fn host_rows(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.HostRow) }
+fn host_rows(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HostRow)
+}
 
-fn host_promises(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.HostPromise) }
+fn host_promises(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HostPromise)
+}
 
-fn host_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.HostSeat) }
+fn host_seats(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HostSeat)
+}
 
-fn host_answers(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, ExternLaw.HostAnswer) }
+fn host_answers(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HostAnswer)
+}
 
 /// a `mut` host seat is a cell C writes
 export law extern_cell {
     kind: "type.host_seat"
-    reads: inouts
+    reads_view: inouts
     voice: inout_words
     witness: "extern fn c_ck(mut n: int) -> i32\n"
 }
@@ -349,7 +387,7 @@ export law extern_crossing {
 /// an extern's answer crosses back from C in one register
 export law extern_crossing_answer {
     kind: "type.host_seat"
-    reads: answers_found
+    reads_view: answers_found
     voice: answer_words
     witness: "extern fn c_give() -> List<int>\n"
 }
@@ -373,7 +411,7 @@ export law extern_row_without_absence {
 /// an extern naming a runtime row declares its seats
 export law extern_row_arity {
     kind: "type.row_shape"
-    reads: row_arities
+    reads_view: row_arities
     voice: arity_words
     witness: "extern fn avra_rc_release(a: ptr, b: ptr)\n"
 }
@@ -381,7 +419,7 @@ export law extern_row_arity {
 /// a runtime row's pointer seat wears the box it reads
 export law extern_row_box {
     kind: "type.row_shape"
-    reads: row_seats
+    reads_view: row_seats
     voice: seat_box_words
     witness: "extern fn avra_str_len(xs: List<int>) -> int\n"
 }
@@ -389,7 +427,7 @@ export law extern_row_box {
 /// a runtime row answers in its own currency
 export law extern_row_currency {
     kind: "type.row_shape"
-    reads: row_answers
+    reads_view: row_answers
     voice: answer_kind_words
     witness: "extern fn avra_array_new() -> bool\n"
 }
@@ -397,7 +435,7 @@ export law extern_row_currency {
 /// a runtime row answers the box its C body built
 export law extern_row_currency_box {
     kind: "type.row_shape"
-    reads: row_answer_boxes
+    reads_view: row_answer_boxes
     voice: answer_box_words
     witness: "extern fn avra_array_new() -> string\n"
 }
@@ -405,7 +443,7 @@ export law extern_row_currency_box {
 /// a host fn is no runtime row
 export law host_fn_name {
     kind: "type.host_fn"
-    reads: host_rows
+    reads_view: host_rows
     voice: host_row_words
     witness: "extern fn avra_rc_release(p: ptr) {}\n"
 }
@@ -413,7 +451,7 @@ export law host_fn_name {
 /// a host fn's seats make no promise
 export law host_fn_promise {
     kind: "type.host_fn"
-    reads: host_promises
+    reads_view: host_promises
     voice: host_promise_words
     witness: "extern fn c_host(mut n: int) -> int { n }\n"
 }
@@ -421,7 +459,7 @@ export law host_fn_promise {
 /// a host fn's seat is one a host hands over
 export law host_fn_seat {
     kind: "type.host_fn"
-    reads: host_seats
+    reads_view: host_seats
     voice: host_seat_words
     witness: "extern fn c_host(xs: List<int>) -> int { 0 }\n"
 }
@@ -429,7 +467,7 @@ export law host_fn_seat {
 /// a host fn's answer is one a host takes
 export law host_fn_taken {
     kind: "type.host_fn"
-    reads: host_answers
+    reads_view: host_answers
     voice: host_answer_words
     witness: "extern fn c_host() -> List<int> { [] }\n"
 }

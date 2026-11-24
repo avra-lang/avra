@@ -90,6 +90,7 @@ use features.fns.{
     name_uncallable,
     null_unpinning,
     param_unpinned,
+    instance_seat_unfilled,
     pins_refused,
     return_bare,
     return_fnless,
@@ -207,7 +208,7 @@ use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definiti
 /// A node a seat refused in a written item, where it stands, its seat, what the seat wants and the
 /// node is, spelled, and whether the node is a spread.
 @derive(Saved)
-type RefusedSeat = { at: FindingAt?, seat: Seating, want: string, found: string, note: SugarNote? = null, spread: bool = false }
+type RefusedSeat = { at: FindingAt?, seat: Seating, want: string, found: string, note: SugarNote? = null, spread: bool = false, instance: string? = null }
 
 /// What the sugar a refused node's operator means says of itself, where it stands.
 @derive(Saved)
@@ -412,7 +413,23 @@ fn refusals_placed(store: SyntaxArena, rows: List<RefusedAt>) -> List<RefusedSea
         found: r.found.spelled(),
         note: sugar_noted(store, r.seat, r.at),
         spread: store.spread_operand(ExprId { index: r.at }) != null,
+        instance: handed_by(store, ExprId { index: r.at }, r.seat),
     } for r in rows]
+}
+
+/// The component whose instance hands what the program wrote, holding the refused `e`, to a call
+/// its template wrote, where `seat` is that call's argument seat: the word of the innermost instance
+/// whose expansion holds the call. Absent for an argument of a call the program wrote, and for any
+/// other seat.
+fn handed_by(store: SyntaxArena, e: ExprId, seat: Seating) -> string? {
+    if !(seat is .Argument) || store.spanned_elsewhere(e) { return null }
+    let call? = [c for i in 0..store.expr_count() for c in [ExprId { index: i }] if store.spanned_elsewhere(c) &&
+        store
+            .expr_children(c)
+            .any((a) -> !store.spanned_elsewhere(a) && store.every_expr(a).contains(e))]
+        .first() else { return null }
+    let inner? = innermost_instance(store, call) else { return null }
+    match store.expr(inner) { .Component(word, _, _, _, _, _) -> word, rest -> null }
 }
 
 /// The note a refusal inside the meaning of a sugar says beside it: the sugar's own words, where it
@@ -719,12 +736,17 @@ fn refused_place(store: SyntaxArena, r: RefusedAt) -> Span? {
 /// the innermost, which is where the program wrote the call it makes.
 fn written_span(store: SyntaxArena, e: ExprId) -> Span? {
     if !store.spanned_elsewhere(e) { return store.expr_span(e) }
+    let inner? = innermost_instance(store, e) else { return null }
+    store.expr_span(inner)
+}
+
+/// The innermost instance the program wrote whose expansion holds the node `e`; absent for a node
+/// no expansion holds.
+fn innermost_instance(store: SyntaxArena, e: ExprId) -> ExprId? {
     let instances = [x for i in 0..store.expr_count() for x in [ExprId { index: i }] if !store.spanned_elsewhere(x) &&
         store.expansion_of(x) != null &&
         store.every_expr(store.expansion_of(x)!).contains(e)]
-    let inner? = instances
-        .find((x) -> !instances.any((o) -> o != x && store.every_expr(x).contains(o))) else { return null }
-    store.expr_span(inner)
+    instances.find((x) -> !instances.any((o) -> o != x && store.every_expr(x).contains(o)))
 }
 
 /// A refusal as its law's voice is handed it: the seat's own words, then what it wants and what it
@@ -743,8 +765,23 @@ fn span_of(at: FindingAt?) -> Span? {
 /// An argument of a fn a seat refused: the fn, its place.
 fn arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     let text = item_text(engine, file, at)
-    flatten([argument_words(r, text) for r in refused_in(engine, file, at)])
+    flatten([argument_words(r, text) for r in refused_in(engine, file, at) if r.instance == null])
 }
+
+/// Each argument an instance's expansion hands to a seat it does not fill, in the instance's words.
+fn instance_seats_unfilled(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [Found { at: span_of(r.at), args: [r.instance!, r.want, r.found] } for r in refused_in(engine, file, at) if r.instance != null]
+}
+
+/// what an instance is written with fills the seat its expansion hands it to
+export law instance_seat_mismatch {
+    kind: "type.mismatch"
+    reads: instance_seats_unfilled
+    voice: instance_seat_words
+    witness: "use @std.meta.{Code}\n\ntype Req<R> = { p: R }\n\ntype In = { a: int }\n\nexport fn takes(serve: fn(Req<int>) -> int) -> int { 1 }\n\nexport component served(name: string) {\n    body: Code\n    fn expand() -> Code {\n        quote { takes(\${self.body}) }\n    }\n}\n\nfn g() -> int { served \"x\" { (inp: In) -> inp.a } }\n"
+}
+
+fn instance_seat_words(a: List<string>) -> Voice { instance_seat_unfilled(a[0], a[1], a[2]) }
 
 fn argument_words(r: RefusedSeat, text: string) -> List<Found> {
     match r.seat {

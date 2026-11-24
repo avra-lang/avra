@@ -57,6 +57,7 @@ cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this
 cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
+ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
 findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
@@ -468,6 +469,17 @@ slice_doors_b() {
     row ui-host make -s -o avra ui-host
 }
 
+# THE UI BOARD WHERE A BROWSER RUNS: its wasm claims over the real page glue, then its claims in
+# headless Firefox, which no machine but a runner holds for every lane. First, what the run stood on,
+# in its own row's log: node, the browser, the wasm linker and the libc it links (a libc without
+# setjmp cannot link the board). A board that SKIPPED ran no claim, and is no pass.
+slice_ui_browser() {
+    row ui-machine sh -c 'node --version && firefox --version && wasm-ld-22 --version 2>/dev/null | head -1; for d in /usr/lib/wasm32-wasi /usr/lib/wasm32-wasip1 "${WASI_SYSROOT:-/nonexistent}/lib/wasm32-wasip1"; do [ ! -d "$d" ] || echo "libc $d: setjmp $(ls "$d"/libsetjmp.a 2>/dev/null || echo absent)"; done'
+    row ui-board sh tools/ui_board.sh
+    judged ui-board-ran "$(grep -c 'SKIPPED' "$out/ui-board.log")"
+    row ui-browser env CI=true sh tools/ui_board_browser.sh
+}
+
 # each package named: tapes --findings with no refusal; built — a library stops at "declares no entry
 # point", which is no refusal — with no program-layer false refusal; the cli's builds are the build slice's
 findings_on() {
@@ -493,6 +505,7 @@ witness_b_rows() {
 row runs-witness sh tools/witness_program_runs.sh build/avra
 row page-closure-witness sh tools/witness_page_closure.sh build/avra
 row board-native-witness sh tools/witness_board_native.sh build/avra
+row waits-witness sh tools/witness_program_waits.sh build/avra
 row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
 row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
 row beside-attack env BESIDE_ATTACK_AVRA="$root/build/avra" sh tools/beside_attack.sh
@@ -606,6 +619,7 @@ if compiler; then
         sound) slice_sound ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
+        ui-browser) slice_ui_browser ;;
         findings-a) slice_findings_a ;;
         findings-b) findings_third 0 ;;
         findings-c) findings_third 1 ;;

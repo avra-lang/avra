@@ -867,10 +867,17 @@ fn node_wait(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e
 }
 
 /// Whether the fn `file` names `name` runs a body that links a scheduler: it calls a runtime row
-/// that may switch the task out, or a fn that does, as the task survey reads its lowered bodies.
+/// that may switch the task out, or a fn that does, as the items' summaries say (`summary_waits`);
+/// where they can't say, as the task survey reads its lowered bodies.
 fn called_waits(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     let d? = resolved(engine, file, Space.Value, name).named() else { return false }
     if d.kind != ItemKind.Fn { return false }
+    summary_waits(engine, d) ?? surveyed_waits(engine, d)
+}
+
+/// Whether the fn `d` runs a body that links a scheduler, as the task survey reads its lowered
+/// bodies.
+fn surveyed_waits(engine: QueryEngine, d: DeclaredName) -> bool {
     let c? = callee_of(engine, d) else { return false }
     !c.external && task_survey(engine).links(body_at(c))
 }
