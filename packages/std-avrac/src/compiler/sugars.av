@@ -200,8 +200,19 @@ fn template_binds(store: SyntaxArena, stmts: List<StmtId>, arms: List<Arm>) -> L
     )
 }
 
-/// `at` and every node under it.
-fn under(store: SyntaxArena, at: At) -> List<At> { [at].concat(flatten([under(store, k) for k in store.kids_walked(at)])) }
+/// `at` and every node under it, in the order a walk meets them: each node appended once, never a
+/// list made again at every level.
+fn under(store: SyntaxArena, at: At) -> List<At> {
+    mut met: List<At> = []
+    walked_into(store, at, met)
+    met
+}
+
+/// `at` and every node under it, appended to `met` in the order a walk meets them.
+fn walked_into(store: SyntaxArena, at: At, mut met: List<At>) {
+    met.push(at)
+    for k in store.kids_walked(at) { walked_into(store, k, met) }
+}
 
 /// The names one node binds.
 fn bound_at(store: SyntaxArena, at: At) -> List<string> {
@@ -259,9 +270,10 @@ fn literal_inits(src: SyntaxArena, stmts: List<StmtId>, mut rb: Rebuilder) -> In
     match src.expr(e) { .StructLit(_, names, values) -> rb.inits(names, values), rest -> null }
 }
 
-/// Whether a template's runs are nothing but holes: its kind is then whatever fills them.
-fn bare_template(lang: Language, parts: List<string>) -> bool {
-    let s? = scratch(lang, woven_quote(parts)) else { return false }
+/// Whether a template's runs are nothing but holes: its kind is then whatever fills them. Read off
+/// the quote where it was written when the splice reaches it, else off the quote its runs weave.
+fn bare_template(lang: Language, written: Scratch?, parts: List<string>) -> bool {
+    let s? = written ?? scratch(lang, woven_quote(parts)) else { return false }
     match quote_kind(s.store, s.body) {
         .Holes -> true,
         .Expr or .Stmts or .Arms or .Decls -> false,
@@ -436,12 +448,13 @@ impl Splice {
     /// A template written in `file` at `at`, copied as `seat` takes it; a body of nothing but holes
     /// is its fills in that seat.
     fn copied(file: string, at: int, parts: List<string>, fills: List<Node>, seat: HoleKind) -> TemplateCopy {
-        if bare_template(self.lang, parts) { return self.bare(fills, seat) }
+        let written = (self.written)(file, at)
+        if bare_template(self.lang, written, parts) { return self.bare(fills, seat) }
         let sp = self
         let copy? = template_copied(
             self.lang,
             self.store,
-            (self.written)(file, at),
+            written,
             parts,
             [(kind: HoleKind) -> sp.filled(kind, fill) for fill in fills],
             seat,

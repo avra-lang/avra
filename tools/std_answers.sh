@@ -8,8 +8,13 @@
 # the INSTALLED compiler over the INSTALLED std, so the packs are made at the paths and the print a
 # program is built with. Each package's own store is left behind nowhere: it is made under a scratch
 # cache and emptied. The compiler's own packages ship no answers: std-avrac is the compiler, and the
-# fuzz, soak and gallery packages are its harnesses, never a program's import. Prints one line: how
-# many packages, how many packs, how many kilobytes.
+# fuzz, soak and gallery packages are its harnesses, never a program's import — but in a checkout the
+# compiler is a program's import (cli's), so STD_ANSWERS_COMPILER=1 judges std-avrac too. Prints one
+# line: how many packages, how many packs, how many kilobytes.
+# THE ANSWERS ARE KEYED BY WHAT MADE THEM: the compiler's bytes, where std and `out` stand, and every
+# file of the packages judged. Where `out` holds answers of that key, they stand as they are and
+# nothing is worked out; any of it moved, and every package is judged again, since a package's
+# verdict reads the packages it uses.
 #   sh tools/std_answers.sh <avra> <std> <out> [package…]   (default every std package but those)
 set -u
 [ $# -ge 3 ] || { sed -n 2,10p "$0"; exit 2; }
@@ -20,18 +25,38 @@ named="$*"
 COMPILERS=" std-avrac std-http-fuzz std-http-soak std-ui_gallery "
 [ -x "$avra" ] || { echo "std_answers: no compiler at $avra" >&2; exit 1; }
 [ -d "$std" ] || { echo "std_answers: no std at $std" >&2; exit 1; }
+[ "${STD_ANSWERS_COMPILER:-0}" = 1 ] && COMPILERS=" std-http-fuzz std-http-soak std-ui_gallery "
+# the packages judged, one a line
+judged() {
+    for p in "$std"/std-*; do
+        [ -f "$p/avra.toml" ] || continue
+        if [ -n "$named" ]; then
+            case " $named " in *" $(basename "$p") "*) ;; *) continue ;; esac
+        else
+            case "$COMPILERS" in *" $(basename "$p") "*) continue ;; esac
+        fi
+        echo "$p"
+    done
+}
+# the key of what the answers are made from: the compiler's bytes, the paths, every judged file
+keyed() {
+    {
+        sha256sum < "$avra"
+        echo "$std $out"
+        for p in $(judged); do find "$p/" -name .avra-cache -prune -o -type f -print; done | LC_ALL=C sort | xargs sha256sum
+    } | sha256sum | cut -c1-64
+}
+key=$(keyed)
+if [ "$(cat "$out/inputs" 2> /dev/null)" = "$key" ]; then
+    echo "std answers: unchanged, $(ls "$out" | grep -c '^pack-') packs, $(du -sk "$out" | cut -f1) KB in $out"
+    exit 0
+fi
 scratch=$(mktemp -d)
 trap 'find "$scratch" -delete' EXIT
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
 n=0
-for p in "$std"/std-*; do
-    [ -f "$p/avra.toml" ] || continue
-    if [ -n "$named" ]; then
-        case " $named " in *" $(basename "$p") "*) ;; *) continue ;; esac
-    else
-        case "$COMPILERS" in *" $(basename "$p") "*) continue ;; esac
-    fi
+for p in $(judged); do
     # the verdict: the package's own check, its answers kept apart and let go
     AVRA_CACHE_DIR="$scratch" AVRA_MACHINE_STORE_DIR="$scratch/judged" AVRA_VERDICT_DIR="$out" AVRA_PROGRAM_NET=0 "$avra" check "$p" >/dev/null 2>"$scratch/said" ||
         { echo "std_answers: $(basename "$p") is refused by its own compiler:" >&2; cat "$scratch/said" >&2; exit 1; }
@@ -42,4 +67,5 @@ for p in "$std"/std-*; do
     n=$((n + 1))
 done
 find "$out" -mindepth 1 ! -name 'pack-*' ! -name 'verdict-*' -delete
+echo "$key" > "$out/inputs"
 echo "std answers: $n packages, $(ls "$out" | wc -l | tr -d ' ') packs, $(du -sk "$out" | cut -f1) KB in $out"

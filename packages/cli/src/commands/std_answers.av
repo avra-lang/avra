@@ -5,8 +5,12 @@
 //! inputs it read wherever it was kept. A machine store that can't take them, or can't stand at
 //! all, is said once, and the build works without it.
 //! BESIDE THEM, THE INSTALL'S VERDICT: each std file its own check found nothing refusing, by its
-//! digest. A std file standing on the toolchain's std with that digest is asked no law; one edited,
-//! or one a path pins, is judged as any dependency is.
+//! digest. A file's refusals read what it uses, so the verdict stands only whole: while every file it
+//! names stands on the toolchain's std with its digest, unpinned, and its packages hold no other
+//! file, those files are asked no law; one edited, added or pinned, and every std file is judged as
+//! any dependency is.
+//! A CHECKOUT IS A TOOLCHAIN TOO: `make avra` makes its binary's answers over the checkout's own std
+//! with the same writer (`tools/std_answers.sh`), beside the binary in `build/answers`.
 use @std.avrac.compiler.{
     ProgramFile,
     avra_fact_definitions,
@@ -15,8 +19,8 @@ use @std.avrac.compiler.{
     spelled_file,
 }
 use @std.avrac.core.{digest_of}
-use @std.io.{IoError, append_bytes, drafted, env, exists, make_dirs, read_bytes, read_text}
-use @std.path.{dir_of, joined_path}
+use @std.io.{IoError, append_bytes, drafted, env, exists, make_dirs, read_bytes, read_text, remove}
+use @std.path.{joined_path}
 use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{packs_answering}
 use @std.program.layered_store.{program_store_at}
@@ -24,11 +28,21 @@ use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.saved_query.{definitions_of}
 use @std.program.source_facts.{source_text}
 
-/// Where the toolchain beside this binary keeps its std answers: `<prefix>/lib/avra/answers`, a
-/// sibling of its std.
+/// What names a binary's mark in the machine's store: its std answers were laid in.
+const MARK: string = "std-answers-"
+
+/// Where the toolchain keeps its std answers, beside the std this binary reads: a checkout's in
+/// `build/answers` over its `packages`, an install's in `<prefix>/lib/avra/answers` over its
+/// `lib/avra/std`; none for a std found further above.
 fn shipped_answers() -> string? {
-    let bin? = own_binary() else { return null }
-    joined_path(dir_of(dir_of(bin)), "lib/avra/answers")
+    let std? = std_root() else { return null }
+    let roots = std_roots()
+    let beside = toolchain_files(["answers", "../lib/avra/answers"])
+    when {
+        std == roots[0] -> beside[0]
+        std == roots[1] -> beside[1]
+        _ -> null
+    }
 }
 
 /// Whether the machine's store at `directory` stands for this process: made where it isn't, said
@@ -46,8 +60,10 @@ fn machine_store_stands(directory: string) -> bool {
 /// The toolchain's std answers for the binary printed `print`, laid into the machine's store at
 /// `directory` once: each pack it ships that the store lacks, then the mark that they were.
 fn std_answers_laid(directory: string, print: string) {
-    let mark = joined_path(directory, "std-answers-${print}")
-    if exists(mark) { return }
+    let mark = joined_path(directory, "${MARK}${print}")
+    // a mark stands for packs the store still holds: once its eviction took them, they're laid in again
+    if exists(mark) && !packs_answering(directory, print).is_empty() { return }
+    marks_swept(directory)
     let shipped? = shipped_answers() else { return }
     let packs = packs_answering(shipped, print)
     if packs.is_empty() { return }
@@ -61,6 +77,17 @@ fn std_answers_laid(directory: string, print: string) {
         }
     }
     let _ = file_laid(mark, "".bytes())
+}
+
+/// Each mark in the machine's store at `directory` whose binary's packs the store no longer holds,
+/// removed: the store keeps the packs of a bounded few binaries, and their marks with them.
+fn marks_swept(directory: string) {
+    for name in names_at(directory) ?? [] {
+        if !name.starts_with(MARK) { continue }
+        if packs_answering(directory, name.substring(MARK.length, name.length)).is_empty() {
+            let _ = remove(joined_path(directory, name))
+        }
+    }
 }
 
 /// The pack at `from` laid at `to`, unless one stands there.
@@ -103,12 +130,27 @@ fn answers_unlaid(directory: string, e: IoError) -> string {
 fn verdict_at(dir: string, print: string) -> string { joined_path(dir, "verdict-${print}") }
 
 /// The std files of the program on `disk` the toolchain's verdict vouches for, each as `spelled_file`
-/// names it: those standing on the toolchain's std, unpinned, whose text is the text it judged.
+/// names it: every file it names, where all of them stand on the toolchain's std, unpinned, with the
+/// text it judged, and the program reads no other file of their packages; else none.
 fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
     let shipped? = shipped_answers() else { return [] }
     let print? = own_print() else { return [] }
     let verdict = read_text(verdict_at(shipped, print)) catch ""
-    [spelled_file(f!) for line in verdict.split("\n") for f in [vouched_line(engine, disk, line)] if f != null]
+    let lines = [line for line in verdict.split("\n") if !line.is_empty()]
+    let judged = [vouched_line(engine, disk, line) for line in lines]
+    if judged.is_empty() || judged.any(it == null) { return [] }
+    mut named: Map<string, bool> = {}
+    mut packages: Map<string, bool> = {}
+    for f in judged {
+        named.set("${f!.package_name}\t${f!.path_in_package}", true)
+        packages.set(f!.package_name, true)
+    }
+    let unjudged = program_files(engine, disk.name)
+        .any(
+            (f) -> packages.has(f.package_name) &&
+                !named.has("${f.package_name}\t${f.path_in_package}"),
+        )
+    if unjudged { [] } else { [spelled_file(f!) for f in judged] }
 }
 
 /// The file a verdict's line names, where it stands on the toolchain's std as the verdict judged it.

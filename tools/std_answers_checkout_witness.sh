@@ -1,0 +1,115 @@
+#!/bin/sh
+# A CHECKOUT READS ITS STD AS AN INSTALL DOES, AND NEVER STALE. A checkout is laid out as one stands
+# (build/avra, packages/std-*), its std answers made as `make avra` makes them (tools/std_answers.sh
+# into build/answers), and a program over @std/text is checked with its binary:
+#   (1) on a fresh machine the checkout's answers are laid in, and the check says what a check with
+#       no machine store says, working out less than half of what a checkout shipping none does;
+#   (2) a body edited inside a std file is worked out again: the check says what a check with no
+#       store says, and works out less than half of what (1) skipped;
+#   (3) a std signature edited so the program no longer types: the program's item is faced again
+#       and the check refuses it, as a check with no store does;
+#   (4) a std file edited so another std file it serves no longer resolves: the verdict stands for
+#       neither, and the check refuses the dependent, as a check with no store does;
+#   (5) the packs the machine store evicted are laid in again, their mark notwithstanding.
+#   sh tools/std_answers_checkout_witness.sh [compiler]     (default build/avra)
+set -u
+root=$(cd "$(dirname "$0")/.." && pwd)
+avra=$(cd "$(dirname "${1:-$root/build/avra}")" && pwd)/$(basename "${1:-$root/build/avra}")
+w=$(mktemp -d "${TMPDIR:-/tmp}/avra-checkout-answers.XXXXXX")
+trap 'find "$w" -delete 2>/dev/null || :' EXIT
+export AVRA_PROGRAM_NET=0
+unset AVRA_MACHINE_STORE AVRA_MACHINE_STORE_DIR
+fail() { echo "std_answers_checkout_witness: $*"; exit 1; }
+held() { echo "std_answers_checkout_witness: $*"; }
+
+# `checkout <dir>`: a checkout at <dir> whose @std/text and @std/meta are copies of the tree's, which
+# the cases edit, its other std the tree's own
+checkout() {
+    mkdir -p "$1/build" "$1/packages"
+    cp "$avra" "$1/build/avra"
+    for d in "$root"/packages/std-*; do ln -s "$d" "$1/packages/$(basename "$d")"; done
+    for p in std-text std-meta; do
+        find "$1/packages/$p" -maxdepth 0 -type l -delete
+        cp -R "$root/packages/$p" "$1/packages/$p"
+        find "$1/packages/$p" -name .avra-cache -prune -exec find {} -delete \;
+    done
+}
+tree="$w/tree"
+checkout "$tree"
+sh "$root/tools/std_answers.sh" "$tree/build/avra" "$tree/packages" "$tree/build/answers" std-text std-prelude std-meta >/dev/null ||
+    fail "the checkout's answers were not made"
+[ "$(ls "$tree/build/answers" | grep -c '^pack-')" -gt 0 ] || fail "the checkout ships no pack"
+bare="$w/bare"
+checkout "$bare"
+
+mkdir -p "$w/p/src"
+printf '[package]\nname = "texted"\nversion = "0.0.1"\n' > "$w/p/avra.toml"
+printf 'use @std.text.{parse_int}\n\nfn n() -> int { parse_int("41") ?? 0 }\nn()\n' > "$w/p/src/main.av"
+# `checked <compiler> <cache> <said> [env…]`: the program checked cold in its own store, under the
+# machine cache `<cache>`; stdout to `<said>`, stderr to `<said>.err`, the exit after stdout, its
+# path said as `<p>` and the checkout's as `<tree>`
+checked() {
+    c=$1; cache=$2; said=$3; shift 3
+    find "$w/p" -name .avra-cache -prune -exec find {} -delete \;
+    env AVRA_CACHE_DIR="$cache" "$@" "$c" check "$w/p" > "$said.raw" 2> "$said.err"
+    code=$?
+    sed -e "s#$w/p#<p>#g" -e "s#$tree#<tree>#g" -e "s#$bare#<tree>#g" "$said.raw" > "$said"
+    echo "exit $code" >> "$said"
+}
+kb() { du -sk "$1/tapes" | cut -f1; }
+# `edited <file> <sed script>`: the same file in both checkouts, edited alike
+edited() {
+    for t in "$tree" "$bare"; do sed -i.was "$2" "$t/packages/$1" && find "$t/packages/$1.was" -delete; done
+}
+# `as_unstored <case> <said>`: the checkout's check over the machine store m1 says what the bare
+# checkout's says with no machine store
+as_unstored() {
+    checked "$bare/build/avra" "$w/none" "$w/$2.bare" AVRA_MACHINE_STORE=0
+    checked "$tree/build/avra" "$w/m1" "$w/$2"
+    cmp -s "$w/$2.bare" "$w/$2" || fail "$1 the checkout says otherwise than a check with no store: $(cat "$w/$2" "$w/$2.err") against $(cat "$w/$2.bare")"
+}
+
+# (1)
+checked "$bare/build/avra" "$w/m0" "$w/unshipped"
+unshipped_kb=$(kb "$w/m0")
+as_unstored "(1)" laid
+[ ! -s "$w/laid.err" ] || fail "(1) a first check said: $(cat "$w/laid.err")"
+shipped_kb=$(du -sk "$tree/build/answers" | cut -f1)
+laid_kb=$(kb "$w/m1")
+gained_kb=$((laid_kb - shipped_kb))
+[ $((gained_kb * 2)) -lt "$unshipped_kb" ] ||
+    fail "(1) the machine store gained ${gained_kb} KB past the ${shipped_kb} KB laid in, against ${unshipped_kb} KB with nothing shipped: the checkout's answers didn't serve"
+held "(1) a checkout's first check: the same words, ${gained_kb} KB worked out past the ${shipped_kb} KB laid in, against ${unshipped_kb} KB with nothing shipped"
+
+# (2)
+edited std-text/src/text.av 's|^    if !avra_str_parses_int(s) { return null }$|    if !avra_str_parses_int(s) { return null }\n    let _edited = 0|'
+grep -q '_edited' "$tree/packages/std-text/src/text.av" || fail "(2) the body edit missed"
+as_unstored "(2)" body
+grep -q '^exit 0$' "$w/body" || fail "(2) a body edit is refused: $(cat "$w/body")"
+regained_kb=$(($(kb "$w/m1") - laid_kb))
+[ $((regained_kb * 2)) -lt $((unshipped_kb - gained_kb)) ] ||
+    fail "(2) a body edit worked out ${regained_kb} KB, against the $((unshipped_kb - gained_kb)) KB the answers spared"
+held "(2) a std body edited: the same words, ${regained_kb} KB worked out again"
+
+# (3)
+edited std-text/src/text.av 's|^export fn parse_int(s: string) -> int? {$|export fn parse_int(s: string) -> string? {|'
+as_unstored "(3)" typed
+grep -q '^exit 1$' "$w/typed" || fail "(3) a std signature the program no longer types with is let through: $(cat "$w/typed")"
+held "(3) a std signature edited: the program's item faced again, refused as with no store"
+edited std-text/src/text.av 's|^export fn parse_int(s: string) -> string? {$|export fn parse_int(s: string) -> int? {|'
+
+# (4)
+edited std-meta/src/meta.av 's|^export fn identity(_t: Type) {}$|export fn identity_moved(_t: Type) {}|'
+as_unstored "(4)" served
+grep -q '^exit 1$' "$w/served" && grep -q 'std-text' "$w/served" ||
+    fail "(4) a std file whose dependency moved is let through: $(cat "$w/served")"
+held "(4) a std dependency edited: the dependent judged again, refused as with no store"
+
+# (5)
+shipped=$(ls "$tree/build/answers" | grep -c '^pack-')
+find "$w/m1/tapes" -name 'pack-*' -delete
+checked "$tree/build/avra" "$w/m1" "$w/evicted"
+[ "$(ls "$w/m1/tapes" | grep -c '^pack-')" -ge "$shipped" ] ||
+    fail "(5) answers the store evicted were not laid in again: $(ls "$w/m1/tapes")"
+held "(5) answers the store evicted: laid in again"
+echo "std_answers_checkout_witness: held"

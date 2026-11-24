@@ -162,11 +162,12 @@ fn module_kept(engine: QueryEngine, package: string, local: List<string>, as_roo
 }
 
 /// What is a file's own at its top level: its kept-apart names and its imports (`own`); its
-/// siblings' kept-apart names, which a read of here is refused with; and each of its declarations
-/// and imports that lost its name. Its module's shared winners and the prelude are read where they
+/// siblings' kept-apart names, which a read of here is refused with, and the same by name
+/// (`siblings_named`), so a read asks one entry rather than every sibling; and each of its declarations and
+/// imports that lost its name. Its module's shared winners and the prelude are read where they
 /// stand (`resolved`).
 @derive(Saved)
-export type FileScope = { own: Bound, siblings: List<DeclaredName>, clashes: List<NameClash> }
+export type FileScope = { own: Bound, siblings: List<DeclaredName>, siblings_named: Map<string, List<DeclaredName>>, clashes: List<NameClash> }
 
 /// What is `file`'s own at its top level; absent for a file that isn't there.
 @cut_query
@@ -188,9 +189,13 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
             }
         }
     }
+    let siblings = [d for d in module.apart if !same_file(d.file, file)]
+    mut named: Map<string, List<DeclaredName>> = {}
+    for d in siblings { named.set(d.name, (named.get(d.name) ?? []).concat([d])) }
     FileScope {
         own: own,
-        siblings: [d for d in module.apart if !same_file(d.file, file)],
+        siblings: siblings,
+        siblings_named: named,
         clashes: [c for c in module.clashes if same_file(c.lost.file, file)].concat(clashes),
     }
 }
@@ -398,7 +403,8 @@ fn unclaimed(
 impl FileScope {
     /// The declarations of `name` in `space` the file's siblings keep apart.
     fn kept_apart(space: Space, name: string) -> List<DeclaredName> {
-        [d for d in self.siblings if d.name == name && space_of(d.kind) == space]
+        let named? = self.siblings_named.get(name) else { return [] }
+        [d for d in named if space_of(d.kind) == space]
     }
 
     /// The name of every declaration in `space` the file's siblings keep apart, as a set.

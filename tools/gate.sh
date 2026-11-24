@@ -239,7 +239,7 @@ cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec fin
 compiler() {
     if compiler_stands; then return 0; fi
     if [ ! -x build/avra ]; then row compiler-recover make recover || return 1; fi
-    row compiler-gen1 env AVRA_PROGRAM_NET=0 make avra || return 1
+    row compiler-gen1 env AVRA_PROGRAM_NET=0 AVRA_STD_ANSWERS=0 make avra || return 1
     row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
 }
 
@@ -258,9 +258,9 @@ cli_built() {
 
 slice_build() {
     row try make try
-    row avra-a make avra && cp build/avra "$out/avra-a"
+    row avra-a env AVRA_STD_ANSWERS=0 make avra && cp build/avra "$out/avra-a"
     cold cli
-    row avra-b make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
+    row avra-b env AVRA_STD_ANSWERS=0 make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
     cli_built on 1
     cli_built off 0
     judged cli-build-false-refusals "$(cat "$out"/cli-build-*.log | grep -c 'program-layer false refusal')"
@@ -444,7 +444,7 @@ slice_cost() {
 # is already: a seed unpacked from the release of a tree of the same compiler source takes it as it is
 gen2_made() {
     read -r _h _a gen _ < build/.avra-built-from 2> /dev/null || gen=1
-    [ "${gen:-1}" -ge 2 ] || row compiler-gen2 env AVRA_PROGRAM_NET=0 make avra
+    [ "${gen:-1}" -ge 2 ] || row compiler-gen2 env AVRA_PROGRAM_NET=0 AVRA_STD_ANSWERS=0 make avra
 }
 # the census compiler, built by this tree's compiler of generation 2
 census_made() {
@@ -529,6 +529,7 @@ row two-compilers-attack sh tools/two_compilers_attack.sh
 row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
 row queue-witness build/avra run tools/queue-witness
 row std-answers-attack sh tools/std_answers_attack.sh build/avra
+row std-answers-checkout-witness sh tools/std_answers_checkout_witness.sh build/avra
 row carried-store-attack env CARRIED_ATTACK_AVRA="$root/build/avra" sh tools/carried_store_attack.sh
 row derive-members-witness sh tools/derive_members_witness.sh build/avra
 row ledger-witness sh tools/witness_program_ledger.sh build/avra

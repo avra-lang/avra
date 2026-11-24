@@ -2762,6 +2762,30 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
+### Native generator runs — a design note, not now
+
+Every generator site's run is INTERPRETED, while a generator's program is one per generator and
+print: compiled natively once, kept in the machine store like any object, a site would call it.
+Measured on 4888de75 (a cold `check packages/cli`): the runs are ~4.8 s self of `generated`'s
+12.5 s, ~22 M evaluator steps over 2,816 runs (`Saved.derive` 4.84 M over 363, `relation` 4.23 M,
+the two `query` derives 3.28 M and 2.61 M, `codec` 3.05 M); the splices are ~1.4 s, and a derive
+run's 4.5 s NESTED is the lifting of the declarations it names, which native code would not touch.
+So native runs win at most the ~4.8 s (5% of check CPU), for a large build. What a native run
+would owe that the evaluator gives a run today:
+1. THE SETTLE BUDGET IS SEMANTICS. A run past its steps or bytes is refused, "ran past its
+   budget", deterministically, and a program is held to it. A native run must count the same
+   steps (fuel in the lowering, which spends part of the gain) or the budget means something else.
+2. Code crosses both ways: the declaration in as a MetaVal heap (`handed_values`), the answer back
+   as Node/Map/Octets values decoded into the compiler's arena (`declared_made`, `directives`). A
+   native run needs a native layout for Code and a crossing each way.
+3. A run reads other declarations lazily (`named_lifted`, a read of the query engine): a native
+   run needs a host callback into the engine mid-run.
+4. The late door (`task_survey`), the `spelled` reader and the embed refusal: small host services,
+   each owed.
+5. Loading the native code per (generator, print) from the machine store: a kept object opened
+   at run time, as the layered dev build's shared objects already are.
+The cut that came first is the nested lifting (one declaration lifted ~28 times a check).
+
 ## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
 
 Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.

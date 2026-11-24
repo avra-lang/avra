@@ -16,6 +16,16 @@
 //!         let nodes = [n! for m in moved for n in [edges_of_node_in(m.question)] if n != null]
 //!         …
 //!     }
+//!
+//! `@memo` OR A QUERY: a `@memo` answer is a value held for the process, never encoded, hashed or
+//! kept, and it is no question of the engine's own: each asker makes its reads again, so a reader of
+//! it stands or moves exactly as what the memo read does, and a later engine of the process takes a
+//! held answer only where every one of those reads holds there. Write `@memo` for an answer with no
+//! stable encoding (a meta `Type`, code) that is cheap to work out again from reads that are cut
+//! questions themselves. Write a query where the answer has a saved shape and often comes out the
+//! same when what it read moved: its own answer then cuts the change off before its readers, one
+//! level above where a memo's askers would, and a later process reads it back instead of working
+//! it out.
 use @std.meta.{
     Code,
     Declared,
@@ -59,7 +69,8 @@ use query_engine.{
 }
 use value_shapes.{ValueShape}
 use interned.{HIGH_LANE, LOW_LANE, KeyLane}
-use answer_record.{Question}
+use answer_record.{Question, content_hash}
+use read_memo.{AskedMemo, asked_memo}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{
     FOLDED,
@@ -103,6 +114,57 @@ export fn query(f: Fn) -> Declared { remembered(f, false, [], false, false) }
 /// `@input`: reads the outside world, so it runs once in every process, and its readers stand
 /// when it comes out the same.
 export fn input(f: Fn) -> Declared { remembered(f, true, [], false, false) }
+
+/// `@memo`: a question answered once in a process and held as a VALUE, never as bytes, so its
+/// answer needs no saved shape. It is no question of the engine's own: its working-out's reads are
+/// made again by every asker, so a reader of it depends on what it read, exactly as had it worked
+/// the answer out itself, and nothing of it is kept for a later process. A later engine of the same
+/// process takes a held answer only where every read it made holds there, so an edit that reaches
+/// those reads works it out again. Its arguments are what it's asked, so each needs a saved shape.
+///
+/// Use `@memo` over `@query` for an answer with no stable encoding (a meta `Type`, code), cheap to
+/// rebuild from reads that are cut questions themselves: it costs no encoding, no hash and no store
+/// row, and its askers stand or move as its reads do, one level below where a query's answer would
+/// cut. Use `@query` where the answer has a saved shape and a change that reaches what it read
+/// often leaves the answer the same, so its readers stand.
+export fn memo(f: Fn) -> Declared {
+    let problems = memo_problems(f)
+    if !problems.is_empty() { return nothing_made(problems) }
+    Declared {
+        made: [
+            Directive { twin: "", name: f.name, at: f.at, wraps: true, source: memo_wrapper(f) },
+            declares(arguments_door(f), f.at, arguments_writer(f)),
+            declares(memo_door(f), f.at, memo_table(f)),
+        ],
+    }
+}
+
+/// A memo is asked by its arguments, so its first seat is the engine and every other has a saved
+/// shape; its answer may be anything.
+fn memo_problems(f: Fn) -> List<Diagnostic> {
+    if f.params.first()?.ty != "QueryEngine" { return [no_engine_seat(f)] }
+    [no_bytes_in_seat(f, p) for p in argument_seats(f) if saved_shape(p.kind) == null]
+}
+
+fn memo_door(f: Fn) -> string { "${f.name}_memo" }
+
+/// `<name>_memo()`: the process's answers to the memo, one table for every engine.
+fn memo_table(f: Fn) -> Decls {
+    quote {
+        once fn ${memo_door(f)}() -> AskedMemo<${f.answer}> { asked_memo() }
+    }
+}
+
+/// The function callers call: the answer to these arguments from the memo, else worked out by the
+/// written body there.
+fn memo_wrapper(f: Fn) -> Decls {
+    let arguments = [name(p.name) for p in f.params]
+    quote {
+        fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
+            ${memo_door(f)}().answer(${engine_of(f)}, content_hash(${arguments_door(f)}(..${arguments})), () -> ${wrapped(f)}(..${arguments}))
+        }
+    }
+}
 
 /// `@cut_query`: a query that cuts a change off — a projection near the inputs, worked out as the
 /// frontier opens wherever a change reaches it, and past which a change reaches nothing where it
