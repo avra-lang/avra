@@ -311,20 +311,20 @@ forms module is not reached, so it is not counted).
 draws no surface and is zero high. That is right for a live region with nothing to say. The dark
 block in the first screenshots was the pane's own padding.
 
-**What the phone needed of the library, and what it still lacks.**
-- **A word too long for its line.** `body{overflow-wrap:break-word}` does not lower a box's
-  min-content width, so a flex item holding `unbroken_text` stood 474 px wide on a 390 px page. This
-  slice changes it to `overflow-wrap:anywhere` (realize/html/css.av, one word). That is a realizer
-  decision for the UI lead: the first frame of a mounted page shrinks by 2 octets (wire test
-  3539 → 3537), and the layout oracle, which needs Firefox, was not run here.
-- **Two frames side by side on a phone.** These leave a field's `<input>` (248 px intrinsic) wider
-  than a 175 px frame. Only `input{width:100%}` contains it, which changes how every field looks, so it
-  is not done. Frames stand one a row by default instead.
-- **Stacking under 600 px** needs a box's LEAST width: a size a wrapping row moves to a line of its
-  own. `Layout` has `Hug`, `Fill`, `Fixed` and `Percent` and no such size, so "one frame a row" is a
-  reader's choice (a checkbox), not a width.
+**What the phone needed of the library (the UI lead's rulings).**
+- `overflow-wrap:anywhere` on the body was proposed and DROPPED: it lowers every Hug box's least width
+  to one character, so a shrinking row could break "Save" mid-word. It returns as its own change,
+  with the layout oracle's Firefox result and two claims: an unbroken 60-character token in a 320 px
+  frame does not overflow, and a button's label in a too-narrow row never breaks inside a word.
+- A field's input is held to its box now (`input:not([type=checkbox]){min-width:0;max-width:100%}`,
+  realize/html/css.av). That is containment only; whether a field FILLS its box is the layout study's
+  call. A box to tick keeps its size: the first form of the rule shrank a checkbox beside long words
+  to 0–3 px, and the `tickable` claim now holds that.
+- "A wrapping row whose items hold a least width" is on the layout study's list (ROADMAP, the
+  storyboard's asks). "One frame a row" is the interim.
+- The seed defect (finding 4) is P1 and routed to the warm lane. The five set-aside cases stay named.
 
-**A place's seed via `with` (finding 4).** The program and its output, on `69ff97e`:
+**A place's seed via `with` (finding 4)**, as sent for the ruling, on `69ff97e`:
 
 ```avra
 use @std.ui.components.{checkbox}
@@ -340,8 +340,7 @@ field:   false
 ```
 The place is seeded when the VALUE is built: `checked`'s default `self.initial` is read at
 construction, so the field already holds `false`, and `with` changes `initial` beside it. By the UI
-lead's law (seeded when MOUNTED), this is a model defect. The page still sets such a case aside by
-name until the ruling.
+lead's law (seeded when MOUNTED), this is a model defect (ruled P1).
 
 ### Slice 2 — semantic snapshots and coverage, in the gate
 
@@ -357,3 +356,46 @@ name until the ruling.
 Cost: `build/avra test packages/std-ui_gallery`, cold, takes **22 s** here: 47 cases, plus the golden's
 program run in both engines (17.8 s of that). That is well under the slice budget. The browser row
 (slice 3) joins this slice.
+
+### Slice 3 — the claims, every case under every dial, with the mutant
+
+`tools/storyboard/claims.mjs` (engine-agnostic over `../ui-board`'s page drivers: Firefox by BiDi,
+WebKit and Chromium by Playwright) and `tools/storyboard_browser.sh` (the gate's row
+`storyboard-browser`, with the same "a run that cannot judge fails" contract as the board's).
+
+**Every event a story's base declares is heard.** `@story` wires each event member of the base to
+`heard("<view>.<event>")` (an event whose seat names a type parameter is left as written), and the
+page draws `heard: button.press 2 · …`. A gesture's claim reads that line before and after.
+
+| Family | Holds, of every frame (585 = 117 cases × 5 dials) | Mutant that must fail it |
+|---|---|---|
+| named | every control is named (label, words, aria-label) | every button's words and label emptied |
+| legible | words 4.5:1 against what they stand on, 3:1 if large; a disabled control owes nothing | every word grey on white |
+| contained | nothing stands past the frame, as wide as its dial holds it | a 2000 px box in every frame |
+| input-held | a field's input stands inside its frame | `min-width: 2000px` on inputs |
+| tickable | a box to tick is ≥ 10 px wide | checkboxes at 0 px |
+| reachable | an enabled control drawn takes the focus and is in the key order; a disabled one does not | `tabindex=-1` everywhere |
+| scheme | each case's canvas AND the surface under it are darker under `dark` than under `light` (luminance) | every canvas white |
+| operable | Enter, Space, a letter or → on the case's own control is heard exactly once (0 when disabled), and a ticked box or a typed letter reads back from what is drawn | every gesture stopped at the window |
+| touched | (with a phone device) a tap is heard exactly once | — |
+
+**Run here** (Chromium 1280×900; Firefox and WebKit are not on this machine): 585 frames, 62
+failures, all pinned (`tools/storyboard/pinned.txt`, each with what it waits on), and every mutant
+caught (95 to 1152 times each). 47 s for the claims, 50 s for the row with `avra dev`'s build.
+
+**What the claims found**, pinned until ruled:
+- A control with an empty label has no name at all (button, checkbox, field, link, slider, switch).
+- `error_text` in the Disabled ink (3.45:1) and the Border ink (1.45:1) — the UI lead's text-ink ruling.
+- A label's unbroken word widens its inline-flex box past a 320 px frame (checkbox, field, progress,
+  slider, switch, fieldset's legend), and pushes a field's input out. This is ruling 2's ground.
+- A `fieldset` stands 13 px past a 320 px frame whatever its legend: the engine's own least width
+  for a fieldset. New.
+
+**Touch** is wired but NOT in the gate yet. On a phone the page still overflows sideways (the
+unbroken labels above), the engine zooms out, and a tap lands where the layout says it is not. With
+the page held to one view that does not overflow (`--view button`), every tap is heard once. It joins
+the checks' WebKit (iPhone) run once the page cannot overflow (ruling 2).
+
+**Zero cost holds**: the board's wasm module and native server are unchanged by the stories and
+their wiring (316,595 B and 3,095,944 B with the input rule left out). The input rule itself costs
+the board +149 B of wasm and the page drawer +240 B.
