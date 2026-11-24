@@ -121,7 +121,7 @@ fn main() -> Result<string, HomeError> {
     let tx = transaction(ctx.db)?
     errdefer tx.rollback()
     let _ = homed(tx.db.run(sql("INSERT INTO users (name) VALUES ('grace')")))?
-    let _ = emails.send(receipt(u), id: "receipt-${u.id}", tx: tx)?   // one commit with the user row
+    let _ = tx.send(emails, receipt(u), id: "receipt-${u.id}")?   // one commit with the user row
     let _ = tx.commit()?
 
     let serving = spawn run(sender)
@@ -132,7 +132,7 @@ fn main() -> Result<string, HomeError> {
 
 What Q4 holds, each a case in `tx_test`, `in_tx_test`, `letters_test` or a program:
 
-- `send(…, tx:)` joins the transaction: its commit delivers the item, its rollback leaves none and frees the name. With `after:` too, the delayed row is written in the transaction: it exists only once that commits, and is due at its instant then. A transaction that ended, one on another connection, and any on a queue with no durable home are refused.
+- `tx.send(q, …)` joins the transaction (it is `q.send(…, tx: tx)`, the spelling a job and a handler's `d.tx` take): its commit delivers the item, its rollback leaves none and frees the name. With `after:` too, the delayed row is written in the transaction: it exists only once that commits, and is due at its instant then. A transaction that ended, one on another connection, and any on a queue with no durable home are refused.
 - A worker of this process takes nothing a transaction has not committed: the loop waits while the connection holds one it does not own (`Home.idle`), and a commit rings the queue's bell.
 - `in_tx: true`: the start is counted on its own, then the handler runs inside the transaction its ack ends (`Home.settles`); a failure, a trap, a lease run out or a hold lost by the ack rolls the handler's writes back. One handler transaction stands per connection at a time; the delivery's `tx` is it, and `ctx.db` inside the handler is its connection.
 - `dead:` is a queue. Burying is one transaction, so a letter on the same database holds the item or the queue does. `stored_dead<T>()` makes the letter durable; a worker's `check` refuses a letter that drops.
@@ -145,7 +145,6 @@ Where it still differs from §1, and what closes each gap:
 | `durable: true` | `durable: stored<Email>()` | a NULLABLE seat pinning a call's type argument (`durable: Durable<T>?` does not pin `stored()`; a plain `Durable<T>` seat would); `@std/queue` cannot name the store, so the setting stays a value the store hands over |
 | no `name:` | `name: "emails"` | a component reading its own instance name |
 | declared at a file's top level | declared inside the fn that sets `ctx db` | a `ctx` read charged where a fn value is called, and top-level instances as declarations (ruled, being built) |
-| `tx.send(emails, …)` | `emails.send(…, tx: tx)` | a generic method (`impl Tx { fn send<T>(q: queue<T>, …) }` is refused today) |
 | `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email>>()` serves |
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
