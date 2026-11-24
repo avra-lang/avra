@@ -28,7 +28,7 @@ use @std.meta.{derive}
 use @std.program.defect.{defect}
 use @std.path.{dir_of, under_dir}
 use @std.text.{parse_int}
-use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.address.{DirectoryAddress, SourceFileAddress, source_file}
 use @std.program.saved_derive.{Saved}
 use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
 use @std.program.syntax_tape.{SyntaxTape, TapeName, tape_about, tape_declares}
@@ -931,7 +931,7 @@ type ComponentHomes = { homes: List<ComponentHome> }
 fn component_homes(engine: QueryEngine, package: string) -> ComponentHomes {
     let packages = depended_on(engine, [package], [])
     ComponentHomes {
-        homes: [ComponentHome { word: w.shape.declared, module: module_written(package, f) } for p in packages for path in package_sources(engine, p, SOURCE_ROOT) if !path.contains("/tests/") for f in [SourceFileAddress { package_name: p, path_in_package: path }] for w in file_words(engine, f).components if w.exported],
+        homes: [ComponentHome { word: w.shape.declared, module: module_written(package, f) } for p in packages for path in package_sources(engine, p, SOURCE_ROOT) if !path.contains("/tests/") for f in [source_file(p, path)] for w in file_words(engine, f).components if w.exported],
     }
 }
 
@@ -965,7 +965,7 @@ export fn fn_exports(engine: QueryEngine, package: string) -> FnExports {
     mut homes: Map<string, List<FnHome>> = {}
     for path in package_sources(engine, package, SOURCE_ROOT) {
         if path.contains("/tests/") { continue }
-        let f = SourceFileAddress { package_name: package, path_in_package: path }
+        let f = source_file(package, path)
         for d in file_declares(engine, f).names {
             if d.kind == ItemKind.Fn && d.exported {
                 homes
@@ -1169,7 +1169,7 @@ fn module_files(engine: QueryEngine, package: string, local: List<string>, as_ro
     let manifest = package_facts(engine, package)
     let entries = dir_listed(engine, package, dir)
     if entries != null {
-        return [SourceFileAddress { package_name: package, path_in_package: "${dir}/${name}" } for name in entries! if name.ends_with(".av") && listed_in(manifest, as_root, "${dir}/${name}")]
+        return [source_file(package, "${dir}/${name}") for name in entries! if name.ends_with(".av") && listed_in(manifest, as_root, "${dir}/${name}")]
     }
     let file = dir_file(package, dir)
     if source_text(engine, file) == null { [] } else { [file] }
@@ -1225,10 +1225,7 @@ type PackageFacts = { excludes: List<string>, bin: string?, lib: string?, depend
 
 @query("summary")
 fn package_facts(engine: QueryEngine, package: string) -> PackageFacts {
-    let text? = source_text(
-        engine,
-        SourceFileAddress { package_name: package, path_in_package: MANIFEST },
-    ) else {
+    let text? = source_text(engine, source_file(package, MANIFEST)) else {
         return PackageFacts { excludes: [], bin: null, lib: null, depends_on: [] }
     }
     let m = read_manifest(new_source_file(MANIFEST, text))

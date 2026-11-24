@@ -1,11 +1,37 @@
 //! WHERE A THING LIVES: a name that means the same in every run, on every machine.
 //! Never a memory position, an absolute path, or a time.
-use @std.meta.{derive}
+use @std.meta.{derive, sealed}
 use saved_derive.{Saved}
+use answer_record.{ContentHash}
+use interned.{HIGH_LANE, LOW_LANE, key_of_lanes}
 
-/// A source file: its package and its path inside that package.
+/// A source file: its package and its path inside that package, and the key they make, the same in
+/// every run: what one file is told from another by, two words compared, never its path read. Made
+/// only by `source_file`, and never saved: a read makes it again there. Sealed, so no copy
+/// rewrites a part and keeps another file's key.
+@sealed
 @derive(Saved)
-export type SourceFileAddress = { package_name: string, path_in_package: string }
+export type SourceFileAddress = { package_name: string, path_in_package: string, @derived(source_file) key: ContentHash }
+
+/// The source file `path` of the package `package`, keyed: the one door a file's address is made by.
+export fn source_file(package: string, path: string) -> SourceFileAddress {
+    SourceFileAddress {
+        package_name: package,
+        path_in_package: path,
+        key: key_of_lanes(
+            HIGH_LANE.text(HIGH_LANE.text(HIGH_LANE.seed, package), path),
+            LOW_LANE.text(LOW_LANE.text(LOW_LANE.seed, package), path),
+        ),
+    }
+}
+
+impl SourceFileAddress {
+    /// Whether this is the file `other` is: their keys, compared.
+    fn same_as(other: SourceFileAddress) -> bool { self.key.same_as(other.key) }
+
+    /// The file at `path` in this file's package.
+    fn beside(path: string) -> SourceFileAddress { source_file(self.package_name, path) }
+}
 
 /// A directory: its package and its path inside that package, "" for the package's root.
 @derive(Saved)
