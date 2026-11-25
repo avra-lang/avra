@@ -148,6 +148,29 @@ jobs:
       - name: census compiler
         if: startsWith(matrix.slice, 'cost-')
         run: tar -xzf census/census-${{ needs.seed.outputs.sha8 }}.tar.gz
+      # THE BROWSER LEG'S MACHINE, for a job holding a keeper of KEEPERS_B or KEEPERS_WASM, as checks.yml's
+      # keepers-b job carries it: the browser's host libraries, the pinned Node, Playwright's WebKit (its
+      # cache is main's, which every branch reads) and gdb, which the defects keeper dumps a stall with
+      - name: browser leg wanted
+        id: browser
+        run: |
+          if sh tools/gate.sh jobs | awk -v j="${{ matrix.slice }}" '$1 == j' | grep -qE ' keepers-(b|wasm)'; then echo "wanted=1" >> "$GITHUB_OUTPUT"; fi
+          v=$(sed -n 's/^playwright_version=//p' tools/ui-board/playwright.sh)
+          echo "playwright=$v" >> "$GITHUB_OUTPUT"
+      - if: steps.browser.outputs.wanted == '1'
+        name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends gdb $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+          sh .github/ci/install_node.sh
+      - if: steps.browser.outputs.wanted == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.browser.outputs.playwright }}-webkit-browsers
       # THE SNAPSHOT'S STD ANSWERS FOR cost-laid (tools/cost.sh `laid`), KEPT BESIDE THE BUILDER: the release
       # `gate-builder` carries the landed run's answers, which every gate can read (a cache cannot cross
       # gate/** branches). Laid down, they are judged by the writer's own key — the census compiler's
