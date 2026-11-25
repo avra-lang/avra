@@ -28,16 +28,7 @@
 //!   format/    the AST's source projection (`avra fmt`)
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
 use @std.program.token_columns.{TokenRoles, token_roles}
-use core.{
-    flatten,
-    some_list,
-    row_for,
-    PayloadRow,
-    node_payload_rows,
-    has_anchor,
-    engine_parse,
-    wreck,
-}
+use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor, wreck}
 use @std.meta.{Field}
 use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
 use grammar.{avra_known_terminals, avra_lexeme, token_classes_worn}
@@ -440,18 +431,17 @@ export once fn avra() -> Language {
     lang with { untold: generated_parse(lang) }
 }
 
-/// The language with no generated parser: every parse on the grammar engine. What `avra grammar`
-/// makes a parser from, so a stale one can always be made again.
+/// The language as its grammar alone, read by the engine: the GENERATOR's own input (`avra
+/// grammar`), never a parse of a program. A stale parser is made again from it.
 export once fn avra_assembled() -> Language {
     assemble(language_features())
 }
 
-/// The generated parser's tables for `lang`; absent where it has no grammar, or the engine is asked
-/// to run every parse (`AVRA_ENGINE_PARSE`). A parser made from another grammar than this compiler's
-/// TRAPS: falling back unseen once cost three days of every compile.
+/// The generated parser's tables for `lang`; absent only where it has no grammar. Avra's own grammar
+/// parses through the generated parser alone: one made from another grammar than this compiler's
+/// TRAPS, naming how to make it again — there is no engine path to fall back to.
 fn generated_parse(lang: Language) -> UntoldParse? {
     let rd? = lang.syntax else { return null }
-    if engine_parse() { return null }
     if grammar_print(rd) != avra_print { wreck(stale_parser()) }
     UntoldParse {
         rows: [lang.builders.get(name) for name in avra_builders],
@@ -460,7 +450,8 @@ fn generated_parse(lang: Language) -> UntoldParse? {
     }
 }
 
-/// One nameless source parsed on the grammar engine, whatever the generated parser's state.
+/// One nameless source parsed on the grammar engine, whatever the generated parser's state: how the
+/// generator writes its own output canonically.
 export fn parse_on_engine(text: string) -> Parsed {
     parse_program(avra_assembled(), new_source_file("<source>", text), BlockWords {})
 }
@@ -472,7 +463,7 @@ export fn parse_source(text: string) -> Parsed {
 }
 
 fn stale_parser() -> string {
-    "avra: compiler/untold_parser.av was made from another grammar than this compiler's — regenerate it with `./wisp parser --write --avra <this compiler>` and build again (`AVRA_ENGINE_PARSE=1` parses on the grammar engine meanwhile)"
+    "avra: compiler/untold_parser.av was made from another grammar than this compiler's — regenerate it with `./wisp parser --write --avra <this compiler>` and build again"
 }
 
 fn no_computed_fn(by: string) -> string {

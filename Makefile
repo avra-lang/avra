@@ -1339,7 +1339,7 @@ pool-check:
 # THE GRAMMAR'S CLAIM ON THE PARSER. compiler/untold_parser.av is the
 # assembled grammar's untold run written as code, one fn per rule. A
 # compiler whose parser another grammar made refuses to parse (`avra()`;
-# AVRA_ENGINE_PARSE is the one fallback), `make avra` never installs one,
+# its grammar has no engine path), `make avra` never installs one,
 # and this keeper refuses the file (`./wisp parser`). A fresh one
 # is then held to the engine on every file of std-avrac: a form whose
 # rule the generated parser cannot hold traps or differs there.
