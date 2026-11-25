@@ -82,6 +82,7 @@ BuildHost	packages/std-avrac/src/compiler/hosts.av	host_word	spelled	the word @s
 BuildHost	packages/cli/src/commands/dev.av	watches	spelled	whether dev can watch a build beside it
 BuildHost	packages/cli/src/commands/run.av	target_ran	spelled	what run means beside it
 Platform	packages/std-avrac/src/compiler/hosts.av	platform_host	spelled	the host a raw triple stands beside
+Lands	packages/std-avrac/src/compiler/host/manifest.av	brought_later	spelled	whether a manifest key is read by a later slice
 RtFlag	packages/std-avrac/src/core/ir.av	flag_symbol	spelled	the runtime's name for a flag's cell
 RtFlag	packages/std-avrac/src/core/ir.av	flag_word	spelled	the word a flag is written with in the IR's text
 RtFlag	packages/std-avrac/src/core/ir.av	flag_layout	spelled	what a read of a flag answers
