@@ -174,15 +174,13 @@ fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
     }
     let packages = seen.keys()
     if packages.is_empty() || packages.any((p) -> !p.starts_with("@std/") || disk.deps.has(p)) { return [] }
-    if !packages.all((p) -> verdict_package(engine, p, [l for l in lines if l.starts_with("${p}\t")])) { return [] }
+    if !packages
+        .all((p) -> verdict_package(engine, p, [l for l in lines if l.starts_with("${p}\t")])) { return [] }
     let files = [SourceFileAddress { package_name: parts[0], path_in_package: parts[1] } for l in lines for parts in [l.split("\t")]]
     mut named: Map<string, bool> = {}
     for f in files { named.set("${f.package_name}\t${f.path_in_package}", true) }
     let unjudged = program_files(engine, disk.name)
-        .any(
-            (f) -> seen.has(f.package_name) &&
-                !named.has("${f.package_name}\t${f.path_in_package}"),
-        )
+        .any((f) -> seen.has(f.package_name) && !named.has("${f.package_name}\t${f.path_in_package}"))
     if unjudged { [] } else { [spelled_file(f) for f in files] }
 }
 
