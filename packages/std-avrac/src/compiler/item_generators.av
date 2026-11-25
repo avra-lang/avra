@@ -669,8 +669,10 @@ fn member_sites(engine: QueryEngine, d: DeclaredName, annotated: List<GeneratorS
     let derivable = [t for g in package_gatherings(engine, d.file.package_name).each if g.members.any(it.is(d)) for t in g.derived]
     if derivable.is_empty() { return [] }
     let written = written_traits(engine, d.file, d.name)
-    let traits = [t for j, t in derivable if derivable.find_index(it == t) == j]
-    [derive_site(d.name, d.item, t) for t in traits if !written.contains(t.name) && !annotated.any((a) -> derives_trait(a, t)) && t.file != d.file]
+    let traits = [t for j, t in derivable if derivable.find_index((x) -> same_trait(x, t)) == j]
+    [derive_site(d.name, d.item, t) for t in traits if !written.contains(t.name) &&
+        !annotated.any((a) -> derives_trait(a, t)) &&
+        !same_file(t.file, d.file)]
 }
 
 /// The trait `t`'s own `derive` over the declaration `d`, as `@derive(T)` written on it runs.
@@ -682,10 +684,13 @@ fn derive_site(name: string, item: ItemId, t: TraitAt) -> GeneratorSite {
     }
 }
 
+/// Whether two name one trait.
+fn same_trait(a: TraitAt, b: TraitAt) -> bool { a.name == b.name && same_file(a.file, b.file) }
+
 /// Whether a site is a `@derive` of the trait `t`.
 fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
     match site.generator.kind {
-        .Derive -> TraitAt { file: site.generator.file, name: site.generator.name } == t,
+        .Derive -> same_trait(TraitAt { file: site.generator.file, name: site.generator.name }, t),
         .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> false,
     }
 }
@@ -1181,7 +1186,7 @@ export fn derive_claims(
         if d.file.package_name != META || d.name != DERIVE { return null }
         for e in a.args {
             let t? = trait_named(engine, scope, file, arg_lit(store, e).text) else { return null }
-            if t.file == file { return null }
+            if same_file(t.file, file) { return null }
             let held? = trait_claims(engine, t, file, name).claims else { return null }
             claims = claims.concat(held)
         }

@@ -24,6 +24,7 @@ use core.{
     op_symbol,
     rt_index,
     rt_waits,
+    same_binder,
     some_list,
 }
 use compiler.laws.{Found, law}
@@ -176,14 +177,14 @@ impl ItemTyping {
         let binds = if body != null { body!.typed.binds } else { self.entry.binds }
         let read? = self.read_at(e) else { return null }
         let site? = read.binder else { return null }
-        binds.find((b: NameBound) -> b.site == site)?.ty
+        binds.find((b: NameBound) -> same_binder(b.site, site))?.ty
     }
 
     /// The type the statement `s`, holding the value `value`, binds it to in a fn's body, as its
     /// binding declares it; absent for a statement that binds nothing, or one no fn's body holds.
     fn declared_at(s: StmtId, value: ExprId) -> SignedType? {
         let body? = self.holding(value) else { return null }
-        body.typed.binds.find((b: NameBound) -> b.site == BindSite.Stmt(s.index))?.ty
+        body.typed.binds.find((b: NameBound) -> same_binder(b.site, BindSite.Stmt(s.index)))?.ty
     }
 
     /// The name read at the node `e`, as the body that holds it read it; absent where none is.

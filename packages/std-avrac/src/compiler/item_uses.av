@@ -429,9 +429,9 @@ fn held_uses(view: ItemView) -> List<Found> {
     let scope? = file_scope(engine, file) else { return [] }
     if !scope.clashes.any(it.imported) { return [] }
     let home = module_files(engine, file.package_name, module_segments(file), true)
-    let taken = [c for c in scope.clashes if c.imported && home.any(it == c.holder.file)]
+    let taken = [c for c in scope.clashes if c.imported && home.any(same_file(it, c.holder.file))]
     if taken.is_empty() { return [] }
-    let twice = [c for c in module_kept(engine, file.package_name, module_segments(file), true).clashes if home.any(it == c.lost.file)]
+    let twice = [c for c in module_kept(engine, file.package_name, module_segments(file), true).clashes if home.any(same_file(it, c.lost.file))]
     [Found { at: l.at, args: [l.path.join("."), name, below_root(c!.holder.file.path_in_package)] } for l in lines for m in some_list(module_named(file, l.path)) for j, listed in l.items for name in [l.bound[j]] if !twice.any(it.lost.name == name) for c in [taken_by(engine, taken, m, listed, name)] if c != null && !(l.exported && c!.holder.exported)]
 }
 

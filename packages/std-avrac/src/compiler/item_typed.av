@@ -20,6 +20,7 @@ use core.{
     some_list,
     NameBound,
     NameRead,
+    same_binder,
     same_expr,
     kept_by_key,
     signed_said,
@@ -104,7 +105,7 @@ fn kept_body(cx: Checking) -> TypedBody {
         ),
         unread: unread_kept(cx),
         reads: reads_kept(cx),
-        binds: [b for j, b in cx.names_bound.get() if !cx.names_bound.get().take(j).any(it.name == b.name && it.site == b.site)],
+        binds: [b for j, b in cx.names_bound.get() if !cx.names_bound.get().take(j).any((c) -> c.name == b.name && same_binder(c.site, b.site))],
         seats_read: [SeatReadAt { stmt: r.stmt, name: r.name, at: r.at.index } for r in cx.seat_reads.get()],
     }
 }
@@ -619,7 +620,7 @@ fn const_reach(
     seen: List<DeclaredAt>,
     through_written: bool,
 ) -> List<DeclaredAt>? {
-    if !through_written && types_itself(engine, here) || seen.any(it == here) { return null }
+    if !through_written && types_itself(engine, here) || seen.any((x) -> same_declared(x, here)) { return null }
     let at? = declared_item(engine, here.file, here.name, ItemKind.Const) else { return null }
     let item = read_item(engine, here.file, at)
     let value? = [v! for s in item.stmts if item.store.let_name(s) == here.name for v in [item.store.const_value(s)] if v != null]
@@ -637,7 +638,7 @@ fn const_reach(
         },
         through_written,
     )
-    if read.any(it == home) { return [here] }
+    if read.any((d) -> same_declared(d, home)) { return [here] }
     let rest? = read
         .find_map((d) -> const_reach(engine, d, home, seen.concat([here]), through_written)) else { return null }
     [here].concat(rest)
@@ -1012,5 +1013,5 @@ type MethodNamed = { subject: ExprId, name: string }
 
 /// Whether the type `ty` is declared in `file`.
 fn declared_in(ty: SignedType, file: SourceFileAddress) -> bool {
-    match ty.head { .Declared(home, _) -> home == file, rest -> false }
+    match ty.head { .Declared(home, _) -> same_file(home, file), rest -> false }
 }

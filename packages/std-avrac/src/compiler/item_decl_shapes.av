@@ -459,7 +459,7 @@ fn loop_back(
     if depth > NAMED_DEPTH { return null }
     let over? = named_shape(engine, file, name) else { return null }
     let next? = declared_at(over.of) else { return null }
-    if next.file == home && next.name == own { return [] }
+    if same_file(next.file, home) && next.name == own { return [] }
     let rest? = loop_back(engine, next.file, next.name, home, own, depth + 1) else { return null }
     [next].concat(rest)
 }
@@ -475,7 +475,7 @@ fn declared_after(
     file: SourceFileAddress,
     at: ItemId?,
 ) -> bool {
-    if d.file != file { return text_before(file.path_in_package, d.file.path_in_package) }
+    if !same_file(d.file, file) { return text_before(file.path_in_package, d.file.path_in_package) }
     let item? = file_declares_named(engine, d.file, d.name)
         .names
         .find(it.name == d.name && it.kind == kind)?.item else { return false }
@@ -526,7 +526,7 @@ fn spreads_nothing(engine: QueryEngine, file: SourceFileAddress, tparams: List<s
 /// Whether `d` is the declaration `file` makes as `name`.
 fn same_declared_opt(d: DeclaredAt?, file: SourceFileAddress, name: string) -> bool {
     let held? = d else { return false }
-    held == declared_place(file, name)
+    same_declared(held, declared_place(file, name))
 }
 
 /// Every spread a record the written item `view` shows declares writes of another record whose
@@ -549,7 +549,7 @@ fn first_spread(engine: QueryEngine, t: DeclaredAt, file: SourceFileAddress, nam
         .find(it.name == t.name && it.kind == ItemKind.Record)?.item
     chain
         .concat([home])
-        .all((d) -> d == t || declared_after(engine, d, ItemKind.Record, t.file, t_at))
+        .all((d) -> same_declared(d, t) || declared_after(engine, d, ItemKind.Record, t.file, t_at))
 }
 
 /// How many named types deep a shape is followed for one that stands over itself.
@@ -759,7 +759,7 @@ fn first_alias(engine: QueryEngine, h: DeclaredAt, closing: DeclaredAt) -> bool 
         .names
         .find(it.name == h.name && it.kind == ItemKind.Alias)?.item
     between
-        .concat(if h == closing { [] } else { [closing] })
+        .concat(if same_declared(h, closing) { [] } else { [closing] })
         .all((d) -> declared_after(engine, d, ItemKind.Alias, h.file, h_at))
 }
 
@@ -1106,7 +1106,7 @@ fn build_loop(engine: QueryEngine, home: DeclaredAt) -> bool {
             let place = declared_place(d.file, d.name)
             let built = build_body(engine, place)
             if built == null { continue }
-            if place == home { return true }
+            if same_declared(place, home) { return true }
             bodies.push(built!)
         }
         bodies = bodies.concat(methods_run(engine, b))
@@ -1118,7 +1118,6 @@ fn build_loop(engine: QueryEngine, home: DeclaredAt) -> bool {
 fn expr_at(at: At) -> ExprId? { match at { .Expr(e) -> e, rest -> null } }
 
 /// Whether two nodes are one.
-// LICENSED compiler.trait_family: only an expression’s place agrees; every other place is unequal
 fn same_at(a: At, b: At) -> bool {
     match a { .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), rest -> false }, rest -> false }
 }

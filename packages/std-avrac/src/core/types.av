@@ -17,7 +17,6 @@ impl TypeId {
 }
 
 /// Type identity — two ids name one type when their indexes agree.
-// LICENSED compiler.trait_family: type IDENTITY, the interned index — agreement is another law
 export fn same_type(a: TypeId, b: TypeId) -> bool {
     // LICENSED structs.index_compared: type identity, not type agreement — ids compare by index
     a.index == b.index
@@ -781,7 +780,7 @@ impl TypeRegistry {
             }
             return self.reps.set_at(id.index, r with { boxed_flat: true })
         }
-        if r.fields == fields { return }
+        if same_fields(r.fields, fields) { return }
         if r.read_flat {
             return self
                 .flag_stale(
@@ -1224,6 +1223,13 @@ export fn no_marks(n: int) -> List<SeatMark> {
 fn nothing_sealed() {}
 
 fn nothing_judged() {}
+
+/// Whether two field lists name the SAME types in the SAME order —
+/// `mark_flat`'s own guard against flagging a re-declaration that
+/// changes nothing.
+fn same_fields(a: List<TypeId>, b: List<TypeId>) -> bool {
+    a.length == b.length && [j for j, x in a if !same_type(x, b[j])].is_empty()
+}
 
 /// `ids`, ascending by index, first appearance kept — a union's
 /// canon key needs this order-independence and nothing else in the

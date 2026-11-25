@@ -727,7 +727,7 @@ impl Code {
     /// `.Param(i)` index never collides with another fn's.
     fn names_this(e: ExprId, b: Binding) -> bool {
         match self.analysed().names.binding(e) {
-            x? -> root_binding(self.analysed().names, x) == b
+            x? -> same_binding(root_binding(self.analysed().names, x), b)
             null -> false
         }
     }
@@ -1084,12 +1084,18 @@ fn filter_cond(c: CompClause) -> ExprId? {
     match c { .Head(_, _, _, _) -> null, .Filter(cond) -> cond }
 }
 
+fn same_span(a: Span?, b: Span?) -> bool {
+    let av? = a else { return b == null }
+    let bv? = b else { return false }
+    av.lo == bv.lo && av.hi == bv.hi
+}
+
 /// Whether `other` is a REAL, DIFFERENT span from `mine` — absent
 /// (a generated node) is never a sibling, and neither is one sharing
 /// `mine`'s own span.
 fn sibling_span(mine: Span?, other: Span?) -> bool {
     let ov? = other else { return false }
-    mine != ov
+    !same_span(mine, ov)
 }
 
 /// `e`'s own FORCE subject — the value under `!` — null for every

@@ -18,6 +18,10 @@ use @std.meta.{identity, plain_field}
 /// by (a FileId, a DeclId).
 export type Key = { family: int, arg: int }
 
+export fn same_key(a: Key, b: Key) -> bool {
+    a.family == b.family && a.arg == b.arg
+}
+
 export enum Verdict {
     Reuse
     Compute
@@ -387,7 +391,7 @@ impl Kernel {
     /// reader's own cell unsound.
     fn covered(b: Bypass, covers: List<Key>) -> bool {
         let reader? = b.frames.last() else { return true }
-        covers.any((c: Key) -> b.frames.any((f: Key) -> c == f) || self.reaches(reader, c))
+        covers.any((c: Key) -> b.frames.any((f: Key) -> same_key(c, f)) || self.reaches(reader, c))
     }
 
     /// Whether following `from`'s dependencies to the bottom meets `target`; answered once
@@ -410,7 +414,7 @@ impl Kernel {
             mut below: List<Key> = []
             for k in frontier {
                 for d in self.deps_of(k) {
-                    if d == target { return true }
+                    if same_key(d, target) { return true }
                     if self.first_visit(d) { below.push(d) }
                 }
             }

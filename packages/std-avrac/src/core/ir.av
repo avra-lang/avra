@@ -29,6 +29,16 @@ export enum Level { Application, Systems, Bare, Hardware }
 @derive(Saved)
 export enum Rounding { Floor, Ceil, Nearest, Trunc }
 
+/// Whether two unary ops are the same op: a payload op compares its
+/// rounding, which is payload-free and compares by variant.
+export fn same_un(a: UnOp, b: UnOp) -> bool {
+    match a {
+        .Not -> b is .Not,
+        .ToFloat -> b is .ToFloat,
+        .ToInt(r) -> match b { .ToInt(s) -> r == s, .Not or .ToFloat -> false },
+    }
+}
+
 /// The one number each rounding is keyed by, in the evaluator's C body
 /// and the backend's intrinsic table alike.
 export fn rounding_code(r: Rounding) -> int {
@@ -582,6 +592,12 @@ export fn alpha_fps(raw: List<Ins>, nparams: int) -> List<int> {
     [i.fingerprint() for i in alpha_renamed(raw, nparams)]
 }
 
+/// Two fingerprint lists, elementwise — `==` compares scalars only,
+/// so an instruction-list comparison spells the scan.
+export fn same_fps(a: List<int>, b: List<int>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it] == b[it])
+}
+
 // ── Static data ─────────────────────────────────────────────────
 // A value the compiler settled and the program only READS is laid
 // out, not built: the lowering folds it into boxes of slots under
@@ -686,15 +702,27 @@ export fn closes_region(i: Ins) -> bool {
 
 /// Register identity — two registers are one when their indexes
 /// agree.
-// LICENSED compiler.trait_family: register IDENTITY, the index the type law reads
 export fn same_reg(a: Reg, b: Reg) -> bool {
     // LICENSED structs.index_compared: register identity, not type agreement — ids compare by index
     a.index == b.index
 }
 
+/// Two register lists equal element by element — `same_fps`'s shape,
+/// for `Reg` rather than `int`.
+fn same_regs(a: List<Reg>, b: List<Reg>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_reg(a[it], b[it]))
+}
+
+/// Two OPTIONAL registers equal — absent on both sides, or the same
+/// register on both.
+fn same_reg_opt(a: Reg?, b: Reg?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    same_reg(a!, b!)
+}
+
 /// `a` and `b` STRUCTURALLY EQUAL — the actual proof behind a
 /// fingerprint match. Every fingerprint bottoms out in an un-keyed
-/// rolling hash (core/fp.av), so two fingerprints agreeing is a claim two
+/// rolling hash (core/fp.av), so `same_fps` agreeing is a claim two
 /// DIFFERENT instruction lists can make; this walks the values
 /// themselves. Like `fingerprint()` and `remapped()`, it answers by
 /// variant with no catch-all on `a` — a new `Ins` variant owes this
@@ -704,7 +732,6 @@ export fn same_reg(a: Reg, b: Reg) -> bool {
 /// present or future) rather than a second registry: a different
 /// variant is never equal, so its answer needs no update when `Ins`
 /// grows.
-// LICENSED compiler.trait_family: an instruction may carry a float, and `==` refuses a float inside a value
 export fn same_ins(a: Ins, b: Ins) -> bool {
     match a {
         .ConstInt(d1, v1) -> match b { .ConstInt(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
@@ -716,15 +743,15 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
             rest -> false,
         },
         .Un(d1, op1, s1) -> match b {
-            .Un(d2, op2, s2) -> same_reg(d1, d2) && op1 == op2 && same_reg(s1, s2),
+            .Un(d2, op2, s2) -> same_reg(d1, d2) && same_un(op1, op2) && same_reg(s1, s2),
             rest -> false,
         },
-        .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && args1 == args2, rest -> false },
+        .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
         .CallRt(d1, c1, args1) -> match b {
-            .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && args1 == args2,
+            .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
             rest -> false,
         },
-        .Pack(d1, e1) -> match b { .Pack(d2, e2) -> same_reg(d1, d2) && e1 == e2, rest -> false },
+        .Pack(d1, e1) -> match b { .Pack(d2, e2) -> same_reg(d1, d2) && same_regs(e1, e2), rest -> false },
         .Extract(d1, s1, at1) -> match b {
             .Extract(d2, s2, at2) -> same_reg(d1, d2) && same_reg(s1, s2) && at1 == at2,
             rest -> false,
@@ -736,17 +763,17 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .FlagRead(d1, f1) -> match b { .FlagRead(d2, f2) -> same_reg(d1, d2) && f1 == f2, rest -> false },
         .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
         .Cleanup(i1) -> match b { .Cleanup(i2) -> i1 == i2, rest -> false },
-        .ScopeExit(g1) -> match b { .ScopeExit(g2) -> g1 == g2, rest -> false },
+        .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
         .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
-        .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && cs1 == cs2, rest -> false },
+        .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && same_fps(cs1, cs2), rest -> false },
         .ArmEnd(g1) -> match b { .ArmEnd(g2) -> same_reg(g1, g2), rest -> false },
         .RegionEnd(d1, g1) -> match b { .RegionEnd(d2, g2) -> same_reg(d1, d2) && same_reg(g1, g2), rest -> false },
         .Call(d1, c1, args1) -> match b {
-            .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && args1 == args2,
+            .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
             rest -> false,
         },
         .CallPtr(d1, f1, args1) -> match b {
-            .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && args1 == args2,
+            .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2),
             rest -> false,
         },
         .RetVal(r1) -> match b { .RetVal(r2) -> same_reg(r1, r2), rest -> false },
@@ -767,11 +794,10 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
     }
 }
 
-/// Two alpha-renamed instruction lists, STRUCTURALLY. Their fingerprints
-/// compare by `==` as a cheap pre-filter; a hash match proves
+/// Two alpha-renamed instruction lists, STRUCTURALLY. `same_fps`
+/// compares their hashes as a cheap pre-filter; a hash match proves
 /// nothing on its own, so `same_ir` (compiler/rule_proof.av) never
 /// calls a rewrite proved without this walk agreeing too.
-// LICENSED compiler.trait_family: element by element through `same_ins`, whose float `==` refuses
 export fn same_ins_list(a: List<Ins>, b: List<Ins>) -> bool {
     a.length == b.length && [i for i in 0..a.length].all(same_ins(a[it], b[it]))
 }

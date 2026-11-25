@@ -58,13 +58,29 @@ export fn bool_part(v: bool) -> string { if v { "t" } else { "f" } }
 /// members swapped never fold alike.
 fn ordered_step(h: int, x: int) -> int { mix(h + x) }
 
+/// Whether two rows file under the same keys in every index.
+fn same_keys(a: List<List<IndexKey>>, b: List<List<IndexKey>>) -> bool {
+    a.length == b.length && [same_run(ks, b[i]) for i, ks in a].all(it)
+}
+
 /// Whether `key` is among `run`, a row's keys in one index.
-fn holds_key(run: List<IndexKey>, key: IndexKey) -> bool { run.any((k: IndexKey) -> k == key) }
+fn holds_key(run: List<IndexKey>, key: IndexKey) -> bool { run.any((k: IndexKey) -> same_key(k, key)) }
+
+fn same_run(a: List<IndexKey>, b: List<IndexKey>) -> bool {
+    a.length == b.length && [same_key(k, b[i]) for i, k in a].all(it)
+}
 
 /// A row's keys in one index, each once — a list field naming one value
 /// twice files the row once.
 fn distinct_keys(ks: List<IndexKey>) -> List<IndexKey> {
-    [k for i, k in ks if !ks.slice(0, i).any((e: IndexKey) -> e == k)]
+    [k for i, k in ks if !ks.slice(0, i).any((e: IndexKey) -> same_key(e, k))]
+}
+
+fn same_key(a: IndexKey, b: IndexKey) -> bool {
+    match a {
+        .Text(x) -> match b { .Text(y) -> x == y, .Slot(_) -> false },
+        .Slot(n) -> match b { .Slot(m) -> n == m, .Text(_) -> false },
+    }
 }
 
 /// One bucket's member ids, in id order — a function of the set, never
@@ -509,7 +525,7 @@ impl Rows<R> {
         id < self.next_id() &&
             self.row(id) != null &&
             self.hashes.get()[id] == hash &&
-            self.filed.get()[id] == [distinct_keys(ks) for ks in named]
+            same_keys(self.filed.get()[id], [distinct_keys(ks) for ks in named])
     }
 
     /// Every bucket the row at `id` is filed in, marked.
@@ -703,7 +719,9 @@ impl Rows<R> {
         let keys = [distinct_keys(ks) for ks in named]
         if id < self.next_id() {
             self.stamps.set_at(id, stamp)
-            if self.row(id) != null && self.hashes.get()[id] == hash && self.filed.get()[id] == keys {
+            if self.row(id) != null &&
+                self.hashes.get()[id] == hash &&
+                same_keys(self.filed.get()[id], keys) {
                 self.rows.set_at(id, row)
                 return
             }
