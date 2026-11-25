@@ -20,6 +20,8 @@ use @std.io.{drafted, read_bytes, remove}
 use @std.meta.{derive}
 use @std.text.{hex_digit}
 use saved_derive.{Saved}
+use saved_layout.{SavedList, SavedSource, saved_root_record}
+use sorted.{sorted_by}
 
 /// An input's answer held by the stamp of the one path it read: its question, its answer, the path,
 /// the stamp the path wore before and after the read, and the places it was read under.
@@ -61,13 +63,24 @@ export fn places_now() -> string { places_cell().get() }
 /// store names no checkout.
 export fn places_held() -> string { places_held_cell().get() }
 
-/// Every input a store holds by a stamp.
+/// Every input a store holds by a stamp, SORTED BY QUESTION, each question's two words beside them:
+/// a process finds the stamp of each input it asks where it lies, and decodes that one alone.
 @derive(Saved)
-type InputStamps = { stamps: List<InputStamp> }
+type InputStamps = { question_highs: List<int>, question_lows: List<int>, stamps: List<InputStamp> }
+
+/// `stamps` as a store keeps them: sorted by question, each question's words beside them.
+fn stamps_laid(stamps: List<InputStamp>) -> InputStamps {
+    let sorted = sorted_by(stamps, (a, b) -> a.question.comes_before(b.question))
+    InputStamps {
+        question_highs: [s.question.high_word for s in sorted],
+        question_lows: [s.question.low_word for s in sorted],
+        stamps: sorted,
+    }
+}
 
 /// What a file of stamps starts with: its name and the version of `InputStamp` it holds, then its
 /// body's hash, then a newline. A file of another version holds no stamp.
-const STAMPS_SEAL: string = "avrastamps2"
+const STAMPS_SEAL: string = "avrastamps3"
 
 /// What changed since a base of stamps: the head of the base it stands over, every stamp that's new
 /// or other than the base's, and every question whose stamp went.
@@ -102,6 +115,127 @@ fn base_at(path: string) -> StampsBase {
     StampsBase { head: sealed.head, stamps: InputStamps.from_saved_bytes(sealed.body).stamps }
 }
 
+/// THE STAMPS A STORE KEEPS, READ AS THEY'RE ASKED: the base where it lies, its stamps sorted by
+/// question, and the delta over it, read whole (a delta is a few stamps by its law). A stamp is
+/// decoded, and its path named (`path_of`), only when its question is asked, so a process that asks
+/// a few of its inputs decodes a few, whatever the store keeps.
+export type KeptStamps = {
+    source: SavedSource,
+    highs: SavedList,
+    lows: SavedList,
+    stamps: SavedList,
+    changed: HashKeyedTable<InputStamp>,
+    gone: HashKeyedTable<bool>,
+    count: int,
+    path_of: fn(string) -> string,
+    /// Each stamp asked, decoded and its path named, held: a question asked twice decodes once.
+    asked: HashKeyedTable<InputStamp>,
+    /// The base's place of each question, made the first time one is asked.
+    placed: Cell<HashKeyedTable<int>?>,
+}
+
+impl KeptStamps {
+    /// The stamp of `question`, its path named as the store reads it; absent where none is kept.
+    fn get(question: ContentHash) -> InputStamp? {
+        let held = self.asked.get(question)
+        if held != null { return held }
+        let kept? = self.changed.get(question) ?? self.based(question) else { return null }
+        let named = kept with { path: (self.path_of)(kept.path) }
+        self.asked.put(question, named)
+        named
+    }
+
+    /// How many stamps are kept.
+    fn length() -> int { self.count }
+
+    /// The base's stamp of `question`, where the delta neither changed nor took it.
+    fn based(question: ContentHash) -> InputStamp? {
+        if self.gone.get(question) != null { return null }
+        let at? = self.place_in_base(question) else { return null }
+        let record? = self.stamps.record_at(self.source, at) else { return null }
+        InputStamp.read_from(self.source, record)
+    }
+
+    /// Where `question` lies among the base's stamps; absent where it doesn't. Each question's words
+    /// are read once, into a table, the first time one is asked.
+    fn place_in_base(question: ContentHash) -> int? {
+        let placed? = self.placed.get() else {
+            let made: HashKeyedTable<int> = hash_keyed_table()
+            for at in 0..self.highs.length {
+                made
+                    .put(
+                        ContentHash {
+                            high_word: self.highs.number_at(self.source, at),
+                            low_word: self.lows.number_at(self.source, at),
+                        },
+                        at,
+                    )
+            }
+            self.placed.set(made)
+            return made.get(question)
+        }
+        placed.get(question)
+    }
+}
+
+/// The stamps kept at `path` as they're asked, each path named by `path_of`: its base where it lies
+/// and the delta beside it where the delta stands over that base; none where there's no base or its
+/// body isn't the one its hash names.
+export fn kept_stamps_at(path: string, path_of: fn(string) -> string) -> KeptStamps {
+    let sealed? = sealed_body(path) else { return kept_stamps_of([]) }
+    let changed: HashKeyedTable<InputStamp> = hash_keyed_table()
+    let gone: HashKeyedTable<bool> = hash_keyed_table()
+    let over = delta_over(path, sealed.head)
+    let taken = over?.gone ?? []
+    for q in taken { gone.put(q, true) }
+    for s in over?.changed ?? [] { changed.put(s.question, s) }
+    laid_over(sealed.body, changed, gone, taken, path_of)
+}
+
+/// The delta beside the base at `path` that stands over the base whose head is `head`; absent where
+/// there's none, or it stands over another base.
+fn delta_over(path: string, head: string) -> StampsDelta? {
+    let sealed? = sealed_body(delta_path(path)) else { return null }
+    let delta = StampsDelta.from_saved_bytes(sealed.body)
+    if delta.base_head == head { delta } else { null }
+}
+
+/// `stamps` as kept stamps, laid out as a store keeps them and read the same way.
+export fn kept_stamps_of(stamps: List<InputStamp>) -> KeptStamps {
+    let changed: HashKeyedTable<InputStamp> = hash_keyed_table()
+    let gone: HashKeyedTable<bool> = hash_keyed_table()
+    laid_over(stamps_laid(stamps).saved_bytes(), changed, gone, [], (p) -> p)
+}
+
+/// The base whose body is `body`, read where it lies, with `changed` and `gone` laid over it.
+fn laid_over(
+    body: Bytes,
+    changed: HashKeyedTable<InputStamp>,
+    gone: HashKeyedTable<bool>,
+    taken: List<ContentHash>,
+    path_of: fn(string) -> string,
+) -> KeptStamps {
+    let source = SavedSource.InMemory(body)
+    let root = saved_root_record(source, body.length)
+    let asked: HashKeyedTable<InputStamp> = hash_keyed_table()
+    let placed: Cell<HashKeyedTable<int>?> = Cell.new(null)
+    let kept = KeptStamps {
+        source: source,
+        highs: InputStamps.question_highs_in_place(source, root),
+        lows: InputStamps.question_lows_in_place(source, root),
+        stamps: InputStamps.stamps_in_place(source, root),
+        changed: changed,
+        gone: gone,
+        count: 0,
+        path_of: path_of,
+        asked: asked,
+        placed: placed,
+    }
+    // the base's stamps the delta took or changed, then the delta's own
+    let left = kept.highs.length - [q for q in taken if kept.place_in_base(q) != null].length - [s for s in changed.values() if kept.place_in_base(s.question) != null].length
+    kept with { count: left + changed.values().length }
+}
+
 type StampsBase = { head: string, stamps: List<InputStamp> }
 
 /// The stamps kept at `path`: its base, with the delta beside it laid over where the delta stands over
@@ -134,7 +268,7 @@ export fn stamps_written(path: string, stamps: List<InputStamp>) {
         let delta = StampsDelta { base_head: base.head, changed: changed, gone: gone }.saved_bytes()
         return sealed_written(delta_path(path), delta)
     }
-    sealed_written(path, InputStamps { stamps: stamps }.saved_bytes())
+    sealed_written(path, stamps_laid(stamps).saved_bytes())
     let _ = remove(delta_path(path))
 }
 

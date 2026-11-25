@@ -54,7 +54,7 @@ use frontier.{
     frontier_written,
 }
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
-use input_stamps.{InputStamp, stamps_read, stamps_written}
+use input_stamps.{InputStamp, KeptStamps, kept_stamps_at, stamps_written}
 use pack_collection.{
     Live,
     QuestionRecords,
@@ -1183,9 +1183,13 @@ impl AnswerStore for DiskStore {
     /// answers is.
     fn keep_frontier(print: string, learned: FrontierLearned) { self.pending_frontier.set(PendingFrontier { print: print, learned: learned }) }
 
-    /// The stamps kept here, each path read where it lies from this store.
-    fn input_stamps() -> List<InputStamp> {
-        [s with { path: normalized(joined_path(self.directory, s.path)) } for s in stamps_read("${self.directory}/${STAMPS_FILE}")]
+    /// The stamps kept here, each read as it's asked, its path read where it lies from this store.
+    fn kept_stamps() -> KeptStamps {
+        let directory = self.directory
+        kept_stamps_at(
+            "${directory}/${STAMPS_FILE}",
+            (path) -> normalized(joined_path(directory, path)),
+        )
     }
 
     /// Writes `stamps` at once, whole or not at all, each path named from this store, so the store
