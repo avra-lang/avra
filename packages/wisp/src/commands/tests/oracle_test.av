@@ -1,0 +1,56 @@
+use commands.{held, first_difference, Case, Reading, CASES}
+
+fn printing(name: string, text: string) -> Reading {
+    Reading.Reference(name, [["printf", text]])
+}
+
+spec "oracle — readings held to each other" {
+    then "two equal answers have no difference" { first_difference("a\nb", "a\nb") == null }
+    then "the first differing line is named, 1-based" {
+        first_difference("a\nb\nc", "a\nx\nc") == "line 2: `b` vs `x`"
+    }
+    then "an answer that stops early differs where it stops" {
+        first_difference("a\nb", "a") == "line 2: `b` vs `(nothing)`"
+    }
+    then "readings that answer alike hold" {
+        held(
+            Case {
+                name: "alike",
+                subject: "-",
+                readings: [printing("one", "x"), printing("two", "x")],
+            },
+            "./avra",
+        )
+    }
+    then "readings that answer differently do not hold" {
+        !held(
+            Case {
+                name: "unlike",
+                subject: "-",
+                readings: [printing("one", "x"), printing("two", "y")],
+            },
+            "./avra",
+        )
+    }
+    then "a reading whose program is not there does not hold" {
+        !held(
+            Case {
+                name: "missing",
+                subject: "-",
+                readings: [Reading.Reference("gone", [["wisp-no-such-program"]])],
+            },
+            "./avra",
+        )
+    }
+    then "a reading whose step fails does not hold" {
+        !held(
+            Case {
+                name: "failing",
+                subject: "-",
+                readings: [Reading.Reference("false", [["false"], ["printf", "x"]])],
+            },
+            "./avra",
+        )
+    }
+    then "every case names itself once" { CASES.all((c) -> CASES.filter(it.name == c.name).length == 1) }
+}

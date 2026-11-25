@@ -1,0 +1,208 @@
+//! `wisp oracle [<case>…]` — THE AGREEMENT CASES. A case names a subject and the readings taken
+//! of it; it holds when every reading prints alike.
+//! Agreement is consistency, never truth: readings that share a mistake agree, so a second reader
+//! built outside Avra (`Reading.Reference`) is what makes a case name the boundary that broke.
+//! Every child runs under `minimal()` plus the names `PASSED` declares, so nothing ambient
+//! reaches a verdict. Exit 0 every case held, 1 one disagreed or could not be read, 2 usage.
+use @std.cli.{CliResult, Runnable, arg, command, option}
+use @std.process.{Tool, Outcome, ProcessError, cmd, tool, tool_at, minimal, exit_text}
+use @std.time.{secs}
+
+/// One reading of a subject: how what it prints is produced.
+export enum Reading {
+    /// The compiler builds the subject natively; the binary its last line names runs.
+    Native
+    /// A second reader built outside Avra: each step runs in order, the last one's output is read.
+    Reference(name: string, steps: List<List<string>>)
+}
+
+/// A subject, the files Make builds before it is read, and its readings, compared on what each
+/// prints.
+export type Case = {
+    name: string,
+    subject: string,
+    needs: List<string> = [],
+    readings: List<Reading>,
+}
+
+/// What a reading answered: its words, or why there are none.
+export type Read = { reading: string, said: Result<string, string> }
+
+/// The environment names a child may see beyond `minimal()`: the link's toolchain prefix.
+const PASSED: List<string> = ["LLVM_PREFIX"]
+
+type OracleCmd = {}
+
+impl Runnable for OracleCmd {
+    fn run(args: CliResult) -> int {
+        let asked = args.args_of("cases")
+        let unknown = asked.filter((n) -> !CASES.any(it.name == n))
+        if !unknown.is_empty() {
+            eprintln(no_case(unknown))
+            return 2
+        }
+        let avra = args.option("avra")
+        let verdicts = [held(c, avra) for c in CASES if asked.is_empty() || asked.contains(c.name)]
+        if verdicts.all(it) { 0 } else { 1 }
+    }
+}
+
+export command oracle {
+    description: "Run the agreement cases: every reading of a subject prints alike"
+    arg cases {
+        description: "the cases to run, by name; none runs every case"
+        variadic: true
+    }
+    option avra {
+        description: "the compiler under test"
+        default: "./avra"
+    }
+    run: OracleCmd {}
+}
+
+/// Runs one case and says its verdict; true when it held.
+fn held(c: Case, avra: string) -> bool {
+    let built = made(c.needs)
+    if built != null {
+        eprintln(unbuilt(c.name, built!))
+        return false
+    }
+    let reads = [read(c, r, avra) for r in c.readings]
+    let failed = reads.find(!answered_words(it))
+    if failed != null {
+        eprintln(unread(c.name, failed!))
+        return false
+    }
+    let first = reads[0]
+    let other = reads.find(words_of(it) != words_of(first))
+    if other != null {
+        eprintln(
+            disagreed(c.name, first, other!, first_difference(words_of(first), words_of(other!))),
+        )
+        return false
+    }
+    println(agreed(c.name, reads, first_line(words_of(first))))
+    true
+}
+
+fn words_of(r: Read) -> string {
+    match r.said { .Ok(w) -> w, .Err(_) -> "" }
+}
+
+fn answered_words(r: Read) -> bool {
+    match r.said { .Ok(_) -> true, .Err(_) -> false }
+}
+
+fn why_of(r: Read) -> string {
+    match r.said { .Ok(_) -> "", .Err(why) -> why }
+}
+
+/// The files a case needs, built by Make; null when every one stands, else Make's words.
+fn made(needs: List<string>) -> string? {
+    if needs.is_empty() { return null }
+    match ran(["make", "-s"].concat(needs)) { .Ok(_) -> null, .Err(why) -> why }
+}
+
+/// One reading of a case's subject.
+fn read(c: Case, r: Reading, avra: string) -> Read {
+    match r {
+        .Native -> Read { reading: "native", said: native(c.subject, avra) },
+        .Reference(name, steps) -> Read { reading: name, said: stepped(steps) },
+    }
+}
+
+fn native(subject: string, avra: string) -> Result<string, string> {
+    let path = last_line(ran([avra, "build", subject])?)
+    if path == "" { return .Err(no_binary(subject)) }
+    ran([path])
+}
+
+/// Runs each step in order; the last one's output.
+fn stepped(steps: List<List<string>>) -> Result<string, string> {
+    mut said = ""
+    for step in steps {
+        said = ran(step)?
+    }
+    .Ok(said)
+}
+
+/// One argv run under the declared environment; its stdout when it exits clean, else why not.
+fn ran(argv: List<string>) -> Result<string, string> {
+    let t? = located(argv[0]) else { return .Err(not_found(argv[0])) }
+    let c = cmd(t, argv.drop(1)) with { env: minimal().passing(PASSED), timeout: secs(600) }
+    match c.outcome() { .Ok(o) -> answered(argv, o), .Err(e) -> .Err(unstarted(argv, e)) }
+}
+
+fn answered(argv: List<string>, o: Outcome) -> Result<string, string> {
+    match o.exit { .Clean -> .Ok(o.out.stdout), .Code(_) or .Signal(_, _) -> .Err(exited(argv, o)) }
+}
+
+/// A word naming a path runs from there; a bare word is looked up on PATH.
+fn located(word: string) -> Tool? {
+    if word.contains("/") { return tool_at(word, word) }
+    match tool(word) { .Ok(t) -> t, .Err(_) -> null }
+}
+
+fn last_line(text: string) -> string {
+    text.trim().split("\n").last() ?? ""
+}
+
+fn first_line(text: string) -> string {
+    text.split("\n").first() ?? ""
+}
+
+/// The first line two answers differ at, 1-based, with each side's text; null when they agree.
+export fn first_difference(a: string, b: string) -> string? {
+    if a == b { return null }
+    let la = a.split("\n")
+    let lb = b.split("\n")
+    let at = (0..longer(la.length, lb.length)).find(line_at(la, it) != line_at(lb, it)) ?? 0
+    "line ${at + 1}: `${line_at(la, at)}` vs `${line_at(lb, at)}`"
+}
+
+fn longer(a: int, b: int) -> int {
+    if a > b { a } else { b }
+}
+
+fn line_at(lines: List<string>, i: int) -> string {
+    if i < lines.length { lines[i] } else { "(nothing)" }
+}
+
+// ── voices ──
+
+fn agreed(name: string, reads: List<Read>, first: string) -> string {
+    "oracle: ${name}: ${reads.map(it.reading).join(" == ")} — ${first}"
+}
+
+fn disagreed(name: string, a: Read, b: Read, at: string?) -> string {
+    "oracle: ${name}: ${a.reading} and ${b.reading} disagree at ${at ?? "their end"}"
+}
+
+fn unread(name: string, r: Read) -> string {
+    "oracle: ${name}: the ${r.reading} reading answered nothing — ${why_of(r)}"
+}
+
+fn unbuilt(name: string, why: string) -> string {
+    "oracle: ${name}: what it needs did not build — ${why}"
+}
+
+fn no_case(names: List<string>) -> string {
+    "oracle: no case named ${names.map("`${it}`").join(", ")}; the cases are ${CASES.map(it.name).join(", ")}"
+}
+
+fn no_binary(subject: string) -> string {
+    "the build of ${subject} named no binary"
+}
+
+fn not_found(word: string) -> string {
+    "`${word}` is not a program here"
+}
+
+fn unstarted(argv: List<string>, e: ProcessError) -> string {
+    "`${argv.join(" ")}` did not start: ${e.describe().message}"
+}
+
+fn exited(argv: List<string>, o: Outcome) -> string {
+    let said = last_line(o.out.stderr)
+    "`${argv.join(" ")}` exited ${exit_text(o.exit)}${if said == "" { "" } else { ": ${said}" }}"
+}

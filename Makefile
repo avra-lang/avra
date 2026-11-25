@@ -1532,29 +1532,12 @@ SQLITE_FLAGS := \
   -DNDEBUG=1
 
 
-# EVERY WORKING FILE LIVES IN `build/`, WHICH IS PER-WORKTREE. A
-# shared `/tmp` path is written by one lane and read by another: the
-# `.out` files here are DIFFED, and every worktree runs the same
-# witness, so a clobber between two lanes comparing the same program
-# is a false PASS rather than a noisy failure. `build/witness-c` was
-# the sharpest — a BINARY one lane compiled and another could run,
-# under a rule whose whole claim is "Avra == C on the SAME object".
-# The build LOCK stays in /tmp by design: it is machine-wide.
-# THE TWO READINGS ARE NOT CAPPED, AND MUST NOT BE: they are compared,
-# and a `tail` over both could make two DIFFERENT outputs equal —
-# manufacturing the very agreement this rule exists to test. Their
-# producer is one fixed program in this tree whose whole output the
-# last line prints. The build's stderr beside them is a log, and is
-# capped. (tools/capped.sh carries the rule.)
+# THE WIDTH WITNESS: the Avra reader and a C reader of the same object agree
+# (`wisp oracle`, its case in packages/wisp/src/commands/oracle_cases.av).
+# The readings are compared whole, in memory: a capped or truncated reading
+# is refused, never compared, so no cap can manufacture the agreement.
 witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/capped.sh build/witness.err 200000 sh -c './avra build packages/width-witness > build/witness.path' \
-	  || { echo "witness: build FAILED"; cat build/witness.err; cat build/witness.path; exit 1; }
-	@$$(tail -1 build/witness.path) > build/witness-avra.out
-	@cc -O2 -o build/witness-c packages/width-witness/src/reader.c build/width_witness.o
-	@build/witness-c > build/witness-c.out
-	@diff build/witness-c.out build/witness-avra.out \
-	  || { echo "witness: Avra and C disagree on the same object — the extern seam lost a width"; exit 1; }
-	@echo "witness: Avra == C on the same object — $$(cat build/witness-avra.out)"
+	@./wisp oracle width-witness
 
 # The whole gate: the vocabulary's guarantee, idioms, then every
 # proof a package carries — its spec cases and its program tests,
