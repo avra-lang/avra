@@ -1,5 +1,6 @@
 use models.{models}
 use store.open.{Graph}
+use store.engine.{Meta}
 use @std.sqlite.{Db, sql}
 use @std.io.{remove}
 use @std.time.{stamp}
@@ -39,6 +40,41 @@ fn fresh_store_opens() -> Result<bool, string> {
     revision == 1
 }
 
+fn format_recorded() -> Result<bool, string> {
+    let path = temp_base("format")
+    let _ = remove(path)
+    let g = match Graph.open(path, models) {
+        .Ok(graph) -> graph,
+        .Err(e) -> { fail "a fresh store must open: ${e}" },
+    }
+    let found = match Meta.where(g.db, key: "format") {
+        .Ok(rows) -> rows,
+        .Err(e) -> { fail "the store records its format: ${e.message}" },
+    }
+    let written = match found { [only] -> only.value, rest -> "" }
+    let _ = g.close()
+    let _ = remove(path)
+    written == "9"
+}
+
+fn mention_table_created() -> Result<bool, string> {
+    let path = temp_base("mention")
+    let _ = remove(path)
+    let g = match Graph.open(path, models) {
+        .Ok(graph) -> graph,
+        .Err(e) -> { fail "a fresh store must open: ${e}" },
+    }
+    let made = match g
+        .db
+        .scalar(sql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='MentionRow'")) {
+        .Ok(value) -> match value { .Int(n) -> n == 1, rest -> false },
+        .Err(_) -> false,
+    }
+    let _ = g.close()
+    let _ = remove(path)
+    made
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -50,5 +86,7 @@ spec "graph storage format" {
     given "a store is std-first" {
         then "an old hand-table database is refused, by attach and by open" { passed(legacy_store_refused()) }
         then "a fresh file opens at revision one" { passed(fresh_store_opens()) }
+        then "a fresh file records the current format" { passed(format_recorded()) }
+        then "a fresh file creates the mention table" { passed(mention_table_created()) }
     }
 }

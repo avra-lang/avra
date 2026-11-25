@@ -1,7 +1,7 @@
 use @std.json.{Json}
 use @std.validate.{Value}
 use data.{as_value}
-use store.publish.{Publication, Record, RecordMode}
+use store.publish.{Publication, Record, RecordMode, Mention}
 use store.identity.{Identity}
 use store.merge.{Merge}
 use store.tombstone.{Tombstone}
@@ -191,7 +191,10 @@ export fn operation(j: Json) -> Result<Operation, string> {
 }
 
 fn record(j: Json) -> Result<Record, string> {
-    closed(j, ["id", "model", "value", "mode", "locator", "identities", "confidence"])?
+    closed(
+        j,
+        ["id", "model", "value", "mode", "locator", "identities", "confidence", "mentions"],
+    )?
     let value? = j.get("value") else { fail "record needs value" }
     let locator = match j.get("locator") {
         found? -> as_value(found)
@@ -212,7 +215,21 @@ fn record(j: Json) -> Result<Record, string> {
         locator: locator,
         identities: identities(j)?,
         confidence: confidence,
+        mentions: mentions(j)?,
     }
+}
+
+fn mentions(j: Json) -> Result<List<Mention>, string> {
+    let found? = j.get("mentions") else { return [] }
+    match found {
+        .Arr(items) -> [mention(item)? for item in items],
+        rest -> { fail "mentions must be an array" },
+    }
+}
+
+fn mention(j: Json) -> Result<Mention, string> {
+    closed(j, ["start", "end", "surface"])?
+    Mention { start: integer(j, "start")?, end: integer(j, "end")?, surface: text(j, "surface")? }
 }
 
 fn identities(j: Json) -> Result<List<Identity>, string> {

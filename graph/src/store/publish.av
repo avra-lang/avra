@@ -19,6 +19,22 @@ use store.identity.{Identity}
 
 export enum RecordMode { Complete, Partial }
 
+/// A source span a producer observed the entity at.
+export type Mention = { start: int, end: int, surface: string }
+
+impl Mention {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("start", Json.Int(self.start)),
+                    field("end", Json.Int(self.end)),
+                    field("surface", Json.Str(self.surface)),
+                ],
+            )
+    }
+}
+
 export type Record = {
     id: string,
     model: string,
@@ -27,6 +43,7 @@ export type Record = {
     locator: Value = Value.Null,
     identities: List<Identity> = [],
     confidence: float? = null,
+    mentions: List<Mention> = [],
 }
 
 impl Record {
@@ -46,10 +63,19 @@ impl Record {
                     .concat(mode)
                     .concat(located(self.locator))
                     .concat(identified(self.identities))
-                    .concat(stated(self.confidence)),
+                    .concat(stated(self.confidence))
+                    .concat(mentioned(self.mentions)),
             )
     }
 }
+
+/// No mentions means no field, so a mention-free run keeps its identity.
+fn mentioned(mentions: List<Mention>) -> List<Field> {
+    if mentions.is_empty() { [] } else { [field("mentions", Json.Arr([m.json() for m in mentions]))] }
+}
+
+/// A mention names a surface at a span that starts at or after zero.
+fn mention_ok(m: Mention) -> bool { m.start >= 0 && m.end >= m.start && !m.surface.is_empty() }
 
 /// No locator means no field, so a locator-free run keeps its identity.
 fn located(locator: Value) -> List<Field> {
@@ -114,6 +140,7 @@ impl Graph {
         let p = publication
         if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
         if p.records.any(!confident_ok(it.confidence)) { fail "confidence must be a finite number between 0 and 1" }
+        if p.records.any(it.mentions.any(!mention_ok(it))) { fail "a mention needs a nonempty surface and an end at or after a nonnegative start" }
         if p.records.any(it.identities.any(it.namespace.is_empty() || it.external_key.is_empty())) { fail "an identity needs a nonempty namespace and key" }
         if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
         mut db = self.db
@@ -229,6 +256,7 @@ impl Graph {
             let claim = self.claimed(db, entity, property.name, entry.value, p.schema)?
             let support = self.supported(db, run, claim, r.locator)?
             if r.confidence != null { let _ = self.confided(db, support, r.confidence!)? }
+            let _ = self.mentioned(db, support, r.mentions)?
             for link in links { self.referenced(db, claim, link)? }
         }
         for a in r.identities { self.named_by(db, entity, a, run)? }

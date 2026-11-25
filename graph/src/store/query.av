@@ -9,7 +9,9 @@ use store.engine.{
     SupportRow,
     RunRow,
     RunTrailRow,
+    MentionRow,
 }
+use store.publish.{Mention}
 use data.{as_value, as_json, encoded}
 
 export type Candidate = { claim: int, value: Value, chosen: bool = false }
@@ -109,7 +111,7 @@ impl Graph {
     }
 
     fn find(model: string, limit: int = 100, offset: int = 0) -> Result<List<string>, string> {
-        if limit < 1 || limit > 1000 || offset < 0 { fail "limit must be 1..1000 and offset nonnegative" }
+        page_ok(limit, offset)?
         self.current()?
         let hidden = self.hidden_members()?
         let candidates = stored(EntityRow.where(self.db, model: model))?
@@ -129,7 +131,7 @@ impl Graph {
         string,
     > {
         if property.is_empty() { fail "a filter needs a property name" }
-        if limit < 1 || limit > 1000 || offset < 0 { fail "limit must be 1..1000 and offset nonnegative" }
+        page_ok(limit, offset)?
         self.current()?
         let hidden = self.hidden_members()?
         let wanted = encoded(value)
@@ -207,6 +209,7 @@ impl Graph {
         let supports = stored(SupportRow.in_claim(self.db, claims))?
         let trails = stored(RunTrailRow.in_run(self.db, supports.map(it.run)))?
         let confidence = stored(ConfidenceRow.in_support(self.db, supports))?
+        let mentions = stored(MentionRow.in_support(self.db, supports))?
         let scheme = self.catalog.fingerprint
         mut rows: List<Json> = []
         for s in supports {
@@ -229,6 +232,7 @@ impl Graph {
                                 field("published_revision", Json.Int(s.run.revision)),
                                 field("locator", self.locator(s)?),
                                 field("confidence", self.confidence_of(s, confidence)),
+                                field("mentions", self.mentions_of(s, mentions)),
                             ],
                         ),
                 )
@@ -241,6 +245,10 @@ impl Graph {
             found? -> Json.Float(found.value)
             null -> Json.Null
         }
+    }
+
+    fn mentions_of(s: SupportRow, rows: List<MentionRow>) -> Json {
+        Json.Arr([Mention { start: r.start, end: r.end, surface: r.surface }.json() for r in rows if r.support.id == s.id])
     }
 
     fn locator(s: SupportRow) -> Result<Json, string> {
@@ -327,4 +335,10 @@ export fn stored_value(text: string) -> Result<Value, string> {
         .Ok(j) -> as_value(j),
         .Err(_) -> { fail "stored graph value is not JSON" },
     }
+}
+
+/// A page reads one to a thousand rows from a nonnegative offset.
+fn page_ok(limit: int, offset: int) -> Result<int, string> {
+    if limit < 1 || limit > 1000 || offset < 0 { fail "limit must be 1..1000 and offset nonnegative" }
+    0
 }

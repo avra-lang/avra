@@ -39,6 +39,8 @@ def main():
                  "value": {"name": "Ada"}},
                 {"id": "m1", "model": "Message", "value": {"author": "p1", "recipients": [], "body": "review the design"}},
                 {"id": "w1", "model": "WorkItem", "locator": {"section": "title"},
+                 "mentions": [{"start": 0, "end": 6, "surface": "Review"},
+                              {"start": 13, "end": 19, "surface": "design"}],
                  "value": {"title": "Review the design", "assignee": "p1", "messages": ["m1"]}},
             ],
         }
@@ -50,6 +52,7 @@ def main():
         assert len(cli({"op": "edges", "id": "p1", "incoming": True})) == 2
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["active"]
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
+        assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["mentions"] == []
         assert cli({"op": "resolve", "namespace": "mail", "key": "ada@example.com"})["entity"] == "p1"
         assert cli({"op": "aliases", "id": "p1"}) == [{"namespace": "mail", "key": "ada@example.com"}]
         assert cli({"op": "aliases", "id": "w1"}) == []
@@ -60,11 +63,20 @@ def main():
                                "records": [{"id": "p2", "model": "Person", "identities": [{"namespace": "mail", "key": "ada@example.com"}],
                                             "value": {"name": "Grace"}}]}, success=False)
         assert cli({"op": "explain", "id": "w1", "property": "assignee"})[0]["locator"] == {"section": "title"}
+        assert cli({"op": "explain", "id": "w1", "property": "assignee"})[0]["mentions"] == [
+            {"start": 0, "end": 6, "surface": "Review"},
+            {"start": 13, "end": 19, "surface": "design"},
+        ]
         moved = {**publication, "records": [
             {**record, "locator": {"section": "metadata"}} if record["id"] == "w1" else record
             for record in publication["records"]
         ]}
         assert "error" in cli(moved, success=False)
+        mentioned = {**publication, "records": [
+            {**record, "mentions": [{"start": 0, "end": 6, "surface": "Review"}]} if record["id"] == "w1" else record
+            for record in publication["records"]
+        ]}
+        assert "error" in cli(mentioned, success=False)
         assert cli({"op": "schema"})["revision"] == published["revision"]
 
         second = {"id": "p2", "model": "Person", "mode": "partial", "value": {"email": "grace@example.com"},
@@ -194,16 +206,17 @@ def main():
 
         import sqlite3
         with sqlite3.connect(database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone()[0] == "8"
-            for table in ("Meta", "EntityRow", "RunRow", "ClaimRow", "SupportRow", "AliasRow", "MergeRow", "TombstoneRow"):
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone()[0] == "9"
+            for table in ("Meta", "EntityRow", "RunRow", "ClaimRow", "SupportRow", "MentionRow", "AliasRow", "MergeRow", "TombstoneRow"):
                 assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
+        assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["mentions"] == []
         assert cli({"op": "aliases", "id": "p1"}) == []
         decisions = cli({"op": "merges"})
         assert len(decisions) == 1 and decisions[0]["active"] is False
         graves = cli({"op": "tombstones"})
         assert len(graves) == 1 and graves[0]["active"] is False
-    print("native smoke: persistence, partial assertions, evidence locators, external identities, merge/split, tombstones, std-first store, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+    print("native smoke: persistence, partial assertions, evidence locators, mention spans, external identities, merge/split, tombstones, std-first store, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":

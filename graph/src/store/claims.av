@@ -2,9 +2,18 @@ use @std.validate.{Value}
 use @std.sqlite.{Db}
 use data.{encoded, digest}
 use store.open.{Graph, stored, modeled}
-use store.engine.{EntityRow, RunRow, ClaimRow, SupportRow, EdgeRow, AliasRow, ConfidenceRow}
+use store.engine.{
+    EntityRow,
+    RunRow,
+    ClaimRow,
+    SupportRow,
+    EdgeRow,
+    AliasRow,
+    ConfidenceRow,
+    MentionRow,
+}
 use store.identity.{Identity}
-use store.publish.{Link}
+use store.publish.{Link, Mention}
 
 impl Graph {
     fn claimed(mut db: Db, entity: EntityRow, property: string, value: Value, schema: string) -> Result<
@@ -53,6 +62,26 @@ impl Graph {
         let key = stamp(["confidence", "${support.id}"])
         if (stored(ConfidenceRow.where(db, stamp: key))?).is_empty() {
             let _ = modeled(ConfidenceRow { support: support, value: value, stamp: key }.insert(db))?
+        }
+        0
+    }
+
+    /// Each distinct mention of a record is stored once per support.
+    fn mentioned(mut db: Db, support: SupportRow, mentions: List<Mention>) -> Result<int, string> {
+        for m in mentions {
+            let key = stamp(["mention", "${support.id}", "${m.start}", "${m.end}", m.surface])
+            if (stored(MentionRow.where(db, stamp: key))?).is_empty() {
+                let _ = modeled(
+                    MentionRow {
+                        support: support,
+                        start: m.start,
+                        end: m.end,
+                        surface: m.surface,
+                        stamp: key,
+                    }
+                        .insert(db),
+                )?
+            }
         }
         0
     }
