@@ -222,6 +222,8 @@ export type SeatFill = { arg: int, field: int }
 @derive(Facts)
 @facts_over("StmtId")
 export type StmtFacts = {
+    // the forms a statement was written in
+    @copied(stmt, wear) marks: StmtMarks = unmarked_stmt(),
     // a collect's `dense` mark: its order is data, unique and gap-free from 0
     @copied(stmt, wear_collect_dense) collect_dense: bool = false,
 }
@@ -243,7 +245,6 @@ export type SyntaxArena = {
     // a fn declaration's pieces (`fn_parts`), by its statement — filed as the statement is made or
     // written again, so asking reads no node and builds no record
     @not_copied("filed as its statement is made") @remade("alloc_stmt files a fn's pieces as it makes its statement") fn_parts_filed: SideColumn<FnParts?>,
-    @copied(stmt, wear) marks: SideColumn<StmtMarks>,
     // the format a `grammar` declaration read, by its statement
     @copied(stmt, wear_grammar) grammars: SideColumn<GrammarSpec?>,
     // a named instance's component, by its statement — the record it
@@ -369,7 +370,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         stmt_prints: no_prints(),
         stmt_values: tail_column(),
         fn_parts_filed: side_column<FnParts?>(null),
-        marks: side_column(unmarked_stmt()),
         grammars: side_column<GrammarSpec?>(null),
         component_insts: side_column<string?>(null),
         hoisted: list_cell(),
@@ -422,7 +422,6 @@ impl SyntaxArena {
             stmt_prints: self.stmt_prints.forked(),
             stmt_values: self.stmt_values.forked(),
             fn_parts_filed: self.fn_parts_filed.forked(),
-            marks: self.marks.forked(),
             grammars: self.grammars.forked(),
             component_insts: self.component_insts.forked(),
             hoisted: Cell.new(self.hoisted.get()),
@@ -1666,7 +1665,7 @@ impl SyntaxArena {
     /// already wears — the one seam every `mark_*` verb writes through,
     /// so a bit lands beside its siblings rather than overwriting them.
     fn update_marks(s: StmtId, upd: fn(StmtMarks) -> StmtMarks) {
-        self.marks.set_at(s.index, upd(self.marks_at(s)))
+        self.stmt_facts.set_marks(s, upd(self.marks_at(s)))
     }
 
     /// An expression's forms, replaced by what `upd` computes from what it
@@ -1688,7 +1687,7 @@ impl SyntaxArena {
     }
 
     /// The marks a statement wears.
-    fn marks_at(s: StmtId) -> StmtMarks { self.marks.at(s.index) }
+    fn marks_at(s: StmtId) -> StmtMarks { self.stmt_facts.marks(s) }
 
     /// Gives `s` every mark `worn` records, each through its own verb so
     /// the fingerprint follows — the one door a copy and a tape use, so a
