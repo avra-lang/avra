@@ -213,6 +213,9 @@ export enum RuleType {
 /// name.
 export type DeclaredType = { package: string, name: string }
 
+/// A free `fn` declaration's own name and its written answer, spelled (`void` where it writes none).
+export type FnHead = { name: string, answer: string }
+
 fn interned_rule_type(t: Ty?, decls: Decls) -> RuleType? {
     let held? = t else { return null }
     RuleType.Interned(held, decls)
@@ -345,6 +348,19 @@ impl Code {
         match self.at {
             .Stmt(id) -> match self.of.view.store.stmt(id) {
                 .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> [Code { of: self.of, at: At.Param(id, i) } for i in 0..params.length],
+                _ -> null,
+            },
+            _ -> null,
+        }
+    }
+
+    /// This node's own NAME AND ANSWER — a free `fn` declaration's — absent for every other shape,
+    /// an `extern fn` among them: a rule reading a fn's whole signature reads its params through
+    /// `fn_params` and the rest here.
+    fn fn_head() -> FnHead? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .FnDecl(name, _, _, ret, _) -> FnHead { name: name.text(), answer: ret?.text() ?? "void" },
                 _ -> null,
             },
             _ -> null,
@@ -711,7 +727,7 @@ impl Code {
     /// `.Param(i)` index never collides with another fn's.
     fn names_this(e: ExprId, b: Binding) -> bool {
         match self.analysed().names.binding(e) {
-            x? -> same_binding(root_binding(self.analysed().names, x), b)
+            x? -> root_binding(self.analysed().names, x) == b
             null -> false
         }
     }
@@ -1068,18 +1084,12 @@ fn filter_cond(c: CompClause) -> ExprId? {
     match c { .Head(_, _, _, _) -> null, .Filter(cond) -> cond }
 }
 
-fn same_span(a: Span?, b: Span?) -> bool {
-    let av? = a else { return b == null }
-    let bv? = b else { return false }
-    av.lo == bv.lo && av.hi == bv.hi
-}
-
 /// Whether `other` is a REAL, DIFFERENT span from `mine` — absent
 /// (a generated node) is never a sibling, and neither is one sharing
 /// `mine`'s own span.
 fn sibling_span(mine: Span?, other: Span?) -> bool {
     let ov? = other else { return false }
-    !same_span(mine, ov)
+    mine != ov
 }
 
 /// `e`'s own FORCE subject — the value under `!` — null for every

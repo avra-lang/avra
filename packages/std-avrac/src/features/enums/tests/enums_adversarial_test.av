@@ -163,22 +163,22 @@ spec "features/enums (adversarial)" {
         }
     }
     given "operators against an enum VALUE" {
-        // FOUND BY RED-TEAMING: `==` typed clean on two enums, then
-        // the interpreter refused with an internal defect while the
-        // backend quietly answered `false` — comparing ADDRESSES.
-        // An engine divergence AND a silently wrong native answer.
-        then "equality refuses, and says to match instead" {
-            let a = judged("${ab()}E.a(1) == E.a(1)")
-            a.diagnostics.length == 1 &&
-                a
-                    .report()
-                    .contains(
-                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
-                    ) &&
-                a.report().contains("match on it instead")
+        // Two enums compare by variant, then payload by payload: two
+        // IDENTICAL carrying values are equal — an answer by address
+        // would say `false`.
+        then "equality compares the variant, then the payload" {
+            shown(
+                "${ab()}\"\${E.a(1) == E.a(1)} \${E.a(1) == E.a(2)} \${E.a(1) == E.b} \${E.b == E.b}\"",
+            ) == "true false false true"
         }
-        then "inequality refuses the same way" {
-            refusals("${ab()}E.b != E.b") == 1
+        then "inequality is the negation" {
+            shown("${ab()}\"\${E.b != E.b} \${E.a(1) != E.a(2)}\"") == "false true"
+        }
+        then "an enum carrying a float refuses, and says to match instead" {
+            let a = judged("enum F {\n    a(float)\n    b\n}\nF.b == F.b")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`==` compares by value — a value whose every part does") &&
+                a.report().contains("match on it instead")
         }
         then "an enum compared to an int refuses" {
             refusals("${ab()}E.b == 1") == 1

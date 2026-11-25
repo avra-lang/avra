@@ -5,10 +5,6 @@ use compiler.store.{RecordMeta, Durability, encode_meta, decode_meta, record_wid
 
 fn bytes_of(v: int) -> Bytes { [v for _i in 0..32].bytes()! }
 
-fn same_bytes(a: Bytes, b: Bytes) -> bool {
-    a.length == b.length && !(0..a.length).any((k) -> a.at(k) != b.at(k))
-}
-
 fn durability_is(m: Meta, i: int, want: Durability) -> bool {
     match m.durability(i) {
         d? -> d == want
@@ -36,14 +32,14 @@ spec "compiler/store/meta — the columnar fixed-width region" {
             let rows = [sample(i) for i in 0..5]
             match decode_meta(encode_meta(rows)!) {
                 m? -> m.records() == 5 &&
-                    same_bytes(m.action_key(3), bytes_of(3)) &&
+                    m.action_key(3) == bytes_of(3) &&
                     m.name_id(3) == 103 &&
-                    same_bytes(m.value_digest(3), bytes_of(4)) &&
+                    m.value_digest(3) == bytes_of(4) &&
                     m.set_id(3) == 203 &&
                     m.changed_at(3) == 1003 &&
                     m.verified_at(3) == 2003 &&
-                    same_bytes(m.shape_fp(3), bytes_of(5)) &&
-                    same_bytes(m.code_hash(3), bytes_of(6))
+                    m.shape_fp(3) == bytes_of(5) &&
+                    m.code_hash(3) == bytes_of(6)
                 null -> false
             }
         }

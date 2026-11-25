@@ -90,10 +90,22 @@ spec "features/expr_spine" {
                     "\${a == b} \${a != c} \${a == c}\"",
             ) == "true true false"
         }
-        then "an enum carrying a payload still refuses" {
+        then "an enum carrying a payload compares by its tag, then that variant's payloads" {
+            shown(
+                "enum E {\n    a(int)\n    b\n}\nfn pick(n: int) -> E { if n < 0 { E.b } else { E.a(n) } }\n\"" +
+                    "\${pick(-1) == E.b} \${pick(2) == E.a(2)} \${pick(2) == E.a(3)} \${pick(2) == E.b}\"",
+            ) == "true true false false"
+        }
+        then "a record holding a float refuses: its parts compare exactly, and a float's `==` is not its bits" {
             refused_with(
-                "enum E {\n    a(int)\n    b\n}\nE.b == E.b",
-                "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                "type P = { x: float, n: int }\nP { x: 1.0, n: 1 } == P { x: 1.0, n: 1 }",
+                "`==` compares by value — a value whose every part does",
+            )
+        }
+        then "a type that holds itself refuses" {
+            refused_with(
+                "type T = { label: string, kids: List<T> }\nT { label: \"a\", kids: [] } == T { label: \"a\", kids: [] }",
+                "or a type that holds itself",
             )
         }
     }

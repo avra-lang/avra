@@ -20,7 +20,7 @@ export type Name = { id: int }
 type NameText = { text: string }
 
 /// The names this process has minted, by their texts' keys: a name's id is its key's.
-once fn names() -> Interned<NameKey> { interned(key_hashed, same_key) }
+once fn names() -> Interned<NameKey> { interned(key_hashed, (a, b) -> a == b) }
 
 /// Each name's text, by id, kept beside the keys it was minted under.
 once fn name_texts() -> Cell<List<string>> { Cell.new([]) }
@@ -38,8 +38,6 @@ fn name_key(text: string) -> NameKey {
 }
 
 fn key_hashed(k: NameKey) -> int { k.high }
-
-fn same_key(a: NameKey, b: NameKey) -> bool { a.high == b.high && a.low == b.low && a.length == b.length }
 
 /// The name the text numbered `number` of a tape's `texts` spells, minted once for the tape's meaning;
 /// the text is read only to mint it. Every reading shares one list of slots, by text number: each
@@ -61,11 +59,9 @@ export fn tape_name(mine: int, texts: List<string>, number: int) -> Name {
 export fn reading_of(meaning: ContentHash) -> int { meanings().id_of(meaning).index + 1 }
 
 /// The tape meanings read in this process, each numbered once, told apart by their hash's two words.
-once fn meanings() -> Interned<ContentHash> { interned(meaning_hashed, same_meaning) }
+once fn meanings() -> Interned<ContentHash> { interned(meaning_hashed, (a, b) -> a == b) }
 
 fn meaning_hashed(h: ContentHash) -> int { h.high_word ^ h.low_word }
-
-fn same_meaning(a: ContentHash, b: ContentHash) -> bool { a.high_word == b.high_word && a.low_word == b.low_word }
 
 /// What the slots hold at `number`, read and let go before they are written; -1 past their end.
 fn slot_held(slots: Cell<List<int>>, number: int) -> int {

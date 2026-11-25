@@ -21,31 +21,37 @@ spec "features/structs (adversarial)" {
         }
     }
     given "operators against a record VALUE" {
-        // FOUND BY RED-TEAMING enums, and it was a RECORD bug too:
-        // `==` typed clean on two records, then the interpreter
-        // refused with an internal defect while the backend quietly
-        // answered `false` for two IDENTICAL records — an engine
-        // divergence and a silently wrong native answer.
-        then "a record of two fields refuses equality, and says to compare a field" {
-            let a = judged(
-                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\na == b",
-            )
-            a.diagnostics.length == 1 &&
-                a
-                    .report()
-                    .contains(
-                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
-                    ) &&
-                a.report().contains("compare a field instead")
+        // Two records compare field by field: two IDENTICAL records are
+        // equal, a field apart makes them not — an answer by address
+        // would say `false` for the first.
+        then "a record of two fields compares field by field" {
+            shown(
+                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\nlet c = Q { x: 1, y: 3 }\n\"\${a == b} \${a == c}\"",
+            ) == "true false"
         }
-        then "inequality over two fields refuses the same way" {
-            refusals("type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\na != a") == 1
+        then "inequality over two fields is the negation" {
+            shown(
+                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 2, y: 2 }\n\"\${a != a} \${a != b}\"",
+            ) == "false true"
+        }
+        then "a record holding a float refuses, and says to compare a field" {
+            let a = judged("type Q = { x: int, f: float }\nlet a = Q { x: 1, f: 2.0 }\na == a")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`==` compares by value — a value whose every part does") &&
+                a.report().contains("compare a field instead")
         }
         then "a record of ONE field compares by it" {
             shown("${p1_bound()}let b = P { x: 1 }\nlet c = P { x: 2 }\n\"\${a == b} \${a != c}\"") == "true true"
         }
+        then "a record of one list field compares by the list" {
+            shown(
+                "type L = { xs: List<int> }\n\"\${L { xs: [1] } == L { xs: [1] }} \${L { xs: [1] } == L { xs: [2] }}\"",
+            ) == "true false"
+        }
         then "a record of one field whose field does not compare refuses" {
-            refusals("type L = { xs: List<int> }\nL { xs: [1] } == L { xs: [1] }") == 1
+            refusals(
+                "type L = { f: fn() -> int }\nfn one() -> int { 1 }\nL { f: one } == L { f: one }",
+            ) == 1
         }
         then "two different one-field types are two types" {
             refused_with(

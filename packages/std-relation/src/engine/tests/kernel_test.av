@@ -1,6 +1,6 @@
 // The kernel's laws, over a toy family: an input `n` and a derived
 // `double` that reads it. Runs are counted so reuse is observable.
-use @std.relation.engine.{Kernel, new_kernel, Key, new_memo, same_key}
+use @std.relation.engine.{Kernel, new_kernel, Key, new_memo}
 
 /// A derived family over the kernel: computes 2n, counting runs.
 /// The tally and values are explicit shared cells, so the verifier's
@@ -491,7 +491,7 @@ spec "relation/engine — the kernel: an abandoned frame" {
             db.record_dep(read)
             db.abandon(inner)
             db.settle(outer, 1)
-            db.cell(inner) == null && db.deps_of(outer).any((k: Key) -> same_key(k, read))
+            db.cell(inner) == null && db.deps_of(outer).any((k: Key) -> k == read)
         }
         then "a read the outer already made is still one dep" {
             mut db = new_kernel()
@@ -543,7 +543,7 @@ spec "relation/engine — the kernel: an edge is its key, whole" {
             db.record_dep(far)
             db.settle(reader, 1)
             let deps = db.deps_of(reader)
-            deps.length == 1 && same_key(deps[0], far)
+            deps.length == 1 && deps[0] == far
         }
         then "one arg under two families is two edges" {
             mut db = new_kernel()
@@ -559,8 +559,8 @@ spec "relation/engine — the kernel: an edge is its key, whole" {
             db.settle(reader, 1)
             let deps = db.deps_of(reader)
             deps.length == 2 &&
-                same_key(deps[0], Key { family: a, arg: 3 }) &&
-                same_key(deps[1], Key { family: b, arg: 3 })
+                deps[0] == Key { family: a, arg: 3 } &&
+                deps[1] == Key { family: b, arg: 3 }
         }
         then "a thousand reads keep their first-read order" {
             mut db = new_kernel()
@@ -801,10 +801,7 @@ spec "relation/engine — the kernel: the open stack, attacked" {
             db.settle(a, 1)
             let a_again = db.ask(a)
             let b_again = db.ask(b)
-            back is .Cycle &&
-                a_again is .Reuse &&
-                b_again is .Reuse &&
-                same_key(db.deps_of(b)[0], a)
+            back is .Cycle && a_again is .Reuse && b_again is .Reuse && db.deps_of(b)[0] == a
         }
         then "a family is in flight only while one of its keys is open" {
             mut db = new_kernel()

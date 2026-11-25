@@ -4,17 +4,7 @@
 // rewrite the proof cannot confirm is ACCEPTED by the law its rule declares only where the edited
 // program is refused nothing.
 use compiler.{Application, Fixing, avra_fact_definitions, fixing, program_erring, rule_law}
-use @std.avrac.core.{
-    Ins,
-    Reg,
-    UnOp,
-    BinOp,
-    alpha_fps,
-    alpha_renamed,
-    same_fps,
-    same_ins_list,
-    fp_str,
-}
+use @std.avrac.core.{Ins, Reg, UnOp, BinOp, alpha_fps, alpha_renamed, same_ins_list, fp_str}
 use @std.avrac.diagnostics.{Diag, error_at}
 use @std.avrac.testing.held.{Held, empty_store, held_at}
 use @std.errors.{Confidence, Edit, Loc, Suggestion}
@@ -229,7 +219,7 @@ spec "the edit proof" {
 // within a few hundred thousand tries — found by brute force, no
 // adversarial intent required to reach in production (any spell-check
 // or wording suggestion that ever touches a string literal is a
-// candidate). the proof never trusts the hash alone: `same_fps` is a
+// candidate). the proof never trusts the hash alone: `==` on the fingerprints is a
 // pre-filter, `same_ins_list` is the actual proof, over the same
 // renamed values the hash folded. `ukxaszao`/`vcbtnszi` are the found
 // colliding pair; re-probe with tools/scratch if `fp` ever changes shape.
@@ -308,12 +298,12 @@ spec "malformed edit spans refuse cleanly" {
 spec "canon_not_if" {
     given "two instruction lists differing only by a negated condition with swapped arms" {
         then "their alpha-renamed fingerprints AGREE" {
-            same_fps(alpha_fps(not_if_ins(), 1), alpha_fps(plain_if_ins(), 1))
+            alpha_fps(not_if_ins(), 1) == alpha_fps(plain_if_ins(), 1)
         }
     }
     given "two instruction lists differing by an operator" {
         then "their alpha-renamed fingerprints DISAGREE" {
-            !same_fps(alpha_fps(add_ins(), 0), alpha_fps(sub_ins(), 0))
+            alpha_fps(add_ins(), 0) != alpha_fps(sub_ins(), 0)
         }
     }
 }
@@ -321,7 +311,7 @@ spec "canon_not_if" {
 spec "same_ins_list, the fingerprint's structural walk" {
     given "two string constants whose fp_str HASH COLLIDES, held in otherwise identical instructions" {
         then "the fingerprints DISAGREE — the walk reads the constants, not their hash" {
-            !same_fps(alpha_fps(word_ins("ukxaszao"), 0), alpha_fps(word_ins("vcbtnszi"), 0))
+            alpha_fps(word_ins("ukxaszao"), 0) != alpha_fps(word_ins("vcbtnszi"), 0)
         }
         then "the structural walk DISAGREES — the actual strings differ" {
             !same_ins_list(
