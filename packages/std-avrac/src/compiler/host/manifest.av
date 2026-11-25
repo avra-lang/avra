@@ -228,6 +228,11 @@ enum Lands {
 /// what it holds and how one is written, in its refusal's words.
 type KeyRow = { section: string, key: string, lands: Lands, holds: string?, writes: string? }
 
+/// Whether a key is read by a slice after this compiler: the bundle's.
+fn brought_later(l: Lands) -> bool {
+    match l { .Now -> false, .WithBundle -> true }
+}
+
 /// The keys this compiler reads, and the ones the bundle slice will.
 const KEYS: List<KeyRow> = table<KeyRow> {
     section          | key               | lands            | holds                                         | writes
@@ -387,10 +392,7 @@ impl Reader {
                     self.speak(self.unknown_key(s, e))
                     continue
                 }
-                match key.lands {
-                    .Now -> continue,
-                    .WithBundle -> self.speak(self.bundle_key(s, e)),
-                }
+                if brought_later(key.lands) { self.speak(self.bundle_key(s, e)) }
             }
         }
     }
