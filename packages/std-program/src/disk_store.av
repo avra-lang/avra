@@ -30,7 +30,7 @@ use @std.io.{
     write_text,
 }
 use @std.meta.{derive}
-use @std.path.{is_absolute, joined_path, normalized, relative_path}
+use @std.path.{is_absolute, joined_path, normalized, relative_path, segments}
 use @std.text.{parse_int, text_before}
 use answer_record.{
     AnswerRecord,
@@ -1185,26 +1185,78 @@ impl AnswerStore for DiskStore {
 
     /// The stamps kept here, each read as it's asked, its path read where it lies from this store.
     fn kept_stamps() -> KeptStamps {
-        let directory = self.directory
-        kept_stamps_at(
-            "${directory}/${STAMPS_FILE}",
-            (path) -> normalized(joined_path(directory, path)),
-        )
+        let named = stamp_paths_from(self.directory)
+        kept_stamps_at("${self.directory}/${STAMPS_FILE}", (path) -> named.path_of(path))
     }
 
     /// Writes `stamps` at once, whole or not at all, each path named from this store, so the store
     /// names no checkout: a stamp only ever spares a read whose answer the frontier still holds.
     fn keep_input_stamps(stamps: List<InputStamp>) {
         let _ = make_dirs(self.directory) catch ""
+        // the directory every path is named from, normalized once: `StampPaths` reads from it so
+        let directory = normalized(self.directory)
         stamps_written(
             "${self.directory}/${STAMPS_FILE}",
-            [s with { path: named_from(self.directory, s.path) } for s in stamps],
+            [s with { path: named_from(directory, door_normalized(s.path)) } for s in stamps],
         )
     }
 }
 
-/// `path` named from the directory `dir` where the two are spelled from one root, else as it stands.
-fn named_from(dir: string, path: string) -> string {
+/// HOW A STORE NAMES THE PATHS ITS STAMPS KEEP, read back: a stamp's path is normalized once, where
+/// it's kept (`keep_input_stamps`), and kept named from the store's directory — its `..` steps all
+/// lead it, so reading it takes the ancestor of the directory those steps reach, made once a store,
+/// and the rest of the path after it. No path is normalized as it's read.
+export type StampPaths = { ancestors: List<string> }
+
+impl StampPaths {
+    /// The path `kept` names, read from the store's directory.
+    fn path_of(kept: string) -> string {
+        if is_absolute(kept) { return kept }
+        mut ups = 0
+        while kept.length >= 3 * ups + 2 &&
+            kept.substring(3 * ups, 3 * ups + 2) == ".." &&
+            (kept.length == 3 * ups + 2 || kept.substring(3 * ups + 2, 3 * ups + 3) == "/") {
+            ups = ups + 1
+        }
+        // past the directory's root: as normalizing it names it, which a kept stamp rarely is
+        if ups >= self.ancestors.length { return normalized(joined_path(self.ancestors[0], kept)) }
+        let rest = if 3 * ups >= kept.length { "" } else { kept.substring(3 * ups, kept.length) }
+        let base = self.ancestors[ups]
+        when {
+            rest.is_empty() -> base
+            base.is_empty() || base == "/" -> "${base}${rest}"
+            _ -> "${base}/${rest}"
+        }
+    }
+}
+
+/// The ancestors of `directory`, normalized, itself first: the base of each number of `..` steps.
+export fn stamp_paths_from(directory: string) -> StampPaths {
+    let at = normalized(directory)
+    let rooted = is_absolute(at)
+    let parts = segments(at)
+    let lead = if rooted { "/" } else { "" }
+    StampPaths {
+        ancestors: [if k == parts.length { lead } else { "${lead}${parts.take(parts.length - k).join("/")}" } for k in 0..parts.length + 1],
+    }
+}
+
+/// `path` as the input door hands it on, normalized: only where it holds a segment to normalize (`.`,
+/// `..`, an empty one, or a slash it ends on), so a clean path costs a scan, not a split.
+export fn door_normalized(path: string) -> string {
+    if path.contains("/.") ||
+        path.contains("//") ||
+        path.starts_with(".") ||
+        path.length > 1 && path.ends_with("/") {
+        normalized(path)
+    } else {
+        path
+    }
+}
+
+/// `path` named from the directory `dir`, normalized, where the two are spelled from one root, else as
+/// it stands.
+export fn named_from(dir: string, path: string) -> string {
     if is_absolute(path) != is_absolute(dir) { return path }
     relative_path(dir, path)
 }
