@@ -5,8 +5,8 @@
 //! mints its own, in its own order, so nothing an id stands for may leave the process as the id. A
 //! name is saved as its TEXT and interned again where it is read back, and every fold of a name is a
 //! fold of its text: a saved answer, a content key and a print are the same in every process.
-use answer_record.{ContentHash}
-use interned.{HIGH_LANE, LOW_LANE, Interned, KeyLane, interned}
+use answer_record.{ContentHash, ContentKey}
+use interned.{Interned, KeyLane, interned, text_key}
 use saved_layout.{SavedLayoutWriter, SavedRecord, SavedSource}
 use saved_derive.{Saved}
 use @std.meta.{derive, sealed}
@@ -20,26 +20,16 @@ export type Name = { id: int }
 type NameText = { text: string }
 
 /// The names this process has minted, by their texts' keys: a name's id is its key's.
-once fn names() -> Interned<NameKey> { interned(key_hashed, same_key) }
+once fn names() -> Interned<ContentKey> { interned(key_hashed, same_key) }
 
 /// Each name's text, by id, kept beside the keys it was minted under.
 once fn name_texts() -> Cell<List<string>> { Cell.new([]) }
 
-/// What a name's text is found by: its content key over both lanes, and its length.
-type NameKey = { high: int, low: int, length: int }
+/// A name's key's hash: its high word, finished, so its low bits pick a slot.
+fn key_hashed(k: ContentKey) -> int { k.high }
 
-/// The key `text` is found by.
-fn name_key(text: string) -> NameKey {
-    NameKey {
-        high: HIGH_LANE.text(HIGH_LANE.seed, text),
-        low: LOW_LANE.text(LOW_LANE.seed, text),
-        length: text.length,
-    }
-}
-
-fn key_hashed(k: NameKey) -> int { k.high }
-
-fn same_key(a: NameKey, b: NameKey) -> bool { a.high == b.high && a.low == b.low && a.length == b.length }
+/// Whether two names' keys are one name.
+fn same_key(a: ContentKey, b: ContentKey) -> bool { a.same_as(b) }
 
 /// The name the text numbered `number` of a tape's `texts` spells, minted once for the tape's meaning;
 /// the text is read only to mint it. Every reading shares one list of slots, by text number: each
@@ -137,7 +127,7 @@ fn printed_through(id: int) -> int {
 export fn name_of(text: string) -> Name {
     let minted = names()
     let before = minted.count()
-    let id = minted.id_of(name_key(text)).index
+    let id = minted.id_of(text_key(text)).index
     if id == before { name_texts().push(text) }
     Name { id: id }
 }
