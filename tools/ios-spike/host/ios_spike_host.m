@@ -117,7 +117,9 @@ static void sources_armed(void) {
 @property(nonatomic, strong) UIColor* ink;
 @property(nonatomic) CGFloat pad_start;
 @property(nonatomic) CGFloat pad_top;
-@property(nonatomic, strong) NSMutableArray<NSNumber*>* kids;
+@property(nonatomic, strong) NSMutableDictionary<NSString*, NSString*>* facts;
+@property(nonatomic, strong) NSMutableSet<NSString*>* fresh;
+@property(nonatomic, strong) NSMutableArray<SpikeNode*>* kid_nodes;
 @end
 @implementation SpikeNode
 @end
@@ -132,8 +134,12 @@ static NSCountedSet<NSString*>* g_unused;
 static double g_first_frame_ms = -1;
 static double g_apply_s;
 static NSInteger g_measures;
+static CGFloat g_row_h;
+static UIColor* placeholder_rows(void);
 static NSInteger g_reused;
 static double g_parse_s;
+static double g_pair_s;
+static NSInteger g_rows_reused;
 static NSMutableDictionary<NSString*, NSNumber*>* g_op_s;
 static double g_measure_s;
 static BOOL g_toggling;
@@ -430,6 +436,9 @@ static void fact_set(SpikeNode* n, int code, NSString* under, NSString* kind, NS
         }
         break;
     case AVRA_FACT_mode: moded(value); break;
+    case AVRA_FACT_skipped_rows:
+        if (g_row_h > 0 && v.backgroundColor != placeholder_rows()) v.backgroundColor = placeholder_rows();
+        break;
     case AVRA_FACT_align: case AVRA_FACT_distribute: case AVRA_FACT_wrap: case AVRA_FACT_width: case AVRA_FACT_height: case AVRA_FACT_grow: case AVRA_FACT_order:
     case AVRA_FACT_margin_start: case AVRA_FACT_margin_end: case AVRA_FACT_margin_top: case AVRA_FACT_margin_bottom: break;
     default: [g_unused addObject:[NSString stringWithFormat:@"fact %d", code]];
@@ -458,12 +467,12 @@ static void fact_dropped(SpikeNode* n, int code) {
 static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
     if (!n) return;
     SpikeNode* was = g_nodes[@(n.parent)];
-    if (was) [was.kids removeObject:@(n.nid)];
+    if (was) [was.kid_nodes removeObject:n];
     n.parent = parent;
     SpikeNode* into = g_nodes[@(parent)];
     if (into) {
-        if (!into.kids) into.kids = [NSMutableArray new];
-        [into.kids addObject:@(n.nid)];
+        if (!into.kid_nodes) into.kid_nodes = [NSMutableArray new];
+        if (![into.kid_nodes containsObject:n]) [into.kid_nodes addObject:n];
     }
     if (is(n, @"dialog")) return;
     SpikeNode* holder = g_nodes[@(parent)];
@@ -471,8 +480,11 @@ static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
         [g_unused addObject:[NSString stringWithFormat:@"a child placed in %@", holder.prim]];
         return;
     }
+    UIView* into_view = holder ? holder.view : g_root;
+    n.view.hidden = NO;
+    if (n.view.superview == into_view) return;
     [n.view removeFromSuperview];
-    [(holder ? holder.view : g_root) addSubview:n.view];
+    [into_view addSubview:n.view];
 }
 
 // The solver's box for an element, relative to its parent's; a container's
@@ -507,28 +519,81 @@ static void list_found(void) {
     }
 }
 
+static BOOL g_win_pending;
+static CGFloat g_last_y;
+static double g_last_t;
+static NSInteger g_scroll_seq;
+
+// A new window only when the rows on screen near the edge of the one standing,
+// reaching ahead of the scroll by what it will travel before the next paint.
 static void window_asked(void) {
-    if (g_row_h <= 0) return;
+    if (g_row_h <= 0 || g_win_pending) return;
     CGFloat y = g_scroll.contentOffset.y - 16 - g_list_top;
-    NSInteger from = MAX(0, (NSInteger)floor(y / g_row_h) - overscan);
-    NSInteger to = from + (NSInteger)ceil(g_scroll.bounds.size.height / g_row_h) + 2 * overscan;
+    double now = CACurrentMediaTime();
+    double v = g_last_t > 0 && now > g_last_t ? (y - g_last_y) / (now - g_last_t) / g_row_h : 0;
+    g_last_y = y;
+    g_last_t = now;
+    NSInteger top = MAX(0, (NSInteger)floor(y / g_row_h));
+    NSInteger bottom = top + (NSInteger)ceil(g_scroll.bounds.size.height / g_row_h);
+    const NSInteger margin = 5;
+    if (g_win_from >= 0 && top - margin >= g_win_from && bottom + margin <= g_win_to) return;
+    // too fast for any row to be read: the placeholders carry the scroll, and
+    // the rows come when it slows (the scroll's own end asks again)
+    if (fabs(v) > 1000) return;
+    NSInteger lead = MIN(40, (NSInteger)ceil(fabs(v) * 0.15));
+    NSInteger from = MAX(0, top - overscan - (v < 0 ? lead : 0));
+    NSInteger to = bottom + overscan + (v > 0 ? lead : 0);
     if (from == g_win_from && to == g_win_to) return;
     if (!avra_host_idling()) return;
     g_win_from = from;
     g_win_to = to;
+    g_win_pending = YES;
     avra_spike_scrolled(from, to, (int64_t)llround(g_row_h));
     resumed();
+}
+
+// What a spacer shows while its rows are on the way: one placeholder row,
+// repeated at the remembered row height.
+static UIColor* placeholder_rows(void) {
+    static UIColor* c;
+    static CGFloat for_h;
+    if (c && for_h == g_row_h) return c;
+    for_h = g_row_h;
+    UIGraphicsImageRenderer* r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(1000, g_row_h)];
+    UIImage* row = [r imageWithActions:^(UIGraphicsImageRendererContext* ctx) {
+        [UIColor.tertiarySystemFillColor setFill];
+        CGFloat mid = g_row_h / 2;
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, mid - 15, 51, 30) cornerRadius:15] fill];
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(60, mid - 7, 90, 14) cornerRadius:7] fill];
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(162, mid - 12, 70, 24) cornerRadius:6] fill];
+    }];
+    c = [UIColor colorWithPatternImage:row];
+    return c;
 }
 
 @interface SpikeScrollWatch : NSObject <UIScrollViewDelegate>
 @end
 @implementation SpikeScrollWatch
-- (void)scrollViewDidScroll:(UIScrollView*)s { window_asked(); }
+- (void)scrollViewDidScroll:(UIScrollView*)s {
+    window_asked();
+    NSInteger seq = ++g_scroll_seq;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (seq != g_scroll_seq) return;
+        g_last_t = 0;
+        window_asked();
+    });
+}
+- (void)scrollViewDidEndDecelerating:(UIScrollView*)s { g_last_t = 0; window_asked(); }
+- (void)scrollViewDidEndDragging:(UIScrollView*)s willDecelerate:(BOOL)d { if (!d) { g_last_t = 0; window_asked(); } }
 @end
 static SpikeScrollWatch* g_scroll_watch;
 
 // A paint reached the views: what it cost the host, and the instrument told.
 static void painted(void) {
+    if (g_win_pending) {
+        g_win_pending = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ window_asked(); });
+    }
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
     {
         double l0 = CACurrentMediaTime();
@@ -537,7 +602,9 @@ static void painted(void) {
         NSMutableString* ops = [NSMutableString new];
         for (NSString* k in g_op_s) [ops appendFormat:@" %@_us=%.0f", k, g_op_s[k].doubleValue * 1e6];
         if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
-            said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f reused=%ld parse_us=%.0f layout_us=%.0f%@", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6, (long)g_reused, g_parse_s * 1e6, layout_s * 1e6, ops]);
+            said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f reused=%ld rows_reused=%ld pair_us=%.0f parse_us=%.0f layout_us=%.0f%@", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6, (long)g_reused, (long)g_rows_reused, g_pair_s * 1e6, g_parse_s * 1e6, layout_s * 1e6, ops]);
+        g_rows_reused = 0;
+        g_pair_s = 0;
         [g_op_s removeAllObjects];
         g_parse_s = 0;
     }
@@ -575,7 +642,9 @@ static void reset(SpikeNode* n) {
     n.seat = n.said_seat = 0;
     n.max = n.amount = 0;
     n.parent = 0;
-    [n.kids removeAllObjects];
+    [n.kid_nodes removeAllObjects];
+    [n.facts removeAllObjects];
+    n.fresh = nil;
 }
 
 // An element of `prim` numbered `nid`: from the pool when one waits, else made.
@@ -597,16 +666,111 @@ static SpikeNode* taken(NSString* prim, NSInteger nid) {
     return n;
 }
 
-// `n` and every element under it leave the page for their prims' pools.
+// A subtree's shape: its prim and its children's shapes in order.
+static NSString* shape_of(SpikeNode* n) {
+    if (n.kid_nodes.count == 0) return n.prim;
+    NSMutableArray* parts = [NSMutableArray new];
+    for (SpikeNode* k in n.kid_nodes) [parts addObject:shape_of(k)];
+    return [NSString stringWithFormat:@"%@(%@)", n.prim, [parts componentsJoinedByString:@";"]];
+}
+
+// THE ROW POOL: a removed subtree waits whole, hidden where it stood, keyed by
+// its shape, for a create of the same shape — as a table's cell is reused whole.
+static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_rows;
+
+// Every node of a subtree, in order: the root, then each child's subtree.
+static void preorder(SpikeNode* n, NSMutableArray<SpikeNode*>* out) {
+    if (!n) return;
+    [out addObject:n];
+    for (SpikeNode* k in n.kid_nodes) preorder(k, out);
+}
+
+// `n` leaves the page: a subtree for the row pool, a single element for its prim's.
 static void pooled(SpikeNode* n) {
     if (!n) return;
-    for (NSNumber* k in [n.kids copy]) pooled(g_nodes[k]);
     if (n.sheet) dialog_shown(n, NO);
-    [n.view removeFromSuperview];
+    n.view.hidden = YES;
+    if (n.kid_nodes.count > 0) {
+        NSString* shape = shape_of(n);
+        NSMutableArray<SpikeNode*>* all = [NSMutableArray new];
+        preorder(n, all);
+        for (SpikeNode* m in all) [g_nodes removeObjectForKey:@(m.nid)];
+        if (!g_rows) g_rows = [NSMutableDictionary new];
+        if (!g_rows[shape]) g_rows[shape] = [NSMutableArray new];
+        [g_rows[shape] addObject:n];
+        return;
+    }
     [g_nodes removeObjectForKey:@(n.nid)];
     if (!g_pool) g_pool = [NSMutableDictionary new];
     if (!g_pool[n.prim]) g_pool[n.prim] = [NSMutableArray new];
     [g_pool[n.prim] addObject:n];
+}
+
+// THE PAIRING, read from a frame before it is applied: each subtree it creates
+// is matched by shape to a pooled one, whose nodes take the new numbers in
+// order. Answers the numbers whose create and inner place the pairing carries.
+static NSMutableSet<NSNumber*>* paired(NSArray<NSString*>* lines, NSMutableSet<NSNumber*>* roots) {
+    NSMutableDictionary<NSNumber*, NSString*>* made_prim = [NSMutableDictionary new];
+    NSMutableDictionary<NSNumber*, NSNumber*>* parent_of = [NSMutableDictionary new];
+    NSMutableDictionary<NSNumber*, NSMutableArray<NSNumber*>*>* kids_of = [NSMutableDictionary new];
+    NSMutableArray<NSNumber*>* order = [NSMutableArray new];
+    for (NSString* line in lines) {
+        if ([line hasPrefix:@"create "]) {
+            NSArray* w = [line componentsSeparatedByString:@" "];
+            made_prim[@([w[1] integerValue])] = w[2];
+            [order addObject:@([w[1] integerValue])];
+        } else if ([line hasPrefix:@"place "]) {
+            NSArray* w = [line componentsSeparatedByString:@" "];
+            NSNumber* id = @([w[1] integerValue]);
+            NSNumber* parent = @([w[2] integerValue]);
+            parent_of[id] = parent;
+            if (made_prim[parent]) {
+                if (!kids_of[parent]) kids_of[parent] = [NSMutableArray new];
+                [kids_of[parent] addObject:id];
+            }
+        }
+    }
+    NSMutableSet<NSNumber*>* carried = [NSMutableSet new];
+    NSString* (^__block shape)(NSNumber*) = nil;
+    __block __weak NSString* (^weak_shape)(NSNumber*);
+    weak_shape = shape = ^NSString*(NSNumber* id) {
+        NSArray* ks = kids_of[id];
+        if (ks.count == 0) return made_prim[id];
+        NSMutableArray* parts = [NSMutableArray new];
+        for (NSNumber* k in ks) [parts addObject:weak_shape(k)];
+        return [NSString stringWithFormat:@"%@(%@)", made_prim[id], [parts componentsJoinedByString:@";"]];
+    };
+    void (^__block flat)(NSNumber*, NSMutableArray*) = nil;
+    __block __weak void (^weak_flat)(NSNumber*, NSMutableArray*);
+    weak_flat = flat = ^(NSNumber* id, NSMutableArray* out) {
+        [out addObject:id];
+        for (NSNumber* k in kids_of[id]) weak_flat(k, out);
+    };
+    for (NSNumber* id in order) {
+        if (made_prim[parent_of[id]]) continue;
+        if (kids_of[id].count == 0) continue;
+        NSString* s = shape(id);
+        SpikeNode* r = [g_rows[s] lastObject];
+        if (!r) continue;
+        [g_rows[s] removeLastObject];
+        NSMutableArray<NSNumber*>* ids = [NSMutableArray new];
+        flat(id, ids);
+        NSMutableArray<SpikeNode*>* nodes = [NSMutableArray new];
+        preorder(r, nodes);
+        for (NSUInteger i = 0; i < ids.count && i < nodes.count; i++) {
+            SpikeNode* m = nodes[i];
+            NSInteger nid = ids[i].integerValue;
+            m.nid = nid;
+            m.view.tag = nid;
+            m.control.tag = nid;
+            m.fresh = [NSMutableSet new];
+            g_nodes[ids[i]] = m;
+            [carried addObject:ids[i]];
+        }
+        [roots addObject:id];
+        g_rows_reused++;
+    }
+    return carried;
 }
 
 static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
@@ -617,6 +781,12 @@ static void applied(NSString* frame) {
     double s0 = CACurrentMediaTime();
     NSArray<NSString*>* lines = [frame componentsSeparatedByString:@"\n"];
     g_parse_s += CACurrentMediaTime() - s0;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    NSMutableSet<NSNumber*>* roots = [NSMutableSet new];
+    double r0 = CACurrentMediaTime();
+    NSMutableSet<NSNumber*>* carried = paired(lines, roots);
+    g_pair_s += CACurrentMediaTime() - r0;
     for (NSString* line in lines) {
         double p0 = CACurrentMediaTime();
         NSArray<NSString*>* w = [line componentsSeparatedByString:@" "];
@@ -627,16 +797,24 @@ static void applied(NSString* frame) {
         double t1 = CACurrentMediaTime();
         g_parse_s += t1 - p0;
         if ([op isEqualToString:@"create"]) {
-            g_nodes[@(nid)] = taken(w[2], nid);
+            if (![carried containsObject:@(nid)]) g_nodes[@(nid)] = taken(w[2], nid);
         } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
-            fact_set(n, w[2].intValue, w[3], w[4], rest(w, 5));
+            NSString* key = [NSString stringWithFormat:@"%@|%@", w[2], w[3]];
+            NSString* value = rest(w, 4);
+            if (!n.facts) n.facts = [NSMutableDictionary new];
+            [n.fresh addObject:key];
+            if (![n.facts[key] isEqualToString:value]) {
+                fact_set(n, w[2].intValue, w[3], w[4], rest(w, 5));
+                n.facts[key] = value;
+            }
         } else if ([op isEqualToString:@"drop"]) {
+            [n.facts removeObjectForKey:[NSString stringWithFormat:@"%@|%@", w[2], w.count > 3 ? w[3] : @"-"]];
             fact_dropped(n, w[2].intValue);
         } else if ([op isEqualToString:@"place"]) {
-            placed(n, w[2].integerValue, w[3].integerValue);
+            if (![carried containsObject:@(nid)] || [roots containsObject:@(nid)]) placed(n, w[2].integerValue, w[3].integerValue);
         } else if ([op isEqualToString:@"remove"]) {
             SpikeNode* above = g_nodes[@(n.parent)];
-            if (above) [above.kids removeObject:@(nid)];
+            if (above) [above.kid_nodes removeObject:n];
             pooled(n);
         } else if ([op isEqualToString:@"listen"]) {
             if ([w[3] isEqualToString:@"button"] || [w[3] isEqualToString:@"link"] || [w[3] isEqualToString:@"dialog"]) n.seat = w[2].integerValue;
@@ -656,6 +834,16 @@ static void applied(NSString* frame) {
         if (!g_op_s) g_op_s = [NSMutableDictionary new];
         g_op_s[op] = @([g_op_s[op] doubleValue] + CACurrentMediaTime() - t1);
     }
+    for (NSNumber* id in carried) {
+        SpikeNode* m = g_nodes[id];
+        for (NSString* key in m.facts.allKeys) {
+            if ([m.fresh containsObject:key]) continue;
+            fact_dropped(m, [key componentsSeparatedByString:@"|"][0].intValue);
+            [m.facts removeObjectForKey:key];
+        }
+        m.fresh = nil;
+    }
+    [CATransaction commit];
 }
 
 // THE PROGRAM'S FRAME: drawn at once once the window stands, kept until then.

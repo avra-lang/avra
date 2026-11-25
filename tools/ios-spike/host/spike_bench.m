@@ -40,6 +40,8 @@ static void say(NSString* line) {
 @property(nonatomic) double toggle_drawn;
 @property(nonatomic) BOOL flinging;
 @property(nonatomic) double fling_from;
+@property(nonatomic) BOOL slow;
+@property(nonatomic) CGFloat slow_from_y;
 @property(nonatomic) double fling_last;
 @property(nonatomic) NSInteger fling_frames;
 @property(nonatomic) double fling_longest;
@@ -71,7 +73,8 @@ static const double fling_s = 3.0;
     double k = MIN(1.0, (t - self.fling_from) / fling_s);
     UIScrollView* s = self.scroll;
     CGFloat bottom = MAX(0, s.contentSize.height - s.bounds.size.height);
-    s.contentOffset = CGPointMake(0, bottom * k);
+    if (self.slow) s.contentOffset = CGPointMake(0, MAX(0, self.slow_from_y - 4000 * k));
+    else s.contentOffset = CGPointMake(0, bottom * k);
     if (k >= 1.0) self.flinging = NO;
 }
 @end
@@ -109,8 +112,21 @@ static void flung(void) {
         say([NSString stringWithFormat:@"fling: %ld frames in %.1f s, longest gap %.1f ms, gaps over 16.7 ms %ld, over 8.3 ms %ld",
             (long)g_bench.fling_frames, fling_s, g_bench.fling_longest, (long)g_bench.over16, (long)g_bench.over8]);
         say([NSString stringWithFormat:@"memory after the fling: %.1f MB", footprint_mb()]);
-        say(@"done");
-        exit(0);
+        say(@"slow scroll begins");
+        g_bench.fling_frames = 0;
+        g_bench.fling_longest = 0;
+        g_bench.over16 = g_bench.over8 = 0;
+        g_bench.fling_last = 0;
+        g_bench.slow = YES;
+        g_bench.slow_from_y = g_bench.scroll.contentOffset.y;
+        g_bench.fling_from = bench_now_s();
+        g_bench.flinging = YES;
+        later(fling_s + 1, ^{
+            say([NSString stringWithFormat:@"slow scroll: %ld frames in %.1f s, longest gap %.1f ms, gaps over 16.7 ms %ld",
+                (long)g_bench.fling_frames, fling_s, g_bench.fling_longest, (long)g_bench.over16]);
+            say(@"done");
+            exit(0);
+        });
     });
 }
 
