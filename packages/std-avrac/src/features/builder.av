@@ -2,6 +2,7 @@
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{
     NodeStore,
+    qtrace,
     found_at,
     Expr,
     Stmt,
@@ -515,6 +516,54 @@ export fn isolating(seats: List<Param>, ps: List<Token>, isos: List<Token>, from
     Param,
 > {
     [s with { promises: s.promises with { unshared: isos.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) } } for j, s in seats]
+}
+
+/// Ordinary seats and whole-seat holes, interleaved by span — two
+/// separately-captured lists, each already source-ordered on its
+/// own, merged the way a merge sort's own merge step reads two
+/// sorted runs into one.
+export fn seats_with_holes(store: NodeStore, ordinary: List<Param>, holes: List<Token>) -> List<
+    Param,
+> {
+    qtrace("Q\tDEBUG_seats_with_holes\tordinary=${ordinary.length}\tholes=${holes.length}\n")
+    if holes.is_empty() { return ordinary }
+    merged_by_span(store, ordinary, [hole_param(store, h) for h in holes])
+}
+
+/// A whole-seat hole's own marker: its name AND its written type both
+/// the SAME hole (`Rebuilder.param_hole`'s two-field agreement) — the
+/// one shape only this builder ever mints, so no ordinary seat can
+/// coincide with it.
+fn hole_param(store: NodeStore, h: Token) -> Param {
+    Param {
+        name: Scoped(h.text),
+        ty: TypeRef { name: h.text, args: [], optional: false, dynamic: false, arrow: false, span: h.span },
+        default: null,
+        promises: plain_mark,
+        id: store.alloc_param_id(h.span),
+    }
+}
+
+fn merged_by_span(store: NodeStore, a: List<Param>, b: List<Param>) -> List<Param> {
+    mut out: List<Param> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length || j < b.length {
+        if i >= a.length {
+            out.push(b[j])
+            j = j + 1
+        } else if j >= b.length {
+            out.push(a[i])
+            i = i + 1
+        } else if (store.param_id_span(a[i].id)?.lo ?? 0) < (store.param_id_span(b[j].id)?.lo ?? 0) {
+            out.push(a[i])
+            i = i + 1
+        } else {
+            out.push(b[j])
+            j = j + 1
+        }
+    }
+    out
 }
 
 /// One seat's contract: the `mut` and `const` tokens written in its

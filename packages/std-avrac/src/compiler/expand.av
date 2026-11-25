@@ -126,13 +126,36 @@ impl Workspace {
     }
 
     /// One directive: a `source` is generated CODE parsed and admitted
-    /// beside the original, and a `twin` mints a fn beside it.
+    /// beside the original, a `twin` mints a fn beside it, and `wrap`
+    /// replaces what the original compiles to instead of adding
+    /// beside it — mutually exclusive with both.
     fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<
         DeclId,
     > {
         let ann = self.decls.decl(w.ann).name
+        if directive.wrap { return self.wrapped(f, w, ann, vis) }
         let source? = directive.source else { return self.twinned(f, w, directive, ann, vis) }
         self.admit_code(f, source.node, ann, w.at, vis)
+    }
+
+    /// A WRAP directive over the annotated declaration — a fn's or a
+    /// METHOD's, told apart by its own kind, never by re-deriving it
+    /// from a name (a method binds no name in either fn namespace, so
+    /// `vis.fn_decl` could never find one). A METHOD'S sibling must
+    /// register under its TARGET TYPE for the wrapper's own call to
+    /// resolve — `Decls.target_of` answers only once the impl is
+    /// SIGNED, which has not happened yet here, so the target is read
+    /// off the written namespace instead, by the method's own OWNER
+    /// name. A bodiless signature (an extern, a trait member) has no
+    /// root to relocate and wraps nothing.
+    fn wrapped(f: FileId, w: DeclareWork, ann: string, vis: Namespace) -> List<DeclId> {
+        let orig = self.decls.decl(w.annotated)
+        if orig.root == null { return [] }
+        if orig.kind is .Method {
+            let target? = vis.type_decl(orig.owner) else { return [] }
+            return self.decls.mint_wrap(f, w, ann, target)
+        }
+        self.decls.mint_wrap(f, w, ann, null)
     }
 
     /// The fn a directive asks for beside the original, when it asks.
@@ -203,6 +226,7 @@ impl Workspace {
                                             answer: answer,
                                             original: x.name,
                                             at: a.span ?? p.store.stmt_span(x.stmt),
+                                            annotated: d,
                                         },
                                     )
                             }
@@ -361,6 +385,7 @@ impl Workspace {
             .Statement -> Filled.Stmts(self.spliced_stmts(f, node)),
             .Arm -> Filled.Arms(self.spliced_arms(f, node)),
             .Run -> Filled.Exprs(self.spliced_exprs(f, node)),
+            .Param -> Filled.Stmts(self.spliced_stmts(f, node)),
         }
     }
 
