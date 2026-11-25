@@ -1,0 +1,77 @@
+diff --git a/packages/std-program/src/source_facts.av b/packages/std-program/src/source_facts.av
+index be9984e5c..bd2acb384 100644
+--- a/packages/std-program/src/source_facts.av
++++ b/packages/std-program/src/source_facts.av
+@@ -107,17 +107,10 @@ export fn listed(engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
+     read_stamped(engine, (places.directory)(dir), () -> names_in(world, dir))
+ }
+ 
+-/// The name of the directory a package's store stands in, beside its sources.
+-export const STORE_DIR: string = ".avra-cache"
+-
+-/// The names `world` lists in `dir`, in text order, but the store's own directory; absent when
+-/// there's no such directory. A STORE IS NO SOURCE: it comes and goes as processes save, so a
+-/// listing that held it would be an answer moved by whatever saved last — a build of one package
+-/// re-worked because another saved beside it, and the std answers a toolchain writes package by
+-/// package, at once, holding what each job happened to see of the others'.
++/// The names `world` lists in `dir`, in text order; absent when there's no such directory.
+ fn names_in(world: SourceWorld, dir: DirectoryAddress) -> List<string>? {
+     let names? = (world.list_directory)(dir) else { return null }
+-    sorted_by([n for n in names if n != STORE_DIR], text_before)
++    sorted_by(names, text_before)
+ }
+ 
+ /// One item: what its part is called, and the hashes of what it says.
+diff --git a/packages/std-program/src/tests/source_facts_test.av b/packages/std-program/src/tests/source_facts_test.av
+index 61acdfd30..64e09fc18 100644
+--- a/packages/std-program/src/tests/source_facts_test.av
++++ b/packages/std-program/src/tests/source_facts_test.av
+@@ -353,15 +353,3 @@ spec "source_facts — an item reads under its file's context" {
+         }
+     }
+ }
+-
+-spec "source_facts — a directory's names" {
+-    given "a store standing beside a package's files" {
+-        then "the listing names the files and never the store, which comes and goes as processes save" {
+-            set_world("v1")
+-            files().set({"a.x": "ka=b;", ".avra-cache": ""})
+-            let engine = process(store_in_memory())
+-            (listed(engine, DirectoryAddress { package_name: "@test/p", path_in_package: "" }) ?? [])
+-                .join(",") == "a.x"
+-        }
+-    }
+-}
+diff --git a/tools/std_answers_checkout_witness.sh b/tools/std_answers_checkout_witness.sh
+index be30984ac..5737f51f3 100644
+--- a/tools/std_answers_checkout_witness.sh
++++ b/tools/std_answers_checkout_witness.sh
+@@ -17,9 +17,7 @@
+ #   (7) a store that compacts once they're laid in keeps them: the check after it works out what
+ #       the check with none does;
+ #   (8) on the volume the answers stand on, each is laid in by a second name, never a copy: every
+-#       pack and kept file the store holds of them is the shipped file itself;
+-#   (9) the answers are the same however the writer's jobs meet: written with its jobs one at a time
+-#       and all at once, the check over each works out the same.
++#       pack and kept file the store holds of them is the shipped file itself.
+ #   sh tools/std_answers_checkout_witness.sh [compiler]     (default build/avra)
+ set -u
+ root=$(cd "$(dirname "$0")/.." && pwd)
+@@ -155,17 +153,4 @@ for n in $(ls "$fresh/build/answers" | grep -E '^(pack|kept)-'); do
+         fail "(8) $n was laid in as a copy, or not at all, on the volume its answers stand on"
+ done
+ held "(8) laid in by a second name: $(ls "$fresh/build/answers" | grep -cE '^(pack|kept)-') files, no copy"
+-
+-# (9)
+-k=0
+-for jobs in 1 3; do
+-    find "$fresh/build/answers" -delete 2>/dev/null
+-    STD_ANSWERS_JOBS=$jobs sh "$root/tools/std_answers.sh" "$fresh/build/avra" "$fresh/packages" "$fresh/build/answers" std-text std-prelude std-meta >/dev/null ||
+-        fail "(9) the answers were not made, $jobs job(s) at a time"
+-    eval "met$k=\$(worked \"\$w/m9-$k\")"
+-    k=$((k + 1))
+-done
+-[ -n "$met0" ] && [ "$met0" = "$met1" ] ||
+-    fail "(9) the shipped answers hang on how the writer's jobs met: ${met0:-none} one at a time, ${met1:-none} at once"
+-held "(9) written one job at a time and all at once: ${met0} answers worked out over each"
+ echo "std_answers_checkout_witness: held"
