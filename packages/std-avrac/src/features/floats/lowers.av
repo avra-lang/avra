@@ -1,0 +1,66 @@
+//! The lowering rules of the conversions between `int` and `float`: `n.float()` is the int's nearest
+//! float; `x.floor()`, `ceil()`, `round()` and `trunc()` read three range checks in order, each a
+//! region over the float's own comparison — NaN is the one value unequal to itself, a float at or past
+//! 2^63 and one below -2^63 are refused — then the rounded int in the `Ok`. A refusal is the `ToInt`
+//! variant that names it, carrying the float where it carries one, in the `Err`.
+use core.{BinOp, ExprId, Ins, Layout, Lowering, OwnType, Reg, Rounding, SignedType, UnOp}
+use core.expr.{MethodCall}
+
+impl Lowering {
+    /// `m`, a conversion verb on a value of the type the language owns `own`; absent, with nothing
+    /// emitted, for any other verb.
+    mut fn number_converted(m: MethodCall, e: ExprId, own: OwnType) -> Reg? {
+        if !m.args.is_empty() { return null }
+        if own == OwnType.Int && m.name.of == "float" { return self.unary(Layout.Real, UnOp.ToFloat, self.lower(m.subject)) }
+        if own != OwnType.Float { return null }
+        let mode? = rounding_of(m.name.of) else { return null }
+        let whole? = self.type_at(e) else { return self.missed_as("an untyped `${m.name.of}`") }
+        let x = self.lower(m.subject)
+        let nan = self.bin(Layout.Truth, BinOp.Ne, x, x)
+        self
+            .region(nan, self.laid_out(whole)) { cx -> refused(cx, whole, "NotANumber", []) } else { cx ->
+                too_large(cx, whole, mode, x)
+            }
+    }
+
+    /// `op` over `src`, answering a value of layout `l`.
+    mut fn unary(l: Layout, op: UnOp, src: Reg) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Un(dst, op, src))
+        dst
+    }
+}
+
+/// The rounding a conversion verb asks for, absent for a verb that isn't one.
+fn rounding_of(verb: string) -> Rounding? {
+    match verb {
+        "floor" -> Rounding.Floor,
+        "ceil" -> Rounding.Ceil,
+        "round" -> Rounding.Nearest,
+        "trunc" -> Rounding.Trunc,
+        rest -> null,
+    }
+}
+
+fn too_large(mut cx: Lowering, whole: SignedType, mode: Rounding, x: Reg) -> Reg {
+    let high = cx.bin(Layout.Truth, BinOp.Ge, x, cx.const_float(TWO_63))
+    cx
+        .region(high, cx.laid_out(whole)) { cx -> refused(cx, whole, "TooLarge", [x]) } else { cx ->
+            too_small(cx, whole, mode, x)
+        }
+}
+
+fn too_small(mut cx: Lowering, whole: SignedType, mode: Rounding, x: Reg) -> Reg {
+    let low = cx.bin(Layout.Truth, BinOp.Lt, x, cx.const_float(MINUS_TWO_63))
+    cx
+        .region(low, cx.laid_out(whole)) { cx -> refused(cx, whole, "TooSmall", [x]) } else { cx ->
+            cx.okayed(whole, cx.unary(Layout.Word, UnOp.ToInt(mode), x))
+        }
+}
+
+/// The refusal `which`, the `ToInt` variant of that name carrying `carried`, in the `Err` of `whole`.
+fn refused(mut cx: Lowering, whole: SignedType, which: string, carried: List<Reg>) -> Reg {
+    let late? = whole.args.last() else { return cx.missed_as(no_result) }
+    let tag? = cx.variants_of(late)?.find_index(it.name == which) else { return cx.missed_as("a `ToInt` without `${which}`") }
+    cx.failure_of(whole, cx.tagged_value(cx.laid_out(late), tag, carried))
+}

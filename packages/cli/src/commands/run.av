@@ -1,0 +1,69 @@
+//! `avra run` — evaluate a program and print its value.
+use @std.cli.{CliResult, Runnable, command, flag}
+
+use @std.avrac.compiler.host.{no_target}
+use @std.avrac.diagnostics.{render_among}
+use @std.avrac.compiler.backend.{Ended}
+use @std.path.{dir_of, joined_path}
+
+type RunCmd = {}
+
+impl Runnable for RunCmd {
+    fn run(args: CliResult) -> int {
+        // a wasm run builds the module, on the path the door chooses, and hands it to the host
+        // runner; the program layer or the evaluator answers every other run
+        if args.option("target") != "" { return run_wasm_command(args) }
+        if args.has_flag("eval") { program_evaluated(args) } else { program_ran(args) }
+    }
+}
+
+/// `avra run` on the program layer: the program built there, then run at the terminal, its exit the
+/// run's — a trap's 2, a cancelled run's 1, as an evaluated run ends.
+fn program_ran(args: CliResult) -> int {
+    let path = path_arg(args)
+    if is_a_dir(path) && entry_written(path) == null {
+        println(render_among(no_target(path), []))
+        return 1
+    }
+    let binary = match built_binary(args) { .Ok(b) -> b, .Err(code) -> { return code } }
+    match run_binary(binary) { .Ok(exit) -> status_of_exit(exit), .Err(e) -> refused_by_host(e) }
+}
+
+/// `avra run --eval` on the program layer: the program made there and run in this compiler's own
+/// evaluator, the engine a native run is held to, ending as a native run ends.
+fn program_evaluated(args: CliResult) -> int {
+    let path = rooted(path_arg(args))
+    if !is_a_dir(path) {
+        let home? = file_home(path) else { return lone_refuse_evaluated(path, live: true) }
+        return program_refuse_evaluated(home, path, live: true)
+    }
+    let root = package_root(path) ?? path
+    let entry? = entry_written(root) else {
+        println(render_among(no_target(root), []))
+        return 1
+    }
+    program_refuse_evaluated(root, joined_path(root, entry), live: true)
+}
+
+/// AN EVALUATED RUN ENDS AS A NATIVE BINARY DOES, so the two engines
+/// end one program one way: `avra: <words>` on stderr and a trap's 2 —
+/// or, the program's own run cancelled, a verdict's 1.
+export fn ended_as(e: Ended) -> int {
+    match e { .Clean -> 0, .Trapped(words) -> said(words, 2), .Cancelled(words) -> said(words, 1) }
+}
+
+fn said(words: string, code: int) -> int {
+    eprintln("avra: ${words}")
+    code
+}
+
+export command run {
+    description: "Run a program and print its value"
+    flags: [time, wasm_reactor, wasm_debug, eval]
+    options: [target]
+    args: [file]
+    run: RunCmd {}
+}
+
+/// `run`'s own: the program evaluated, never built.
+export flag eval { description: "run the program in the compiler's own evaluator instead of building it — the engine a native run is held to" }

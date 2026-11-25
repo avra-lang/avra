@@ -1,0 +1,44 @@
+// proves: a component declaration is a config — its fields the schema, its body the sources — read
+// layer by layer: a file, a stage's file laid beneath the environment and the flags, every leaf
+// keeping where it came from, a secret never shown, and a stage no body declares refused.
+use @std.meta.{derive}
+use @std.io.{write_text, make_dirs, env_or}
+use @std.time.{stamp}
+use @std.validate.{Decode, range}
+use @std.config.{Configured, Secret, file, env, flags, stage}
+
+once fn run_base() -> string { "${env_or("TMPDIR", "/tmp")}/avra-config-layered/${stamp()}" }
+
+@derive(Decode)
+type Db = { url: string = "sqlite://app.db", @range(1, 512) pool: int = 10 }
+
+@derive(Decode)
+component Shop {
+    @range(1, 65535) port: int = 8080
+    host: string = "localhost"
+    db: Db = Db {}
+    password: Secret<string>
+
+    file "${run_base()}/app.toml"
+    env "SHOP" { only: {"SHOP__PASSWORD": "hunter2", "SHOP__PORT": "7000"} }
+    flags ["--db.url=postgres://flag/shop", "--verbose"]
+    stage prod {
+        file "${run_base()}/app.prod.toml"
+    }
+}
+
+fn shown(named: string) -> string {
+    match Shop.load_as(named) {
+        .Ok(c) -> "${c.value.port} ${c.value.db.pool} ${c.value.db.url} ${c.value.password.reveal((t: string) -> t.length)}\n${c.explain()}",
+        .Err(e) -> e.report(),
+    }
+}
+
+let _ = make_dirs(run_base())
+let _ = write_text(
+    "${run_base()}/app.toml",
+    "port = 9000\n[db]\nurl = \"postgres://db/shop\"\npool = 4\n",
+)
+let _ = write_text("${run_base()}/app.prod.toml", "[db]\npool = 40\n")
+"no stage\n${shown("")}\n\nprod\n${shown("prod")}\n\nstaging\n${shown("staging")}"
+    .replace(run_base(), "<dir>")

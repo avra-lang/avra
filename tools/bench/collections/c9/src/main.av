@@ -1,0 +1,22 @@
+//! C9: 1M text keys into a fresh map, then 1M hits and 1M misses. C9i
+//! is the insert alone, the per-key cost C10 is read against.
+//! Today: `Map.set`/`get`. Target: unchanged.
+use @bench.input.{SEED, draw, folded, report}
+use @std.time.{now_ns}
+
+let n = 1000000
+let keys = ["key:${draw(SEED, i)}:${i}" for i in 0..n]
+let absent = ["miss:${draw(SEED, i)}:${i}" for i in 0..n]
+let t0 = now_ns()
+mut m: Map<string, int> = {}
+// LICENSED loops.push_loop: a timed loop writes a map, it builds no list
+for i, k in keys { m.set(k, i) }
+let t1 = now_ns()
+mut found = 0
+// LICENSED loops.push_loop: a timed loop counts, it builds no list
+for k in keys { found = found + (m.get(k) ?? -1) }
+// LICENSED loops.push_loop: a timed loop counts, it builds no list
+for k in absent { found = found + (m.get(k) ?? -1) }
+let t2 = now_ns()
+report("C9i", m.length, t0, t1)
+report("C9", folded(m.length, found), t0, t2)

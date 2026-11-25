@@ -1,0 +1,183 @@
+//! `app/layers.av` — WHAT A WRITE HAS DONE, SHOWN BEFORE THE SERVER SAYS SO. A layer is a write's
+//! effect laid over the entries it reaches, in the order the writes were made. An entry keeps only
+//! what the server said, so a layer that is dropped leaves nothing to restore, and an answer that
+//! arrives while a layer stands is read with the layer over it again. A layer is DATA: the row a
+//! write appends, patches or hides, named by the model's key column — never a closure — except the
+//! `Custom` a hand-written route declares, which is pure and reads the reply it is laid over.
+use @std.http_message.message.{Reply}
+use @std.json.{Field, Json, parse, to_text}
+use app.{Key}
+
+/// What a write does to the replies it reaches. `key` is the model's key column, `id` the row's key
+/// as text.
+export enum Overlay {
+    Append(key: string)
+    Patch(key: string, id: string)
+    Hide(key: string, id: string)
+    Custom(apply: fn(Reply) -> Reply)
+}
+
+/// A write's layer: the collection it writes (its route path), what it does, the row it carries
+/// (the write's JSON body), whose answer settles it, where the database stood after the write
+/// (once answered), the row the server answered a create with, and the count of asks made when the
+/// answer came.
+export type Layer = {
+    id: int,
+    path: string,
+    overlay: Overlay,
+    body: Json?,
+    owner: Cell<int>,
+    stand: Cell<int?>,
+    answered: Cell<Json?>,
+    after: Cell<int?>,
+}
+
+/// A reply with the layers over it, and which layer each row of a list came from: a row a layer
+/// appended, none for one the server sent.
+export type Laid = { reply: Reply, marks: List<int?> }
+
+/// The rows and where each came from, while layers are laid.
+type Shape = { rows: List<Json>, marks: List<int?> }
+
+impl Layer {
+    /// The row a layer carries: the server's, once it answered, else the write's own.
+    fn row() -> Json? { self.answered.get() ?? self.body }
+
+    /// Whether the layer reaches a reply read under `key`: the collection, or the row it names.
+    fn reaches(key: Key) -> bool {
+        match self.overlay {
+            .Append(_) or .Hide(_, _) or .Custom(_) -> key.path == self.path,
+            .Patch(_, id) -> key.path == self.path || key.path == "${self.path}/${id}",
+        }
+    }
+}
+
+/// `reply` as the layers that reach `key` leave it; the reply itself where none do, or where its
+/// body is not the JSON a layer reads.
+export fn laid(layers: List<Layer>, key: Key, reply: Reply) -> Laid {
+    let mine = [l for l in layers if l.reaches(key)]
+    let plain = Laid { reply: reply, marks: [] }
+    if mine.is_empty() { return plain }
+    let said = mine.fold(reply, customized)
+    let doc = match parse(said.body.text() ?? "") { .Ok(j) -> j, .Err(_) -> { return plain } }
+    match doc {
+        .Arr(items) -> {
+            let unmarked: int? = null
+            let start = Shape { rows: items, marks: [unmarked for _x in items] }
+            let end = mine.fold(start, (s: Shape, l: Layer) -> s.under(l, key.query))
+            Laid {
+                reply: said with { body: to_text(Json.Arr(end.rows)).bytes() },
+                marks: end.marks,
+            }
+        },
+        .Obj(_) -> {
+            let end = mine.fold(doc, mended)
+            Laid { reply: said with { body: to_text(end).bytes() }, marks: [] }
+        },
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> plain,
+    }
+}
+
+fn customized(r: Reply, l: Layer) -> Reply {
+    match l.overlay { .Custom(apply) -> apply(r), .Append(_) or .Patch(_, _) or .Hide(_, _) -> r }
+}
+
+/// One row's object with a layer's patch laid over it.
+fn mended(row: Json, l: Layer) -> Json {
+    match l.overlay {
+        .Patch(_, _) -> merged(row, l.body),
+        .Append(_) or .Hide(_, _) or .Custom(_) -> row,
+    }
+}
+
+impl Shape {
+    /// The list with `l` laid over it: an append goes last when the entry's filter admits the row,
+    /// a patch changes the row it names (and drops it from a list whose filter it no longer
+    /// passes), a hide removes it.
+    fn under(l: Layer, query: string) -> Shape {
+        match l.overlay {
+            .Append(_) -> {
+                let row? = l.row() else { return self }
+                if admits(row, query) != true { return self }
+                Shape { rows: self.rows.concat([row]), marks: self.marks.concat([l.id]) }
+            },
+            .Patch(key, id) -> self.patched(l, key, id, query),
+            .Hide(key, id) -> self.without(key, id),
+            .Custom(_) -> self,
+        }
+    }
+
+    fn patched(l: Layer, key: string, id: string, query: string) -> Shape {
+        let made = [if named(r, key, id) { merged(r, l.body) } else { r } for r in self.rows]
+        let keep = [i for i, r in made if !named(self.rows[i], key, id) || admits(r, query) != false]
+        Shape { rows: [made[i] for i in keep], marks: [self.marks[i] for i in keep] }
+    }
+
+    fn without(key: string, id: string) -> Shape {
+        let keep = [i for i, r in self.rows if !named(r, key, id)]
+        Shape { rows: [self.rows[i] for i in keep], marks: [self.marks[i] for i in keep] }
+    }
+}
+
+/// Whether `row`'s key column holds `id`.
+fn named(row: Json, key: string, id: string) -> bool { cell_text(row, key) == id }
+
+/// The text of the row's member `key`: a string as itself, a number or a bool as written.
+fn cell_text(row: Json, key: string) -> string? {
+    match member(row, key) {
+        .Str(s) -> s,
+        .Int(n) -> "${n}",
+        .Bool(b) -> "${b}",
+        .Float(_) or .Null or .Arr(_) or .Obj(_) -> null,
+    }
+}
+
+fn member(row: Json, key: string) -> Json {
+    match row {
+        .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> Json.Null,
+    }
+}
+
+/// `row` with the members of `patch` written over it.
+fn merged(row: Json, patch: Json?) -> Json {
+    let fields = match row {
+        .Obj(fs) -> fs,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> { return row },
+    }
+    let over = match patch ?? Json.Null {
+        .Obj(fs) -> fs,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> [],
+    }
+    let kept = [over.find(it.key == f.key) ?? f for f in fields]
+    .Obj(kept.concat([f for f in over if !fields.any(it.key == f.key)]))
+}
+
+/// Whether a list read under `query` (`name=value` pairs) admits `row`: every pair holds, or some pair
+/// names a member the row lacks and nothing can be said.
+fn admits(row: Json, query: string) -> bool? {
+    let pairs = [p.split("=") for p in query.split("&") if !p.is_empty()]
+    let held = [cell_text(row, p.first() ?? "") for p in pairs]
+    if held.any(it == null) { return null }
+    pairs.all(cell_text(row, it.first() ?? "") == it.drop(1).join("="))
+}
+
+/// The route a write's layer is laid on: the collection, which is the write's own path unless it names a row.
+export fn collection_of(url: string, overlay: Overlay) -> string {
+    let path = url.split("?").first() ?? ""
+    match overlay {
+        .Patch(_, id) or .Hide(_, id) -> if path.ends_with("/${id}") { path.substring(0, path.length - id.length - 1) } else { path },
+        .Append(_) or .Custom(_) -> path,
+    }
+}
+
+impl Layer {
+    /// The key the server named a row this layer appended, once it has.
+    fn named_by() -> string? {
+        let row? = self.answered.get() else { return null }
+        match self.overlay {
+            .Append(key) -> cell_text(row, key),
+            .Patch(_, _) or .Hide(_, _) or .Custom(_) -> null,
+        }
+    }
+}

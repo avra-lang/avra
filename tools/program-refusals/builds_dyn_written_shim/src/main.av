@@ -1,0 +1,31 @@
+// A writing method called through `dyn` boxes that several bodies make over one type: each body
+// that boxes the type reaches the same written-entry shim, and the program links one.
+trait Grow {
+    mut fn grow()
+    fn size() -> int
+}
+
+type R = { xs: List<int> }
+
+impl Grow for R {
+    mut fn grow() { self.xs.push(1) }
+    fn size() -> int { self.xs.length }
+}
+
+fn copied(d: dyn Grow) -> int {
+    mut q = d
+    q.grow()
+    q.size()
+}
+
+fn boxed(p: R) -> int {
+    let d: dyn Grow = p
+    mut q = d
+    q.grow()
+    q.grow()
+    d.size() * 10 + q.size()
+}
+
+let r = R { xs: [] }
+let dr: dyn Grow = r
+println("${copied(dr)} ${boxed(r)} ${dr.size()}")

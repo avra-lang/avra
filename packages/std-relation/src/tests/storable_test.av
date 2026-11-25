@@ -1,0 +1,118 @@
+// `Storable`: what `@codec` writes is reached through a bound, so a generic fn keeps and reads
+// back any coded type — and reaches the very members the type's own name does.
+use @std.relation.{Storable, codec}
+use @std.relation.stable.{CodecFault, indexed_scope}
+use @std.text.{from_codepoint}
+
+@codec
+type Mail = { to: string, n: int }
+
+@codec
+enum Fate {
+    Sent
+    Bounced(why: string)
+}
+
+@codec
+type Envelope = { mail: Mail, fate: Fate }
+
+@codec
+type Batch = { mails: List<Mail>, last: Mail?, notes: List<string> }
+
+@codec
+type Nothing = {}
+
+fn kept<T: Storable>(v: T) -> Bytes { v.encoded_in(indexed_scope()) }
+
+fn read<T: Storable>(b: Bytes) -> Result<T, CodecFault> { T.decoded_in(indexed_scope(), b) }
+
+fn round<T: Storable>(v: T) -> Result<T, CodecFault> { read(kept(v)) }
+
+fn shape_of<T: Storable>() -> int { T.codec_shape() }
+
+fn same_mail(a: Mail, b: Mail) -> bool { a.to == b.to && a.n == b.n }
+
+fn mail_back(m: Mail) -> bool {
+    match round(m) { .Ok(back) -> same_mail(m, back), .Err(_) -> false }
+}
+
+fn bounced(r: Result<Fate, CodecFault>, why: string) -> bool {
+    match r { .Ok(.Bounced(w)) -> w == why, .Ok(.Sent) or .Err(_) -> false }
+}
+
+fn sent(r: Result<Fate, CodecFault>) -> bool {
+    match r { .Ok(.Sent) -> true, .Ok(.Bounced(_)) or .Err(_) -> false }
+}
+
+fn other_shape(r: Result<Fate, CodecFault>) -> bool {
+    match r { .Err(f) -> f.word() == "other_shape", .Ok(_) -> false }
+}
+
+spec "std/relation — a coded type is reached through its bound" {
+    given "a record" {
+        then "it comes back whole, an empty text and a zero among its fields" {
+            mail_back(Mail { to: "a@b", n: -3 }) && mail_back(Mail { to: "", n: 0 })
+        }
+        then "a text holding a NUL keeps every character" {
+            let holed = "a${from_codepoint(0)}b"
+            holed.length == 3 && mail_back(Mail { to: holed, n: 1 })
+        }
+    }
+    given "an enum" {
+        then "a bare variant and a payload each come back as themselves" {
+            sent(round(Fate.Sent)) &&
+                bounced(round(Fate.Bounced("full")), "full") &&
+                bounced(round(Fate.Bounced("")), "")
+        }
+    }
+    given "a record holding coded types" {
+        then "the nested record and enum come back inside it" {
+            match round(Envelope { mail: Mail { to: "x", n: 2 }, fate: Fate.Bounced("no") }) {
+                .Ok(back) -> back.mail.to == "x" && back.mail.n == 2 && bounced(.Ok(back.fate), "no"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a list and a nullable" {
+        then "elements, a present value and an absent one come back" {
+            let full = round(
+                Batch {
+                    mails: [Mail { to: "a", n: 1 }, Mail { to: "b", n: 2 }],
+                    last: Mail { to: "z", n: 9 },
+                    notes: ["", "n"],
+                },
+            )
+            let empty = round(Batch { mails: [], last: null, notes: [] })
+            match full {
+                    .Ok(back) -> back.mails.length == 2 &&
+                        back.mails[1].to == "b" &&
+                        back.last!.n == 9 &&
+                        back.notes.length == 2 &&
+                        back.notes[0] == "",
+                    .Err(_) -> false,
+                } &&
+                match empty {
+                    .Ok(back) -> back.mails.is_empty() && back.last == null && back.notes.is_empty(),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "a record of no fields" {
+        then "it is its shape's fingerprint alone, and reads back" {
+            let nothing: Result<Nothing, CodecFault> = round(Nothing {})
+            kept(Nothing {}).length == 8 && nothing is .Ok
+        }
+    }
+    given "the members a type's own name reaches" {
+        then "the bound reaches the same fingerprint and the same octets" {
+            let m = Mail { to: "q", n: 4 }
+            shape_of<Mail>() == Mail.codec_shape() &&
+                shape_of<Fate>() == Fate.codec_shape() &&
+                shape_of<Mail>() != shape_of<Fate>() &&
+                kept(m) == m.encoded_in(indexed_scope())
+        }
+        then "octets of another type are refused through the bound too" {
+            other_shape(read(kept(Mail { to: "q", n: 4 })))
+        }
+    }
+}

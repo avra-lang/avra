@@ -1,0 +1,752 @@
+//! @std.time — a duration is a VALUE, never a bare count, so a seat
+//! that wants one cannot be handed a number that meant something
+//! else; the clock is monotonic milliseconds, what a deadline is
+//! made of. Two readings differ by the time between them and mean
+//! nothing alone. `within d { … }` gives a block a deadline; the
+//! `TimedOut` a block answers when it runs past one is here.
+//!
+//! TWO CLOCKS, NEVER CROSSED: `now_ms` bounds things and `wall_secs`
+//! dates them. The wall clock is the host's, and it may step either
+//! way, so no deadline is ever read from it.
+//!
+//! THREE TIMERS, each a value a task may wait on: `after(d)` is one
+//! instant, `quiet(d)` a silence, `every(d)` a period. The monotonic
+//! clock is this process's own: on Linux it stands still while the
+//! machine is suspended, on macOS it runs on, so a timer set across a
+//! suspend falls due late on the first and at once on the second.
+use @std.errors.{Frame}
+use @std.meta.{sealed}
+use @std.text.{ascii_lower, codepoints, parse_int, repeat, TextForm}
+
+extern fn avra_now_ns() -> int
+extern fn avra_time_wall_s() -> int
+extern fn avra_time_wall_ns() -> int
+extern fn avra_fiber_sleep(ms: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_trap(message: string)
+
+/// A span of time, in nanoseconds. SEALED: `nanos`, `ms`, `secs`,
+/// `mins` and `hours` are its doors, and a span past the range they
+/// hold traps.
+@sealed
+export type Duration = { ns: int }
+
+/// The deadline a block ran past: `after` is the span it was given
+/// and `at` the frames the task stood in when it fired.
+export type TimedOut = { after: Duration, at: List<Frame> }
+
+/// Re-raise a caught deadline as the failure the caller hears — the
+/// fold a `within … catch` arm uses where a waiting verb's own
+/// timeout error stood.
+export fn late<T>(t: TimedOut) -> Result<T, TimedOut> {
+    fail t
+}
+
+/// `n` nanoseconds: every int is one.
+export fn nanos(n: int) -> Duration {
+    Duration { ns: n }
+}
+
+export fn ms(n: int) -> Duration {
+    scaled(n, ns_per_ms, "ms")
+}
+
+export fn secs(n: int) -> Duration {
+    scaled(n, 1000000000, "secs")
+}
+
+export fn mins(n: int) -> Duration {
+    scaled(n, ns_per_min, "mins")
+}
+
+export fn hours(n: int) -> Duration {
+    scaled(n, 3600000000000, "hours")
+}
+
+/// `n` units of `unit` nanoseconds; a count past the range traps.
+fn scaled(n: int, unit: int, word: string) -> Duration {
+    if n > farthest / unit || n < 0 - farthest / unit { avra_trap("a span of ${n} ${word} is past the range of @std.time.Duration") }
+    Duration { ns: n * unit }
+}
+
+/// The monotonic clock, in milliseconds since an origin nobody is
+/// told.
+export fn now_ms() -> int {
+    avra_now_ns() / 1000000
+}
+
+/// The same clock in nanoseconds — what a phase timing measures, and
+/// too fine a grain for a deadline.
+export fn now_ns() -> int {
+    avra_now_ns()
+}
+
+/// A serial for this process alone.
+once fn stamps() -> Cell<int> { Cell.new(0) }
+
+/// A name for this moment that no other call in this process shares:
+/// the monotonic reading and a serial, so two made in one instant of a
+/// clock that stands still differ. What a scratch path is rooted at.
+export fn stamp() -> string {
+    let n = stamps().get() + 1
+    stamps().set(n)
+    "${avra_now_ns()}-${n}"
+}
+
+/// The wall clock: whole seconds since 1970-01-01 UTC, as the host
+/// says — what a date is made of.
+export fn wall_secs() -> int {
+    avra_time_wall_s()
+}
+
+/// The calling task parked for `d` while the others run; a program
+/// with none simply waits. Under a millisecond it lets every other
+/// ready task run once, then goes on.
+export fn sleep(d: Duration) {
+    avra_fiber_sleep(d.ms())
+}
+
+impl Duration {
+    fn plus(other: Duration) -> Duration {
+        Duration { ns: add_ns(self.ns, other.ns) }
+    }
+    /// The whole milliseconds, rounded down: the sub-millisecond part is
+    /// dropped, so `ms(1)` less one nanosecond reads `0` and one
+    /// nanosecond before zero reads `-1`.
+    fn ms() -> int {
+        floor_div(self.ns, ns_per_ms)
+    }
+    fn is_zero() -> bool {
+        self.ns == 0
+    }
+    /// The span as a human reads it: `340ms`, `1.2s`, `2m05s`.
+    fn text() -> string {
+        duration_text(self.ms())
+    }
+    /// The first instant after `t` that is a whole number of this span
+    /// past the epoch: a period's tick, the same in every process that
+    /// reads the wall alike. Absent for a span of nothing or less, and
+    /// past the range of instants.
+    fn next_after(t: Time) -> Time? {
+        if self.ns <= 0 { return null }
+        let k = floor_div(t.ns, self.ns) + 1
+        if k > farthest / self.ns { return null }
+        Time { ns: k * self.ns }
+    }
+}
+
+/// `a + b` in nanoseconds; a result past the int range traps.
+fn add_ns(a: int, b: int) -> int {
+    if b > 0 && a > farthest - b || b < 0 && a < 0 - farthest - 1 - b { avra_trap(out_of_range("a sum of spans")) }
+    a + b
+}
+
+/// `a - b` in nanoseconds; a result past the int range traps.
+fn sub_ns(a: int, b: int) -> int {
+    if b < 0 && a > farthest + b || b > 0 && a < 0 - farthest - 1 + b { avra_trap(out_of_range("a difference of instants")) }
+    a - b
+}
+
+/// Milliseconds as text, at the unit a human would pick.
+export fn duration_text(total: int) -> string {
+    if total < 1000 { return "${total}ms" }
+    if total < 60000 { return "${total / 1000}.${total % 1000 / 100}s" }
+    let s = total % 60000 / 1000
+    let pad = if s < 10 { "0" } else { "" }
+    "${total / 60000}m${pad}${s}s"
+}
+
+// ── Timers ──────────────────────────────────────────────────────
+
+/// The last instant the clock can say.
+const farthest: int = 9223372036854775807
+
+const ns_per_ms: int = 1000000
+
+const ns_per_min: int = 60000000000
+
+/// The instant `ns` after `at`: never before the clock's origin, and
+/// the farthest when that is past spelling.
+fn later(at: int, ns: int) -> int {
+    when {
+        ns > farthest - at -> farthest
+        ns < 0 - at -> 0
+        _ -> at + ns
+    }
+}
+
+/// The calling task parked until `at`, the others running meanwhile —
+/// at once when `at` is due.
+fn parked_until(at: int) {
+    if avra_now_ns() >= at { return }
+    avra_wait_until(at, 0, 0)
+    let _ = avra_wait_park()
+}
+
+/// One instant of this process's monotonic clock, in nanoseconds.
+/// SEALED: `after` and `plus` are its doors. The instant means nothing
+/// to another process — `left()` is what crosses a wire or a store, and
+/// `after(left)` rebuilds it there.
+@sealed
+export type Deadline = { at: int }
+
+/// The instant `d` from now. Bound once, it is one budget for
+/// everything that waits on it.
+export fn after(d: Duration) -> Deadline {
+    Deadline { at: later(avra_now_ns(), d.ns) }
+}
+
+impl Deadline {
+    /// The instant `span` after this one.
+    fn plus(span: Duration) -> Deadline {
+        Deadline { at: later(self.at, span.ns) }
+    }
+
+    fn due() -> bool {
+        avra_now_ns() >= self.at
+    }
+
+    /// What is left before it, in whole milliseconds rounded up — zero
+    /// exactly when it is due.
+    fn left() -> Duration {
+        let ns = self.at - avra_now_ns()
+        Duration { ns: if ns <= 0 { 0 } else { ((ns - 1) / ns_per_ms + 1) * ns_per_ms } }
+    }
+
+    /// How far past it the clock is, in whole milliseconds rounded down —
+    /// zero until it is due.
+    fn late() -> Duration {
+        let ns = avra_now_ns() - self.at
+        Duration { ns: if ns <= 0 { 0 } else { ns / ns_per_ms * ns_per_ms } }
+    }
+
+    /// The calling task parked until the instant, the others running
+    /// meanwhile; at once when it is due.
+    fn wait() {
+        parked_until(self.at)
+    }
+}
+
+/// A silence of `span`. SEALED: `quiet` is its door.
+@sealed
+export type Quiet = { span: Duration }
+
+/// `d` with nothing happening: armed each time the wait it stands in is
+/// entered, for `d` from that entry. Anything taken first, and the time
+/// spent on it, starts it over, so it has no longest wait. IT IS A
+/// DEBOUNCE, NEVER A WATCHDOG: beside a source that keeps speaking,
+/// `quiet(ms(200))` never fires. A watchdog is a `Deadline` the
+/// heartbeat moves — `mut dog = after(ms(200))`, written
+/// `dog = after(ms(200))` at each beat, and due when the beats stop.
+export fn quiet(d: Duration) -> Quiet {
+    Quiet { span: d }
+}
+
+/// A period: one tick every `period`, on instants fixed when it was
+/// made. SEALED: `every` is its door.
+@sealed
+export type Every = { period: Duration, next: Cell<int>, skipped: Cell<int> }
+
+/// A tick every `d`, the first one `d` from now and each next one `d`
+/// after the last DUE instant, whatever was done between them. A period
+/// of nothing traps.
+export fn every(d: Duration) -> Every {
+    if d.ns <= 0 { avra_trap("a period of ${d.ms()} ms is no period — `every` takes one longer than nothing") }
+    Every { period: d, next: Cell.new(later(avra_now_ns(), d.ns)), skipped: Cell.new(0) }
+}
+
+impl Every {
+    /// Whether a tick is due — and then it is taken: the next tick is
+    /// the first period boundary after now. MISSED PERIODS COALESCE:
+    /// the ones that went by untaken are counted, never delivered.
+    fn passed() -> bool {
+        let behind = avra_now_ns() - self.next.get()
+        if behind < 0 { return false }
+        let period = self.period.ns
+        let gone = behind / period
+        self.skipped.set(self.skipped.get() + gone)
+        self.next.set(later(self.next.get(), later(gone * period, period)))
+        true
+    }
+
+    /// How many periods went by untaken.
+    fn missed() -> int {
+        self.skipped.get()
+    }
+
+    /// The calling task parked until the next tick, which it takes; at
+    /// once when one is due.
+    fn wait() {
+        parked_until(self.next.get())
+        let _ = self.passed()
+    }
+}
+
+// ── Instants ────────────────────────────────────────────────────
+
+/// An instant on the wall clock: nanoseconds since 1970-01-01T00:00:00Z.
+/// Its range is 1677 to 2262; a span past it is refused, never wrapped.
+export type Time = { ns: int }
+
+/// The host's wall clock as an instant. The clock may step either way, so two
+/// reads are not ordered; the monotonic clock (`now_ns`) is the one deadlines use.
+export fn now() -> Time {
+    Time { ns: avra_time_wall_ns() }
+}
+
+/// 1970-01-01T00:00:00Z.
+export fn epoch() -> Time {
+    Time { ns: 0 }
+}
+
+/// Seconds past the epoch the range holds, as a magnitude.
+const reach: int = 9223372036
+
+impl Time {
+    /// This instant moved by `d`; a move past the range traps.
+    fn plus(d: Duration) -> Time {
+        Time { ns: add_ns(self.ns, d.ns) }
+    }
+    /// This instant moved by `d`, held at the range's first or last
+    /// instant where the move runs past it.
+    fn plus_held(d: Duration) -> Time {
+        if d.ns > 0 && self.ns > farthest - d.ns { return Time { ns: farthest } }
+        if d.ns < 0 && self.ns < 0 - farthest - 1 - d.ns { return Time { ns: 0 - farthest - 1 } }
+        Time { ns: self.ns + d.ns }
+    }
+    /// The span from `earlier` to this instant, exact; two instants more
+    /// than the range apart trap.
+    fn minus(earlier: Time) -> Duration {
+        Duration { ns: sub_ns(self.ns, earlier.ns) }
+    }
+    fn before(other: Time) -> bool {
+        self.ns < other.ns
+    }
+    fn after(other: Time) -> bool {
+        self.ns > other.ns
+    }
+    /// The instant as ISO-8601 UTC, with all nine fraction digits:
+    /// `YYYY-MM-DDTHH:MM:SS.sssssssssZ`.
+    fn iso() -> string {
+        let secs = floor_div(self.ns, 1000000000)
+        let part = self.ns % 1000000000
+        let frac = if part < 0 { part + 1000000000 } else { part }
+        let days = floor_div(secs, 86400)
+        let of_day = secs - days * 86400
+        let date = civil(days)
+        "${digits(date.y, 4)}-${digits(date.m, 2)}-${digits(date.d, 2)}T${digits(of_day / 3600, 2)}:${digits(of_day % 3600 / 60, 2)}:${digits(of_day % 60, 2)}.${digits(frac, 9)}Z"
+    }
+}
+
+/// A time is its ISO text wherever a value type crosses as text.
+impl TextForm for Time {
+    fn text_form() -> string { self.iso() }
+
+    static fn from_text_form(text: string) -> Time? { parse_iso(text) }
+}
+
+/// The instant an ISO-8601 UTC text names, in the shape `iso` writes
+/// with the fraction optional (up to nine digits). Null for any other
+/// text, including an out-of-range date or a zone other than `Z`.
+export fn parse_iso(s: string) -> Time? {
+    let b = s.bytes()
+    if b.length < 20 || b.length > 30 || b.at(b.length - 1) != 90 { return null }
+    if b.at(4) != 45 || b.at(7) != 45 || b.at(10) != 84 || b.at(13) != 58 || b.at(16) != 58 { return null }
+    let y = field(b, 0, 4)?
+    let m = field(b, 5, 7)?
+    let d = field(b, 8, 10)?
+    let h = field(b, 11, 13)?
+    let mi = field(b, 14, 16)?
+    let sec = field(b, 17, 19)?
+    let frac = fraction(b)?
+    if m < 1 || m > 12 || d < 1 || d > days_in(m, y) || h > 23 || mi > 59 || sec > 59 { return null }
+    let secs = days_from(y, m, d) * 86400 + h * 3600 + mi * 60 + sec
+    if secs > reach || secs < 0 - reach - 1 { return null }
+    Time {
+        ns: if secs < 0 { (secs + 1) * 1000000000 + (frac - 1000000000) } else { secs * 1000000000 + frac },
+    }
+}
+
+/// The nanoseconds a `.` and its digits name, nine places, or zero when
+/// the text has no fraction; null when the text is not exactly that.
+fn fraction(b: Bytes) -> int? {
+    if b.length == 20 { return 0 }
+    if b.at(19) != 46 || b.length == 20 { return null }
+    let digits = b.slice(20, b.length - 1).text()?
+    if digits.length > 9 { return null }
+    let n = parse_int(digits)?
+    n * pow10(9 - digits.length)
+}
+
+fn field(b: Bytes, from: int, to: int) -> int? {
+    let text = b.slice(from, to).text()?
+    if !codepoints(text).all(it >= 48 && it <= 57) { return null }
+    parse_int(text)
+}
+
+fn pow10(n: int) -> int {
+    if n == 0 { 1 } else { 10 * pow10(n - 1) }
+}
+
+fn floor_div(a: int, b: int) -> int {
+    let q = a / b
+    if a % b != 0 && a < 0 { q - 1 } else { q }
+}
+
+fn days_in(m: int, y: int) -> int {
+    when {
+        m == 2 -> if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 }
+        m == 4 || m == 6 || m == 9 || m == 11 -> 30
+        _ -> 31
+    }
+}
+
+/// Days since 1970-01-01 of a civil date (proleptic Gregorian).
+fn days_from(y: int, m: int, d: int) -> int {
+    let yy = if m <= 2 { y - 1 } else { y }
+    let era = floor_div(yy, 400)
+    let yoe = yy - era * 400
+    let mp = if m > 2 { m - 3 } else { m + 9 }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+}
+
+/// The civil date of a day count since 1970-01-01.
+fn civil(days: int) -> Civil {
+    let z = days + 719468
+    let era = floor_div(z, 146097)
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 }
+    Civil { y: y, m: m, d: d }
+}
+
+type Civil = { y: int, m: int, d: int }
+
+fn digits(n: int, width: int) -> string {
+    let t = "${n}"
+    repeat("0", width - t.length) + t
+}
+
+fn out_of_range(what: string) -> string {
+    "${what} is past the int range of nanoseconds: 1677 to 2262 for instants, about 292 years for spans"
+}
+
+// ── Cron ────────────────────────────────────────────────────────
+
+/// A field of a cron line, in the order a line writes them.
+export enum CronField { minute, hour, day, month, weekday }
+
+/// Why a text is no cron line: it holds `found` fields where five are
+/// written, its `@` nickname is none cron knows, a field's `text` reads
+/// as no list of values, a `value` stands outside its field's `lo` to
+/// `hi`, a range runs backward, a step is not a whole number past
+/// zero, or no day of any month it names exists.
+export enum CronError {
+    Fields(found: int)
+    Nickname(text: string)
+    Unread(field: CronField, text: string)
+    Range(field: CronField, value: int, lo: int, hi: int)
+    Backward(field: CronField, from: int, to: int)
+    Step(field: CronField, text: string)
+    Never
+}
+
+/// A cron line: the minutes, hours, days of the month, months and days
+/// of the week a tick falls on, each a set of bits. Every instant is
+/// read in UTC: `@std.time` holds no zones. SEALED: `cron` is its door,
+/// so a value is always a line that ticks.
+///
+/// The two day fields follow the classic cron: when both are written
+/// without a leading `*`, a day of either kind matches (`either_day`);
+/// otherwise a day matches both.
+@sealed
+export type Cron = {
+    line: string,
+    minutes: int,
+    hours: int,
+    days: int,
+    months: int,
+    weekdays: int,
+    either_day: bool,
+}
+
+/// The cron line `text` names: five fields split by blanks — minute,
+/// hour, day of the month, month, day of the week — each `*`, a value,
+/// a range `a-b`, any of those stepped `/n`, or a list of them split by
+/// commas. Months and weekdays take their three-letter English names,
+/// and a weekday of 7 is Sunday as 0 is. The nicknames `@yearly`,
+/// `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight` and
+/// `@hourly` stand for their lines. Any other text is a `CronError`.
+export fn cron(text: string) -> Result<Cron, CronError> {
+    let words = [w for w in text.replace("\t", " ").split(" ") if w != ""]
+    if words.length == 1 && words[0].starts_with("@") {
+        let line? = nickname(words[0]) else { fail CronError.Nickname(words[0]) }
+        return cron(line)? with { line: text }
+    }
+    if words.length != 5 { fail CronError.Fields(words.length) }
+    let weekdays = field_bits(words[4], CronField.weekday)?
+    let made = Cron {
+        line: text,
+        minutes: field_bits(words[0], CronField.minute)?,
+        hours: field_bits(words[1], CronField.hour)?,
+        days: field_bits(words[2], CronField.day)?,
+        months: field_bits(words[3], CronField.month)?,
+        weekdays: (weekdays | (weekdays >> 7)) & 127,
+        either_day: !words[2].starts_with("*") && !words[4].starts_with("*"),
+    }
+    if !made.ever() { fail CronError.Never }
+    made
+}
+
+impl Cron {
+    /// The first tick strictly after `t`, on a whole minute. Absent past
+    /// the range of instants.
+    fn next_after(t: Time) -> Time? {
+        let from = floor_div(t.ns, ns_per_min) + 1
+        mut day = floor_div(from, 1440)
+        mut minute = from - day * 1440
+        let last = day + 146097
+        while day <= last {
+            let date = civil(day)
+            if !has(self.months, date.m) {
+                day = days_from(date.y, date.m, 1) + days_in(date.m, date.y)
+                minute = 0
+                continue
+            }
+            let at? = (if self.day_fits(date, weekday_of(day)) { self.minute_from(minute) } else { null }) else {
+                day = day + 1
+                minute = 0
+                continue
+            }
+            return instant_at(day * 1440 + at)
+        }
+        null
+    }
+
+    /// Whether `t` falls on a tick: its minute is one the line names.
+    fn ticks_at(t: Time) -> bool {
+        let at = floor_div(t.ns, ns_per_min)
+        self.next_after(Time { ns: (at - 1) * ns_per_min })?.ns == at * ns_per_min
+    }
+
+    /// Whether the day `date`, a `weekday`, is one the line names.
+    fn day_fits(date: Civil, weekday: int) -> bool {
+        let of_month = has(self.days, date.d)
+        let of_week = has(self.weekdays, weekday)
+        if self.either_day { of_month || of_week } else { of_month && of_week }
+    }
+
+    /// The first minute of the day at or after `minute` the line names.
+    fn minute_from(minute: int) -> int? {
+        mut h = minute / 60
+        mut m = minute % 60
+        while h < 24 {
+            if has(self.hours, h) {
+                let found? = first_bit(self.minutes, m, 59) else {
+                    h = h + 1
+                    m = 0
+                    continue
+                }
+                return h * 60 + found
+            }
+            h = h + 1
+            m = 0
+        }
+        null
+    }
+
+    /// Whether any day ever fits. A line whose day fields both match
+    /// either way always has one; one that asks both asks a day of a
+    /// month it names, and every such day falls on every weekday within
+    /// one 400-year cycle.
+    fn ever() -> bool {
+        self.either_day || (1..13).any((m) -> self.month_has_day(m))
+    }
+
+    fn month_has_day(m: int) -> bool {
+        has(self.months, m) && first_bit(self.days, 1, days_in(m, 2000)) != null
+    }
+}
+
+impl CronError {
+    /// The error as a sentence.
+    fn text() -> string {
+        match self {
+            .Fields(n) -> fields_count(n),
+            .Nickname(t) -> unknown_nickname(t),
+            .Unread(f, t) -> unread_field(f, t),
+            .Range(f, v, lo, hi) -> out_of_field(f, v, lo, hi),
+            .Backward(f, a, b) -> backward_range(f, a, b),
+            .Step(f, t) -> bad_step(f, t),
+            .Never -> never_ticks(),
+        }
+    }
+}
+
+/// The line a nickname stands for, or absent for none cron knows.
+fn nickname(word: string) -> string? {
+    match ascii_lower(word) {
+        "@yearly" or "@annually" -> "0 0 1 1 *",
+        "@monthly" -> "0 0 1 * *",
+        "@weekly" -> "0 0 * * 0",
+        "@daily" or "@midnight" -> "0 0 * * *",
+        "@hourly" -> "0 * * * *",
+        _ -> null,
+    }
+}
+
+/// The least and greatest value a field holds.
+type Reach = { lo: int, hi: int }
+
+fn reach_of(f: CronField) -> Reach {
+    match f {
+        .minute -> Reach { lo: 0, hi: 59 },
+        .hour -> Reach { lo: 0, hi: 23 },
+        .day -> Reach { lo: 1, hi: 31 },
+        .month -> Reach { lo: 1, hi: 12 },
+        .weekday -> Reach { lo: 0, hi: 7 },
+    }
+}
+
+fn field_word(f: CronField) -> string {
+    match f {
+        .minute -> "minute",
+        .hour -> "hour",
+        .day -> "day of the month",
+        .month -> "month",
+        .weekday -> "day of the week",
+    }
+}
+
+/// The bits a field's text names: a comma list, every item read.
+fn field_bits(text: string, f: CronField) -> Result<int, CronError> {
+    if text.ends_with(",") { fail CronError.Unread(f, text) }
+    mut bits = 0
+    for part in text.split(",") { bits = bits | item_bits(part, f)? }
+    bits
+}
+
+/// The bits one item names: `*`, `v`, `a-b`, each with an optional `/n`.
+/// A stepped single value runs from it to the field's end.
+fn item_bits(text: string, f: CronField) -> Result<int, CronError> {
+    let parts = text.split("/")
+    if text == "" || parts.length > 2 || text.ends_with("/") { fail CronError.Unread(f, text) }
+    let step = if parts.length == 2 { step_of(parts[1], f)? } else { 1 }
+    let r = reach_of(f)
+    let base = parts[0]
+    if base == "*" { return stepped(r.lo, r.hi, step) }
+    let ends = base.split("-")
+    if ends.length == 0 || ends.length > 2 || ends.any(it == "") || base.ends_with("-") { fail CronError.Unread(f, text) }
+    let from = value_of(ends[0], f, text)?
+    let to = when {
+        ends.length == 2 -> value_of(ends[1], f, text)?
+        parts.length == 2 -> r.hi
+        _ -> from
+    }
+    if to < from { fail CronError.Backward(f, from, to) }
+    stepped(from, to, step)
+}
+
+fn step_of(text: string, f: CronField) -> Result<int, CronError> {
+    let n? = whole(text) else { fail CronError.Step(f, text) }
+    if n < 1 { fail CronError.Step(f, text) }
+    n
+}
+
+/// A field's value: digits, or a month's or weekday's name, inside the
+/// field's reach. `item` is the text an unread value is named by.
+fn value_of(text: string, f: CronField, item: string) -> Result<int, CronError> {
+    let v? = whole(text) ?? named(text, f) else { fail CronError.Unread(f, item) }
+    let r = reach_of(f)
+    if v < r.lo || v > r.hi { fail CronError.Range(f, v, r.lo, r.hi) }
+    v
+}
+
+/// Digits alone, as a number; absent for anything else.
+fn whole(text: string) -> int? {
+    if text == "" || !codepoints(text).all(it >= 48 && it <= 57) { return null }
+    parse_int(text)
+}
+
+/// A month's or weekday's three-letter name, in any case, as its number.
+fn named(text: string, f: CronField) -> int? {
+    let names = match f {
+        .month -> ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"],
+        .weekday -> ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
+        .minute or .hour or .day -> [],
+    }
+    let i = names.index_of(ascii_lower(text))
+    if i < 0 { return null }
+    if f == CronField.month { i + 1 } else { i }
+}
+
+/// The bits `from`, `from + step`, … up to `to`.
+fn stepped(from: int, to: int, step: int) -> int {
+    mut bits = 0
+    mut v = from
+    while v <= to {
+        bits = bits | (1 << v)
+        v = v + step
+    }
+    bits
+}
+
+fn has(bits: int, v: int) -> bool {
+    (bits >> v) & 1 == 1
+}
+
+/// The least bit set at or after `from` and no later than `to`.
+fn first_bit(bits: int, from: int, to: int) -> int? {
+    (from..to + 1).find(has(bits, it))
+}
+
+/// The day of the week of a day count since 1970-01-01, Sunday 0: that
+/// day was a Thursday.
+fn weekday_of(day: int) -> int {
+    let w = (day + 4) % 7
+    if w < 0 { w + 7 } else { w }
+}
+
+/// The instant `minutes` whole minutes past the epoch, or absent past
+/// the range.
+fn instant_at(minutes: int) -> Time? {
+    if minutes > farthest / ns_per_min { return null }
+    Time { ns: minutes * ns_per_min }
+}
+
+// ── The voices ──
+
+fn fields_count(n: int) -> string {
+    "a cron line has five fields — minute, hour, day of the month, month, day of the week — and this has ${n}"
+}
+
+fn unknown_nickname(t: string) -> string {
+    "`${t}` is no cron nickname — @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly are"
+}
+
+fn unread_field(f: CronField, t: string) -> string {
+    "the ${field_word(f)} field reads `${t}`, which is no value, range, step or list of them"
+}
+
+fn out_of_field(f: CronField, v: int, lo: int, hi: int) -> string {
+    "a ${field_word(f)} is ${lo} to ${hi}, and this is ${v}"
+}
+
+fn backward_range(f: CronField, a: int, b: int) -> string {
+    "a range in the ${field_word(f)} field runs upward, and `${a}-${b}` runs down"
+}
+
+fn bad_step(f: CronField, t: string) -> string {
+    "a step in the ${field_word(f)} field is a whole number past zero, and this is `${t}`"
+}
+
+fn never_ticks() -> string {
+    "this cron line names no day that any month has, so it never ticks"
+}

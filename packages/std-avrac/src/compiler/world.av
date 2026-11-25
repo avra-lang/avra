@@ -1,0 +1,52 @@
+//! THE WORLD, AS CELLS. Every read of the world a query makes is one
+//! `Family.Input` cell: asked through the door once, kept, and cut by
+//! its digest, so a query that read it is ordered after it. A cell
+//! stands until the DRIVER says the world may have moved — then every
+//! input is read again, and only one whose digest differs moves the
+//! revision.
+use compiler.families.{Family}
+use core.{EmbedKind, fp}
+use compiler.host.{Read, InputName, InputKind, Listed, Stamp}
+use @std.relation.engine.{Loaded, list_cell}
+
+/// What reading the world again found.
+export enum Moved {
+    /// Every input that can move under a running process was read again
+    /// — so many — and each one that
+    /// differed moved the revision.
+    Reread(inputs: int)
+    /// The set of files moved, or a manifest's text did. The package
+    /// graph is no longer this workspace's to answer: the driver lets
+    /// it go and opens another.
+    Graph
+}
+
+/// A name as it is interned and shown: its kind's word, then its key.
+fn spelled(name: InputName) -> string { "${kind_word(name.kind)} ${name.key}" }
+
+fn kind_word(k: InputKind) -> string {
+    match k {
+        .Text -> "text",
+        .Octets -> "octets",
+        .Range -> "range",
+        .Listing -> "listing",
+        .Exists -> "exists",
+        .Env -> "env",
+        .Tool -> "tool",
+        .Compiler -> "compiler",
+        .Embedded -> "embedded",
+        .EmbeddedOctets -> "embedded_octets",
+    }
+}
+
+/// Whether a kind of input reads a file's text.
+fn is_text(k: InputKind) -> bool {
+    match k {
+        .Text -> true,
+        .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> false,
+    }
+}
+
+fn loaded(seen: Read) -> Loaded<DbRow> {
+    Loaded { value: DbRow.Input(seen), fingerprint: seen.input().digest.word }
+}

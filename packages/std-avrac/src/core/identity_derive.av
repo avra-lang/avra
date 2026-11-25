@@ -1,0 +1,55 @@
+//! `@derive(Identity)` — A NODE'S CONTENT IDENTITY, read off the node
+//! model: a tag, the type's name, then one folded value per payload.
+//! Spans never participate, so reformatting never changes an identity,
+//! and two nodes with the same content wear the same number however
+//! far apart they sit in the arena.
+//!
+//! EACH NODE RECORD DERIVES ITS OWN `identity`: a `collect enum E:
+//! Identity` implements the trait over its members and reaches the
+//! member's impl, so no arm per variant is written here.
+//!
+//! IT IS NOT `Fingerprint`, AND THE DIFFERENCE IS NOT COSMETIC.
+//! `Fingerprint` folds a VALUE's own fields. A node's payloads are
+//! `ExprId`s — `{ index: int }` — so folding the value folds an ARENA
+//! POSITION, and two structurally identical subtrees would wear
+//! different identities, which is the one thing a fingerprint must
+//! never do. A node's identity is only meaningful THROUGH its arena,
+//! so `identity` takes the arena and an id payload reaches its answer
+//! through the store's memoized column.
+//!
+//! THE FOLD ITSELF IS `Fingerprint`'S, CALLED AND NEVER COPIED.
+//! `parted` writes the tag and folds the type's name at derive time —
+//! one fold, one literal tag, in the one file `make fingerprints` can
+//! read it in. What THIS derive owns is the row per payload TYPE.
+//!
+//! A PARTS LIST IS FIXED ARITY. Every variable-length payload folds
+//! through `fp_list` to ONE value before it stands in a parts list, so
+//! no payload's boundary can move and two shapes cannot splice to one
+//! sequence.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Directive, Code, beside, Declared}
+
+/// The compiler's derive for a node's content identity.
+export trait Identity {
+    fn identity(arena: SyntaxArena) -> int
+
+    /// `@local` and `@facet` fields are not part of what a node folds.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            beside(
+                t,
+                quote {
+                    impl Identity for ${t} {
+                        fn identity(arena: SyntaxArena) -> int { ${folding(t, leaf_folds(identity_of))} }
+                    }
+                },
+            ),
+        ]
+    }
+}
+
+/// A named payload folds by its own `identity`.
+fn identity_of(e: Code) -> Code { quote { ${e}.identity(arena) } }

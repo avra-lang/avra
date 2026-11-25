@@ -1,0 +1,25 @@
+// proves: a type a generator's hole names is the one where the code lands, even where the
+// template's own module declares a type of that name (`@std/relation` declares a private `Slot`).
+use @std.relation.{codec, indexed_scope}
+
+@codec
+enum Slot {
+    Int(n: int)
+    Text(s: string)
+}
+
+@codec
+enum Box {
+    Slots(cells: List<Slot>)
+    Table(keys: List<string>, values: List<Slot>)
+}
+
+fn shown(b: Box) -> string {
+    match Box.decoded_in(indexed_scope(), b.encoded_in(indexed_scope())) {
+        .Ok(.Slots(cells)) -> "slots ${cells.length}",
+        .Ok(.Table(keys, values)) -> "table ${keys.length} ${values.length}",
+        .Err(_) -> "fault",
+    }
+}
+
+"${shown(Box.Slots([Slot.Int(1), Slot.Text("a")]))} ${shown(Box.Table(["k"], [Slot.Int(2)]))}"

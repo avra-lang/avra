@@ -1,0 +1,38 @@
+// A DERIVE RUN TYPES THE DERIVE FN AND WHAT IT REACHES, NEVER ITS FILE, asked of the program
+// layer: a trait whose derive runs over a type of its own package, its derive reaching a method
+// whose call is refused. Typing the derive's program asks nothing the derive's runs make, so the
+// refusal is spoken where the derive is written — never a cycle through the file it runs over —
+// and with the call written right the package checks clean.
+use @std.avrac.testing.{held_at, vendored_meta}
+use @std.avrac.testing.held.{empty_store}
+
+/// The library whose trait `Shown` derives over its own `Part`, `Vocab.any_known` reading its
+/// fields as `pick` writes the predicate.
+fn own_derive(pick: string) -> string {
+    held_at(
+        vendored_meta(
+            {
+                "/w/avra.toml": "[package]\nname = \"@repro/shown\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"repro-shown\"\npath = \"src/shown.av\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+                "/w/src/shown.av": "use @std.meta.{Type, Field, Declared, beside, derive, literal}\n\ntype Vocab = { known: List<string> }\n\nimpl Vocab {\n    fn knows(name: string) -> bool { self.known.contains(name) }\n\n    fn any_known(fields: List<Field>) -> bool { fields.any(${pick}) }\n}\n\nexport trait Shown {\n    fn shown() -> string\n\n    static fn derive(t: Type) -> Declared {\n        let v = Vocab { known: [\"id\"] }\n        let words = if v.any_known(t.fields) { \"known\" } else { \"unknown\" }\n        Declared { made: [beside(t, quote { impl Shown for \${t} { fn shown() -> string { \${literal(words)} } } })] }\n    }\n}\n",
+                "/w/src/parts.av": "use @std.meta.{derive}\nuse shown.{Shown}\n\n@derive(Shown)\nexport type Part = { id: int }\n",
+            },
+        ),
+        "/w",
+    )
+        .checked_over(empty_store())
+}
+
+spec "compiler/derive — a derive over its own package's type" {
+    given "a method call its derive reaches, refused" {
+        then "the refusal is spoken, in the derive's own file" {
+            let said = own_derive("self.knows(it.name)")
+            said.contains("error[type.") && said.contains("shown.av")
+        }
+        then "and no cycle is asked through the file it runs over" {
+            !own_derive("self.knows(it.name)").contains("was asked while it was being answered")
+        }
+    }
+    given "the same call written right" {
+        then "the package checks clean" { !own_derive("(f) -> self.knows(f.name)").contains("error[") }
+    }
+}

@@ -1,0 +1,25 @@
+// The union a node reaches: through a cycle, a diamond and a self-loop, each set folded once.
+use @std.avrac.core.{NodeReads, reached_union}
+
+fn reads(n: string) -> NodeReads {
+    match n {
+        "main" -> NodeReads { own: ["m"], refs: ["a", "d"] },
+        "a" -> NodeReads { own: ["x"], refs: ["b"] },
+        "b" -> NodeReads { own: [], refs: ["a", "c"] },
+        "c" -> NodeReads { own: ["y", "x"], refs: ["c"] },
+        "d" -> NodeReads { own: [], refs: ["c"] },
+        rest -> NodeReads { own: [], refs: [] },
+    }
+}
+
+spec "core/scc reached_union" {
+    given "a graph read from its root" {
+        then "the root reaches its own and every node it calls, each once, in order" {
+            reached_union("main", reads).join(",") == "m,x,y"
+        }
+        then "a cycle's members reach the same" { reached_union("a", reads).join(",") == reached_union("b", reads).join(",") }
+        then "a cycle reaches what it calls out of the cycle" { reached_union("b", reads).join(",") == "x,y" }
+        then "a self-loop reaches its own" { reached_union("c", reads).join(",") == "x,y" }
+        then "a node that holds nothing and calls nothing reaches nothing" { reached_union("q", reads).is_empty() }
+    }
+}

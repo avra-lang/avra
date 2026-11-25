@@ -1,0 +1,77 @@
+//! The evaluator's CHANGE LOG: the keys of watched boxes written this
+//! turn, once each, in first-write order — the runtime's change
+//! tracking, over the machine's own handles. A key is nonzero, names
+//! one box for the whole run, and never collides across kinds.
+use features.{nothing}
+
+/// A box's key, 0 for a value that is no box.
+fn box_key(v: Val) -> int {
+    match v {
+        .C(id) -> 4 * id + 1,
+        .A(id) -> 4 * id + 2,
+        .M(id) -> 4 * id + 3,
+        .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .P(_) or .N or .Gone -> 0,
+    }
+}
+
+impl Machine {
+    /// EVERY IN-PLACE SLOT WRITE OF A BOX PASSES HERE: a watched box not
+    /// yet written this turn files its key. A length change or a map write
+    /// is no slot write, and a write that copies first (`cell_unique_val`,
+    /// `map_at_end`) lands in a new handle no one watches, as a native copy
+    /// lands at a new address.
+    fn touched(v: Val) {
+        if self.watched.is_empty() { return }
+        let k = "${box_key(v)}"
+        let stamp? = self.watched.get(k) else { return }
+        if stamp == self.turn { return }
+        self.watched.set(k, self.turn)
+        self.changed.push(box_key(v))
+    }
+
+    /// A box a site reads is held and watched, stamped as not yet
+    /// written; a box already watched is only stamped again. A static
+    /// answers 0, as a read-only box does natively.
+    fn box_observe_val(v: Val) -> Val {
+        let key = box_key(v)
+        if key == 0 || self.frozen.get(v.handle()) != null { return Val.I(0) }
+        if self.watched.get("${key}") == null { self.holding(v) }
+        self.watched.set("${key}", 0)
+        Val.I(1)
+    }
+
+    /// A box let go: released, and out of the watch.
+    fn box_unobserve_val(v: Val) -> Val {
+        let key = "${box_key(v)}"
+        if self.watched.get(key) == null { return Val.I(0) }
+        self.watched.remove(key)
+        self.releases_val(v)
+        Val.I(1)
+    }
+
+    /// A watched aggregate holds a reference of its own; a cell has no
+    /// count, and stays out of the idle pool while watched.
+    fn holding(v: Val) {
+        match v {
+            .A(id) -> self.retained(id),
+            .M(id) -> self.map_retained(id),
+            .C(_) or .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .P(_) or .N or .Gone -> nothing(),
+        }
+    }
+
+    /// A turn begins: the stamp moves on, and answers 1 when it wrapped.
+    fn turn_next_val() -> Val {
+        self.turn = self.turn + 1
+        if self.turn <= 65535 { return Val.I(0) }
+        self.turn = 1
+        Val.I(1)
+    }
+
+    /// The keys written this turn, as a list the caller owns; the log
+    /// starts empty again.
+    fn changes_take_val() -> Val {
+        let keys = [Val.I(k) for k in self.changed]
+        self.changed = []
+        self.fresh_array(keys)
+    }
+}

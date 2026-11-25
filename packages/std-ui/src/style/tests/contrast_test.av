@@ -1,0 +1,78 @@
+//! Contrast, by its law: every pair a theme draws is held to WCAG 2.x in
+//! each scheme at standard and at more contrast, and a pair that falls
+//! short is named with its two colours, its ratio and its bar.
+use @std.ui.style.contrast.{shortfalls, ratio, luminance, two_places, bar_of, Bar}
+use @std.ui.style.theme.{Theme, Dial, Contrast, default_theme}
+use @std.ui.style.tokens.{Ink}
+
+fn ratio_said(a: string, b: string) -> string {
+    let r? = ratio(a, b) else { return "unread" }
+    two_places(r)
+}
+
+/// Crisp with its muted ink faded in the light scheme.
+fn faint() -> Theme {
+    default_theme with { ink: default_theme.ink with { muted: default_theme.ink.muted with { light: "#BBBBBB" } } }
+}
+
+/// Crisp with a control's line faded past the graphic bar.
+fn faded_field() -> Theme {
+    default_theme with { ink: default_theme.ink with { field: Dial { light: "#999999", dark: "#8A8A8A" } } }
+}
+
+/// Crisp with a link named by a word no proof reads.
+fn worded() -> Theme {
+    default_theme with { ink: default_theme.ink with { link: Dial { light: "blue", dark: "#FAFAFA" } } }
+}
+
+spec "std/ui contrast — WCAG 2.x" {
+    given "two colours" {
+        then "black on white is 21:1" { ratio_said("#000000", "#FFFFFF") == "21.00" }
+        then "the order of the two does not matter" { ratio_said("#FFFFFF", "#767676") == ratio_said("#767676", "#FFFFFF") }
+        then "#767676 on white just clears the text bar and #777777 just misses it" {
+            ratio_said("#767676", "#FFFFFF") == "4.54" && ratio_said("#777777", "#FFFFFF") == "4.47"
+        }
+        then "lower-case digits read as upper" { ratio_said("#ffffff", "#000000") == "21.00" }
+        then "a colour not written #RRGGBB is not read" {
+            luminance("blue") == null && luminance("#GG0000") == null && luminance("#FFF") == null
+        }
+    }
+    given "the bars" {
+        then "words owe 4.5:1, a control's line, the focus ring and the disabled ink 3:1, a divider nothing" {
+            bar_of(Ink.Muted) == Bar.Text &&
+                bar_of(Ink.Link) == Bar.Text &&
+                bar_of(Ink.Field) == Bar.Graphic &&
+                bar_of(Ink.Focus) == Bar.Graphic &&
+                bar_of(Ink.Disabled) == Bar.Graphic &&
+                bar_of(Ink.Border) == Bar.Decorative
+        }
+    }
+    given "Crisp" {
+        then "no pair it draws falls short, in either scheme, at either contrast" {
+            shortfalls(default_theme).map(it.said()).join("\n") == ""
+        }
+        then "a held contrast is read at both all the same" {
+            shortfalls(default_theme with { contrast: .Standard }).is_empty() &&
+                shortfalls(faint() with { contrast: .More }).length == shortfalls(faint()).length
+        }
+    }
+    given "a theme whose muted ink is faint in the light scheme" {
+        then "each ground it is drawn on falls short at standard contrast, and none where its stronger shade stands" {
+            shortfalls(faint()).length == 4 &&
+                shortfalls(faint()).all(it.contrast == Contrast.Standard)
+        }
+        then "the refusal names the pair, the way it is seen, the two colours, the ratio and the bar" {
+            shortfalls(faint())[0].said() == "`muted` on `canvas`, light at standard contrast: #BBBBBB on #FFFFFF is 1.91:1, under the 4.50:1 a text pair owes"
+        }
+    }
+    given "a theme whose field line is faded" {
+        then "it falls short of the graphic bar" {
+            shortfalls(faded_field())[0].said() == "`field` on `canvas`, light at standard contrast: #999999 on #FFFFFF is 2.84:1, under the 3.00:1 a graphic pair owes"
+        }
+    }
+    given "a theme naming a colour by a word" {
+        then "the pair is named as unread" {
+            shortfalls(worded())[0].said() == "`link` on `canvas`, light at standard contrast: `blue` on `#FFFFFF` — a colour the proof reads is written `#RRGGBB`"
+        }
+    }
+}

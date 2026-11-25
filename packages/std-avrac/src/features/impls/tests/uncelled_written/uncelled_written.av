@@ -1,0 +1,42 @@
+// proves: a writing method called through a binding that holds no cell — a seat that isn't `mut`, a
+// narrowed binder, a loop's binder, a path below a seat — writes a copy the binding never sees;
+// through a `let` it writes the binding.
+trait Counter {
+    fn get() -> int
+}
+type C = { n: int, m: int }
+impl Counter for C {
+    fn get() -> int { self.n }
+}
+impl C { mut fn bump() { self.n = self.n + 1 } }
+type O = { c: C, k: int }
+fn narrowed(x: dyn Counter) -> int {
+    match x {
+        c: C -> {
+            c.bump()
+            c.n
+        },
+        _ -> 0,
+    }
+}
+fn looped(cs: List<C>) -> int {
+    mut t = 0
+    for c in cs {
+        c.bump()
+        t = t + c.n
+    }
+    t
+}
+fn nested(o: O) -> int {
+    o.c.bump()
+    o.c.n
+}
+fn bound_let() -> int {
+    let y = C { n: 5, m: 0 }
+    if y.n > 0 { y.bump() }
+    y.n
+}
+let a: dyn Counter = C { n: 1, m: 0 }
+let cs = [C { n: 1, m: 0 }, C { n: 2, m: 0 }]
+let o = O { c: C { n: 1, m: 0 }, k: 0 }
+println("${narrowed(a)} ${a.get()} ${looped(cs)} ${cs[0].n} ${nested(o)} ${o.c.n} ${bound_let()}")

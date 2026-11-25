@@ -1,0 +1,276 @@
+//! `@derive(Children)` — THE COMPLETE WALK, read off the node model:
+//! every expression a node holds, named by its payload TYPES. An
+//! `ExprId` is a child, a `List<ExprId>` is children, an `ExprId?` is
+//! a child when present, a `List<StmtId>` reaches through its
+//! statements. A RECORD or ENUM payload (`Arm`, `CompClause`) is read
+//! off its own declaration, field by field in declaration order, through
+//! the same rows — so a payload type needs no row of its own. Everything
+//! that cannot reach an expression contributes none. A variant wearing
+//! `@apart` reaches nothing through such payloads: they are walked from
+//! their own root (a seat's default, a spec case's body).
+//!
+//! IT IS NOT `kids`, AND THE DIFFERENCE IS THE POINT. A feature's
+//! `kids` answers WHICH CHILDREN THAT FEATURE TYPES and hides some
+//! deliberately — an `if`'s branches type under the narrow a presence
+//! test may prove, a lambda's body under its own scope. That is
+//! MEANING and no derive can read it. This walk answers what a node
+//! HOLDS, which is a fact about the declaration, so a question about
+//! every expression in a body asks here (nodes.av's hidden-branch
+//! law) and never through `kids`.
+//!
+//! IT GENERATES STORE VOCABULARY. A child is an `ExprId`, and an id
+//! means nothing without its arena — reaching a statement list's
+//! expressions is `self.stmts_exprs(ss)`. So the walk is a method on
+//! `SyntaxArena`, as `@derive(Grammar)` answers a free fn rather than a
+//! value method for the same reason.
+//!
+//! TWO MARKS THE TYPES CANNOT SAY. `@declares` means the statement
+//! declares a body OF ITS OWN, walked from that body and never
+//! through the statement, so it holds no children whatever its
+//! payloads say. `@expands` means the node's view STANDS IN for its
+//! written payloads and holds the same nodes, so the walk reaches the
+//! view alone. A body's PARSED form and EXPANSION are a payload of
+//! their own type (`BodyView`), so the walk reads them through a row
+//! like any other.
+//!
+//! It stands ALONE in this file on purpose: running a derive TYPES
+//! the file that declares it, and a file that also walked the nodes
+//! would be typed while the annotated file's own impls are still
+//! registering (CLAUDE.md).
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Mark as MetaMark,
+    Directive,
+    Declared,
+    Diagnostic,
+    Code,
+    Arms,
+    Kind,
+    payload_of,
+    holds,
+    name,
+    refuse_as_at,
+    beside,
+    Held,
+}
+
+/// The shape words a variant may wear. Exactly one decides how the
+/// walk reaches its children; a variant wearing none is refused, so a
+/// new node kind cannot arrive with its shape undeclared.
+const shape_words: List<string> = [
+    "declares",
+    "expands",
+    "apart",
+    "sequence",
+    "branches",
+    "clauses",
+]
+
+/// The compiler's derive for the complete child walk.
+export trait Children {
+    static fn derive(t: MetaType) -> Declared {
+        let problems = flatten([shape_problems(t, v) for v in t.variants])
+        if !problems.is_empty() { return Declared { made: [refused_children(t)], problems: problems } }
+        Declared {
+            made: [
+                beside(
+                    t,
+                    quote {
+            impl SyntaxArena {
+                fn ${walk_of(t.name)}(id: ${holder_of(t.name)}) -> List<ExprId> {
+                    match self.${reader_of(t.name)}(id) { ${[child_arm(t, v) for v in t.variants]} }
+                }
+            }
+        },
+                ),
+            ],
+            problems: [],
+        }
+    }
+
+    /// The words this derive reads — a variant's shape, and a field's
+    /// `@local` and `@facet` — and no others. A derive that claims a
+    /// mark it never reads makes the claim law say nothing: the word
+    /// stops being refused without anything having started to read it.
+    static fn marks(t: MetaType) -> List<string> { shape_words.concat([local_word, facet_word]) }
+}
+
+/// What a refused enum is given: the walk answers nothing anyone
+/// wrote, so no caller is blamed for a method the build never made.
+fn refused_children(t: MetaType) -> Directive {
+    beside(
+        t,
+        quote {
+            impl SyntaxArena {
+                fn ${walk_of(t.name)}(_id: ${holder_of(t.name)}) -> List<ExprId> { [] }
+            }
+        },
+    )
+}
+
+/// What is wrong with a variant's shape, when anything is.
+fn shape_problems(t: MetaType, v: MetaVariant) -> List<Diagnostic> {
+    if !shape_words.any(marked(v, it) != null) { return [unshaped(t, v)] }
+    if marked(v, "clauses") != null && !v.fields.any(it.ty == "List<CompClause>") {
+        return [clauses_without_clause(t, v)]
+    }
+    []
+}
+
+/// One variant's arm: its payloads bound, the expression-bearing ones
+/// concatenated in declaration order.
+fn child_arm(t: MetaType, v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    quote { .${v}(${binders(v)}) -> ${reach_of(t, v)} }
+}
+
+/// What a variant reaches. A DECLARING statement reaches nothing —
+/// its body is walked as the declaration it is. A body's VIEW reaches
+/// through its own payload row (`body_view_children`), so a parsed
+/// quote's statements and a sublanguage's expansion are reached and
+/// its holes are not walked beside them.
+fn reach_of(t: MetaType, v: MetaVariant) -> Code {
+    if marked(v, "declares") != null { return quote { [] } }
+    if marked(v, "expands") != null { return concatenated(view_parts(t, v)) }
+    concatenated(parts_of(t, v))
+}
+
+/// An EXPANDING node's written payloads are nodes its view already
+/// holds, so the view alone is walked — each node reached once.
+fn view_parts(t: MetaType, v: MetaVariant) -> List<Code> {
+    [r! for r in [reach(t, v, f) for f in v.fields if reached(f) && f.ty == "BodyView"] if r != null]
+}
+
+/// The mark of this name the variant carries, or absence.
+fn marked(v: MetaVariant, word: string) -> MetaMark? {
+    v.marks.find(it.name == word)
+}
+
+/// Each expression-bearing payload's reach, in declaration order. ONE
+/// LIST DECIDES: a payload carries expressions exactly when `reach`
+/// answers, so the question "does this type carry any" and the answer
+/// "here is how to reach them" cannot drift into two lists that
+/// disagree.
+fn parts_of(t: MetaType, v: MetaVariant) -> List<Code> {
+    let held = [reach(t, v, f) for f in v.fields if reached(f)]
+    [r! for r in held if r != null]
+}
+
+/// HOW A PAYLOAD'S TYPE REACHES THE EXPRESSIONS UNDER IT — the whole
+/// registry, one row per shape the node model spells, and ABSENCE for
+/// a type that carries no expression. `List<Param>` is absent on
+/// purpose: it holds a field's DEFAULT, which is a declaration of its
+/// own and walked from its own root.
+///
+/// A NEW ID-BEARING PAYLOAD TYPE GETS NO ROW AND SO CARRIES NOTHING,
+/// silently — the one hole this shape has. It is closed from the other
+/// side: `@derive(Identity)` folds the SAME payload types and refuses
+/// an unrowed one at the generated code, so a type added to the model
+/// without a row here breaks that build before it can quietly shrink
+/// this walk.
+fn reach(t: MetaType, v: MetaVariant, f: Field) -> Code? {
+    reach_through(t, f.kind, name(f.name), marked(v, "apart") != null)
+}
+
+/// The rows: the payload types a walk of children reaches by name.
+fn reach_row(ty: string, b: Code) -> Code? {
+    match ty {
+        "ExprId" -> quote { [${b}] },
+        "ExprId?" -> quote { some_list(${b}) },
+        "List<ExprId>" -> b,
+        "List<StmtId>" -> quote { self.stmts_exprs(${b}) },
+        "BodyView" -> quote { self.body_view_children(${b}) },
+        _ -> null,
+    }
+}
+
+/// A payload's reach through its TYPE: a row when it has one, else —
+/// unless its holder walks it apart — its own declaration, entered only
+/// when it can hold an expression or a statement list.
+fn reach_through(t: MetaType, k: Kind, e: Code, apart: bool) -> Code? {
+    let row = reach_row(k.spelled(), e)
+    if row != null { return row }
+    if apart || !holds(t, k, carries_nodes) { return null }
+    match k {
+        .List(inner) -> {
+            let each? = reach_through(t, inner, quote { each }, apart) else { return null }
+            quote { flatten([${each} for each in ${e}]) }
+        },
+        .Opt(inner) -> {
+            let each? = reach_through(t, inner, quote { each }, apart) else { return null }
+            quote { flatten([${each} for each in some_list(${e})]) }
+        },
+        .Named(n, _) -> declared_reach(t, n, e, apart),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
+    }
+}
+
+/// The types a walk of children stops at.
+fn carries_nodes(n: string) -> bool { n == "ExprId" || n == "StmtId" }
+
+/// A declared record's fields, or an enum's variants, read in order.
+fn declared_reach(t: MetaType, n: string, e: Code, apart: bool) -> Code? {
+    let held? = payload_of(t, n) else { return null }
+    match held {
+        .Record(fields) -> {
+            let parts = [r! for r in [reach_through(t, f.kind, quote { ${e}.${f.name} }, apart) for f in fields if reached(f)] if r != null]
+            if parts.is_empty() { return null }
+            concatenated(parts)
+        },
+        .Enum(variants) -> {
+            let arms = [variant_reach(t, v, apart) for v in variants]
+            quote { (match ${e} { ${arms} }) }
+        },
+    }
+}
+
+/// One variant of a declared enum: its payloads bound under names of
+/// their own, the ones that reach concatenated.
+fn variant_reach(t: MetaType, v: MetaVariant, apart: bool) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    let bound = ["${f.name}_held" for f in v.fields if carried(f)]
+    let parts = [r! for r in [reach_through(t, f.kind, name("${f.name}_held"), apart) for f in v.fields if carried(f)] if r != null]
+    if parts.is_empty() { return quote { .${v}(${bound}) -> [] } }
+    quote { .${v}(${bound}) -> ${concatenated(parts)} }
+}
+
+// ── voices ──
+
+fn unshaped(t: MetaType, v: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "children-shape",
+        v.at,
+        "a node's children follow the mark its variant wears — `${t.name}.${v.name}` wears none",
+        "mark it `@apart`, `@sequence`, `@branches`, `@clauses(…)`, `@declares` or `@expands`",
+    )
+}
+
+fn clauses_without_clause(t: MetaType, v: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "children-clauses",
+        v.at,
+        "`@clauses` names a variant's clause walk — `${t.name}.${v.name}` holds no `List<CompClause>`",
+        "drop `@clauses`, or give the variant a `List<CompClause>` field",
+    )
+}
+
+/// The parts as ONE expression — a hole in expression position takes
+/// one `Code`, so a run is folded rather than spliced.
+/// The walk's name, its id type and the store's reader for it — the
+/// node model's two arenas, named once.
+fn walk_of(owner: string) -> string {
+    if owner == "Expr" { return "expr_children" }
+    "stmt_children"
+}
+
+fn holder_of(owner: string) -> string {
+    if owner == "Expr" { return "ExprId" }
+    "StmtId"
+}
+
+fn reader_of(owner: string) -> string {
+    if owner == "Expr" { return "expr" }
+    "stmt"
+}

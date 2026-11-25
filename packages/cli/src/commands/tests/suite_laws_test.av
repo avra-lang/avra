@@ -1,0 +1,57 @@
+//! `avra test` judges a suite's cases before it makes them: a case a law
+//! refuses is refused in the law's words, as a check of its file says them,
+//! and no suite is built. `avra_ran` and `scratch_dir` are the neighbouring
+//! tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.process.{Exit}
+use @std.time.{stamp}
+
+/// A package whose one spec file holds `case` as a case's body; its root.
+fn suite_of(name: string, case: string) -> string {
+    let root = "${scratch_dir()}/suite_laws_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src/tests")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"suite_laws\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/lib.av", "export fn nums() -> List<int> { [1, 2] }\n")
+    let _ = write_text(
+        "${root}/src/tests/nums_test.av",
+        "use lib.{nums}\n\nspec \"nums\" {\n    given \"two\" {\n        then \"they hold\" { ${case} }\n    }\n}\n",
+    )
+    root
+}
+
+fn exits_one(e: Exit) -> bool { match e { .Code(1) -> true, .Clean or .Code(_) or .Signal(_, _) -> false } }
+
+spec "avra test — a case is judged before it is made" {
+    given "a case comparing two lists with `==`" {
+        then "the suite is refused in the law's words, at the case" {
+            match avra_ran(["test", suite_of("lists", "nums() == [1, 2]")]) {
+                .Ok(o) -> exits_one(o.exit) &&
+                    "${o.out.stdout}${o.out.stderr}".contains("`==` compares by value") &&
+                    "${o.out.stdout}${o.out.stderr}".contains("nums_test.av:5:"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a case asking a list for a method no list has" {
+        then "the suite is refused in the type law's words, at the case, never as a body not made yet" {
+            match avra_ran(["test", suite_of("method", "nums().check(\"x\") == \"y\"")]) {
+                .Ok(o) -> exits_one(o.exit) &&
+                    "${o.out.stdout}${o.out.stderr}".contains("error[type.method]") &&
+                    "${o.out.stdout}${o.out.stderr}".contains("nums_test.av:5:") &&
+                    !"${o.out.stdout}${o.out.stderr}".contains("not made yet"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "the same case written over what `==` compares" {
+        then "the suite runs and passes" {
+            match avra_ran(["test", suite_of("lengths", "nums().length == 2")]) {
+                .Ok(o) -> exit_is_zero(o.exit) && o.out.stdout.contains("1/1 tests passed"),
+                .Err(_) -> false,
+            }
+        }
+    }
+}

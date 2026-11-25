@@ -1,0 +1,127 @@
+//! A TYPE CROSSES AS A SHAPE, not as text. Every verb here
+//! DISPATCHES on `Kind` and never reads a spelling, so the answer it
+//! writes is proof the structure arrived — and `spelled()` beside it
+//! is proof the shape still knows the words.
+use @std.meta.{Type, Fn, Param, Field, Variant, Kind, Seat, Directive, literal}
+
+/// A record's fields three ways: STRUCTURALLY (a Kind dispatch), in
+/// the shape's OWN WORDS (`spelled()`), and as the program WROTE
+/// them. The last two agreeing is what says the Kind was built from
+/// the type and not from the text beside it.
+export trait Shapes {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl ${t} {
+            fn shapes() -> string { ${literal(joined([shaped(f.kind) for f in t.fields]))} }
+            fn words() -> string { ${literal(joined([f.kind.spelled() for f in t.fields]))} }
+            fn written() -> string { ${literal(joined([f.ty for f in t.fields]))} }
+        } },
+            },
+        ]
+    }
+}
+
+/// A VARIANT's payload as FIELDS — the names a grammar capture
+/// binds to, beside the spellings `payload` already carried. The two
+/// run together, so `paired` asserts the lengths agree and `named`
+/// asserts each field's `ty` IS its payload spelling: two lists that
+/// disagree positionally are two things wearing one identity.
+export trait Carried {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl ${t} {
+            fn carried() -> string { ${literal(joined([variant_fields(v.name, v.fields) for v in t.variants]))} }
+            fn paired() -> string { ${literal(joined(["${v.payload.length}=${v.fields.length}" for v in t.variants]))} }
+            fn named() -> string { ${literal(joined([same_spelling(v) for v in t.variants]))} }
+        } },
+            },
+        ]
+    }
+}
+
+fn variant_fields(name: string, fields: List<Field>) -> string {
+    "${name}(${joined(["${f.name}:${shaped(f.kind)}" for f in fields])})"
+}
+
+/// Each field's `ty` against the payload spelling beside it.
+fn same_spelling(v: Variant) -> string {
+    "${v.name}:${agrees(v)}"
+}
+
+fn agrees(v: Variant) -> bool {
+    [j for j, f in v.fields if f.ty != v.payload[j]].is_empty()
+}
+
+/// A FN's seats and answer, shaped — where a `mut` mark, a `Result`
+/// and a fn-typed seat live, none of which a struct field carries.
+export fn seated(f: Fn) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote { fn ${seat_reader(f.name)}() -> string { ${literal(fn_shape(f))} } },
+        },
+    ]
+}
+
+fn seat_reader(name: string) -> string { "${name}_shape" }
+
+fn fn_shape(f: Fn) -> string {
+    "(${joined([param_shape(p) for p in f.params])})->${shaped(f.answers)}|${f.answers.spelled()}"
+}
+
+fn param_shape(p: Param) -> string {
+    "${mark_word(p.mutable, p.settled)}${shaped(p.kind)}"
+}
+
+/// THE STRUCTURAL SPELLING: every variant answers, so a shape this
+/// vocabulary has no word for cannot pass as one that does.
+export fn shaped(k: Kind) -> string {
+    match k {
+        .Int -> "i",
+        .Float -> "f",
+        .Bool -> "b",
+        .Str -> "s",
+        .Ptr -> "p",
+        .Void -> "v",
+        .List(elem) -> "[${shaped(elem)}]",
+        .Cell(inner) -> "cell(${shaped(inner)})",
+        .Map(key, value) -> "{${shaped(key)}:${shaped(value)}}",
+        .Opt(inner) -> "${shaped(inner)}?",
+        .Result(ok, err) -> "(${shaped(ok)}!${shaped(err)})",
+        .Named(name, args) -> named_shape(name, args),
+        .Fn(seats, answer) -> "fn(${joined([seat_shape(s) for s in seats])})->${shaped(answer)}",
+        .Dyn(name) -> "dyn@${name}",
+        .Var(name) -> "var@${name}",
+        .Unspelled(text) -> "?<${text}>",
+        .Bytes -> "bytes",
+    }
+}
+
+fn named_shape(name: string, args: List<Kind>) -> string {
+    if args.is_empty() { return "@${name}" }
+    "@${name}<${joined([shaped(a) for a in args])}>"
+}
+
+/// A seat carries its promises WITH its shape — one value, never a
+/// parallel list.
+fn seat_shape(s: Seat) -> string {
+    "${mark_word(s.mutable, s.settled)}${shaped(s.kind)}"
+}
+
+fn mark_word(mutable: bool, settled: bool) -> string {
+    if settled { return if mutable { "cm:" } else { "c:" } }
+    if mutable { return "m:" }
+    ""
+}
+
+fn joined(xs: List<string>) -> string { xs.join(",") }

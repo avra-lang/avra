@@ -1,0 +1,42 @@
+// THE FIXTURES THE SUITES SHARE. Every file in this directory is ONE
+// module, so a fixture defined here is in scope for all of them — and
+// a fixture each suite spells for itself is a second builder under
+// test beside the product. Six files each built a `Request` from
+// octets; this is that builder, once.
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted}
+use @std.text.{from_codepoint}
+use @std.http.body.{Body}
+
+/// A request as the server holds one: framed from the octets it
+/// arrived in, so the target is a SPAN the framer already judged and
+/// never a string a test invented.
+fn framed_from(raw: Bytes) -> Request<Unrouted>? {
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// A request from its whole line, with the Host a 1.1 request owes.
+fn asked(line: string) -> Request<Unrouted>? { framed_from((line + "\r\nHost: h\r\n\r\n").bytes()) }
+
+/// A GET of one target.
+fn asked_get(target: string) -> Request<Unrouted>? { asked("GET " + target + " HTTP/1.1") }
+
+/// A NUL, which no string literal can spell.
+fn nul() -> string { from_codepoint(0) }
+
+/// The wire as text with its `date` line dropped — the one field a
+/// fixture cannot know ahead of the second it runs in.
+fn undated(t: string) -> string {
+    let b = t.bytes()
+    let at = b.index_of("\r\ndate: ".bytes(), 0)
+    if at < 0 { return t }
+    let end = b.index_of("\r\n".bytes(), at + 2)
+    b.slice(0, at).concat(b.slice(end, b.length)).text() ?? t
+}
+
+/// The octets a date line adds to a response: `date: `, an
+/// IMF-fixdate, a CRLF.
+const date_width: int = 37

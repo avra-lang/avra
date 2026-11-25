@@ -1,0 +1,764 @@
+//! The lowering rules of the walks a list, or a range's integers, takes a fn for — `find`, `find_index`, `any`, `all`, `map`,
+//! `filter`, `fold`, `count`, over a map each of its entries — and of `contains`, `index_of`, `take`, `drop`, `sum`, `min` and `max`: the list first, then
+//! each stage of a walk it runs as one with, then what the answer gathers in, then the fn or the
+//! value sought, then one walk over the list handing each element through the stages to the fn or
+//! comparing it. A lambda capturing nothing, of one expression that leaves nothing
+//! to the walk's frame, is asked in place, its seats bound to what it's handed; any other fn through
+//! its box, its code read once before the walk.
+use core.{
+    BinOp,
+    BoxKind,
+    Bound,
+    ExprId,
+    Layout,
+    LiftedBody,
+    Lowering,
+    OwnType,
+    Param,
+    Reg,
+    SignedType,
+    SyntaxArena,
+    lift_refusal,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{Lambda, MethodCall}
+
+/// A walk a list takes a fn for.
+enum WalkVerb {
+    Find
+    FindIndex
+    FindMap
+    Any
+    All
+    Map
+    Filter
+    Fold
+    Count
+    Contains
+    IndexOf
+    Take
+    Drop
+    Sum
+    Min
+    Max
+}
+
+/// A verb a list's walk answers to: its name, the walk it is and the stage it is in a walk after it,
+/// each where it's lowered here, and whether it hands its walk on to a walk after it, which runs both
+/// as one.
+type WalkRow = { verb: string, walk: WalkVerb?, stage: StageVerb?, hands_on: bool }
+
+/// A stage a walk hands each element through before the walk after it reads it.
+enum StageVerb {
+    Map
+    Filter
+    Take
+    Drop
+    FilterMap
+    FlatMap
+    Flatten
+    TakeWhile
+    DropWhile
+}
+
+/// How many arguments a stage takes, each by position.
+fn stage_arity(s: StageVerb) -> int {
+    match s {
+        .Map or .Filter or .Take or .Drop or .FilterMap or .FlatMap or .TakeWhile or .DropWhile -> 1,
+        .Flatten -> 0,
+    }
+}
+
+/// What a walk's own loop is labelled, which ending the walk leaves from however deep a stage's loop
+/// stands in it.
+const WALK_LOOP: string = " walk"
+
+/// Every verb a list's walk answers to.
+once fn walk_rows() -> List<WalkRow> {
+    table<WalkRow> {
+        verb         | walk               | stage               | hands_on
+        "find"       | WalkVerb.Find      | null                | false
+        "find_index" | WalkVerb.FindIndex | null                | false
+        "find_map"   | WalkVerb.FindMap   | null                | false
+        "any"        | WalkVerb.Any       | null                | false
+        "all"        | WalkVerb.All       | null                | false
+        "map"        | WalkVerb.Map       | StageVerb.Map       | true
+        "filter"     | WalkVerb.Filter    | StageVerb.Filter    | true
+        "fold"       | WalkVerb.Fold      | null                | false
+        "count"      | WalkVerb.Count     | null                | false
+        "contains"   | WalkVerb.Contains  | null                | false
+        "index_of"   | WalkVerb.IndexOf   | null                | false
+        "take"       | WalkVerb.Take      | StageVerb.Take      | true
+        "drop"       | WalkVerb.Drop      | StageVerb.Drop      | true
+        "sum"        | WalkVerb.Sum       | null                | false
+        "min"        | WalkVerb.Min       | null                | false
+        "max"        | WalkVerb.Max       | null                | false
+        "filter_map" | null               | StageVerb.FilterMap | true
+        "flat_map"   | null               | StageVerb.FlatMap   | true
+        "flatten"    | null               | StageVerb.Flatten   | true
+        "chars"      | null               | null                | true
+        "take_while" | null               | StageVerb.TakeWhile | true
+        "drop_while" | null               | StageVerb.DropWhile | true
+    }
+}
+
+/// The row of the verb `name`, absent for a verb no walk answers to.
+fn walk_row(name: string) -> WalkRow? { walk_rows().find(it.verb == name) }
+
+impl Lowering {
+    /// `m`, a verb on a value of the type the language owns `own`, when it's a walk a list or a range
+    /// takes a fn for, or a map's `filter`; absent, with nothing emitted, for any other verb.
+    mut fn list_walked(m: MethodCall, e: ExprId, own: OwnType) -> Reg? {
+        if own == OwnType.Map {
+            let only = map_walk(m.name.of)
+            if only != null { return map_walked(self, only!, m, e) }
+        }
+        let verb? = walk_row(m.name.of)?.walk else { return null }
+        match own {
+            .List or .Range or .Map -> walk_lowered(self, verb, m, e),
+            .Int or .Float or .Bool or .Str or .Ptr or .Void or .Bytes or .Cell or .Result or .Task or .Tasks -> null,
+        }
+    }
+}
+
+/// The walk `verb` over `m`'s receiver: a receiver that is itself a walk runs as one with it, each
+/// element passing that walk's stages before the verb reads it. One over a walk no stage here is
+/// isn't lowered yet.
+fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> Reg {
+    let elem? = walked_of(cx, cx.type_at(m.subject)) else { return cx.missed_as("a walk `${m.name.of}` over an untyped receiver") }
+    if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as("a walk `${m.name.of}` naming an argument") }
+    if !stages_of(cx, m.subject) { return cx.missed_as("a walk over a walk it runs as one with") }
+    match verb {
+        .Find -> found(cx, m, e, elem),
+        .FindIndex -> found_at(cx, m, e),
+        .FindMap -> found_mapped(cx, m, e),
+        .Any -> judged(cx, m, e, false),
+        .All -> judged(cx, m, e, true),
+        .Map -> gathered(cx, m, e, true),
+        .Filter -> gathered(cx, m, e, false),
+        .Fold -> folded(cx, m, e),
+        .Count -> tallied(cx, m, e),
+        .Contains -> contained(cx, m, e, elem),
+        .IndexOf -> indexed(cx, m, e, elem),
+        .Take -> limited(cx, m, e, true),
+        .Drop -> limited(cx, m, e, false),
+        .Sum -> summed(cx, m, e, elem),
+        .Min -> extreme(cx, m, e, elem, BinOp.Lt),
+        .Max -> extreme(cx, m, e, elem, BinOp.Gt),
+    }
+}
+
+// ── A walk over a walk ──────────────────────────────────────────────
+
+/// What a walk turns: what it starts from and its elements' type, and each stage an element passes
+/// before the verb reads it, in the order written.
+type Chain = { from: Source, elem: SignedType, stages: List<Stage> }
+
+/// What a walk starts from: a list, a range's integers, a map's keys beside its values, each turn the
+/// entry of one, or a text's code points.
+enum Source {
+    Listed(list: Reg)
+    Chars(text: Reg)
+    Counted(range: Reg)
+    Entries(keys: Reg, values: Reg, entry: SignedType)
+}
+
+/// What a walk over a value of `ty` hands on: a list's elements, a range's integers, a map's entries.
+fn walked_of(cx: Lowering, ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    let seen = cx.named_over(t) ?? t
+    seen.listed() ?? if seen.owns(OwnType.Range) { owned_type("int") } else { entry_of(cx, seen) }
+}
+
+/// The prelude's `Entry` a walk over the map `ty` hands on, absent for any other type.
+fn entry_of(cx: Lowering, ty: SignedType) -> SignedType? {
+    let value? = ty.mapped() else { return null }
+    let entry? = (cx.program.checked.toolchain_type)("@std.prelude", "Entry") else { return null }
+    entry with { args: [ty.args[0], value] }
+}
+
+/// What the receiver `e` starts a walk from, read once: a map's keys and values each once.
+fn source_of(mut cx: Lowering, e: ExprId) -> Source {
+    let text = cx.chars_viewed(e)
+    if text != null { return Source.Chars(cx.lower(text!)) }
+    let v = cx.lower(e)
+    let ty = cx.type_at(e)!
+    let entry = entry_of(cx, cx.named_over(ty) ?? ty)
+    if entry != null {
+        let keys = cx.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_keys")!, [v])
+        return Source
+            .Entries(
+                keys,
+                cx.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_vals")!, [v]),
+                entry!,
+            )
+    }
+    if (cx.named_over(ty) ?? ty).listed() == null { Source.Counted(v) } else { Source.Listed(v) }
+}
+
+/// A stage an element passes: a fn's answer in its place; a predicate it passes only where it holds;
+/// a count it passes only below its bound (`take`, the walk ended at the bound) or past it (`drop`);
+/// what a fn answers of it, where present (`filter_map`); each element of the list it is, or of the
+/// list a fn answers of it (`flatten`, `flat_map`); a predicate it passes while it holds, the walk
+/// ended at the first it doesn't (`take_while`), or once it first fails, `dropping` until then
+/// (`drop_while`).
+enum Stage {
+    Mapped(f: Asked, out: SignedType)
+    Kept(p: Asked)
+    Taken(count: Reg, n: Reg)
+    Dropped(count: Reg, n: Reg)
+    Present(f: Asked, answer: SignedType)
+    Spread(f: Asked?, list: SignedType)
+    TakenWhile(p: Asked)
+    DroppedWhile(p: Asked, dropping: Reg)
+}
+
+/// The walk `e` is, when it's a list's walk that hands it on: its receiver and its call.
+fn handed_on(cx: Lowering, e: ExprId) -> MethodCall? {
+    let m? = match cx.store.expr(cx.meaning_of(e)) {
+        .MethodCall(subject, name, args) -> MethodCall { subject: subject, name: name, args: args },
+        rest -> null,
+    } else { return null }
+    if !(walk_row(m.name.of)?.hands_on ?? false) || cx.type_at(m.subject)?.listed() == null { null } else { m }
+}
+
+/// Whether every walk the receiver `e` hands on is a stage here, of one argument by position.
+fn stages_of(cx: Lowering, e: ExprId) -> bool {
+    let m? = handed_on(cx, e) else { return true }
+    let stage? = walk_row(m.name.of)?.stage else { return false }
+    m.args.length == stage_arity(stage) &&
+        !m.args.any((a) -> cx.store.arg_label(a) != null) &&
+        stages_of(cx, m.subject)
+}
+
+/// The chain the receiver `e` starts: the list it starts from read first, then each stage's fn or
+/// bound in the order written.
+fn chain_of(mut cx: Lowering, e: ExprId) -> Chain {
+    let m? = handed_on(cx, e) else { return Chain { from: source_of(cx, e), elem: walked_of(cx, cx.type_at(e))!, stages: [] } }
+    let before = chain_of(cx, m.subject)
+    before with { stages: before.stages.concat([stage_of(cx, m, cx.meaning_of(e))]) }
+}
+
+/// The stage the walk `m` at `at` is, `stages_of` holding that it's one.
+fn stage_of(mut cx: Lowering, m: MethodCall, at: ExprId) -> Stage {
+    match walk_row(m.name.of)!.stage! {
+        .Map -> Stage.Mapped(asked(cx, m.args[0], 1), cx.type_at(at)!.listed()!),
+        .Filter -> Stage.Kept(asked(cx, m.args[0], 1)),
+        .Take -> Stage.Taken(cx.seeded_cell(Layout.Word, cx.const_int(0)), cx.lower(m.args[0])),
+        .Drop -> Stage.Dropped(cx.seeded_cell(Layout.Word, cx.const_int(0)), cx.lower(m.args[0])),
+        .FilterMap -> Stage.Present(asked(cx, m.args[0], 1), cx.type_at(cx.meaning_of(m.args[0]))!.answer!),
+        .FlatMap -> Stage.Spread(asked(cx, m.args[0], 1), cx.type_at(cx.meaning_of(m.args[0]))!.answer!),
+        .Flatten -> Stage.Spread(null, walked_list(cx, m.subject)),
+        .TakeWhile -> Stage.TakenWhile(asked(cx, m.args[0], 1)),
+        .DropWhile -> Stage
+            .DroppedWhile(asked(cx, m.args[0], 1), cx.seeded_cell(Layout.Truth, cx.const_bool(true))),
+    }
+}
+
+/// The type of the elements of the list `e` is.
+fn walked_list(cx: Lowering, e: ExprId) -> SignedType { cx.type_at(e)!.listed()! }
+
+/// One walk over the chain `c`: each element through its stages, then `body` handed what passed
+/// them and its place among those that did.
+fn turned(mut cx: Lowering, c: Chain, body: fn(mut Lowering, Reg, Reg) -> void) {
+    let arrived = if c.stages.is_empty() { null } else { cx.seeded_cell(Layout.Word, cx.const_int(0)) }
+    let start = match c.from {
+        .Listed(_) or .Chars(_) or .Entries(_, _, _) -> null,
+        .Counted(range) -> cx.range_start(range),
+    }
+    let w = match c.from {
+        .Listed(list) -> cx.walk_list(list, c.elem),
+        .Chars(text) -> cx.walk_chars(text),
+        .Counted(range) -> cx.walk_count(start!, cx.range_end(range)),
+        .Entries(keys, _, entry) -> cx.walk_list(keys, entry.args[0]),
+    }
+    let here = cx.walk_turn(w)
+    cx.labelled([WALK_LOOP])
+    let v = match c.from {
+        .Listed(_) or .Chars(_) -> cx.walked_element(w, here),
+        .Counted(_) -> here,
+        .Entries(keys, values, entry) -> cx
+            .record_packed(
+                cx.laid_out(entry),
+                [
+                    cx.element_at(w.elem_layout, keys, here),
+                    cx.element_at(cx.laid_out(entry.args[1]), values, here),
+                ],
+            ),
+    }
+    let place = if start == null { cx.walk_place(w, here) } else { cx.bin(Layout.Word, BinOp.Sub, here, start!) }
+    passed(cx, c.stages, 0, v, place, arrived, body)
+    cx.loop_end()
+}
+
+/// The element `v` at the place `here` through stage `at` onward, then `body`; `arrived` counts the
+/// elements that pass every stage, where there are any.
+fn passed(
+    mut cx: Lowering,
+    stages: List<Stage>,
+    at: int,
+    v: Reg,
+    here: Reg,
+    arrived: Reg?,
+    body: fn(mut Lowering, Reg, Reg) -> void,
+) {
+    if at == stages.length {
+        let cell? = arrived else { return body(cx, v, here) }
+        let seen = cx.loaded(Layout.Word, cell)
+        counted_past(cx, cell, seen)
+        return body(cx, v, seen)
+    }
+    match stages[at] {
+        .Mapped(f, out) -> passed(cx, stages, at + 1, answered(cx, f, [v], cx.laid_out(out)), here, arrived, body),
+        .Kept(p) -> cx
+            .void_region(answered(cx, p, [v], Layout.Truth)) { cx -> passed(cx, stages, at + 1, v, here, arrived, body) },
+        .Taken(count, n) -> {
+            let seen = cx.loaded(Layout.Word, count)
+            let keep = cx.bin(Layout.Truth, BinOp.Lt, seen, n)
+            cx
+                .void_region(keep) { cx ->
+                    counted_past(cx, count, seen)
+                    passed(cx, stages, at + 1, v, here, arrived, body)
+                }
+            cx.void_region(cx.not(keep)) { cx -> walk_ended(cx) }
+        },
+        .Dropped(count, n) -> {
+            let seen = cx.loaded(Layout.Word, count)
+            counted_past(cx, count, seen)
+            cx
+                .void_region(cx.bin(Layout.Truth, BinOp.Ge, seen, n)) { cx -> passed(cx, stages, at + 1, v, here, arrived, body) }
+        },
+        .Present(f, answer) -> {
+            let got = answered(cx, f, [v], cx.laid_out(answer))
+            cx
+                .void_region(cx.present(got, answer)) { cx -> passed(cx, stages, at + 1, cx.carried(got, answer), here, arrived, body) }
+        },
+        .Spread(f, list) -> {
+            let inner = if f == null { v } else { answered(cx, f!, [v], cx.laid_out(list)) }
+            let w = cx.walk_list(inner, list.listed()!)
+            let place = cx.walk_turn(w)
+            passed(
+                cx,
+                stages,
+                at + 1,
+                cx.element_at(w.elem_layout, inner, place),
+                here,
+                arrived,
+                body,
+            )
+            cx.loop_end()
+        },
+        .TakenWhile(p) -> {
+            let holds = answered(cx, p, [v], Layout.Truth)
+            cx.void_region(holds) { cx -> passed(cx, stages, at + 1, v, here, arrived, body) }
+            cx.void_region(cx.not(holds)) { cx -> walk_ended(cx) }
+        },
+        .DroppedWhile(p, dropping) -> {
+            let skipped = cx
+                .region(cx.loaded(Layout.Truth, dropping), Layout.Truth) { cx -> answered(cx, p, [v], Layout.Truth) } else { cx -> cx.const_bool(false) }
+            cx
+                .void_region(cx.not(skipped)) { cx ->
+                    cx.stored(dropping, cx.const_bool(false))
+                    passed(cx, stages, at + 1, v, here, arrived, body)
+                }
+        },
+    }
+}
+
+/// The walk ended, from however deep a stage's loop stands in it.
+fn walk_ended(mut cx: Lowering) { cx.jumped_to(WALK_LOOP, false) }
+
+// ── The verbs ───────────────────────────────────────────────────────
+
+/// `xs.any(p)` / `xs.all(p)`: a truth seeded with `all`, overturned and the walk ended at the first
+/// element that settles it: the first `p` holds of for `any`, the first it doesn't for `all`.
+fn judged(mut cx: Lowering, m: MethodCall, e: ExprId, all: bool) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(all))
+    let f = asked(cx, m.args[0], 1)
+    turned(cx, c) { cx, v, _at ->
+        let hit = answered(cx, f, [v], Layout.Truth)
+        cx
+            .void_region(if all { cx.not(hit) } else { hit }) { cx -> ended(cx, cell, cx.const_bool(!all)) }
+    }
+    cx.loaded(Layout.Truth, cell)
+}
+
+/// `xs.find(p)`: absent until the first element `p` holds of, which is kept and ends the walk; over
+/// nullable elements, a `null` found stays apart from none found.
+fn found(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let opt? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(opt)
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
+    let f = asked(cx, m.args[0], 1)
+    turned(cx, c) { cx, v, _at ->
+        cx
+            .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(v, elem, opt)) }
+    }
+    cx.loaded(l, cell)
+}
+
+/// `xs.find_map(f)`: absent until the first element `f` answers present for, whose answer is kept
+/// and ends the walk.
+fn found_mapped(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let opt? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(opt)
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
+    let f = asked(cx, m.args[0], 1)
+    turned(cx, c) { cx, v, _at ->
+        let got = answered(cx, f, [v], l)
+        cx.void_region(cx.present(got, opt)) { cx -> ended(cx, cell, got) }
+    }
+    cx.loaded(l, cell)
+}
+
+/// `xs.find_index(p)`: absent until the first element `p` holds of, whose place is kept and ends the
+/// walk.
+fn found_at(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let opt? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(opt)
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
+    let f = asked(cx, m.args[0], 1)
+    turned(cx, c) { cx, v, at ->
+        cx
+            .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(at, opt.unwrapped(), opt)) }
+    }
+    cx.loaded(l, cell)
+}
+
+/// `xs.map(f)` / `xs.filter(p)`: an empty list, each element's answer pushed onto it, or each
+/// element `p` holds of.
+fn gathered(mut cx: Lowering, m: MethodCall, e: ExprId, mapping: bool) -> Reg {
+    if m.args.length != 1 { return cx.missed_as("a walk `${m.name.of}` handed ${m.args.length} arguments") }
+    let ty? = cx.type_at(e) else { return cx.missed_as("an untyped walk `${m.name.of}`") }
+    let out? = gathered_into(cx, ty) else { return cx.missed_as("a walk `${m.name.of}` answering no list or map") }
+    let c = chain_of(cx, m.subject)
+    let f = asked(cx, m.args[0], 1)
+    let dst = gathering(cx, ty)
+    turned(cx, c) { cx, v, _at ->
+        if mapping {
+            kept_in(cx, dst, ty, answered(cx, f, [v], cx.laid_out(out)))
+        } else {
+            cx.void_region(answered(cx, f, [v], Layout.Truth)) { cx -> kept_in(cx, dst, ty, v) }
+        }
+    }
+    dst
+}
+
+/// `xs.fold(seed, f)`: the seed in a cell, rewritten with `f`'s answer about it and each element.
+fn folded(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length != 2 { return cx.unlowered(e) }
+    let ret? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(ret)
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(l, cx.lowered_into(m.args[0], ret))
+    let f = asked(cx, m.args[1], 2)
+    turned(cx, c) { cx, v, _at -> cx.stored(cell, answered(cx, f, [cx.loaded(l, cell), v], l)) }
+    cx.loaded(l, cell)
+}
+
+/// `xs.count()`, or `xs.count(p)`: a tally seeded zero, one more for each element, or each `p` holds of.
+fn tallied(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length > 1 { return cx.unlowered(e) }
+    let c = chain_of(cx, m.subject)
+    let tally = cx.seeded_cell(Layout.Word, cx.const_int(0))
+    let p = if m.args.is_empty() { null } else { asked(cx, m.args[0], 1) }
+    turned(cx, c) { cx, v, _at ->
+        let held? = p else { return one_more(cx, tally) }
+        cx.void_region(answered(cx, held, [v], Layout.Truth)) { cx -> one_more(cx, tally) }
+    }
+    cx.loaded(Layout.Word, tally)
+}
+
+/// The count in `tally` one more.
+fn one_more(mut cx: Lowering, tally: Reg) { counted_past(cx, tally, cx.loaded(Layout.Word, tally)) }
+
+/// `xs.sum()`: a count seeded zero before the list is read, each element added to it. One over
+/// elements that aren't `int` isn't lowered yet.
+fn summed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if !m.args.is_empty() || !elem.owns(OwnType.Int) { return cx.unlowered(e) }
+    let cell = cx.seeded_cell(Layout.Word, cx.const_int(0))
+    let c = chain_of(cx, m.subject)
+    turned(cx, c) { cx, v, _at -> cx.stored(cell, cx.bin(Layout.Word, BinOp.Add, cx.loaded(Layout.Word, cell), v)) }
+    cx.loaded(Layout.Word, cell)
+}
+
+/// `xs.min()` / `xs.max()`: absent seeded before the list is read, each element kept where none is
+/// yet or it stands `beyond` the one kept. One over elements that aren't `int` isn't lowered yet.
+fn extreme(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, beyond: BinOp) -> Reg {
+    if !m.args.is_empty() || !elem.owns(OwnType.Int) { return cx.unlowered(e) }
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(ty)
+    let cell = cx.seeded_cell(l, cx.absent_of(ty, l))
+    let c = chain_of(cx, m.subject)
+    turned(cx, c) { cx, v, _at ->
+        let held = cx.loaded(l, cell)
+        let past = cx
+            .region(cx.present(held, ty), Layout.Truth) { cx -> cx.bin(Layout.Truth, beyond, v, cx.carried(held, ty)) } else { cx -> cx.const_bool(true) }
+        cx.void_region(past) { cx -> cx.stored(cell, cx.lifted(v, elem, ty)) }
+    }
+    cx.loaded(l, cell)
+}
+
+/// `xs.contains(x)`: a truth seeded false, made true and the walk ended at the first element that is
+/// the same value as `x`. One over elements that don't compare by value isn't lowered yet.
+fn contained(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    if !cx.equatable(elem) { return cx.missed_as("a `contains` over elements that don't compare by value") }
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(false))
+    let needle = cx.lowered_into(m.args[0], elem)
+    turned(cx, c) { cx, v, _at ->
+        cx
+            .void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, cx.const_bool(true)) }
+    }
+    cx.loaded(Layout.Truth, cell)
+}
+
+/// `xs.index_of(x)`: a place seeded -1, made the place of the first element that is the same value
+/// as `x`, which ends the walk. One over elements that don't compare by value isn't lowered yet.
+fn indexed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    if !cx.equatable(elem) { return cx.missed_as("an `index_of` over elements that don't compare by value") }
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(Layout.Word, cx.const_int(-1))
+    let needle = cx.lowered_into(m.args[0], elem)
+    turned(cx, c) { cx, v, at ->
+        cx.void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, at) }
+    }
+    cx.loaded(Layout.Word, cell)
+}
+
+/// `xs.take(n)` / `xs.drop(n)`: an empty list, and a count of the elements that reach the limit; each
+/// element pushed while the count stands short of `n` and the walk ended once it doesn't, for `take`,
+/// or each once the count reaches `n`, for `drop`.
+fn limited(mut cx: Lowering, m: MethodCall, e: ExprId, taking: bool) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let c = chain_of(cx, m.subject)
+    let count = cx.seeded_cell(Layout.Word, cx.const_int(0))
+    let n = cx.lower(m.args[0])
+    let dst = gathering(cx, ty)
+    turned(cx, c) { cx, v, _at ->
+        let seen = cx.loaded(Layout.Word, count)
+        if taking {
+            let keep = cx.bin(Layout.Truth, BinOp.Lt, seen, n)
+            cx
+                .void_region(keep) { cx ->
+                    counted_past(cx, count, seen)
+                    kept_in(cx, dst, ty, v)
+                }
+            cx.void_region(cx.not(keep)) { cx -> walk_ended(cx) }
+        } else {
+            counted_past(cx, count, seen)
+            cx
+                .void_region(cx.bin(Layout.Truth, BinOp.Ge, seen, n)) { cx -> kept_in(cx, dst, ty, v) }
+        }
+    }
+    dst
+}
+
+// ── What a walk gathers into ───────────────────────────────────────
+
+/// What each value gathered into an answer of `ty` is: a list's element, or a map's entry.
+fn gathered_into(cx: Lowering, ty: SignedType) -> SignedType? {
+    let seen = cx.named_over(ty) ?? ty
+    seen.listed() ?? entry_of(cx, seen)
+}
+
+/// An empty answer of `ty`: a list, or a map a walk that keeps a map's shape writes into.
+fn gathering(mut cx: Lowering, ty: SignedType) -> Reg {
+    if (cx.named_over(ty) ?? ty).mapped() != null { return cx.call_row(cx.laid_out(ty), rt_sig_of("avra_map_new")!, []) }
+    cx.list_made(ty, cx.const_int(0))
+}
+
+/// `v` kept in the answer `dst` of `ty`: pushed onto a list, or, an entry, written into a map under
+/// its key.
+fn kept_in(mut cx: Lowering, dst: Reg, ty: SignedType, v: Reg) {
+    let entry? = entry_of(cx, cx.named_over(ty) ?? ty) else { return cx.push_slot(dst, v) }
+    let fields? = cx.fields_of(entry) else { return cx.missed("an `Entry` whose fields aren't known") }
+    let laid? = cx.seat_layouts(fields) else { return cx.missed("an `Entry` whose fields aren't laid out") }
+    cx.map_written(dst, cx.field_read(v, entry, laid, 0), cx.field_read(v, entry, laid, 1))
+}
+
+// ── The walks only a map's own rules take here ─────────────────────
+
+/// A walk over a map's entries that a list reaches through the prelude's body instead.
+enum MapWalk {
+    Entries
+    FindLast
+    TakeWhile
+    DropWhile
+    FilterMap
+}
+
+/// The map-only walk `name` is, absent for any other verb.
+fn map_walk(name: string) -> MapWalk? {
+    match name {
+        "entries" -> MapWalk.Entries,
+        "find_last" -> MapWalk.FindLast,
+        "take_while" -> MapWalk.TakeWhile,
+        "drop_while" -> MapWalk.DropWhile,
+        "filter_map" -> MapWalk.FilterMap,
+        rest -> null,
+    }
+}
+
+/// The map-only walk `w` over `m`'s receiver, a map: `entries()` each entry in a list; `find_last(p)`
+/// the last entry `p` holds of; `take_while(p)` / `drop_while(p)` the entries up to, or from, the
+/// first `p` fails for, as a map; `filter_map(f)` each present answer of `f`, in a list.
+fn map_walked(mut cx: Lowering, w: MapWalk, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as("a walk `${m.name.of}` naming an argument") }
+    let ty? = cx.type_at(e) else { return cx.missed_as("an untyped walk `${m.name.of}`") }
+    let wants = if w is .Entries { 0 } else { 1 }
+    if m.args.length != wants { return cx.missed_as("a walk `${m.name.of}` handed ${m.args.length} arguments") }
+    let c = chain_of(cx, m.subject)
+    match w {
+        .Entries -> {
+            let dst = gathering(cx, ty)
+            turned(cx, c) { cx, v, _at -> kept_in(cx, dst, ty, v) }
+            dst
+        },
+        .FindLast -> {
+            let l = cx.laid_out(ty)
+            let cell = cx.seeded_cell(l, cx.absent_of(ty, l))
+            let p = asked(cx, m.args[0], 1)
+            turned(cx, c) { cx, v, _at ->
+                cx
+                    .void_region(answered(cx, p, [v], Layout.Truth)) { cx -> cx.stored(cell, cx.adopted(v, c.elem, ty)) }
+            }
+            cx.loaded(l, cell)
+        },
+        .TakeWhile -> {
+            let dst = gathering(cx, ty)
+            let p = asked(cx, m.args[0], 1)
+            turned(cx, c) { cx, v, _at ->
+                cx
+                    .void_branches(answered(cx, p, [v], Layout.Truth)) { cx -> kept_in(cx, dst, ty, v) } else { cx ->
+                        cx.jumped(false)
+                    }
+            }
+            dst
+        },
+        .DropWhile -> {
+            let dst = gathering(cx, ty)
+            let dropping = cx.seeded_cell(Layout.Truth, cx.const_bool(true))
+            let p = asked(cx, m.args[0], 1)
+            turned(cx, c) { cx, v, _at ->
+                let still = cx
+                    .region(cx.loaded(Layout.Truth, dropping), Layout.Truth) { cx -> answered(cx, p, [v], Layout.Truth) } else { cx ->
+                        cx.const_bool(false)
+                    }
+                cx
+                    .void_branches(still) { cx -> } else { cx ->
+                        cx.stored(dropping, cx.const_bool(false))
+                        kept_in(cx, dst, ty, v)
+                    }
+            }
+            dst
+        },
+        .FilterMap -> {
+            let out? = ty.listed() else { return cx.missed_as("a `filter_map` answering no list") }
+            let opt = out with { nulls: out.nulls + 1 }
+            let dst = gathering(cx, ty)
+            let f = asked(cx, m.args[0], 1)
+            turned(cx, c) { cx, v, _at ->
+                let got = answered(cx, f, [v], cx.laid_out(opt))
+                cx
+                    .void_region(cx.present(got, opt)) { cx -> cx.push_slot(dst, cx.carried(got, opt)) }
+            }
+            dst
+        },
+    }
+}
+
+/// One more element counted past the limit's count `count`, which stood at `seen`.
+fn counted_past(mut cx: Lowering, count: Reg, seen: Reg) { cx.stored(count, cx.bin(Layout.Word, BinOp.Add, seen, cx.const_int(1))) }
+
+/// The answer `v` written into `cell`, and the walk ended.
+fn ended(mut cx: Lowering, cell: Reg, v: Reg) {
+    cx.stored(cell, v)
+    walk_ended(cx)
+}
+
+// ── The fn a walk asks ──────────────────────────────────────────────
+
+/// How a walk asks its fn about an element: its body in place, its seats bound to what it's handed,
+/// or a call of the code read from its box.
+enum Asked {
+    InPlace(params: List<Param>, seats: List<SignedType>, body: ExprId)
+    Boxed(box: Reg, code: Reg, of: SignedType?)
+}
+
+/// The fn `f` of `seats` seats, as a walk asks it: in place where it can be, else boxed, its code
+/// read once.
+fn asked(mut cx: Lowering, f: ExprId, seats: int) -> Asked {
+    let here = in_place(cx, f, seats)
+    if here != null { return here! }
+    let box = cx.lower(f)
+    Asked.Boxed(box, cx.code_of(box), cx.type_at(f))
+}
+
+/// `f` asked in place: a lambda of `seats` plain seats, none written through, capturing nothing, whose body is one
+/// expression with no `?`, `catch` or statement acting on the frame it would stand in. Absent for any
+/// other fn.
+fn in_place(mut cx: Lowering, f: ExprId, seats: int) -> Asked? {
+    let at = cx.meaning_of(f)
+    let lam? = match cx.store.expr(at) {
+        .Lambda(params, body) -> Lambda { params: params, body: body },
+        rest -> null,
+    } else { return null }
+    let ty? = cx.type_at(at) else { return null }
+    if lam.params.length != seats || lift_refusal(lam, ty) != null || ty.seats.any(it.mutable) { return null }
+    let body? = inline_body(cx.store, lam.body) else { return null }
+    if !inline_safe(cx.store, body) || !captures_nothing(cx, lam, ty, at) { return null }
+    Asked.InPlace(lam.params, [s.ty for s in ty.seats], body)
+}
+
+/// Whether the lambda `lam` at `at` reads nothing from further out: its body lowered as its own unit
+/// and set aside.
+fn captures_nothing(mut cx: Lowering, lam: Lambda, ty: SignedType, at: ExprId) -> bool {
+    let aside: Cell<List<LiftedBody>> = Cell.new([])
+    cx.lift(lam, ty, at, cx.program with { lifts: aside }).lanes.is_empty()
+}
+
+/// What `f` answers about `args`, a value of layout `l`.
+fn answered(mut cx: Lowering, f: Asked, args: List<Reg>, l: Layout) -> Reg {
+    match f {
+        .InPlace(params, seats, body) -> {
+            cx.opened()
+            for at, p in params { cx.bind(p.name.text(), Bound.Value(args[at], seats[at])) }
+            let r = cx.lower(body)
+            cx.closed()
+            r
+        },
+        .Boxed(box, code, of) -> cx.called_code(l, code, box, args, of),
+    }
+}
+
+/// The expression a lambda's body is, unwrapped from a block holding only it; absent for a body of
+/// statements.
+fn inline_body(store: SyntaxArena, body: ExprId) -> ExprId? {
+    match store.expr(body) { .Block(_) -> store.lone_value(body), rest -> body }
+}
+
+/// Whether `e` stands in another fn's frame unchanged: no block of statements, `?` or `catch` in it
+/// that a walk reaches, a lambda's own body aside.
+fn inline_safe(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Block(_) -> store.lead_of(e).is_empty() &&
+            store.tail_of(e) != null &&
+            inline_safe(store, store.tail_of(e)!),
+        .Propagate(_) or .Catch(_, _) -> false,
+        .Lambda(_, _) -> true,
+        rest -> store.walked(e).all((k) -> inline_safe(store, k)),
+    }
+}

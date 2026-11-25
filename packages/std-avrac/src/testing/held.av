@@ -1,0 +1,810 @@
+//! A PROGRAM HELD IN MEMORY, asked of the program layer: its files, where each package it names
+//! stands, and what a build of it says, runs and lowers to.
+use compiler.{
+    meta_door,
+    item_ids,
+    item_start,
+    read_item,
+    InferringFn,
+    program_unset_holes,
+    Space,
+    resolved,
+    lowered_fn,
+    raised,
+    fn_reaches,
+    fn_reads,
+    item_rule_file,
+    file_law_diags,
+    program_erring,
+    LinkRead,
+    LinkWorld,
+    program_link_words,
+    program_packages,
+    file_formatted,
+    file_write_checked,
+    file_expanded,
+    file_compiled_items,
+    program_hosts_owed,
+    made_suite,
+    MadeSuite,
+    CompiledItem,
+    Finding,
+    file_rule_rows,
+    program_files,
+    avra,
+    AdmittedSaid,
+    GraphHeld,
+    GraphRoot,
+    MadeProgram,
+    NOTHING_ADMITTED,
+    ProgramFile,
+    manifest_voices,
+    manifests_voiced,
+    package_stands,
+    avra_fact_definitions,
+    avra_source_world,
+    file_refusals,
+    finding_diag,
+    made_program,
+    program_refused,
+    program_warned,
+    body_at,
+    task_survey,
+    CancelFact,
+    declared_symbol,
+}
+use compiler.backend.{Kept, render_ir, run_kept, run_program}
+use compiler.lower.{Lowered}
+use compiler.host.{Manifest, read_manifest}
+use core.{CalledFn, StmtId, distinct, flatten, sorted_texts, Span}
+use features.{RuleFile}
+use @std.io.{env, is_dir, list_dir, make_dirs, read_text, write_text}
+use compiler.hosts.{host_fn_owed_diag}
+use @std.relation.engine.{map_cell}
+use diagnostics.{Diag, SourceFile, has_errors, loc_at, new_source_file, rendered_among}
+use @std.meta.{embed}
+use @std.path.{dir_of, file_name, normalized}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.layered_store.{use_machine_store, use_package_places}
+use @std.program.query_engine.{QueryDefinition, QueryEngine, query_engine}
+use @std.program.source_facts.{FileOctets, WorldPlaces, use_source_world}
+use @std.program.tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+
+/// The symbol a program's entry runs under.
+const ENTRY: string = "main"
+
+/// A program held in memory: every file by its full path, the package it is rooted at, the std
+/// root its toolchain's packages lie under, each path dependency's directory by its name, and what
+/// admitting its package graph said. A file named in `spoken` is said by that name wherever a
+/// diagnostic places it.
+export type Held = {
+    files: Map<string, string>,
+    root: string,
+    name: string,
+    std: string = STD_ROOT,
+    deps: Map<string, string> = {},
+    admitted: AdmittedSaid = NOTHING_ADMITTED,
+    spoken: Map<string, string> = {},
+    /// Whether the files it was given lay a toolchain of their own under the std root.
+    floored: bool = false,
+    /// How many times each file's text was asked for, by its path.
+    asked: Cell<Map<string, int>>,
+    /// Whether its files stand on the machine's disk, each read through its stamp as a build reads
+    /// it; else they are held in memory and every read is hashed.
+    on_disk: bool = false,
+    /// The print of the reader its files are read under: one language's.
+    language: string = HELD_LANGUAGE,
+    /// The files it lists that hold no text, each by what a read of its octets finds.
+    unread: Map<string, FileOctets> = {},
+    /// The environment its manifests' `[link]` holes are filled from.
+    env: Map<string, string> = {},
+}
+
+/// The print of the reader a held program is read under.
+const HELD_LANGUAGE: string = "avra-held"
+
+/// Where a held toolchain's std packages lie.
+const STD_ROOT: string = "/std"
+
+impl Held {
+    /// Where a package's path stands.
+    fn standing(package: string, path: string) -> string {
+        let dir = package_stands(package, self.name, self.root, self.std, self.deps)
+        if path.is_empty() { dir } else { "${dir}/${path}" }
+    }
+
+    /// A file's text; absent when it holds none there.
+    fn read(file: SourceFileAddress) -> string? {
+        let path = self.standing(file.package_name, file.path_in_package)
+        self.asked.put(path, (self.asked.get().get(path) ?? 0) + 1)
+        if self.unread.has(path) { return null }
+        self.files.get(path)
+    }
+
+    /// How many times the text of the file standing at `path` was asked for.
+    fn reads_of(path: string) -> int { self.asked.get().get(path) ?? 0 }
+
+    /// Every file the layer asked for the text of.
+    fn files_read() -> List<string> { self.asked.get().keys() }
+
+    /// The most any one file under the directory `dir` was asked for.
+    fn most_reads_under(dir: string) -> int {
+        [n for path, n in self.asked.get() if path.starts_with("${dir}/")]
+            .fold(0, (most, n) -> if n > most { n } else { most })
+    }
+
+    /// A file's octets, for a build that reads it as data.
+    fn octets(file: SourceFileAddress) -> FileOctets {
+        let unread = self.unread.get(self.standing(file.package_name, file.path_in_package))
+        if unread != null { return unread! }
+        let text? = self.read(file) else { return FileOctets.Missing }
+        FileOctets.Read(text.bytes())
+    }
+
+    /// The names directly in a directory; absent when nothing it holds lies under it.
+    fn listed(dir: DirectoryAddress) -> List<string>? {
+        let at = self.standing(dir.package_name, dir.path_in_package)
+        let under = [path.substring(at.length + 1, path.length) for path in self.files.keys().concat(self.unread.keys()) if path.starts_with("${at}/")]
+        if under.is_empty() { return null }
+        distinct(
+            [if rest.contains("/") { rest.substring(0, rest.index_of("/")) } else { rest } for rest in under],
+        )
+    }
+
+    /// Whether it holds the toolchain's `@std/task`: a program over it runs under the scheduler the
+    /// process itself is compiled with, so the differential compares what is said of it and never
+    /// runs it here.
+    fn schedules() -> bool { self.files.has("${self.std}/std-task/avra.toml") }
+
+    /// The manifest of a package it holds; an empty one where it holds none.
+    fn manifest_of(package: string) -> Manifest {
+        let path = self.standing(package, "avra.toml")
+        read_manifest(new_source_file(path, self.files.get(path) ?? ""))
+    }
+
+    /// A file as a diagnostic names it.
+    fn named(file: SourceFileAddress) -> ProgramFile {
+        let at = self.standing(file.package_name, file.path_in_package)
+        ProgramFile { file: file, full: self.spoken.get(at) ?? at, program: self.name }
+    }
+
+    /// The process reads through these files from here on.
+    fn entered() {
+        use_package_places([])
+        use_machine_store(null)
+        if self.on_disk {
+            use_source_world(
+                avra_source_world(
+                    (f) -> disk_text(self.standing(f.package_name, f.path_in_package)),
+                    (d) -> disk_names(self.standing(d.package_name, d.path_in_package)),
+                    self.language,
+                    (f) -> self.octets(f),
+                    WorldPlaces {
+                        file: (f) -> self.standing(f.package_name, f.path_in_package),
+                        directory: (d) -> self.standing(d.package_name, d.path_in_package),
+                        print: self.root,
+                    },
+                ),
+            )
+            return
+        }
+        use_source_world(
+            avra_source_world(
+                (f) -> self.read(f),
+                (d) -> self.listed(d),
+                self.language,
+                (f) -> self.octets(f),
+            ),
+        )
+    }
+
+    /// The file standing at `path`, as the program addresses it.
+    fn file_at(path: string) -> SourceFileAddress {
+        SourceFileAddress {
+            package_name: self.name,
+            path_in_package: path.substring(self.root.length + 1, path.length),
+        }
+    }
+
+    /// What a check of the whole package says, asked by one process over `store` — which it
+    /// leaves as a process that ended leaves it: every refusal its laws find in any file, rendered,
+    /// then a line, then every warning.
+    fn checked_over(store: StoreInMemory) -> string {
+        self.entered()
+        let engine = query_engine(store, avra_fact_definitions())
+        let said = self.package_said(engine)
+        engine.frontier_kept()
+        said
+    }
+
+    /// What one process over `store` makes of the program the file at `path` runs, read out
+    /// before it ends as a process ends: what its build says, what it runs to, its IR, and the
+    /// queries it worked out, inputs aside. The process's compiler is the one whose queries are
+    /// `definitions`.
+    fn passed_over(
+        path: string,
+        store: StoreInMemory,
+        definitions: List<QueryDefinition> = avra_fact_definitions(),
+    ) -> Pass {
+        self.passed_with(path, query_engine(store, definitions))
+    }
+
+    /// What a build of the program `entry` runs says, asked through `engine`: what its manifests
+    /// and its package graph say and, where none of those refuses, each refusal and warning of its
+    /// files.
+    fn judged_with(entry: SourceFileAddress, engine: QueryEngine) -> Judged {
+        self.entered()
+        let said_of_graph = self.manifests_said(engine)
+        // the meta door, as the old path's: a loaded `@std/meta` whose shapes moved speaks alone
+        let graph = if has_errors(said_of_graph) { said_of_graph } else { said_of_graph.concat(meta_door(engine)) }
+        let said = if has_errors(graph) { graph } else { graph.concat(self.files_said(engine, entry)) }
+        Judged { held: self, engine: engine, entry: entry, diagnostics: said }
+    }
+
+    /// What one process asking through `engine` makes of the program the file at `path` runs.
+    fn passed_with(path: string, engine: QueryEngine) -> Pass {
+        let j = self.judged_with(self.file_at(path), engine)
+        let made = j.made()
+        let pass = Pass {
+            report: j.report(),
+            ran: match made {
+                .Ok(l) -> answer_of(run_program(l, ENTRY)),
+                .Err(why) -> "refused: ${why}",
+            },
+            ir: match made { .Ok(l) -> render_ir(l), .Err(why) -> "not made: ${why}" },
+            worked: sorted_texts([name for name in engine.computed_queries() if !engine.input_named(name)]),
+        }
+        engine.frontier_kept()
+        pass
+    }
+
+    /// The queries one process works out — its inputs aside — judging the program the file at
+    /// `path` runs over `store`, each named once per answer, in name order: what an edit made it
+    /// ask again.
+    fn worked_judging(path: string, store: StoreInMemory) -> List<string> {
+        self.entered()
+        let engine = query_engine(store, avra_fact_definitions())
+        let entry = self.file_at(path)
+        let _ = program_refused(engine, entry, entry.package_name, [])
+        let _ = program_warned(engine, entry.package_name)
+        engine.frontier_kept()
+        sorted_texts([name for name in engine.computed_queries() if !engine.input_named(name)])
+    }
+
+    /// `passed_over` a store on disk under `directory`, opened afresh and saved as a process that
+    /// ended saves it.
+    fn passed_on_disk(
+        path: string,
+        directory: string,
+        definitions: List<QueryDefinition> = avra_fact_definitions(),
+    ) -> Pass {
+        let store = disk_store_at(directory)
+        let pass = self.passed_with(path, query_engine(store, definitions))
+        match store.saved_alone() {
+            .Ok(_) -> pass,
+            .Err(_) -> pass with { report: "<the store did not save>" },
+        }
+    }
+
+    /// `checked_over` a store on disk under `directory`, opened afresh and saved as a process
+    /// that ended saves it: the next check there reads the bytes this one wrote.
+    fn checked_on_disk(directory: string) -> string {
+        self.entered()
+        let store = disk_store_at(directory)
+        let engine = query_engine(store, avra_fact_definitions())
+        let said = self.package_said(engine)
+        engine.frontier_kept()
+        match store.saved_alone() { .Ok(_) -> said, .Err(_) -> "<the store did not save>" }
+    }
+
+    /// Every refusal the laws find in any file of the package, rendered, a line, then every warning.
+    fn package_said(engine: QueryEngine) -> string {
+        let refused = [d for f in program_erring(engine, self.name) for d in file_law_diags(engine, self.named(f)) if !(d.severity is .Warning)]
+        let warned = [d! for w in program_warned(engine, self.name) for f in w.findings for d in [finding_diag(f, self.named(w.file).full)] if d != null]
+        let sources = [new_source_file(path, text) for path, text in self.files]
+        "${rendered_among(refused, sources)}\n${rendered_among(warned, sources)}"
+    }
+
+    /// The file standing at `path` as the formatter prints it, or why it refuses.
+    fn formatted_at(path: string) -> Result<string, string> {
+        self.entered()
+        file_formatted(query_engine(store_in_memory(), avra_fact_definitions()), self.file_at(path))
+    }
+
+    /// The file standing at `path` as the formatter would write it, its receipts held.
+    fn write_checked_at(path: string) -> Result<string, string> {
+        self.entered()
+        file_write_checked(
+            query_engine(store_in_memory(), avra_fact_definitions()),
+            self.file_at(path),
+        )
+    }
+
+    /// What a build of the program the file at `path` runs says.
+    fn judged_at(path: string) -> Judged { self.judged(self.file_at(path)) }
+
+    /// What a build of the program the file at `path` runs says, asked by one process over `store`,
+    /// which it leaves as a process that ended leaves it.
+    fn judged_over(path: string, store: StoreInMemory) -> Judged {
+        let j = self.judged_with(self.file_at(path), query_engine(store, avra_fact_definitions()))
+        j.engine.frontier_kept()
+        j
+    }
+
+    /// What a build of the program `entry` runs says, asked of an engine of its own: what its
+    /// manifests and its package graph say and, where none of those refuses, each refusal and
+    /// warning of its files.
+    fn judged(entry: SourceFileAddress) -> Judged {
+        self.judged_with(entry, query_engine(store_in_memory(), avra_fact_definitions()))
+    }
+
+    /// Every file given beyond the toolchain's prelude, each under its path.
+    fn own_text() -> string {
+        ["// ${path}\n${text}" for path, text in self.files if !path.starts_with("${STD_ROOT}/std-prelude/")]
+            .join("\n")
+    }
+}
+
+/// What one process made of a program before it ended: what its build said, what it ran to, its
+/// IR, and the queries it worked out.
+export type Pass = { report: string, ran: string, ir: string, worked: List<string> }
+
+/// A run's answer, or the words it stopped with.
+fn answer_of(r: Result<string, string>) -> string {
+    match r { .Ok(v) -> v, .Err(why) -> "refused: ${why}" }
+}
+
+/// `all` with one of each name in `less` taken away: what one process worked out past another.
+export fn beyond(all: List<string>, less: List<string>) -> List<string> {
+    mut rest = less
+    mut out: List<string> = []
+    for name in all {
+        let at = rest.index_of(name)
+        if at < 0 { out.push(name) } else { rest = rest.take(at).concat(rest.drop(at + 1)) }
+    }
+    out
+}
+
+impl Held {
+
+    /// What each manifest the program stands on says, then what admitting its package graph said.
+    fn manifests_said(engine: QueryEngine) -> List<Diag> {
+        flatten(
+            [manifest_voices(self.named(f).full, self.read(f) ?? "") for f in manifests_voiced(engine, self.name)],
+        )
+            .concat(self.admitted.voices)
+            .concat(
+                program_unset_holes(
+                    engine,
+                    self.name,
+                    (p: string) -> self.manifest_source(p),
+                    (n: string) -> self.env.get(n),
+                ),
+            )
+    }
+
+    /// The manifest of the package `package`, as source.
+    fn manifest_source(package: string) -> SourceFile {
+        let path = self.standing(package, "avra.toml")
+        new_source_file(path, self.files.get(path) ?? "")
+    }
+
+    /// Each refusal of the files a build of `entry` fails on, then each warning of the files it reads.
+    fn files_said(engine: QueryEngine, entry: SourceFileAddress) -> List<Diag> {
+        let home = self.named(entry)
+        let refused = flatten(
+            [file_refusals(engine, self.named(f), home) for f in program_refused(engine, entry, entry.package_name, [])],
+        )
+        let warned = [d! for w in program_warned(engine, entry.package_name) for f in w.findings for d in [finding_diag(f, self.named(w.file).full)] if d != null]
+        let owed = if refused.is_empty() { self.hosts_said(engine, entry.package_name) } else { [] }
+        refused.concat(owed).concat(warned)
+    }
+
+    /// Each host fn of the package `package`'s program that owes it what it doesn't pay, refused in
+    /// its decision's words, as a build asks once nothing else refuses.
+    fn hosts_said(engine: QueryEngine, package: string) -> List<Diag> {
+        [host_fn_owed_diag(
+            loc_at(
+                self.named(r.file).full,
+                if r.at == null { null } else { Span { lo: r.at!.lo, hi: r.at!.hi } },
+            ),
+            r.name,
+            r.from,
+            r.owed,
+            if r.first_file == null {
+                null
+            } else {
+                loc_at(
+                    self.named(r.first_file!).full,
+                    if r.first_at == null { null } else { Span { lo: r.first_at!.lo, hi: r.first_at!.hi } },
+                )
+            },
+        ) for r in program_hosts_owed(engine, package).rows]
+    }
+
+}
+
+/// The toolchain's prelude, every file of it, where a toolchain's std root holds it.
+// LICENSED input.compile_embed: the package's own files, read when the compiler is built
+const PRELUDE_FILES: Map<string, string> = {
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/avra.toml": embed("@std/prelude/avra.toml"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/src/prelude.av": embed("@std/prelude/src/prelude.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/Bytes.av": embed("@std/prelude/verbs/Bytes.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/Cell.av": embed("@std/prelude/verbs/Cell.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/List.av": embed("@std/prelude/verbs/List.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/Map.av": embed("@std/prelude/verbs/Map.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/Range.av": embed("@std/prelude/verbs/Range.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/Task.av": embed("@std/prelude/verbs/Task.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/Tasks.av": embed("@std/prelude/verbs/Tasks.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/float.av": embed("@std/prelude/verbs/float.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/int.av": embed("@std/prelude/verbs/int.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/props/Bytes.av": embed("@std/prelude/verbs/props/Bytes.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/props/List.av": embed("@std/prelude/verbs/props/List.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/props/Map.av": embed("@std/prelude/verbs/props/Map.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/props/Task.av": embed("@std/prelude/verbs/props/Task.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/props/string.av": embed("@std/prelude/verbs/props/string.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/statics/Cell.av": embed("@std/prelude/verbs/statics/Cell.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/statics/Tasks.av": embed("@std/prelude/verbs/statics/Tasks.av"),
+    // LICENSED input.compile_embed: the std prelude, embedded when the harness is compiled
+    "/std/std-prelude/verbs/string.av": embed("@std/prelude/verbs/string.av"),
+}
+
+/// One source standing in no package: a package of that file alone, said as `<source>`, the
+/// toolchain's prelude beside it as every program reads it.
+export fn held_alone(source: string) -> Held {
+    mut files = PRELUDE_FILES
+    files.set("/alone/src/main.av", source)
+    Held {
+        files: files,
+        root: "/alone",
+        name: "alone",
+        spoken: {"/alone/src/main.av": "<source>"},
+        asked: no_reads(),
+    }
+}
+
+/// The package at `root` among `files`, each by its full path: its manifest's name, its rows
+/// admitted as every reading of a package graph admits them, the toolchain's prelude under the
+/// std root wherever `files` lays none of its own there; under another `std` root, `files` lay
+/// the whole toolchain themselves.
+export fn held_at(files: Map<string, string>, root: string, std: string = STD_ROOT) -> Held {
+    mut all: Map<string, string> = if std == STD_ROOT { PRELUDE_FILES } else { {} }
+    for path, text in files { all.set(path, text) }
+    graphed(all, root, std) with { floored: files.keys().any(it.starts_with("${std}/")) }
+}
+
+/// The package at `root` among `files`, its rows admitted as every reading of a package graph
+/// admits them, its toolchain under `std`.
+fn graphed(files: Map<string, string>, root: string, std: string) -> Held {
+    let graph = GraphHeld {
+        text_at: (path) -> files.get(path),
+        absolute: (path) -> normalized(path),
+    }
+    let home = GraphRoot { name: graph.package_named(root, file_name(root)), dir: root }
+    mut deps: Map<string, string> = {}
+    mut admitted = NOTHING_ADMITTED
+    graph.rows_admitted(root, true, [home.name], home, deps, admitted)
+    Held {
+        files: files,
+        root: root,
+        name: home.name,
+        std: std,
+        deps: deps,
+        admitted: admitted,
+        asked: no_reads(),
+    }
+}
+
+/// The queries of a compiler whose one query `named` was built from other code: another binary's.
+export fn another_compiler(named: string) -> List<QueryDefinition> {
+    [if d.query_name == named { d with { code_hash: "${d.code_hash}+another" } } else { d } for d in avra_fact_definitions()]
+}
+
+/// A store with nothing saved, for the processes of one case to share.
+export fn empty_store() -> StoreInMemory { store_in_memory() }
+
+/// The package at `root` as it stands on the machine's disk, the toolchain's prelude written
+/// beside it under `root/.std`: every file read through its stamp, as a build reads it.
+export fn held_on_disk(root: string) -> Held {
+    let std = "${root}/.std"
+    for path, text in PRELUDE_FILES {
+        let at = std + path.substring(STD_ROOT.length, path.length)
+        if disk_text(at) == null {
+            let _ = make_dirs(dir_of(at))
+            let _ = write_text(at, text)
+        }
+    }
+    graphed(disk_files(root), root, std) with { on_disk: true }
+}
+
+/// A file's text on the machine's disk; absent where it can't be read.
+fn disk_text(path: string) -> string? {
+    match read_text(path) { .Ok(text) -> text, .Err(_) -> null }
+}
+
+/// The names in a directory on the machine's disk; absent where it is none.
+fn disk_names(path: string) -> List<string>? {
+    match list_dir(path) { .Ok(names) -> names, .Err(_) -> null }
+}
+
+/// Every file under `dir` on the machine's disk, by its full path, with its text.
+fn disk_files(dir: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for name in disk_names(dir) ?? [] {
+        let path = "${dir}/${name}"
+        if is_dir(path) {
+            for p, t in disk_files(path) { out.set(p, t) }
+        } else {
+            out.set(path, disk_text(path) ?? "")
+        }
+    }
+    out
+}
+
+/// A count of reads with none made.
+fn no_reads() -> Cell<Map<string, int>> {
+    let none: Map<string, int> = {}
+    Cell.new(none)
+}
+
+/// The entry of a package held under `name`.
+export fn entry_of(name: string) -> SourceFileAddress {
+    SourceFileAddress { package_name: name, path_in_package: "src/main.av" }
+}
+
+/// What the program layer says of one held program: every refusal and warning its build speaks, and
+/// the engine that answers the rest.
+export type Judged = { held: Held, engine: QueryEngine, entry: SourceFileAddress, diagnostics: List<Diag> }
+
+impl Judged {
+    /// No errors — warnings render and never block.
+    fn clean() -> bool { !has_errors(self.diagnostics) }
+
+    /// Every diagnostic rendered for the terminal; "" means clean.
+    fn report() -> string { self.rendered(self.diagnostics) }
+
+    /// Any diagnostics rendered over the held files.
+    fn rendered(ds: List<Diag>) -> string {
+        rendered_among(
+            ds,
+            [new_source_file(self.held.spoken.get(path) ?? path, text) for path, text in self.held.files],
+        )
+    }
+
+    /// The program made: its entry and each body it reaches, lowered, or why it isn't.
+    fn made() -> Result<Lowered, string> {
+        if !self.clean() { return .Err(self.report()) }
+        self.held.entered()
+        match made_program(self.engine, self.entry) {
+            .Made(l) -> .Ok(l),
+            .Unmade(why, at) -> .Err("not made on the program layer: ${why}, at ${at}"),
+            .Refused(files) -> .Err(
+                self
+                    .rendered(
+                        flatten(
+                            [file_refusals(
+                                self.engine,
+                                self.held.named(f),
+                                self.held.named(self.entry),
+                            ) for f in files],
+                        ),
+                    ),
+            ),
+        }
+    }
+
+    /// The program as IR, memory strategy applied — what `avra build` compiles. One its build
+    /// refuses lowers to the code of a program that runs nothing, carrying what refused it.
+    fn lowered() -> Lowered {
+        match self.made() {
+            .Ok(l) -> l,
+            .Err(_) -> held_alone("0").judged(entry_of("alone")).lowered() with { diagnostics: self.diagnostics },
+        }
+    }
+
+    /// Everything wrong, rendered, as the refusal; or what merely warned, rendered, as the
+    /// answer — "" when nothing spoke.
+    fn checked() -> Result<string, string> {
+        if self.clean() { .Ok(self.report()) } else { .Err(self.report()) }
+    }
+
+    /// What the program's run left behind in the evaluator.
+    fn kept() -> Result<Kept, string> { run_kept(self.made()?) }
+
+    /// The warnings alone, rendered — "" when none spoke.
+    fn warnings() -> string {
+        let said = [d for d in self.diagnostics if d.severity is .Warning]
+        if said.is_empty() { "" } else { self.rendered(said) }
+    }
+
+    /// The file standing at `path` as compiled: its written items, each instance and sugar
+    /// noted, and each generator's items under their provenance line.
+    fn expanded_at(path: string) -> string {
+        self.held.entered()
+        file_expanded(self.engine, self.held.file_at(path))
+    }
+
+    /// Each written item of the file at `path` as compiled: its statements, and the store they stand
+    /// in, each instance's expansion and each sugar's meaning in it.
+    fn items_at(path: string) -> List<CompiledItem> {
+        self.held.entered()
+        file_compiled_items(self.engine, self.held.file_at(path))
+    }
+
+    /// The suite of every case the files at `paths` write, made as `avra test` makes it: where a
+    /// law refuses one of them, what the laws say of those files, rendered, in place of a suite.
+    fn suite(paths: List<string>) -> Result<MadeSuite, string> {
+        self.held.entered()
+        let files = [self.held.file_at(p) for p in paths]
+        let refused = [d for f in files for d in file_law_diags(self.engine, self.held.named(f)) if !(d.severity is .Warning)]
+        if !refused.is_empty() { return .Err(self.rendered(refused)) }
+        made_suite(self.engine, files, (f: SourceFileAddress) -> self.held.named(f).full)
+    }
+
+    /// What a call of the fn `name` the entry declares — a method as `Owner.method` — may do, as
+    /// the layer's task survey reads it:
+    /// `p` where it may park, `s` where it may spin, `L` where it links a scheduler, `-` in each place
+    /// it doesn't.
+    fn cancel_bits(name: string) -> string {
+        self.held.entered()
+        let dot = name.index_of(".")
+        let at = body_at(
+            CalledFn {
+                file: self.entry,
+                name: if dot < 0 { name } else { name.substring(dot + 1, name.length) },
+                symbol: declared_symbol(self.entry, name),
+                external: false,
+                plain: true,
+                owner: if dot < 0 { null } else { name.substring(0, dot) },
+                of: if dot < 0 { null } else { self.entry },
+            },
+        )
+        let survey = task_survey(self.engine)
+        let parks = survey.finds(at, map_cell(), (f: CancelFact) -> f.parks)
+        let spins = survey.finds(at, map_cell(), (f: CancelFact) -> f.spins)
+        "${if parks { "p" } else { "-" }}${if spins { "s" } else { "-" }}${if survey.links(at) { "L" } else { "-" }}"
+    }
+
+    /// Every file the program reads, each as a diagnostic names it.
+    fn source_paths() -> List<string> {
+        self.held.entered()
+        [self.held.named(f).full for f in program_files(self.engine, self.entry.package_name)]
+    }
+
+    /// The packages the program reaches, in name order.
+    fn packages() -> List<string> {
+        self.held.entered()
+        program_packages(self.engine, self.entry.package_name)
+    }
+
+    /// The objects and flags the program links with, read off its packages' manifests: each
+    /// variable as `env` sets it, and a file there where the held files hold one.
+    fn link_words(env: Map<string, string> = {}) -> List<string> {
+        self.held.entered()
+        let held = self.held
+        program_link_words(
+            self.engine,
+            self.entry.package_name,
+            LinkRead {
+                root_of: (p: string) -> held.standing(p, ""),
+                manifest_of: (p: string) -> held.manifest_of(p),
+                world: LinkWorld {
+                    env: (n: string) -> env.get(n),
+                    there: (path: string) -> held.files.has(path),
+                },
+            },
+        )
+    }
+
+    /// Whether the fn `name` the file at `path` declares consumes its seat `j`: keeps it whole on every
+    /// path to its answer, as its body lowers.
+    fn consumes_seat(path: string, name: string, j: int) -> bool {
+        self.held.entered()
+        let consumed = lowered_fn(self.engine, self.held.file_at(path), name)?.consumed ?? []
+        j < consumed.length && consumed[j]
+    }
+
+    /// The file the name `name` read at the top level of the file at `path` names, a value's or else
+    /// a type's; absent where it names nothing there.
+    fn resolved_in(path: string, name: string) -> string? {
+        self.held.entered()
+        let file = self.held.file_at(path)
+        let d? = resolved(self.engine, file, Space.Value, name).named() ?? resolved(
+            self.engine,
+            file,
+            Space.Type,
+            name,
+        )
+            .named() else {
+            return null
+        }
+        self.held.named(d.file).full
+    }
+
+    /// What the `_` fn `name` the file at `path` declares raises, each error type spelled, in the
+    /// order the union holds them, then `?` where a site it reaches raises what nothing names.
+    fn raised_of(path: string, name: string) -> List<string> {
+        self.held.entered()
+        let r = raised(self.engine, InferringFn { file: self.held.file_at(path), name: name })
+        [t.spelled() for t in r.members].concat(if r.unnamed { ["?"] } else { [] })
+    }
+
+    /// What the fn `name` the file at `path` declares reads of the program's state by its own body,
+    /// each place by its key: a module `state`'s, or its own `state` statement's; what it reads at
+    /// paint time that no reading answers for where `structural`.
+    fn state_reads_of(path: string, name: string, structural: bool = false) -> List<string> {
+        self.held.entered()
+        fn_reads(self.engine, self.held.file_at(path), name, structural).own
+    }
+
+    /// What the fn `name` the file at `path` declares reaches of the program's state, by its own
+    /// body and every fn it calls through any cycle, each place by its key; what it reaches at paint
+    /// time that no reading answers for where `structural`.
+    fn state_reaches_of(path: string, name: string, structural: bool = false) -> List<string> {
+        self.held.entered()
+        fn_reaches(self.engine, self.held.file_at(path), name, structural)
+    }
+
+    /// What a fact rule reads of each item of the file at `path` whose parse stands, in the order
+    /// written.
+    fn rule_files(path: string) -> List<RuleFile> {
+        self.held.entered()
+        let file = self.held.file_at(path)
+        [r! for at in item_ids(self.engine, file) for r in [item_rule_file(self.engine, self.entry.package_name, file, at)] if r != null]
+    }
+
+    /// Each item of the file at `path` whose parse stands, as a rule reads it: its rule file, its
+    /// top-level statements, and where it starts in the file.
+    fn rule_items(path: string) -> List<RuleItem> {
+        self.held.entered()
+        let file = self.held.file_at(path)
+        [RuleItem {
+            file: r!,
+            stmts: read_item(self.engine, file, at).stmts,
+            start: item_start(self.engine, file, at),
+        } for at in item_ids(self.engine, file) for r in [item_rule_file(self.engine, self.entry.package_name, file, at)] if r != null]
+    }
+
+    /// Every rule finding across the files the program reads, each on the line it stands on.
+    fn findings() -> List<Finding> {
+        self.held.entered()
+        [Finding { rule: r.rule, file: self.held.named(f).full, text: r.text } for f in program_files(self.engine, self.entry.package_name) for r in file_rule_rows(self.engine, self.entry.package_name, f).rows]
+    }
+
+    /// What the build says in the file standing at `path`.
+    fn said_in(path: string) -> List<Diag> { [d for d in self.diagnostics if d.primary.loc?.file == path] }
+
+    /// Everything spoken, rendered; "" when nothing spoke.
+    fn check() -> string { self.report() }
+
+    /// The program's printed answer, or the report or refusal that stopped it.
+    fn run() -> Result<string, string> { run_program(self.made()?, ENTRY) }
+
+    /// The program's printed answer, or null when it refused.
+    fn ran() -> string? {
+        match self.run() { .Ok(text) -> text, .Err(_) -> null }
+    }
+}
+
+/// An item as a rule reads it: its rule file, its top-level statements, and where it starts in its
+/// file — what a fix's edits, made over the item's own text, are moved by.
+export type RuleItem = { file: RuleFile, stmts: List<StmtId>, start: int }

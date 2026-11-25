@@ -1,0 +1,122 @@
+//! The manifest closure: the root package, its path dependencies, and
+//! the module path each names. Moved out of the workspace god-object.
+use core.{FileId, ModulePath, Span, key_spelled, flatten}
+use @std.path.{under_dir, joined_path, normalized, relative_path}
+use features.{nothing, Budgets, budgets_of}
+use diagnostics.{SourceFile, new_source_file, Diag, Voice, said_as}
+use compiler.families.{Family}
+use @std.errors.{Loc, Suggestion, Edit, Confidence}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
+use compiler.host.{
+    Dependency,
+    Manifest,
+    ToolRow,
+    Provenance,
+    bad_dependency_path,
+    dependency_cycle,
+    deps_offset,
+    duplicate_package,
+    name_mismatch,
+    prelude_depends,
+    read_manifest,
+    manifest_read,
+    row_at,
+    unset_link_variable,
+}
+
+// ── The packages ──
+
+/// A manifest row whose words are filled from the environment.
+type LinkRow = { section: string, key: string, words: List<string> }
+
+/// The rows a link fills from the environment — `[link.raw]` only for the
+/// program's own manifest, the one it is heard from.
+fn link_rows(m: Manifest, own: bool) -> List<LinkRow> {
+    [
+        LinkRow { section: "link", key: "objects", words: m.objects },
+        LinkRow { section: "link", key: "wasm_objects", words: m.wasm_objects },
+        LinkRow { section: "link", key: "search", words: m.search },
+        LinkRow { section: "link", key: "libs", words: m.libs },
+    ]
+        .concat(if own { [LinkRow { section: "link.raw", key: "flags", words: m.raw }] } else { [] })
+}
+
+/// A manifest's value over its staged text.
+@query
+fn manifest_in(db: RelDb, path: string) -> Manifest { read_manifest(new_source_file(path, file_text(db, path))) }
+
+/// The one package every file sees without a `use`.
+const prelude_key = "@std/prelude"
+
+/// A dependency row a package graph admits: the key it names, the directory it names it at, where
+/// the row stands, the packages that depend on it, and the directory the graph already holds that
+/// key at, where it holds it.
+export type Admitting = { key: string, dir: string, at: Loc?, chain: List<string>, known: string? }
+
+/// What a package graph does with a dependency row.
+export enum Admission {
+    /// The key is held already, at this directory.
+    Held
+    /// The key is new, and its directory keeps a manifest: the package enters.
+    Entered
+    /// The row is refused: a cycle, one key at two directories, or a directory with no manifest.
+    Refused(Diag)
+}
+
+/// THE ONE ADMISSION LAW every reading of a package graph keeps: a key its own dependents name is a
+/// cycle; a key the graph holds is held, or refused where the row names another directory — the two
+/// compared as `absolute` places them; a new key enters where `there` finds a manifest in its directory.
+export fn admission(row: Admitting, absolute: fn(string) -> string, there: fn(string) -> bool) -> Admission {
+    if row.chain.contains(row.key) { return .Refused(dependency_cycle(row.at, row.chain.concat([row.key]))) }
+    let known? = row.known else {
+        if !there(joined_path(row.dir, "avra.toml")) { return .Refused(bad_dependency_path(row.at, row.key, row.dir)) }
+        return .Entered
+    }
+    if absolute(known) != absolute(row.dir) { return .Refused(duplicate_package(row.at, row.key, known, row.dir)) }
+    .Held
+}
+
+/// What entering the package `key` at `dir`, its manifest `m`, the row naming it at `at`, says —
+/// its manifest calls itself another name, or the prelude depends on something — and whether its
+/// rows are admitted: THE FLOOR, the prelude's never are, so the layering has a bottom.
+export type Entering = { voices: List<Diag>, admits: bool }
+
+/// THE ONE ENTRY LAW every reading of a package graph keeps, past its admission.
+export fn entering(key: string, dir: string, at: Loc?, m: Manifest) -> Entering {
+    let named = if m.name != key { [name_mismatch(at, key, m.name, dir)] } else { [] }
+    if key == prelude_key && !m.deps.is_empty() { return Entering { voices: named.concat([prelude_depends(m.deps[0].at)]), admits: false } }
+    Entering { voices: named, admits: true }
+}
+
+/// The chain a dependency's admission extends. A DEV EDGE STARTS ITS
+/// OWN: the tests are the consumer and nothing depends on them, so a
+/// package's test reaching a library that depends BACK on it closes no
+/// cycle — `@std/text`'s program prints through `@std/io`, which reads
+/// `@std/text`. A library edge carries the chain it came by.
+export fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
+    if d.dev { return [] }
+    chain
+}
+
+/// A `use` of the package `key`, which the manifest at `manifest` doesn't declare.
+export fn undeclared_dependency(key: string, manifest: string) -> Voice {
+    Voice {
+        message: "`${key}` is not a dependency of this package",
+        label: "in this use",
+        help: "declare it under `[dependencies]` in `${manifest}` — `\"${key}\" = { path = \"…\" }`",
+    }
+}
+
+/// Every hole inside a longer `[link]` word of the manifest `m`, read from `src`, whose variable `env`
+/// doesn't set — the program's own `[link.raw]` among its words where `own` — refused by name. The
+/// manifest's source is read only where a hole refuses: a package whose manifest isn't on disk, or a
+/// host handed nothing to read, is asked nothing.
+export fn unset_link_holes_of(
+    src: fn() -> SourceFile,
+    m: Manifest,
+    own: bool,
+    env: fn(string) -> string?,
+) -> List<Diag> {
+    [unset_link_variable(row_at(src(), row.section, row.key), row.key, w, name) for row in link_rows(m, own) for w in row.words if !whole_hole(w) for name in holes(w) if env(name) == null]
+}

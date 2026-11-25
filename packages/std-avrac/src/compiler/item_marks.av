@@ -1,0 +1,228 @@
+//! WHERE A MARK HAS NO READER: a mark written on a declaration's fields or variants that nothing
+//! claims. Judged where the old path knows the claims exactly: a declaration wearing no annotation
+//! claims only the marks the compiler reads itself; one wearing only `@derive`s claims those and what
+//! each derived trait's `marks` answers, run over it. One another annotation stands on, and a
+//! `collect enum`, whose members' marks its readers hold, are left alone. Read off the item's syntax.
+use core.{
+    Annotation,
+    CollectKind,
+    CollectScope,
+    ParseRefusal,
+    Span,
+    StmtId,
+    SyntaxArena,
+    distinct,
+    flatten,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.meta.{derive}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// Every mark the written item `view` shows writes that no reader claims, with the one that
+/// leaves it unread (none for the declaration itself) and the marks read: a field's or a variant's
+/// on a declaration wearing no annotation; a mark annotation a declaration of the program's own wears
+/// that no collect gathers and nothing else it wears reads; each mark a member a `collect enum`
+/// wearing no annotation gathers wears, but the one it gathers by.
+fn unread_marks(view: ItemView) -> List<Found> {
+    let item = view.item
+    let store = item.store
+    if !store.refusals().all(lexed_past(it)) { return [] }
+    let claimed = compiler_marks()
+    let written = [unread_at(m.span, m.name, "", claimed) for s in item.stmts if claims_known(store, s) for m in store.marks_written(s) if !claimed.contains(m.name)]
+    let derived = flatten(
+        [derived_unread(view.engine, view.file, store, s, claimed) for s in item.stmts if derived_alone(store, s)],
+    )
+    let own = [unread_at(a.span, a.name, "", claimed) for s in item.stmts if !declared_exported(view.engine, view.file, store, s) for a in marks_alone(view.engine, view.file, store, s) if !claimed.contains(a.name)]
+    let gathered = flatten(
+        [members_unread(view.engine, view.file, c!.name, c!.kind, c!.scope, claimed) for s in item.stmts for c in [store.collect_enum_parts(s)] if c != null && store.annotations_of(s).is_empty()],
+    )
+    written.concat(derived).concat(own).concat(gathered)
+}
+
+/// The marks written on the declaration `s` makes that neither the compiler nor the traits it
+/// derives claim; none where what they claim can't be known.
+fn derived_unread(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    own: List<string>,
+) -> List<Found> {
+    let name? = decl_word(store, s) else { return [] }
+    let read? = derive_claims(engine, file, store, s, name) else { return [] }
+    let claimed = distinct(read.concat(own))
+    [unread_at(m.span, m.name, "", claimed) for m in store.marks_written(s) if !claimed.contains(m.name)]
+}
+
+/// Whether the statement `s` is its source's own and wears annotations, no `collect enum`: one whose
+/// claims its `@derive`s may say.
+fn derived_alone(store: SyntaxArena, s: StmtId) -> bool {
+    store.stmt_origins.at(s.index) == null &&
+        !store.annotations_of(s).is_empty() &&
+        store.collect_enum_parts(s) == null
+}
+
+/// Whether the refusal `r` is a character no token starts with, which the parse reads past: what it
+/// read is the item's as written around it, so its marks are judged.
+fn lexed_past(r: ParseRefusal) -> bool { match r { .Grammar(cause, _, _, _, _) -> cause is .Lex, rest -> false } }
+
+/// A mark `name` at `span` no reader claims, `gatherer` the `collect enum` that leaves it unread
+/// ("" for none), `claimed` the marks read.
+fn unread_at(span: Span?, name: string, gatherer: string, claimed: List<string>) -> Found { Found { at: span, args: [name, gatherer].concat(claimed) } }
+
+/// Whether the statement `s` of `file` declares a name the file exports.
+fn declared_exported(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> bool {
+    let name? = decl_word(store, s) else { return true }
+    file_declares_named(engine, file, name).names.any(it.name == name && it.exported)
+}
+
+/// The mark annotations the statement `s` of `file` wears where every annotation it wears is one —
+/// nothing it wears reads them, and no collect gathers it by them; none where it wears another.
+fn marks_alone(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> List<
+    Annotation,
+> {
+    let worn = store.annotations_of(s)
+    if worn.is_empty() || !worn.all(marks(engine, file, it.name)) { return [] }
+    if gathered_by_any(engine, file, [a.name for a in worn]) { return [] }
+    if worn.any((a) -> gathered_by_mark(engine, file, a.name)) { return [] }
+    worn
+}
+
+/// Whether the annotation `name` read from `file` is a mark: a fn answering `@std/meta`'s `Marker`.
+fn marks(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    if d.kind != ItemKind.Fn { return false }
+    let answer? = declared_signature_of(engine, d)?.answer else { return false }
+    match answer.head {
+        .Declared(home, name) -> name == MARK_ANSWER && home.package_name == META,
+        rest -> false,
+    }
+}
+
+/// The name the statement `s` declares, a fn's or a type's; absent for any other statement.
+fn decl_word(store: SyntaxArena, s: StmtId) -> string? { store.fn_parts(s)?.name ?? store.type_decl_name(s) }
+
+/// The type a mark annotation answers.
+const MARK_ANSWER: string = "Marker"
+
+/// Whether a gathering a file of `file`'s package writes gathers by one of the annotations `words`.
+fn gathered_by_any(engine: QueryEngine, file: SourceFileAddress, words: List<string>) -> bool {
+    item_ids(engine, file)
+        .any(
+            (k) -> read_item(engine, file, k)
+                .stmts
+                .any((s) -> gathers_by_word(read_item(engine, file, k).store, s, words)),
+        )
+}
+
+/// Whether a gathering gathers by the mark `name` as `file` reads it: one written in any source of
+/// `file`'s package, or of the package that declares the mark, whose annotation names that same
+/// declaration. A `collect … in closure` a dependency writes claims the marks a program's own
+/// declarations wear.
+fn gathered_by_mark(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let mark? = resolved(engine, file, Space.Value, name).named() else { return false }
+    let key = mark_key(mark.file, mark.name)
+    distinct([file.package_name, mark.file.package_name])
+        .any((p) -> package_gathered_marks(engine, p).marks.contains(key))
+}
+
+/// The marks the gatherings of `package`'s sources gather by, each as `mark_key` names its
+/// declaration: asked once a package, whatever reads it.
+@query("summary")
+fn package_gathered_marks(engine: QueryEngine, package: string) -> GatheredMarks {
+    GatheredMarks {
+        marks: distinct(
+            [k for path in package_source_paths(engine, package).paths for k in file_gathered_marks(engine, source_at(package, path))],
+        ),
+    }
+}
+
+/// The marks one package's gatherings gather by.
+@derive(Saved)
+type GatheredMarks = { marks: List<string> }
+
+/// The marks the gatherings the source `f` writes gather by, each as `mark_key` names the declaration
+/// its annotation resolves to where it is written.
+fn file_gathered_marks(engine: QueryEngine, f: SourceFileAddress) -> List<string> {
+    [k! for at in item_ids(engine, f) for item in [read_item(engine, f, at)] for s in item.stmts for k in [gathering_mark(engine, f, item.store, s)] if k != null]
+}
+
+/// The mark the statement `s` of `f` gathers by, as `mark_key` names it; absent for any other.
+fn gathering_mark(engine: QueryEngine, f: SourceFileAddress, store: SyntaxArena, s: StmtId) -> string? {
+    let kind? = store.collect_enum_parts(s)?.kind ?? store.collect_parts(s)?.kind else { return null }
+    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
+    let d? = resolved(engine, f, Space.Value, word).named() else { return null }
+    mark_key(d.file, d.name)
+}
+
+/// A mark declaration's key: its file and its name.
+fn mark_key(file: SourceFileAddress, name: string) -> string { "${spelled_file(file)}#${name}" }
+
+/// Whether the statement `s` is a gathering by one of the annotations `words`.
+fn gathers_by_word(store: SyntaxArena, s: StmtId, words: List<string>) -> bool {
+    let kind? = store.collect_enum_parts(s)?.kind ?? store.collect_parts(s)?.kind else { return false }
+    match kind { .Annotated(w) -> words.contains(w), rest -> false }
+}
+
+/// Each mark a member the `collect enum` `name` of `file`, gathering by `kind` over `scope`, gathers
+/// wears that `claimed` doesn't hold, but the annotation it gathers by: the member's own mark
+/// annotations and its fields' and variants' marks, each in `file`.
+fn members_unread(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    kind: CollectKind,
+    scope: CollectScope,
+    claimed: List<string>,
+) -> List<Found> {
+    let by = match kind { .Annotated(w) -> w, rest -> "" }
+    let members = gathered(engine, file, kind, scope, [], false, "") ?? []
+    flatten(
+        [member_unread(engine, d, name, by, claimed) for d in members if same_file(d.file, file)],
+    )
+}
+
+/// The marks the gathered member `d` wears that `claimed` doesn't hold, but `by`, left unread by
+/// `gatherer`.
+fn member_unread(
+    engine: QueryEngine,
+    d: DeclaredName,
+    gatherer: string,
+    by: string,
+    claimed: List<string>,
+) -> List<Found> {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> decl_word(item.store, x) == d.name) else { return [] }
+    let own = [unread_at(a.span, a.name, gatherer, claimed) for a in item.store.annotations_of(s) if a.name != by && !claimed.contains(a.name) && marks(engine, d.file, a.name)]
+    own
+        .concat(
+            [unread_at(m.span, m.name, gatherer, claimed) for m in item.store.marks_written(s) if !claimed.contains(m.name)],
+        )
+}
+
+/// Whether the statement `s`'s claims are known exactly: its source's own, wearing no annotation,
+/// and no `collect enum`.
+fn claims_known(store: SyntaxArena, s: StmtId) -> bool {
+    store.stmt_origins.at(s.index) == null &&
+        store.annotations_of(s).is_empty() &&
+        store.collect_enum_parts(s) == null
+}
+
+/// every mark is read by something that claims it
+export law mark_has_a_reader {
+    kind: "annotation.unread_mark"
+    reads_view: unread_marks
+    voice: unread_words
+    witness: "enum E {\n    @nobody A\n}\n"
+}
+
+fn unread_words(a: List<string>) -> Voice { unread_mark_said(a[0], a.drop(2), if a[1].is_empty() { null } else { a[1] }) }
+
+collect listed_mark_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the mark laws read through, for a process to hand its engine.
+export fn mark_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_mark_facts) }

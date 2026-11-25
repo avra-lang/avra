@@ -1,0 +1,315 @@
+//! WHAT A FN MEANS: its body with every sugar's meaning spliced beside it, as the sugar's feature
+//! states it in a `meaning`, and the whole typed again as the core it means. A sugar is typed twice,
+//! by its own rule on the surface and as its meaning in the core, and the two agree, or the core
+//! answers the type its seat wants and the surface's type fits that seat, or a meaning is wrong.
+use core.{
+    Annotation,
+    At,
+    Expansion,
+    Expr,
+    ExprId,
+    Minting,
+    NameRead,
+    NodeKind,
+    Nominal,
+    Plain,
+    SignedType,
+    Span,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    minting,
+    same_expr,
+    some_list,
+}
+use @std.meta.{Rewrite}
+use features.{TypedCode, TypedItem, TypedView}
+use features.components.{StatementFill, element_fill, instance_fills}
+use @std.io.{env}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{content_hash}
+use @std.program.defect.{defect}
+use @std.program.query_engine.{QueryEngine}
+
+/// A fn's body and what it means: the store holding both, each sugar given a meaning, each
+/// expression's type on the surface, and its type in the core.
+export type ElaboratedBody = {
+    store: SyntaxArena,
+    /// The body's root.
+    body: ExprId,
+    sugars: List<ExprId>,
+    /// The statements a meaning rewrote.
+    statements: List<StmtId>,
+    surface: List<SignedType?>,
+    core: List<SignedType?>,
+    /// The type each node's seat wanted in the core, by the node's index, where its seat names one.
+    seats: Map<string, SignedType>,
+    /// How many nodes a seat refused on the surface.
+    refused: int = 0,
+    /// Each name the surface reads that nothing binds and the program gives no type.
+    unread: List<UnreadAt> = [],
+    /// Each name the core reads, as its typing resolved it.
+    reads: List<NameRead> = [],
+}
+
+impl ElaboratedBody {
+    /// The type the seat of the node at `index` wanted in the core, absent where it names none.
+    fn seat_at(index: int) -> SignedType? { self.seats.get("${index}") }
+}
+
+/// The body of the fn `file` declares as `name`, elaborated; absent when it declares none with a
+/// body.
+export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> ElaboratedBody? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    elaborated(engine, file, signed)
+}
+
+/// A signed body, elaborated in a store of its own over the one it was read into, which keeps every
+/// node and mark the elaboration makes: the item's store stays as it was read, its indices and
+/// sites the source's alone, whichever bodies of it were elaborated before.
+fn elaborated(engine: QueryEngine, file: SourceFileAddress, read: SignedBody) -> ElaboratedBody {
+    let signed = own_store(read)
+    let store = signed.item.store
+    let surface = signed.typed ?? kept_body(body_checked(engine, file, signed, false))
+    let typed = TypedItem { view: TypedView { store: store }, types: surface.types }
+    let filled = [e for e in store.every_expr(signed.body) if instance_filled(engine, typed, e, owner_of(signed, e))]
+    let statements = [s for s in every_stmt(store, At.Expr(signed.body)) if stmt_meant_beside(typed, s)]
+    let sugars = [e for e in store.every_expr(signed.body) if meant_beside(typed, e)]
+    let left = if filled.is_empty() &&
+        statements.is_empty() &&
+        sugars.is_empty() &&
+        means_itself(store, signed.body) { read.seats } else { null }
+    if left != null && core_from_surface() != "off" {
+        if core_from_surface() == "checked" { core_alike(engine, file, signed, surface, left!) }
+        return ElaboratedBody {
+            store: store,
+            body: signed.body,
+            sugars: sugars,
+            statements: statements,
+            surface: typed.types,
+            core: surface.types,
+            seats: left!,
+            refused: surface.refused.length,
+            unread: surface.unread,
+            reads: surface.reads,
+        }
+    }
+    let core = body_checked(engine, file, signed, true)
+    ElaboratedBody {
+        store: store,
+        body: signed.body,
+        sugars: sugars,
+        statements: statements,
+        surface: typed.types,
+        core: core.types.get(),
+        seats: core.seats.get(),
+        refused: surface.refused.length,
+        unread: surface.unread,
+        reads: reads_kept(core),
+    }
+}
+
+/// Whether no node under `body` means anything but itself: no sugar's meaning stands for one, no
+/// statement's, and none is an instance its component judges. Such a body's core is its surface:
+/// the check through meanings walks the nodes the surface check walked, each under the same seat —
+/// but for a `fail`, whose value the surface holds to the failure its fn promises and the core
+/// reads as it is, so a body that fails is checked both ways.
+fn means_itself(store: SyntaxArena, body: ExprId) -> bool {
+    !store
+            .every_expr(body)
+            .any((e) -> store.meant(e) != null || store.instance_value(e) != null) &&
+        !every_stmt(store, At.Expr(body))
+            .any(
+                (s) -> store.stmt_meant(s) != null ||
+                    store.node_kind(At.Stmt(s)) == NodeKind.StmtFail,
+            )
+}
+
+/// `AVRA_CORE_FROM_SURFACE`: a witness's way into a body whose core is taken from its surface —
+/// `checked` holds each to the check through meanings it skips, `off` skips none.
+once fn core_from_surface() -> string {
+    // LICENSED input.debug_flag: a check of the compiler against itself, which no answer reads
+    env("AVRA_CORE_FROM_SURFACE") ?? ""
+}
+
+/// Stops the process where the check through meanings of `signed`'s body types a node, seats one
+/// or reads a name otherwise than its surface check did.
+fn core_alike(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    surface: TypedBody,
+    seats: Map<string, SignedType>,
+) {
+    let core = body_checked(engine, file, signed, true)
+    let types = core.types.get()
+    let typed_alike = types.length == surface.types.length &&
+        (0..types.length)
+            .all((i: int) -> types[i]?.spelled() ?? "" == surface.types[i]?.spelled() ?? "")
+    let core_seats = core.seats.get()
+    let seated_alike = core_seats.length == seats.length &&
+        core_seats.keys().all((k) -> seats.get(k)?.spelled() == core_seats.get(k)?.spelled())
+    let read_alike = [content_said(r.saved_bytes()) for r in reads_kept(core)].join(" ") == [content_said(r.saved_bytes()) for r in surface.reads].join(" ")
+    if typed_alike && seated_alike && read_alike { return }
+    defect(
+        "a body's core differs from its surface in ${spelled_file(file)} at statement ${signed.stmt.index}: types alike ${typed_alike}, seats alike ${seated_alike}, reads alike ${read_alike}",
+    )
+}
+
+/// Octets as the text of their hash.
+fn content_said(bytes: Bytes) -> string { hash_text(content_hash(bytes)) }
+
+/// `signed` over a store of its own, forked from the one it stands in: what a check through meanings
+/// mints lands there.
+fn own_store(signed: SignedBody) -> SignedBody { signed with { item: signed.item with { store: signed.item.store.forked() } } }
+
+/// Whether `e` is an instance whose wrapping statement fills fields of its record (fills.av's law),
+/// its value then the literal it built `with` each: a doc as its text, each annotation as one
+/// element of its field's list. A record element is minted where its type is declared, so its name
+/// reads there. An instance already filled is left as it is.
+fn instance_filled(engine: QueryEngine, typed: TypedItem, e: ExprId, owner: StmtId?) -> bool {
+    let store = typed.view.store
+    let owner? = owner else { return false }
+    let literal? = store.instance_value(e) else { return false }
+    if store.expr(literal) is .With { return false }
+    let ty? = surface_type(typed, e) else { return false }
+    let at? = declared_at(ty) else { return false }
+    let record? = record_signature(engine, at.file, at.name) else { return false }
+    let fills = instance_fills(store, owner, [f.name for f in record.fields])
+    if fills.is_empty() { return false }
+    let span = store.expr_span(e)
+    let values = [filled_value(engine, store, f.fill, record.fields[f.slot].ty, span) for f in fills]
+    let value = store
+        .alloc_expr(Expr.With(literal, [Plain(record.fields[f.slot].name) for f in fills], values), span)
+    let check = if store.checked_by(e) == null { null } else { store.alloc_expr(Expr.MethodCall(value, Plain(CHECK), []), span) }
+    let expansion = Expansion { literal: value, check: check }
+    store
+        .means_as(e, Minting { nodes: [value].concat(some_list(check)), expansion: expansion }, FILLED_NOTE)
+    // a store read back holds no component under its instances, so the expansion is set as read
+    store.expansion_read(e, expansion)
+    true
+}
+
+/// The statement an instance in `signed` stands in: the one its store says, else the declaration
+/// whose value it is, which a store read back holds no owner for.
+fn owner_of(signed: SignedBody, e: ExprId) -> StmtId? {
+    let store = signed.item.store
+    store.instance_owner(e) ?? if same_expr(e, signed.body) { signed.stmt } else { null }
+}
+
+/// The type surface typing found for `e`, absent where it found none.
+fn surface_type(typed: TypedItem, e: ExprId) -> SignedType? { if e.index < typed.types.length { typed.types[e.index] } else { null } }
+
+/// How many fields an element record has; absent for an element that is no record.
+fn field_count(record: ElementRecord?) -> int? {
+    let r? = record else { return null }
+    r.fields.length
+}
+
+/// The method a component that checks its instances judges each by.
+const CHECK: string = "check"
+
+/// What a filled instance's meaning is noted as.
+const FILLED_NOTE: string = "the fields its statement's doc and annotations fill"
+
+/// What fills a field of type `ty`: the doc's text, or one element per annotation in a list.
+fn filled_value(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    fill: StatementFill,
+    ty: SignedType?,
+    span: Span?,
+) -> ExprId {
+    match fill {
+        .Doc(text) -> store.alloc_expr(Expr.StrLit(text), span),
+        .Annotated(marks) -> {
+            let elem = ty?.listed()
+            let record = element_record(engine, elem)
+            store
+                .alloc_expr(Expr.ListLit([element_value(store, a, record, span) for a in marks]), span)
+        },
+    }
+}
+
+/// A list's element type as a record: where it is declared, and its fields; absent for any other.
+type ElementRecord = { at: DeclaredAt, fields: List<string> }
+
+fn element_record(engine: QueryEngine, elem: SignedType?) -> ElementRecord? {
+    let t? = elem else { return null }
+    let at? = declared_at(t) else { return null }
+    let record? = record_signature(engine, at.file, at.name) else { return null }
+    ElementRecord { at: at, fields: [f.name for f in record.fields] }
+}
+
+/// One annotation as one element, as `element_fill` says; a record's literal is minted as written in
+/// the file declaring it.
+fn element_value(store: SyntaxArena, a: Annotation, record: ElementRecord?, span: Span?) -> ExprId {
+    match element_fill(a, field_count(record)) {
+        .Zero -> zero_value(store, record, span),
+        .Arg(one) -> one,
+        .Packed(args) -> record_value(store, record!, args, span),
+    }
+}
+
+/// The zero of an element: a record's literal with every field defaulted, else empty text.
+fn zero_value(store: SyntaxArena, record: ElementRecord?, span: Span?) -> ExprId {
+    let r? = record else { return store.alloc_expr(Expr.StrLit(""), span) }
+    record_value(store, r, [], span)
+}
+
+/// The record's literal over `args` by position, the fields past them defaulted, read where the
+/// record is declared.
+fn record_value(store: SyntaxArena, record: ElementRecord, args: List<ExprId>, span: Span?) -> ExprId {
+    let since = store.marks()
+    let lit = store
+        .alloc_expr(
+            Expr
+                .StructLit(Nominal(record.at.name), [Plain(record.fields[k]) for k in 0..args.length], args),
+            span,
+        )
+    store.note_foreign(since, "${record.at.file.package_name}:${record.at.file.path_in_package}")
+    lit
+}
+
+/// Whether `e` is a sugar some meaning rewrites, its meaning then spliced beside it: the first of
+/// the meanings filed under it whose arms match. A node the parse already gave a meaning keeps
+/// that one.
+fn meant_beside(typed: TypedItem, e: ExprId) -> bool {
+    let store = typed.view.store
+    if store.meant(e) != null { return false }
+    let said? = meaning_said(typed, At.Expr(e)) else { return false }
+    let made = rewritten_beside(avra(), store, e, said.rewrite)
+    if made.is_empty() { return false }
+    store.means_as(e, minting(made), "`${said.by}`")
+    true
+}
+
+/// Whether `s` is a statement some meaning rewrites, the statements it means then standing for it.
+fn stmt_meant_beside(typed: TypedItem, s: StmtId) -> bool {
+    let store = typed.view.store
+    if store.stmt_meant(s) != null { return false }
+    let said? = meaning_said(typed, At.Stmt(s)) else { return false }
+    let made = stmts_rewritten_beside(avra(), store, s, said.rewrite)
+    if made.is_empty() { return false }
+    store.stmt_means_as(s, made)
+    true
+}
+
+/// What a meaning says a node means, and the meaning that said it.
+type MeaningSaid = { rewrite: Rewrite, by: string }
+
+/// What the first meaning filed under the node whose arms match says the node means.
+fn meaning_said(typed: TypedItem, at: At) -> MeaningSaid? {
+    let store = typed.view.store
+    for m in meaning_index().at_node(store.shallow_at(at), store.kind_at(at)) {
+        let said? = (m.run)(TypedCode { of: typed, at: at }) else { continue }
+        return MeaningSaid { rewrite: said, by: "${m.module}.${m.name}" }
+    }
+    null
+}
+
+/// Every statement at and under `root`, inner statements before the ones holding them.
+fn every_stmt(store: SyntaxArena, root: At) -> List<StmtId> {
+    let own = match root { .Stmt(s) -> [s], rest -> [] }
+    flatten([every_stmt(store, k) for k in store.kids_at(root)]).concat(own)
+}

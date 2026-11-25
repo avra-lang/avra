@@ -1,0 +1,29 @@
+//! Specs — the test DSL: `spec "name" { given "…" { then "…" {
+//! statements… condition } } }`. A spec is a declaration; each
+//! `then` is a CASE — a bodied declaration answering a bool, typed,
+//! lowered and run like any fn. `given` names a group and nothing
+//! more; the runner (`avra test`, over @std/testing) reports each
+//! case by its three names.
+use features.{LanguageFeature}
+use features.specs.{refusal_uncounted_contains}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn specs() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind                     | summary
+        "resolve.nested_spec"    | "a spec lives at the top level"
+        "resolve.duplicate_case" | "a group names each case once"
+        "type.case"              | "a `then` answers a bool"
+    }
+    LanguageFeature specs {
+        gram: grammar {
+            stmt = "spec" name:STRING "{" ( BREAK | groups:given_group | groups:lone_then )* "}" END @recover(sync_to: "END") -> Stmt.Spec
+            given_group = "given" name:STRING "{" ( BREAK | cases:then_case )* "}" @expect("}", "expected `}` to close the `given` — it holds `then` cases") @recover(sync_to: "END") -> Record.Given
+            lone_then = c:then_case -> Record.Given(name = "", cases = [c])
+            then_case = "then" name:STRING body:block @recover(sync_to: "END") -> Record.Case(group = "")
+        }
+        diags: codes
+    }
+    specs
+}

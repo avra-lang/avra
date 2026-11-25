@@ -1,0 +1,55 @@
+//! WHERE A `catch` HAS NO FAILURE TO RECOVER: its subject a literal or a name read — neither of which
+//! fails — whose type is one the language owns and no `Result`. A subject that runs anything, a call
+//! or a `?`, may fail without its type saying so, and is left to the failure laws. Read off the
+//! item's typed nodes.
+use core.{At, ExprId, NodeKind, OwnType, SignedType}
+use compiler.laws.{Found, Reach, law}
+use diagnostics.{Voice}
+use features.results.{nothing_to_recover}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The `catch` `at` of `view`'s item, its file's own, where it writes an arm and its subject is a
+/// literal or a name read of a type the language owns that holds no failure, with that type spelled.
+fn catches_of_nothing(view: ItemView, at: At) -> List<Found> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null { return [] }
+    [Found { at: t.store.expr_span(s), args: [ty!.spelled()] } for s in caught_subject(t, e) if unfailing(t, s) for ty in [(t.type_at)(s.index)] if ty != null && failureless(ty!)]
+}
+
+/// The subject of the `catch` `e` that writes at least one arm; none for any other node.
+fn caught_subject(t: TypedNodes, e: ExprId) -> List<ExprId> {
+    match t.store.expr(e) {
+        .Catch(subject, arms) -> if arms.is_empty() { [] } else { [subject] },
+        rest -> [],
+    }
+}
+
+/// Whether reading `s` runs nothing that can fail: a literal, or a name read.
+fn unfailing(t: TypedNodes, s: ExprId) -> bool {
+    match t.store.expr(s) {
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) -> true,
+        rest -> false,
+    }
+}
+
+/// Whether a value of `ty` holds no failure: a type the language owns, known whole, and no `Result`
+/// nor a task, whose wait may carry one.
+fn failureless(ty: SignedType) -> bool {
+    if !(ty.head is .Owned) || ty.dynamic || ty.generic() || ty.inferred() { return false }
+    !(ty.owns(OwnType.Result) || ty.owns(OwnType.Task) || ty.owns(OwnType.Tasks))
+}
+
+/// a `catch` recovers a value that can fail
+export law catch_over_a_failure {
+    kind: "type.catch"
+    on: [NodeKind.ExprCatch]
+    judge: catches_of_nothing
+    reach: Reach.Typed
+    judged_if: read_cleanly
+    voice: nothing_words
+    witness: "let n = 1 catch 2\nn\n"
+}
+
+fn nothing_words(a: List<string>) -> Voice { nothing_to_recover(a[0]) }

@@ -1,0 +1,37 @@
+// proves, against the grain: a failure leaves a view whose root is no
+// column exactly as it was; the same failure twice is read twice; a
+// failure whose words are empty is still a failure.
+use @std.ui.components.{button}
+use @std.ui.headless.{Screen, headless}
+
+state count: int = 0
+state words: string = "boom"
+state failing: bool = false
+
+fn single() -> button { button "add" { on press { count = count + 1 } } }
+
+fn contained(act: fn() -> bool) -> Result<bool, string> {
+    let ran = act()
+    if !failing { return .Ok(ran) }
+    .Err(words)
+}
+
+fn shown(s: Screen) -> string {
+    [l.trim() for l in s.text().split("\n") if l.trim() != ""].join(" | ")
+}
+
+let s = headless(single)
+s.guarded(contained)
+println(shown(s))
+failing = true
+let _ = s.press("add")
+println(shown(s))
+let _ = s.press("add")
+println("again: ${s.failure() ?? "none"} count=${count}")
+words = ""
+let _ = s.press("add")
+println("empty: [${s.failure() ?? "none"}]")
+println(shown(s))
+failing = false
+let _ = s.press("add")
+println(shown(s))

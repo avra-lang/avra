@@ -1,0 +1,36 @@
+// proves: a cell load stands only while no write to that cell can
+// intervene before the local's last use. `self.audit.held` read twice
+// (once for `get`, once for `set`) mints two DIFFERENT registers for
+// the SAME box — exact register identity cannot see the second one
+// refill what the first one borrowed. Native traps "index out of
+// bounds" on a freed box here before the fix (avra-8sb5.57.75); the
+// evaluator was always correct. The loop's own allocations (`noise`)
+// give the freed box's memory somewhere to be reused, which is what
+// turns the read into a visible trap rather than a silent one.
+type Row = { tag: int, frames: List<int> }
+type Audit = { held: Cell<List<Row>>, open: List<int> }
+type State = { audit: Audit }
+impl State {
+    fn drained() -> int {
+        let held = self.audit.held.get()
+        let none: List<Row> = []
+        self.audit.held.set(none)
+        mut noise: List<string> = []
+        mut total = 0
+        for r in held {
+            noise = noise.concat(["${r.tag}-${r.frames.length}-padding-value-to-force-a-reuse"])
+            total = total + r.tag + r.frames.length
+        }
+        total
+    }
+}
+let shared = [1, 2, 3]
+let rows = [
+    Row { tag: 10, frames: shared },
+    Row { tag: 20, frames: shared },
+    Row { tag: 30, frames: shared },
+    Row { tag: 40, frames: shared },
+    Row { tag: 50, frames: shared },
+]
+let s = State { audit: Audit { held: Cell.new(rows), open: shared } }
+"${s.drained()}"

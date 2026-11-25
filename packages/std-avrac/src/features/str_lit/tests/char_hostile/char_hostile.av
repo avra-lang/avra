@@ -1,0 +1,30 @@
+// proves: `s.chars()` answers what `codepoints(s)` does over every
+// hostile text — empty, each UTF-8 width, a NUL, a sequence cut short,
+// a stray tail, a lead with no tail — alone, chained and nested.
+use @std.text.{from_codepoint, from_codepoints, codepoints}
+
+fn shown(s: string) -> string { ["${c}" for c in s.chars()].join(",") }
+
+fn agrees(s: string) -> bool { shown(s) == ["${c}" for c in codepoints(s)].join(",") }
+
+fn shared(a: string, b: string) -> int {
+    mut n = 0
+    for x in a.chars() {
+        for y in b.chars() { if x == y { n = n + 1 } }
+    }
+    n
+}
+
+let wide = "é€😀"
+let nul = "a" + from_codepoint(0) + "b"
+let cut = "é".substring(0, 1)
+let stray = "é".substring(1, 2)
+let untailed = cut + "a"
+let short = "a" + "😀".substring(0, 3)
+let hostile = ["", "ab", wide, nul, cut, stray, untailed, short, "€".substring(0, 2) + "é"]
+let all_agree = hostile.all(agrees(it))
+let round = from_codepoints("héllo€😀".chars()) == "héllo€😀"
+let chain = "aé".chars().map(it + 1).filter(it > 98).length
+let found = "héllo".chars().find(it > 200) ?? 0
+let none = "".chars().any(it > 0)
+"${"".chars().length} [${shown(wide)}] [${shown(nul)}] [${shown(untailed)}] [${shown(short)}] ${all_agree} ${round} ${chain} ${found} ${none} ${shared("héé", "é€")}"

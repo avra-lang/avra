@@ -1,0 +1,31 @@
+//! Mutation — `mut x = e` (or `mut x: T = e`, holding what it
+//! declares) makes a reassignable cell and `x = e` assigns to one,
+//! ACCEPTED by the binding's type with widening recorded. The cell
+//! holds UNMANAGED values only — scalars and their pairs — until
+//! ownership analysis covers managed ones. The assign branch is NAME-headed and
+//! non-committing: `x + 1` backtracks to the expression statement —
+//! which is also why it carries NO @recover: recovery converts a
+//! break into a hole HIT, and a recovering NAME-headed branch would
+//! swallow every expression line.
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode, Remedy}
+
+export fn mutation() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name | build
+    }
+    let codes = table<DiagCode> {
+        kind                | summary                                                        | remedy
+        "resolve.immutable" | "assignment needs a `mut` binding"                             | Remedy.Fix
+        "resolve.place"     | "a mutation lands on a place — a name, a field, or an index" | Remedy.Help
+    }
+    LanguageFeature mutation {
+        gram: grammar {
+            stmt = "mut" name:NAME ( ":" ty:type )? "=" value:expression END @recover(sync_to: "END") -> Stmt.MutLet
+        }
+        builders: rows
+        diags: codes
+    }
+    mutation
+}

@@ -1,0 +1,98 @@
+//! An item's octets read with no program: through the descriptor its
+//! home kept for the shape it was written under, as JSON. A record is
+//! an object of its fields, an enum the name of its variant or an
+//! object of it over its payload, a letter its item, its fate and its
+//! path. What no descriptor here follows — a float, a nested type, a
+//! byte layout of another number — is no reading, never a guess.
+use @std.json.{Json, field}
+use @std.relation.shape.{Descriptor, descriptor_unspelled}
+use @std.relation.stable.{CodecFault, Reader, reader}
+use letters.{DeadParts, dead_parts}
+
+/// The byte layout a descriptor is followed in.
+const coded_format: int = 3
+
+/// The item `body` holds, written under the shape `descriptor` spells;
+/// absent where it cannot be read whole.
+export fn read_out(descriptor: string, body: Bytes) -> Json? {
+    match whole(descriptor, body) { .Ok(j) -> j, .Err(_) -> null }
+}
+
+/// The value `body` holds, every octet of it read.
+fn whole(descriptor: string, body: Bytes) -> Result<Json, CodecFault> {
+    let r = reader(body)
+    let v = described(descriptor, r)?
+    if !r.done() { fail CodecFault.Trailing }
+    v
+}
+
+/// The value at `r` under `descriptor`: a coded type's, a letter's, or
+/// a plain wire's.
+fn described(descriptor: string, r: Reader) -> Result<Json, CodecFault> {
+    let shape = descriptor_unspelled(descriptor)
+    if shape != null { return coded(shape!, r) }
+    let dead = dead_parts(descriptor)
+    if dead != null { return lettered(dead!, r) }
+    match descriptor {
+        "int" -> .Ok(Json.Int(r.int()?)),
+        "string" -> .Ok(Json.Str(r.text()?)),
+        _ -> { fail CodecFault.OtherShape },
+    }
+}
+
+/// A coded type's value: its shape's header, then its slots in order.
+fn coded(d: Descriptor, r: Reader) -> Result<Json, CodecFault> {
+    if d.format != coded_format || r.fixed()? != d.hash { fail CodecFault.OtherShape }
+    if d.tagged { return variant(d, r) }
+    .Ok(Json.Obj([field(s.name, slot(s.ty, r)?) for s in d.slots]))
+}
+
+/// An enum's value: its variant by place, and the payload it carries.
+fn variant(d: Descriptor, r: Reader) -> Result<Json, CodecFault> {
+    let s = d.slots[r.ordinal(d.slots.length)?]
+    if s.ty == "" { return .Ok(Json.Str(s.name)) }
+    .Ok(Json.Obj([field(s.name, Json.Arr([slot(t, r)? for t in s.ty.split(",")]))]))
+}
+
+/// One slot's value, as its spelling says it was written: marks after
+/// the type are no part of the octets.
+fn slot(spelled: string, r: Reader) -> Result<Json, CodecFault> {
+    let ty = spelled.split(" @").first() ?? spelled
+    if ty.ends_with("?") {
+        if !r.present()? { return .Ok(Json.Null) }
+        return slot(ty.substring(0, ty.length - 1), r)
+    }
+    if ty.starts_with("List<") && ty.ends_with(">") {
+        let n = r.count()?
+        let each = ty.substring(5, ty.length - 1)
+        return .Ok(Json.Arr([slot(each, r)? for _i in 0..n]))
+    }
+    match ty {
+        "int" -> .Ok(Json.Int(r.int()?)),
+        "bool" -> .Ok(Json.Bool(r.bool()?)),
+        "string" -> .Ok(Json.Str(r.text()?)),
+        _ -> { fail CodecFault.OtherShape },
+    }
+}
+
+/// A letter: its item under the item's descriptor, its fate with the
+/// error under the error's, and the queues it passed through.
+fn lettered(p: DeadParts, r: Reader) -> Result<Json, CodecFault> {
+    let item = whole(p.item, r.octets()?)?
+    let fate = match r.count()? {
+        0 -> Json.Obj([field("failed", whole(p.error, r.octets()?)?)]),
+        1 -> Json.Str("unanswered"),
+        _ -> { fail CodecFault.NotVariant },
+    }
+    let n = r.count()?
+    .Ok(
+        Json
+            .Obj(
+                [
+                    field("item", item),
+                    field("fate", fate),
+                    field("path", Json.Arr([Json.Str(r.text()?) for _i in 0..n])),
+                ],
+            ),
+    )
+}

@@ -1,0 +1,73 @@
+// proves: a range is its start and its end wherever it stands — a local, a generic seat and answer,
+// a record's field, a list's element, a map's value, a cell, a nullable, an enum's payload, a
+// `Result`'s side, a closure's capture and answer — and a walk over it reads those two ends, in both
+// engines. Every place is reached through an inferred or generic type and read by a walk, so both
+// paths build it; a place that holds no range answers the default, 100..101.
+type Span2<T> = { name: string, r: T }
+
+enum Shape<T> {
+    Over(r: T)
+    Named(n: string, r: T)
+}
+
+fn same<T>(x: T) -> T { x }
+
+fn kept<T>(x: T, keep: bool) -> T? { if keep { x } else { null } }
+
+fn present<T>(x: T?, d: T) -> T { x ?? d }
+
+fn payload<T>(s: Shape<T>) -> T { match s { .Over(x) or .Named(_, x) -> x } }
+
+fn checked<T>(n: int, x: T) -> Result<T, string> { if n < 0 { .Err("negative") } else { .Ok(x) } }
+
+fn ok_of<T>(r: Result<T, string>, d: T) -> T { match r { .Ok(x) -> x, .Err(_) -> d } }
+
+let r = (2..7)
+mut lo = 0
+mut hi = 0
+for i in r {
+    if lo == 0 && hi == 0 { lo = i }
+    hi = i + 2
+}
+let d = (100..101)
+let sp = Span2 { name: "s", r: (1..4) }
+let rs = [(0..3), (5..6), (2..2)]
+let by = {"a": (4..8)}
+let held = Cell.new((0..5))
+held.set((10..13))
+let window = () -> (3..9)
+let add = (k: int) -> {
+    mut s = 0
+    for i in r { s = s + i + k }
+    s
+}
+let all = [
+    r,
+    (lo..hi),
+    same(r),
+    sp.r,
+    rs[0],
+    rs[1],
+    rs[2],
+    by.get("a")!,
+    held.get(),
+    present(kept((0..1), false), d),
+    present(kept((6..9), true), d),
+    payload(Shape.Over((0..4))),
+    payload(Shape.Named("ab", (1..3))),
+    ok_of(checked(4, (0..4)), d),
+    ok_of(checked(-1, (0..4)), d),
+    window(),
+]
+mut walked: List<string> = []
+for x in all {
+    mut sum = 0
+    mut count = 0
+    for i in x {
+        sum = sum + i
+        count = count + 1
+    }
+    walked.push("${sum}/${count}")
+}
+let bad = match checked(-1, (0..4)) { .Ok(_) -> -1, .Err(e) -> e.length }
+"${walked.join(" ")} | ${add(10)} ${bad}"

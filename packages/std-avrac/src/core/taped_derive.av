@@ -1,0 +1,62 @@
+//! Avra's tree on a tape: `Taped` writes and reads a node that isn't a root, and `TapeRoot` a root's
+//! nodes, saying which of its variants each is, and the id naming them, with its schema. The generators are
+//! `@std/program`'s and know no language; this names Avra's tree, which fields belong on a tape, and
+//! how an id reaches its arena.
+use @std.meta.{Code, Declared, Field, Type as MetaType, type_named}
+use @std.program.tape_derive.{TapeLanguage, TreeVerbs, root_declared, tape_marks, taped_declared}
+use @std.program.value_shapes.{FieldRole, Reading}
+use @std.text.{ascii_lower}
+
+/// The compiler's derive for a node's tape.
+export trait Taped {
+    /// `@local` and `@facet` fields aren't on the node's tape.
+    static fn marks(_t: MetaType) -> List<string> { [local_word, facet_word].concat(tape_marks()) }
+
+    static fn derive(t: MetaType) -> Declared { taped_declared(t, avra_language()) }
+}
+
+/// A root of Avra's tapes: its nodes' writer and reader, saying which of its variants each is and
+/// the id naming them. `AVRA_TAPE_SCHEMA` reads every root's schema off the declarations.
+export trait TapeRoot {
+    static fn marks(_t: MetaType) -> List<string> { [local_word, facet_word].concat(tape_marks()) }
+
+    static fn derive(t: MetaType) -> Declared { root_declared(t, avra_language()) }
+}
+
+/// Avra's tree as the build declares it: a `@local` field rides its node and stays off the tape,
+/// and a `@facet` field lives in its side table. Each arena is named for its node: `expr(id)`,
+/// `expr_span(id)` and `alloc_expr(node, span)`.
+fn avra_language() -> TapeLanguage {
+    TapeLanguage {
+        tree: "SyntaxArena",
+        reading: avra_reading(),
+        verbs: TreeVerbs {
+            node: (tree: Code, id: Code, node: string) -> quote { ${tree}.${arena_word(node)}(${id}) },
+            place: (tree: Code, id: Code, node: string) -> quote { ${tree}.${"${arena_word(node)}_place"}(${id}) },
+            added: (tree: Code, read: Code, place: Code, node: string) -> quote {
+                ${tree}.${"alloc_${arena_word(node)}"}(${read}, ${tree}.placed_span(${place}))
+            },
+            facts_written: (tree: Code, tape: Code, id: Code, node: string) -> quote {
+                SyntaxArena.${"tape_${arena_word(node)}_tables"}(${tree}, ${tape}, ${id})
+            },
+            facts_read: (tree: Code, tape: Code, id: Code, node: string) -> quote {
+                SyntaxArena.${"untape_${arena_word(node)}_tables"}(${tree}, ${tape}, ${id})
+            },
+        },
+    }
+}
+
+/// The word an arena's verbs are named by: its node's name, lowered.
+fn arena_word(node: string) -> string { ascii_lower(node) }
+
+/// Avra's tree as the build declares it, read for a tape.
+export fn avra_reading() -> Reading { Reading { declared: type_named, role: role_on_tape, places: true } }
+
+/// A `@hollow` field is a body: written, and left out of a face.
+fn role_on_tape(f: Field) -> FieldRole {
+    match field_route(f) {
+        .Plain -> if is_hollow(f) { .Body } else { .Written },
+        .Local -> .Carried,
+        .Facet(_) -> .Apart,
+    }
+}

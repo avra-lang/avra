@@ -1,0 +1,78 @@
+//! WHAT `avra test` FINDS IN A PACKAGE: every file with an `.expected` beside it is a program test,
+//! every file with a `.refuses` or a `.verdict` beside it a child-run test owing a trap's or a
+//! verdict's exit, and a library file none. Each case runs the real `avra test` over a package on
+//! disk in a process of its own. `avra_ran_in`, `scratch_dir` and `exit_is_zero` are the
+//! neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.path.{dir_of}
+use @std.time.{stamp}
+
+/// A package of a library, two program tests and a refusal test, with `more` beside them: its root.
+fn suite_package(name: string, more: Map<string, string>) -> string {
+    let root = "${scratch_dir()}/program_files/${name}-${stamp()}"
+    mut files: Map<string, string> = {
+        "avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+        "src/lib.av": "export fn double(n: int) -> int { n * 2 }\n",
+        "src/alpha/alpha.av": "use lib.{double}\ndouble(21)\n",
+        "src/alpha/alpha.expected": "42\n",
+        "src/beta/beta.av": "use lib.{double}\nlet n = double(4)\nn + 1\n",
+        "src/beta/beta.expected": "9\n",
+        "src/trap/trap.av": "let missing: int? = null\nmissing!\n",
+        "src/trap/trap.refuses": "unwrapped an absent value\n",
+    }
+    for path, text in more { files.set(path, text) }
+    for path, text in files {
+        let at = "${root}/${path}"
+        let _ = make_dirs(dir_of(at))
+        let _ = write_text(at, text)
+    }
+    root
+}
+
+/// What `avra test` over the package at `root` said, both streams, and whether it ended clean.
+type Tested = { said: string, clean: bool }
+
+fn tested(root: string) -> Tested {
+    match avra_ran_in(root, ["test", "."]) {
+        .Ok(o) -> Tested { said: "${o.out.stdout}\n${o.out.stderr}", clean: exit_is_zero(o.exit) },
+        .Err(_) -> Tested { said: "", clean: false },
+    }
+}
+
+spec "avra test — the programs a package's suite finds" {
+    given "two program tests and a refusal test beside a library" {
+        then "both program tests are proved, and the library is no program" {
+            let t = tested(suite_package("found", {}))
+            t.clean &&
+                t.said.contains("2 programs proved") &&
+                t.said.contains("src/alpha/alpha: ") &&
+                t.said.contains("src/beta/beta: ")
+        }
+        then "the refusal test is found and proved" {
+            let t = tested(suite_package("refusal", {}))
+            t.clean && t.said.contains("1 refusal proved")
+        }
+    }
+    given "what each proof owes" {
+        then "a `.refuses` owes a trap's exit" {
+            let t = tested(suite_package("owes-trap", {"src/trap/trap.av": "1\n"}))
+            !t.clean &&
+                t.said.contains("src/trap/trap.av: native exited clean, wanted a trap (code 2)")
+        }
+        then "a `.verdict` beside a file is a child-run test owing a verdict's exit" {
+            let t = tested(
+                suite_package(
+                    "owes-verdict",
+                    {
+                        "src/gamma/gamma.av": "use lib.{double}\ndouble(1)\n",
+                        "src/gamma/gamma.verdict": "x\n",
+                    },
+                ),
+            )
+            !t.clean &&
+                t
+                    .said
+                    .contains("src/gamma/gamma.av: native exited clean, wanted a verdict (code 1)")
+        }
+    }
+}

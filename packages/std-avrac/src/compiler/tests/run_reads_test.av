@@ -1,0 +1,49 @@
+// A compile-time run's read of the world is a recorded read: the program is made again when that
+// file's text moves, a file that is not there refuses until it arrives, and while the text stands
+// a second process over the same store works nothing out.
+use @std.avrac.testing.held.{Pass, empty_store, held_at}
+use @std.avrac.testing.{vendored_meta}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
+
+const RUN_READS_MAIN: string = "/w/src/main.av"
+
+/// The package whose const reads `src/data.txt` at compile time; `data` absent where null.
+fn run_reads_files(data: string?) -> Map<string, string> {
+    mut files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            RUN_READS_MAIN: "use @std.meta.{embed}\nconst D: string = embed(\"data.txt\")\nD\n",
+        },
+    )
+    if data != null { files.set("/w/src/data.txt", data!) }
+    files
+}
+
+/// What a process over `store` makes of the package with `data` beside it.
+fn run_pass(data: string?, store: StoreInMemory) -> Pass {
+    held_at(run_reads_files(data), "/w").passed_over(RUN_READS_MAIN, store)
+}
+
+/// What the second of two processes over one store runs to, the data going from `before` to `after`.
+fn run_second(before: string?, after: string?) -> Pass {
+    let s = empty_store()
+    let _ = run_pass(before, s)
+    run_pass(after, s)
+}
+
+spec "compiler/settle — a run's read of the world is recorded" {
+    then "a file a compile-time run reads answers its text" {
+        run_pass("one", empty_store()).ran == "one"
+    }
+    then "its text edited, a second process over the same store answers the edit" {
+        run_second("one", "two").ran == "two"
+    }
+    then "a file that is not there refuses, and its arrival moves what the run answers" {
+        run_pass(null, empty_store()).ran.starts_with("refused") &&
+            run_second(null, "one").ran == "one"
+    }
+    then "its text unchanged, a second process answers alike and works nothing out" {
+        let p = run_second("one", "one")
+        p.ran == "one" && p.worked.is_empty()
+    }
+}

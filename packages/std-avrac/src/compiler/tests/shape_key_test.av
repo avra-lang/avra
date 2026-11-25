@@ -1,0 +1,66 @@
+//! A TYPE'S SHAPE KEY is a function of the type alone: the same declarations key alike whichever
+//! shape was met first, because a kept verdict stands on a key computed in an earlier process. On
+//! the program layer the key is what a fn's code hash reads of each type it carries
+//! (`code_hash(answer)`, code_hash_test's `hash_in`), so a cycle of types declared in any order
+//! hashes alike, and a member of the cycle whose layout the fn reads moving moves it. The key reads
+//! each register's type as the machine lays it out: a field that rides a box is the box it rides.
+use @std.avrac.testing.held.{held_at}
+use @std.avrac.testing.{vendored_meta}
+
+/// What `code_hash(answer)` says in a program of `decls`.
+fn keyed(decls: string) -> string {
+    let held = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use @std.meta.{code_hash}\n${decls}\n\ncode_hash(answer) ?? \"absent\"",
+        },
+    )
+    held_at(held, "/w").judged_at("/w/src/main.av").run() catch e -> "refused: ${e}"
+}
+
+/// Whether two programs key `answer` alike, each keyed at all.
+fn keyed_alike(a: string, b: string) -> bool { keyed(a) == keyed(b) && keyed(a) != "absent" && !keyed(a).starts_with("refused") }
+
+/// The cycle A → B → C → A, and D over all three, declared in `order`.
+fn cyclic(order: List<string>) -> string {
+    let decls: Map<string, string> = {
+        "A": "type A = { b: B?, n: int }",
+        "B": "type B = { a: A?, c: C?, m: string }",
+        "C": "type C = { b: B?, a: A? }",
+        "D": "type D = { a: A, c: C, b: B }",
+    }
+    [decls.get(n)! for n in order].join("\n")
+}
+
+/// The cycle declared in `order`, and an `answer` reading a value of `through`, so it carries it.
+fn reaching(order: List<string>, through: string) -> string {
+    let reads: Map<string, string> = {
+        "A": "x.n",
+        "B": "x.m.length",
+        "C": "if x.b == null { 0 } else { 1 }",
+        "D": "x.a.n",
+    }
+    "${cyclic(order)}\nfn answer(x: ${through}) -> int { ${reads.get(through)!} }"
+}
+
+spec "compiler — a type's shape key" {
+    then "each type of the cycle is keyed" { ["A", "B", "C", "D"].all(keyed(reaching(["A", "B", "C", "D"], it)) != "absent") }
+    then "a cycle's members key alike whichever is declared first" {
+        ["A", "B", "C", "D"]
+            .all(
+                (n) -> keyed_alike(
+                        reaching(["A", "B", "C", "D"], n),
+                        reaching(["D", "C", "B", "A"], n),
+                    ) &&
+                    keyed_alike(
+                        reaching(["A", "B", "C", "D"], n),
+                        reaching(["C", "A", "D", "B"], n),
+                    ),
+            )
+    }
+    then "a cycle member's field the fn reads changing its layout moves the key" {
+        let was = keyed(reaching(["A", "B", "C", "D"], "B"))
+        let now = keyed(reaching(["A", "B", "C", "D"], "B").replace("m: string", "m: List<int>"))
+        was != now && !was.starts_with("refused") && !now.starts_with("refused")
+    }
+}

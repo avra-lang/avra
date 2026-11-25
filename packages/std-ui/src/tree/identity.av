@@ -1,0 +1,389 @@
+//! `tree/identity.av` — ONE identity per node: WHERE IT STANDS — its
+//! parent, then its own STEP: its key, or the SITE it was written at.
+//! A node is the same node while its step and its ancestors' stand,
+//! whatever is inserted, removed or reordered beside it: a sibling that
+//! comes and goes above it moves nothing.
+//!
+//! A SITE IS LEXICAL: the literal that made the node, one number a
+//! written literal (`@std/meta`'s `Site`). Siblings one site made — a
+//! loop's, a helper's called twice — are told apart by their TURN, which
+//! is order, so what must keep its own through a reorder wears a key.
+//!
+//! Identity is never written out whole. A page that keeps a node across
+//! paints gives it a NUMBER when it first appears (`NodeId`) and the node
+//! wears that number while it stays: fixed in width however deep the node
+//! sits, and never shared, since a number is counted out and not hashed.
+//! Steps are VALUES, matched as values: a key of a number makes no text,
+//! and sibling steps are counted and found by a table over their words
+//! (`StepTable`). The steps a number stands under are spelled only for a
+//! reader (`spelled`, one spelling everywhere), who is
+//! shown a place where a site would say nothing.
+use @std.meta.{Key, Site, Structural, Opaque}
+
+/// The number a page gives a node while the node stays on it. Compared
+/// and echoed, never parsed. A node no page has placed wears none.
+export type NodeId = { n: int }
+
+/// What a node not yet on a page wears.
+export const unplaced = NodeId { n: -1 }
+
+/// What a view says of where it stands among its siblings: its key, when
+/// it has one, and the site it was written at — which fills itself.
+/// `via` is the steps of the compositions a node was drawn THROUGH: a
+/// composition draws what it is made of in place, under its own parent,
+/// so its step is part of each of those nodes' own.
+/// `structural` holds the state cells its frame reads at paint time that no
+/// text says again, which the compiler fills in; a write to one of them takes
+/// the full paint. `opaque` says the page cannot place that set, or a
+/// composition drew the node, so the page is always painted whole.
+export type Stand = {
+    key: Key? = null,
+    site: Site,
+    via: Step? = null,
+    structural: Structural = [],
+    opaque: Opaque = false,
+}
+
+/// A view standing under `key`, written at `site`.
+export fn stand_of(key: Key?, site: Site) -> Stand { Stand { key: key, site: site } }
+
+/// Who asked for work a control owns: where the control stands, and whether
+/// it is told from its siblings by order alone.
+export type Owner = { key: string, ordered: bool }
+
+/// What tells a node from its siblings.
+export enum Step {
+    /// Its key's words — its kind, the word a number, truth or tag rides,
+    /// its text — and its turn among the siblings that share it: inline, so
+    /// a keyed step is one value and no key is boxed apart.
+    Keyed(kind: int, word: int, text: string, turn: int)
+    /// The site it was written at, and in `placed` (`sited_step` makes it) its
+    /// turn among the siblings that site made and — for a reader — its
+    /// place among its unkeyed siblings.
+    Sited(site: Site, placed: int)
+    /// A part a target makes inside a node, by the name the target gives
+    /// it — a control under its label, a run of text.
+    Part(name: string)
+    /// A step drawn through compositions: theirs, then its own.
+    Through(via: Step, step: Step)
+    /// A seat under the seat of what its siblings stand beside: that one,
+    /// then its own — an element that holds nothing has its children
+    /// beside it.
+    Under(above: Step, step: Step)
+    /// A seat read back from a page that holds it, as the page spelled it
+    /// and showed it: matched by those words, the one place a step is.
+    Read(words: string, shows: string)
+}
+
+impl Step {
+    /// A step as a sibling is MATCHED by. A key is written with its
+    /// LENGTH, so no key's own text reads as another node's steps; a site
+    /// opens with `s` and a part with `+`, so the three never spell alike.
+    fn spelled() -> string {
+        match self {
+            .Keyed(kind, word, text, turn) -> turned(keyed_words(spoken(kind, word, text)), turn),
+            .Sited(site, placed) -> turned("s${site}", placed / SPAN),
+            .Part(name) -> "+${name}",
+            .Through(via, step) -> under(via.spelled(), step.spelled()),
+            .Under(above, step) -> under(above.spelled(), step.spelled()),
+            .Read(words, _) -> words,
+        }
+    }
+
+    /// A step as a READER's path shows it: a site is shown as the place
+    /// it stands at, since its number says nothing to a reader.
+    fn shown() -> string {
+        match self {
+            .Sited(_, placed) -> "${placed % SPAN}",
+            .Through(_, step) -> step.shown(),
+            .Under(above, step) -> under(above.shown(), step.shown()),
+            .Read(_, shows) -> shows,
+            .Keyed(_, _, _, _) or .Part(_) -> self.spelled(),
+        }
+    }
+}
+
+/// A key as a reader is told it, from its words: a text key its text, any other its word.
+fn spoken(kind: int, word: int, text: string) -> string { if kind == 0 { text } else { "${word}" } }
+
+/// A key's step as it is spelled: its length, so no key's own text reads as other steps, then itself.
+fn keyed_words(said: string) -> string { "k${said.length}:${said}" }
+
+/// The step of a sibling keyed `k`, at its `turn`.
+export fn keyed_step(k: Key, turn: int) -> Step { Step.Keyed(k.kind, k.word, k.text, turn) }
+
+/// How a sited step holds its turn and, for a reader, its place among the unkeyed siblings, in one
+/// word: the turn times this, plus the place.
+const SPAN: int = 4294967296
+
+/// The step of an unkeyed sibling written at `site`, at its `turn`, standing `at` among the unkeyed.
+export fn sited_step(site: Site, turn: int, at: int) -> Step { Step.Sited(site, turn * SPAN + at) }
+
+/// A step's words with its turn — the first turn says nothing.
+fn turned(words: string, turn: int) -> string {
+    if turn == 0 { words } else { "${words}~${turn}" }
+}
+
+/// Each sibling's step, from what each says of where it stands, in
+/// order. A key or a site seen before takes the next turn, so two
+/// siblings never share a step.
+export fn steps(stands: List<Stand>) -> List<Step> { stepped(stands).steps }
+
+/// Siblings' steps and whether each is told from another by order alone, from one count of them.
+export type Stepped = { steps: List<Step>, shared: List<bool> }
+
+/// Each sibling's step, and whether it shares its key or its site with another, counted once.
+export fn stepped(stands: List<Stand>) -> Stepped {
+    let counted = counting(stands)
+    let seen: Cell<int> = Cell.new(0)
+    let placed = [unkeyed_before(seen, s) for s in stands]
+    Stepped {
+        steps: [through(stand.via, turned_step(stand, counted.turns[j], placed[j])) for j, stand in stands],
+        shared: [counted.totals[counted.first[j]] > 1 for j in 0..stands.length],
+    }
+}
+
+/// Siblings counted by where each says it stands, before its turn — what drew it, then its key, else
+/// its site — with no step made: each one's turn among those like it before it, the first like it,
+/// and how many are like it.
+fn counting(stands: List<Stand>) -> Counted {
+    let first = firsts(stands)
+    let totals: Cell<List<int>> = Cell.new([0 for _s in stands])
+    let turns = [counted_turn(totals, first[j]) for j in 0..stands.length]
+    Counted { turns: turns, first: first, totals: totals.get() }
+}
+
+/// For each sibling, the first one that stands like it: read in turn for a few, else by a table over
+/// what each says.
+fn firsts(stands: List<Stand>) -> List<int> {
+    if stands.length <= SCANNED { return [stands.find_index((t) -> same_stand(t, s))! for s in stands] }
+    let size = sized(stands.length)
+    let slots: Cell<List<int>> = Cell.new([-1 for _s in 0..size])
+    [first_placed(stands, slots, j) for j in 0..stands.length]
+}
+
+/// The first sibling that stands like the one at `j`, found in `slots`, where it is placed when it is
+/// the first.
+fn first_placed(stands: List<Stand>, slots: Cell<List<int>>, j: int) -> int {
+    let mask = slots.get().length - 1
+    mut at = stand_hash(stands[j]) & mask
+    while slots.get()[at] >= 0 {
+        if same_stand(stands[slots.get()[at]], stands[j]) { return slots.get()[at] }
+        at = at + 1 & mask
+    }
+    slots.set_at(at, j)
+    j
+}
+
+/// Whether two siblings stand alike before their turns: drawn through the same step, and the same key,
+/// or no key and the same site.
+fn same_stand(a: Stand, b: Stand) -> bool {
+    let vias = if a.via == null || b.via == null { a.via == null && b.via == null } else { same_step(a.via!, b.via!) }
+    if !vias { return false }
+    if a.key == null || b.key == null { return a.key == null && b.key == null && a.site == b.site }
+    a.key!.same(b.key!)
+}
+
+/// A number of where a sibling says it stands, the same for two `same_stand` calls alike.
+fn stand_hash(s: Stand) -> int {
+    let via = if s.via == null { 0 } else { step_hash(s.via!) }
+    let k? = s.key else { return mixed(via, mixed(mixed(1, s.site.of), 0)) }
+    mixed(via, mixed(mixed(mixed(k.kind, k.word), text_hash(k.text)), 0))
+}
+
+/// How many unkeyed siblings stand before `stand`, counted in `seen`.
+fn unkeyed_before(seen: Cell<int>, stand: Stand) -> int {
+    let at = seen.get()
+    if stand.key == null { seen.set(at + 1) }
+    at
+}
+
+/// A sibling's own step at its `turn`; an unkeyed one stands at `at`
+/// among the unkeyed, for a reader.
+fn turned_step(stand: Stand, turn: int, at: int) -> Step {
+    match stand.key {
+        k? -> keyed_step(k, turn)
+        null -> sited_step(stand.site, turn, at)
+    }
+}
+
+/// `step` as drawn through `via` — itself, when it was drawn through
+/// nothing.
+fn through(via: Step?, step: Step) -> Step {
+    let drawn? = via else { return step }
+    Step.Through(drawn, step)
+}
+
+/// Whether each sibling shares its key or its site with another — the
+/// two are then told apart by their order alone.
+export fn shared(stands: List<Stand>) -> List<bool> { stepped(stands).shared }
+
+/// A PATH: steps from a root down, as one text. The ONE place a path is
+/// spelled from its steps.
+export fn path(of: List<string>) -> string { of.join("/") }
+
+/// `step` under the path of what holds it — alone when nothing does.
+export fn under(above: string?, step: string) -> string {
+    match above {
+        p? -> path([p, step])
+        null -> step
+    }
+}
+
+/// Whether two steps are one: one kind, the same key (its kind, word and
+/// text), site, part or way through, the same turn — the reader's place
+/// aside, which says nothing of who the node is.
+export fn same_step(a: Step, b: Step) -> bool {
+    match a {
+        .Keyed(kind, word, text, t) -> match b {
+            .Keyed(k, w, x, u) -> t == u && kind == k && word == w && text == x,
+            .Read(words, _) -> a.spelled() == words,
+            rest -> false,
+        },
+        .Sited(s, t) -> match b {
+            .Sited(r, u) -> t / SPAN == u / SPAN && s == r,
+            .Read(words, _) -> a.spelled() == words,
+            rest -> false,
+        },
+        .Part(n) -> match b { .Part(m) -> n == m, .Read(words, _) -> a.spelled() == words, rest -> false },
+        .Through(v, x) -> match b {
+            .Through(w, y) -> same_step(v, w) && same_step(x, y),
+            .Read(words, _) -> a.spelled() == words,
+            rest -> false,
+        },
+        .Under(v, x) -> match b {
+            .Under(w, y) -> same_step(v, w) && same_step(x, y),
+            .Read(words, _) -> a.spelled() == words,
+            rest -> false,
+        },
+        .Read(words, _) -> b.spelled() == words,
+    }
+}
+
+/// A number of a step's words, the same for two steps `same_step` calls one, made with no text. A step
+/// read back from a page has only its words, so a table of such steps hashes every step by its spelling
+/// (`spelled_hash`): that table is made once, as a page is taken over.
+export fn step_hash(s: Step) -> int {
+    match s {
+        .Keyed(kind, word, text, t) -> mixed(mixed(mixed(kind, word), text_hash(text)), t),
+        .Sited(site, placed) -> mixed(mixed(1, site.of), placed / SPAN),
+        .Part(n) -> mixed(2, text_hash(n)),
+        .Through(v, x) -> mixed(step_hash(v), step_hash(x)),
+        .Under(v, x) -> mixed(mixed(3, step_hash(v)), step_hash(x)),
+        .Read(words, _) -> text_hash(words),
+    }
+}
+
+/// A number of a step's spelling, for a table that holds steps read back from a page.
+fn spelled_hash(s: Step) -> int { text_hash(s.spelled()) }
+
+/// Whether `s` was read back from a page.
+fn read_back(s: Step) -> bool { s is .Read }
+
+/// Two numbers as one.
+fn mixed(h: int, x: int) -> int { (h * 1000003 + x) % 2305843009213693951 }
+
+/// A number of a text's characters, read in place: no text is made.
+fn text_hash(t: string) -> int { (0..t.length).fold(t.length, (h: int, i: int) -> mixed(h, t.char_code(i))) }
+
+/// STEPS BY THEIR WORDS: each step's place among `steps`, found again with
+/// no text made. Open addressing over `step_hash`, twice as many slots as
+/// steps, each holding a step's index or -1.
+export type StepTable = { steps: List<Step>, slots: Cell<List<int>>, spelled: bool = false }
+
+/// Siblings' steps counted: each one's turn among the steps before it that
+/// are the same, the first of them, and how many share it.
+export type Counted = { turns: List<int>, first: List<int>, totals: List<int> }
+
+impl StepTable {
+    /// The table of `steps`, the first of each run of the same step kept.
+    static fn of(steps: List<Step>) -> StepTable {
+        if steps.length <= SCANNED {
+            let none: Cell<List<int>> = Cell.new([])
+            return StepTable { steps: steps, slots: none }
+        }
+        let size = sized(steps.length)
+        let made = StepTable {
+            steps: steps,
+            slots: Cell.new([-1 for _s in 0..size]),
+            spelled: steps.any(read_back(it)),
+        }
+        for j, s in steps { if made.find(s) == null { made.place(j) } }
+        made
+    }
+
+    /// The index of the first step among the table's that is `s`; absent where none is.
+    fn find(s: Step) -> int? {
+        let slots = self.slots.get()
+        if slots.is_empty() { return self.steps.find_index((t) -> same_step(t, s)) }
+        let mask = slots.length - 1
+        mut at = self.hash(s) & mask
+        while slots[at] >= 0 {
+            if same_step(self.steps[slots[at]], s) { return slots[at] }
+            at = at + 1 & mask
+        }
+        null
+    }
+
+    /// The number a step lands at: by its spelling where the table holds a step read back from a page.
+    fn hash(s: Step) -> int { if self.spelled { spelled_hash(s) } else { step_hash(s) } }
+
+    /// The step at `j` given the first free slot its words land at.
+    fn place(j: int) {
+        let mask = self.slots.get().length - 1
+        mut at = self.hash(self.steps[j]) & mask
+        while self.slots.get()[at] >= 0 { at = at + 1 & mask }
+        self.slots.set_at(at, j)
+    }
+}
+
+/// The next turn of the step whose first is at `first`, counted in `totals`.
+fn counted_turn(totals: Cell<List<int>>, first: int) -> int {
+    let turn = totals.get()[first]
+    totals.set_at(first, turn + 1)
+    turn
+}
+
+/// How many steps a table finds by reading each in turn, with no slots made.
+const SCANNED: int = 8
+
+/// A table's size for `n` steps: the least power of two at least twice `n`, and at least 2.
+fn sized(n: int) -> int {
+    mut size = 2
+    while size < n * 2 { size = size * 2 }
+    size
+}
+
+/// A text as the key it is: a key of kind 0, which a reader is told as the text.
+export fn text_key(t: string) -> Key { Key { kind: 0, word: 0, text: t } }
+
+/// Steps found by their words, each beside the row it was last found at.
+export type StepRows = { found: StepTable, rows: List<int> }
+
+impl StepRows {
+    /// Steps `steps`, the one at `j` found at row `rows[j]`.
+    static fn of(steps: List<Step>, rows: List<int>) -> StepRows { StepRows { found: StepTable.of(steps), rows: rows } }
+
+    /// The row the step `s` was found at; absent where it was not.
+    fn at(s: Step) -> int? {
+        let j? = self.found.find(s) else { return null }
+        self.rows[j]
+    }
+}
+
+/// The step of a tree's ROOT. It has no sibling to be told from, so
+/// where it was written says nothing: a root is its key, or the one
+/// place a root stands — and a page turned into another view keeps its
+/// root.
+export fn root(key: Key?) -> Step {
+    match key {
+        k? -> keyed_step(k, 0)
+        null -> sited_step(Site(0), 0, 0)
+    }
+}
+
+/// A step as a reader's line shows it: a character that would break the
+/// line is written as its escape, so no key forges a line of its own.
+export fn readable(step: string) -> string {
+    step.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+}

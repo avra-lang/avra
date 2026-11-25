@@ -1,0 +1,158 @@
+//! INPUTS HELD BY A STAMP. An input that reads one file or one directory may be held by that path's
+//! stamp (`@std/io` `stamp`): its kind, size, modification and change times and inode as one number,
+//! taken only of a path that hasn't changed within the last two seconds. THE LAW: an answer is kept
+//! beside a stamp only where the path wore that stamp both before and after the read that made it,
+//! and it is held without a read only where the path wears that stamp now. A write to a file, and an
+//! entry added to, removed from or renamed in a directory, moves its change time, which no caller can
+//! set and which lands at least two seconds past the change time a kept stamp saw — so a path that
+//! changed after the read wears another stamp, whatever its size and whatever it set its modification
+//! time to; a change while the path was being read moves it between the two stamps, and nothing is
+//! kept. Wherever a stamp can't be taken — a path changed this second, one absent or of another kind,
+//! a store whose stamps don't read back — the input is read and hashed as it always is. A question
+//! names what it reads, never where: a stamp holds only under the places it was read under (`places`,
+//! the world's print of where each question's path lies), so the same question placed elsewhere is
+//! read there. What the law
+//! leans on: a file system that moves a change time on every write, at a grain under two seconds,
+//! and a clock not set back by more than that.
+use answer_record.{ContentHash, content_hash}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use @std.io.{drafted, read_bytes, remove}
+use @std.meta.{derive}
+use @std.text.{hex_digit}
+use saved_derive.{Saved}
+
+/// An input's answer held by the stamp of the one path it read: its question, its answer, the path,
+/// the stamp the path wore before and after the read, and the places it was read under.
+@derive(Saved)
+export type InputStamp = {
+    question: ContentHash,
+    answer: ContentHash,
+    path: string,
+    stamp: int,
+    places: string,
+}
+
+impl InputStamp {
+    /// Whether `other` holds the same answer by the same stamp.
+    fn same_as(other: InputStamp) -> bool {
+        self.question.same_as(other.question) &&
+            self.answer.same_as(other.answer) &&
+            self.path == other.path &&
+            self.stamp == other.stamp &&
+            self.places == other.places
+    }
+}
+
+once fn places_cell() -> Cell<string> { Cell.new("") }
+
+once fn places_held_cell() -> Cell<string> { Cell.new("") }
+
+/// Sets the places this process's inputs are read under: a print of where each question's path lies.
+export fn use_places(print: string) {
+    places_cell().set(print)
+    places_held_cell()
+        .set(if print.is_empty() { "" } else { content_hash(print.bytes()).held_key() })
+}
+
+/// The places this process's inputs are read under.
+export fn places_now() -> string { places_cell().get() }
+
+/// The places this process's inputs are read under as a stamp holds them: the print's digest, so a
+/// store names no checkout.
+export fn places_held() -> string { places_held_cell().get() }
+
+/// Every input a store holds by a stamp.
+@derive(Saved)
+type InputStamps = { stamps: List<InputStamp> }
+
+/// What a file of stamps starts with: its name and the version of `InputStamp` it holds, then its
+/// body's hash, then a newline. A file of another version holds no stamp.
+const STAMPS_SEAL: string = "avrastamps2"
+
+/// What changed since a base of stamps: the head of the base it stands over, every stamp that's new
+/// or other than the base's, and every question whose stamp went.
+@derive(Saved)
+type StampsDelta = { base_head: string, changed: List<InputStamp>, gone: List<ContentHash> }
+
+/// THE STAMPS AS A BASE AND ONE DELTA: a write that changes a few stamps writes only them, beside the
+/// base, in the file after `path` (`.delta`); the delta names its base by the base's head, so a
+/// delta over another base holds nothing. A change past the base's stamps over `STAMPS_DELTA_SHARE`
+/// writes the base again, whole, and the delta goes.
+const STAMPS_DELTA_SHARE: int = 4
+
+fn delta_path(path: string) -> string { "${path}.delta" }
+
+/// A file at `path` read as a head and its body, absent where it's no such file or its body isn't the
+/// one its head names.
+fn sealed_body(path: string) -> SealedBody? {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    let octets = read_bytes(path) catch "".bytes()
+    if octets.length < HEAD_LENGTH { return null }
+    let body = octets.slice(HEAD_LENGTH, octets.length)
+    let head = octets.slice(0, HEAD_LENGTH).text() ?? ""
+    if head != stamps_head(body) { return null }
+    SealedBody { head: head, body: body }
+}
+
+type SealedBody = { head: string, body: Bytes }
+
+/// The base at `path`: its head and stamps, none where it doesn't read.
+fn base_at(path: string) -> StampsBase {
+    let sealed? = sealed_body(path) else { return StampsBase { head: "", stamps: [] } }
+    StampsBase { head: sealed.head, stamps: InputStamps.from_saved_bytes(sealed.body).stamps }
+}
+
+type StampsBase = { head: string, stamps: List<InputStamp> }
+
+/// The stamps kept at `path`: its base, with the delta beside it laid over where the delta stands over
+/// that base; none where there's no base or its body isn't the one its hash names.
+export fn stamps_read(path: string) -> List<InputStamp> {
+    let base = base_at(path)
+    if base.head.is_empty() { return [] }
+    let sealed? = sealed_body(delta_path(path)) else { return base.stamps }
+    let delta = StampsDelta.from_saved_bytes(sealed.body)
+    if delta.base_head != base.head { return base.stamps }
+    let gone: HashKeyedTable<bool> = hash_keyed_table()
+    for q in delta.gone { gone.put(q, true) }
+    for s in delta.changed { gone.put(s.question, true) }
+    [s for s in base.stamps if gone.get(s.question) == null].concat(delta.changed)
+}
+
+/// `stamps` kept at `path`: as a delta over the base there when they change few of its stamps, else as
+/// a new base, whole, the delta gone. Each file is written whole or not at all; a store that can't
+/// write keeps none.
+export fn stamps_written(path: string, stamps: List<InputStamp>) {
+    let base = base_at(path)
+    let held: HashKeyedTable<InputStamp> = hash_keyed_table()
+    for s in base.stamps { held.put(s.question, s) }
+    let now: HashKeyedTable<bool> = hash_keyed_table()
+    for s in stamps { now.put(s.question, true) }
+    let changed = stamps.filter((s) -> !(held.get(s.question)?.same_as(s) ?? false))
+    let gone = [s.question for s in base.stamps if now.get(s.question) == null]
+    if !base.head.is_empty() &&
+        (changed.length + gone.length) * STAMPS_DELTA_SHARE <= base.stamps.length {
+        let delta = StampsDelta { base_head: base.head, changed: changed, gone: gone }.saved_bytes()
+        return sealed_written(delta_path(path), delta)
+    }
+    sealed_written(path, InputStamps { stamps: stamps }.saved_bytes())
+    let _ = remove(delta_path(path))
+}
+
+/// `body` written at `path` under its head, whole or not at all.
+fn sealed_written(path: string, body: Bytes) {
+    let draft? = match drafted(path) { .Ok(d) -> d, .Err(_) -> null } else { return }
+    if (draft.write(stamps_head(body).bytes().concat(body)) catch -1) < 0 { return draft.dropped() }
+    if (draft.published(path) catch "") == "" { draft.dropped() }
+}
+
+/// The head a stamps file whose body is `body` starts with: always `HEAD_LENGTH` octets.
+fn stamps_head(body: Bytes) -> string {
+    let h = content_hash(body)
+    "${STAMPS_SEAL} ${hex_word(h.high_word)}${hex_word(h.low_word)}\n"
+}
+
+/// The length of a stamps file's head: the seal, a space, two words of sixteen hex digits, a newline.
+const HEAD_LENGTH: int = 45
+
+/// A word as sixteen hex digits.
+fn hex_word(w: int) -> string { [hex_digit((w >> 60 - 4 * i) & 15) for i in 0..16].join("") }

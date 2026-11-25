@@ -1,0 +1,29 @@
+// proves: a `once` answer never dies, and a `dyn` box owns what it
+// wraps
+trait Show { fn show() -> string }
+type P = { xs: List<int> }
+type Q = { name: string }
+impl Show for P { fn show() -> string { "p${self.xs.length}" } }
+impl Show for Q { fn show() -> string { "q${self.name}" } }
+
+once fn config() -> List<string> { ["a", "b", "c"] }
+
+fn pick(i: int) -> dyn Show {
+    match i % 2 { 0 -> P { xs: [i, i] }, _ -> Q { name: "n" } }
+}
+
+fn shown() -> string {
+    mut all: List<dyn Show> = []
+    mut t = 0
+    for i in 0..200 {
+        let d = pick(i)
+        if i < 4 { all.push(d) }
+        t = t + d.show().length + config().length
+    }
+    let c = config()
+    mut copy = c
+    copy.push("d")
+    "${t} ${[s.show() for s in all].join(",")} ${config().length} ${copy.length}"
+}
+
+shown()

@@ -1,0 +1,513 @@
+//! A component's declaration: its record takes the record's laws — the
+//! naming law over its fields, each default a body of its own — and its
+//! methods walk as an impl's. Its own laws are its template's: `expand`
+//! answers the code an instance becomes, and a template reads each of
+//! its instance's fields once.
+use core.{
+    StmtId,
+    Span,
+    ExprId,
+    Type,
+    TypeId,
+    DeclId,
+    Annotation,
+    ComponentParts,
+    Unheard,
+    same_file,
+    same_decl,
+    some_list,
+    user_kind,
+}
+use features.{ResolveCx, TypeCx, type_named, nested_types}
+use core.{default_mark, expand_of}
+use @std.meta.{Diagnostic}
+use diagnostics.{Diag, Voice, refusal, said_as, warning, note}
+use @std.errors.{Loc, Frame}
+
+fn resolve_component(mut cx: ResolveCx, s: StmtId) {
+    if cx.refuses_nested(s, "resolve.nested_type", nested_types()) { return }
+    let c? = cx.view.store.component_parts(s) else { return }
+    cx.check_params(c.head.concat(c.holders), s)
+    for f in c.holders {
+        if f.default != null { cx.walk_under([], f.default!) }
+    }
+    cx.impl_stmts(cx.view.store.member_fns(s))
+}
+
+fn check_component(mut cx: TypeCx, s: StmtId) {
+    let c? = cx.view.store.component_parts(s) else { return }
+    seats_law(cx, c)
+    default_law(cx, s, c)
+    check_body(cx, s)
+    check_law(cx, c)
+    expand_law(cx, c)
+    copied_events_law(cx, s, c)
+    format_law(cx, s, c)
+    unfired_law(cx, s, c)
+}
+
+/// THE BODY LAW: a component that holds statements is made of them,
+/// and what "made of" means is ONE trait's to say — the one wearing
+/// `@composes`. Its `derive` ran over the component during this file's
+/// resolve; asking again hits the memo, and what it refused is spoken
+/// here, as a written `@derive`'s is.
+fn check_body(mut cx: TypeCx, s: StmtId) {
+    let body? = cx.view.store.component_body(s) else { return }
+    let name = cx.view.store.type_decl_name(s) ?? "this component"
+    let traits = cx.view.decls.composers(cx.view.file)
+    let composer? = traits.first() else { return no_composer(cx, s, name) }
+    if traits.length > 1 { return two_composers(cx, s, name, [cx.view.decls.decl(t).name for t in traits]) }
+    // a `@derive` WRITTEN over the same trait speaks for itself
+    if cx.view.store.annotations_of(s).any(written_over(cx, it, composer)) {
+        return
+    }
+    let m? = cx.view.decls.trait_derive(composer) else { return }
+    if same_file(cx.view.decls.decl(m).file, cx.view.file) { return }
+    let by = cx.view.decls.decl(composer).name
+    // a derive that could not run is spoken where it ran
+    let problems = match cx.view.decls.lifted(m, cx.view.file, s, body, []) {
+        .Ok(crossed) -> crossed.declared_problems(),
+        .Err(_) -> [],
+    }
+    for x in problems { if !x.warning { body_refused(cx, m, s, x, by) } }
+}
+
+/// An event's seats have distinct names: a handler names each one.
+fn seats_law(mut cx: TypeCx, c: ComponentParts) {
+    for e in c.events() {
+        let names = [s.name.of for s in e.says]
+        let twice? = names.find([n for n in names if n == it].length > 1) else { continue }
+        let declared? = e.holder.default else { continue }
+        cx.emit(seat_twice(cx.loc_of(declared), e.name, twice.text()))
+    }
+}
+
+/// THE DEFAULT LAW: `@default` marks an event, and at most one — bare
+/// statements in an instance fill the one default, so two would leave them
+/// no home.
+fn default_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    let defaults = [e.name for e in c.events() if e.holder.marks.any(it.name == default_mark)]
+    if defaults.length > 1 { cx.emit(default_twice(cx.stmt_loc(s), c.name, defaults)) }
+    for f in c.fields() {
+        if f.marks.any(it.name == default_mark) { cx.emit(default_field(cx.stmt_loc(s), c.name, f.name.text())) }
+    }
+}
+
+/// AN EVENT A COMPOSITION DECLARES IS FIRED OR HANDED ON: its body or one
+/// of its methods (a declaring statement reaches no child, so each
+/// method's body is a root of its own) reads `self.<event>` — to call it, or to pass it to a
+/// child's seat (`on press: self.pick`). A body that never does leaves
+/// the handler an instance writes with nothing that can run it. A
+/// template (it writes `expand`) is expanded, never run, and a component
+/// with no body is fired from outside it.
+fn unfired_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    if cx.view.store.component_body(s) == null { return }
+    if c.fns.any((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") { return }
+    let stmts = [st for m in c.fns for st in cx.view.store.member_stmts(m)]
+    let methods = [f.body for st in stmts for f in some_list(cx.view.store.fn_parts(st))]
+    let roots = cx.view.store.stmts_exprs(stmts).concat(methods)
+    let read = [n for r in roots for n in self_reads(cx, r)]
+    for e in c.events() {
+        if !read.contains(e.name) { cx.emit(unfired_event(cx.stmt_loc(s), c.name, e.name)) }
+    }
+}
+
+/// Every name `self` is read at under `e` — every expression it holds,
+/// a match arm's and a hidden branch's included.
+fn self_reads(cx: TypeCx, e: ExprId) -> List<string> {
+    [n for k in cx.view.store.every_expr(e) for n in self_read(cx, k)]
+}
+
+/// The name `self` is read at in `e` itself, when it is `self.name` — as a
+/// property or as a call's receiver.
+fn self_read(cx: TypeCx, e: ExprId) -> List<string> {
+    let p? = cx.view.store.prop_parts(e) else { return method_read(cx, e) }
+    if cx.view.store.is_receiver(p.subject) { [p.name] } else { [] }
+}
+
+fn method_read(cx: TypeCx, e: ExprId) -> List<string> {
+    let m? = cx.view.store.method_parts(e) else { return [] }
+    if cx.view.store.is_receiver(m.subject) { [m.name] } else { [] }
+}
+
+/// A `check` takes nothing and answers `List<Diagnostic>` — what the
+/// compiler speaks at each instance.
+fn check_law(mut cx: TypeCx, c: ComponentParts) {
+    let m? = c.fns.find((f: StmtId) -> cx.view.store.fn_parts(f)?.name == "check") else { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, m) else { return }
+    let sig? = cx.view.decls.sig(d)?.fn_sig() else { return }
+    let elem: TypeId? = cx.view.types.element(sig.ret)
+    if sig.params.length <= 1 && elem != null && cx.view.decls.meta_type(elem!, "Diagnostic") { return }
+    cx.emit(no_diagnostics(cx.stmt_loc(m), cx.view.types.name_of(sig.ret)))
+}
+
+fn expand_law(mut cx: TypeCx, c: ComponentParts) {
+    let expand? = c.fns.find((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") else { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, expand) else { return }
+    let answer? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return }
+    if !cx.view.decls.meta_type(answer, "Code") && !cx.view.decls.meta_type(answer, "Decls") {
+        return cx.emit(no_code(cx.stmt_loc(expand), cx.view.types.name_of(answer)))
+    }
+    let parts? = expand_of(cx.view.store, c) else { return }
+    let body? = template_body(cx.view.store, parts) else { return }
+    let twice? = read_twice(cx.view.store, body, formats_of(c)) else { return }
+    cx.emit(read_again(cx.stmt_loc(expand), c.name, twice))
+}
+
+/// A template copies its `expand` where an instance stands, and copied
+/// code hears no event: each event it declares is refused where it is.
+fn copied_events_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    if !copies_events(cx.view.store, c) { return }
+    for e in c.events() {
+        cx
+            .emit(
+                copied_event(
+                    if e.holder.default == null { cx.stmt_loc(s) } else { cx.loc_of(e.holder.default!) },
+                    c.name,
+                    e.name,
+                ),
+            )
+    }
+}
+
+/// An instance of a template refused for its events stands as a hole, and
+/// a note points it at the event's declaration — the one error is there.
+/// Only a hole asks.
+fn refused_there_law(mut cx: TypeCx, e: ExprId, x: ExprId) {
+    if !cx.errored(x) { return }
+    let inst? = cx.view.store.instance_parts(e) else { return }
+    let d? = type_named(cx.names, inst.word) else { return }
+    let c? = cx.view.decls.component_parts_of(d) else { return }
+    let store = cx.view.decls.store(d)
+    if !copies_events(store, c) { return }
+    let event? = c.events().first() else { return }
+    let declared: Span? = if event.holder.default == null { null } else { store.expr_span(event.holder.default!) }
+    cx
+        .emit(
+            refused_there(
+                cx.loc_of(e),
+                c.name,
+                event.name,
+                cx.view.decls.homed(cx.view.decls.decl(d).file, null, null, declared),
+            ),
+        )
+}
+
+/// A head spelled `Format` is `@std.meta`'s pattern: the instance read
+/// the spelling, so the resolved type must agree.
+fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    let d? = cx.view.decls.decl_of(cx.view.file, s) else { return }
+    let sig? = cx.view.decls.sig(d)?.record_sig() else { return }
+    let formats = formats_of(c)
+    for j, n in sig.names {
+        if formats.contains(n) && !cx.view.decls.meta_type(sig.types[j], "Format") { cx.emit(foreign_format(cx.stmt_loc(s), n)) }
+    }
+}
+
+/// THE HEAD LAW: the brace after an instance's head opens the instance's
+/// block, so a head that names a record was meant as that record's
+/// literal — refused once, before the block is read as settings.
+fn head_law(mut cx: TypeCx, e: ExprId) -> bool {
+    let inst? = cx.view.store.instance_parts(e) else { return false }
+    let head? = inst.heads.find(names_record(cx, it)) else { return false }
+    let named = cx.view.store.ident_name(head) ?? ""
+    cx
+        .emit(
+            refusal(
+                "type.component_head",
+                cx.loc_of(head),
+                braced_head(named),
+                "names a record",
+                parenthesised_head(inst.word, named),
+            ),
+        )
+    true
+}
+
+fn names_record(cx: TypeCx, e: ExprId) -> bool {
+    if cx.view.store.ident_name(e) == null { return false }
+    let d? = cx.bound_decl(e) else { return false }
+    cx.view.decls.is_record(d)
+}
+
+/// A COMPONENT THAT HOLDS A HANDLER WHICH CAN FAIL NAMES A FATE:
+/// `flow.no_fate`. The handler is structural — a field whose value
+/// answers `Result` — and the fate is the component's own `dead:`
+/// field, set. A component that declares no `dead:` field is not one
+/// that owes a fate.
+fn fate_law(mut cx: TypeCx, x: ExprId) {
+    let parts? = cx.view.store.struct_lit_parts(x) else { return }
+    let handler? = parts.values.find((v) -> fails(cx, v)) else { return }
+    let sig? = cx.fields_of(cx.type_at(x)) else { return }
+    if !sig.names.contains(fate_field) { return }
+    let slot = parts.fields.index_of(fate_field)
+    if slot >= 0 && !(cx.shape_at(parts.values[slot]) is .Null) { return }
+    cx.emit(no_fate(cx.loc_of(handler), cx.view.store.struct_lit_name(x) ?? "this component"))
+}
+
+/// The field a component names its fate in.
+const fate_field = "dead"
+
+/// Whether a value's type is a fn whose answer can fail.
+fn fails(cx: TypeCx, v: ExprId) -> bool {
+    match cx.shape_at(v) { .Fn(_, _, ret) -> is_failure(cx, ret), rest -> false }
+}
+
+/// Whether a type is a `Result`.
+fn is_failure(cx: TypeCx, ty: TypeId) -> bool {
+    match cx.view.types.shape_of(ty) { .Res(_, _) -> true, rest -> false }
+}
+
+/// An instance hears the events its component declares, each with all
+/// its event says or none of it: a handler the component cannot hear is
+/// refused by name.
+fn event_law(mut cx: TypeCx, e: ExprId) {
+    let inst? = cx.view.store.instance_parts(e) else { return }
+    let body? = inst.body else { return }
+    for s in cx.view.store.block_stmts(body) ?? [] {
+        let handler? = cx.view.store.setting_parts(s)?.value else { continue }
+        let heard? = cx.view.store.on_handler(handler) else { continue }
+        let why? = heard.unheard else { continue }
+        cx
+            .emit(
+                match why {
+                    .Undeclared(declared) -> undeclared_event(cx.stmt_loc(s), inst.word, heard.event, declared),
+                    .Seats(says) -> misheard_event(cx.stmt_loc(s), heard.event, says),
+                    .Twice -> heard_twice(cx.stmt_loc(s), inst.word, heard.event),
+                },
+            )
+    }
+}
+
+// ── voices ──
+
+fn no_fate(at: Loc?, word: string) -> Diag { said_as("flow.no_fate", at, fate_unnamed(word)) }
+
+/// A handler of the component `word` that can fail, where `word` names no fate.
+export fn fate_unnamed(word: string) -> Voice {
+    Voice {
+        message: "a handler that can fail must name a fate for its failure, and `${word}` names none",
+        label: "this handler can fail",
+        help: "name the letter a failed item is buried in — `dead: <sink>`",
+    }
+}
+
+fn no_diagnostics(at: Loc?, found: string) -> Diag { said_as("type.component_check", at, check_unshaped(found)) }
+
+/// A component's `check` answering `found`, or taking a seat.
+/// An instance in another's block written under the name of one of its slots.
+export fn slot_shadows(slot: string, outer: string) -> Voice {
+    Voice {
+        message: "in `${outer}`'s block, `${slot}` names its slot, and this fills it — the component `${slot}` is not made here",
+        label: "fills the slot",
+        help: "to place the component `${slot}` in the slot, write it inside: `${slot}: collect { ${slot} { … } }`",
+    }
+}
+
+/// A member's default reading what isn't one of its component's plain inputs.
+export fn default_unmade(word: string, member: string, field: string) -> Voice {
+    Voice {
+        message: "`${word}`'s `${member}` starts from `self.${field}`, which isn't one of its plain inputs",
+        label: "not a plain input",
+        help: "a member's default reads the component's plain inputs, once, as the instance is made — give `${word}` an input `${member}` starts from",
+    }
+}
+
+export fn check_unshaped(found: string) -> Voice {
+    Voice {
+        message: "a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `${found}`",
+        label: "this `check`",
+        help: "`fn check() -> List<Diagnostic> { … }`, with `Diagnostic` from `@std.meta`",
+    }
+}
+
+fn no_code(at: Loc?, found: string) -> Diag {
+    refusal(
+        "type.component_expand",
+        at,
+        "`expand` answers the code an instance becomes — `Code`, or `Decls` for declarations — and this answers `${found}`",
+        "this `expand`",
+        "answer a template: `fn expand() -> Code { quote { … } }`",
+    )
+}
+
+fn read_again(at: Loc?, name: string, field: string) -> Diag {
+    refusal(
+        "type.component_twice",
+        at,
+        "the template of `${name}` reads `self.${field}` twice — an instance's code runs where the template writes it, once",
+        "this `expand`",
+        "bind it once — `let v = \${self.${field}}` — and read `v` after",
+    )
+}
+
+fn foreign_format(at: Loc?, field: string) -> Diag { said_as("type.component_format", at, format_foreign(field)) }
+
+/// A component's head `field` spelled `Format` that names a type other than `@std.meta`'s.
+export fn format_foreign(field: string) -> Voice {
+    Voice {
+        message: "a `Format` head is `@std.meta`'s pattern type, and `${field}`'s `Format` names another",
+        label: "this component",
+        help: "`use @std.meta.{Format}`, or rename the other type",
+    }
+}
+
+fn undeclared_event(at: Loc?, word: string, event: string, declared: List<string>) -> Diag { said_as("type.component_event", at, event_undeclared(word, event, declared)) }
+
+/// A handler an instance of `word` writes for `event`, which `word` declares no event of; `declared`
+/// are the ones it does.
+export fn event_undeclared(word: string, event: string, declared: List<string>) -> Voice {
+    Voice {
+        message: "`${word}` declares no event `${event}` — an instance hears the events its component declares",
+        label: "heard here",
+        help: if declared.is_empty() { "`${word}` declares no events" } else { "the events of `${word}` are ${ticked(declared)}" },
+    }
+}
+
+fn copied_event(at: Loc?, word: string, event: string) -> Diag { said_as("type.component_event", at, event_copied(word, event)) }
+
+/// The event `event` a template `word` declares, which copied code never hears.
+export fn event_copied(word: string, event: string) -> Voice {
+    Voice {
+        message: "`${word}` copies its `expand` where an instance stands, and copied code hears no event — `${event}` is never heard",
+        label: "declared here",
+        help: "declare `${event}` on a component that builds a record, one with no `expand`",
+    }
+}
+
+fn refused_there(at: Loc?, word: string, event: string, declared: Loc?) -> Diag {
+    note(
+        "type.component_event",
+        at,
+        "`${word}`'s event `${event}` is refused where it is declared, so this instance is not built",
+        "met here",
+        "fix it where `${word}` declares `${event}`",
+    ) with { secondary: [Frame { label: "refused here", loc: declared }] }
+}
+
+fn misheard_event(at: Loc?, event: string, says: List<string>) -> Diag { said_as("type.component_event", at, event_misheard(event, says)) }
+
+/// A handler naming some of what `event` says, `says`, and not all of it.
+export fn event_misheard(event: string, says: List<string>) -> Voice {
+    Voice {
+        message: "`${event}` says ${if says.is_empty() { "nothing" } else { ticked(says) }} — a handler hears all its event says, or none of it",
+        label: "heard here",
+        help: heard_forms(event, says),
+    }
+}
+
+/// The ways a handler may hear the event.
+fn heard_forms(event: string, says: List<string>) -> string {
+    if says.is_empty() { return "`on ${event} { … }`" }
+    "`on ${event} { ${says.join(", ")} -> … }`, or `on ${event} { … }`"
+}
+
+fn heard_twice(at: Loc?, word: string, event: string) -> Diag { said_as("type.component_event", at, event_heard_twice(word, event)) }
+
+/// A second handler an instance of `word` writes for `event`.
+export fn event_heard_twice(word: string, event: string) -> Voice {
+    Voice {
+        message: "an instance hears an event once, and this `${word}` hears `${event}` again",
+        label: "heard again here",
+        help: "keep one handler for `${event}`",
+    }
+}
+
+fn unfired_event(at: Loc?, word: string, event: string) -> Diag {
+    let v = event_unfired(word, event)
+    warning("type.component_event", at, v.message, v.label ?? "", v.help)
+}
+
+/// The event `event` the composition `word` declares and never fires or hands on.
+export fn event_unfired(word: string, event: string) -> Voice {
+    Voice {
+        message: "event `${event}` is declared and nothing in `${word}` calls it or hands it on — a handler an instance writes for it can never run",
+        label: "declared here",
+        help: "fire it where it is heard (`let fire? = self.${event} else { return }`, then `fire(…)`), pass it to a child's seat (`on ${event}: self.${event}`), or drop the event",
+    }
+}
+
+fn seat_twice(at: Loc?, event: string, seat: string) -> Diag { said_as("type.component_event", at, event_seat_twice(event, seat)) }
+
+/// The seat `seat` the event `event` names twice.
+export fn event_seat_twice(event: string, seat: string) -> Voice {
+    Voice {
+        message: "an event's seats have distinct names, and `${event}` names `${seat}` twice",
+        label: "declared here",
+        help: "rename one — a handler names each seat it is told",
+    }
+}
+
+fn default_twice(at: Loc?, owner: string, marked: List<string>) -> Diag { said_as("type.component_event", at, event_default_twice(owner, marked)) }
+
+/// The members `marked` the component `owner` marks `@default`, more than one: its events and the
+/// fields a `collect` fills, as written.
+export fn event_default_twice(owner: string, marked: List<string>) -> Voice {
+    Voice {
+        message: "a component has one default, an event or a field a `collect` fills, and `${owner}` marks ${ticked(marked)} `@default`",
+        label: "declared here",
+        help: "keep `@default` on the one bare statements fill, and write `on <event> { … }` or the field's own block for the others",
+    }
+}
+
+fn default_field(at: Loc?, owner: string, field: string) -> Diag { said_as("type.component_event", at, event_default_field(owner, field)) }
+
+/// The field `field` the component `owner` marks `@default`, which no `collect` fills.
+export fn event_default_field(owner: string, field: string) -> Voice {
+    Voice {
+        message: "only an event or a field a `collect` fills can be a component's default, and `${field}` of `${owner}` is neither",
+        label: "declared here",
+        help: "mark the event (`@default on press`) or the `List` field bare statements fill",
+    }
+}
+
+/// Words as a refusal lists them.
+fn ticked(words: List<string>) -> string { ["`${w}`" for w in words].join(", ") }
+
+/// Whether an annotation names the trait `composer` among its
+/// arguments — a `@derive` written over it.
+fn written_over(cx: TypeCx, a: Annotation, composer: DeclId) -> bool {
+    a.args.any(names_composer(cx, it, composer))
+}
+
+/// Whether an annotation's argument names the trait `composer`.
+fn names_composer(cx: TypeCx, e: ExprId, composer: DeclId) -> bool {
+    let named? = cx.bound_decl(e) else { return false }
+    same_decl(named, composer)
+}
+
+/// What a composing trait refused of a component's body — its own
+/// words, under its package's kind.
+fn body_refused(mut cx: TypeCx, d: DeclId, s: StmtId, x: Diagnostic, by: string) {
+    let kind = user_kind(cx.view.decls.package_of(d), x.kind) ?? body_kind
+    let _ = cx
+        .spoken(refusal(kind, x.at ?? cx.view.stmt_loc(s), x.message, "refused by `${by}`", x.help))
+}
+
+const body_kind = "type.component_body"
+
+/// A component `name` whose body holds statements, where no trait says what a body is.
+export fn composerless(name: string) -> Voice {
+    Voice {
+        message: "a component is made of what its body holds, and nothing here says what `${name}`'s is",
+        label: "holds statements",
+        help: "write a component of a library in the body, or `use` the library",
+    }
+}
+
+/// A component `name` whose body holds statements, where the traits `by` each say what a body is.
+export fn composed_twice(name: string, by: List<string>) -> Voice {
+    Voice {
+        message: "one trait says what a component's body is, and here ${["`${t}`" for t in by].join(" and ")} both do",
+        label: "`${name}` holds statements",
+        help: "make this file name one library's components alone — move what uses the other into a file of its own",
+    }
+}
+
+fn no_composer(mut cx: TypeCx, s: StmtId, name: string) {
+    let _ = cx.spoken(said_as(body_kind, cx.view.stmt_loc(s), composerless(name)))
+}
+
+fn two_composers(mut cx: TypeCx, s: StmtId, name: string, by: List<string>) {
+    let _ = cx.spoken(said_as(body_kind, cx.view.stmt_loc(s), composed_twice(name, by)))
+}

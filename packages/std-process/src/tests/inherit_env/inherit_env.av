@@ -1,0 +1,59 @@
+// proves: an inherited environment carries its overrides to the child,
+// evaluated and native alike — a new name set, an inherited one
+// replaced once, an empty value kept as set, two chained, one after
+// `passing`, a sibling still inherited, and a NUL or a bad name
+// refused rather than dropped.
+use @std.process.{Env, ProcessError, tool, cmd, inherited}
+use @std.text.{from_codepoint}
+
+fn world() -> Env {
+    inherited()
+}
+
+/// The child's environment as `env` prints it, one entry a line.
+fn seen(e: Env) -> Result<List<string>, ProcessError> {
+    let t = tool("env")?
+    ((cmd(t, []) with { env: e }).run()?).stdout.split("\n")
+}
+
+fn starting(lines: List<string>, name: string) -> List<string> {
+    [l for l in lines if l.starts_with("${name}=")]
+}
+
+fn refusal(e: Env) -> string {
+    match seen(e) {
+        .Ok(_) -> "ran",
+        .Err(x) -> match x {
+            .Holed(_, at) -> "holed:${at}",
+            .BadEnvName(n) -> "bad_env_name:${n}",
+            rest -> "other",
+        },
+    }
+}
+
+fn shown() -> Result<string, ProcessError> {
+    let set = seen(world().with_var("AVRA_X", "1"))?
+    let replaced = starting(seen(world().with_var("PATH", "/bin:/usr/bin"))?, "PATH")
+    let empty = seen(world().with_var("AVRA_E", ""))?
+    let chained = seen(world().with_var("AVRA_X", "1").with_var("AVRA_Y", "2"))?
+    let passed = seen(world().passing(["PATH"]).with_var("AVRA_P", "3"))?
+    let nul = from_codepoint(0)
+    [
+        "set ${set.contains("AVRA_X=1")}",
+        "replaced ${replaced.join(",")}",
+        "empty ${empty.contains("AVRA_E=")}",
+        "chained ${chained.contains("AVRA_X=1") && chained.contains("AVRA_Y=2")}",
+        "passed ${passed.contains("AVRA_P=3")}",
+        "sibling ${starting(set, "PATH").length == 1}",
+        "value ${refusal(world().with_var("AVRA_N", "a${nul}b"))}",
+        "name ${refusal(world().with_var("AV${nul}RA", "v"))}",
+        "split ${refusal(world().with_var("A=B", "v"))}",
+        "unnamed ${refusal(world().with_var("", "v"))}",
+        "get ${world().with_var("AVRA_X", "1").get("AVRA_X") ?? "null"}",
+        "unset ${world().get("AVRA_SURELY_UNSET_NAME") ?? "null"}",
+        "blank [${world().with_var("AVRA_E", "").get("AVRA_E") ?? "null"}]",
+    ]
+        .join(" | ")
+}
+
+shown() catch "failed"

@@ -1,0 +1,75 @@
+// A builder of octets: what it builds is every octet appended, in order, and what it handed out
+// never changes.
+use text.{BytesBuilder, bytes_builder}
+
+/// The octets of `b`, as numbers.
+fn numbers(b: Bytes) -> List<int> { [b.at(i) for i in 0..b.length] }
+
+/// Whether two lists of numbers are one.
+fn same(a: List<int>, b: List<int>) -> bool { a.length == b.length && (0..a.length).all(a[it] == b[it]) }
+
+spec "text/bytes_builder — octets built in place" {
+    given "nothing appended" {
+        then "it builds no octets" {
+            let b = bytes_builder(0)
+            b.length() == 0 && b.built(0).length == 0
+        }
+        then "an empty run appends nothing" {
+            let b = bytes_builder(4)
+            b.run("".bytes())
+            b.length() == 0
+        }
+    }
+    given "words" {
+        then "each width writes its octets, the most significant first" {
+            let b = bytes_builder(0)
+            b.word(258, 2)
+            b.word(1, 1)
+            b.word(16909060, 4)
+            b.word(-1, 8)
+            same(numbers(b.built(0)), [1, 2, 1, 1, 2, 3, 4, 255, 255, 255, 255, 255, 255, 255, 255])
+        }
+        then "an octet is the word's low octet" {
+            let b = bytes_builder(1)
+            b.octet(511)
+            b.octet(0)
+            same(numbers(b.built(0)), [255, 0])
+        }
+    }
+    given "runs and words past the room" {
+        then "the buffer moves and keeps every octet in order" {
+            let b = bytes_builder(2)
+            for i in 0..1000 {
+                b.word(i, 2)
+                b.run("ab".bytes())
+            }
+            let built = b.built(0)
+            built.length == 4000 &&
+                built.at(3998) == 97 &&
+                built.at(3996) == 999 / 256 &&
+                built.at(3997) == 999 % 256
+        }
+    }
+    given "octets handed out" {
+        then "they never change as the builder goes on" {
+            let b = bytes_builder(64)
+            b.run("first".bytes())
+            let first = b.built(64)
+            b.run("second".bytes())
+            first.text() == "first" && b.built(0).text() == "second"
+        }
+        then "octets read from the builder's cell stay as read" {
+            let b = bytes_builder(64)
+            b.run("seen".bytes())
+            let seen = b.octets.get()
+            b.run("more".bytes())
+            seen.text() == "seen" && b.built(0).text() == "seenmore"
+        }
+        then "a run of its own octets appends what they were" {
+            let b = bytes_builder(64)
+            b.run("ab".bytes())
+            b.run(b.octets.get())
+            b.built(0).text() == "abab"
+        }
+    }
+}

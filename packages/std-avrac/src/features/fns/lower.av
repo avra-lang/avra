@@ -1,0 +1,253 @@
+//! The call's lowering rule: argument registers, then one Call —
+//! the memory pass owns the retains the ABI demands.
+use core.{
+    EmbedBase,
+    EmbedKind,
+    ExprId,
+    Reg,
+    Ins,
+    StmtId,
+    DeclId,
+    SeatMark,
+    TypeId,
+    Type,
+    Arrow,
+    mut_mark,
+    state_mark,
+    no_marks,
+    rt_waits,
+    BinOp,
+}
+use features.{LowerCx, bound_decl_of}
+
+/// `code_hash(f)` over a declared fn: the hash of `f`'s code, which the
+/// program answers once every body is lowered. Null for every other
+/// call — and for an argument that names no declared fn, which reaches
+/// `code_hash`'s own body and traps there.
+fn code_hash_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "code_hash") || args.length != 1 { return null }
+    let target? = bound_decl_of(cx.names, args[0]) else { return null }
+    // the value wants the target's body, as any fn value does
+    let _ = cx.reg_of(args[0])
+    cx.code_hash_read(e, cx.symbol_at(target, args[0]))
+}
+
+/// `guarded(body)` over a closure answering a bool: the runtime's guarded
+/// run, whose status word says whether a trap on this task ended it — then
+/// the trap's words are the answer — or the body ran to its end, and the
+/// answer is absent. Null for every other call.
+fn guarded_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "guarded") || args.length != 1 { return null }
+    let status = cx.guard_run(Type.Int, cx.reg_of(args[0]))
+    let trapped = cx.bin(Type.Bool, BinOp.Ne, status, cx.const_int(0))
+    cx
+        .region(trapped, e) { cx ->
+            cx.guard_words(Type.Str)
+        } else { cx ->
+            cx.hollow_of(cx.type_at(e))
+        }
+}
+
+/// `embed("…")`'s one seat: the path of the file the literal names from
+/// THIS source file, so the read is of that file whatever const runs
+/// it. Null for every other call.
+fn embedded_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg>? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    let kind? = cx.view.decls.embed_kind_of(d) else { return null }
+    if args.length != 1 { return null }
+    let rel? = cx.view.store.expr(args[0]).text_of() else { return null }
+    match cx.view.decls.embed_placed(cx.view.file, rel, kind, EmbedBase.Beside) {
+        .Ok(path) -> [cx.const_str(path)],
+        .Err(_) -> null,
+    }
+}
+
+/// `provided<T>("p")`: the file's octets and their content digest handed to
+/// `T.provide` with the package-relative path, and an answer of absence refused by name. The
+/// path is the one the embed judge placed from the package's root. Null for
+/// every other call.
+fn provided_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "provided") || args.length != 1 { return null }
+    let rel? = cx.view.store.expr(args[0]).text_of() else { return null }
+    match cx.view.decls.embed_placed(cx.view.file, rel, EmbedKind.Octets, EmbedBase.Root) {
+        .Ok(path) -> provided_call(cx, e, rel, path),
+        .Err(_) -> null,
+    }
+}
+
+fn provided_call(mut cx: LowerCx, e: ExprId, rel: string, path: string) -> Reg {
+    let kind = cx.type_at(e)
+    let provide? = provider_of(cx, kind) else { return cx.lower_defect(e, "a provided kind without a `provide` survived typing") }
+    let octets = cx.embed_octets(Type.Bytes, cx.const_str(path))
+    let digest = cx.embed_digest(Type.Str, cx.const_str(path))
+    let held = cx.type(kind?)
+    let answer = cx
+        .call_decl(held, cx.method_symbol(provide, e, kind), [cx.const_str(rel), octets, digest])
+    cx
+        .presence(answer, held, e) { cx, carried -> carried } else { cx ->
+            cx.trap(cx.const_str(provided_unread(rel, kind_name(cx, kind))))
+            cx.hollow_of(kind)
+        }
+}
+
+/// The `provide` a kind's `Provider` impl declares.
+fn provider_of(cx: LowerCx, kind: TypeId) -> DeclId? {
+    let owner? = type_decl_of(cx, kind) else { return null }
+    cx
+        .view
+        .decls
+        .declared_methods(owner)
+        .find((m) -> cx.view.decls.decl(m).name == "provide" && cx.view.decls.is_static_of(m))
+}
+
+fn type_decl_of(cx: LowerCx, kind: TypeId) -> DeclId? {
+    match cx.view.types.shape_of(kind) { .Struct(d, _) or .Enum(d, _) -> d, rest -> null }
+}
+
+fn kind_name(cx: LowerCx, kind: TypeId) -> string {
+    let owner? = type_decl_of(cx, kind) else { return "kind" }
+    cx.view.decls.decl(owner).name
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+/// A kind read nothing from the file it was pointed at.
+fn provided_unread(rel: string, kind: string) -> string {
+    "`${rel}` is no `${kind}` — the kind found none of its signature in the file"
+}
+
+/// A call's argument registers, a `state` seat handed its caller's
+/// CELL where every other seat is handed a value. The marks come
+/// from the DECLARATION when one stands behind the callee, and from
+/// the fn value's own type otherwise — the same seats typing judged.
+fn call_arg_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg> {
+    let marks = call_marks(cx, e, args.length)
+    [if state_mark(marks, j) { state_seat_reg(cx, a) } else { cx.reg_of(a) } for j, a in args]
+}
+
+/// A `state` seat's argument register: the caller's cell. Typing held
+/// the seat to a `state` place, so absence here is a DEFECT — never a
+/// value default, which hands the callee a register its body reads as
+/// a Cell.
+fn state_seat_reg(mut cx: LowerCx, a: ExprId) -> Reg {
+    let cell? = cx.state_root_cell(a) else { return cx.lower_defect(a, "a `state` seat without a place survived typing") }
+    cell
+}
+
+/// The seat marks a call judges: a declared callee's own, or the fn
+/// value's type where none stands behind it.
+fn call_marks(cx: LowerCx, e: ExprId, n: int) -> List<SeatMark> {
+    let d? = bound_decl_of(cx.names, e) else { return indirect_marks(cx, e, n) }
+    cx.view.decls.marks_of(d, n)
+}
+
+/// A fn value's marks — the arrow its binding wears. A binding with no
+/// arrow has no marked seats.
+fn indirect_marks(cx: LowerCx, e: ExprId, n: int) -> List<SeatMark> {
+    let b? = cx.names.binding(e) else { return no_marks(n) }
+    let fnty: TypeId? = match b {
+        .Def(s) -> cx.def_ty(s),
+        .Capture(lam, j) -> cx.capture_ty(lam, j),
+        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .TypeParam(_) or .Decl(_) -> null,
+    }
+    if fnty == null { return no_marks(n) }
+    let held: Arrow? = cx.view.decls.types.arrow_parts(fnty!)
+    held?.marks ?? no_marks(n)
+}
+
+/// A direct call's registers in its callee's seat order.
+fn seated_left(mut cx: LowerCx, e: ExprId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+    let d? = bound_decl_of(cx.names, e) else { return regs }
+    cx.seated_regs(e, d, args, regs)
+}
+
+/// A NAMED TYPE'S CONSTRUCTION — `UserId(5)`: the name is free at
+/// runtime, so the value IS the argument and one Pack gives the
+/// register the NAME's type, which each engine renders as identity.
+/// Absent when the callee is no named type.
+fn named_reg(mut cx: LowerCx, e: ExprId, regs: List<Reg>) -> Reg? {
+    let bound? = bound_decl_of(cx.names, e) else { return null }
+    let d: DeclId? = cx.view.decls.named_by(bound)
+    if d == null || !cx.view.decls.is_named(d!) { return null }
+    if regs.length != 1 { return cx.lower_defect(e, "a named type built from no single value survived typing") }
+    cx.packed(e, regs)
+}
+
+/// A host call: its arguments, the call, then each place a `mut` seat was handed along a path written
+/// back from the cell C wrote. A `mut` seat takes the ADDRESS of a cell — an Avra `mut` seat writes
+/// through the shared box, and a C callee has no box, so the cell IS the mechanism — and every other
+/// seat takes the value.
+fn host_call(mut cx: LowerCx, e: ExprId, symbol: string, args: List<ExprId>) -> Reg {
+    let marks = host_marks(cx, e, args.length)
+    let seats = [host_seat(cx, a, mut_mark(marks, j)) for j, a in args]
+    let answer = extern_call_reg(cx, e, symbol, [s.reg for s in seats])
+    for s in seats {
+        if s.along {
+            cx.written_to(s.arg, cx.loaded_as(cx.out.type_of_reg(s.reg), s.reg))
+        }
+    }
+    answer
+}
+
+/// What a host seat is handed: the register, and whether it is a cell seeded from a place along a
+/// path, which the call's write reaches only when the cell is written back.
+type HostSeat = { arg: ExprId, reg: Reg, along: bool }
+
+/// The register a seat is handed. An inout seat takes the CELL a `mut` local holds, or for a place
+/// along a path from one, a cell seeded with the place's value; the two host-seat laws guarantee one
+/// of them — so absence here is the compiler's own defect, never the value as a fallback, which would
+/// hand C a copy and lose every write it makes.
+fn host_seat(mut cx: LowerCx, a: ExprId, inout: bool) -> HostSeat {
+    if !inout { return HostSeat { arg: a, reg: cx.reg_of(a), along: false } }
+    let cell = cx.cell_of(a)
+    if cell != null { return HostSeat { arg: a, reg: cell!, along: false } }
+    let root = cx.view.store.place_root(a)
+    if root == null || root! == a {
+        return HostSeat {
+            arg: a,
+            reg: cx.lower_defect(a, "a `mut` host seat with no cell behind it"),
+            along: false,
+        }
+    }
+    let value = cx.view.store.expr(a).lower(cx, a)
+    HostSeat { arg: a, reg: cx.seeded_cell(cx.out.type_of_reg(value), value), along: true }
+}
+
+/// The callee's declared marks for this call's seats.
+fn host_marks(cx: LowerCx, e: ExprId, n: int) -> List<SeatMark> {
+    let d? = bound_decl_of(cx.names, e) else { return [] }
+    cx.view.decls.marks_of(d, n)
+}
+
+/// The indirect path: through the box, which rides seat 0 —
+/// exactly as `self` does.
+fn valued_call_reg(mut cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg {
+    cx.called_through(e, box, regs)
+}
+
+/// `return v`: the value's register exits the fn HERE — the open
+/// frames' `defer`s run first, and the memory pass settles every
+/// open scope's debts before the exit. Answers no statement value:
+/// the driver's last-value tracking never sees a return.
+export fn lower_return(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let v: Reg? = cx.lower_value(s)
+    cx.answer_exit(v)
+    null
+}
+
+/// A call across the host seam: the extern's bare symbol as a
+/// runtime call — void ones answer nothing.
+fn extern_call_reg(mut cx: LowerCx, e: ExprId, symbol: string, regs: List<Reg>) -> Reg {
+    if cx.shape_at(e) is .Void {
+        cx.emit(Ins.CallRtVoid(symbol, regs))
+        cx.unwound_after(rt_waits(symbol))
+        return cx.zero(e)
+    }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, symbol, regs))
+    cx.unwound_after(rt_waits(symbol))
+    dst
+}

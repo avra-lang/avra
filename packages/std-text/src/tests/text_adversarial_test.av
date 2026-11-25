@@ -1,0 +1,126 @@
+// The red team's record for @std/text: the empty and the negative in
+// every slot, rows at their edges, and the walk over sequences cut in
+// half — a lone lead byte or a stray tail stands for itself.
+use @std.text.{
+    builder,
+    repeat,
+    pad_left,
+    pad_right,
+    lines,
+    indent,
+    is_blank,
+    codepoints,
+    chars,
+    codepoint_count,
+    from_codepoint,
+}
+
+fn a_codes(s: string) -> string {
+    ["${c}" for c in codepoints(s)].join(",")
+}
+
+spec "std/text — adversarial" {
+    given "the empty and the negative" {
+        then "repeating nothing is nothing, however many times" { repeat("", 1000) == "" }
+        then "padding to a zero or negative width changes nothing" {
+            pad_right("ab", 0) == "ab" && pad_left("ab", 0 - 3) == "ab" && pad_right("", 0) == ""
+        }
+        then "padding the empty text is spaces alone" { pad_left("", 3) == "   " }
+        then "indent by nothing, or by less, sets nothing in" { indent("a\nb", 0) == "a\nb" && indent("a", 0 - 1) == "a" }
+        then "indenting nothing is nothing" { indent("", 4) == "" }
+        then "a builder built twice answers the same text" {
+            mut t = builder()
+            t.push("ab")
+            t.built() == "ab" && t.built() == "ab"
+        }
+        then "ten thousand pushes" {
+            mut t = builder()
+            mut i = 0
+            while i < 10000 {
+                t.push("ab")
+                i = i + 1
+            }
+            t.built().length == 20000
+        }
+    }
+    given "a NUL is a character, not a terminator" {
+        // `from_codepoint(0)` mints one with no foreign input at all,
+        // and `+` carries it. Text is a LENGTH and BYTES: every one of
+        // these read about a PREFIX before, and called it the whole
+        // string.
+        then "text carrying a NUL is longer than its prefix, and not equal to it" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            held.length == 5 && !(held == "ab") && held != "ab"
+        }
+        then "two texts equal past a NUL are equal" {
+            "a" + from_codepoint(0) + "b" == "a" + from_codepoint(0) + "b"
+        }
+        then "two texts differing only past a NUL are NOT equal" {
+            "a" + from_codepoint(0) + "b" != "a" + from_codepoint(0) + "c"
+        }
+        then "a needle after a NUL is found" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            held.contains("cd") && held.index_of("cd") == 3
+        }
+        then "a NUL itself is findable" {
+            ("ab" + from_codepoint(0) + "cd").index_of(from_codepoint(0)) == 2
+        }
+        then "splitting sees past a NUL" {
+            let held = "a" + from_codepoint(0) + "b.c"
+            held.split(".").length == 2 && held.split(".")[1] == "c"
+        }
+        then "replacing reaches past a NUL and keeps what follows" {
+            let held = "a" + from_codepoint(0) + "bXc"
+            held.replace("X", "-").length == 5 && held.replace("X", "-").index_of("-") == 3
+        }
+        then "a NUL can be replaced away" {
+            ("a" + from_codepoint(0) + "b").replace(from_codepoint(0), "-") == "a-b"
+        }
+        // AT EQUAL LENGTH A PREFIX IS EQUALITY, so `starts_with` and
+        // `==` must never disagree about the same pair. The sweep that
+        // taught the length walk named five verbs and these two are
+        // the sixth and seventh.
+        then "a prefix differing only past a NUL is not a prefix" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            !held.starts_with("ab" + from_codepoint(0) + "ce")
+        }
+        then "a prefix agreeing past a NUL is a prefix" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            held.starts_with("ab" + from_codepoint(0) + "cd") && held.starts_with("ab")
+        }
+        then "a prefix longer than the text is not a prefix" {
+            !"ab".starts_with("ab" + from_codepoint(0) + "cd")
+        }
+        then "a suffix differing only past a NUL is not a suffix" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            !held.ends_with(from_codepoint(0) + "ce") && held.ends_with(from_codepoint(0) + "cd")
+        }
+    }
+    given "the split contract, which the length walk must preserve" {
+        then "a trailing empty segment is dropped, a leading one kept" {
+            "a.".split(".").length == 1 && ".a".split(".").length == 2 && "".split(".").length == 0
+        }
+        then "an empty needle is present in everything, at zero" {
+            "abc".contains("") && "abc".index_of("") == 0 && "".contains("")
+        }
+        then "a needle longer than the text is absent" {
+            !"ab".contains("abc") && "ab".index_of("abc") == 0 - 1
+        }
+    }
+    given "rows at their edges" {
+        then "one newline is one empty row" { lines("\n").length == 1 && lines("\n")[0] == "" }
+        then "two newlines are two empty rows" { lines("\n\n").length == 2 }
+        then "a row of spaces is blank; a row with a tab and a letter is not" { is_blank("   ") && !is_blank("\tx") }
+    }
+    given "the walk over sequences cut in half" {
+        then "a lone lead byte stands for itself" { a_codes("é".substring(0, 1)) == "195" }
+        then "stray continuation bytes each stand for themselves" { a_codes("日".substring(1, 3)) == "151,165" }
+        then "a four-byte sequence missing its last byte is three lone bytes" {
+            a_codes("😀".substring(0, 3)) == "240,159,152"
+        }
+        then "chars over a cut sequence answers one text per byte" { chars("é".substring(0, 1)).length == 1 }
+        then "codepoint_count never exceeds the byte length" {
+            codepoint_count("😀é日a") == 4 && "😀é日a".length == 10
+        }
+    }
+}

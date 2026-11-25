@@ -1,0 +1,192 @@
+//! WHAT A PROGRAM REACHES, AND WHAT OF IT THE PROGRAM LAYER BUILDS: a program file's entry and every
+//! body it reaches, walked past each one not lowered yet, each filed as made or by why it isn't, with
+//! how many bodies call it.
+use core.{CalledFn, rt_sig_of}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// What a body a program reaches is.
+export enum BodyKind {
+    Entry
+    Fn
+    Method
+    Static
+    GenericUnit
+    TraitDefault
+    FieldDefault
+    SeatDefault
+    Extern
+    Lambda
+    Data
+    Wrapper
+}
+
+impl BodyKind {
+    /// The kind as a receipt names it.
+    fn word() -> string {
+        match self {
+            .Entry -> "entry",
+            .Fn -> "fns",
+            .Method -> "methods",
+            .Static -> "static fns",
+            .GenericUnit -> "generic units",
+            .TraitDefault -> "trait defaults",
+            .FieldDefault -> "field defaults",
+            .SeatDefault -> "seat defaults",
+            .Extern -> "extern rows",
+            .Lambda -> "lambdas",
+            .Data -> "statics",
+            .Wrapper -> "wrappers",
+        }
+    }
+}
+
+/// A body a program reaches: its symbol, what it is, the file declaring it, how many bodies call it,
+/// and why it isn't made, absent when it is.
+export type ReachedBody = { symbol: string, kind: BodyKind, file: SourceFileAddress, callers: int, why: string? }
+
+/// Every body a program reaches, in the order met, and whether the walk reached its end before it was
+/// told to stop.
+export type ReachSurvey = { bodies: List<ReachedBody>, finished: bool }
+
+/// The bodies the program `file` runs reaches from its entry, each lowered as `made_program` lowers
+/// it, the walk going past each one not lowered yet into what it calls; it stops where `stop` says so.
+export fn reach_surveyed(engine: QueryEngine, file: SourceFileAddress, stop: fn() -> bool) -> ReachSurvey {
+    let unplaced? = lowered_entry(engine, file) else { return ReachSurvey { bodies: [], finished: true } }
+    let survey = task_survey(engine)
+    let checks = scheduled_by(survey, unplaced)
+    let entry = survey.placed(unplaced, checks)
+    let found: Cell<List<ReachedBody>> = Cell.new([])
+    let root = ReachedBody {
+        symbol: ENTRY,
+        kind: BodyKind.Entry,
+        file: file,
+        callers: 0,
+        why: entry.missing.first(),
+    }
+    mut known: Map<string, bool> = {}
+    filed(found, known, root, entry)
+    mut queue = every_callee_of(entry)
+    mut seen: Map<string, bool> = {}
+    mut calls: Map<string, int> = {}
+    mut at = 0
+    while at < queue.length && !stop() {
+        let c = queue[at]
+        at = at + 1
+        calls.set(c.symbol, (calls.get(c.symbol) ?? 0) + 1)
+        if seen.has(c.symbol) { continue }
+        seen.set(c.symbol, true)
+        known.set(c.symbol, true)
+        let kind = body_kind(c)
+        if c.external {
+            found
+                .push(
+                    ReachedBody {
+                        symbol: c.symbol,
+                        kind: kind,
+                        file: c.file,
+                        callers: 0,
+                        why: extern_why(engine, c),
+                    },
+                )
+            continue
+        }
+        let held? = survey.body(c) else {
+            found
+                .push(
+                    ReachedBody {
+                        symbol: c.symbol,
+                        kind: kind,
+                        file: c.file,
+                        callers: 0,
+                        why: "a call of a fn with no body here",
+                    },
+                )
+            continue
+        }
+        let f = survey.placed(held, checks)
+        filed(
+            found,
+            known,
+            ReachedBody {
+                symbol: c.symbol,
+                kind: kind,
+                file: c.file,
+                callers: 0,
+                why: f.missing.first(),
+            },
+            f,
+        )
+        // LICENSED loops.push_loop: the walk's own worklist grows while it is walked; a `concat` copies it per body
+        for callee in every_callee_of(f) { queue.push(callee) }
+    }
+    ReachSurvey {
+        bodies: [b with { callers: calls.get(b.symbol) ?? 0 } for b in found.get()],
+        finished: at >= queue.length,
+    }
+}
+
+/// `body` filed with what its lowering `f` made beside it: its lambdas, each made where `body` is,
+/// and the data and wrappers it lays out, each once — `known` the symbols filed so far.
+fn filed(
+    found: Cell<List<ReachedBody>>,
+    mut known: Map<string, bool>,
+    body: ReachedBody,
+    f: LoweredFn,
+) {
+    let lifted: string? = if body.why == null { null } else { "a lambda inside a body not lowered yet" }
+    let made = [ReachedBody {
+        symbol: l.symbol,
+        kind: BodyKind.Lambda,
+        file: body.file,
+        callers: 0,
+        why: lifted,
+    } for l in f.lifts]
+        .concat(
+            [ReachedBody {
+                symbol: s.name,
+                kind: BodyKind.Data,
+                file: body.file,
+                callers: 0,
+                why: null,
+            } for s in f.statics],
+        )
+        .concat(
+            [ReachedBody {
+                symbol: w.symbol,
+                kind: BodyKind.Wrapper,
+                file: body.file,
+                callers: 0,
+                why: null,
+            } for w in f.wrappers],
+        )
+    found.push(body)
+    known.set(body.symbol, true)
+    for m in made {
+        if known.has(m.symbol) { continue }
+        found.push(m)
+        known.set(m.symbol, true)
+    }
+}
+
+/// What a call of `c` reaches.
+fn body_kind(c: CalledFn) -> BodyKind {
+    if c.external { return BodyKind.Extern }
+    match c.defaulted {
+        .Field -> BodyKind.FieldDefault,
+        .Seat -> BodyKind.SeatDefault,
+        .Not -> when {
+            c.given_by != null -> BodyKind.TraitDefault
+            !c.parameters.is_empty() -> BodyKind.GenericUnit
+            c.of == null -> BodyKind.Fn
+            c.statics -> BodyKind.Static
+            _ -> BodyKind.Method
+        },
+    }
+}
+
+/// Why the extern `c` isn't answered yet, absent where a runtime row or its own declared row answers
+/// it.
+fn extern_why(engine: QueryEngine, c: CalledFn) -> string? {
+    if rt_sig_of(c.symbol) != null || declared_row(engine, c) != null { null } else { "an extern whose seat or answer no one word carries" }
+}

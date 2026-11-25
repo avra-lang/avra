@@ -1,0 +1,24 @@
+//! A component whose template writes a lambda: every expansion copies it from one place.
+use @std.meta.{Code, Format}
+
+/// A pattern, and what its reader says of a span.
+export type Reader = { pattern: string, read: fn(Bytes) -> string }
+
+/// The reader a pattern's span answers with.
+export fn reader<R>(pattern: string, read: fn(Bytes) -> R?) -> Reader {
+    Reader { pattern: pattern, read: (t: Bytes) -> if read(t) == null { "none" } else { "some" } }
+}
+
+export component hole(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { reader(${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t)) }
+    }
+}
+
+export component scaled(k: int) {
+    body: Code
+    fn expand() -> Code {
+        quote { [1, 2].map((x) -> x * ${self.k}) }
+    }
+}
