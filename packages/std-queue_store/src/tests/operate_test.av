@@ -7,7 +7,7 @@ use @std.json.{to_text}
 use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate, HomeError, Order}
 use @std.relation.{codec}
 use @std.sqlite.{Db, sql}
-use @std.time.{Time, mins, ms, nanos, now_ns, secs, sleep}
+use @std.time.{Time, mins, ms, now_ns, secs, sleep}
 use durable.{db, stored, stored_with}
 use fault.{homed}
 use letters.{stored_dead}
@@ -29,7 +29,7 @@ type Mail = { to: string, tries: int, tags: List<string>, cc: string?, urgent: b
 @codec
 type Unit = { name: string }
 
-/// A type that nests another, which wears its own codec.
+/// A type no descriptor here follows: it nests another.
 @codec
 type Reading = { unit: Unit }
 
@@ -112,7 +112,7 @@ fn listed() -> Result<string, HomeError> {
         order: Order.by_key
         dedupe: mins(60)
     }
-    queue<Dead<Notice>> undeliverable {
+    queue<Dead<Notice, string>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Notice>(clock: ticking)
     }
@@ -166,8 +166,8 @@ fn never_homed() -> Result<string, HomeError> {
 }
 
 /// Items written by other builds and other shapes, read by their own
-/// descriptors: a grown record, an enum, a row whose shape the database
-/// never recorded, and a type that nests another.
+/// descriptors: a grown record, an enum, a type no descriptor here
+/// follows, and a row whose shape the database never recorded.
 fn other_builds() -> Result<string, HomeError> {
     ctx db = homed(Db.memory())?
     queue<Notice> mixed {
@@ -225,7 +225,7 @@ fn retried_letter() -> Result<string, HomeError> {
         durable: stored<Notice>(clock: ticking)
         retries: 1
     }
-    queue<Dead<Notice>> undeliverable {
+    queue<Dead<Notice, string>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Notice>(clock: ticking)
     }
@@ -322,22 +322,11 @@ fn foreign_terms() -> Result<string, HomeError> {
     let _ = jobs.send(1)?
     let _ = homed(ctx.db.run(sql("UPDATE \"FlowTerms\" SET \"overflow\" = 99")))?
     let odd = standing_text(queues(ctx.db)?[0])
-    let _ = homed(ctx.db.run(sql("UPDATE \"FlowTerms\" SET \"overflow\" = 1, \"lease\" = -1")))?
+    let _ = homed(
+        ctx.db
+            .run(sql("UPDATE \"FlowTerms\" SET \"overflow\" = 1, \"lease\" = 9223372036854775807")),
+    )?
     "${odd} || ${standing_text(queues(ctx.db)?[0])}"
-}
-
-/// Spans no whole number of milliseconds: the row keeps each exactly.
-fn exact_spans() -> Result<string, HomeError> {
-    ctx db = homed(Db.memory())?
-    queue<int> jobs {
-        name: "jobs"
-        durable: stored_with(int_wire(), clock: ticking)
-        lease: nanos(1500001)
-        dedupe: nanos(60000000007)
-    }
-    let _ = jobs.send(1)?
-    let s = queues(ctx.db)?[0]
-    "${s.terms?.lease?.ns ?? 0} ${s.dedupe?.ns ?? 0}"
 }
 
 /// Octets and descriptors no build of this one wrote: each reads as
@@ -348,7 +337,7 @@ fn hostile_rows() -> Result<string, HomeError> {
         name: "emails"
         durable: stored<Notice>(clock: ticking)
     }
-    queue<Dead<Notice>> undeliverable {
+    queue<Dead<Notice, string>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Notice>(clock: ticking)
     }
@@ -397,10 +386,7 @@ spec "std/queue_store — operating a queue" {
         then "a database no home opened holds none, and asking makes nothing" {
             shown(never_homed()) == "0 0 missing missing tables 0"
         }
-        then "a span short of a whole millisecond reads back to the nanosecond" {
-            shown(exact_spans()) == "1500001 60000000007"
-        }
-        then "a terms row another build numbered reads as no terms, and a span of less than nothing as none" {
+        then "a terms row another build numbered reads as no terms, and a span past the range as none" {
             shown(foreign_terms()) == "jobs no terms | waiting 1 owed 1 || jobs no terms | waiting 1 owed 1"
         }
     }
@@ -414,8 +400,8 @@ spec "std/queue_store — operating a queue" {
         then "the letters are the queues whose items are letters" {
             shown(listed()).split("\n")[6] == "letters undeliverable held held@x"
         }
-        then "an item another build wrote reads by its own shape, one that nests reads whole, and one with no descriptor reads as none" {
-            shown(other_builds()) == "{\"to\":\"old@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\n{\"to\":\"new@x\",\"tries\":2,\"tags\":[],\"cc\":\"boss@x\",\"urgent\":true}\n{\"Loud\":[3]}\n\"Quiet\"\nunread\n{\"unit\":{\"name\":\"f\"}}"
+        then "an item another build wrote reads by its own shape, and one no descriptor follows reads as none" {
+            shown(other_builds()) == "{\"to\":\"old@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\n{\"to\":\"new@x\",\"tries\":2,\"tags\":[],\"cc\":\"boss@x\",\"urgent\":true}\n{\"Loud\":[3]}\n\"Quiet\"\nunread\nunread"
         }
         then "a lease that ran out reads as lapsed, and an unknown queue as none" {
             shown(lapsed()) == "lapsed 7 | unknown true 0"

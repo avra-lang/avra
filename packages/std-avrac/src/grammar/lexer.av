@@ -647,7 +647,7 @@ fn line_boundary(tokens: List<Token>, j: int) -> bool {
 /// and the line does not continue; leading breaks always drop.
 fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> List<Token> {
     mut out: List<Token> = []
-    mut open: List<bool> = []
+    mut open: List<string> = []
     // A COLUMN, and a file's first statement stands at column zero.
     // `span.lo` is a byte OFFSET, which only reads as a column while
     // the first token is on line one — a leading comment makes
@@ -677,16 +677,13 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
             }
             i = j
         } else {
-            let bracket = bracket_of(t)
-            if bracket > 0 {
-                opened_at.push(line_indent)
-                open.push(t.text.char_code() == "{".char_code())
-            }
-            if bracket < 0 && !opened_at.is_empty() {
+            if opens_bracket(t) { opened_at.push(line_indent) }
+            if closes_bracket(t) && !opened_at.is_empty() {
                 line_indent = opened_at.last()!
                 opened_at = opened_at.slice(0, opened_at.length - 1)
             }
-            if bracket < 0 && !open.is_empty() { let _ = open.pop() }
+            if opens_bracket(t) { open.push(t.text) }
+            if closes_bracket(t) && !open.is_empty() { let _ = open.pop() }
             out.push(t)
             i = i + 1
         }
@@ -713,18 +710,15 @@ fn continued_by(raw: List<Token>, j: int, deeper: bool, last: Token) -> bool {
 }
 
 /// Whether a line break separates here: outside every bracket, or
-/// directly inside a brace — inside `(` or `[` it never does. `open` holds,
-/// for each bracket open, whether it is a brace.
-fn separates(open: List<bool>) -> bool { open.last() ?? true }
-
-/// What the token `t` does to the brackets open around it, read by its one character: 1 opens one,
-/// -1 closes one, 0 neither.
-fn bracket_of(t: Token) -> int {
-    if t.kind != TokenKind.Op || t.text.length != 1 { return 0 }
-    let c = t.text.char_code()
-    if c == "(".char_code() || c == "[".char_code() || c == "{".char_code() { return 1 }
-    if c == ")".char_code() || c == "]".char_code() || c == "}".char_code() { 0 - 1 } else { 0 }
+/// directly inside a brace — inside `(` or `[` it never does.
+fn separates(open: List<string>) -> bool {
+    let top: string? = open.last()
+    top == null || top! == "{"
 }
+
+fn opens_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == "(" || t.text == "[" || t.text == "{") }
+
+fn closes_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == ")" || t.text == "]" || t.text == "}") }
 
 /// A token after which the line continues — an operator that wants
 /// a right side, or the `or` between a pattern's alternatives.
@@ -744,31 +738,11 @@ fn continues(t: Token) -> bool {
 /// the next statement onto this line. The asymmetry belongs to the
 /// bracket, not to the operator; it is the `>>`-munch law at the
 /// LINE rather than the token.
-fn continuing_op(text: string) -> bool { continuing_ops().has(text) }
-
-/// The operators `continuing_op` names, as a set made once a process.
-once fn continuing_ops() -> Map<string, bool> {
-    mut ops: Map<string, bool> = {}
-    for op in [
-        "+",
-        "-",
-        "*",
-        "/",
-        "%",
-        "==",
-        "!=",
-        "<",
-        "<=",
-        ">=",
-        "&&",
-        "||",
-        "??",
-        "|>",
-        "=",
-        "->",
-        ",",
-    ] { ops.set(op, true) }
-    ops
+fn continuing_op(text: string) -> bool {
+    match text {
+        "+" or "-" or "*" or "/" or "%" or "==" or "!=" or "<" or "<=" or ">=" or "&&" or "||" or "??" or "|>" or "=" or "->" or "," -> true,
+        _ -> false,
+    }
 }
 
 /// The whole input, one ScanStep at a time; then the line policy, a
@@ -1527,12 +1501,11 @@ export fn lex_blocks(
 /// SOFT keyword: it means `state` only where a binding follows, so a
 /// binding, a field or a property called `state` stays an ordinary name.
 /// `state NAME :` and `state NAME =` are the two shapes it claims, at a
-/// statement's start — after the marks a member writes before it too
-/// (`@attr(.Value) state value: string`) — or a parameter's own mark position.
+/// statement's start or a parameter's own mark position.
 fn opens_state(ts: List<Token>, i: int) -> bool {
     let t = ts[i]
     if t.kind != TokenKind.Name || t.text != "state" { return false }
-    if !starts_member(ts, i) && !after_param_sep(ts, i) { return false }
+    if !starts_statement(ts, i) && !after_param_sep(ts, i) { return false }
     if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
     i + 2 < ts.length && (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
 }

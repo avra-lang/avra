@@ -1,8 +1,7 @@
 //! WHAT A PROGRAM LINKS WITH: the packages it reaches, and the objects and flags their manifests
 //! name, read through whatever holds those manifests.
 use core.{flatten}
-use compiler.host.{Manifest, read_manifest}
-use diagnostics.{Diag, SourceFile}
+use compiler.host.{Manifest}
 use @std.program.query_engine.{QueryEngine}
 use @std.program.sorted.{sorted_by}
 use @std.text.{text_before}
@@ -16,22 +15,8 @@ export fn program_packages(engine: QueryEngine, package: string) -> List<string>
     sorted_by(package_reach(engine, package).packages, (a, b) -> text_before(a, b))
 }
 
-/// Every hole inside a longer `[link]` word of the manifests the program rooted at `package`
-/// stands on whose variable `env` doesn't set, refused by name — the root's own `[link.raw]` among
-/// its words; `source_of` reads a package's manifest.
-export fn program_unset_holes(
-    engine: QueryEngine,
-    package: string,
-    source_of: fn(string) -> SourceFile,
-    env: fn(string) -> string?,
-) -> List<Diag> {
-    flatten(
-        [unset_link_holes_of(() -> source_of(p), read_manifest(source_of(p)), p == package, env) for p in program_packages(engine, package)],
-    )
-}
-
 /// The objects and flags the packages the program rooted at `package` reaches link with, read off
-/// their manifests, the packages in name order: for a wasm `target`, the wasm objects each
+/// their manifests, the packages in name order: for a non-host `target`, the wasm objects each
 /// names.
 export fn program_link_words(
     engine: QueryEngine,
@@ -41,8 +26,7 @@ export fn program_link_words(
     target: string = "",
 ) -> List<string> {
     let reached = program_packages(engine, package)
-    let wasm = match platform_of(target) { .Wasm -> true, .Native or .Apple(_) -> false }
-    if wasm {
+    if target != "" {
         return flatten(
             [manifest_wasm_words((read.manifest_of)(p), (read.root_of)(p), read.world) for p in reached],
         )

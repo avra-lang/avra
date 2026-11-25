@@ -186,13 +186,6 @@ int64_t avra_io_remove(const char* path) {
     return remove(path) == 0 ? 0 : -errno;
 }
 
-/* The file at `from` known by a second name, `to`: one file, two names,
-   never a copy. A name that stands at `to` already, or a `to` on another
-   volume (EXDEV), refuses; the caller copies instead. */
-int64_t avra_io_link(const char* from, const char* to) {
-    return link(from, to) == 0 ? 0 : -errno;
-}
-
 /* ── The durable write ────────────────────────────────────────────
    A reader sees the old file or the new and never half of one, so the
    bytes go to a TEMP beside the target and the rename is LAST.

@@ -132,17 +132,12 @@ static Job* zlib_decode(int64_t format, const unsigned char* in, size_t n, size_
     return why == DONE ? j : failed(j, why);
 }
 
-/* Brotli at `quality`, its window no wider than `widest` bits nor than `n` needs: a wider window
-   reaches repeats further back, and costs a reader that much memory. `widest` is held within the
-   standard's 10 to 24 bits, so any brotli decoder reads the stream (never the large-window kind). */
-static Job* brotli_encode(int quality, int widest, const unsigned char* in, size_t n) {
+static Job* brotli_encode(int quality, const unsigned char* in, size_t n) {
     size_t cap = BrotliEncoderMaxCompressedSize(n);
     Job* j = job_new(cap ? cap : n + 1024);
     if (!j) return NULL;
     size_t out = j->cap;
-    if (widest < BROTLI_MIN_WINDOW_BITS) widest = BROTLI_MIN_WINDOW_BITS;
-    if (widest > BROTLI_MAX_WINDOW_BITS) widest = BROTLI_MAX_WINDOW_BITS;
-    int lgwin = window_for(n, BROTLI_MIN_WINDOW_BITS, widest);
+    int lgwin = window_for(n, BROTLI_MIN_WINDOW_BITS, BROTLI_DEFAULT_WINDOW);
     if (!BrotliEncoderCompress(quality, lgwin, BROTLI_MODE_GENERIC, n, in, &out, j->data)) return failed(j, FAIL_MEMORY);
     j->len = out;
     return j;
@@ -292,19 +287,12 @@ int64_t avra_cz_stream_free(int64_t coder) { coder_free(coder_held(coder)); retu
 static int64_t handed(Job* j) { return (int64_t)(intptr_t)j; }
 static Job* held(int64_t job) { return (Job*)(intptr_t)job; }
 
-/* `avra_cz_encode`, brotli's window up to `window` bits (10 to 24, held there) rather than its
-   default 22; zlib's window is its own 15 bits whatever `window` says. */
-int64_t avra_cz_encode_within(int64_t format, int64_t level, int64_t window, const unsigned char* in, int64_t n) {
-    if (n < 0) return 0;
-    if (format == FORMAT_BROTLI) return handed(brotli_encode((int)level, (int)window, in, (size_t)n));
-    return handed(zlib_encode(format, (int)level, in, (size_t)n));
-}
-
 /* `n` octets of `in` encoded in `format` at `level` (zlib 0-9, brotli
    0-11). */
 int64_t avra_cz_encode(int64_t format, int64_t level, const unsigned char* in, int64_t n) {
     if (n < 0) return 0;
-    return avra_cz_encode_within(format, level, BROTLI_DEFAULT_WINDOW, in, n);
+    if (format == FORMAT_BROTLI) return handed(brotli_encode((int)level, in, (size_t)n));
+    return handed(zlib_encode(format, (int)level, in, (size_t)n));
 }
 
 /* `n` octets of `in` decoded from `format`, holding at most `ceiling`. */

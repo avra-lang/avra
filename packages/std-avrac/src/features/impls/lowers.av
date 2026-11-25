@@ -88,9 +88,8 @@ fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> 
 }
 
 /// The unit a call of the static `written` of `ty`, reached as `reached`, is: itself on a type of no type parameters;
-/// on a generic type, the unit the type's own arguments, where `ty` is applied (`Box<A>`, as a
-/// generic call reaches it), then the call's arguments and its own type lay out the type's
-/// parameters in. Absent where they don't.
+/// on a generic type, the unit its arguments and the call's own type lay out the type's parameters
+/// in. Absent where they don't.
 fn static_unit(
     cx: Lowering,
     m: MethodCall,
@@ -101,7 +100,7 @@ fn static_unit(
 ) -> CalledFn? {
     if !cx.generic_declared(ty) { return written }
     let signed? = (cx.program.checked.static_of)(ty, reached) else { return null }
-    cx.instantiated_as(written, signed, [], m.args, e, applied: ty.args)
+    cx.instantiated_as(written, signed, [], m.args, e)
 }
 
 /// A call of a static of a generic type whose arguments and type don't lay out the type's parameters.
@@ -279,19 +278,9 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
     let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
     let code = cx.dyn_code(seats[0], at)
     cx.declined(e, Declined.Dyn(DynDecline.TargetsUnknown))
-    let entered = placed_call(cx, subject, seats[0])
     let answered = cx.called_code(cx.layout_at(e), code, value, seats.drop(1), subject)
-    if entered != null { cx.placed_left(entered!) }
     cx.dyn_marked(answered, subject, at)
     answered
-}
-
-/// Where a call through the box `box` of `subject` runs under the frame the box was placed under: the
-/// frame entered, for `placed_left`. Absent for a trait that isn't placed, or a body whose placed
-/// boxes carry no frame.
-fn placed_call(mut cx: Lowering, subject: SignedType, box: Reg) -> Reg? {
-    if !cx.placed(subject) || !cx.placing() { return null }
-    cx.placed_entered(box)
 }
 
 /// A call of `member`, at `at` among the trait's methods, that may write its receiver through the
@@ -315,10 +304,7 @@ fn dyn_written(
         _ -> cx.call_row(cx.laid_out(subject), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
     }
     cx.declined(e, Declined.Dyn(DynDecline.TargetsUnknown))
-    let code = cx.dyn_code(box, at)
-    let entered = placed_call(cx, subject, box)
-    let answered = cx.called_code(cx.layout_at(e), code, box, args, subject)
-    if entered != null { cx.placed_left(entered!) }
+    let answered = cx.called_code(cx.layout_at(e), cx.dyn_code(box, at), box, args, subject)
     cx.dyn_marked(answered, subject, at)
     answered
 }

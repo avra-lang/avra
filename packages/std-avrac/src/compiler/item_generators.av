@@ -103,7 +103,7 @@ impl DeclSeat {
 /// A declaration a site hands its generator past the one it stands on: where it's written and the
 /// seat it crosses into.
 @derive(Saved)
-export type HandedDecl = { file: SourceFileAddress, name: string, item: ItemId, seat: DeclSeat }
+export type HandedDecl = { file: SourceFileAddress, name: string, item: int, seat: DeclSeat }
 
 /// What a site hands one seat of its generator past the declaration it stands on: a declaration the
 /// argument names, the literal it spells, or the quote it writes; or why it crosses as none of them.
@@ -117,13 +117,13 @@ export enum HandedArg {
     Code(home: string, at: int, parts: List<string>)
     /// A const the argument names whose value is no literal: its settled value, run where it's
     /// declared, and the print of its settlement — what a site that hands it runs again on.
-    Settled(file: SourceFileAddress, name: string, item: ItemId, value: ContentHash)
+    Settled(file: SourceFileAddress, name: string, item: int, value: ContentHash)
     /// Fields of the declaration `decl` the site stands on in `file`, by their place among its
     /// fields: one, or a list of them where `listed`.
     Fields(file: SourceFileAddress, decl: string, picked: List<int>, listed: bool)
     /// An argument the source computes — a call — written at node `at` of the written item `item` of
     /// `file`: its value run at compile time under the seat type `seat`.
-    Computed(file: SourceFileAddress, item: ItemId, at: int, seat: SignedType)
+    Computed(file: SourceFileAddress, item: int, at: int, seat: SignedType)
     /// An argument the program layer doesn't cross yet, and why.
     Uncrossed(why: string)
     /// An argument naming no declaration its seat takes: the program's fault, and why.
@@ -202,10 +202,6 @@ fn derives(engine: QueryEngine, t: TraitAt) -> bool {
 /// The symbol a generator runs as.
 export fn generator_symbol(g: GeneratorAt) -> string { declared_symbol(g.file, g.unit()) }
 
-/// What a run of the generator `g` over the declaration `name` is named on the settle line: its
-/// symbol, then what it ran over (`…relation.av.codec(TypeFacts)`).
-export fn generator_run_named(g: GeneratorAt, name: string) -> string { "${generator_symbol(g)}(${name})" }
-
 /// The generator `g` and every body it reaches, made into a program whose entry is the generator
 /// itself, its seat the meta value, each fn it only holds as a value made when a run calls it; with
 /// `missed`, each body it reaches that isn't lowered yet filed there. Absent when it writes no body.
@@ -227,18 +223,11 @@ export fn made_generator(engine: QueryEngine, g: GeneratorAt, missed: Cell<List<
 
 /// What a trait's generator is: the hash of the program made of it, printed, or why it isn't made.
 @derive(Saved)
-export type GeneratorPrint = {
-    print: ContentHash?,
-    unmade: string,
-    /// Whether the site is the one to say why it isn't made: a generator the layer can't make yet. One
-    /// its own files refuse is said there, and a trait that writes no generator by the law over
-    /// `@derive`, so the site says nothing more of either.
-    speaks: bool = false,
-}
+export type GeneratorPrint = { print: ContentHash?, unmade: string }
 
 /// The generator `g` as the content of the program made of it: the hash of its printed IR, the
 /// program kept for this process under that hash.
-@query("generate")
+@query
 export fn generator_print(engine: QueryEngine, g: GeneratorAt) -> GeneratorPrint {
     let m? = made_generator(engine, g) else { return GeneratorPrint { print: null, unmade: "`${g.name}` writes no generator" } }
     match m {
@@ -246,7 +235,6 @@ export fn generator_print(engine: QueryEngine, g: GeneratorAt) -> GeneratorPrint
         .Unmade(why, at) -> GeneratorPrint {
             print: null,
             unmade: "`${g.name}`'s generator isn't made yet: ${why} at ${at}",
-            speaks: true,
         },
         .Refused(files) -> GeneratorPrint { print: null, unmade: generator_refused(g, files) },
     }
@@ -349,8 +337,6 @@ export fn generator_run(
         plan,
         spelled: reader_spelled(file.package_name),
         late: late_door(task_survey(engine), TaskChecks.Tested),
-        settled_as: generator_run_named(g, name),
-        declared: (k: string) -> declared_lifted(engine, k),
     ) {
         .Ok(lifted) -> match answer_shape(engine, g) {
             .Declared -> GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems()),
@@ -371,7 +357,7 @@ export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: strin
 /// it's one — hands a generator whose first seat is `first`, past it `handed`. An answer of its own,
 /// so a site whose declaration and arguments cross as they did runs its generator no more: an edit
 /// elsewhere in the file moves what the file declares, never this.
-@query("generate")
+@query
 export fn handed_values(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -516,13 +502,13 @@ export fn wraps_body(
 /// How many fields `@std/meta`'s `Fn` declares: the slots a crossed `Fn` is written with.
 fn fn_slots(engine: QueryEngine) -> int {
     let d? = declarations_of(engine, META, [], false, META_FN).find(it.kind == ItemKind.Record) else { return 0 }
-    let sig? = record_signature_written(engine, d.file, d.name) else { return 0 }
+    let sig? = record_signature(engine, d.file, d.name) else { return 0 }
     sig.fields.length
 }
 
 /// A declaration a generator runs over: the name its file declares it as, the item declaring it, the
 /// generator, each argument the site hands it past this one, and, for a method, the impl writing it.
-export type GeneratorSite = { name: string, item: ItemId, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
+export type GeneratorSite = { name: string, item: int, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
 
 /// A method an annotation stands on: the impl writing it, and whether it's a static.
 @derive(Saved)
@@ -538,7 +524,7 @@ export fn validator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<
 
 /// Each annotation's own fn or derived trait a file's declarations name, in the order written.
 fn annotated_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> {
-    let scope? = written_file_scope(engine, file) else { return [] }
+    let scope? = file_scope(engine, file) else { return [] }
     flatten([declared_sites(engine, scope, file, d) for d in file_declares(engine, file).names])
         .concat(method_sites(engine, scope, file))
 }
@@ -549,17 +535,17 @@ fn method_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress) 
     GeneratorSite,
 > {
     flatten(
-        [impl_method_sites(engine, scope, a) for k in item_ids(engine, file) for a in written_impls_at(engine, scope, file, k)],
+        [impl_method_sites(engine, scope, a) for k in 0..item_count(engine, file) for a in written_impls_at(engine, scope, file, k)],
     )
 }
 
 /// The impls the written item `at` of `file` holds whose targets its written names resolve, as
 /// `impls_at` places them.
-fn written_impls_at(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, at: ItemId) -> List<
+fn written_impls_at(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, at: int) -> List<
     ImplAt,
 > {
-    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in filed_impls(engine, file, at) for d in [
-        declared_of(stratum_resolved(engine, scope, file, Space.Type, i.target).named()) ?? own_declared(
+    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in item_impls(engine, file, at) for d in [
+        declared_of(resolved_in(engine, scope, file, Space.Type, i.target).named()) ?? own_declared(
             i.target,
         ),
     ] if d != null]
@@ -584,7 +570,7 @@ fn impl_method_sites(engine: QueryEngine, scope: FileScope, a: ImplAt) -> List<G
 
 /// The sites written on the method `name` a file's impls write, as `site` names one.
 export fn method_sites_of(engine: QueryEngine, m: MethodSite, name: string) -> List<GeneratorSite> {
-    let scope? = written_file_scope(engine, m.at.file) else { return [] }
+    let scope? = file_scope(engine, m.at.file) else { return [] }
     [x for x in impl_method_sites(engine, scope, m.at) if x.name == name && x.method?.statics == m.statics]
 }
 
@@ -592,7 +578,7 @@ export fn method_sites_of(engine: QueryEngine, m: MethodSite, name: string) -> L
 export fn declaration_sites(engine: QueryEngine, file: SourceFileAddress, d: DeclaredName) -> List<
     GeneratorSite,
 > {
-    let scope? = written_file_scope(engine, file) else { return [] }
+    let scope? = file_scope(engine, file) else { return [] }
     declared_sites(engine, scope, file, d)
 }
 
@@ -676,7 +662,7 @@ fn member_sites(engine: QueryEngine, d: DeclaredName, annotated: List<GeneratorS
 }
 
 /// The trait `t`'s own `derive` over the declaration `d`, as `@derive(T)` written on it runs.
-fn derive_site(name: string, item: ItemId, t: TraitAt) -> GeneratorSite {
+fn derive_site(name: string, item: int, t: TraitAt) -> GeneratorSite {
     GeneratorSite {
         name: name,
         item: item,
@@ -700,61 +686,16 @@ fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
 @derive(Saved)
 type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt> }
 
-/// Each `collect enum` a package writes with a trait that derives, and what it gathers; and what the
-/// members its enums gather over a trait that derives nothing owe of impls, kept by the path of the
-/// file that declares each member, with its item — so an item finds what it owes in one look, its
-/// file's path the key it already holds.
+/// Each `collect enum` a package writes with a trait that derives, and what it gathers.
 @derive(Saved)
-type DerivedGatherings = { each: List<DerivedGathering>, owed: Map<string, List<OwedImpl>> = {} }
+type DerivedGatherings = { each: List<DerivedGathering> }
 
-/// The gatherings a package's written `collect enum`s make, each read where it's written, read once a
-/// package: the derives a member takes, and the impls the member law asks of each item.
-@cut_query("generate")
-export fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
-    let enums = [d for p in package_listed_sources(engine, package).paths for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
-    mut owed: Map<string, List<OwedImpl>> = {}
-    for e in enums {
-        for t in gathered_traits(engine, e.file, e.name, true) {
-            if !derives(engine, t) {
-                // a member of another package is no item this package's laws read
-                for m in [m for m in members_of(engine, e.file, e.name, false, "") ?? [] if m.file.package_name == package] {
-                    let key = m.file.path_in_package
-                    owed
-                        .set(
-                            key,
-                            (owed.get(key) ?? [])
-                                .concat(
-                                    [
-                                        OwedImpl {
-                                            owner: e.name,
-                                            word: t.name,
-                                            member: m.name,
-                                            item: m.item,
-                                        },
-                                    ],
-                                ),
-                        )
-                }
-            }
-        }
-    }
-    DerivedGatherings {
-        each: [g! for d in enums for g in [gathering(engine, d)] if g != null],
-        owed: owed,
-    }
+/// The gatherings a package's written `collect enum`s make, each read where it's written.
+@cut_query
+fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
+    let enums = [d for p in package_sources(engine, package, "src") for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
+    DerivedGatherings { each: [g! for d in enums for g in [gathering(engine, d)] if g != null] }
 }
-
-/// Whether a member of `package` owes an impl of a trait its `collect enum` is written over: one
-/// word, read once a package, so the member law reads no gathering for an item of a package that
-/// owes none — as most packages, declaring no `collect enum`, do.
-@cut_query("generate")
-export fn owes_impls(engine: QueryEngine, package: string) -> bool { !package_gatherings(engine, package).owed.is_empty() }
-
-/// A member a package's `collect enum` gathers over a trait that derives nothing: the enum, the
-/// trait, the member and the written item of its file that declares it, which owes an impl of the
-/// trait.
-@derive(Saved)
-export type OwedImpl = { owner: string, word: string, member: string, item: ItemId }
 
 /// The gathering the `collect enum` `d` makes; absent when none of its traits derives, or it gathers
 /// only once built.
@@ -772,13 +713,13 @@ fn annotation_sites(
     scope: FileScope,
     file: SourceFileAddress,
     name: string,
-    item: ItemId,
+    item: int,
     kind: ItemKind,
     read: ReadItem,
     a: Annotation,
 ) -> List<GeneratorSite> {
     let store = read.store
-    let named? = stratum_resolved(engine, scope, file, Space.Value, a.name).named() else { return [] }
+    let named? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return [] }
     if named.file.package_name == META && named.name == DERIVE {
         return [derive_site(name, item, t!) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
     }
@@ -975,7 +916,7 @@ fn handed_arg(
     let store = read.store
     let seat? = meta_seat_of(ty) else { return spelled_arg(engine, scope, file, read, e, 0) }
     let name? = store.ident_name(e) else { return HandedArg.Unfit(unnamed_decl()) }
-    let d? = stratum_resolved(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Unfit(unnamed_decl()) }
+    let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Unfit(unnamed_decl()) }
     if seat.takes(d.kind) { HandedArg.Decl(HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat }) } else { HandedArg.Unfit(unnamed_decl()) }
 }
 
@@ -1001,12 +942,12 @@ export fn spelled_arg(
     }
     let name? = store.ident_name(e) else { return HandedArg.Uncrossed(unspelled_arg()) }
     if depth >= CONST_CHAIN { return HandedArg.Uncrossed(unspelled_arg()) }
-    let d? = stratum_resolved(engine, scope, file, Space.Value, name).named() else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return HandedArg.Uncrossed(unspelled_arg()) }
     if d.kind != ItemKind.Const { return HandedArg.Uncrossed(unspelled_arg()) }
     let item = read_item(engine, d.file, d.item)
     let s? = item.stmts.find((x) -> item.store.let_name(x) == d.name) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let v? = item.store.const_value(s) else { return HandedArg.Uncrossed(unspelled_arg()) }
-    let there? = written_file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let there? = file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let spelled = spelled_arg(engine, there, d.file, item, v, depth + 1)
     if spelled is .Uncrossed { HandedArg.Settled(d.file, d.name, d.item, settled_print(engine, d)) } else { spelled }
 }
@@ -1021,7 +962,7 @@ fn settled_handed(
     engine: QueryEngine,
     file: SourceFileAddress,
     name: string,
-    item: ItemId,
+    item: int,
     mut heap: MetaHeap,
 ) -> MetaVal? {
     let ran? = const_lifted(engine, file, name, item) else { return null }
@@ -1036,10 +977,10 @@ fn defaulted_arg(engine: QueryEngine, named: DeclaredName, at: int) -> HandedArg
     let params = item.store.fn_parts(s)!.params
     if at >= params.length { return HandedArg.Uncrossed(unspelled_arg()) }
     let e? = params[at].default else { return HandedArg.Uncrossed(unspelled_arg()) }
-    let scope? = written_file_scope(engine, named.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let scope? = file_scope(engine, named.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let spelled = spelled_arg(engine, scope, named.file, item, e, 0)
     if !(spelled is .Uncrossed) { return spelled }
-    settled_default(engine, named, params[at].name.text())
+    settled_default(engine, named, params[at].name.of)
 }
 
 /// What the default the annotation fn `named` writes for its seat `seat` settles to, run as a
@@ -1177,12 +1118,12 @@ export fn derive_claims(
     s: StmtId,
     name: string,
 ) -> List<string>? {
-    let scope? = written_file_scope(engine, file) else { return null }
+    let scope? = file_scope(engine, file) else { return null }
     let worn = store.annotations_of(s)
     if worn.is_empty() { return null }
     mut claims: List<string> = []
     for a in worn {
-        let d? = stratum_resolved(engine, scope, file, Space.Value, a.name).named() else { return null }
+        let d? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return null }
         if d.file.package_name != META || d.name != DERIVE { return null }
         for e in a.args {
             let t? = trait_named(engine, scope, file, arg_lit(store, e).text) else { return null }
@@ -1202,7 +1143,7 @@ export type TraitClaims = { claims: List<string>? }
 /// The trait `t`'s own `static fn marks` run over the declaration `file` writes as `name`, as its
 /// `derive` is run: the marks it claims; none where it declares no `marks`, absent where it doesn't
 /// run.
-@query("generate")
+@query
 export fn trait_claims(engine: QueryEngine, t: TraitAt, file: SourceFileAddress, name: string) -> TraitClaims {
     let unknown = TraitClaims { claims: null }
     let body? = trait_static_body(engine, t, CLAIMS) else { return TraitClaims { claims: [] } }
@@ -1245,7 +1186,7 @@ const CLAIMS: string = "marks"
 
 /// The trait `name` names from `file`, absent for a name naming none.
 fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {
-    let d? = stratum_resolved(engine, scope, file, Space.Type, name).named() else { return null }
+    let d? = resolved_in(engine, scope, file, Space.Type, name).named() else { return null }
     if d.kind == ItemKind.Trait { TraitAt { file: d.file, name: d.name } } else { null }
 }
 

@@ -102,13 +102,10 @@ impl Checks for StructLit {
         let args = [filled.get("${at}") for at in 0..record.params]
         let open = args.find_index(it == null)
         if open == null { return named with { args: [a! for a in args] } }
-        if (!written.is_empty() || phantom(record, open!)) && cx.refused.get().length == before { unpinned_literal(cx, e, self, record, open!, written) }
+        if !written.is_empty() && cx.refused.get().length == before { unpinned_literal(cx, e, self, record, open!, written) }
         null
     }
 }
-
-/// Whether no field of `record` names its type parameter `at`: nothing a literal writes can pin it.
-fn phantom(record: RecordShape, at: int) -> bool { !record.fields.any((it.ty?.parameters() ?? []).contains(at)) }
 
 /// The value `v` checked into the seat `seat` of the field `name`: a field of `@std/meta`'s `Key` takes
 /// a value of any type a key is made from, as its own type; refused, as a value of no such type, where
@@ -156,22 +153,6 @@ fn places_handed(
                     Unhanded.Unshared,
                 )
         }
-    }
-    overshown(cx, lit, fields)
-}
-
-/// Each entry of the literal `lit` for a member shown over a place, written beside a place handed
-/// that place: what it shows would stand over what the caller already holds, so the two are one
-/// setting too many.
-fn overshown(mut cx: Checking, lit: StructLit, fields: List<FieldSeat>) {
-    for at, f in lit.fields {
-        let seat? = fields.find(it.name == f.of) else { continue }
-        let over? = seat.over else { continue }
-        let placed? = lit.fields.find_index(it.of == over) else { continue }
-        if !fields.any(it.name == over && it.placed) { continue }
-        if !cx.placed(cx.store.unnamed(lit.values[placed])) { continue }
-        let ty? = seat.ty else { continue }
-        cx.unhanded(lit.values[at], ty, lit.name.of, at, "${f.of} ${over}", Unhanded.Overshown)
     }
 }
 
@@ -224,24 +205,9 @@ fn unpinned_literal(
                 want: none,
                 found: none,
                 seat: Seating
-                    .LiteralUnpinned(
-                        lit.name.of,
-                        param,
-                        shown_params(written, open, param, record.params),
-                        unwritten,
-                    ),
+                    .LiteralUnpinned(lit.name.of, param, [spelled(t) for t in written], unwritten),
             },
         )
-}
-
-/// How a literal writing `written` spells its record's `count` type arguments to pin the parameter
-/// `open`, named `param`: each written one as written, `param` in its place, every other `…`.
-fn shown_params(written: List<TypeRef>, open: int, param: string, count: int) -> List<string> {
-    [when {
-        at < written.length -> spelled(written[at])
-        at == open -> param
-        _ -> "…"
-    } for at in 0..count]
 }
 
 /// The record a literal names, applied to the type arguments it writes (`Box<int> { … }`), absent for
@@ -261,20 +227,13 @@ fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType?
 }
 
 /// The value `v` a `with` writes for the field `name` of `subject`, checked against that field: a
-/// field of `@std/meta`'s `Key` as a literal's is; a field its record doesn't have refused at the
-/// value, as a literal's is (`LiteralFault.Unknown`); a value of a subject no field is known of,
-/// freely.
+/// field of `@std/meta`'s `Key` as a literal's is; a value of a subject no field is known of, freely.
 fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
     let held? = subject else {
         let _ = cx.check(v, Expected.Free)
         return
     }
     let field? = cx.field_of(held, name) else {
-        let record = cx.record_of(held)
-        if record != null && !cx.store.refused_elsewhere(v) {
-            cx
-                .literal_refused(v, LiteralFault.Unknown(held.spelled(), name, [f.name for f in record!.fields]))
-        }
         let _ = cx.check(v, Expected.Free)
         return
     }
@@ -283,28 +242,12 @@ fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
 }
 
 impl Checks for With {
-    /// `r with { f: v }` is `r`'s record, each value checked against its field; a component's `state`
-    /// seat or member written takes a place, as the instance's own block writes it.
+    /// `r with { f: v }` is `r`'s record, each value checked against its field.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
         let _ = cx.seals(e, subject, "copied with new fields here")
         if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return subject }
         for at, v in self.values { written(cx, subject, v, self.fields[at].of) }
-        let record = if subject == null { null } else { cx.record_of(subject!) }
-        let fields = record?.fields ?? []
-        for at, f in self.fields {
-            let seat? = fields.find(it.name == f.of && it.placed) else { continue }
-            let ty? = seat.ty else { continue }
-            cx
-                .state_seat_handed(
-                    cx.store.unnamed(self.values[at]),
-                    ty,
-                    subject!.spelled(),
-                    at,
-                    f.of,
-                    Unhanded.Unshared,
-                )
-        }
         subject
     }
 }

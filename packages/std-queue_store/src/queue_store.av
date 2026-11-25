@@ -54,19 +54,16 @@ use @std.relation.shape.{Descriptor, Verdict, descriptor_unspelled, verdict}
 use @std.relation.stable.{CodecFault, Reader, Writer, decoded_with, encoded_with, indexed_scope}
 use @std.sqlite.{Db, Durability, Journal, OpenConfig, Sql, SqlValue, prepared, sql}
 use @std.text.{parse_int}
-use @std.time.{Duration, Time, mins, nanos, now}
+use @std.time.{Duration, Time, mins, now}
 use fault.{ask_again, homed}
 use rows.{
     count_standing,
-    found_due,
-    items_stand,
     order_code,
     overflow_code,
     read_mark,
     tables_made,
     take_next,
     terms_kept,
-    untaken_index,
     waiting_index,
 }
 use tx.{begun, freed}
@@ -228,11 +225,11 @@ fn kept_terms(queue: string, terms: Terms, dedupe: Duration, shape: int) -> List
     [
         .Text(queue),
         .Int(terms.capacity),
-        .Int(terms.lease.ns),
+        .Int(terms.lease.ms()),
         .Int(terms.retries),
         .Int(overflow_code(terms.overflow)),
         .Int(order_code(terms.order)),
-        .Int(dedupe.ns),
+        .Int(dedupe.ms()),
         at(now()),
         .Int(shape),
     ]
@@ -242,18 +239,14 @@ fn kept_terms(queue: string, terms: Terms, dedupe: Duration, shape: int) -> List
 /// A queue's count is not among them: one that is missing is counted
 /// from the rows at its first send.
 fn made(db: Db, terms: Terms) -> Result<bool, HomeError> {
-    let _ = tables_made(db)?
+    let _ = homed(tables_made(db))?
     if terms.overflow == Overflow.latest { let _ = homed(db.run(sql(waiting_index)))? }
-    if terms.overflow == Overflow.latest || terms.overflow == Overflow.drop_oldest {
-        let _ = homed(db.run(sql(untaken_index)))?
-    }
     true
 }
 
 /// The tables a home reads where they all stand; refused, and undone,
 /// where one would be made.
 fn unmade(db: Db, terms: Terms) -> Result<bool, HomeError> {
-    if !items_stand(db)? { return .Err(opened_inside()) }
     let before = changes(db)?
     let _ = made(db, terms)?
     if changes(db)? != before { return .Err(opened_inside()) }
@@ -431,7 +424,10 @@ impl Store<T> {
     fn ready_after(after: Duration) -> Result<Time?, HomeError> {
         if after.ns <= 0 { return .Ok(null) }
         let _ = delay_terms(self.terms)?
-        .Ok((self.clock)().plus_held(after))
+        let now = (self.clock)()
+        .Ok(
+            if after.ns > last_instant - now.ns { Time { ns: last_instant } } else { now.plus(after) },
+        )
     }
 
     /// Send many items as one transaction, answering each as `send`
@@ -477,7 +473,7 @@ impl Store<T> {
         eased(
             self.db,
             self.eases,
-            () -> self.over_held(let_go, d, [at((self.clock)().plus_held(after))]),
+            () -> self.over_held(let_go, d, [at((self.clock)().plus(after))]),
         )
     }
 
@@ -626,7 +622,6 @@ impl Store<T> {
             .Blob(body),
             at(now),
             .Int(ready?.ns ?? first_instant),
-            if ready == null { at(now) } else { .Null },
         ]
         let roomy = sql(file_in_room, [..row, .Int(self.terms.capacity)])
         if homed(self.db.run(roomy))? == 1 || self.recounted()? && homed(self.db.run(roomy))? == 1 {
@@ -665,12 +660,10 @@ impl Store<T> {
 
     // ── Taking ──
 
-    /// The takes of one call, each at the call's one instant, once every
-    /// row whose due instant passed is put in line. An item is handed out
-    /// once in a call, however soon its hold is over.
+    /// The takes of one call, each at the call's one instant. An item
+    /// is handed out once in a call, however soon its hold is over.
     fn leased(max: int) -> Result<List<Delivery<T>>, HomeError> {
         let now = (self.clock)()
-        let _ = homed(self.db.run(sql(found_due, [.Text(self.queue), at(now)])))?
         mut out: List<Delivery<T>> = []
         while out.length < max {
             let d? = self.next(now, if out.is_empty() { now } else { self.lapse_after(now) })? else {
@@ -685,8 +678,8 @@ impl Store<T> {
     /// it out again: now, or the instant before the holds the call
     /// gives end, where a hold is over the moment it is given.
     fn lapse_after(now: Time) -> Time {
-        let ends = now.plus_held(self.terms.lease)
-        if ends.ns > now.ns { now } else { ends.plus_held(nanos(-1)) }
+        let ends = now.plus(self.terms.lease)
+        if ends.ns > now.ns { now } else { Time { ns: ends.ns - 1 } }
     }
 
     /// Lease the oldest item that is due, that the order term lets stand
@@ -719,7 +712,7 @@ impl Store<T> {
     /// Let go a row a newer build wrote, due again once `yields` passed
     /// and no sooner than the next instant: its attempt stands as it was.
     fn yielded(row: Leased, now: Time) -> Result<int, HomeError> {
-        let due = now.plus_held(if self.yields.ns > 0 { self.yields } else { nanos(1) })
+        let due = Time { ns: now.ns + if self.yields.ns > 0 { self.yields.ns } else { 1 } }
         homed(self.db.run(sql(let_go, [.Int(row.id), .Text(self.queue), .Int(row.epoch), at(due)])))
     }
 
@@ -733,7 +726,7 @@ impl Store<T> {
                     take_next,
                     [
                         .Text(self.reader),
-                        at(now.plus_held(self.terms.lease)),
+                        at(now.plus(self.terms.lease)),
                         .Text(self.queue),
                         at(now),
                         .Int(whole_queue(self.terms.order)),
@@ -796,7 +789,7 @@ impl Store<T> {
         eased(
             self.db,
             self.eases,
-            () -> self.over_held(hold_on, d, [at((self.clock)().plus_held(self.terms.lease))]),
+            () -> self.over_held(hold_on, d, [at((self.clock)().plus(self.terms.lease))]),
         )
     }
 
@@ -860,25 +853,26 @@ const back: string = "ROLLBACK TO \"flow_step\""
 
 const find_shape: string = "SELECT \"descriptor\" FROM \"FlowShape\" WHERE \"hash\" = ?1"
 
-/// A shape's descriptor, kept as the home opened last spells it: an
-/// earlier build's spelling of the same shape is written over.
-const know_shape: string = "INSERT INTO \"FlowShape\" (\"hash\", \"descriptor\") VALUES (?1, ?2) ON CONFLICT (\"hash\") DO UPDATE SET \"descriptor\" = excluded.\"descriptor\" WHERE \"descriptor\" <> excluded.\"descriptor\""
+const know_shape: string = "INSERT OR IGNORE INTO \"FlowShape\" (\"hash\", \"descriptor\") VALUES (?1, ?2)"
 
 /// The least instant there is: the `ready_at` of an item due from the
 /// first.
 const first_instant: int = 0 - 9223372036854775807 - 1
 
-const file_item: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"in_line\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0)"
+/// The last instant there is: the `ready_at` of an item held back past
+/// the range.
+const last_instant: int = 9223372036854775807
 
-/// The row is written only while fewer than `?8` items of its queue
+const file_item: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)"
+
+/// The row is written only while fewer than `?7` items of its queue
 /// wait, as its count says: a queue with no count takes no row.
-const file_in_room: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"in_line\", \"attempt\", \"epoch\") SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0 WHERE (SELECT \"waiting\" FROM \"FlowRoom\" WHERE \"queue\" = ?1) < ?8"
+const file_in_room: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, 0 WHERE (SELECT \"waiting\" FROM \"FlowRoom\" WHERE \"queue\" = ?1) < ?7"
 
 const drop_row: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = ?1"
 
-/// The oldest waiting item goes: the older of the oldest in line and
-/// the oldest of the rows that wait for their due instant.
-const drop_oldest: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = (SELECT min(\"id\") FROM (SELECT \"id\" FROM (SELECT \"id\" FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"in_line\" IS NOT NULL AND \"epoch\" = 0 ORDER BY \"id\" LIMIT 1) UNION ALL SELECT min(\"id\") FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" IS NULL AND \"in_line\" IS NULL AND \"epoch\" = 0))"
+/// The oldest waiting item goes, read from the rows no reader holds.
+const drop_oldest: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = (SELECT \"id\" FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"leased_until\" IS NULL AND \"epoch\" = 0 ORDER BY \"id\" LIMIT 1)"
 
 /// The oldest waiting item of the key `?2` goes.
 const drop_same: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = (SELECT \"id\" FROM \"FlowItem\" WHERE \"queue\" = ?1 AND \"key\" = ?2 AND \"epoch\" = 0 ORDER BY \"id\" LIMIT 1)"

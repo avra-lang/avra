@@ -1,0 +1,29 @@
+use @std.time.{ms, sleep, now_ms}
+
+fn slow(left: Cell<string>, name: string, span: int) -> int {
+    defer left.set(left.get() + "${name}-left ")
+    sleep(ms(span))
+    left.set(left.get() + "${name}-done ")
+    1
+}
+
+fn by_task(left: Cell<string>, open: bool) -> int {
+    select {
+        r in spawn slow(left, "d", 10) -> r
+        r in spawn slow(left, "e", 900) if open -> r + 10
+    }
+}
+
+fn told(f: fn(Cell<string>) -> int) -> string {
+    let left = Cell.new("")
+    let r = f(left)
+    "${r}: ${left.get()}"
+}
+
+let t0 = now_ms()
+let direct = Cell.new("")
+let _ = by_task(direct, true)
+println("direct: ${direct.get()} in ${now_ms() - t0}")
+sleep(ms(1200))
+println("later: ${direct.get()}")
+println("through: ${told((l: Cell<string>) -> by_task(l, true))}")

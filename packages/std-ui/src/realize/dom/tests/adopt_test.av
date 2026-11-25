@@ -27,7 +27,7 @@ fn counting(n: int) -> Node {
 fn adopted_over(print: int, root: Node) -> List<Patch> {
     let page = live()
     page.stood.set(print)
-    page.patches(root)
+    page.patches(root, default_theme)
 }
 
 fn is_listen(p: Patch) -> bool {
@@ -49,16 +49,16 @@ fn kept_kinds(p: Patch?) -> List<string>? {
 spec "std/ui dom — a server's page, adopted" {
     given "the print" {
         then "the same tree folds to the same print" {
-            hydration(counting(1)).print == hydration(counting(1)).print
+            hydration(counting(1), default_theme).print == hydration(counting(1), default_theme).print
         }
         then "a word that differs folds to another print" {
-            hydration(counting(1)).print != hydration(counting(2)).print
+            hydration(counting(1), default_theme).print != hydration(counting(2), default_theme).print
         }
-        then "a print is never zero, which is the word for none" { hydration(counting(1)).print > 0 }
+        then "a print is never zero, which is the word for none" { hydration(counting(1), default_theme).print > 0 }
     }
     given "a page whose print the tree draws" {
         then "the first paint is the adoption and listeners alone" {
-            let h = hydration(counting(1))
+            let h = hydration(counting(1), default_theme)
             let patches = adopted_over(h.print, counting(1))
             let names = kept_kinds(patches.first()) ?? []
             names.length > 3 &&
@@ -66,23 +66,23 @@ spec "std/ui dom — a server's page, adopted" {
                 patches.slice(1, patches.length).all(is_listen(it))
         }
         then "the next paint of the same tree says nothing" {
-            let h = hydration(counting(1))
+            let h = hydration(counting(1), default_theme)
             let page = live()
             page.stood.set(h.print)
-            let _ = page.patches(counting(1))
-            page.patches(counting(1)).is_empty()
+            let _ = page.patches(counting(1), default_theme)
+            page.patches(counting(1), default_theme).is_empty()
         }
         then "the next paint of a changed tree says only the change" {
-            let h = hydration(counting(1))
+            let h = hydration(counting(1), default_theme)
             let page = live()
             page.stood.set(h.print)
-            let _ = page.patches(counting(1))
-            page.patches(counting(2)).length == 1
+            let _ = page.patches(counting(1), default_theme)
+            page.patches(counting(2), default_theme).length == 1
         }
     }
     given "a page whose print the tree does not draw" {
         then "the first paint empties what the host holds and draws it all" {
-            let h = hydration(counting(1))
+            let h = hydration(counting(1), default_theme)
             let patches = adopted_over(h.print, counting(2))
             let names = kept_kinds(patches.first())
             names != null && names!.is_empty() && patches.length > 10
@@ -90,32 +90,32 @@ spec "std/ui dom — a server's page, adopted" {
     }
     given "a page a host asked to draw again" {
         then "it is drawn whole, with no adoption in the frame" {
-            let h = hydration(counting(1))
+            let h = hydration(counting(1), default_theme)
             let page = live()
             page.stood.set(h.print)
-            let _ = page.patches(counting(1))
+            let _ = page.patches(counting(1), default_theme)
             page.reset()
-            let patches = page.patches(counting(1))
+            let patches = page.patches(counting(1), default_theme)
             kept_kinds(patches.first()) == null && patches.length > 10
         }
         then "it says again what the host was told of each seat, whose first frame the host dropped" {
             let page = live()
-            let _ = page.paint(counting(1))
+            let _ = page.paint(counting(1), default_theme)
             let told = !page.told.get().is_empty()
             page.reset()
             told && page.told.get().is_empty()
         }
         then "it says its sheet again" {
             let page = live()
-            let _ = page.patches(counting(1))
+            let _ = page.patches(counting(1), default_theme)
             page.reset()
-            page.patches(counting(1)).any(styles(it))
+            page.patches(counting(1), default_theme).any(styles(it))
         }
     }
     given "words that differ only past ASCII" {
         then "fold to different prints" {
-            let a = hydration(tree_of(text "café")).print
-            let b = hydration(tree_of(text "cafe")).print
+            let a = hydration(tree_of(text "café"), default_theme).print
+            let b = hydration(tree_of(text "cafe"), default_theme).print
             a != b
         }
     }

@@ -59,27 +59,22 @@ export enum UnOp { Not, ToInt(Rounding), ToFloat }
 @derive(Fingerprint)
 @codec
 @derive(Saved)
-export enum RtFlag { Unwinding, Tick, Frame, Heard }
+export enum RtFlag { Unwinding, Tick, Frame }
 
 /// The runtime's own name for the flag's cell.
 export fn flag_symbol(f: RtFlag) -> string {
-    match f {
-        .Unwinding -> "avra_unwinding",
-        .Tick -> "avra_tick",
-        .Frame -> "avra_ctx_now",
-        .Heard -> "avra_ctx_heard_now",
-    }
+    match f { .Unwinding -> "avra_unwinding", .Tick -> "avra_tick", .Frame -> "avra_ctx_now" }
 }
 
 /// The flag's word in the IR's text.
 export fn flag_word(f: RtFlag) -> string {
-    match f { .Unwinding -> "unwinding", .Tick -> "tick", .Frame -> "frame", .Heard -> "heard" }
+    match f { .Unwinding -> "unwinding", .Tick -> "tick", .Frame -> "frame" }
 }
 
 /// What a read of the flag answers: a byte's bit as a truth, or the running task's frame as the word
 /// it is.
 export fn flag_layout(f: RtFlag) -> Layout {
-    match f { .Unwinding or .Tick -> Layout.Truth, .Frame or .Heard -> Layout.Word }
+    match f { .Unwinding or .Tick -> Layout.Truth, .Frame -> Layout.Word }
 }
 
 /// The operator's surface symbol — the projection beside its enum.
@@ -681,14 +676,11 @@ fn slot_code_sym(c: Slot) -> List<string> {
 /// per-file module knows which of them it owns. `debug` marks data a program READS but
 /// that is no part of what its code DOES — a body's frame, whose label and
 /// declaration span move when a line above the body is written — so the code
-/// graph resolves a reference to it without hashing it. `at_item` is the item of `home` whose start a
-/// frame's site counts its offsets from, absent where they count from the file's; such a frame is
-/// placed in its file before a program reads it. `elsewhere` marks one another module defines: this
-/// one declares it and reads it there.
+/// graph resolves a reference to it without hashing it.
 @derive(Fingerprint)
 @codec
 @derive(Saved)
-export type Static = { name: string, boxes: List<StaticBox>, home: string? = null, debug: bool = false, at_item: int? = null, elsewhere: bool = false }
+export type Static = { name: string, boxes: List<StaticBox>, home: string? = null, debug: bool = false }
 
 /// Which instructions BRACKET a region — kept beside the enum, like
 /// every fact about it, so no consumer re-derives the list.
@@ -991,9 +983,6 @@ export enum RtHost {
     /// workspace directly, the one row whose C body is never its
     /// real answer.
     TypeNamed
-    /// A declared FN, by the identity an annotation that names it carries: answered as the
-    /// interpreter's arm reaches the workspace, and natively a trap, as `TypeNamed` is.
-    FnDeclared
     /// A program's own trap, in its words. A settlement records it as the
     /// const's refusal and goes on; a running program exits.
     Trap
@@ -1038,19 +1027,10 @@ export enum RtHost {
     CtxRead
     CtxSet
     CtxBack
-    /// The frame a body is made under: the one in force, one entered, one pushed onto a box as its
-    /// frame, and a box under another.
+    /// The frame a body is made under: the one in force, one entered, and a fn box under another.
     CtxFrame
     CtxEnter
-    CtxFramePushed
     CtxReframed
-    CtxEntry
-    CtxHeard
-    CtxListen
-    CtxListened
-    CtxHolds
-    CtxHeardDrop
-    CtxReheard
     TaskId
     /// Who asked the cancel that ended a task, or its own id for an
     /// answer: the record `avra_task_ended_by` reads.

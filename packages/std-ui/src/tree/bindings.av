@@ -4,6 +4,7 @@
 //! event bubbles up a page. The chain is read off the tree by the focused
 //! node's seat, the number the walk gives it.
 use tree.chord.{Chord, chord, parsed}
+use tree.lists.{flatten}
 use tree.node.{Node}
 use tree.seats.{seat_named}
 
@@ -44,7 +45,7 @@ fn held_by(n: Node) -> List<Binding> {
 /// The bindings live while the node at `seat` has the focus, nearest first;
 /// the root's alone when `seat` is none.
 export fn live(root: Node, seat: int?) -> List<Binding> {
-    [held_by(n) for n in chain(root, 0, seat ?? 0)].flatten()
+    flatten([held_by(n) for n in chain(root, 0, seat ?? 0)])
 }
 
 /// The binding the chord `c` meets, or none: the nearest live one that names it.
@@ -57,9 +58,8 @@ export fn names(root: Node, seat: int?, c: Chord) -> bool { meeting(root, seat, 
 
 /// The words that say why each key under `n` is dead: its chord is none.
 export fn dead_keys(n: Node) -> List<string> {
-    [dead(k) for k in n.children if !k.drawn()]
-        .flatten()
-        .concat([dead_keys(c) for c in n.children].flatten())
+    flatten([dead(k) for k in n.children if !k.drawn()])
+        .concat(flatten([dead_keys(c) for c in n.children]))
 }
 
 fn dead(k: Node) -> List<string> {

@@ -68,8 +68,6 @@ impl Lowering {
         let signed? = (self.program.checked.method_of)(subject, name) else { return null }
         mut found: Map<string, SignedType> = {}
         if signed.seats.is_empty() || !signed.seats[0].ty.unifies(subject, found) { return null }
-        for i, a in subject.args { if !found.has("${i}") { found.set("${i}", a) } }
-        for j, p in self.method_pins(e) { found.set("${subject.args.length + j}", self.written(p)) }
         if callee.type_params > subject.args.length &&
             !self.own_pinned(signed, callee, args, e, found) { return null }
         let filled = defaulted(found, (self.program.checked.method_params)(subject, name).defaults)
@@ -77,12 +75,6 @@ impl Lowering {
         if fills.any(it == null) { return null }
         self
             .laid_unit(callee, [f! for f in fills], [s.ty.filled(filled) for s in signed.seats.drop(1)])
-    }
-
-    /// The type arguments the method call at `e` writes after its name; none where there's no call.
-    fn method_pins(e: ExprId?) -> List<TypeRef> {
-        let at? = e else { return [] }
-        self.store.struct_targs_of(at)
     }
 
     /// Whether a call at `e` of the method `callee`, of the fn type `signed`, handing it `args` pins
@@ -115,18 +107,15 @@ impl Lowering {
     }
 
     /// `callee`, a generic fn of the fn type `signed`, as the unit a call of it at `e` pinning `pins`
-    /// and handing it `args` reaches, as `instantiated` says; `applied` lays out its leading type
-    /// parameters first, as an applied type lays out the parameters of a static fn it's reached on.
+    /// and handing it `args` reaches, as `instantiated` says.
     fn instantiated_as(
         callee: CalledFn,
         signed: SignedType,
         pins: List<TypeRef>,
         args: List<ExprId>,
         e: ExprId,
-        applied: List<SignedType> = [],
     ) -> CalledFn? {
         mut found: Map<string, SignedType> = {}
-        for i, t in applied { found.set("${i}", t) }
         for i, p in pins { found.set("${i}", self.written(p)) }
         for pair in self.seat_pairs(signed, callee, args) {
             if !pair.seat.generic() { continue }

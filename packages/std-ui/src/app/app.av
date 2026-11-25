@@ -10,6 +10,8 @@ use tree.node.{Node, Prim, Attribute, Urgency}
 use style.box.{Box}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
+use style.theme.{Theme, default_theme}
+use style.contrast.{legible}
 use @std.http_message.message.{Reply, Request}
 
 /// Whatever may change the program's state, as the door takes it: it
@@ -86,7 +88,8 @@ export type Door = {
 /// passed on yet.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
-    show: fn(Node) -> void,
+    theme: Cell<fn() -> Theme>,
+    show: fn(Node, Theme) -> void,
     stands: Standing,
     told: Cell<List<string>>,
     door: Cell<Door?>,
@@ -134,10 +137,15 @@ export fn notice_node(words: string) -> Node {
     }
 }
 
-/// `view`, shown by `show`: the tree a paint draws carries the theme it is drawn in (`ctx theme`).
-export fn app<V: View>(view: fn() -> V, show: fn(Node) -> void) -> App {
+/// The theme of an app that names none: Crisp, every pair of which clears
+/// its contrast bar or this package does not build.
+@legible(default_theme)
+export fn plain() -> Theme { default_theme }
+
+/// `view` under `theme`, shown by `show`.
+export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
     let nothing: List<Owner> = []
-    owned_app(view, show, Cell.new(nothing))
+    owned_app(view, theme, show, Cell.new(nothing))
 }
 
 /// `app`, whose target keeps `on_screen` — the owner keys of the controls
@@ -145,7 +153,8 @@ export fn app<V: View>(view: fn() -> V, show: fn(Node) -> void) -> App {
 /// is: a control's path where the tree is held, a node's number on a page.
 export fn owned_app<V: View>(
     view: fn() -> V,
-    show: fn(Node) -> void,
+    theme: fn() -> Theme,
+    show: fn(Node, Theme) -> void,
     on_screen: Cell<List<Owner>>,
     stands: Standing = standing(),
 ) -> App {
@@ -156,6 +165,7 @@ export fn owned_app<V: View>(
     let nobody: string? = null
     App {
         view: Cell.new(drawn),
+        theme: Cell.new(theme),
         show: show,
         stands: stands,
         told: Cell.new(untold),
@@ -180,11 +190,14 @@ export fn owned_app<V: View>(
     }
 }
 
-/// `on` shows `view` from now on: the same app on the same
+/// `on` shows `view` under `theme` from now on: the same app on the same
 /// target, so a paint already under way paints this view, never the one
 /// it replaced. What stood stays on offer: an instance the new view
 /// reaches where the old one had it keeps its state.
-export fn remounted<V: View>(on: App, view: fn() -> V) { on.view.set((at: Standing) -> rooted(view().describe(at))) }
+export fn remounted<V: View>(on: App, view: fn() -> V, theme: fn() -> Theme) {
+    on.view.set((at: Standing) -> rooted(view().describe(at)))
+    on.theme.set(theme)
+}
 
 impl App {
     /// The view as the state stands now, shown. The walk opens the
@@ -194,6 +207,7 @@ impl App {
         self.dirty.set(false)
         self.walks.set(self.walks.get() + 1)
         let view = self.view.get()
+        let theme = self.theme.get()
         self.stands.begun()
         let before = self.standing.get()
         self.painting.set(true)
@@ -202,7 +216,7 @@ impl App {
         self.observed.released(self.walks.get())
         hung_up(self)
         for w in dead_keys(root) { self.stands.says(w) }
-        self.show(root)
+        self.show(root, theme())
         let joined = self.joined(before)
         if joined { self.refuse(joined_by_order()) }
         if joined || standers(before) != standers(self.standing.get()) { self.woken() }

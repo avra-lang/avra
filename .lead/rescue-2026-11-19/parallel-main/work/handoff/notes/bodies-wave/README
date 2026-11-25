@@ -1,0 +1,26 @@
+BODIES-WAVE TABLE — how it was measured (avra-lane-parallel-main)
+
+1. Engine clock, exact, every family (no perf needed)
+   measure.patch (on 323fe0a1; std-program only):
+     - QueryTimes.spoken_ms(): every family, own/whole in ms, asks; the core report line uses it.
+     - decode tallies (optional): where each answer read back came from (draft/packs/machine/wave/cell)
+       and its decode time; printed as "decoded: ..." on each core line.
+   Build:   git apply measure.patch && make try          (AVRA_FRAME_POINTERS=1 for step 2)
+   Run:     cold; AVRA_QUERY_TIMES=1 AVRA_PROGRAM_NET=0 build/avra-try build packages/cli > log 2>&1
+   Table:   python3 families.py log [top-N]
+   Note: AVRA_QUERY_TIMES itself costs ~2.6 CPU-s in the bodies wave (QueryTimes.opened/closed).
+
+2. What the CPU does inside the families (perf, frame-pointer build)
+   AVRA_FRAME_POINTERS=1 make try (in a separate worktree), then
+     perf record -F 250 --call-graph fp -o bw.data -- build/avra-try build packages/cli
+     perf script -i bw.data -F pid,tid,time,ip,sym > bw.script
+     python3 bwsplit3.py bw.script
+   bwsplit3.py: bodies-wave cores = processes whose stacks pass law_findings, the main process left out.
+   Each sample goes to its innermost Avra frame: std-program engine code by role (records/frontier,
+   memo tables, decode, encode, hash, key fold, store), else the query whose *_compute frame encloses it.
+
+3. Whole-build critical path (busy vs idle per phase)
+   sh sample.sh tl <cmd...>          # per-process CPU every 0.25 s
+   python3 timeline.py tl 2          # busy cores per 2 s window
+   python3 critical.py tl            # serial stretches and waves, idle core-seconds
+   Wave waits on claims: each core's "waited Nms: <family> ..." on its core line (AVRA_QUERY_TIMES=1).

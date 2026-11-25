@@ -1,38 +1,24 @@
 //! The typing rules of a component instance: one a component expands is what its meaning is — the
-//! literal under the `check` call where its component judges it — and a named one of a generic
-//! component binds its name to it;
+//! literal under the `check` call where its component judges it;
 //! else its heads and block check for what they are, and an instance is the component's type, which
 //! a named instance binds its name to; an instance fn binds its seats in a fenced scope over its
 //! statements.
-use core.{
-    Checking,
-    Checks,
-    ExprId,
-    Expected,
-    OwnType,
-    Seating,
-    SignedType,
-    TypeHead,
-    TypeRef,
-    headed_type,
-}
+use core.{Checking, Checks, ExprId, Expected, OwnType, SignedType, TypeHead, TypeRef, headed_type}
 use core.expr.{Component}
 
 impl Checks for Component {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let expanded = cx.store.meant(e)
-        if expanded != null && (self.name == null || generic_instance(cx, self.word)) {
+        if expanded != null && self.name == null {
             let meant = cx.meaning_checked(e, expanded!, expected)
             fate_judged(cx, e, meant)
-            if self.name != null { cx.bind(self.name!.text(), meant ?? instance_type(cx, self.word, self.targs)) }
             return meant
         }
         cx.checked_free(self.heads)
         if self.key != null { let _ = cx.check(self.key!, Expected.Free) }
-        let instance = instance_type(cx, self.word, self.targs)
-        if instance != null && self.body != null { settings_seated(cx, instance!, self.body!) }
         if self.body != null { let _ = cx.check(self.body!, Expected.Unknown) }
-        if self.name != null { cx.bind(self.name!.text(), instance) }
+        let instance = instance_type(cx, self.word, self.targs)
+        if self.name != null { cx.bind(self.name!.of, instance) }
         instance
     }
 }
@@ -43,7 +29,7 @@ impl Checks for InstanceFn {
         for p in self.seats {
             cx
                 .bind(
-                    p.name.text(),
+                    p.name.of,
                     if p.ty == null { null } else { cx.written(p.ty!) },
                     false,
                     p.promises.mutable || p.state,
@@ -56,36 +42,17 @@ impl Checks for InstanceFn {
 }
 
 /// The type an instance of the component `word` is: the component, applied to the type arguments
-/// written — a prefix, the rest left to its fields — absent when the word names no component the
-/// program declares.
+/// written; absent when the word names no component the program declares.
 fn instance_type(cx: Checking, word: string, targs: List<TypeRef>) -> SignedType? {
     let named = cx.type_named(word, null)
     match named.head {
-        .Declared(_, _) -> named with { args: [cx.written(t) for t in targs].concat(inferred_args(cx, named).drop(targs.length)) },
+        .Declared(_, _) -> named with { args: if targs.is_empty() { inferred_args(cx, named) } else { [cx.written(t) for t in targs] } },
         rest -> null,
     }
 }
 
-/// Each setting the block `body` writes, its value checked against the field of `instance` it names:
-/// what every instance's settings owe their declared types.
-fn settings_seated(mut cx: Checking, instance: SignedType, body: ExprId) {
-    let record? = cx.record_of(instance) else { return }
-    for s in cx.store.block_stmts(body) ?? [] {
-        let set? = cx.store.setting_parts(s) else { continue }
-        let seat? = record.fields.find(it.name == set.name)?.ty else { continue }
-        let _ = cx.check_seated(set.value, seat.bound(instance.args), Seating.Field(set.name))
-    }
-}
-
-/// Whether `word` names a component that declares type parameters: a named instance of one is its
-/// meaning, which alone says what its fields make of the parameters its written arguments leave.
-fn generic_instance(cx: Checking, word: string) -> bool {
-    let named = cx.type_named(word, null)
-    cx.record_of(named)?.params ?? 0 > 0
-}
-
-/// The type arguments an instance leaves its component's parameters: each one the instance's fields
-/// decide, so inferred.
+/// The type arguments an instance that writes none leaves its component's parameters: each one the
+/// instance's fields decide, so inferred.
 fn inferred_args(cx: Checking, declared: SignedType) -> List<SignedType> {
     [headed_type(TypeHead.Inferred) for _p in 0..cx.record_of(declared)?.params ?? 0]
 }

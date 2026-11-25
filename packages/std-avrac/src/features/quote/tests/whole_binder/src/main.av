@@ -1,21 +1,17 @@
 // proves: a quote pattern that is one code binder binds the whole subject, never a node under it —
 // a statement standing for a struct literal binds the statement, so it is no struct literal.
-use @std.avrac.testing.{judged}
-use @std.avrac.testing.held.{RuleItem}
+use @std.avrac.compiler.{analyze_source}
 use @std.avrac.core.{At}
 use @std.avrac.features.{Code}
 
-/// The first item of a one-line program, as a rule reads it on the program layer.
-fn item_of(src: string) -> RuleItem { judged(src).rule_items("/alone/src/main.av")[0] }
-
 fn stmt_of(src: string) -> Code {
-    let i = item_of(src)
-    Code { of: i.file, at: At.Stmt(i.stmts[0]) }
+    let a = analyze_source(src)
+    a.code_at(At.Stmt(a.view.stmts[0]))
 }
 
 fn expr_of(src: string) -> Code {
-    let i = item_of(src)
-    Code { of: i.file, at: At.Expr(i.file.view.store.answer_of(i.stmts[0])!) }
+    let a = analyze_source(src)
+    a.code_at(At.Expr(a.view.store.answer_of(a.view.stmts[0])!))
 }
 
 fn literal(c: Code) -> bool { match c { quote { ${x} } -> x.is_struct_lit(), _ -> false } }

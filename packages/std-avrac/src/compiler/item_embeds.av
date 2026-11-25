@@ -2,7 +2,7 @@
 //! computed, stands outside the package, names a package this one doesn't reach, or names a file
 //! that isn't there, is reached through a link, or isn't the text `embed` answers. Judged at the
 //! literal by the one embed place (`embed_file`), the file read as the build's own input.
-use core.{scoped, EmbedBase, ExprId, Scoped, SyntaxArena}
+use core.{EmbedBase, ExprId, SyntaxArena}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.{EmbedFault, embed_file}
@@ -19,7 +19,7 @@ type EmbedJudged = { kind: string, found: Found }
 
 /// Each call in the written item `at` of `file` of `@std/meta`'s `embed` or `provided` whose literal
 /// the embed law refuses.
-fn embeds_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<EmbedJudged> {
+fn embeds_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<EmbedJudged> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
@@ -29,7 +29,7 @@ fn embeds_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
 /// Each file the written items of `file` read as data: the one each embedding call's literal names,
 /// where it names one — what a build of `file` reads besides its sources.
 export fn file_embedded(engine: QueryEngine, file: SourceFileAddress) -> List<SourceFileAddress> {
-    [a for at in item_ids(engine, file) for a in item_embedded(engine, file, read_item(engine, file, at).store)]
+    [a for at in 0..item_count(engine, file) for a in item_embedded(engine, file, read_item(engine, file, at).store)]
 }
 
 fn item_embedded(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena) -> List<
@@ -76,26 +76,18 @@ fn embedding_base(
     file: SourceFileAddress,
     store: SyntaxArena,
     e: ExprId,
-    callee: Scoped,
+    callee: string,
 ) -> EmbedBase? {
-    let base? = embedding_fns().find(it.name == callee)?.base else { return null }
+    let base? = match callee {
+        "embed" -> EmbedBase.Beside,
+        "provided" -> EmbedBase.Root,
+        _ -> null,
+    } else { return null }
     for f in read_from(engine, file, store.home_of(e)) {
-        let named? = resolved(engine, f, Space.Value, callee.text()).named() else { continue }
+        let named? = resolved(engine, f, Space.Value, callee).named() else { continue }
         return if named.file.package_name == META_PACKAGE { base } else { null }
     }
     null
-}
-
-/// An embedding fn of `@std/meta` by its name, and where it reads its file from.
-type EmbeddingFn = { name: Scoped, base: EmbedBase }
-
-/// `@std/meta`'s embedding fns, `embed` reading beside the source and `provided` from the package's
-/// root, their names minted once a process.
-once fn embedding_fns() -> List<EmbeddingFn> {
-    [
-        EmbeddingFn { name: scoped("embed"), base: EmbedBase.Beside },
-        EmbeddingFn { name: scoped("provided"), base: EmbedBase.Root },
-    ]
 }
 
 /// What is wrong with the file the literal `rel`, written in `file`, names from `base`; absent where
@@ -140,15 +132,15 @@ fn kept_fault(a: List<string>) -> EmbedFault {
 }
 
 /// The findings of one kind in the written item `at` of `file`.
-fn embeds_of(kind: string, engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn embeds_of(kind: string, engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [j.found for j in embeds_refused(engine, file, at) if j.kind == kind]
 }
 
-fn places_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { embeds_of("type.embed_place", engine, file, at) }
+fn places_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { embeds_of("type.embed_place", engine, file, at) }
 
-fn files_refused(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { embeds_of("type.embed_file", engine, file, at) }
+fn files_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { embeds_of("type.embed_file", engine, file, at) }
 
-fn paths_computed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { embeds_of("type.embed_literal", engine, file, at) }
+fn paths_computed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { embeds_of("type.embed_literal", engine, file, at) }
 
 fn fault_said(a: List<string>) -> Voice {
     embed_fault_voice(

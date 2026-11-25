@@ -1,7 +1,6 @@
 //! Parse-time lowering: the annotation lands on the declaration it
 //! crosses, as a fact; the declaration itself is the node answered.
 use core.{
-    scoped,
     Expr,
     Stmt,
     ExprId,
@@ -32,7 +31,7 @@ fn annotated_written(s: dyn Slots) -> Result<Built, string> {
     let word = mark_word(s.text_of("name")?)
     let named_at? = s.at_of("name")? else { return .Err(no_place()) }
     let args = s.exprs_of("args")?
-    let callee = store.alloc_expr(Expr.Ident(scoped(word)), named_at)
+    let callee = store.alloc_expr(Expr.Ident(Scoped(word)), named_at)
     let _ = applied(store, word, args, s.built_at() ?? named_at)
     store
         .annotate_before(d, Annotation { name: word, callee: callee, args: args, span: s.built_at() })
@@ -79,10 +78,10 @@ fn named_arg(store: SyntaxArena, e: ExprId) -> MarkArg? {
 /// annotation judges and splices the call where it reads it, so the
 /// call is typed there and its refusals point here.
 fn applied(store: SyntaxArena, name: string, args: List<ExprId>, at: Span) -> ExprId {
-    let value = store.alloc_expr(Expr.Ident(scoped("value")), at)
-    let hole = store.alloc_expr(Expr.Ident(scoped("\${0}")), at)
+    let value = store.alloc_expr(Expr.Ident(Scoped("value")), at)
+    let hole = store.alloc_expr(Expr.Ident(Scoped("\${0}")), at)
     store.mark_hole(hole)
-    let call = store.alloc_expr(Expr.Call(scoped(name), [], [hole].concat(args)), at)
+    let call = store.alloc_expr(Expr.Call(Scoped(name), [], [hole].concat(args)), at)
     // placeless, so no doc comment takes it for the declaration it wraps
     let body = [store.alloc_stmt(Stmt.ExprStmt(call))]
     let q = store

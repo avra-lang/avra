@@ -106,7 +106,7 @@ fn main() -> Result<string, HomeError> {
         durable: stored<Email>()
         retries: 5
     }
-    queue<Dead<Email>> undeliverable {
+    queue<Dead<Email, string>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Email>()
     }
@@ -121,7 +121,7 @@ fn main() -> Result<string, HomeError> {
     let tx = transaction(ctx.db)?
     errdefer tx.rollback()
     let _ = homed(tx.db.run(sql("INSERT INTO users (name) VALUES ('grace')")))?
-    let _ = tx.send(emails, receipt(u), id: "receipt-${u.id}")?   // one commit with the user row
+    let _ = emails.send(receipt(u), id: "receipt-${u.id}", tx: tx)?   // one commit with the user row
     let _ = tx.commit()?
 
     let serving = spawn run(sender)
@@ -132,7 +132,7 @@ fn main() -> Result<string, HomeError> {
 
 What Q4 holds, each a case in `tx_test`, `in_tx_test`, `letters_test` or a program:
 
-- `tx.send(q, …)` joins the transaction (it is `q.send(…, tx: tx)`, the spelling a job and a handler's `d.tx` take): its commit delivers the item, its rollback leaves none and frees the name. With `after:` too, the delayed row is written in the transaction: it exists only once that commits, and is due at its instant then. A transaction that ended, one on another connection, and any on a queue with no durable home are refused.
+- `send(…, tx:)` joins the transaction: its commit delivers the item, its rollback leaves none and frees the name. With `after:` too, the delayed row is written in the transaction: it exists only once that commits, and is due at its instant then. A transaction that ended, one on another connection, and any on a queue with no durable home are refused.
 - A worker of this process takes nothing a transaction has not committed: the loop waits while the connection holds one it does not own (`Home.idle`), and a commit rings the queue's bell.
 - `in_tx: true`: the start is counted on its own, then the handler runs inside the transaction its ack ends (`Home.settles`); a failure, a trap, a lease run out or a hold lost by the ack rolls the handler's writes back. One handler transaction stands per connection at a time; the delivery's `tx` is it, and `ctx.db` inside the handler is its connection.
 - `dead:` is a queue. Burying is one transaction, so a letter on the same database holds the item or the queue does. `stored_dead<T>()` makes the letter durable; a worker's `check` refuses a letter that drops.
@@ -142,13 +142,14 @@ Where it still differs from §1, and what closes each gap:
 
 | §1 says | Today | Closed by |
 |---|---|---|
-| `durable: true` | `durable: stored<Email>()` | a NULLABLE seat pinning a call's type argument (`durable: Durable<T>?` does not pin `stored()`; a plain `Durable<T>` seat would); `@std/queue` cannot name the store, so the setting stays a value the store hands over |
+| `durable: true` | `durable: stored<Email>()` | a type argument inferred from the seat that wants it; `@std/queue` cannot name the store, so the setting stays a value the store hands over |
 | no `name:` | `name: "emails"` | a component reading its own instance name |
 | declared at a file's top level | declared inside the fn that sets `ctx db` | a `ctx` read charged where a fn value is called, and top-level instances as declarations (ruled, being built) |
-| `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email>>()` serves |
+| `tx.send(emails, …)` | `emails.send(…, tx: tx)` | a generic method (`impl Tx { fn send<T>(q: queue<T>, …) }` is refused today) |
+| `durable: true` on a letter | `durable: stored_dead<Email>()` | the same seat inference as `durable: true`; `string` carrying the codec, so one `stored<Dead<Email, string>>()` serves |
 | `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
 | `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
-| `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate, with or without an import cycle) |
+| `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
 
 Delayed and recurring work (Q5):
 
@@ -182,61 +183,8 @@ let ticking = spawn nightly.run()
   is skipped. A wait that wakes past a tick by more than `catch_up` fires `missed`. A clock
   that steps back sends no tick twice. `check` refuses `catch_up` longer than a durable
   queue's `dedupe`.
-- At the last instant a take, a renewed hold and a release are held to it (`Time.plus_held`),
-  so a clock at the range's end hands an item out and back without a trap.
-- A free row is IN LINE or it WAITS. `in_line: Time?` is set by a plain send and by the take
-  that finds a waiting row due, and cleared by the take that leases it; a delayed send, a
-  release and a let-go leave it absent. So the take reads two indexes and walks neither past
-  rows not yet due: `@index(present: in_line) queue` (the line, in send order) and
-  `@index(queue, present: leased_until) leased_until` (the leases). Each take call first puts
-  in line every waiting row due by its instant (`found_due`, one `UPDATE` over `FlowItem_held`,
-  DDL `(queue, ready_at) WHERE leased_until IS NULL AND in_line IS NULL`: two absences no field
-  mark says, and a mark for both would copy two facts the row holds). A row is put in line
-  once, so 10 000 rows due at once cost one walk, ~47 steps a row, and are handed out by their
-  send. The line branch still asks `ready_at <= now`, so a row put in line before the clock
-  stepped back waits again. The taken and waiting indexes stay DDL, their rows said by `epoch`.
-- A home opens over an earlier build's database with `FlowItem.migrate`: the column and its
-  index are added, the old free index dropped, a backup taken; every free row then waits and
-  the first take puts the due ones in line. A table a newer build grew (a moving plan) is
-  opened as it stands; one that would grow inside a transaction is refused like a fresh one.
-- Paid (was owed): the take's walk of the free index stepped over every delayed row. SQLite VM
-  steps, 10 000 rows that wait an hour ahead of one due row. A take row is one `take()` through
-  the store (begin, put in line, the take, commit; `due_test.av` holds it within 16 steps of a
-  take past none, per order and per way of waiting); every other row is the statement alone,
-  read from the tree, in the sqlite3 shell:
-
-  | statement | before | after |
-  |---|---|---|
-  | take, `after:` sends, fifo / by_key | 50 342 / 50 323 | 376 / 357 |
-  | the same, sent in a transaction | 50 342 / 50 323 | 376 / 357 |
-  | take, backoff releases, by_key | 50 323 | 357 |
-  | take past none (the floor) | 342 / 323 | 372 / 353 |
-  | send / `after:` send | 101 / 101 | 108 / 109 |
-  | ack / release | 74 / 57 | 77 / 60 |
-  | the lapsed-lease branch, by_key | 50 116 | 129 |
-  | depth (`FlowRoom`) | 9 | 9 |
-  | operate's delayed count | 80 026 | 60 046 |
-  | `drop_oldest` past the 10 000, all never taken | 78 | 80 114 |
-
-  A take past none costs ~30 steps more (the put-in-line `UPDATE`: one more statement per
-  take call). `drop_oldest` now finds the oldest waiting row by `min(id)` over the rows that
-  wait, so it walks them; a `drop_oldest` queue refuses delayed sends, so they are its backoffs
-  alone, which the free index walked too. The delayed count still walks what it counts. A
-  plain `(queue, ready_at)` index on the free rows was measured worse (100 226): the planner
-  took it for the candidate and sorted by id.
-- Paid (was owed): `drop_oldest` walked every row backing off. A home whose terms give up the
-  oldest (`drop_oldest`, `latest`) makes `FlowItem_untaken`, `(queue) WHERE leased_until IS NULL
-  AND in_line IS NULL AND epoch = 0`: the rows that wait and no take reached, in send order, so
-  the statement's `min(id)` over them is one index entry. The statement, and so the row it
-  gives up, is unchanged. 10 000 rows backing off, fifo / by_key: 50 123 / 50 114 → 126 / 117
-  (`store_test` holds it equal past 2000 backing-off rows and past 10). The index is a cost on
-  every write of a database that holds such a queue — send 108 → 114, `after:` send 109 → 120,
-  take 121 → 124 (fifo) and 292 → 303 (by_key), ack 77 → 80, release 60 → 70 — and none on
-  any other database.
-- Still owed, by choice: operate's delayed count walks the rows that wait (50 054 past 10 000
-  backing off; 60 046 when the 10 000 are the delayed rows it counts). An index-only count is
-  measured — `(queue, ready_at)` under the same three conditions answers 52 — but it costs every
-  write of every database the steps above, for an operator's command, which may walk.
+- Owed: `take`'s walk of the free index steps over delayed rows not yet due (one per take,
+  each), a cost to row in ZERO_COST before a queue holds many long delays.
 
 Jobs and operating a queue (Q6):
 
@@ -265,34 +213,20 @@ server app { group "/admin/queues" { queue_admin(ctx.db, operator) } }
   `buries_in:`), one of them, not both. The program's letter is `buries_in:`, not `dead:`: a job always
   has a fate (its own letter by default), and `flow.no_fate` reads a field named `dead`.
 - `run(resize)` is `resize.run()`, as a schedule's is: there is no overloading.
-- Every home records its terms, spans to the nanosecond, and item shape when it opens (`FlowTerms`),
-  and a letter's descriptor holds its item's and its error's. A database describes its own queues with no program.
+- Every home records its terms and item shape when it opens (`FlowTerms`), and a letter's descriptor
+  holds its item's and its error's. A database describes its own queues with no program.
 - `@std.queue_store.operate`: `queues`, `queue_named`, `letters`, `peek` (items as JSON records, each
   read through the descriptor of the shape its row was written under, so another build's rows read
-  too), `retry` (a live item due now; a letter's item
+  too; a nested type is not followed and reads as none), `retry` (a live item due now; a letter's item
   back to the queue it was buried out of, as a fresh item) and `discard` (the item and its name). A
   live lease wins over both. Reads write nothing.
-- Paid (was owed): `peek` follows nested types. A descriptor (`avra.shape.2`, `@std.relation.shape`)
-  names its type and says whether its texts cross through a scope; each type its wire reaches is a
-  reach of its own — name, fingerprint, FORM (`Record`, `Variants`, `Over`, `Dense`, or
-  `Coded(hash, scoped, tagged)` for one that wears its own codec) and its slots — and a slot names a
-  type by its reach, so a type that reaches itself is one reach, never inlined. Every variable run
-  is counted, so no boundary moves. `verdict` still judges by fingerprints: a nested record that
-  grew is `Moved` (it is read whole), as before. An item that cannot be read is `item: null` with
-  `unread:` saying why; the walk is bounded at 64 levels and `64 × octets + 4096` values, so a
-  corrupt, cyclic or doubling descriptor answers a reason, never a trap. A descriptor an earlier
-  build wrote (`avra.shape.1`: names and fingerprints only) still reads and is still judged; its
-  nested items read as none until a home of this build opens, whose `know_shape` writes its own
-  spelling over a different one of the same hash. The codec's hashes and its encode/decode are
-  unchanged; only the `codec_descriptor()` text grew, and it is read on the open path only.
 - `@std.queue_store.admin.queue_admin(db, allowed, clock)`: those verbs as routes, JSON out, each a 403
   to a request `allowed` refuses; nothing serves until a program mounts it. `@std/crud` does not fit:
   its doors are row edits, and these are laws (a lease check, a move across queues, a name freed).
 - The two-process witness is `tools/queue-witness` (`avra run tools/queue-witness`, about a
   second): a sender and two `in_tx` workers over one file handle 40 items once each, and a worker
   stopped after its take, inside its handler and after its ack leaves the item to its lease, its
-  handler's write undone, or nothing. It runs as its own binary (`@std/process`'s `this_program()`),
-  so it is no suite program.
+  handler's write undone, or nothing. It runs as its own binary, so it is no suite program.
 - Owed: `avra explain flow` and `avra queue peek` (the CLI; the std API they read is `queues` and
   `peek`), and a CI target that runs the witness.
 
@@ -448,30 +382,6 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 | a SQL function registered from Avra (`flow_json`) | not possible: no C callback trampoline. That projection waits; `peek` and the admin router do not |
 | `ctx db = …` when the read is through a fn value | a false `ctx.unread` warning; reported |
 
-### 8b. The short forms, re-probed (batch-57 binary, 2026-11-19)
-
-Each row a probe package run with `./avra run` or `./avra test`; the queue's sources use every form that lands.
-
-| Asked | Answer |
-|---|---|
-| a default type parameter, `fn f<T, E = string>`, `component c<T, E = string>`, `type D<T, E = string>`, `enum F<E = string>` | lands; a fully defaulted enum is written bare (`Fate`). `Dead<T, E = string>` and `Fate<E = string>` are the library's, so a text-failing letter is `Dead<Email>` |
-| `E = never` as a default | refused at run: "a body not lowered yet was reached: … a method of the generic `qd<int, never>`"; written, `never` is `type.unknown` "`never` names no type" |
-| a partial type argument (`pair<int>(3, "x")` for `pair<A, B>`) | lands |
-| a call pinned by a nullable seat (`stored()` into `durable: Durable<T>?`; `made()` into a `Box<int>?` argument, `let`, record or component field) | still refused: "`T` is not pinned by the arguments"; a non-null seat pins it. `stored<Email>()` stays |
-| `==` on `ptr` | lands |
-| a generic method (`impl Tx { fn send<T>(q: queue<T>, item: T, …) }`) | lands: `tx.send(emails, item, id: …)` |
-| a component method handing `self`'s field beside a named argument, under `avra test` | lands: the schedule names its `id:` |
-| `export use schedule.{schedule}` from the package root | still refused, with no cycle needed: `resolve.duplicate_type` "`schedule` is declared more than once" (a program-layer false refusal). `use @std.queue.schedule.{schedule}` stays |
-| a ctx read in a spawned task under `avra test` | still traps "the context `n` is required, and nothing set it before it was read"; `avra run` reads it. The suites' warm-ups before a spawn stay |
-| a type-level annotation's named word (`@index(lane, absent: done_at)`) | still `resolve.unresolved` "`done_at` is not defined"; the field marks (`@index(present: in_line) queue`) stay |
-| `dead:` on the queue, `queue<T, E = …>` | `q<Email> emails { dead: undeliverable }` lands (`E` read from the field beside a written `T`); a queue with no letter needs a default `E`, and `never` cannot run a method (above). A method answering the inferred `E` is not checked at typing (`let s: int? = q.wrong()` where `E = string` passes `check` and traps at run) |
-| `dead:` as a job's letter field | `flow.no_fate` refuses any instance that leaves a field named `dead` unset, so `buries_in:` stays |
-| a job instance with no type arguments (`job twice { each: doubled }`) | lands; `each:` pins `T`, `R` and `E` |
-| a component `check` that builds another instance | still skipped at build; a plain one refuses |
-| a schedule's `check` (no name, weekday 8) | still not run at build |
-| a foreign generic record literal as a generic fn's tail | works (`letters.read`) |
-
-
 Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect contracts (§7.2), Postgres.
 
 ## 9. Where this differs from CHANNELS
@@ -480,7 +390,7 @@ Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect cont
 - The tables are `@model` types, so std-db owns their migrations, where CHANNELS wrote SQL.
 - `ready_at` is new: one column serves `after:`, backoff and schedules.
 - `job` and `schedule` are new surface; the laws they keep are CHANNELS'.
-- `dead:` is the worker's, where CHANNELS put it on the queue. The worker's handler decides the error type, so the worker owns everything typed in it: the letter and the `failed` and `buried` events. A queue names no letter. (A component now infers one type parameter from a field while another is written, so `dead:` may return to the queue: `queue<T, E = …>`, where a queue with no letter needs a default `E` that can run a method, which `never` cannot (§8b). The owner chooses.)
+- `dead:` is the worker's, where CHANNELS put it on the queue. The worker's handler decides the error type, so the worker owns everything typed in it: the letter and the `failed` and `buried` events. A queue names no letter. (A component cannot infer one type parameter from a field while another is written; if it learns to, `dead:` may return.)
 - The store is `ctx db`, where CHANNELS wrote `@store type Main` and `Tx<Main>`. One database needs no type to tell it apart; the dual-write check (`flow.dual_write`) reads the transaction value.
 
 ## 10. Decisions (owner, 2026-11-18)

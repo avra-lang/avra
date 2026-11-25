@@ -4,23 +4,22 @@
 //! that counted it made a derive's fate depend on how much the compiler had
 //! already loaded: the same derive settled in 2 MB or was cut off past 5 MiB,
 //! and the cut dropped its declarations without a word.
-use @std.avrac.testing.{judged}
-use @std.avrac.core.{Ins, Reg, Layout, BoxKind}
+use @std.avrac.testing.old_path.{typed_ir_of}
+use @std.avrac.core.{Ins, Reg}
 use @std.avrac.features.{Unsettled, Lifted, MetaVal, new_meta_heap, budgets_of}
 use compiler.backend.{run_crossed}
 use compiler.lower.{Body, Lowered}
 
 /// An entry that asks the workspace for `X` before its own answer.
 fn asks_the_workspace() -> Lowered {
-    let base = judged("fn f() -> int { 3 }\nf()").lowered()
+    let base = typed_ir_of("fn f() -> int { 3 }\nf()")
     let plain: Body = base.fns.first()!
     let e = plain with { name: base.entry.name }
-    // the program layer's bodies carry their registers' layouts, never language types
-    let at = e.layouts.length
+    let at = e.reg_types.length
     let text = Reg { index: at }
     let answer = Reg { index: at + 1 }
     // LICENSED compiler.raw_rt_call: the witness hand-builds the one instruction whose row reaches the workspace
-    let kept = e with { ins: [Ins.ConstStr(text, "X"), Ins.CallRt(answer, "avra_type_named", [text])].concat(e.ins), layouts: e.layouts.concat([Layout.Boxed(BoxKind.Text), Layout.Boxed(BoxKind.Record)]) }
+    let kept = e with { ins: [Ins.ConstStr(text, "X"), Ins.CallRt(answer, "avra_type_named", [text])].concat(e.ins), reg_types: e.reg_types.concat([e.reg_types[0], e.reg_types[0]]), layouts: e.layouts.concat([e.layouts[0], e.layouts[0]]) }
     base with { entry: kept, fns: [] }
 }
 
@@ -31,10 +30,8 @@ fn answered(held: Cell<List<int>>, bytes: int) -> Lifted {
 }
 
 /// How the run ended: `settled`, or the refusal in its own words.
-fn ended(kept_bytes: int) -> string { ended_holding(Cell.new([0]), kept_bytes) }
-
-/// How the run ended, the workspace keeping what it builds in `held`.
-fn ended_holding(held: Cell<List<int>>, kept_bytes: int) -> string {
+fn ended(kept_bytes: int) -> string {
+    let held: Cell<List<int>> = Cell.new([0])
     match run_crossed(
         asks_the_workspace(),
         budgets_of(1000, 1),
@@ -55,9 +52,5 @@ spec "compiler/settle — the bill" {
     given "a run that asks the workspace, which keeps what it builds" {
         then "settles under a budget the kept memory alone would break" { ended(4 * 1048576) == "settled" }
         then "a run that holds nothing settles the same" { ended(0) == "settled" }
-        then "the run does ask the workspace — what it built is kept" {
-            let held: Cell<List<int>> = Cell.new([0])
-            ended_holding(held, 64) == "settled" && held.get().length == 8
-        }
     }
 }

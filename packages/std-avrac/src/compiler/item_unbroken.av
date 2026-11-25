@@ -45,23 +45,8 @@ type BrokenAt = { at: FindingAt?, words: List<string> }
 type ItemBroken = { rows: List<BrokenAt> }
 
 /// Every way an `@unbroken` fn the written item `at` of `file` declares lets another task run.
-fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBroken {
-    if !item_held(engine, file, at) { return broken_made(engine, file, at) }
-    broken_seen(item_view(engine, file, at))
-}
-
-/// What `item_broken` answers through the item's `view`, made the first time it is asked.
-fn broken_seen(view: ItemView) -> ItemBroken {
-    let held? = view.broken.get() else {
-        let made = broken_made(view.engine, view.file, view.at)
-        view.broken.set(made)
-        return made
-    }
-    held
-}
-
-/// What `item_broken` answers, made.
-fn broken_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBroken {
+@query
+fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBroken {
     if !item_held(engine, file, at) { return ItemBroken { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemBroken { rows: [] } }
@@ -207,11 +192,12 @@ fn callee_unbroken(engine: QueryEngine, c: CalledFn) -> bool {
                     marks_unbroken(engine, c.file, item.store, s),
             )
     }
-    item_ids(engine, c.file).any((at) -> impl_marks(engine, c.file, at, owner, c.name))
+    [at for at in 0..item_count(engine, c.file)]
+        .any((at) -> impl_marks(engine, c.file, at, owner, c.name))
 }
 
 /// Whether an impl of `owner` the written item `at` of `file` writes marks its fn `name` `@unbroken`.
-fn impl_marks(engine: QueryEngine, file: SourceFileAddress, at: ItemId, owner: string, name: string) -> bool {
+fn impl_marks(engine: QueryEngine, file: SourceFileAddress, at: int, owner: string, name: string) -> bool {
     let item = read_item(engine, file, at)
     impls_at(engine, file, at)
         .any(
@@ -245,9 +231,9 @@ fn default_may_wait(engine: QueryEngine, file: SourceFileAddress, c: CalledFn) -
 fn written_default(store: SyntaxArena, stmts: List<StmtId>, owner: string, name: string) -> ExprId? {
     for s in stmts {
         let f = store.fn_parts(s)
-        if f != null && f!.name == owner { return f!.params.find(it.name.spells(name))?.default }
+        if f != null && f!.name == owner { return f!.params.find(it.name.of == name)?.default }
         let r = store.struct_parts(s)
-        if r != null && r!.name == owner { return r!.fields.find(it.name.spells(name))?.default }
+        if r != null && r!.name == owner { return r!.fields.find(it.name.of == name)?.default }
     }
     null
 }
@@ -286,15 +272,15 @@ const UNBROKEN: string = "unbroken"
 /// The package whose verbs are the language's own rows.
 const PRELUDE_ROWS: string = "@std/prelude"
 
-/// Every way the `@unbroken` fns of the written item `view` shows break.
-fn unbroken_broken(view: ItemView) -> List<Found> {
-    [Found { at: span_of(r.at), args: r.words } for r in broken_seen(view).rows]
+/// Every way the `@unbroken` fns of the written item `at` of `file` break.
+fn unbroken_broken(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(r.at), args: r.words } for r in item_broken(engine, file, at).rows]
 }
 
 /// an `@unbroken` fn lets no other task run inside it
 export law unbroken_holds {
     kind: "flow.broken"
-    reads_view: unbroken_broken
+    reads: unbroken_broken
     voice: unbroken_words
     witness: "use @std.meta.{unbroken}\n\nfn helper(n: int) -> int { n + 1 }\n\n@unbroken\nfn ring(n: int) -> int { helper(n) }\n"
 }

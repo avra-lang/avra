@@ -261,7 +261,7 @@ spec "std/db migrate" {
     }
     given "a key over several columns" {
         then "is a line after the columns, read back in key order" {
-            shape(base().concat([N, "unique(title,n)"])).indexes[0].columns.join(" ") == "title n"
+            shape(base().concat([N, "unique(title,n)"])).uniques[0].join(" ") == "title n"
         }
         then "and renders after the columns however the lines were ordered" {
             shape_text(shape(["unique(title,n)", N, "unique(n,title)"].concat(base())))
@@ -307,54 +307,6 @@ spec "std/db migrate" {
         }
         then "the report says a key's statements like any step's" {
             report([plan_from(base().concat([N]), keyed())]).join("\n") == "t:\n  CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\");"
-        }
-    }
-    given "a plain index" {
-        then "of one column is a line after the columns" {
-            let i = shape(base().concat(["index(title)"])).indexes[0]
-            i.columns.join(" ") == "title" && !i.unique && i.only == null
-        }
-        then "over the rows a column is null in reads back which" {
-            let i = shape(base().concat([N, "index(title) absent(n)"])).indexes[0]
-            i.only!.column == "n" && i.only!.absent
-        }
-        then "over the rows a column holds a value in reads back which" {
-            let i = shape(base().concat([N, "index(title) present(n)"])).indexes[0]
-            i.only!.column == "n" && !i.only!.absent
-        }
-        then "renders to the very text it was read from" {
-            let lines = base().concat([N, "index(n)", "index(title) absent(n)", "unique(title,n)"])
-            shape_text(shape(lines)) == "t\n${[VERSION, KEY, N, TITLE].join("\n")}\nindex(n)\nindex(title) absent(n)\nunique(title,n)"
-        }
-        then "naming no column is no shape" { shape_read("t\n${KEY}\nindex()") == null }
-        then "over rows said by an unknown word is no shape" { shape_read("t\n${KEY}\nindex(id) some(id)") == null }
-        then "over rows of two columns is no shape" { shape_read("t\n${KEY}\nindex(id) absent(id,n)") == null }
-        then "with three parts is no shape" { shape_read("t\n${KEY}\nindex(id) absent(id) absent(id)") == null }
-        then "a key over only some rows is no shape" { shape_read("t\n${KEY}\nunique(id,n) absent(n)") == null }
-        then "a blank line among the lines is no shape" { shape_read("t\n${KEY}\n\nindex(id)") == null }
-        then "new over the columns already there is one statement, and nothing moves" {
-            brief(plan_from(base().concat([N]), base().concat([N, "index(title,n)"]))) == "1||CREATE INDEX \"t_index(title,n)\" ON \"t\" (\"title\", \"n\")"
-        }
-        then "no longer declared is ended, and nothing moves" {
-            brief(plan_from(base().concat([N, "index(n)"]), base().concat([N]))) == "1||DROP INDEX \"t_index(n)\""
-        }
-        then "that comes to hold only some rows ends and begins again" {
-            sql(
-                plan_from(
-                    base().concat([N, "index(title)"]),
-                    base().concat([N, "index(title) absent(n)"]),
-                ),
-            ) == "DROP INDEX \"t_index(title)\";CREATE INDEX \"t_index(title) absent(n)\" ON \"t\" (\"title\") WHERE \"n\" IS NULL"
-        }
-        then "that becomes a key over the same columns ends and begins again" {
-            sql(plan_from(base().concat([N, "index(title,n)"]), keyed())) == "DROP INDEX \"t_index(title,n)\";CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\")"
-        }
-        then "stands beside a key over the same columns, each its own" {
-            let both = base().concat([N, "index(title,n)", "unique(title,n)"])
-            sql(diff(null, shape(both), []))
-                .ends_with(
-                    ";CREATE INDEX \"t_index(title,n)\" ON \"t\" (\"title\", \"n\");CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\")",
-                )
         }
     }
     given "the whole program against a database" {

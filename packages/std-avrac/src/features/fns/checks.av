@@ -26,31 +26,21 @@ use core.stmt.{FnDecl, Return}
 
 impl Checks for Call {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        let callee_text = self.callee.text()
-        let callee = cx.read(e, callee_text)
+        let callee = cx.read(e, self.callee.of)
         let written? = callee else {
-            return crossed(cx, e, callee_text, self.args) ?? unanswered_call(
+            return crossed(cx, e, self.callee.of, self.args) ?? unanswered_call(
                 cx,
                 e,
-                callee_text,
+                self.callee.of,
                 self.args,
                 !self.pins.is_empty(),
             )
         }
-        let seat_of = (at: int) -> Seating.Argument(callee_text, at)
-        if cx.local(callee_text) != null {
-            if cx.value_call_refused(e, callee_text, written, !self.pins.is_empty()) { return cx.unfilled(self.args) }
+        let seat_of = (at: int) -> Seating.Argument(self.callee.of, at)
+        if cx.local(self.callee.of) != null {
+            if cx.value_call_refused(e, self.callee.of, written, !self.pins.is_empty()) { return cx.unfilled(self.args) }
             let held? = cx.program.called_as(written) else { return cx.unfilled(self.args) }
-            // a fn value's seats have no names, whatever the fn it holds named them: a named argument
-            // is refused as an extern's is, by position
-            if cx
-                .seats_named(
-                    e,
-                    held with { seats: [s with { name: null } for s in held.seats] },
-                    self.args,
-                    0,
-                    callee_text,
-                ) { return null }
+            if cx.seats_named(e, held, self.args, 0, self.callee.of) { return null }
             let answer = cx
                 .rigidly_called(
                     held with { seats: [s with { defaulted: false } for s in held.seats] },
@@ -61,12 +51,12 @@ impl Checks for Call {
             return answer
         }
         if !(written.head is .Function) { return cx.unfilled(self.args) }
-        let declares = (cx.program.type_params_named)(callee_text, cx.home_of(e))
+        let declares = (cx.program.type_params_named)(self.callee.of, cx.home_of(e))
         if declares != null &&
-            cx.pins_refused(e, callee_text, declares!.length, self.pins.length, self.args) { return null }
+            cx.pins_refused(e, self.callee.of, declares!.length, self.pins.length, self.args) { return null }
         mut pinned: Map<string, SignedType> = {}
         for at, pin in self.pins { pinned.set("${at}", cx.written(pin)) }
-        if cx.seats_named(e, written, self.args, 0, callee_text) { return null }
+        if cx.seats_named(e, written, self.args, 0, self.callee.of) { return null }
         let answer = cx
             .called(
                 written,
@@ -74,14 +64,14 @@ impl Checks for Call {
                 expected,
                 seat_of,
                 pinned,
-                (cx.program.bounds_named)(callee_text, cx.home_of(e)),
+                (cx.program.bounds_named)(self.callee.of, cx.home_of(e)),
                 if declares == null {
                     null
                 } else {
                     CalleeNamed {
-                        name: callee_text,
+                        name: self.callee.of,
                         type_params: declares!,
-                        defaults: (cx.program.defaults_named)(callee_text, cx.home_of(e)),
+                        defaults: (cx.program.defaults_named)(self.callee.of, cx.home_of(e)),
                     }
                 },
             )
@@ -94,8 +84,8 @@ impl Checks for Call {
 /// argument refused where it does.
 fn named_into_extern(mut cx: Checking, e: ExprId, call: Call) -> bool {
     let named? = call.args.find((a) -> cx.store.names_its_seat(a)) else { return false }
-    if !(cx.program.external)(call.callee.text(), cx.home_of(e)) { return false }
-    cx.unplaced(named, call.callee.text(), cx.store.arg_label(named) ?? "")
+    if !(cx.program.external)(call.callee.of, cx.home_of(e)) { return false }
+    cx.unplaced(named, call.callee.of, cx.store.arg_label(named) ?? "")
     true
 }
 
@@ -109,7 +99,7 @@ fn seats_written(mut cx: Checking, e: ExprId, call: Call, f: SignedType) {
     if !f.seats.any(it.mutable || it.state) { return }
     let names = [s.name ?? "" for s in f.seats]
     let plan = if names.any(it.is_empty()) { [if j < call.args.length { j } else { 0 - 1 } for j in 0..f.seats.length] } else { cx.store.seat_plan(call.args, names) }
-    let external = (cx.program.external)(call.callee.text(), cx.home_of(e))
+    let external = (cx.program.external)(call.callee.of, cx.home_of(e))
     mut roots: List<string> = []
     for j, at in plan {
         if at >= 0 && f.seats[j].state {
@@ -117,16 +107,16 @@ fn seats_written(mut cx: Checking, e: ExprId, call: Call, f: SignedType) {
                 .state_seat_handed(
                     cx.store.unnamed(call.args[at]),
                     f.seats[j].ty,
-                    call.callee.text(),
+                    call.callee.of,
                     j,
-                    if cx.local(call.callee.text()) == null { f.seats[j].name ?? "" } else { "" },
+                    if cx.local(call.callee.of) == null { f.seats[j].name ?? "" } else { "" },
                     Unhanded.Stateless,
                 )
         } else if at >= 0 && f.seats[j].mutable {
             let a = cx.store.unnamed(call.args[at])
-            cx.seat_written(a, f.seats[j].ty, call.callee.text(), j, external)
+            cx.seat_written(a, f.seats[j].ty, call.callee.of, j, external)
             let root? = cx.written_root(a) else { continue }
-            if roots.contains(root) { cx.handed_twice(e, call.callee.text(), root) }
+            if roots.contains(root) { cx.handed_twice(e, call.callee.of, root) }
             roots = roots.concat([root])
         }
     }
@@ -149,7 +139,7 @@ fn spread_seats(mut cx: Checking, call: Call, f: SignedType) {
                         at: a,
                         want: seat.ty,
                         found: seat.ty,
-                        seat: Seating.SpreadPlace(call.callee.text(), field.name),
+                        seat: Seating.SpreadPlace(call.callee.of, field.name),
                     },
                 )
         }
@@ -219,7 +209,7 @@ fn unanswered_call(mut cx: Checking, e: ExprId, callee: string, args: List<ExprI
 
 impl StmtChecks for FnDecl {
     /// A fn declared in a body binds its name there; its own body is typed as its own declaration.
-    fn stmt_checked(mut cx: Checking, s: StmtId) { cx.bind(self.name.text(), null) }
+    fn stmt_checked(mut cx: Checking, s: StmtId) { cx.bind(self.name.of, null) }
 }
 
 impl Checks for Named {

@@ -29,39 +29,6 @@ export fn json_value(j: Json) -> Value {
     }
 }
 
-/// One field a query or a form carries, its name and value already
-/// decoded: `text` is absent for a key sent bare, with no `=`.
-export type Keyed = { key: string, text: string? }
-
-/// Keyed fields as a value, the keys in the order they first appear. A
-/// key sent once holds its text — or `true` when it was sent bare, so a
-/// flag reads as one and every other field refuses it — and a key sent
-/// again holds a list of each in order: a list field takes it, a scalar
-/// field refuses it. Read it under `Coercion.Lax`, where text spells a
-/// number or a truth and one value reads as a list of one.
-export fn from_keyed(fields: List<Keyed>) -> Value {
-    mut slot: Map<string, int> = {}
-    mut held: List<List<Value>> = []
-    for f in fields {
-        let at? = slot.get(f.key) else {
-            slot.set(f.key, held.length)
-            held.push([keyed_value(f)])
-            continue
-        }
-        held[at].push(keyed_value(f))
-    }
-    Value.Map([Entry { key: k, value: one_or_all(held[at]) } for k, at in slot])
-}
-
-fn keyed_value(f: Keyed) -> Value {
-    let t? = f.text else { return Value.Bool(true) }
-    Value.Text(t)
-}
-
-fn one_or_all(said: List<Value>) -> Value {
-    if said.length == 1 { said[0] } else { Value.List(said) }
-}
-
 /// TOML text as a value: each `[a.b]` section a map inside its
 /// parent, keys in written order. Every line TOML refuses is an issue.
 export fn from_toml(text: string) -> Result<Value, Issues> {

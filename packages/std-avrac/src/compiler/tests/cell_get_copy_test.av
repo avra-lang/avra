@@ -4,8 +4,7 @@
 //! door. The rule's entry in the compiler's own table (`rules`) is
 //! exercised directly, so the refuse and accept surfaces are both
 //! proven without a package.
-use compiler.{example_roots, nearest_fix, checks_keeps}
-use testing.{judged}
+use compiler.{analyze_source, nearest_fix, checks_keeps}
 use compiler.{rule_entries, RuleEntry}
 use features.{Code, Fix}
 
@@ -13,10 +12,13 @@ use features.{Code, Fix}
 /// the declaration's field.
 fn applied() -> fn(Code) -> Fix? { (c: Code) -> rule_entries().find(it.name == "cell_get_copy")!.run.applied(c) }
 
-/// Whether the rule fires anywhere in `text`'s first statement, as the program layer's items hold it.
+/// Whether the rule fires anywhere in `text`'s first statement.
 fn fires(text: string) -> bool {
-    let first? = example_roots(judged(text).rule_items("/alone/src/main.av")).first() else { return false }
-    nearest_fix(applied(), first) != null
+    let a = analyze_source(text)
+    match a.view.stmts.first() {
+        s? -> nearest_fix(applied(), a.code_at(.Stmt(s))) != null
+        null -> false
+    }
 }
 
 /// Whether the rule keeps `text` — fires nowhere in it.

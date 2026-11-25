@@ -3,8 +3,8 @@
 //! isn't `mut`, writes where nobody looks. A `mut` local, a `mut` seat, a `state` and the method's
 //! own `self` are places. Read over the writes a written item's bodies make, as the copy laws read
 //! them; a root nothing in the fn binds is the program's, which other laws hold.
-use core.{scoped, ExprId, NodeKind, Param, PatId, StmtId}
-use compiler.laws.{Found, ItemAnalysis, Reach, law}
+use core.{flatten, ExprId, NodeKind, Param, PatId, StmtId}
+use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.{chain_receiver_copied, receiver_a_value, receiver_captured, receiver_not_mut}
 use @std.meta.{derive}
@@ -40,18 +40,16 @@ type ItemReceivers = { writes: List<ReceiverWrite> }
 /// lands in it.
 type ReceiverBinder = { lo: int, mutable: bool }
 
-fn receivers_valued(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Value) }
+fn receivers_valued(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Value) }
 
-fn receivers_chained(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Chained) }
+fn receivers_chained(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Chained) }
 
-fn receivers_captured(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Captured) }
+fn receivers_captured(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Captured) }
 
-fn receivers_unmarked(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Unmarked) }
+fn receivers_unmarked(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unplaced_of(engine, file, at, Unplaced.Unmarked) }
 
 /// Each receiver of the item `at` of `file` that isn't a place for the reason `why`.
-fn unplaced_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId, why: Unplaced) -> List<
-    Found,
-> {
+fn unplaced_of(engine: QueryEngine, file: SourceFileAddress, at: int, why: Unplaced) -> List<Found> {
     [Found { at: span_of(w.at), args: [w.root, w.method] } for w in item_receivers(engine, file, at).writes if same_unplaced(w.why, why)]
 }
 
@@ -66,7 +64,7 @@ fn same_unplaced(a: Unplaced, b: Unplaced) -> bool {
 
 /// Every receiver a declared method writes in the written item `at` of `file` that isn't a place it
 /// may write, in node order.
-fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemReceivers {
+fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemReceivers {
     if !item_held(engine, file, at) { return receivers_made(engine, file, at) }
     let view = item_view(engine, file, at)
     let held? = view.receivers.get() else {
@@ -78,7 +76,7 @@ fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> I
 }
 
 /// What `item_receivers` answers, made.
-fn receivers_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemReceivers {
+fn receivers_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemReceivers {
     if !item_held(engine, file, at) { return ItemReceivers { writes: [] } }
     let item = read_item(engine, file, at)
     let cx = copies_in(engine, file, at, item)
@@ -101,8 +99,10 @@ fn receivers_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> I
 
 /// The names the statements `file` runs before its written item `at` bind, the latest last, each with
 /// whether a write lands in it.
-fn ran_before(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<RanBinding> {
-    [RanBinding { name: b.name, mutable: b.mutable } for b in front_before(engine, file, at).binds]
+fn ran_before(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<RanBinding> {
+    flatten(
+        [[RanBinding { name: b.name, mutable: b.mutable } for b in item_front(engine, file, i).binds] for i in 0..at],
+    )
 }
 
 fn ran_in(item: ReadItem) -> List<RanBinding> {
@@ -143,11 +143,10 @@ fn receiver_binder(cx: Copies, root: ExprId, at: ExprId, lambdas: List<ExprId>) 
     let from = cx.fn_lo(at)
     if cx.store.is_receiver(root) { return ReceiverBinder { lo: from, mutable: true } }
     let name = cx.root_word(root)
-    let named = scoped(name)
     let here = cx.lo(at)
     let stated = [ReceiverBinder { lo: cx.stmt_lo(s), mutable: binds_writable(cx, s) } for s in cx.store.stmt_ids() if cx.store.let_name(s) == name && cx.stmt_lo(s) > from && cx.stmt_lo(s) < here]
-    let seated = [ReceiverBinder { lo: from, mutable: p.promises.mutable } for s in cx.store.stmt_ids() if cx.stmt_lo(s) == from for f in [cx.store.fn_parts(s)] if f != null for p in f!.params if p.name == named]
-    let seats = [ReceiverBinder { lo: cx.lo(l), mutable: p.promises.mutable || heard_mut(cx, l, j) } for l in lambdas if cx.holds(l, here) for parts in [cx.store.lambda_parts(l)] if parts != null for j, p in parts!.params if p.name == named]
+    let seated = [ReceiverBinder { lo: from, mutable: p.promises.mutable } for s in cx.store.stmt_ids() if cx.stmt_lo(s) == from for f in [cx.store.fn_parts(s)] if f != null for p in f!.params if p.name.of == name]
+    let seats = [ReceiverBinder { lo: cx.lo(l), mutable: p.promises.mutable || heard_mut(cx, l, j) } for l in lambdas if cx.holds(l, here) for parts in [cx.store.lambda_parts(l)] if parts != null for j, p in parts!.params if p.name.of == name]
     let patterned = [ReceiverBinder { lo: span!.lo, mutable: false } for i in 0..cx.store.pat_count() for p in [PatId { index: i }] if cx.store.bind_name(p) == name for span in [cx.store.pat_span(p)] if span != null && span!.lo > from && span!.lo < here]
     latest_binder(stated.concat(seated).concat(seats).concat(patterned))
 }
@@ -180,7 +179,6 @@ fn lambda_since(cx: Copies, lo: int, at: ExprId, lambdas: List<ExprId>) -> bool 
 export law receiver_valued {
     kind: "type.receiver"
     reads: receivers_valued
-    through: [RECEIVERS]
     voice: valued_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f() { C { n: 0 }.bump() }\n"
@@ -190,7 +188,6 @@ export law receiver_valued {
 export law receiver_chained {
     kind: "type.receiver"
     reads: receivers_chained
-    through: [RECEIVERS]
     voice: chained_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f(c: C?) { c?.bump() }\n"
@@ -200,7 +197,6 @@ export law receiver_chained {
 export law receiver_captured_written {
     kind: "type.receiver"
     reads: receivers_captured
-    through: [RECEIVERS]
     voice: captured_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f(mut c: C) -> fn() {\n    () -> c.bump()\n}\n"
@@ -210,17 +206,9 @@ export law receiver_captured_written {
 export law receiver_unmarked {
     kind: "type.receiver"
     reads: receivers_unmarked
-    through: [RECEIVERS]
     voice: unmarked_words
     warns: true
     witness: "type C = { n: int }\n\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\n\nfn f(c: C) { c.bump() }\n"
-}
-
-/// The receivers a declared method writes that aren't places it may write, every receiver law's
-/// reading: a write is a method's, so only an item holding a method call, or a chained one, finds one.
-const RECEIVERS: ItemAnalysis = ItemAnalysis {
-    name: "receivers",
-    needs: [NodeKind.ExprMethodCall, NodeKind.ExprChainCall],
 }
 
 fn valued_words(a: List<string>) -> Voice { receiver_a_value(a[1]) }

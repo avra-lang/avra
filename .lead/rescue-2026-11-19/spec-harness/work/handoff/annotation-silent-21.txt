@@ -1,0 +1,475 @@
+# The 21 annotation laws the program layer never speaks (parity-values)
+# Base: batch53 d5062c32 + avra-lane-spec-harness. Spec: packages/std-avrac/src/features/annotations/tests/annotations_adversarial_test.av
+# Fixture: `packaged(src)` = package app with @std/meta vendored (vendored_meta) plus vendor/meta/src/probes.av = meta_probes() from that file.
+# Each entry: the pinned case name, the case as written (its phrase is the exact old words the spec holds), the main.av it judges,
+# what the old path said and what the layer said, each as the differential records it: one `kind: headline` a diagnostic, sorted.
+# 20 are silent on the layer. The last (`cross with their own kinds`) is NOT silent: the layer speaks, but reads the receiver `o: Self` as `Named T` where the old path says `Var Self`.
+# The CLI shows the old words only because the net (old path judging first) speaks them; AVRA_PROGRAM_NET=0 shows the layer's silence.
+
+### features/annotations — the compile-time call's laws / the callee and receiver / a value is not an annotation fn
+--- case (as the spec writes it)
+then "a value is not an annotation fn" {
+            refused(
+                "let mark = 1\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                "an annotation names a fn",
+            )
+        }
+--- main.av (as judged)
+let mark = 1
+@mark
+fn answer() -> int { 1 }
+answer()
+--- old path says (kind: words)
+annotation.callee: an annotation names a fn over a declaration
+--- layer says
+resolve.runtime_binding: `mark` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it
+
+### features/annotations — the compile-time call's laws / the callee and receiver / a same-named user record cannot counterfeit the meta receiver
+--- case (as the spec writes it)
+then "a same-named user record cannot counterfeit the meta receiver" {
+            refused(
+                "type Fn = {}\nfn mark(f: Fn) { }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                "not `@std.meta.Fn`",
+            )
+        }
+--- main.av (as judged)
+type Fn = {}
+fn mark(f: Fn) { }
+@mark
+fn answer() -> int { 1 }
+answer()
+--- old path says (kind: words)
+annotation.receiver: an annotation's first seat says what it takes
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a declaration-making annotation fn in the same file is refused, not ignored
+--- case (as the spec writes it)
+then "a declaration-making annotation fn in the same file is refused, not ignored" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "fn gen(f: Fn) -> List<Directive> { [] }\n" +
+                        "@gen\nfn sum() -> int { 1 }\nsum()",
+                ),
+                "generates declarations and stands in this file",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+fn gen(f: Fn) -> List<Directive> { [] }
+@gen
+fn sum() -> int { 1 }
+sum()
+--- old path says (kind: words)
+annotation.seats: an annotation's arguments fill its seats
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a declaration-making annotation reaches only literals
+--- case (as the spec writes it)
+then "a declaration-making annotation reaches only literals" {
+            refused_n(
+                packaged(sampled_use() + "@sampled([1, 2])\nfn answer() -> int { 1 }\nanswer()"),
+                "generates declarations, so its arguments come from the source alone",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, sampled}
+@sampled([1, 2])
+fn answer() -> int { 1 }
+answer()
+--- old path says (kind: words)
+annotation.seats: an annotation's arguments fill its seats
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a const computed from more than a literal is refused at the argument
+--- case (as the spec writes it)
+then "a const computed from more than a literal is refused at the argument" {
+            refused_in(
+                packaged(
+                    directive_use() +
+                        "const Label = \"a\" + \"b\"\n@traced(Label)\nfn sum() -> int { 1 }\nsum()",
+                ),
+                "`@traced` generates declarations, so `Label` must name a literal",
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+const Label = "a" + "b"
+@traced(Label)
+fn sum() -> int { 1 }
+sum()
+--- old path says (kind: words)
+annotation.seats: `@traced` generates declarations, so `Label` must name a literal
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a const holding an aggregate is refused at the argument
+--- case (as the spec writes it)
+then "a const holding an aggregate is refused at the argument" {
+            refused_in(
+                packaged(
+                    sampled_use() +
+                        "const Picks = [1, 2]\n@sampled(Picks)\nfn answer() -> int { 1 }\nanswer()",
+                ),
+                "`@sampled` generates declarations, so `Picks` must name a literal",
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, sampled}
+const Picks = [1, 2]
+@sampled(Picks)
+fn answer() -> int { 1 }
+answer()
+--- old path says (kind: words)
+annotation.seats: `@sampled` generates declarations, so `Picks` must name a literal
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a declaring annotation's argument that CALLS a fn is refused
+--- case (as the spec writes it)
+then "a declaring annotation's argument that CALLS a fn is refused" {
+            refused_in(
+                packaged(
+                    directive_use() +
+                        "fn label() -> string { \"x\" }\n@traced(label())\nfn sum() -> int { 1 }\nsum()",
+                ),
+                "generates declarations, so its arguments come from the source alone",
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+fn label() -> string { "x" }
+@traced(label())
+fn sum() -> int { 1 }
+sum()
+--- old path says (kind: words)
+annotation.seats: an annotation's arguments fill its seats
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a twin naming the annotated fn's OWN name is refused, not silently doubled
+--- case (as the spec writes it)
+then "a twin naming the annotated fn's OWN name is refused, not silently doubled" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{same_twin}\n@same_twin\nfn raised_by(n: int) -> int { n }\nraised_by(1)",
+                ),
+                "`@same_twin` generates `raised_by`, which this file already declares",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{same_twin}
+@same_twin
+fn raised_by(n: int) -> int { n }
+raised_by(1)
+--- old path says (kind: words)
+annotation.generated_taken: `@same_twin` generates `raised_by`, which this file already declares
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a WRAP whose source declares no fn of the annotated name is refused
+--- case (as the spec writes it)
+then "a WRAP whose source declares no fn of the annotated name is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_missing}\n@wrap_missing\nfn f() -> int { 1 }\nf()",
+                ),
+                "`@wrap_missing` asks to wrap `f`, and its `source` declares no fn of that name",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{wrap_missing}
+@wrap_missing
+fn f() -> int { 1 }
+f()
+--- old path says (kind: words)
+annotation.wrap_missing: `@wrap_missing` asks to wrap `f`, and its `source` declares no fn of that name
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a WRAP over a declaration with no body is refused
+--- case (as the spec writes it)
+then "a WRAP over a declaration with no body is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_bodiless}\n@wrap_bodiless\nextern fn f() -> int\n1",
+                ),
+                "`@wrap_bodiless` asks to wrap `f`, which has no body to move",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{wrap_bodiless}
+@wrap_bodiless
+extern fn f() -> int
+1
+--- old path says (kind: words)
+annotation.wrap_bodiless: `@wrap_bodiless` asks to wrap `f`, which has no body to move
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a WRAP whose wrapper redeclares a different signature is refused
+--- case (as the spec writes it)
+then "a WRAP whose wrapper redeclares a different signature is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_mismatch}\n@wrap_mismatch\nfn f(n: int) -> int { n }\nf(1)",
+                ),
+                "`@wrap_mismatch`'s wrapper for `f` does not redeclare its exact signature",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{wrap_mismatch}
+@wrap_mismatch
+fn f(n: int) -> int { n }
+f(1)
+--- old path says (kind: words)
+annotation.wrap_mismatch: `@wrap_mismatch`'s wrapper for `f` does not redeclare its exact signature
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a WRAP whose wrapper drops a static method's `static` is refused
+--- case (as the spec writes it)
+then "a WRAP whose wrapper drops a static method's `static` is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_unstatic}\ntype P = { a: int }\nimpl P {\n    @wrap_unstatic\n    static fn m(n: int) -> int { n }\n}\nP.m(1)",
+                ),
+                "`@wrap_unstatic`'s wrapper for `m` does not redeclare its exact signature",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{wrap_unstatic}
+type P = { a: int }
+impl P {
+    @wrap_unstatic
+    static fn m(n: int) -> int { n }
+}
+P.m(1)
+--- old path says (kind: words)
+annotation.wrap_mismatch: `@wrap_unstatic`'s wrapper for `m` does not redeclare its exact signature
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a WRAP whose wrapper adds `mut fn` to a reading method is refused
+--- case (as the spec writes it)
+then "a WRAP whose wrapper adds `mut fn` to a reading method is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_mutating}\ntype P = { a: int }\nimpl P {\n    @wrap_mutating\n    fn m(n: int) -> int { n }\n}\nP { a: 1 }.m(1)",
+                ),
+                "`@wrap_mutating`'s wrapper for `m` does not redeclare its exact signature",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{wrap_mutating}
+type P = { a: int }
+impl P {
+    @wrap_mutating
+    fn m(n: int) -> int { n }
+}
+P { a: 1 }.m(1)
+--- old path says (kind: words)
+annotation.wrap_mismatch: `@wrap_mutating`'s wrapper for `m` does not redeclare its exact signature
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / declaration generation / a twin naming ANY OTHER written binding is refused the same way
+--- case (as the spec writes it)
+then "a twin naming ANY OTHER written binding is refused the same way" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{other_twin}\nfn already() -> int { 0 }\n@other_twin\nfn raised_by(n: int) -> int { n }\nraised_by(1) + already()",
+                ),
+                "`@other_twin` generates `already`, which this file already declares",
+                1,
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Directive, traced}
+use @std.meta.{other_twin}
+fn already() -> int { 0 }
+@other_twin
+fn raised_by(n: int) -> int { n }
+raised_by(1) + already()
+--- old path says (kind: words)
+annotation.generated_taken: `@other_twin` generates `already`, which this file already declares
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / argument evaluation / an argument that reaches the world is refused before it runs
+--- case (as the spec writes it)
+then "an argument that reaches the world is refused before it runs" {
+            let src = meta_use() +
+                "extern fn avra_puts(s: string)\n" +
+                "fn noisy() -> int { avra_puts(\"x\")\n1 }\n" +
+                "fn mark(f: Fn, n: int) { }\n" +
+                "@mark(noisy())\nfn answer() -> int { 1 }\nanswer()"
+            refused(src, "reaches `avra_puts`")
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Type, Diagnostic}
+extern fn avra_puts(s: string)
+fn noisy() -> int { avra_puts("x")
+1 }
+fn mark(f: Fn, n: int) { }
+@mark(noisy())
+fn answer() -> int { 1 }
+answer()
+--- old path says (kind: words)
+annotation.unsettled: an annotation could not run
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / argument evaluation / an argument trap is reported once at its annotation
+--- case (as the spec writes it)
+then "an argument trap is reported once at its annotation" {
+            let src = meta_use() +
+                "fn boom() -> int { 1 / 0 }\n" +
+                "fn mark(f: Fn, n: int) { }\n" +
+                "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
+            refused(src, "division by zero")
+        }
+--- main.av (as judged)
+use @std.meta.{Fn, Type, Diagnostic}
+fn boom() -> int { 1 / 0 }
+fn mark(f: Fn, n: int) { }
+@mark(boom())
+fn answer() -> int { 1 }
+answer()
+--- old path says (kind: words)
+annotation.unsettled: an annotation could not run
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / every mark owes a reader / the unclaimed word alone is refused, and the help names the claims
+--- case (as the spec writes it)
+then "the unclaimed word alone is refused, and the help names the claims" {
+            let p = packaged(
+                "use @std.meta.{derive, Tagged}\n@derive(Tagged)\nenum E {\n    @frozen A(x: int)\n    @typo B(y: int)\n}\nfn f() -> int { 1 }\nf()",
+            )
+            refused_in(p, "`@typo` — nothing on this declaration reads it") &&
+                p.report().contains("the marks read here are `@default`, `@frozen`, `@widened`")
+        }
+--- main.av (as judged)
+use @std.meta.{derive, Tagged}
+@derive(Tagged)
+enum E {
+    @frozen A(x: int)
+    @typo B(y: int)
+}
+fn f() -> int { 1 }
+f()
+--- old path says (kind: words)
+annotation.unread_mark: every mark is read by something that claims it
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / every mark owes a reader / a derive that declares no `marks` claims nothing
+--- case (as the spec writes it)
+then "a derive that declares no `marks` claims nothing" {
+            refused(
+                "use @std.meta.{derive, Plainly}\n@derive(Plainly)\nenum E {\n    @frozen A(x: int)\n}\nfn f() -> int { 1 }\nf()",
+                "`@frozen` — nothing on this declaration reads it",
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{derive, Plainly}
+@derive(Plainly)
+enum E {
+    @frozen A(x: int)
+}
+fn f() -> int { 1 }
+f()
+--- old path says (kind: words)
+annotation.unread_mark: every mark is read by something that claims it
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / marks — malformed surface / a doubled `@` says BOTH true things — the bad one, and the mark behind it
+--- case (as the spec writes it)
+then "a doubled `@` says BOTH true things — the bad one, and the mark behind it" {
+            refusals("enum E { @@m A(x: int) }\n0") == 2
+        }
+--- main.av (as judged)
+enum E { @@m A(x: int) }
+0
+--- old path says (kind: words)
+annotation.unread_mark: every mark is read by something that claims it
+lex.error: expected a name after `@`
+--- layer says
+lex.error: expected a name after `@`
+
+### features/annotations — the compile-time call's laws / a derive's own seat / a trait whose `derive` takes a `Type` refuses a fn, at the annotation
+--- case (as the spec writes it)
+then "a trait whose `derive` takes a `Type` refuses a fn, at the annotation" {
+            refused(
+                "use @std.meta.{derive, Tagged}\n@derive(Tagged)\nfn g() -> int { 2 }\nfn f() -> int { 1 }\nf()",
+                "`Tagged`'s `derive` takes `Type`, and this is a fn",
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{derive, Tagged}
+@derive(Tagged)
+fn g() -> int { 2 }
+fn f() -> int { 1 }
+f()
+--- old path says (kind: words)
+annotation.receiver: an annotation's first seat says what it takes
+--- layer says
+(nothing)
+
+### features/annotations — the compile-time call's laws / a method's parameters / cross with their own kinds, the receiver apart
+--- case (as the spec writes it)
+then "cross with their own kinds, the receiver apart" {
+            refused(
+                "use @std.meta.{Trait, Kind, Diagnostic, refuse}\ntype Ctx = { n: int }\nfn spell(k: Kind) -> string {\n    match k {\n        .Var(w) -> \"Var \${w}\",\n        .Named(w, _) -> \"Named \${w}\",\n        .Int -> \"Int\",\n        rest -> \"other\",\n    }\n}\nfn probe(tr: Trait) -> List<Diagnostic> {\n    [refuse(\"kinds \${[spell(p.kind) for p in f.params].join(\",\")}\") for f in tr.fns]\n}\n@probe\ntrait T {\n    fn a(cx: Ctx, o: Self, n: int) -> Self\n}\n1",
+                "kinds Named Ctx,Var Self,Int",
+            )
+        }
+--- main.av (as judged)
+use @std.meta.{Trait, Kind, Diagnostic, refuse}
+type Ctx = { n: int }
+fn spell(k: Kind) -> string {
+    match k {
+        .Var(w) -> "Var ${w}",
+        .Named(w, _) -> "Named ${w}",
+        .Int -> "Int",
+        rest -> "other",
+    }
+}
+fn probe(tr: Trait) -> List<Diagnostic> {
+    [refuse("kinds ${[spell(p.kind) for p in f.params].join(",")}") for f in tr.fns]
+}
+@probe
+trait T {
+    fn a(cx: Ctx, o: Self, n: int) -> Self
+}
+1
+--- old path says (kind: words)
+annotation.said: kinds Named Ctx,Var Self,Int
+--- layer says
+annotation.said: kinds Named Ctx,Named T,Int

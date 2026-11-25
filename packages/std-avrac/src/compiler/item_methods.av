@@ -40,7 +40,7 @@ use @std.program.saved_query.{
 /// Where an impl stands: its file, its item there, which of the item's impls it is (its impls in
 /// order, then its components), and its target's type parameters as it names them.
 @derive(Saved)
-export type ImplAt = { file: SourceFileAddress, item: ItemId, params: List<string>, nth: int = 0 }
+export type ImplAt = { file: SourceFileAddress, item: int, params: List<string>, nth: int = 0 }
 
 /// The impl statement `at` names in `item`; absent for a component's.
 fn impl_stmt_at(item: ReadItem, at: ImplAt) -> StmtId? {
@@ -79,64 +79,39 @@ type Filed = { impls: List<FiledImpl> }
 /// Every impl a package's written items hold, one part per name of the type its target resolves to
 /// from the impl's own file, so an import's other name files with the type it names, and a reader of
 /// one type's impls stands when another's move.
-@cut_parted_query("summary")
+@cut_parted_query
 export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts { impls_filed(engine, package, false) }
 
 /// Every impl a package's generators made, filed as `package_impls` files the written ones.
-@cut_parted_query("summary")
+@cut_parted_query
 export fn package_generated_impls(engine: QueryEngine, package: string) -> AnswerParts { impls_filed(engine, package, true) }
 
 /// The impls of a package's generated items when `generated`, else of its written ones, one part
 /// per name of the type each impl's target resolves to: read where the template that wrote the impl
-/// stands first, then from its file. A written impl's names are read as what is written names them,
-/// so filing the written impls runs no generator — a generator may ask them; a written impl of a
-/// type only a generator declares files with the generated ones, where any generator declares.
+/// stands first, then from its file.
 fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerParts {
     mut by_type: Map<string, List<FiledImpl>> = {}
-    let generators_declare = generated && generators_declare_any(engine, package)
     for path in package_sources(engine, package, "src") {
         let f = SourceFileAddress { package_name: package, path_in_package: path }
+        let first = if generated { item_count(engine, f) } else { 0 }
         let by_item = if generated { generated_impls(engine, f) } else { written_impls(engine, f) }
-        for k, held in by_item {
+        for at, held in by_item {
             for nth, i in held {
-                let d? = impl_target(engine, f, i, !generated) else { continue }
-                let filed = filed_impl(
-                    engine,
-                    f,
-                    i,
-                    d,
-                    nth_item_id(engine, f, generated, k),
-                    nth,
-                    !generated,
-                )
+                let d? = impl_target(engine, f, i) else { continue }
+                let tr = if i.implements == null { null } else { impl_named(engine, f, i.trait_in, i.implements!) }
+                let filed = FiledImpl {
+                    at: ImplAt {
+                        file: f,
+                        item: first + at,
+                        params: impl_params(engine, i, d),
+                        nth: nth,
+                    },
+                    of: d.file,
+                    methods: i.methods,
+                    statics: i.statics,
+                    implements: if tr == null { null } else { TraitAt { file: tr!.file, name: tr!.name } },
+                }
                 by_type.set(d.name, (by_type.get(d.name) ?? []).concat([filed]))
-            }
-        }
-        if !generators_declare {
-            continue
-        }
-        for k, held in written_impls(engine, f) {
-            for nth, i in held {
-                if impl_target(engine, f, i, true) != null { continue }
-                let d? = impl_target(engine, f, i, false) else { continue }
-                by_type
-                    .set(
-                        d.name,
-                        (by_type.get(d.name) ?? [])
-                            .concat(
-                                [
-                                    filed_impl(
-                                        engine,
-                                        f,
-                                        i,
-                                        d,
-                                        nth_item_id(engine, f, false, k),
-                                        nth,
-                                        false,
-                                    ),
-                                ],
-                            ),
-                    )
             }
         }
     }
@@ -145,72 +120,17 @@ fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerP
     )
 }
 
-/// Whether a generator of `package`, or of a package it depends on, declares anything: where none
-/// does, no written impl is of a type only a generator declares, and the generated impls read none of
-/// the written ones, so an edit to them leaves the generated impls standing.
-fn generators_declare_any(engine: QueryEngine, package: string) -> bool {
-    depended_on(engine, [package], [])
-        .any(
-            (p) -> package_sources(engine, p, "src")
-                .any(
-                    (path) -> !generated_declares(
-                        engine,
-                        SourceFileAddress { package_name: p, path_in_package: path },
-                    )
-                        .names
-                        .is_empty(),
-                ),
-        )
-}
-
-/// The impl `i` of the item `item` of `f`, filed under the type `d` it's for, its trait named as
-/// written names it where `written`.
-fn filed_impl(
-    engine: QueryEngine,
-    f: SourceFileAddress,
-    i: ItemImpl,
-    d: DeclaredAt,
-    item: ItemId,
-    nth: int,
-    written: bool,
-) -> FiledImpl {
-    let tr = if i.implements == null { null } else { impl_named(engine, f, i.trait_in, i.implements!, written) }
-    FiledImpl {
-        at: ImplAt { file: f, item: item, params: impl_params(engine, i, d), nth: nth },
-        of: d.file,
-        methods: i.methods,
-        statics: i.statics,
-        implements: if tr == null { null } else { TraitAt { file: tr!.file, name: tr!.name } },
-    }
-}
-
 /// The type an impl in `file` is for, named `name`: read where the impl lands, then where `home`
 /// says its template wrote the name — a generator's impl may be for a neighbour of the declaration
 /// it annotates.
-fn target_named(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    home: string?,
-    name: string,
-    written: bool = false,
-) -> DeclaredName? {
-    impl_named(engine, file, null, name, written) ?? impl_named(engine, file, home, name, written)
+fn target_named(engine: QueryEngine, file: SourceFileAddress, home: string?, name: string) -> DeclaredName? {
+    impl_named(engine, file, null, name) ?? impl_named(engine, file, home, name)
 }
 
 /// The type an impl in `file` names `name` in one of its seats: read where `home` says that seat's
 /// name was written, then where the impl stands.
-fn impl_named(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    home: string?,
-    name: string,
-    written: bool = false,
-) -> DeclaredName? {
-    read_from(engine, file, home)
-        .find_map(
-            (h) -> if written { resolved_written(engine, h, Space.Type, name) } else { resolved(engine, h, Space.Type, name) }
-                .named(),
-        )
+fn impl_named(engine: QueryEngine, file: SourceFileAddress, home: string?, name: string) -> DeclaredName? {
+    read_from(engine, file, home).find_map((h) -> resolved(engine, h, Space.Type, name).named())
 }
 
 /// Where the language's own type `word` (`Task`, `List`) is declared for an impl of it to be filed
@@ -242,8 +162,8 @@ export fn receiver_over(file: SourceFileAddress, name: string, params: List<stri
 }
 
 /// The type the impl `i` in `f` is for, as declared; absent where it names none.
-fn impl_target(engine: QueryEngine, f: SourceFileAddress, i: ItemImpl, written: bool = false) -> DeclaredAt? {
-    declared_of(target_named(engine, f, i.target_in, i.target, written)) ?? own_declared(i.target)
+fn impl_target(engine: QueryEngine, f: SourceFileAddress, i: ItemImpl) -> DeclaredAt? {
+    declared_of(target_named(engine, f, i.target_in, i.target)) ?? own_declared(i.target)
 }
 
 /// The type parameters the impl `i` stands over: those it writes, else those of the type `d` it's for.
@@ -272,7 +192,7 @@ fn impls_in(part: Bytes?, file: SourceFileAddress) -> List<FiledImpl> {
 /// or, when `statics`, as a static: the written ones that do, and only where none does, the
 /// generated; none for a static an enum's variant names. So a generator's own code, which calls
 /// what is written and builds variants by name, never asks what generators make.
-@query("summary")
+@query
 export fn impls_with(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -328,30 +248,6 @@ export fn impls_given(
         .first() ?? []
 }
 
-/// Whether an impl a generator made of the type `file` declares as `name` gives it `member`, as a
-/// static where `statics`.
-export fn generated_gives(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    name: string,
-    member: string,
-    statics: bool,
-) -> bool {
-    impls_in(package_generated_impls_part(engine, file.package_name, name), file)
-        .any(gives(it, member, statics))
-}
-
-/// The methods the impls of the type `file` declares as `name` give it in its package, written and
-/// generated, each once, in the order they are filed: what a call of a method it lacks is offered.
-export fn methods_given(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
-    let parts = [
-        package_impls_part(engine, file.package_name, name),
-        package_generated_impls_part(engine, file.package_name, name),
-    ]
-    let all = [m for part in parts for i in impls_in(part, file) for m in i.methods]
-    [m for j, m in all if all.index_of(m) == j]
-}
-
 /// The written impls the package `package` holds of the type `file` declares as `name` that write
 /// `method`, impls written alike once, as `impls_with` keeps its own.
 fn foreign_impls(
@@ -384,7 +280,7 @@ fn gives(i: FiledImpl, method: string, statics: bool) -> bool { if statics { i.s
 
 /// The method `method` a trait declares, its `Self` standing for `receiver`; absent when it declares
 /// none.
-@query("summary")
+@query
 export fn trait_method_signature(
     engine: QueryEngine,
     held: TraitAt,
@@ -422,7 +318,7 @@ fn written_signature(signing: Signing, written: WrittenFn) -> FnSignature {
 
 /// Every method an impl gives, signed under the impl's type parameters and its own: one part per
 /// name, so the impl is read once for every method asked of it.
-@parted_query("summary")
+@parted_query
 export fn impl_signatures(engine: QueryEngine, at: ImplAt) -> AnswerParts {
     let item = read_item(engine, at.file, at.item)
     let impl_fns = impl_fns_at(item, at)
@@ -459,7 +355,7 @@ fn impl_signed(
     }
     FnSignature {
         type_params: type_params,
-        params: [signing.param(p) with { defaulted: p.default != null || trait_seat_default(engine, implemented, name, p.name.text()) != null } for p in written.params],
+        params: [signing.param(p) with { defaulted: p.default != null || trait_seat_default(engine, implemented, name, p.name.of) != null } for p in written.params],
         answer: signing.signed(written.ret),
         answer_width: null,
         bounds: target_bounds(engine, at).concat(signing.bounds(written)),
@@ -492,11 +388,11 @@ fn target_bounds(engine: QueryEngine, at: ImplAt) -> List<SignedType?> {
 }
 
 /// The impls the item `at` of `file` holds: a written item's, else, past them, a generated one's.
-fn impls_of_item(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ItemImpl> {
-    if item_held(engine, file, at) { return item_impls(engine, file, at) }
-    let k? = generated_rank(at) else { return [] }
+fn impls_of_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
+    let written = item_count(engine, file)
+    if at < written { return item_impls(engine, file, at) }
     let made = generated_impls(engine, file)
-    if k < made.length { made[k] } else { [] }
+    if at - written < made.length { made[at - written] } else { [] }
 }
 
 /// The trait the impl at `at` implements, read where its file names it; absent for an impl of no
@@ -518,7 +414,7 @@ fn trait_seat_default(engine: QueryEngine, implemented: TraitAt?, name: string, 
     let t? = implemented else { return null }
     let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
     let f? = trait_fns(item).find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
-    let value? = item.store.fn_parts(f)!.params.find(it.name.spells(seat))?.default else { return null }
+    let value? = item.store.fn_parts(f)!.params.find(it.name.of == seat)?.default else { return null }
     TraitDefault { item: item, stmt: f, value: value }
 }
 
@@ -903,7 +799,8 @@ fn trait_written(engine: QueryEngine, file: SourceFileAddress, named: string?, w
 /// What `name` names as a type from `file`'s top level; among written names alone where `written`.
 fn type_named(engine: QueryEngine, file: SourceFileAddress, name: string, written: bool) -> DeclaredName? {
     if !written { return resolved(engine, file, Space.Type, name).named() }
-    written_resolution(engine, file, Space.Type, name).named()
+    let scope? = file_scope(engine, file) else { return null }
+    resolved_in(engine, scope, file, Space.Type, name).named()
 }
 
 /// The trait the declaration `d` is.
@@ -935,9 +832,7 @@ export fn language_gives(engine: QueryEngine, owner: SignedType, name: string, s
 
 /// Whether a value of `ty` implements the trait `bound` names, applied as `bound` applies it: as an
 /// impl says, written or generated, in the type's own package, in `reader`, or in any package
-/// `reader` reaches — the whole program a build of `reader` holds. The written impls are asked
-/// first: a type one of them answers for runs no generator to say so, and only a type none does asks
-/// what the generators made — which a generator may make for a type it doesn't stand on. Absent where `ty` is no declared
+/// `reader` reaches — the whole program a build of `reader` holds. Absent where `ty` is no declared
 /// or owned type known whole, or `bound` names no declared trait.
 export fn implements(engine: QueryEngine, reader: string, ty: SignedType, bound: SignedType) -> bool? {
     if ty.nullable() || ty.dynamic || ty.generic() || ty.inferred() { return null }
@@ -947,13 +842,15 @@ export fn implements(engine: QueryEngine, reader: string, ty: SignedType, bound:
     let packages = distinct(
         [d.file.package_name, reader].concat(package_reach(engine, reader).packages),
     )
-    let answers = (i: FiledImpl) -> i.implements != null &&
-        i.implements!.name == held.name &&
-        same_file(i.implements!.file, held.file) &&
-        applied_alike(impl_trait_args(engine, i.at), bound.args)
-    if packages.any((p) -> impls_in(package_impls_part(engine, p, d.name), d.file).any(answers)) { return true }
-    packages
-        .any((p) -> impls_in(package_generated_impls_part(engine, p, d.name), d.file).any(answers))
+    let impls = [i for p in packages for i in impls_in(package_impls_part(engine, p, d.name), d.file)
+        .concat(impls_in(package_generated_impls_part(engine, p, d.name), d.file))]
+    impls
+        .any(
+            (i) -> i.implements != null &&
+                i.implements!.name == held.name &&
+                same_file(i.implements!.file, held.file) &&
+                applied_alike(impl_trait_args(engine, i.at), bound.args),
+        )
 }
 
 /// Whether an impl applying its trait to `written` answers a bound applying it to `asked`: each
@@ -1015,7 +912,7 @@ fn statics_marked(engine: QueryEngine, ty: SignedType) -> List<MarkedStatic> {
 
 /// The statics the type `file` declares as `name` has in its package, written and generated, each
 /// with every mark it wears.
-@query("summary")
+@query
 fn marked_statics(engine: QueryEngine, file: SourceFileAddress, name: string) -> MarkedStatics {
     MarkedStatics {
         statics: flatten([impl_marked(engine, i.at) for i in impls_of(engine, file, name)]),

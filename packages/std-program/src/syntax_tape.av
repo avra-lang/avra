@@ -12,7 +12,6 @@
 use answer_record.{ContentHash, content_hash}
 use defect.{defect}
 use dense_window.{DenseWindow, dense_window}
-use names.{Name, reading_of, tape_name}
 use @std.meta.{derive}
 use saved_derive.{Saved}
 use saved_layout.{
@@ -158,8 +157,8 @@ export type TapeWriter = {
     facts: SectionWriter = SectionWriter {},
     above: SectionWriter = SectionWriter {},
     place_facts: SectionWriter = SectionWriter {},
-    /// Each kind of node met, by the kind, and the number each of its nodes was written as.
-    written: Map<string, WrittenNodes> = {},
+    /// Each kind of node met, and the number each of its nodes was written as.
+    written: List<WrittenNodes> = [],
     /// For each node being written, innermost last, whether it stands in another file.
     standing: List<bool> = [],
     /// Whether this tape is a face, which leaves out every body.
@@ -208,9 +207,6 @@ impl TapeWriter {
 
     /// A text, as its number among the item's texts.
     fn text(text: string) { self.count(self.texts.number(text)) }
-
-    /// A name, written as its text: a tape holds no id.
-    fn name(n: Name) { self.text(n.text()) }
 
     /// Octets: their length, then each one.
     fn octets(octets: Bytes) { octets_into(self.structure, octets) }
@@ -278,20 +274,20 @@ impl TapeWriter {
 
     /// The number the node at `index` of `kind` was written as, absent when it's not on the tape yet.
     fn number_of(kind: string, index: int) -> int? {
-        let nodes? = self.written.get(kind) else { return null }
+        let nodes? = self.written.find(it.kind == kind) else { return null }
         nodes.numbers.get(index)
     }
 
     /// The node at `index` of `kind` is written as `number`, so a later mention of it refers to it.
     fn wrote(kind: string, index: int, number: int) {
-        let nodes = self.written.get(kind) ?? self.kind_met(kind)
+        let nodes = self.written.find(it.kind == kind) ?? self.kind_met(kind)
         nodes.numbers.put(index, number)
     }
 
     /// A kind of node met for the first time.
     fn kind_met(kind: string) -> WrittenNodes {
         let nodes = WrittenNodes { kind: kind, numbers: dense_window() }
-        self.written.set(kind, nodes)
+        self.written.push(nodes)
         nodes
     }
 
@@ -407,8 +403,6 @@ export type TapeReader = {
     last_offset: Cell<int> = Cell.new(0),
     /// By number, the index each node was made at, -1 while it's still being read.
     made: Cell<List<int>> = Cell.new(no_nodes_made()),
-    /// The number of the tape's meaning, which its name slots are written under: one for every reading of it.
-    name_reading: int,
 }
 
 fn no_nodes_made() -> List<int> { [] }
@@ -420,7 +414,6 @@ export fn tape_reader(tape: SyntaxTape, item_start: int = 0) -> TapeReader {
         structure: tape.meaning.structure,
         texts: texts_of(tape.meaning.texts),
         places: tape.places.places,
-        name_reading: reading_of(tape.meaning_hash),
     }
 }
 
@@ -460,12 +453,6 @@ impl TapeReader {
     }
 
     fn text() -> string { self.texts[self.count()] }
-
-    /// A name, read as the text it was written as, interned once for each text of the tape.
-    fn name() -> Name {
-        let number = self.count()
-        tape_name(self.name_reading, self.texts, number)
-    }
 
     fn octets() -> Bytes {
         let length = self.count()

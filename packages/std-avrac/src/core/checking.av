@@ -16,15 +16,6 @@ export enum Expected {
     Dropped
     /// Unknown: the node stands under one with no rule, which may use its value or drop it.
     Unknown
-    /// Part of a type: a seat that names a type parameter its call leaves open, that parameter
-    /// `never`. It pins what a call's answer fills of it and judges nothing, so a node under it is
-    /// otherwise one under no rule.
-    Partly(ty: SignedType)
-}
-
-impl Expected {
-    /// Whether the seat says nothing the node is judged by: unknown, or only part of a type.
-    fn unknowing() -> bool { self is .Unknown || self is .Partly }
 }
 
 /// What a body's checking reads of the program: the type a top-level value's name has from the
@@ -77,8 +68,6 @@ export type CheckedProgram = {
     owner: fn(SignedType) -> bool,
     /// The module that seals `ty`, where it is one other than the body's own; absent for any other.
     sealed_home: fn(SignedType) -> string?,
-    /// Whether a type wears `@unbranched`: a value of it is read, never chosen by.
-    unbranched: fn(SignedType) -> bool,
     /// Whether the type is declared in the file being checked.
     declared_here: fn(SignedType) -> bool,
     /// Whether a value's name, read where the template that wrote the read stands (its home) before
@@ -149,12 +138,9 @@ export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List
 /// holds the cell its value lives in, whether that cell is the place its writer names — a
 /// component's `state` seat or member — where a record's is its own, and whether its default reads
 /// the instance (`self`), so it is made once the inputs it reads stand. A record's signature saves its
-/// fields as these, and typing reads them as saved. `over` is the place a member marked `@over(x)`
-/// is shown over: `x`, absent for a member not so marked. `needed` says a `state` member of a type
-/// `@seeded_at_need` holds no cell until its state is first needed; `rank` orders such seeds, each
-/// after every one its own seed reads.
+/// fields as these, and typing reads them as saved.
 @derive(Saved)
-export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false, over: string? = null, needed: bool = false, rank: int = 0 }
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false }
 
 impl FieldSeat {
     /// What the field's slot holds: its type, or the cell its value lives in for a `state` field;
@@ -242,18 +228,9 @@ export type Checking = {
     /// The seats being checked in, innermost last, each beside the type it wants: a node checked
     /// against that same type, passed down from it, fills that seat.
     seated: Cell<List<SeatWant>>,
-    /// Each refusal a seat's want made, as the seat it judged: how many seats stood open, and what it
-    /// wanted.
-    agreements: Cell<List<SeatJudged>?>,
-    /// How many refusals a seat's want has made: what a check compares before it reads them.
-    agreed_count: Cell<int>,
     /// Each name read that nothing binds and the program gives no type, in the order met: a name
     /// nothing declares among them.
     unread: Cell<List<Unread>>,
-    /// Each argument a seat could not take whose type it could not name — a block riding the seat's
-    /// pronoun reads as no type of its own — so it was refused by nothing, newest last: what a call
-    /// its template wrote says it of, in the instance's words.
-    silenced: Cell<List<Refused>>,
     /// The body consts being checked, innermost last, each by its statement's index.
     consting: Cell<List<int>>,
     /// Each body const whose value reads a seat of its fn that no run settles: the first such read.
@@ -369,9 +346,6 @@ type NamedPattern = { name: string, args: List<PatId> }
 /// A seat being checked in, and the type it wants, spelled.
 type SeatWant = { seat: Seating, want: string }
 
-/// A refusal a seat's want made: how many seats stood open when it judged, and what it wanted.
-type SeatJudged = { depth: int, want: string }
-
 /// A node its seat refused: the node, what the seat wants, what the node is, and the seat.
 /// A refusal of a pattern stands at the node that holds it, and is said at the pattern `pat`.
 export type Refused = { at: ExprId, want: SignedType, found: SignedType, seat: Seating, pat: PatId? = null }
@@ -447,9 +421,8 @@ fn arm_apart(ty: SignedType, want: SignedType) -> bool { ty.head is .Owned && !t
 
 /// The name two of a lambda's seats `params` wear, the first so named; absent where each names one.
 export fn seat_worn_twice(params: List<Param>) -> string? {
-    let names = [p.name for p in params]
-    let twice? = names.find((n) -> names.filter(it == n).length > 1) else { return null }
-    twice.text()
+    let names = [p.name.of for p in params]
+    names.find((n) -> names.filter(it == n).length > 1)
 }
 
 /// What a `select`'s arms leave unsaid: a supply `name` waited on with no `.ended` arm of its own; a
@@ -506,9 +479,6 @@ export enum Unhanded {
     Unshared
     /// A place rooted in a binding one call hands a `mut` seat twice.
     Twice
-    /// A component's member marked `@over(x)` handed beside a place for `x`: what it shows stands over
-    /// a place the caller already holds.
-    Overshown
 }
 
 /// Why `==` or `!=` refuses an operand.
@@ -522,8 +492,6 @@ export enum Uncompared {
     Unasked
     /// Both sides are `null`.
     Absent
-    /// The side's type wears `@unbranched`, whose value is read and never chosen by.
-    Unbranched(name: string)
 }
 
 /// What a value offered where a value that compares was wanted is, by what to reach for instead.
@@ -754,8 +722,6 @@ export enum Seating {
     ArmApart(of: Meeting)
     /// The second branch of an `if` no seat judges, answering another type than the first.
     BranchesApart
-    /// An arm of a `when` no seat judges whose answer the `_` arm's doesn't join.
-    WhenApart
     /// A value a record literal or a `with` writes for the field `name` a second time.
     FieldRepeated(name: string)
     /// A `?` with no caller to pass to — a failure where `failing`, else absence: inside a lambda
@@ -777,9 +743,6 @@ export enum Seating {
     CaughtArm
     /// The value a binding names, which answers nothing.
     Voided
-    /// A `within`: its block, which answers nothing, or — `untimed` — the `within` itself, in a
-    /// program that loads no `@std/time`, whose `Duration` and `TimedOut` it answers through.
-    Within(untimed: bool)
     /// A read of the property `name` on a value that may be absent.
     Guarantee(name: string)
     /// The subject of a `for`, which walks nothing as `fault` says.
@@ -795,9 +758,9 @@ export enum Seating {
     Folded(fault: FoldFault)
     /// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
     Pinned(callee: string, want: int, found: int)
-    /// A literal of `record` that leaves its parameter `param` filled by nothing: `shown` spells the
-    /// type arguments that would pin it, `fields` are the unwritten fields whose type names it.
-    LiteralUnpinned(record: string, param: string, shown: List<string>, fields: List<string>)
+    /// A literal of `record` writing the leading type arguments `args`, which leaves its parameter
+    /// `param` filled by nothing; `fields` are the unwritten fields whose type names it.
+    LiteralUnpinned(record: string, param: string, args: List<string>, fields: List<string>)
     /// A bare `null` handed seat `at` of `callee`, which names a type parameter nothing fills.
     NullPin(callee: string, at: int)
     /// A comprehension's range bound, the high one where `high`, that is no `int`.
@@ -1013,10 +976,7 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let seats: Cell<Map<string, SignedType>> = Cell.new({})
     let refused: Cell<List<Refused>> = Cell.new([])
     let seated: Cell<List<SeatWant>> = Cell.new([])
-    let agreements: Cell<List<SeatJudged>?> = Cell.new(null)
-    let agreed_count: Cell<int> = Cell.new(0)
     let unread: Cell<List<Unread>> = Cell.new([])
-    let silenced: Cell<List<Refused>> = Cell.new([])
     let consting: Cell<List<int>> = Cell.new([])
     let seat_reads: Cell<List<SeatRead>> = Cell.new([])
     let conditions: Cell<List<int>> = Cell.new([])
@@ -1024,7 +984,6 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let names_bound: Cell<List<NameBound>> = Cell.new([])
     Checking {
         unread: unread,
-        silenced: silenced,
         names_read: names_read,
         names_bound: names_bound,
         consting: consting,
@@ -1033,8 +992,6 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
         seats: seats,
         refused: refused,
         seated: seated,
-        agreements: agreements,
-        agreed_count: agreed_count,
         store: store,
         program: program,
         answer: answer,
@@ -1049,24 +1006,15 @@ impl Checking {
     mut fn check(e: ExprId, expected: Expected) -> SignedType? {
         let outer = self.site
         self.site = BindSite.Expr(e.index)
+        let refused_before = self.refused.get().length
         let meant = if self.meanings { self.store.meant(e) } else { null }
         self.seat_kept(e, expected)
-        let judged_before = self.agreed_count.get()
-        let refused_before = self.refused.get().length
         let made = if meant != null { self.meaning_checked(e, meant!, expected) } else { self.store.expr(e).checked(self, e, expected) }
         // a type the body decides is known only once typing infers it
         let ty = if made != null && made!.inferred() { null } else { made }
         if ty != null {
             self.types.set_at(e.index, ty)
-            // a refusal under `e` poisons what depends on the refused value — its node answers no
-            // type — never a type `e` knows without it, which its seat still judges; a value under
-            // `e` its seat already refused, as a block's tail, is that seat's one refusal; and a
-            // check under `e` that took back refusals made before it re-judged what it holds, as a
-            // generic call pins its parameters, so `e` stands as that re-judging left it
-            let retracted = self.refused.get().length < refused_before
-            if !retracted &&
-                (self.agreed_count.get() == judged_before ||
-                    !self.judged_under(judged_before, expected)) { self.agreed(e, expected, ty!) }
+            if self.refused.get().length == refused_before || fnless_wanted(expected, ty!) { self.agreed(e, expected, ty!) }
         }
         self.site = outer
         ty
@@ -1101,26 +1049,9 @@ impl Checking {
     /// that stands over a parameter a call fills, or one the body decides, is the seat law's under
     /// what fills it, not here — a seat written under its declaration's own parameters is judged, a
     /// concrete value never standing as a parameter; a seat answering nothing drops what it holds.
-    /// A value over the body's own parameters held to a seat over none is judged here: it stands
-    /// there for every instance or it is refused, since no instance is judged apart from its body. A
-    /// fn over parameters is a generic fn read bare, whose parameters are its own and no call fills:
-    /// that read is its own law's.
-    /// Whether a value checked since `before` was refused by the seat `expected` names, standing
-    /// where it stands now: the one seat a block hands its tail.
-    fn judged_under(before: int, expected: Expected) -> bool {
-        let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return false }
-        let depth = self.seated.get().length
-        let spelled = want.spelled()
-        let all? = self.agreements.get() else { return false }
-        for k in before..all.length { if all[k].depth == depth && all[k].want == spelled { return true } }
-        false
-    }
-
     mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
         let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
-        if found.generic() && (want.generic() || found.head is .Function) ||
-            want.inferred() ||
-            found.inferred() { return }
+        if found.generic() || want.inferred() || found.inferred() { return }
         if want.generic() && !self.seat_wanting(want).declared_under() { return }
         if want.unknown() || found.unknown() || self.misapplied(want) { return }
         if found.head is .Meta && self.seat_wanting(want) is .Binding { return }
@@ -1129,9 +1060,6 @@ impl Checking {
             if !found.reaches(want) && self.store.expr(e).literal_form() { self.seals_filled(e, want) }
             return
         }
-        let judged = SeatJudged { depth: self.seated.get().length, want: want.spelled() }
-        self.agreements.set((self.agreements.get() ?? []).concat([judged]))
-        self.agreed_count.set(self.agreed_count.get() + 1)
         self
             .refused
             .push(
@@ -1158,11 +1086,7 @@ impl Checking {
     /// `v`, of type `read`, refused by the generic `seat` it doesn't unify with, where its type is
     /// known and nothing inside it was refused since `before`.
     mut fn unmet(v: ExprId, seat: SignedType, read: SignedType?, at: Seating, before: int) {
-        let found? = read else {
-            if !seat.unknown() { self.silence(v, seat, owned_type("void"), at) }
-            return
-        }
-        if found.inferred() && !seat.unknown() { self.silence(v, seat, found, at) }
+        let found? = read else { return }
         if found.inferred() || found.unknown() || seat.unknown() { return }
         if self.refused.get().length != before && !fnless(seat, found) { return }
         self
@@ -1553,7 +1477,7 @@ impl Checking {
     /// branch of another type keeps as its seat under a seat that wants nothing, or the seat's type
     /// where they don't join, which each lifts into; nothing under a seat that isn't known, which may widen them.
     fn branches_met(branches: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
-        if expected.unknowing() || types.any(it == null) { return null }
+        if expected is .Unknown || types.any(it == null) { return null }
         let joined = types_joined(types)
         if joined != null { return if expected is .Free { self.met_seated(branches, types, joined) } else { joined } }
         match expected { .Exactly(wanted) -> wanted, rest -> null }
@@ -1565,11 +1489,11 @@ impl Checking {
     /// free seat, an arm whose type isn't known is checked again where the others meet, which pins a
     /// generic answer (a generic call's, a generic enum's variant).
     mut fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
-        if expected.unknowing() || types.any(it == null) { return null }
+        if expected is .Unknown || types.any(it == null) { return null }
         match expected {
             .Exactly(wanted) -> wanted,
             .Free -> self.met_seated(arms, types, types_joined(types) ?? self.met_at_one(arms, types)),
-            .Dropped or .Unknown or .Partly(_) -> types_joined(types),
+            .Dropped or .Unknown -> types_joined(types),
         }
     }
 
@@ -1584,7 +1508,7 @@ impl Checking {
         expected: Expected,
         before: int,
     ) -> SignedType? {
-        if expected is .Exactly { self.arms_seated(e, arms, types, before) } else if !expected.unknowing() { self.arms_apart(arms, types) }
+        if expected is .Exactly { self.arms_seated(e, arms, types, before) } else if !(expected is .Unknown) { self.arms_apart(arms, types) }
         self.arms_met(arms, types, expected)
     }
 
@@ -1614,30 +1538,6 @@ impl Checking {
         self.refused.set(rest)
         self.arms_apart(arms, types)
         if self.refused.get().length == rest.length { self.refused.set(all) }
-    }
-
-    /// The arms `values` of a `when` under a seat that wants nothing, of these types, `total` among them
-    /// the `_` arm: each arm whose answer the `_` arm's can't join, refused against it. The `_` arm
-    /// anchors, since it always runs when nothing else does. Absent where the `_` arm isn't known.
-    mut fn when_arms_apart(values: List<ExprId>, types: List<SignedType?>, total: int) {
-        if self.meanings || total < 0 || total >= types.length { return }
-        let anchor? = settled_arm(types[total]) else { return }
-        for at, ty in types {
-            if at == total { continue }
-            let t? = settled_arm(ty) else { continue }
-            if types_joined([anchor, t]) == null {
-                self
-                    .refused
-                    .push(
-                        Refused {
-                            at: self.answering(values[at]),
-                            want: anchor,
-                            found: t,
-                            seat: Seating.WhenApart,
-                        },
-                    )
-            }
-        }
     }
 
     /// Each arm among `arms`, of these types, that the first known arm's answer joined with each in
@@ -1712,8 +1612,8 @@ impl Checking {
             .Exactly(want) -> !self.holds_fn(want) &&
                 self
                     .lambda_faulted(e, LambdaFault.Unseated(want.spelled(), self.store.written_as_block(e))),
-            .Free or .Dropped -> unheard != null && self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.text())),
-            .Unknown or .Partly(_) -> false,
+            .Free or .Dropped -> unheard != null && self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.of)),
+            .Unknown -> false,
         }
     }
 
@@ -1728,7 +1628,7 @@ impl Checking {
         let seat = match expected {
             .Free or .Dropped -> null,
             .Exactly(ty) -> ty with { nulls: 0 },
-            .Unknown or .Partly(_) -> { return },
+            .Unknown -> { return },
         }
         let variants = self.seat_variants(seat)
         if variants == null && self.unjudged_seat(seat) { return }
@@ -1783,28 +1683,10 @@ impl Checking {
         if s.generic() || s.inferred() || s.unknown() || s.dynamic { return }
         let got? = match self.store.pat(p) {
             .Lit(v) -> self.literal_unmatched(v, s),
-            .Bind(name) -> if self.compares(name.text()) { const_apart(self.bound_from(name.text(), self.home_of(e)), s) } else { null },
+            .Bind(name) -> if self.compares(name.of) { const_apart(self.bound_from(name.of, self.home_of(e)), s) } else { null },
             rest -> null,
         } else { return }
         self.refused.push(Refused { at: e, want: s, found: got, seat: Seating.Unmatched, pat: p })
-    }
-
-    /// THE UNBRANCHED LAW. A value whose type wears `@unbranched` (`@std/meta`) is read and never
-    /// chosen by: `op` — `==`, `!=` or `match` — over it at `at` is refused. Answers whether it was.
-    mut fn branched_on(at: ExprId, op: string, ty: SignedType?) -> bool {
-        let t? = ty else { return false }
-        if !(self.program.unbranched)(t) { return false }
-        self
-            .refused
-            .push(
-                Refused {
-                    at: at,
-                    want: t,
-                    found: t,
-                    seat: Seating.Compared(op, Uncompared.Unbranched(t.spelled())),
-                },
-            )
-        true
     }
 
     /// THE PATTERN'S COMPARING. The pattern `p` of the match `e` that names a const compares the
@@ -1814,9 +1696,7 @@ impl Checking {
         let s? = subject else { return }
         if self.meanings || s.generic() || s.inferred() || s.unknown() || s.dynamic { return }
         let name? = match self.store.pat(p) { .Bind(name) -> name.of, rest -> null } else { return }
-        if !self.compares(name.text()) ||
-            compares_by_value(self, s) ||
-            self.refused.get().any(it.pat == p) { return }
+        if !self.compares(name) || compares_by_value(self, s) || self.refused.get().any(it.pat == p) { return }
         let how = Uncompared.Uncomparable(offered(self, unnamed_shape(self, s)))
         self
             .refused
@@ -1889,10 +1769,10 @@ impl Checking {
         let record? = known(one.seats[0].ty) else { return false }
         let fields? = self.record_of(record)?.fields?.map(it.name) else { return false }
         if params.length == 1 &&
-            (params[0].name.spells(PRONOUN) || !fields.contains(params[0].name.text())) { return false }
-        let stranger = params.find((p) -> !fields.contains(p.name.text()))
+            (params[0].name.of == PRONOUN || !fields.contains(params[0].name.of)) { return false }
+        let stranger = params.find((p) -> !fields.contains(p.name.of))
         let typed = params.find(it.ty != null)
-        let seat = if stranger != null { Seating.NotOffered(stranger!.name.text(), "offered", fields) } else if typed != null { Seating.NotOffered(typed!.name.text(), "typed", []) } else { return false }
+        let seat = if stranger != null { Seating.NotOffered(stranger!.name.of, "offered", fields) } else if typed != null { Seating.NotOffered(typed!.name.of, "typed", []) } else { return false }
         self.refused.push(Refused { at: e, want: record, found: record, seat: seat })
         true
     }
@@ -1914,7 +1794,7 @@ impl Checking {
         for at, p in params {
             self
                 .bind(
-                    p.name.text(),
+                    p.name.of,
                     types[at],
                     false,
                     p.promises.mutable || seat?.seats?.get(at)?.mutable ?? false,
@@ -1923,7 +1803,7 @@ impl Checking {
         let before = self.refused.get().length
         let read = self.lambda_answered(body, seat, !params.is_empty())
         self.closed()
-        if expected.unknowing() || read == null || types.any(it == null) { return null }
+        if expected is .Unknown || read == null || types.any(it == null) { return null }
         let answer = self.answer_lifted(body, expected, before) ?? read
         headed_type(TypeHead.Function) with { seats: [SignedSeat {
             ty: types[at]!,
@@ -1991,9 +1871,9 @@ impl Checking {
     /// parameter is its field's type, its body checks against the seat's answer as any lambda's does,
     /// and the lambda is the fn type of that one seat.
     mut fn offer_checked(params: List<Param>, body: ExprId, seat: SignedType, record: SignedType) -> SignedType? {
-        let types = [self.field_of(record, p.name.text()) for p in params]
+        let types = [self.field_of(record, p.name.of) for p in params]
         self.fenced()
-        for at, p in params { self.bind(p.name.text(), types[at], false, false) }
+        for at, p in params { self.bind(p.name.of, types[at], false, false) }
         let answer = self.lambda_answered(body, seat)
         self.closed()
         if answer == null || types.any(it == null) { return null }
@@ -2163,7 +2043,7 @@ impl Checking {
     /// The first value the lambda `lam` captures — read, or called — that is or holds an identity, as
     /// its refusal says it.
     fn identity_captured(lam: LambdaParts) -> Captured? {
-        let own = [p.name.text() for p in lam.params]
+        let own = [p.name.of for p in lam.params]
         let read = [n for e in self.store.every_expr(lam.body) for n in some_list(self.store.ident_name(e) ?? self.store.callee_name(e)) if !own.contains(n)]
         for at, n in read {
             if read.take(at).contains(n) { continue }
@@ -2222,7 +2102,7 @@ impl Checking {
         if is_literal(node) { return true }
         match node {
             .NullLit or .ListLit(_) or .MapLit(_) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
-            .Ident(name) -> self.settled_name(k, name.text()),
+            .Ident(name) -> self.settled_name(k, name.of),
             .Prop(subject, _) or .MethodCall(subject, _, _) -> self.type_of(subject)?.described() != null,
             rest -> false,
         }
@@ -2374,7 +2254,7 @@ impl Checking {
     /// copy of its record shares. Anything else is a value.
     fn placed(a: ExprId) -> bool {
         match self.store.expr(a) {
-            .Ident(n) -> self.state_named(a, n.text()),
+            .Ident(n) -> self.state_named(a, n.of),
             .Prop(_, _) -> self.state_field(a),
             _ -> false,
         }
@@ -2414,7 +2294,7 @@ impl Checking {
     /// The name a place's root `root` reads, absent for a root that reads none.
     fn root_word(root: ExprId) -> string? {
         let step? = self.store.place_step(root) else { return null }
-        match step { .Root(n) -> n.text(), rest -> null }
+        match step { .Root(n) -> n.of, rest -> null }
     }
 
     /// The place `e`'s last step, where it's a field.
@@ -2431,13 +2311,12 @@ impl Checking {
     /// that test it, column by column over its payloads, take every value, else refused once; a
     /// variant pattern over a value of no enum is refused at the subject; over any other value, the
     /// arms take every value by a catch-all, or a list by its lengths, else the match is refused, as
-    /// a `let` whose pattern can refuse where the `let` wrote it; a `dyn` among them, which its type
-    /// tests leave open, since any type may implement its trait. A match is judged as it's written,
+    /// a `let` whose pattern can refuse where the `let` wrote it. A match is judged as it's written,
     /// never as the core a sugar means.
     mut fn arms_cover(e: ExprId, on: ExprId, subject: SignedType?, arms: List<Arm>) {
         if self.meanings || self.store.is_sugar_match(e) { return }
         let s? = subject else { return }
-        if s.generic() || s.inferred() || s.head is .Unnamed { return }
+        if s.generic() || s.inferred() || s.dynamic || s.head is .Unnamed { return }
         let rows = [read_row([p]) for a in arms if a.guard == null for p in a.pats]
         let shape? = self.enum_of(s) else { return self.unenumerated_cover(e, on, s, arms, rows) }
         self.arms_once(arms)
@@ -2590,7 +2469,7 @@ impl Checking {
             .Member(name, _) -> self.member_misshapen(name.of, s, top),
             .Fields(name, fields, rests) -> self.record_misshapen(p, name.of, [f.name.of for f in fields], rests, s),
             .Seq(_, middles, _) -> self.list_misshapen(middles, seen, s),
-            .Typed(_, ty) -> self.narrow_misshapen(s, ty),
+            .Typed(_, _) -> self.narrow_misshapen(s),
             rest -> null,
         }
     }
@@ -2647,36 +2526,11 @@ impl Checking {
 
     /// What refuses a type pattern over a value of `s`, absent for a `dyn` value, read through a name:
     /// one that may be absent where it holds a `dyn`, any other value plain.
-    fn narrow_misshapen(s: SignedType, ty: TypeRef) -> Seating? {
+    fn narrow_misshapen(s: SignedType) -> Seating? {
         let held = self.seen(s with { nulls: 0 }) ?? s
-        if !s.nullable() && held.dynamic { return self.narrow_target(held, ty) }
+        if !s.nullable() && held.dynamic { return null }
         Seating
             .Misshapen(if s.nullable() && held.dynamic { "absent" } else { "typed" }, "", s.spelled())
-    }
-
-    /// What refuses the type `ty` a type pattern names over a value of the `dyn` `holder`, as the old
-    /// path's narrow law says it: a box names no box, absence, type parameter or built-in generic, and
-    /// what it names implements the trait. Absent where it fits, and where the name names no type,
-    /// which the type-naming law refuses.
-    fn narrow_target(holder: SignedType, ty: TypeRef) -> Seating? {
-        let to = self.written(ty)
-        if to.unknown() || to.inferred() { return null }
-        let trait_name = (holder with { dynamic: false }).spelled()
-        if to.dynamic { return Seating.Misshapen("narrow.dyn", trait_name, to.spelled()) }
-        if to.nullable() {
-            return Seating
-                .Misshapen("narrow.absent", (to with { nulls: 0 }).spelled(), to.spelled())
-        }
-        if to.head is .Parameter { return Seating.Misshapen("narrow.param", "", to.spelled()) }
-        if [OwnType.List, OwnType.Map, OwnType.Cell, OwnType.Task, OwnType.Result]
-            .any((o) -> to.owns(o)) {
-            return Seating.Misshapen("narrow.builtin", "", to.spelled())
-        }
-        if (self.program.implements)(to, holder with { dynamic: false }) == false {
-            return Seating
-                .Misshapen("narrow.impl", trait_name, "${to.spelled()}\n${holder.spelled()}")
-        }
-        null
     }
 
     /// The patterns the pattern `p` holds, each beside the type of what it matches over a value of
@@ -2903,7 +2757,7 @@ impl Checking {
 
     /// Whether the pattern `p` is a bare name that compares with the const it names.
     fn compares_bare(p: PatId) -> bool {
-        match self.store.pat(p) { .Bind(name) -> self.compares(name.text()), rest -> false }
+        match self.store.pat(p) { .Bind(name) -> self.compares(name.of), rest -> false }
     }
 
     /// The types of the variant `v`'s payloads on a value of `ty`, one per payload, absent where unknown.
@@ -3318,16 +3172,6 @@ impl Checking {
             .push(Refused { at: handler, want: none, found: none, seat: Seating.Fateless(word) })
     }
 
-    /// The `within` at `at` refused: its block answers nothing, or — `untimed` — the program loads no
-    /// `@std/time` for it to answer through.
-    mut fn within_refused(at: ExprId, untimed: bool) {
-        if self.meanings { return }
-        let none = owned_type("void")
-        self
-            .refused
-            .push(Refused { at: at, want: none, found: none, seat: Seating.Within(untimed) })
-    }
-
     /// The quote's hole, or the quote, at `at`, refused as `fault` says.
     mut fn hole_faulted(at: ExprId, fault: HoleFault) {
         let none = owned_type("void")
@@ -3457,7 +3301,7 @@ impl Checking {
                 self.unmet(v, seat, read, seat_of(at), before)
             }
         }
-        let wanted = match expected { .Exactly(ty) or .Partly(ty) -> ty, rest -> null }
+        let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
         let handed = found
         mut from_seat: Map<string, SignedType> = {}
         if answer != null && wanted != null && answer_pinned(answer!, wanted!, from_seat) {
@@ -3483,7 +3327,7 @@ impl Checking {
             let open = !seat.fills_all(found)
             let lambda = self.store.closure_parts(v) != null
             let before = self.refused.get().length
-            let read = if open && !lambda { self.check(v, Expected.Partly(seat.filled_or_never(found))) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
+            let read = if open && !lambda { self.check(v, Expected.Unknown) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
             if lambda && !open && !seat.fills_all(handed) && self.refused.get().length != before {
                 let own = self.answered_alone(v, seat, handed, seat_of(at), before)
                 if own != null {
@@ -3716,39 +3560,6 @@ impl Checking {
     /// Whether every refusal made from `from` up to `to` is one a seat's type withdraws: a type
     /// parameter nothing filled, a bare variant no enum was named for.
     fn seat_wanted_only(from: int, to: int) -> bool { self.refused.get().slice(from, to).all(it.seat is .Unpinned || it.seat is .Unenumed) }
-
-    /// The argument `v` a seat of `seat` refused by nothing, read as `found`, kept for a call its
-    /// template wrote to say in the instance's words.
-    mut fn silence(v: ExprId, seat: SignedType, found: SignedType, at: Seating) {
-        self
-            .silenced
-            .set(self.silenced.get().concat([Refused { at: v, want: seat, found: found, seat: at }]))
-    }
-
-    /// Whether a call a component's template wrote, which its arguments fill no instance of, hands a
-    /// value the program wrote to a seat naming a type parameter: refused at that value, the seat's
-    /// type wanted and the value's found, where the program wrote it, since it wrote the instance and
-    /// never the call.
-    mut fn handed_unfilled(values: List<ExprId>) -> bool {
-        if self.meanings { return false }
-        let at? = self.site_node() else { return false }
-        if !self.store.spanned_elsewhere(at) { return false }
-        let silent? = [r for r in self.silenced.get() if values.contains(r.at)].last() else { return false }
-        let v? = self.written_within(silent.at) else { return false }
-        // a block riding the seat's pronoun answers its value: that is what the program wrote
-        let found = if silent.found.head is .Function &&
-            silent.found.answer != null &&
-            silent.found.answer!.head is .Function { silent.found.answer! } else { silent.found }
-        self.refused.push(silent with { at: v, found: found })
-        true
-    }
-
-    /// What the program wrote that `v` holds: `v` itself where no template wrote it, else the first
-    /// node within it a hole filled from the program; absent where a template wrote it whole.
-    fn written_within(v: ExprId) -> ExprId? {
-        if !self.store.spanned_elsewhere(v) { return v }
-        self.store.every_expr(v).find((x) -> !self.store.spanned_elsewhere(x))
-    }
 
     /// Whether the call of the fn `declared` names leaves one of its type parameters filled by
     /// nothing: refused at the first that none of `fillers` names — the seats, whose arguments say
@@ -4190,15 +4001,7 @@ impl Checking {
             .seats_settled(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         self
             .seats_isolated(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
-        // a call whose arguments fill no instance and said nothing of why — a block riding the
-        // seat's pronoun reads as no type of its own — is refused at its first type parameter
-        // nothing pinned, never left untyped for its lowering to find
-        let found? = filled else {
-            if self.refused.get().length == before && !self.handed_unfilled(fill.values) {
-                let _ = self.left_unpinned(declared, pinned, [])
-            }
-            return null
-        }
+        let found? = filled else { return null }
         let found = defaulted(found, declared?.defaults ?? [])
         if !self.bounds_held(bounds, found) { return null }
         if self.refused.get().length == before &&
@@ -4386,7 +4189,6 @@ impl Checking {
         expected: Expected,
         seat_of: fn(int) -> Seating,
         declares: ParamsDeclared = ParamsDeclared {},
-        pins: List<SignedType> = [],
     ) -> SignedType? {
         mut pinned: Map<string, SignedType> = {}
         if self.spreads_records(method, args) {
@@ -4396,7 +4198,6 @@ impl Checking {
         let fill? = self.filling(method, args, 1) else { return self.miscounted(method, args, 1, seat_of(0), false) }
         let seats? = self.seats_filled(fill.f, args.length + 1) else { return self.miscounted(method, args, 1, seat_of(0), false) }
         if !method.seats[0].ty.unifies(subject, pinned) { return self.unfilled(args) }
-        for j, p in pins { pinned.set("${subject.args.length + j}", p) }
         let filled = self
             .fills(
                 [s.ty for s in seats.drop(1)],
@@ -4683,6 +4484,11 @@ fn fnless(want: SignedType, found: SignedType) -> bool {
         !found.dynamic &&
         !found.generic() &&
         !found.inferred()
+}
+
+/// Whether `expected` wants a fn and `found` is none.
+fn fnless_wanted(expected: Expected, found: SignedType) -> bool {
+    match expected { .Exactly(want) -> fnless(want, found), rest -> false }
 }
 
 /// Whether the fn type `f`'s seats past its first `skip` take values of the types `typed`, one each.

@@ -4,10 +4,9 @@
 //! subject, and a greedy hole may fail where its lazy twin would take: the place it took can leave a
 //! later piece unfound. Each step runs only where every step before it held, which keeps a cursor
 //! past the end from the search, whose start must stand inside. Each hole's span lands in cells the
-//! steps write; a value is cut from them only where an arm binds it. A hole that reads as an `int`,
-//! or as a type that crosses text, reads its span once every span is found, still inside the
-//! verdict: a span that spells no `int`, or that the type's `from_text_form` answers absence for,
-//! fails the scan, as a missing piece does, and the value lands in the hole's own cell.
+//! steps write; a value is cut from them only where an arm binds it. A hole that reads as an `int`
+//! reads its span once every span is found, still inside the verdict: a span that spells no `int`
+//! fails the scan, as a missing piece does, and the `int` lands in the hole's own cell.
 
 /// A format's scan over a subject: whether it took it, the octets it read, the cells holding each
 /// hole's span, its start then its end, in hole order, and a cell per hole for the `int` a hole that
@@ -44,7 +43,7 @@ impl Lowering {
             ok: self.format_anchored(octets, len, head, last.piece),
             octets: octets,
             spans: spans,
-            reads: [self.read_cell(self.hole_read_as(p.hole)) for p in parts],
+            reads: [self.seeded_cell(Layout.Word, self.const_int(0)) for _p in parts],
         }
         self.format_read(v, bytes, self.format_spanned(s, parts, cur, stop, 0), parts, 0)
     }
@@ -52,37 +51,7 @@ impl Lowering {
     /// What each hole that binds holds once the scan `s` of `v` took it, in hole order: its span cut,
     /// as octets where `bytes` and as text otherwise.
     mut fn format_cut(v: Reg, bytes: bool, s: FormatScan, parts: List<FormatPart>) -> List<Reg> {
-        [self.hole_cut(v, bytes, s, k, self.hole_read_as(p.hole)) for k, p in parts if binds(p.hole)]
-    }
-
-    /// What hole `k` of the scan `s` of `v` holds, read as `reading` says: its span cut, the `int` it
-    /// read, or the value its type read from its text.
-    mut fn hole_cut(v: Reg, bytes: bool, s: FormatScan, k: int, reading: HoleReading) -> Reg {
-        match reading {
-            .Text -> self.span_cut(v, bytes, s, k),
-            .Int -> self.loaded(Layout.Word, s.reads[k]),
-            .Form(ty) -> self
-                .carried(self.loaded(self.laid_out(ty with { nulls: 1 }), s.reads[k]), ty with { nulls: 1 }),
-        }
-    }
-
-    /// How the hole `h` reads its span, its written type resolved where the body stands.
-    fn hole_read_as(h: Hole) -> HoleReading {
-        let written? = h.ty else { return HoleReading.Text }
-        hole_reading((self.program.checked.written)(written, null))
-    }
-
-    /// The cell hole `k` of a scan reads its value into: a word for an `int` or a span, the absence
-    /// of the value's type for one read through its text.
-    mut fn read_cell(reading: HoleReading) -> Reg {
-        match reading {
-            .Text or .Int -> self.seeded_cell(Layout.Word, self.const_int(0)),
-            .Form(ty) -> {
-                let held = ty with { nulls: 1 }
-                let l = self.laid_out(held)
-                self.seeded_cell(l, self.absent_of(held, l))
-            },
-        }
+        [if reads_int(p.hole) { self.loaded(Layout.Word, s.reads[k]) } else { self.span_cut(v, bytes, s, k) } for k, p in parts if binds(p.hole)]
     }
 
     /// Hole `k`'s span of the scan `s` of `v`, cut: from the octets where `bytes`, else from the text
@@ -97,51 +66,14 @@ impl Lowering {
         self.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_str_substring")!, [v, lo, hi])
     }
 
-    /// Each hole from `k` on that reads its span as an `int` or through its type's text form, read,
-    /// each only where the scan so far took the subject.
+    /// Each hole from `k` on that reads as an `int` read from its span, each only where the scan so
+    /// far took the subject.
     mut fn format_read(v: Reg, bytes: bool, s: FormatScan, parts: List<FormatPart>, k: int) -> FormatScan {
         if k == parts.length { return s }
-        let reading = self.hole_read_as(parts[k].hole)
-        let reads = match reading { .Text -> false, .Int or .Form(_) -> true }
-        if !reads { return self.format_read(v, bytes, s, parts, k + 1) }
+        if !reads_int(parts[k].hole) { return self.format_read(v, bytes, s, parts, k + 1) }
         let ok = self
-            .region(s.ok, Layout.Truth) { cx -> cx.value_read(v, bytes, s, k, reading) } else { cx -> cx.const_bool(false) }
+            .region(s.ok, Layout.Truth) { cx -> cx.int_read(v, bytes, s, k) } else { cx -> cx.const_bool(false) }
         self.format_read(v, bytes, s with { ok: ok }, parts, k + 1)
-    }
-
-    /// Whether hole `k`'s span reads as `reading` asks, its value landing in its cell.
-    mut fn value_read(v: Reg, bytes: bool, s: FormatScan, k: int, reading: HoleReading) -> Reg {
-        match reading {
-            .Text -> self.const_bool(true),
-            .Int -> self.int_read(v, bytes, s, k),
-            .Form(ty) -> self.form_read(v, bytes, s, k, ty),
-        }
-    }
-
-    /// Whether hole `k`'s span reads as a `ty` through `ty`'s own `from_text_form`, the value landing in
-    /// its cell: octets only where they are text.
-    mut fn form_read(v: Reg, bytes: bool, s: FormatScan, k: int, ty: SignedType) -> Reg {
-        let callee? = (self.program.statics)(ty, FROM_TEXT_FORM) else {
-            self
-                .missed(
-                    "`${ty.spelled()}.${FROM_TEXT_FORM}`, which a format hole of the type reads its span through",
-                )
-            return self.const_bool(false)
-        }
-        let span = self.span_cut(v, bytes, s, k)
-        if !bytes { return self.formed_into(callee, span, s.reads[k], ty) }
-        let text = owned_type("string") with { nulls: 1 }
-        let held = self.call_row(self.laid_out(text), rt_sig_of("avra_str_of_bytes")!, [span])
-        self
-            .region(self.present(held, text), Layout.Truth) { cx -> cx.formed_into(callee, cx.carried(held, text), s.reads[k], ty) } else { cx -> cx.const_bool(false) }
-    }
-
-    /// Whether `text` reads as a `ty` through `callee`; where it does, the value lands in `cell`.
-    mut fn formed_into(callee: CalledFn, text: Reg, cell: Reg, ty: SignedType) -> Reg {
-        let held = ty with { nulls: 1 }
-        let read = self.call_fn(self.laid_out(held), callee, [text])
-        self.stored(cell, read)
-        self.present(read, held)
     }
 
     /// Whether hole `k`'s span spells an `int`, which lands in its cell: octets only where they are
@@ -251,25 +183,8 @@ impl Lowering {
 /// How many octets the text `piece` is, which is what the scan counts.
 fn octet_count(piece: string) -> int { piece.bytes().length }
 
-/// What a hole reads its span as: the text itself, the `int` it spells, or a value of a type that
-/// crosses text, read through the type's own `from_text_form`.
-export enum HoleReading {
-    Text
-    Int
-    Form(ty: SignedType)
-}
+/// Whether a hole reads its span as an `int`, its written type.
+export fn reads_int(h: Hole) -> bool { h.ty?.name == "int" }
 
-/// How a hole whose written type is `ty` reads its span, by the type's identity: text where it writes
-/// none or a `string`, an `int` where it writes one, and any other type through its text form.
-export fn hole_reading(ty: SignedType?) -> HoleReading {
-    let t? = ty else { return HoleReading.Text }
-    if t.owns(OwnType.Str) { return HoleReading.Text }
-    if t.owns(OwnType.Int) { return HoleReading.Int }
-    HoleReading.Form(t)
-}
-
-/// The static a type that crosses text reads a value from its text through.
-export const FROM_TEXT_FORM: string = "from_text_form"
-
-/// The method a value of such a type writes its text through.
-export const TEXT_FORM: string = "text_form"
+/// Whether a hole reads its span as a type the scan reads: text, written or not, or an `int`.
+export fn hole_read(h: Hole) -> bool { h.ty == null || h.ty?.name == "string" || reads_int(h) }

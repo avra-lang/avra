@@ -45,7 +45,6 @@ impl Lowering {
         if entries.any(it == null) { return self.missed_as("a `dyn` box over a value laid inline whose method writes a seat") }
         let tag? = self.type_tag(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
         let identity? = self.type_identity(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
-        let stamped = self.placed(into) && self.placing()
         self.box_marked(from, into, callees)
         for c in callees { self.reached(c) }
         let methods = self
@@ -56,14 +55,9 @@ impl Lowering {
             )
         self.box_typed(methods, into)
         let dst = self
-            .call_row(
-                self.laid_out(into),
-                rt_sig_of("avra_array_sized")!,
-                [self.const_int(if stamped { DYN_FRAME + 1 } else { DYN_FRAME })],
-            )
+            .call_row(self.laid_out(into), rt_sig_of("avra_array_sized")!, [self.const_int(2)])
         self.run_row(rt_sig_of("avra_array_push")!, [dst, if inline { self.crossed(r) } else { r }])
         self.run_row(rt_sig_of("avra_array_push")!, [dst, methods])
-        if stamped { self.run_row(rt_sig_of("avra_ctx_frame_pushed")!, [dst]) }
         self.box_typed(dst, into)
         dst
     }
@@ -196,10 +190,6 @@ impl Lowering {
         "${symbol}<${[self.type_identity(a) ?? a.spelled() for a in ty.args].join(",")}>"
     }
 }
-
-/// The slot a `dyn` box of a placed trait holds the frame it was placed under in, after its value and
-/// its table: a box made where its body's placed boxes carry no frame has no such slot.
-export const DYN_FRAME: int = 2
 
 /// What the name of a type's table for a trait begins with.
 export const VTABLE: string = "vt\$"

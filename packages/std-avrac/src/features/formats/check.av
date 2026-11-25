@@ -103,21 +103,12 @@ fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
     []
 }
 
-/// An arm a format above it takes every text of: `above`, that format as written.
-export fn format_covers_arm(above: string) -> Voice {
-    Voice {
-        message: "this arm is never reached — `${above}` above accepts every text it does",
-        label: "never reached",
-        help: "move it above the broader format, or remove it",
-    }
-}
-
 /// A format's hole `name` reading its span as `ty`, which text doesn't read as.
 export fn hole_unread(name: string, ty: string) -> Voice {
     Voice {
-        message: "`{${name}: ${ty}}` reads its span as `${ty}`, which crosses no text",
+        message: "`{${name}: ${ty}}` reads its span as `${ty}`, and a hole reads text as `string` or `int`",
         label: "here",
-        help: "implement `@std/text`'s `TextForm` for `${ty}`, or take the span as text and convert it",
+        help: "take the span as text and convert it in the arm",
     }
 }
 
@@ -134,7 +125,6 @@ export fn on_grammar(t: Type) -> bool {
 /// answer is the RECORD the declaration's holes became.
 export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
-    if grammar_unread(cx, mc) { return cx.error_type }
     cx.worded(mc, "parse", [read_seat(cx, mc)], Type.Opt(named))
 }
 
@@ -142,7 +132,6 @@ export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 /// UTF-8 answer absence.
 export fn check_parse_octets(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
-    if grammar_unread(cx, mc) { return cx.error_type }
     cx.worded(mc, "parse_octets", [Type.Bytes], Type.Opt(named))
 }
 
@@ -159,25 +148,6 @@ fn read_seat(mut cx: TypeCx, mc: MethodCall) -> Type {
     Type.Str
 }
 
-/// Whether the grammar a door's subject names holds a hole this path reads no text as — it reads a
-/// hole as `string` or `int` alone — refused at the door.
-fn grammar_unread(mut cx: TypeCx, mc: MethodCall) -> bool {
-    let format? = match cx.view.types.shape_of(cx.type_at(mc.subject)) {
-        .TypeName(decl, _) -> cx.view.decls.grammar_of(decl),
-        rest -> null,
-    } else { return false }
-    let part? = format.parts.find(reads_of(it.hole) == null) else { return false }
-    cx
-        .emit(
-            said_as(
-                "type.format_parse",
-                cx.loc_of(mc.e),
-                hole_unread(part.hole.name, part.hole.ty!.name),
-            ),
-        )
-    true
-}
-
 /// The record a type name's declaration stands for.
 fn record_of(cx: TypeCx, ty: TypeId) -> TypeId? {
     match cx.view.types.shape_of(ty) {
@@ -191,7 +161,6 @@ fn record_of(cx: TypeCx, ty: TypeId) -> TypeId? {
 /// RECORD the declaration's holes became; the answer is its text.
 export fn check_print(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
-    if grammar_unread(cx, mc) { return cx.error_type }
     if !cx.seated(mc, "print", [named]) { return cx.error_type }
     cx.type(string?)
 }

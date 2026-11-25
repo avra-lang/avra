@@ -4,6 +4,7 @@
 //! Every attempt reads what it needs. What survives is what it KEPT — rows
 //! under keys that name their own inputs — so a later run re-reads and finds
 //! the same answers, never a stored answer trusted in place of a read.
+use core.debug.{db_judging}
 use core.{
     distinct,
     flatten,
@@ -32,6 +33,7 @@ use compiler.memory.{sound_checked}
 use core.{wreck}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
+use compiler.host.{no_source}
 use compiler.findings.{Finding}
 
 /// What a command wants of a program. A file's warnings stand in for it
@@ -51,9 +53,18 @@ impl Want {
 /// the attempts that gave way to it.
 type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], turned: int = 0, left: List<Left> = [], edit: string = "" }
 
+/// The entry a derivation trims its root walk by: a build's, whose program is
+/// what the entry reaches; a check reads every file of the package.
+fn built_entry(at: Attempt) -> string? {
+    match at.want { .Binary -> at.entry, .Diagnostics -> null }
+}
+
 /// AN ATTEMPT THAT DID NOT STAND: what it spent, phase by phase up to where it
 /// left, and what the attempt made instead does that it did not.
 export type Left = { spans: List<Phase>, ns: int, turn: string }
+
+/// The derivation's phases, in the order `tried` ends them.
+const PHASES: List<string> = ["load", "admit", "analyze", "lower", "keep"]
 
 /// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
 /// the refusal. It rides the failure channel, so a phase that finds the question
@@ -85,6 +96,10 @@ impl Attempt {
         turn_said(root, next.parse.slice(self.parse.length, next.parse.length))
     }
 }
+
+/// What one attempt answered, whether its workspace held any file, and what it
+/// spent: its phases and its whole time.
+type Tried = { answer: Result<Derived, Turn>, spans: List<Phase>, ns: int }
 
 /// How many read files a turn names before it counts the rest.
 const TURN_NAMED: int = 3
@@ -126,9 +141,64 @@ fn spent(spans: List<Phase>) -> int {
     total
 }
 
+/// A refusal in the derivation's words is the attempt's refusal.
+fn or_refused<T>(r: Result<T, string>) -> Result<T, Turn> {
+    match r { .Ok(v) -> .Ok(v), .Err(why) -> .Err(Turn.Refused(why)) }
+}
+
 /// What a file SAID the last time it parsed: its warnings, rendered, and the
 /// cases it declares — what stands in for it under every want.
 export type Said = { path: string, warnings: string, cases: List<CaseCall>, findings: List<Finding> = [] }
+
+/// A program derived: clean, every parsed body lowered, its records and what
+/// each file said kept. `program.ws` is the workspace the attempt that stood
+/// ran in.
+///
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [], unreached: List<string> = [] }
+
+/// One file's hold: held, or read with why (null for a file no record
+/// knows), the stored rows a read-for-want-of-rows file lacks, and what
+/// moved in its key since it was last kept.
+export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string>, moved: List<PartMoved> }
+
+/// How many read files `--time` names before it counts the rest.
+const READ_NAMED: int = 12
+
+impl Derived {
+    /// THE BUILD, by the workspace this derivation was made in — an
+    /// identity, so it is written through and never copied.
+    fn linked(m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
+        self.program.ws.linked(self, m, under, binary, tools)
+    }
+
+    /// WHAT `--time` SAYS: the phases and what followed them on one line, then
+    /// each attempt that gave way to this one with what it spent, then the files a
+    /// record knows that were read all the same, each with why.
+    fn timed(more: List<Phase>) -> string {
+        let counted = ["discarded ${self.turned}"]
+        let line = joined(
+            [ph.shown() for ph in grouped_phases(self.program.ws.phases.get())]
+                .concat(counted)
+                .concat([ph.shown() for ph in grouped_phases(self.spans.concat(more))]),
+            ", ",
+        )
+        let said = [line].concat(["  ${left_line(l)}" for l in self.left])
+        if self.read.is_empty() { return joined(said, "\n") }
+        let named = ["  ${relative_path(self.program.ws.root, r.path)} — ${r.why.says()}" for r in self.read.slice(0, READ_NAMED)]
+        let rest = if self.read.length > READ_NAMED { ["  … and ${self.read.length - READ_NAMED} more"] } else { [] }
+        joined(said.concat(["read:"]).concat(named).concat(rest), "\n")
+    }
+}
+
+/// An `Analysis`'s three facts tables, as a rule reads them — the
+/// same value under a narrower name (features/code.av's `Analysed`),
+/// since a rule takes no `lang`/`diagnostics`/`program` of its own.
+export fn analysed(a: Analysis) -> Analysed {
+    Analysed { view: a.view, names: a.names, facts: a.facts }
+}
 
 /// What was said, the silent dropped.
 fn spoken(texts: List<string>) -> string { joined([text for text in texts if !text.is_empty()], "\n\n") }
@@ -153,7 +223,461 @@ fn remember(store: Store, key: string, paths: List<string>) {
 /// files a check REACHED and not merely what it found) falls back to
 /// building its own rather than forcing every `check` to pay for a
 /// Program it does not otherwise need.
-export type Checked = { warnings: string, reused: bool, timed: string, licenses: string = "", findings: List<Finding> = [] }
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [] }
+
+impl Workspace {
+    /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
+    /// kept as the program's verdict, so an unchanged program costs its reads. A
+    /// refusal is never kept.
+    fn checked(entry: string?) -> Result<Checked, string> {
+        if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
+        let opening = self.clock()
+        let store = self.opened_store()
+        self.timed("open", opening)
+        let named = "check:${entry ?? ""}"
+        let judging = self.clock()
+        let standing: CheckSaid? = if db_judging() { null } else { self.standing_verdict(store, named)? }
+        self.timed("judge", judging)
+        let kept? = standing else { return self.checked_anew(store, entry, named) }
+        if sound_checked() { self.held_to_a_run(store, entry, named, kept) }
+        Checked {
+            warnings: kept.warnings(),
+            reused: true,
+            timed: joined(
+                ["${ph.name} ${ph.ns / 1000}us" for ph in grouped_phases(self.phases.get())],
+                ", ",
+            ),
+            licenses: kept.licenses(),
+            findings: kept.findings(),
+        }
+    }
+
+    /// What `check` says when no verdict stands: the program derived, and its verdict kept.
+    /// Under the sound check a standing verdict is held to a run that stands on nothing kept
+    /// but what it judges itself.
+    fn held_to_a_run(store: Store, entry: string?, named: string, kept: CheckSaid) {
+        match self.checked_anew(store, entry, named) {
+            .Ok(ran) -> { if ran.warnings != kept.warnings() { wreck(verdict_disagrees(ran.warnings, kept.warnings())) } },
+            .Err(why) -> wreck(verdict_disagrees(why, kept.warnings())),
+        }
+    }
+
+    fn checked_anew(store: Store, entry: string?, named: string) -> Result<Checked, string> {
+        let d = self.derived(entry, Want.Diagnostics)?
+        let said = d.program.ws.check_said(d)
+        d.program.ws.sign_tables_written()
+        d.program.ws.keep_check_verdict(store, named, said)
+        work_sized(
+            d.program.ws.decls.file_count(),
+            d.program.ws.decls.module_count(),
+            d.program.ws.decls.decl_count(),
+        )
+        Checked {
+            warnings: said.warnings(),
+            reused: false,
+            timed: d.timed([]),
+            program: d.program,
+            licenses: said.licenses(),
+            findings: said.findings(),
+        }
+    }
+
+    /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
+    /// `per_file` is how the workspace itself remembers that, so this asks
+    /// the workspace rather than the disk again) with no `.av` file
+    /// directly in the root either. `root_files` already reads
+    /// `packages[0].src` as the workspace was built — a directory of
+    /// programs lists direct files alone, which is what makes an empty
+    /// answer here mean none exist, not merely unwalked.
+    ///
+    /// A MANIFEST THAT ALREADY SPOKE IS LEFT TO SPEAK: a malformed
+    /// `avra.toml` earns `manifest.syntax` naming the broken line, not
+    /// "nothing to check" naming a symptom of it — the more specific
+    /// voice wins, so this asks only once the manifest is silent.
+    fn nothing_to_check() -> bool {
+        self.per_file && self.packages_voiced().is_empty() && self.root_files().is_empty()
+    }
+
+    /// A refusal about the workspace's own SHAPE — no line anywhere to
+    /// point at, so no source window is ever asked for.
+    fn rendered_shape(ds: List<Diag>) -> string {
+        joined([render_among(d, []) for d in ds], "\n\n")
+    }
+
+    /// The program at `entry`, derived — under the hold, and from the sources
+    /// alone when the hold's attempt refused.
+    fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
+
+    /// `derived`, with files read whatever the store holds for them.
+    fn derived_reading(entry: string?, want: Want, parse: List<ReadFile>) -> Result<Derived, string> {
+        self
+            .again(
+                Attempt {
+                    entry: entry,
+                    want: want,
+                    parse: parse,
+                    edit: self.edit_print(entry, want),
+                },
+            )
+    }
+
+    /// The program derived with nothing held — the hold's oracle.
+    fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(attempt_at(entry, want)) }
+
+    /// ONE FILE'S HOLD, as this package's derivation under `want` decided it:
+    /// held, or read with why — and for a file nothing kept stands in for,
+    /// which of its rows the store is missing.
+    fn hold_report(want: Want) -> Result<List<FileHold>, string> {
+        let d = self.derived(null, want)?
+        d.program.ws.holds_of(d)
+    }
+
+    /// Every file's hold under the derivation that stood in this workspace.
+    // LICENSED whole.cold: the old path's Workspace, which no warm check on the program layer runs; it leaves at the switch
+    fn holds_of(d: Derived) -> List<FileHold> { [self.file_hold(d, fi.path) for fi in self.decls.all_files()] }
+
+    fn file_hold(d: Derived, path: string) -> FileHold {
+        let why: Reads? = d.read.find(it.path == path)?.why
+        FileHold {
+            path: path,
+            held: false,
+            why: why,
+            missing: [],
+            moved: self.parts_moved_at(path),
+        }
+    }
+
+    /// What this build found moved in a file's key: its own parts, then the
+    /// modules its module sees.
+    fn parts_moved_at(path: string) -> List<PartMoved> {
+        let moved = self.hold.moved.get()
+        (moved.get(parts_key(path)) ?? [])
+            .concat(moved.get(seen_key(self.module_path_of(path).text())) ?? [])
+    }
+
+    /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
+    /// names the attempt to make instead, and a fresh workspace makes it — a
+    /// restart never inherits a hold.
+    fn again(at: Attempt) -> Result<Derived, string> { self.turned(at, self.tried_anew(at)) }
+
+    /// ONE ATTEMPT IN A WORKSPACE OF ITS OWN, which gives back what it derived
+    /// unless the attempt stood. The workspace is this fn's alone, so what a
+    /// turned attempt read dies here, before the next attempt reads anything.
+    fn tried_anew(at: Attempt) -> Tried {
+        if traced() { qtrace("Q\tattempt\t${at.turned}\t${at.shown()}\n") }
+        // NOT `mut`: `anew`'s own hooks already capture this box
+        // (workspace.av's `anew` doc — an identity, never a value).
+        let fresh = self.anew()
+        mut clock = fresh.marking()
+        let began = clock.last
+        let answer = fresh.tried(at, clock)
+        if answer is .Ok { return Tried { answer: answer, spans: [], ns: 0 } }
+        // the phase it left in closes under its own name
+        clock.next(PHASES)
+        let spans = fresh.phases.get().concat(clock.spans)
+        fresh.discarded()
+        Tried { answer: answer, spans: spans, ns: clock.last - began }
+    }
+
+    /// What `at` answered: the derivation that stood, or the attempt it names,
+    /// made — carrying what `at` spent.
+    fn turned(at: Attempt, t: Tried) -> Result<Derived, string> {
+        match t.answer {
+            .Ok(d) -> d,
+            .Err(.Again(next)) -> {
+                let left = Left { spans: t.spans, ns: t.ns, turn: at.gave_way(self.root, next) }
+                self.again(next with { turned: at.turned + 1, left: next.left.concat([left]) })
+            },
+            .Err(.Refused(why)) -> { fail why },
+        }
+    }
+
+    /// WHAT A BUILD OF `entry` WOULD STOP ON BEFORE IT LOWERS: the program the build derives — the
+    /// entry's reach, held and read as the build holds and reads it — analysed, its refusal failing
+    /// here in the build's words; nothing lowered. An acceptance is kept as a verdict, as `checked`
+    /// keeps one, so an unchanged program costs its reads; a refusal is never kept.
+    fn judged_for_build(entry: string?) -> Result<bool, string> {
+        let named = "build-judged:${entry ?? ""}"
+        let store = self.opened_store()
+        if self.standing_verdict(store, named)? != null { return true }
+        let judged = self.judged(attempt_at(entry, Want.Binary))?
+        self.keep_check_verdict(store, named, CheckSaid { voices: "", voice_files: [], files: [] })
+        judged
+    }
+
+    /// `judged_for_build` over one attempt, in a workspace of its own, turning as a derivation turns.
+    fn judged(at: Attempt) -> Result<bool, string> {
+        let fresh = self.anew()
+        let answer = fresh.analysed_alone(at)
+        fresh.discarded()
+        match answer {
+            .Ok(_) -> true,
+            .Err(.Again(next)) -> self.judged(next with { turned: at.turned + 1 }),
+            .Err(.Refused(why)) -> { fail why },
+        }
+    }
+
+    /// The derivation's first three phases alone — hold, admit, analyse — and the entry's law a build
+    /// holds its files to before it lowers them.
+    fn analysed_alone(at: Attempt) -> Result<bool, Turn> {
+        let _ = self.holding()?
+        self.admit_all()
+        let p = self.analysed(at)?
+        let outside = p.outside_entry()
+        if !outside.is_empty() { fail Turn.Refused(p.rendered(outside)) }
+        true
+    }
+
+    /// THE DERIVATION, straight through: hold what the store stands in for, read
+    /// the rest, lower it, keep what was learned.
+    fn tried(at: Attempt, mut clock: Marks) -> Result<Derived, Turn> {
+        let store = self.holding()?
+        clock.next(PHASES)
+        self.admit_all()
+        clock.next(PHASES)
+        let p = self.analysed(at)?
+        clock.next(PHASES)
+        let lo = self.bodies_lowered(at, p)?
+        clock.next(PHASES)
+        let said = self.kept(at, store, p)?
+        clock.next(PHASES)
+        self.stood(at, store, p, lo, said, clock.spans)
+    }
+
+    /// WHAT THE STORE STANDS IN FOR, settled: every module's record met, every
+    /// hold asked, and the host told how much is about to be read — a host that
+    /// must not do heavy work where it stands leaves there, having done none.
+    /// From here a held file's declarations are minted when something reads them.
+    fn holding() -> Result<Store, Turn> {
+        let store = self.opened_store()
+        self.attach_store(store)
+        // INPUTS FIRST: every file's text is staged before any kept answer is judged.
+        let staging = self.clock()
+        for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
+        self.timed("inputs", staging)
+        self.host.reads_ahead(self.decls.file_count())
+
+        store
+    }
+
+    /// WHICH EDIT THIS IS, as the files whose text moved since their module's record was
+    /// written: the key a remembered guess is filed under. Empty when nothing moved.
+    fn edit_print(entry: string?, want: Want) -> string {
+        let store = self.opened_store()
+        let moved = flatten(
+            [self.moved_in(store, m) for m in held_modules(self, store, built_entry(attempt_at(entry, want)))],
+        )
+        if moved.is_empty() { "" } else { digest_of(joined(sorted_texts(moved), "\n")) }
+    }
+
+    fn moved_in(store: Store, m: ModulePath) -> List<string> {
+        let places = record_places(self, store, m)
+        [path for path in self.module_files(m) if !written_from(places.get(path), self.text_digest(path))]
+    }
+
+    /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
+    /// its held asks reach read beside it, or the attempt that reads them.
+    fn analysed(at: Attempt) -> Result<Program, Turn> {
+        let p = self.program(at.entry, built_entry(at))
+        at.having_read(self.bodies_asked())?
+        if !p.clean() { fail Turn.Refused(p.report()) }
+        p
+    }
+
+    /// EVERY READ BODY, LOWERED. A parsed const nothing parsed reads is settled
+    /// here, while a body it runs can still send the attempt back.
+    fn bodies_lowered(at: Attempt, p: Program) -> Result<Lowered, Turn> {
+        let lowered = p.files_checked(at.want.links())
+        self.settle_consts(p)
+        at.having_read(self.bodies_asked())?
+        or_refused(lowered)
+    }
+
+    /// WHAT WAS LEARNED, KEPT: the records first — every key folds them — then what
+    /// stands in for each read file, whole: what it said, and what its bodies ask.
+    fn kept(at: Attempt, store: Store, p: Program) -> Result<List<Said>, Turn> {
+        let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
+        keep_interfaces(self, store, moved)
+        self.keep_uses(store)
+        let defects = self.defects.get()
+        if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
+        let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
+        self.query_db().readers_kept()
+        said
+    }
+
+    /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
+    /// home owes are named, never lowered — and a derivation that owes none is
+    /// marked clean.
+    fn stood(
+        at: Attempt,
+        store: Store,
+        p: Program,
+        lo: Lowered,
+        said: List<Said>,
+        spans: List<Phase>,
+    ) -> Derived {
+        let reach = reached_modules(self, p)
+        self.keep_docs_read(store)
+        store.settle()
+        Derived {
+            entry: at.entry,
+            want: at.want,
+            program: p,
+            lowered: lo,
+            store: store,
+            said: said,
+            warnings: spoken(
+                [p.warned(p.voices)]
+                    .concat([s.warnings for s in said if reaches_file(self, reach, s.path)]),
+            ),
+            unreached: [s.path for s in said if !reaches_file(self, reach, s.path)],
+            turned: at.turned,
+            left: at.left,
+            spans: spans,
+            read: self.hold.read_files.get(),
+        }
+    }
+
+    /// Every declared const of every parsed file, settled.
+    fn settle_consts(p: Program) {
+        for a in p.files {
+            for d in self.decls.decls_of_file(a.view.file) {
+                let x = self.decl_at(d)
+                if x.kind is .Const && !x.nested() { let _ = self.settled(x.file, SettleRoot.Const(x.stmt), []) }
+            }
+        }
+    }
+
+    /// THE HELD FILES THIS ATTEMPT ASKED A BODY OF: a compile-time run reached
+    /// them, and the next attempt reads them. The file that ran them keeps the
+    /// list in its record, so a later derivation reads them with it.
+    fn bodies_asked() -> List<ReadFile> { [ReadFile { path: path, why: Reads.BodyAsked } for path in distinct(self.hold.body_asks.get())] }
+
+    /// A READER'S PENDING READS, RESOLVED: a reader whose kept read names a
+    /// declaration holds when that declaration's syntax still stands — the read
+    /// file is parsed here, after the walk, never inside a key. A reader whose
+    /// read moved, or whose declaration can no longer be named, is read instead.
+    fn resolve_pending_reads(store: Store) -> List<string> {
+        let pending = self.hold.pending_reads.get()
+        if pending.is_empty() { return [] }
+        for p in pending {
+            let key = pending_key(p.reader, p.read)
+            // JUDGING THE READ PARSES ITS FILE, so that file is read: its record's rows
+            // no longer stand in for it, whatever the reader's own hold comes to.
+            self.declared(self.file_id(p.read.path))
+            self.force_read(p.read.path, Reads.RunBy(relative_path(self.root, p.reader)))
+            let d = self.decl_from_ref(p.read.ref)
+            if d == null {
+                self.hold.pending_resolved.put(key, self.run_said(p.read.path))
+                self.force_read(p.reader, Reads.RunBy(relative_path(self.root, p.read.path)))
+            } else {
+                let now = "${self.syntax(d!)}"
+                self.hold.pending_resolved.put(key, now)
+                // THE DECLARATION READ STANDS, BUT ITS FILE'S OUTLINE MAY NOT: a
+                // renamed, added or removed declaration beside it moves the module
+                // interface the reader's key follows, so the reader is read, never
+                // held to discover the move a turn later.
+                if now != p.read.print {
+                    self.force_read(p.reader, Reads.RunBy(relative_path(self.root, p.read.path)))
+                }
+            }
+        }
+        let readers = distinct([p.reader for p in pending])
+        for reader in readers {
+            let m = self.module_path_of(reader)
+            let fresh = self.key_parts(store, m, reader)
+            self.keys.object_parts.put("${m.text()}\t${reader}", fresh)
+            self.keys.object_keys.put("${m.text()}\t${reader}", object_key_of_parts(self, fresh))
+        }
+        self.hold.pending_reads.set([])
+        readers
+    }
+
+    /// The declarations a read file names, standing: its own admission, plus its
+    /// resolution only where declarations are generated at resolve. Resolving a
+    /// file asks the items of every file it sees, which parses each held file the
+    /// holds have not yet settled.
+    fn declared(f: FileId) {
+        if self.has_declares(f) || self.has_marks(f) { let _ = self.resolved(f) } else { touch(self.items(f)) }
+    }
+
+    /// A file this attempt now reads, its reason standing with it: the one door a read
+    /// enters by, so the read set names every file the attempt took a text of.
+    fn force_read(path: string, why: Reads) {
+        if !self.hold.read_files.get().any(it.path == path) {
+            self.hold.read_files.push(ReadFile { path: path, why: why })
+        }
+    }
+
+    /// What every file said, the root package's files first, each part by path —
+    /// never mint order, which a hold reorders — null when a file's facts no longer
+    /// place. A file the table knows and nothing read said nothing.
+    fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
+        let read = [a.view.file for a in p.files]
+        for a in p.files { self.keep_file_key(store, a.view.source.file) }
+        // LICENSED whole.cold: the old path's Workspace, which no warm check on the program layer runs; it leaves at the switch
+        let saying = [fi for fi in self.decls.all_files() if read.any(same_file(it, fi.id))]
+        let rooted = sorted_by(
+            saying,
+            (a: FileInfo, b: FileInfo) -> self.said_before(a.path, b.path),
+        )
+        let said = [self.said_now(fi.id, want) for fi in rooted]
+        if said.any(it == null) { return null }
+        [s! for s in said]
+    }
+
+    /// The root package's files first, then by path.
+    fn said_before(a: string, b: string) -> bool {
+        let ra = self.holder_of_path(a) == 0
+        let rb = self.holder_of_path(b) == 0
+        if ra != rb { return ra }
+        text_before(a, b)
+    }
+
+    /// A read file's key parts: its own under its path, the modules it sees
+    /// under its module — each rewritten only when it moved, and what moved
+    /// noted in the hold under the row's key.
+    fn keep_parts(store: Store, path: string) {
+        let now = self.key_parts_cached(store, self.module_path_of(path), path)
+        let own = now with { seen: [] }
+        let kept = store.get(Stored.History, parts_key(path))
+        let was = parts_of(kept ?? "")
+        self
+            .keep_moved(
+                store,
+                parts_key(path),
+                parts_wire(own),
+                if was == null { [] } else { parts_moved(store, self.record_bodies(), was!, own) },
+            )
+        // THE MODULE'S SEEN ROW is the module's whole view, one row its files share: the key a
+        // file wears narrows it by name, and the move a reader is told of is the module's
+        let whole = self.view_parts(store, self.module_path_of(path))
+        let seen = store.get(Stored.History, seen_key(now.module))
+        let seen_was = seen_of(seen ?? "")
+        self
+            .keep_moved(
+                store,
+                seen_key(now.module),
+                seen_wire(whole),
+                if seen == null || seen_was == null { [] } else { seen_list_moved(store, self.record_bodies(), seen_was!, whole) },
+            )
+    }
+
+    /// A parts row kept when it moved, what moved noted under its key.
+    fn keep_moved(store: Store, key: string, wire: string, moved: List<PartMoved>) {
+        if store.get(Stored.History, key) == wire { return }
+        if !moved.is_empty() { self.hold.moved.put(key, moved) }
+        let _ = store.keep(Stored.History, key, wire, [])
+    }
+
+    /// A read file's key: its pending reads resolved first, so what is kept and what is
+    /// asked wear one spelling — its parts.
+    fn keep_file_key(store: Store, path: string) {
+        let _ = self.resolve_pending_reads(store)
+        self.keep_parts(store, path)
+    }
+}
 
 // ── The voices ──
 
@@ -187,3 +711,10 @@ fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
     }
     out
 }
+
+fn verdict_disagrees(ran: string, kept: string) -> string {
+    "the sound check: a standing verdict disagrees with a run\n--- ran\n${ran}\n--- kept\n${kept}"
+}
+
+/// The first attempt at deriving `entry` under `want`.
+fn attempt_at(entry: string?, want: Want) -> Attempt { Attempt { entry: entry, want: want } }

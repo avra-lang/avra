@@ -1,0 +1,180 @@
+diff --git a/packages/std-avrac/src/compiler/item_view.av b/packages/std-avrac/src/compiler/item_view.av
+index 458ad96b..162918d3 100644
+--- a/packages/std-avrac/src/compiler/item_view.av
++++ b/packages/std-avrac/src/compiler/item_view.av
+@@ -62,7 +62,15 @@ type WalkedNode = { at: At, kind: NodeKind?, quoted: bool, under: At? }
+ /// Puts on `walked` the nodes under `at`, `at` first, in the order a law walks them, each with its
+ /// kind, whether a quote writes it — every one where `quoted`, else a quote and what it holds — and
+ /// what it stands under, `at` under `parent`.
+-fn walk_under(store: SyntaxArena, at: At, parent: At?, quoted: bool, walked: Cell<List<WalkedNode>>) {
++/// `kids` is the walk's stack: what a node pushes on it for its kids is gone again once they are walked.
++fn walk_under(
++    store: SyntaxArena,
++    at: At,
++    parent: At?,
++    quoted: bool,
++    walked: Cell<List<WalkedNode>>,
++    mut kids: List<At>,
++) {
+     let kind = store.node_kind(at)
+     let here = WalkedNode {
+         at: at,
+@@ -71,7 +79,10 @@ fn walk_under(store: SyntaxArena, at: At, parent: At?, quoted: bool, walked: Cel
+         under: parent,
+     }
+     walked.push(here)
+-    for k in store.kids_walked(at) { walk_under(store, k, at, here.quoted, walked) }
++    let from = kids.length
++    let count = store.kids_walked_pushed(at, kids)
++    for k in from..from + count { walk_under(store, kids[k], at, here.quoted, walked, kids) }
++    while kids.length > from { let _ = kids.pop() }
+ }
+ 
+ /// The nodes `walked`, filed by kind in the order they come, each with its place among them.
+@@ -149,7 +160,8 @@ impl ItemView {
+             pats: side_column<At?>(null),
+         }
+         let walked: Cell<List<WalkedNode>> = Cell.new([])
+-        for s in self.item.stmts { walk_under(self.item.store, At.Stmt(s), null, false, walked) }
++        mut kids: List<At> = []
++        for s in self.item.stmts { walk_under(self.item.store, At.Stmt(s), null, false, walked, kids) }
+         for r in walked.get() {
+             match r.at {
+                 .Expr(e) -> walk.exprs.set_at(e.index, r.under),
+diff --git a/packages/std-avrac/src/core/shape.av b/packages/std-avrac/src/core/shape.av
+index e0abcaca..27c47cae 100644
+--- a/packages/std-avrac/src/core/shape.av
++++ b/packages/std-avrac/src/core/shape.av
+@@ -156,6 +156,26 @@ impl SyntaxArena {
+         }
+     }
+ 
++    /// `kids_at(at)` pushed onto `onto` in order, with no list of its own: answers how many.
++    fn kids_pushed(at: At, mut onto: List<At>) -> int {
++        match at {
++            .Expr(id) -> match self.expr(id) {
++                .StructLit(_, fields, _) -> {
++                    for i in 0..fields.length { onto.push(At.Field(id, i)) }
++                    fields.length
++                },
++                _ -> self.kids_pushed_expr(self.expr(id), onto),
++            },
++            .Stmt(id) -> self.kids_pushed_stmt(self.stmt(id), onto),
++            .Pat(id) -> self.kids_pushed_pat(self.pat(id), onto),
++            .Field(owner, index) -> {
++                onto.push(At.Expr(field_value_of(self, owner, index)))
++                1
++            },
++            .Param(_, _) -> 0,
++        }
++    }
++
+     /// A node's children AS A LAW WALKS THEM: its kids, and under a `spec`, each case's body — a case's
+     /// body is a body as a fn's is, and what a law finds in one it finds there. A rule's reach is
+     /// `kids_at`'s alone.
+@@ -166,6 +186,19 @@ impl SyntaxArena {
+         }
+     }
+ 
++    /// `kids_walked(at)` pushed onto `onto` in order, with no list of its own: answers how many.
++    fn kids_walked_pushed(at: At, mut onto: List<At>) -> int {
++        let count = self.kids_pushed(at, onto)
++        match at {
++            .Stmt(id) -> {
++                let cases = self.spec_parts(id)?.cases ?? []
++                for c in cases { onto.push(At.Expr(c.body)) }
++                count + cases.length
++            },
++            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> count,
++        }
++    }
++
+     /// `root` and every place under it, each once, in one list: in `.Pre` a place comes before its
+     /// kids, in `.Post` after them; kids in `kids_at` order. A place `stops` holds for is listed,
+     /// but nothing under it is walked. One stack and one list, whatever the depth.
+@@ -187,13 +220,18 @@ impl SyntaxArena {
+                 entered.push(true)
+             }
+             if stops(at) { continue }
+-            let kids = self.kids_at(at)
+-            mut k = kids.length
+-            while k > 0 {
+-                k = k - 1
+-                pending.push(kids[k])
+-                entered.push(false)
++            let from = pending.length
++            let count = self.kids_pushed(at, pending)
++            mut lo = from
++            mut hi = from + count - 1
++            while lo < hi {
++                let kept = pending[lo]
++                pending[lo] = pending[hi]
++                pending[hi] = kept
++                lo = lo + 1
++                hi = hi - 1
+             }
++            for _ in 0..count { entered.push(false) }
+         }
+         out
+     }
+diff --git a/packages/std-avrac/src/core/shape_derive.av b/packages/std-avrac/src/core/shape_derive.av
+index 4bb480ab..6d490337 100644
+--- a/packages/std-avrac/src/core/shape_derive.av
++++ b/packages/std-avrac/src/core/shape_derive.av
+@@ -63,6 +63,11 @@ export trait Matchable {
+                     fn ${kids_of(t.name)}(node: ${t}) -> List<At> {
+                         match node { ${[kids_case(t, v) for v in t.variants]} }
+                     }
++                    fn ${pushed_of(t.name)}(node: ${t}, mut onto: List<At>) -> int {
++                        let from = onto.length
++                        let to = match node { ${[pushed_case(t, v) for v in t.variants]} }
++                        to - from
++                    }
+                     fn ${tag_of(t.name)}(node: ${t}) -> int {
+                         match node { ${[tag_case(t, v) for v in t.variants]} }
+                     }
+@@ -236,6 +241,35 @@ fn kids_case(t: MetaType, v: MetaVariant) -> Arms {
+     quote { .${v}(${binders(v)}) -> ${concatenated(reach_parts(t, v))} }
+ }
+ 
++/// One variant's kids pushed onto `onto` in `kids_case`'s order, answering how long `onto` then is:
++/// an id payload pushed where it lies, any other payload through its kids.
++fn pushed_case(t: MetaType, v: MetaVariant) -> Arms {
++    if v.fields.is_empty() { return quote { .${v} -> onto.length } }
++    let pushes = [pushed_part(f, r!) for f in v.fields if reached(f) for r in [reach_shape(t, v, f)] if r != null]
++    if pushes.is_empty() { return quote { .${v}(${binders(v)}) -> onto.length } }
++    quote {
++        .${v}(${binders(v)}) -> {
++            ${..pushes}
++            onto.length
++        }
++    }
++}
++
++/// One payload's kids pushed onto `onto`; `reach` is its kids as a list, for a payload of no id row.
++fn pushed_part(f: Field, reach: Code) -> Stmts {
++    let b = name(f.name)
++    match f.kind.spelled() {
++        "ExprId" -> quote { onto.push(At.Expr(${b})) },
++        "ExprId?" -> quote { if ${b} != null { onto.push(At.Expr(${b}!)) } },
++        "List<ExprId>" -> quote { for each in ${b} { onto.push(At.Expr(each)) } },
++        "StmtId" -> quote { onto.push(At.Stmt(${b})) },
++        "List<StmtId>" -> quote { for each in ${b} { onto.push(At.Stmt(each)) } },
++        "PatId" -> quote { onto.push(At.Pat(${b})) },
++        "List<PatId>" -> quote { for each in ${b} { onto.push(At.Pat(each)) } },
++        _ -> quote { for each in ${reach} { onto.push(each) } },
++    }
++}
++
+ /// The one `At` a payload holding a single id reaches; absent for any other payload. A node whose
+ /// every walked payload is one names its kids in one list, never a list per payload joined.
+ fn single_at(f: Field) -> Code? {
+@@ -339,5 +373,8 @@ fn kind_of(owner: string) -> string {
+ 
+ fn shallow_of(owner: string) -> string { "shallow_${kind_of(owner)}" }
+ fn kids_of(owner: string) -> string { "kids_${kind_of(owner)}" }
++
++/// The generated method pushing a node's kids onto a walk's stack.
++fn pushed_of(owner: string) -> string { "kids_pushed_${kind_of(owner)}" }
+ fn tag_of(owner: string) -> string { "tag_${kind_of(owner)}" }
+ fn ids_of(owner: string) -> string { "ids_${kind_of(owner)}" }

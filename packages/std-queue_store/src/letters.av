@@ -2,7 +2,7 @@
 //! on the program's database, so an item buried out of a durable queue
 //! is moved in one transaction and survives a restart.
 //!
-//!     queue<Dead<Email>> undeliverable {
+//!     queue<Dead<Email, string>> undeliverable {
 //!         name: "undeliverable"
 //!         durable: stored_dead<Email>()
 //!     }
@@ -23,7 +23,7 @@ export fn stored_dead<T: Storable>(
     sync: Sync = Sync.every_send,
     poll: Duration = ms(250),
     clock: fn() -> Time = now,
-) -> Durable<Dead<T>> {
+) -> Durable<Dead<T, string>> {
     stored_with(dead_wire(wire<T>(), text_wire()), sync, poll, clock)
 }
 
@@ -113,5 +113,7 @@ fn read<T, E>(r: Reader, item: Wire<T>, error: Wire<E>) -> Result<Dead<T, E>, Co
     if !unanswered && e == null { fail CodecFault.OtherShape }
     let n = r.count()?
     let path = [r.text()? for _i in 0..n]
-    Dead { item: it, fate: if unanswered { Fate.Unanswered } else { Fate.Failed(e!) }, path: path }
+    let fate: Fate<E> = if unanswered { Fate.Unanswered } else { Fate.Failed(e!) }
+    let letter: Dead<T, E> = Dead { item: it, fate: fate, path: path }
+    letter
 }

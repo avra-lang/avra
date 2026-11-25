@@ -1,0 +1,167 @@
+diff --git a/packages/std-avrac/src/features/tasks/tests/channel_test.av b/packages/std-avrac/src/features/tasks/tests/channel_test.av
+index 41788840..c7ba61f6 100644
+--- a/packages/std-avrac/src/features/tasks/tests/channel_test.av
++++ b/packages/std-avrac/src/features/tasks/tests/channel_test.av
+@@ -3,11 +3,7 @@
+ //! lowering, the running channel and the order and bound laws are
+ //! proved by `packages/std-task`'s program tests, which see the real
+ //! `@std/task`.
+-use @std.avrac.testing.{floored_beside, refused_in, refused_with, projected}
+-
+-/// A toolchain carrying `@std/task`'s pair — enough for the front end
+-/// to type a `channel` against.
+-const task_src: string = "export type Sink<T> = { send: fn(T) -> bool, close: fn() -> void }\nexport type Source<T> = { next: fn() -> T? }\nexport type Channel<T> = { sink: Sink<T>, source: Source<T> }\n"
++use @std.avrac.testing.{beside_task, refused_in, refused_with, projected}
+ 
+ /// A task reading `ch.source` that the block never lets end: no close.
+ const spawned_reader: string = "use @std.task.{Channel, Source}\n" +
+@@ -61,20 +57,12 @@ spec "features/tasks.channel" {
+     }
+     given "what it answers" {
+         then "it answers a `Channel<T>` and types clean" {
+-            let p = floored_beside(
+-                "use @std.task.{Channel}\nlet c: Channel<int> = channel<int>(2)\n0",
+-                "task",
+-                task_src,
+-            )
++            let p = beside_task("use @std.task.{Channel}\nlet c: Channel<int> = channel<int>(2)\n0")
+             p.said_in("/w/src/main.av").is_empty()
+         }
+         then "a capacity that is no `int` is refused by name" {
+             refused_in(
+-                floored_beside(
+-                    "use @std.task.{Channel}\nlet c = channel<int>(\"x\")\n0",
+-                    "task",
+-                    task_src,
+-                ),
++                beside_task("use @std.task.{Channel}\nlet c = channel<int>(\"x\")\n0"),
+                 "a `channel` capacity is a `int`, found `string`",
+             )
+         }
+@@ -84,10 +72,10 @@ spec "features/tasks.channel" {
+     }
+     given "a spawned reader the block never lets end" {
+         then "no `close()` before the block ends is refused by name" {
+-            refused_in(floored_beside(spawned_reader, "task", task_src), "flow.never_ends")
++            refused_in(beside_task(spawned_reader), "flow.never_ends")
+         }
+         then "a `close()` after the spawn lets the reader end, so nothing is refused" {
+-            floored_beside(closed_reader, "task", task_src).said_in("/w/src/main.av").is_empty()
++            beside_task(closed_reader).said_in("/w/src/main.av").is_empty()
+         }
+     }
+ }
+diff --git a/packages/std-avrac/src/features/tasks/tests/produce_test.av b/packages/std-avrac/src/features/tasks/tests/produce_test.av
+index 63b27ef1..f1b75718 100644
+--- a/packages/std-avrac/src/features/tasks/tests/produce_test.av
++++ b/packages/std-avrac/src/features/tasks/tests/produce_test.av
+@@ -2,11 +2,7 @@
+ //! Both are TYPED here; the producer's task ownership and lowering are
+ //! FLOW 05 S2/S3, so a valid `produce` is typed and refused at
+ //! lowering by name.
+-use @std.avrac.testing.{floored_beside, refused_with, projected}
+-
+-/// A toolchain carrying `@std/task`'s `Source` and `Sink` — enough for
+-/// the front end to type against.
+-const task_src: string = "export type Source<T> = { next: fn() -> T? }\nexport type Sink<T> = { send: fn(T) -> bool }\n"
++use @std.avrac.testing.{beside_task, refused_with, projected}
+ 
+ spec "features/tasks.produce" {
+     given "the emit verb" {
+@@ -14,18 +10,14 @@ spec "features/tasks.produce" {
+             refused_with("yield 1\n0", "no producer encloses it")
+         }
+         then "`yield` sends what the producer's element names" {
+-            let p = floored_beside(
++            let p = beside_task(
+                 "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield 1 }\n0",
+-                "task",
+-                task_src,
+             )
+             p.said_in("/w/src/main.av").is_empty()
+         }
+         then "a `yield` the element does not accept refuses" {
+-            let p = floored_beside(
++            let p = beside_task(
+                 "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield \"x\" }\n0",
+-                "task",
+-                task_src,
+             )
+             p.said_in("/w/src/main.av").length == 1
+         }
+@@ -38,10 +30,8 @@ spec "features/tasks.produce" {
+             projected("produce<int>(2) { yield 1 }\n0") != "<parse refused>"
+         }
+         then "its answer walks as a `Source`, binding the element" {
+-            let p = floored_beside(
++            let p = beside_task(
+                 "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield 1 }\nmut n = 0\nfor p in pages { n = n + p }\nn",
+-                "task",
+-                task_src,
+             )
+             p.said_in("/w/src/main.av").is_empty()
+         }
+diff --git a/packages/std-avrac/src/testing/held.av b/packages/std-avrac/src/testing/held.av
+index a1309b82..05ca7f81 100644
+--- a/packages/std-avrac/src/testing/held.av
++++ b/packages/std-avrac/src/testing/held.av
+@@ -112,6 +112,11 @@ impl Held {
+         )
+     }
+ 
++    /// Whether it holds the toolchain's `@std/task`: a program over it runs under the scheduler the
++    /// process itself is compiled with, so the differential compares what is said of it and never
++    /// runs it here.
++    fn schedules() -> bool { self.files.has("${self.std}/std-task/avra.toml") }
++
+     /// The manifest of a package it holds; an empty one where it holds none.
+     fn manifest_of(package: string) -> Manifest {
+         let path = self.standing(package, "avra.toml")
+@@ -223,7 +228,7 @@ impl Held {
+             told.said,
+             said_sorted(j.diagnostics),
+             told.run,
+-            run_said(j.run(), told.quiet),
++            if self.schedules() { UNRUN } else { run_said(j.run(), told.quiet) },
+         )
+         j
+     }
+@@ -250,7 +255,7 @@ impl Held {
+         let old = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+         let said = OldSaid {
+             said: said_sorted(old),
+-            run: run_said(p.run(), old.is_empty()),
++            run: if self.schedules() { UNRUN } else { run_said(p.run(), old.is_empty()) },
+             quiet: old.is_empty(),
+         }
+         one_shot_let_go()
+@@ -264,6 +269,9 @@ impl Held {
+     }
+ }
+ 
++/// What stands for a run the differential does not make.
++const UNRUN: string = "(not run here: the program holds @std/task)"
++
+ /// What the old path said of one program, as text: its diagnostics sorted, what it ran to, and
+ /// whether it said nothing.
+ export type OldSaid = { said: string, run: string, quiet: bool }
+diff --git a/packages/std-avrac/src/testing/mod.av b/packages/std-avrac/src/testing/mod.av
+index 47b9c73e..94f5cb74 100644
+--- a/packages/std-avrac/src/testing/mod.av
++++ b/packages/std-avrac/src/testing/mod.av
+@@ -331,6 +331,15 @@ export fn beside_db(main: string) -> Judged {
+     held_at(files, "/w").judged_at("/w/src/main.av")
+ }
+ 
++/// A program at `/w` that uses the real `@std/task`, with its closure vendored beside the
++/// prelude: a channel or a producer opens through the package's own fns, so it runs.
++export fn beside_task(main: string) -> Judged {
++    let files = vendored_task(
++        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
++    )
++    held_at(files, "/w").judged_at("/w/src/main.av")
++}
++
+ /// A program at `/w` whose toolchain carries the real `@std/prelude`
+ /// and nothing else — what a file in a package sees and a lone source
+ /// does not.

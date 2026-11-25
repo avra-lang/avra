@@ -1,0 +1,9 @@
+# hd-families2 handoff (2026-11-02)
+- Branch `hd-families2`, pushed head 106963e8 (worktree ../avra-hd-families2). @family 30 on branch.
+- Done (engine, std-relation): Scope = the one speller (`ctx.query_scope()`, Workspace = FactsScope base 0, `minting:false` for restore); saved context queries (`saved()`), doors `<q>_key/_held/_dropped/_seat_of`, `@digested_with`, `@scoped_by`, `@recursive`, `db.unkept()`, lazy leaves; record keys holding dense ids; @codec answers via `digest_in/written_by/read_by` (hd-codec merged, 353d9d86); non-minting restore (decl_standing); bypass reads recorded as `audit_covers` (9b34a90c — hd-decl's 02ba2e6a `read_door` is a second hook: fold into one).
+- Witnesses: std-relation tests/context_query, query_marks, codec_list_answer.
+- RED: gate suites fail — `test packages/std-meta` can't see std-errors' types ("no `type ErrorInfo` is declared"), deterministic, even on a clear cache.
+- BISECT (GitHub `work run`, `git checkout <sha> -- packages; make try; avra-try test packages/std-meta`): b95a310c PASS, 41e9da06 PASS. First known FAIL: f3ac53cd (+ rung cherry-pick). Suspects in between: a3fffa59 (merge hd-clean 6c1c123f — askfast's spelling × my scoped/plain_spelled), 374f7c7f, e327df1d (@scoped_by), f3ac53cd (asked_by/scoped over record seats: `scoped(f)` now true for ANY context query whose seat or answer holds a dense id).
+- Next: bisect a3fffa59 vs 374f7c7f vs f3ac53cd the same way; std-meta alone reproduces in ~10 min.
+- Not merged yet: hd-codec 7f100079 (FactsScope moved to facts_scope.av — re-apply `minting` there), hd-lowq 626a0672 (@codec answer read fix, approved), hd-marks-cycle fdc81292 (@cycled_by, approved with nits).
+- Open: DenseNames can't validate a never-asked dense query in a fresh process (needs a typed context in std-relation); family_reflect list is derived now; remaining families mine: References/FileRefs, Admitted, Plain, Writes/CancelBits, Raised/DeclReads.

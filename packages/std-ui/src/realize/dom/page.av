@@ -7,22 +7,24 @@ use realize.dom.wire.{echo, frame}
 use tree.identity.{Owner}
 use tree.node.{Node}
 use tree.view.{View}
+use style.theme.{Theme}
 
 /// An app and the page it is painted on. The page owns the one standing the
 /// app walks, so the instances the page watches are the ones the app draws.
 export type Paged = { app: App, page: Live }
 
-/// `view` on `page`, in the theme its tree carries: each paint's patches go to `send` as
+/// `view` under `theme` on `page`: each paint's patches go to `send` as
 /// one frame, and a page that did not change is sent nothing. A page that
 /// already shows something is TURNED INTO the view, never drawn over.
-export fn paged<V: View>(view: fn() -> V, page: Live, send: fn(Bytes) -> void) -> Paged {
+export fn paged<V: View>(view: fn() -> V, theme: fn() -> Theme, page: Live, send: fn(Bytes) -> void) -> Paged {
     let notice: Cell<Node?> = Cell.new(null)
     let standing: Cell<List<Owner>> = Cell.new([])
     let made = Paged {
         app: owned_app(
             view,
-            (root: Node) -> {
-                let patches = page.patches_drawn(root, notice.get())
+            theme,
+            (root: Node, worn: Theme) -> {
+                let patches = page.patches_drawn(root, worn, notice.get())
                 standing.set(page.owners())
                 if !patches.is_empty() { send(frame(patches, page.told)) }
             },

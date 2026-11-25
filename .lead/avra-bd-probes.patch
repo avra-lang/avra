@@ -1,0 +1,182 @@
+diff --git a/packages/cli/src/commands/shared.av b/packages/cli/src/commands/shared.av
+index 08dbc541..02fc02bc 100644
+--- a/packages/cli/src/commands/shared.av
++++ b/packages/cli/src/commands/shared.av
+@@ -1,4 +1,4 @@
+-//! What every command shares: the host externs, the argued source
++//! What every command shares: the host externs, the argued source (edited4)
+ //! file, the analyze-or-refuse step, and what every file command takes.
+ use @std.cli.{CliResult, flag, arg}
+ use @std.avrac.compiler.{
+diff --git a/packages/std-avrac/src/compiler/decl_rows.av b/packages/std-avrac/src/compiler/decl_rows.av
+index a8dd18fe..0201fefb 100644
+--- a/packages/std-avrac/src/compiler/decl_rows.av
++++ b/packages/std-avrac/src/compiler/decl_rows.av
+@@ -18,7 +18,7 @@ use core.{
+ use compiler.families.{Family}
+ use core.debug.{db_verified_decl, db_verified_items}
+ use compiler.store.{Store, Stored, node_key}
+-use features.{Decl, Listed}
++use features.{Decl}
+ 
+ impl Workspace {
+     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
+@@ -55,38 +55,48 @@ impl Workspace {
+         self.gathered_set(held.gathering, self.file_id(path)) != held.digest
+     }
+ 
+-    /// THE DURABLE REFS OF EVERY DECLARATION NAMED `name`, program-wide, nothing minted,
+-    /// parsed or expanded and nothing recorded: each file the name environments or the standing
+-    /// rows place it in, answered by `refs_in`. None while a file cannot answer whole.
++    /// THE DURABLE REFS OF EVERY DECLARATION NAMED `name`, program-wide: what the program
++    /// declares is a fact about the program, so the bucket folds the same content in every
++    /// process whatever either one has minted. None while a file cannot answer whole — a
++    /// partial bucket is a race, never a fact.
+     fn named_refs(name: string) -> List<string>? {
+-        let known = self.records.named_refs.get().get(name)
+-        if known != null { return known! }
+-        let refs? = self.named_refs_now(name) else { return null }
+-        self.records.named_refs.put(name, refs)
+-        refs
++        let all? = self.named_index() else { return null }
++        all.get(name) ?? []
+     }
+ 
+-    /// `named_refs` as the build stands now.
+-    fn named_refs_now(name: string) -> List<string>? {
+-        let standing = self.decls.named_standing(name)
+-        let files = distinct(
+-            self
+-                .envs
+-                .listed(Listed.Name(name))
+-                .concat([self.decls.file(x.file).path for x in standing]),
+-        )
+-        let refs = [self.refs_in(path, name, standing) for path in files]
+-        if refs.any(it == null) { return null }
+-        flatten([r! for r in refs])
++    /// `named_refs`' whole table, built once per build.
++    fn named_index() -> Map<string, List<string>>? {
++        if self.records.named_index_ready.get() { return self.records.named_index.get() }
++        let made? = self.named_index_now() else { return null }
++        self.records.named_index.set(made)
++        self.records.named_index_ready.set(true)
++        made
++    }
++
++    /// Every file's names as one table; none while any file cannot answer whole.
++    fn named_index_now() -> Map<string, List<string>>? {
++        let by_file = [self.named_file_refs(path) for path in self.decls.file_paths()]
++        if by_file.any(it == null) { return null }
++        mut out: Map<string, List<string>> = {}
++        for by in by_file {
++            for name, refs in by! { out.set(name, (out.get(name) ?? []).concat(refs)) }
++        }
++        out
+     }
+ 
+-    /// The refs one file gives `name`: off its kept lines while they stand for its text, so the
+-    /// answer never depends on what this process minted or expanded; else off its rows once
+-    /// the file is made whole; else none.
+-    fn refs_in(path: string, name: string, standing: List<Decl>) -> List<string>? {
++    /// Every name one file declares, each ref off its kept lines while they stand for its
++    /// text, else off its rows once the file is made whole; none while neither answers.
++    fn named_file_refs(path: string) -> Map<string, List<string>>? {
+         let kept = self.line_refs_of(path)
+-        if !kept.kept { return self.rows_in(path, standing) }
+-        kept.by.get(name) ?? []
++        if kept.kept { return kept.by }
++        let f? = self.decls.known_file_id(path) else { return {} }
++        if !self.made_whole(f) { return null }
++        mut out: Map<string, List<string>> = {}
++        for d in self.decls.decls_so_far(f) {
++            let name = self.decls.raw_decl(d).name
++            out.set(name, (out.get(name) ?? []).concat([self.decl_ref(d)]))
++        }
++        out
+     }
+ 
+     /// A file's kept declaration wires by name, off its kept lines.
+@@ -104,13 +114,6 @@ impl Workspace {
+         made
+     }
+ 
+-    /// A read file's standing rows as refs, once every declaration it makes is one.
+-    fn rows_in(path: string, standing: List<Decl>) -> List<string>? {
+-        let f? = self.decls.known_file_id(path) else { return null }
+-        if !self.made_whole(f) { return null }
+-        [self.decl_ref(x.id) for x in standing if same_file(x.file, f)]
+-    }
+-
+     /// Whether every declaration a file makes is a row: it is parsed, and it generates none
+     /// or its expansion has finished.
+     fn made_whole(f: FileId) -> bool {
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index cb2489c4..13949c4f 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -453,9 +453,10 @@ type Records = {
+     uses_seen: Cell<Map<string, string>>,
+     /// Each file's kept declaration wires by the name each declares, read once per build.
+     line_refs: Cell<Map<string, LineRefs>>,
+-    /// A name's whole bucket as `named_refs` answers it, once it answers: a whole answer
+-    /// stands for the build.
+-    named_refs: Cell<Map<string, List<string>>>,
++    /// THE PROGRAM'S DECLARATIONS BY NAME, each ref program-wide: `named_refs`' table, and
++    /// whether it stands — one answer per build, whole or none.
++    named_index: Cell<Map<string, List<string>>?>,
++    named_index_ready: Cell<bool>,
+     /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
+     /// marks as re-exporting a name, read once per build however many
+     /// modules see it.
+@@ -519,7 +520,8 @@ fn new_records() -> Records {
+         line_index: map_cell(),
+         uses_seen: map_cell(),
+         line_refs: map_cell(),
+-        named_refs: map_cell(),
++        named_index: Cell.new(no_index),
++        named_index_ready: Cell.new(false),
+         record_producers: Cell.new(no_producers_of),
+         record_stamps: map_cell(),
+         record_reexports: Cell.new(no_reexports),
+diff --git a/packages/std-io/src/io.av b/packages/std-io/src/io.av
+index 7ecd9fce..49e5b775 100644
+--- a/packages/std-io/src/io.av
++++ b/packages/std-io/src/io.av
+@@ -1,4 +1,4 @@
+-//! @std.io — the host's streams, files and environment, as values.
++//! @std.io — the host's streams, files and environment, as values. (edited4)
+ //!
+ //! Printing is the prelude's (`println`/`eprintln`, no `use`). A file
+ //! is read whole (`read_text`) or written whole (`write_text` — through a sibling
+diff --git a/packages/std-relation/src/db.av b/packages/std-relation/src/db.av
+index a34ee24a..aa5d9200 100644
+--- a/packages/std-relation/src/db.av
++++ b/packages/std-relation/src/db.av
+@@ -906,13 +906,26 @@ impl Db {
+     fn leaves_hold(ns: List<int>) -> bool { ns.all((n) -> self.leaf_holds(self.leaf_table.leaf(n))) }
+ 
+     fn leaf_holds(l: Leaf) -> bool {
+-        match l {
++        let ok = match l {
+             .Rows(name, digest) -> self.rows_digest(name) == digest,
+             .Input(name, spelled, digest) -> {
+                 let now? = self.input_digest(name, spelled) else { return self.unstaged(name) }
+                 now == digest
+             },
+         }
++        if !ok {
++            match l {
++                .Rows(name, digest) -> self.probe_leaf("r", name, "${digest}"),
++                .Input(name, spelled, digest) -> self.probe_leaf("i", "${name} ${spelled}", "${digest}"),
++            }
++        }
++        ok
++    }
++
++    fn probe_leaf(kind: string, what: string, was: string) {
++        let now = self.leaf_digest("${kind}\t${what}") ?? "?"
++        let k? = self.kernel.get() else { return }
++        if k.tracing.get() { avra_qtrace("Q\tleaffail\t${kind}\t${what}\t${was}\t${now}\n") }
+     }
+ 
+     /// The digest of the read `Leaf.id` names, as it stands here; absent when this Db cannot

@@ -8,7 +8,6 @@ use core.{
     NamesRead,
     ExprId,
     StmtId,
-    SignedType,
     SyntaxArena,
     TypeRef,
     UseParts,
@@ -99,11 +98,11 @@ export type KeptDiag = {
 /// What every rule the program layer runs finds in `file`: those that read syntax alone over the
 /// whole file and each item's fact rules over the item, in the order one walk of the file finds
 /// them — each node after the nodes under it.
-@query("laws")
+@query
 export fn file_rule_rows(engine: QueryEngine, program: string, file: SourceFileAddress) -> FileRuleRows {
     let src = rule_source(engine, file)
     let facts = flatten(
-        [item_fact_findings(engine, program, file, at, src) for at in item_ids(engine, file)],
+        [item_fact_findings(engine, program, file, at, src) for at in 0..item_count(engine, file)],
     )
         .concat(
             [found_placed(found_in_file(engine, file, i.at, f), src) for i in entry_fact_found(engine, file).items for f in i.found],
@@ -120,7 +119,7 @@ fn file_syntax_findings(engine: QueryEngine, file: SourceFileAddress, source: So
 > {
     let back = read_back(
         source.file,
-        [placed_item(engine, file, item_under(engine, file, at), item_start(engine, file, at)) for at in item_ids(engine, file)],
+        [placed_item(engine, file, item_under(engine, file, at), item_start(engine, file, at)) for at in 0..item_count(engine, file)],
     )
     placed_syntax_findings(
         SyntaxFile { view: SyntaxView { store: back.store, source: source } },
@@ -129,7 +128,7 @@ fn file_syntax_findings(engine: QueryEngine, file: SourceFileAddress, source: So
     )
         .concat(
             flatten(
-                [item_syntax_findings(engine, file, at, source) for at in item_ids(engine, file)],
+                [item_syntax_findings(engine, file, at, source) for at in 0..item_count(engine, file)],
             ),
         )
 }
@@ -139,7 +138,7 @@ fn reads_its_item(r: RuleEntry) -> bool { !reads_the_file(r) }
 
 /// What the rules that read their item alone find in the item `at` of `file`, placed where the item
 /// stands in the file `src`.
-fn item_syntax_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId, src: SourceFile) -> List<
+fn item_syntax_findings(engine: QueryEngine, file: SourceFileAddress, at: int, src: SourceFile) -> List<
     PlacedDiag,
 > {
     [found_placed(found_in_file(engine, file, at, f), src) for f in item_syntax_found(engine, file, at).found]
@@ -151,17 +150,16 @@ fn item_syntax_findings(engine: QueryEngine, file: SourceFileAddress, at: ItemId
 type ItemAlone = { text: string, tape: SyntaxTape }
 
 /// The item `at` of `file` as the rules that read it alone see it.
-@cut_query("laws")
-fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemAlone {
+@cut_query
+fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemAlone {
     let item = item_under(engine, file, at)
     ItemAlone { text: item.text, tape: placed_item(engine, file, item, 0).tape }
 }
 
 /// What every rule that reads its item alone finds in the item `at` of `file`, each beside the node
-/// it fired at — every place counted from the item's own start. Its own query, asked where rule rows
-/// are: a check reads rules over the program's own files, and laws over every file it reaches.
-@query("laws")
-export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemFound {
+/// it fired at — every place counted from the item's own start.
+@query
+export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFound {
     let alone = item_alone(engine, file, at)
     let source = new_source_file(rule_named(file), alone.text)
     let back = read_back(source.file, [PlacedTape { start: 0, tape: alone.tape }])
@@ -176,7 +174,7 @@ export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: It
 
 /// A finding the item `at` of `file` kept, each of its places counted from the item's start, with
 /// each counted from the file's instead (`file_placed`).
-fn found_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId, f: KeptFound) -> KeptFound {
+fn found_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: KeptFound) -> KeptFound {
     let placed = (p: KeptPlace) -> kept_place_in_file(engine, file, at, p)
     KeptFound {
         node: placed(f.node),
@@ -185,7 +183,7 @@ fn found_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId, f: Ke
 }
 
 /// A kept place of the item `at` of `file`, counted from the file's start.
-fn kept_place_in_file(engine: QueryEngine, file: SourceFileAddress, at: ItemId, p: KeptPlace) -> KeptPlace {
+fn kept_place_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, p: KeptPlace) -> KeptPlace {
     let placed = file_placed(engine, file, at, FindingAt { lo: p.lo, hi: p.hi })
     KeptPlace { lo: placed.lo, hi: placed.hi }
 }
@@ -205,7 +203,7 @@ fn item_fact_findings(
     engine: QueryEngine,
     program: string,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     src: SourceFile,
 ) -> List<PlacedDiag> {
     [found_placed(found_in_file(engine, file, at, f), src) for f in item_fact_found(engine, program, file, at).found]
@@ -217,7 +215,7 @@ fn found_placed(f: KeptFound, src: SourceFile) -> PlacedDiag { PlacedDiag { lo: 
 /// What every fact rule finds in the statements one item of a file runs as its entry: the item, and
 /// each finding beside the node it fired at, counted from the item's start.
 @derive(Saved)
-export type ItemRanFound = { at: ItemId, found: List<KeptFound> }
+export type ItemRanFound = { at: int, found: List<KeptFound> }
 
 /// What every fact rule finds in the statements a file runs, item by item.
 @derive(Saved)
@@ -226,7 +224,7 @@ export type EntryRanFound = { items: List<ItemRanFound> }
 /// What every fact rule finds in the statements `file` runs, typed as one body — its entry — once for
 /// all of its items: each local such a statement binds read through the entry's own reads; each
 /// item's statements walked over that item's own text.
-@query("laws")
+@query
 export fn entry_fact_found(engine: QueryEngine, file: SourceFileAddress) -> EntryRanFound {
     let read = entry_read(engine, file)
     let signed? = entry_signed(read) else { return EntryRanFound { items: [] } }
@@ -255,7 +253,7 @@ fn entry_item_facts(
     read: EntryRead,
     typed: TypedBody,
     entry: NamesRead,
-    at: ItemId,
+    at: int,
 ) -> RuleFile {
     RuleFile {
         view: SyntaxView {
@@ -359,8 +357,8 @@ fn kept_loc(p: KeptPlace, path: string) -> Loc { Loc { file: path, lo: p.lo, hi:
 
 /// What every fact rule the program layer runs finds in the item `at` of `file`, over its bodies as
 /// typing found them; an item whose parse refused holds no finding.
-@query("laws")
-export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFileAddress, at: ItemId) -> ItemFound {
+@query
+export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFileAddress, at: int) -> ItemFound {
     let facts? = item_rule_file(engine, program, file, at) else { return ItemFound { found: [] } }
     let store = facts.view.store
     found_kept(
@@ -373,11 +371,11 @@ export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFile
 
 /// What a fact rule reads of the item `at` of `file`: its tree, and its bodies as typing found them;
 /// absent for an item whose parse refused.
-export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileAddress, at: ItemId) -> RuleFile? {
+export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileAddress, at: int) -> RuleFile? {
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return null }
     let stated = item_stated_bodies(engine, file, at, item)
-    let bodies = [b.typed.types for b in stated].concat(entry_typed(engine, file, at))
+    let bodies = [b.typed.types for b in stated]
     let reach = bodies.map(it.length).fold(0, (a, b) -> if a > b { a } else { b })
     let src = new_source_file(rule_named(file), item_under(engine, file, at).text)
     RuleFile {
@@ -402,33 +400,24 @@ export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileA
     }
 }
 
-/// The types the entry gives the item `at` of `file`'s own top-level nodes, read from the one query
-/// that types the entry (`entry_types`): its node `k` is the entry's node `k + base`. None where the
-/// item runs no statement.
-fn entry_typed(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<List<SignedType?>> {
-    let entry = entry_types(engine, file)
-    let base? = entry.bases.find(it.at == at)?.base else { return [] }
-    [entry.types.slice(base, entry.types.length)]
-}
-
 /// Each fn a declaration of a file names in `@cycled_by` or `@scoped_by`.
 @derive(Saved)
 export type SeatFns = { names: List<string> }
 
 /// Each fn the declarations of `file` name in `@cycled_by` or `@scoped_by`, over every item it
 /// writes.
-@query("laws")
+@query
 export fn file_seat_fns(engine: QueryEngine, file: SourceFileAddress) -> SeatFns {
     SeatFns {
         names: flatten(
-            [seat_fns_of(item.store, item.stmts) for at in item_ids(engine, file) for item in [read_item(engine, file, at)]],
+            [seat_fns_of(item.store, item.stmts) for at in 0..item_count(engine, file) for item in [read_item(engine, file, at)]],
         ),
     }
 }
 
 /// The body each `impl Trait for` method of the item `at` of `file` overrides, where its trait gives
 /// the member one.
-fn trait_defaults(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+fn trait_defaults(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     TraitDefault,
 > {
     let impls = [s for s in item.stmts if item.store.impl_parts(s) != null]
@@ -497,9 +486,10 @@ export type DeclKeys = { keys: List<string> }
 /// Each declaration the written items of `file` read by name, resolved from its top level: a name
 /// read or called, a record's or a type's name, a written type, an impl's trait and target, and a
 /// field's mark. A `use` line's own names are no read.
-@query("laws")
+@query
 export fn file_reads(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
-    let read = [r for at in every_item_id(engine, file) for r in names_read(read_item(engine, file, at).store)]
+    let items = item_count(engine, file) + file_generated(engine, file).items.length
+    let read = [r for at in 0..items for r in names_read(read_item(engine, file, at).store)]
     DeclKeys {
         keys: distinct(
             [decl_key(d!) for r in read for d in [read_declaration(engine, file, r)] if d != null],
@@ -519,9 +509,10 @@ fn read_declaration(engine: QueryEngine, file: SourceFileAddress, r: ReadName) -
 
 /// Each call the written items of `file` make by name of a fn the program declares, its callee's
 /// key once a call.
-@query("laws")
+@query
 export fn file_calls(engine: QueryEngine, file: SourceFileAddress) -> DeclKeys {
-    let calls = [r for at in every_item_id(engine, file) for r in calls_written(read_item(engine, file, at).store)]
+    let items = item_count(engine, file) + file_generated(engine, file).items.length
+    let calls = [r for at in 0..items for r in calls_written(read_item(engine, file, at).store)]
     DeclKeys {
         keys: [decl_key(d!) for r in calls for d in [read_declaration(engine, file, r)] if d != null],
     }
@@ -535,7 +526,7 @@ fn calls_written(store: SyntaxArena) -> List<ReadName> {
 /// The name a call at `e` names its callee by; absent for any other node.
 fn callee_read(store: SyntaxArena, e: ExprId) -> ReadName? {
     if !(store.expr(e).use_shape() is .Callee) { return null }
-    value_read(store.callee_name(e))
+    value_read(store.call_parts(e)?.callee)
 }
 
 /// Each call the program `program` makes of the fn `name` that `file` declares, by the file making it.
@@ -548,7 +539,7 @@ fn callers_of(engine: QueryEngine, program: string, file: SourceFileAddress, nam
 }
 
 /// Each declaration the files of the program `package` read by name.
-@query("laws")
+@query
 export fn program_reads(engine: QueryEngine, package: string) -> DeclKeys {
     DeclKeys {
         keys: distinct(flatten([file_reads(engine, f).keys for f in program_files(engine, package)])),
@@ -597,7 +588,7 @@ fn names_read(store: SyntaxArena) -> List<ReadName> {
 fn expr_name(store: SyntaxArena, e: ExprId) -> ReadName? {
     match store.expr(e).use_shape() {
         .Read -> value_read(store.ident_name(e)),
-        .Callee -> value_read(store.callee_name(e)),
+        .Callee -> value_read(store.call_parts(e)?.callee),
         .Method(_, _) -> null,
         .Record(name) -> type_read(name.of),
         .Component(word) -> type_read(word),

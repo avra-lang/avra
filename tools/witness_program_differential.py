@@ -1,10 +1,6 @@
-"""The judge tools/witness_program_differential.sh runs: each witness laid out on disk, built on the
-program layer, judged against what the old path said of it, and the table printed. The old path's
-word is frozen in tools/witness_program_differential.old, one line a witness: it was asked once, at
-cbc437f4, before its deletion. A witness written or changed since has no frozen word, and is said
-UNFROZEN. Arguments: the compiler, a scratch directory holding witnesses.jsonl, the bar, the jobs,
-and the codes to judge (none: every code)."""
-import hashlib
+"""The judge tools/witness_program_differential.sh runs: each witness laid out on disk, run on both
+paths, judged, and the table printed. Arguments: the compiler, a scratch directory holding
+witnesses.jsonl, the bar, the jobs, and the codes to judge (none: every code)."""
 import concurrent.futures
 import json
 import os
@@ -77,18 +73,11 @@ def run(args, cwd, env):
         return "timeout", out
 
 
-FROZEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "witness_program_differential.old")
-
-
-def frozen():
-    """The old path's word on each witness, by its code: what it said, frozen."""
-    with open(FROZEN) as f:
-        return {o["code"]: o for o in (json.loads(l) for l in f if l.strip())}
-
-
-def witnessed(w):
-    """The digest of a witness's files: a frozen word stands for the files it was said of."""
-    return hashlib.sha256(json.dumps(w["files"], sort_keys=True).encode()).hexdigest()
+def new_only(avra, pkg, env):
+    """Each form only the program layer builds that the package at `pkg` uses, as `tapes` says them."""
+    done = subprocess.run([avra, "tapes", pkg, "--new-only"], cwd=pkg, env=env, capture_output=True, text=True,
+                          timeout=TIMEOUT)
+    return [l for l in done.stdout.splitlines() if l.strip()]
 
 
 def first(pattern, said):
@@ -122,7 +111,7 @@ def in_test_file(said):
     return path.endswith("_test.av") or "/tests/" in path
 
 
-def judged(avra, scratch, w, old):
+def judged(avra, scratch, w):
     """One witness's row: its code, its verdict, its owner, and both first lines."""
     code = w["code"]
     row = {"code": code, "owner": owner(code), "old": "", "new": ""}
@@ -130,23 +119,35 @@ def judged(avra, scratch, w, old):
         return dict(row, verdict=w["shape"].upper(), old=w["why"])
     if any(p.startswith("/std/") for p in w["files"]):
         return dict(row, verdict="STD-ROOT")
-    said = old.get(code)
     case = os.path.join(scratch, "cases", re.sub(r"[^A-Za-z0-9_.-]", "_", code))
     pkg = laid_out(case, w["files"])
-    env = dict(os.environ, AVRA_CACHE_DIR=os.path.join(case, "machine"), PWD=pkg)
-    in_test = said["in_test"] if said is not None else False
-    new_exit, new_said = run([avra, "check" if in_test else "build", pkg], pkg, env)
+    env = dict(os.environ)
+    env.pop("AVRA_PROGRAM_NET", None)
+    # the old path by name: since the flip the program layer is the default
+    env["AVRA_PROGRAM"] = "0"
+    env["AVRA_CACHE_DIR"] = os.path.join(case, "machine")
+    # a witness using a form only the program layer builds is never asked of the old path
+    forms = new_only(avra, pkg, dict(env, AVRA_PROGRAM="1", PWD=pkg))
+    if forms:
+        shutil.rmtree(case, ignore_errors=True)
+        return dict(row, verdict="NEW-ONLY", new=forms[0])
+    old_verb = "build" if w["shape"] == "built" else "check"
+    old_exit, old_said = run([avra, old_verb, pkg], pkg, dict(env, PWD=pkg))
+    for d, _, _ in os.walk(pkg):
+        if os.path.basename(d) == ".avra-cache":
+            shutil.rmtree(d, ignore_errors=True)
+    shutil.rmtree(env["AVRA_CACHE_DIR"], ignore_errors=True)
+    # the program layer alone: the old check's net off, so its own words are judged
+    new_env = dict(env, AVRA_PROGRAM="1", AVRA_PROGRAM_NET="0")
+    new_verb = "check" if in_test_file(old_said) else "build"
+    new_exit, new_said = run([avra, new_verb, pkg], pkg, dict(new_env, PWD=pkg))
     shutil.rmtree(case, ignore_errors=True)
-    # the witness's own directory, said as the frozen words say it
-    new_said = new_said.replace(case, "<case>")
+    old_line, old_kind = first(ERROR, old_said)
     new_line, new_kind = first(ERROR, new_said)
-    if said is None or said["digest"] != witnessed(w):
-        return dict(row, verdict="UNFROZEN", new=new_line or f"exit {new_exit}")
-    old_line, old_kind = said["line"], said["kind"]
     if old_line is None:
-        warned = said["warned"]
+        warned, _ = first(re.compile(r"^warning\[" + re.escape(code) + r"\]"), old_said)
         if warned is None:
-            return dict(row, verdict="OLD-SILENT", old=f"exit {said['exit']}")
+            return dict(row, verdict="OLD-SILENT", old=f"exit {old_exit}")
         row["old"] = warned
         heard, _ = first(re.compile(r"^warning\[" + re.escape(code) + r"\]"), new_said)
         return dict(row, verdict="WARNED" if heard == warned else "WARN-MISSING", new=heard or "")
@@ -172,10 +173,9 @@ def main():
         witnesses = [json.loads(l) for l in f if l.startswith("{")]
     witnesses = [w for w in witnesses if not only or w["code"] in only]
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        old = frozen()
-        rows = list(pool.map(lambda w: judged(avra, scratch, w, old), witnesses))
+        rows = list(pool.map(lambda w: judged(avra, scratch, w), witnesses))
     order = ["COMPILER-DEFECT", "ACCEPTED", "OTHER-ERROR", "DIFFERENT", "UNBUILT", "WARN-MISSING",
-             "OLD-SILENT", "STD-ROOT", "UNFROZEN", "BEYOND", "ABSENT", "UNREAD", "WARNED", "SAME"]
+             "OLD-SILENT", "STD-ROOT", "NEW-ONLY", "BEYOND", "ABSENT", "UNREAD", "WARNED", "SAME"]
     print("| code | verdict | owner (guess) | old first line | program layer first line |")
     print("|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (order.index(r["verdict"]), r["owner"], r["code"])):
@@ -187,7 +187,7 @@ def main():
     print()
     print("witness_program_differential: " + ", ".join(f"{counts[v]} {v}" for v in order if counts[v]) +
           f" — {len(rows)} codes")
-    print(f"witness_program_differential: {counts['UNFROZEN']} UNFROZEN (a witness the old path never judged, or one changed since its word was frozen)")
+    print(f"witness_program_differential: {counts['NEW-ONLY']} skipped (NEW-ONLY: a form only the program layer builds, never asked of the old path)")
     same = counts["SAME"]
     if same < bar:
         print(f"witness_program_differential: {same} SAME, under the bar of {bar}")

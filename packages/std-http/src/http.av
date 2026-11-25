@@ -38,9 +38,6 @@
 //!            control as one connection value, fed bytes, owing bytes
 //! h2_serve.av  a stream as the 1.1 `Request` its fields mean, and a
 //!            `Response` as the stream's answer
-//! typed.av   TYPED READS: a body or a query as the record a handler
-//!            declares, a capture as text, and the answers — 404,
-//!            201, the one 422 every refused record earns
 //! cookie.av  COOKIES: read from a request, set with the safe
 //!            defaults, signed over a MAC, sessions sealed in one
 //! files.av   STATIC FILES: a directory as routes, never above its
@@ -224,7 +221,13 @@ impl Request {
     /// form can post any bytes as `text/plain` across origins, so the
     /// media type is what a browser will not forge — 400 when the body
     /// is not UTF-8 or not JSON, naming where.
-    fn json() -> Result<Json, Response> { body_json(self.json_text()?) }
+    fn json() -> Result<Json, Response> {
+        let body = self.json_text()?
+        match parse(body) {
+            .Ok(j) -> j,
+            .Err(e) -> { fail text(400, "the body is not JSON: ${e.describe().message}") },
+        }
+    }
 
     /// THE BODY AS JSON TEXT, or the response that refuses it: `json`'s 415 and
     /// 400 for a body that is not UTF-8, the text itself unparsed.
@@ -253,14 +256,6 @@ export fn with_field<P>(q: Request<P>, name: string, value: string) -> Request<P
 export fn without_field<P>(q: Request<P>, name: string) -> Request<P> {
     if q.head.fields.named(q.raw, name.bytes()) < 0 { return q }
     q with { head: q.head with { fields: q.head.fields.without(q.raw, name.bytes()) } }
-}
-
-/// A body's text as JSON, or the 400 naming where it is not.
-export fn body_json(body: string) -> Result<Json, Response> {
-    match parse(body) {
-        .Ok(j) -> j,
-        .Err(e) -> { fail text(400, "the body is not JSON: ${e.describe().message}") },
-    }
 }
 
 /// The response refusing a body that could not be read: 413 past the

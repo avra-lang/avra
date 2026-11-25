@@ -1,13 +1,13 @@
 // `Pat` is a GATHERED enum (core/pat): each derive it wears is asked
 // here for something only that derive generates over its variants.
 use @std.avrac.core.{
-    scoped,
     new_node_store,
     fp_str,
     distinct,
     classifier,
     Pat,
     Expr,
+    Scoped,
     Plain,
     node_payload_rows,
     row_for,
@@ -16,7 +16,7 @@ use @std.avrac.core.{
 
 fn name_of(p: Pat) -> string {
     match p {
-        .Bind(name) or .Typed(name, _) -> name.text(),
+        .Bind(name) or .Typed(name, _) -> name.of,
         .Wild or .Rest or .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> "",
     }
 }
@@ -33,12 +33,12 @@ spec "core/pat — a gathered node enum" {
             let tags = [
                 s.tag_pat(Pat.Wild),
                 s.tag_pat(Pat.Rest),
-                s.tag_pat(Pat.Bind(scoped("x"))),
+                s.tag_pat(Pat.Bind(Scoped("x"))),
                 s.tag_pat(Pat.Variant(Plain("V"), [])),
                 s.tag_pat(Pat.Lit(one)),
                 s.tag_pat(Pat.Format("h", [])),
                 s.tag_pat(Pat.Quote(one)),
-                s.tag_pat(Pat.Typed(scoped("c"), named_ref("Code"))),
+                s.tag_pat(Pat.Typed(Scoped("c"), named_ref("Code"))),
             ]
             distinct(["${t}" for t in tags]).length == 8
         }
@@ -48,13 +48,13 @@ spec "core/pat — a gathered node enum" {
         }
         then "Exact compares a variant's payload by value" {
             let s = new_node_store()
-            s.exact_pat(Pat.Bind(scoped("x")), Pat.Bind(scoped("x"))) &&
-                !s.exact_pat(Pat.Bind(scoped("x")), Pat.Bind(scoped("y"))) &&
+            s.exact_pat(Pat.Bind(Scoped("x")), Pat.Bind(Scoped("x"))) &&
+                !s.exact_pat(Pat.Bind(Scoped("x")), Pat.Bind(Scoped("y"))) &&
                 !s.exact_pat(Pat.Wild, Pat.Rest)
         }
         then "Rebuild builds a variant again from its payload" {
             mut rb = classifier(new_node_store(), [])
-            name_of(Pat.Bind(scoped("kept")).rebuilt(rb)) == "kept"
+            name_of(Pat.Bind(Scoped("kept")).rebuilt(rb)) == "kept"
         }
         then "Grammar answers a variant's payload row, spelling and kind, from its record's fields" {
             let row = row_for(node_payload_rows(), "Pat", "Variant")

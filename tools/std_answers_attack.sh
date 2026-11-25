@@ -8,9 +8,7 @@
 #       no draft behind;
 #   (3) a compiler of another print lays nothing in;
 #   (4) a machine store that can't stand, or a disk too small for the packs (where this machine can
-#       mount one), costs one line on stderr and nothing else: the check says what it says without;
-#   (5) the install's verdict stands only for the std it judged: an installed std file edited to a
-#       type error is judged again, and the program's check refuses it.
+#       mount one), costs one line on stderr and nothing else: the check says what it says without.
 #   sh tools/std_answers_attack.sh [compiler]     (default build/avra-try)
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,14 +24,8 @@ held() { echo "std_answers_attack: $*"; }
 tc="$w/tc"
 mkdir -p "$tc/bin" "$tc/lib/avra"
 cp "$avra" "$tc/bin/avra"
-# the toolchain's std: the tree's, its @std/text a copy of its own, which (5) edits
-mkdir -p "$tc/lib/avra/std"
-for d in "$root"/packages/std-*; do ln -s "$d" "$tc/lib/avra/std/$(basename "$d")"; done
-text_std="$tc/lib/avra/std/std-text"
-find "$text_std" -maxdepth 0 -type l -delete
-cp -R "$root/packages/std-text" "$text_std"
-find "$text_std" -name .avra-cache -prune -exec find {} -delete \;
-sh "$root/tools/std_answers.sh" "$tc/bin/avra" "$tc/lib/avra/std" "$tc/lib/avra/answers" std-text std-prelude std-meta >/dev/null ||
+ln -s "$root/packages" "$tc/lib/avra/std"
+sh "$root/tools/std_answers.sh" "$tc/bin/avra" "$tc/lib/avra/std" "$tc/lib/avra/answers" std-text >/dev/null ||
     fail "the toolchain's answers were not made"
 shipped=$(ls "$tc/lib/avra/answers" | grep -c '^pack-')
 [ "$shipped" -gt 0 ] || fail "the toolchain ships no pack"
@@ -48,10 +40,8 @@ checked() {
     c=$1; cache=$2; said=$3; shift 3
     dir=${at:-$w/p}
     find "$dir" -name .avra-cache -prune -exec find {} -delete \;
-    env AVRA_CACHE_DIR="$cache" "$@" "$c" check "$dir" > "$said.raw" 2> "$said.err"
-    code=$?
-    sed "s#$dir#<p>#g" "$said.raw" > "$said"
-    echo "exit $code" >> "$said"
+    env AVRA_CACHE_DIR="$cache" "$@" "$c" check "$dir" 2> "$said.err" | sed "s#$dir#<p>#g" > "$said"
+    echo "exit $?" >> "$said"
 }
 
 checked "$tc/bin/avra" "$w/none" "$w/cold" AVRA_MACHINE_STORE=0
@@ -111,11 +101,4 @@ if mount -t tmpfs -o size=64k tmpfs "$w/tiny" 2>/dev/null; then
 else
     held "(4) a full disk: not attacked, this machine mounts no small disk"
 fi
-# (5)
-src=$(ls "$tc/lib/avra/std/std-text/src"/*.av | head -1)
-printf '\nexport fn broken_by_the_attack() -> int { "text" }\n' >> "$src"
-checked "$tc/bin/avra" "$w/m1" "$w/edited"
-grep -q '^exit 1$' "$w/edited" && grep -q 'type.mismatch' "$w/edited" ||
-    fail "(5) an edited std file standing on the install's verdict: $(cat "$w/edited" "$w/edited.err")"
-held "(5) an installed std file edited to a type error: judged again, the check refuses it"
 echo "std_answers_attack: held"

@@ -411,12 +411,12 @@ impl SourceText {
     mut fn statement_node(s: StmtId, depth: int) -> List<string> {
         let exported = if self.store.is_exported(s) { "export " } else { "" }
         match self.store.stmt(s) {
-            .Let(name, ty, value) -> [self.let_or_component_inst(s, name.text(), ty, value, depth)],
+            .Let(name, ty, value) -> [self.let_or_component_inst(s, name.of, ty, value, depth)],
             .MutLet(name, ty, value) -> {
                 // A `state` binding IS a mut binding's place: it prints
                 // the word it was written with, so the sugar round-trips.
                 let word = if self.store.is_state_stmt(s) { "state" } else { "mut" }
-                let name_part = "${word} ${source_name(name.text())}"
+                let name_part = "${word} ${source_name(name.of)}"
                 let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
                 [
                     source_line(
@@ -427,10 +427,10 @@ impl SourceText {
             },
             .ConstDecl(name, ty, value) -> [
                 if self.store.is_component_inst(s) {
-                    self.component_inst(exported, value, name.text(), depth)
+                    self.component_inst(exported, value, name.of, depth)
                 } else {
                     let word = if self.store.is_asset_stmt(s) { "asset" } else { "const" }
-                    let name_part = "${exported}${word} ${source_name(name.text())}"
+                    let name_part = "${exported}${word} ${source_name(name.of)}"
                     let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
                     let shown = if self.store.is_asset_stmt(s) { self.asset_path(value) ?? value } else { value }
                     source_line(
@@ -440,7 +440,7 @@ impl SourceText {
                 },
             ],
             .CtxDecl(name, ty, value) -> {
-                let name_part = "${exported}ctx ${source_name(name.text())}"
+                let name_part = "${exported}ctx ${source_name(name.of)}"
                 let typed = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))}"
                 let v? = value else { return [source_line(depth, typed)] }
                 let prefix = "${typed} = "
@@ -452,7 +452,7 @@ impl SourceText {
                 ]
             },
             .CtxSet(name, value) -> {
-                let prefix = "ctx ${source_name(name.text())} = "
+                let prefix = "ctx ${source_name(name.of)} = "
                 [
                     source_line(
                         depth,
@@ -471,7 +471,7 @@ impl SourceText {
             },
             .ExprStmt(value) -> [source_line(depth, self.expression(value, loosest_tier, depth))],
             .FnDecl(name, tparams, params, ret, body) -> {
-                let head = "${exported}${self.fn_mark(s)}fn ${source_name(name.text())}${self.type_params(tparams)}"
+                let head = "${exported}${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}"
                 let sig = "${head}${self.params_wrapped(params, depth, col_after(head, depth * 4))}"
                 [
                     source_line(
@@ -481,7 +481,7 @@ impl SourceText {
                 ]
             },
             .ExternFn(name, params, ret) -> {
-                let head = "${exported}extern fn ${source_name(name.text())}"
+                let head = "${exported}extern fn ${source_name(name.of)}"
                 let sig = "${head}${self.params_wrapped(params, depth, col_after(head, depth * 4))}"
                 [
                     source_line(
@@ -525,7 +525,7 @@ impl SourceText {
                 self
                     .trait_decl(
                         exported,
-                        name.text(),
+                        name.of,
                         [t.of for t in tparams],
                         fns,
                         self.stmt_end(s),
@@ -533,13 +533,13 @@ impl SourceText {
                         depth,
                     ),
             ],
-            .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.text())} {${text}}")],
+            .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
             .Setting(name, value) -> self.setting(name.of, value, depth),
             .ComponentDecl(name, tparams, head, fields, fns, spreads) -> [
                 self
                     .component_decl(
                         exported,
-                        name.text(),
+                        name.of,
                         tparams,
                         head,
                         self.entries(fields, self.store.placed(fields, spreads), depth + 1),
@@ -549,7 +549,7 @@ impl SourceText {
                     ),
             ],
             .LetElse(name, subject, stmts) -> {
-                let prefix = "let ${source_name(name.text())}? = "
+                let prefix = "let ${source_name(name.of)}? = "
                 [
                     self
                         .statement_block(
@@ -571,7 +571,7 @@ impl SourceText {
                 ]
             },
             .ForEach(index, name, subject, stmts) -> {
-                let prefix = "for ${self.loop_binds(index?.text(), name.text())} in "
+                let prefix = "for ${self.loop_binds(index?.of, name.of)} in "
                 [
                     self
                         .statement_block(
@@ -588,7 +588,7 @@ impl SourceText {
                     .struct_or_grammar_decl(
                         s,
                         exported,
-                        name.text(),
+                        name.of,
                         tparams,
                         fields,
                         self.stmt_end(s),
@@ -597,7 +597,7 @@ impl SourceText {
                     ),
             ],
             .NamedType(name, tparams, of) -> {
-                let prefix = "${exported}type ${source_name(name.text())}${self.type_params(tparams)} = "
+                let prefix = "${exported}type ${source_name(name.of)}${self.type_params(tparams)} = "
                 [
                     source_line(
                         depth,
@@ -606,7 +606,7 @@ impl SourceText {
                 ]
             },
             .Alias(name, tparams, of) -> {
-                let prefix = "${exported}alias ${source_name(name.text())}${self.type_params(tparams)} = "
+                let prefix = "${exported}alias ${source_name(name.of)}${self.type_params(tparams)} = "
                 [
                     source_line(
                         depth,
@@ -618,7 +618,7 @@ impl SourceText {
                 self
                     .enum_decl(
                         exported,
-                        name.text(),
+                        name.of,
                         tparams,
                         variants,
                         self.stmt_end(s),
@@ -639,7 +639,7 @@ impl SourceText {
                     self
                         .collect_decl(
                             exported,
-                            name.text(),
+                            name.of,
                             ty,
                             kind,
                             scope,
@@ -655,7 +655,7 @@ impl SourceText {
                     self
                         .collect_enum_decl(
                             exported,
-                            name.text(),
+                            name.of,
                             traits,
                             kind,
                             scope,
@@ -792,7 +792,7 @@ impl SourceText {
 
     fn type_params(params: List<Param>) -> string {
         if params.is_empty() { return "" }
-        "<${joined(["${source_name(p.name.text())}${self.bound(p.ty)}${self.type_default(p.type_default)}" for p in params], ", ")}>"
+        "<${joined(["${source_name(p.name.of)}${self.bound(p.ty)}${self.type_default(p.type_default)}" for p in params], ", ")}>"
     }
 
     fn named_type_params(params: List<string>) -> string {
@@ -844,7 +844,7 @@ impl SourceText {
     /// type and its default.
     mut fn field(p: Param, depth: int) -> string {
         let dots = if p.spread != null { ".." } else { "" }
-        let name = if p.name.text().is_empty() { "" } else { "${dots}${source_name(p.name.text())}${if p.ty == null { "" } else { ": " }}" }
+        let name = if p.name.is_empty() { "" } else { "${dots}${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { written_type(p.ty!) }
         let word = if p.state { "state " } else { "" }
         "${self.marks(p.marks, depth)}${word}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
@@ -939,27 +939,8 @@ impl SourceText {
             let first = unpadded(all[0], depth + 1)
             return if head.is_empty() { "{ ${first} }" } else { "{ ${head} ${first} }" }
         }
-        if one_line && value == null && self.settings_alone(stmts, all) {
-            let line = joined([unpadded(l, depth + 1) for l in all], ", ")
-            return if head.is_empty() { "{ ${line} }" } else { "{ ${head} ${line} }" }
-        }
         let opening = if head.is_empty() { "{" } else { "{ ${head}" }
         "${opening}\n${joined(all, "\n")}\n${source_line(depth, "}")}"
-    }
-
-    /// Whether a block written on one line holds plain settings alone, each printed on one line and
-    /// nothing between them: such a block stays on its line, its settings parted by commas.
-    fn settings_alone(stmts: List<StmtId>, lines: List<string>) -> bool {
-        lines.length > 1 &&
-            lines.length == stmts.length &&
-            lines.all(!it.contains("\n")) &&
-            stmts.all((s) -> self.plain_setting(s))
-    }
-
-    /// Whether a statement sets a member by name to a value, no handler.
-    fn plain_setting(s: StmtId) -> bool {
-        let st? = self.store.setting_parts(s) else { return false }
-        self.store.on_handler_kind(st.value) == null
     }
 
     mut fn statement_block(head: string, stmts: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
@@ -1033,7 +1014,7 @@ impl SourceText {
             .concat(self.trivia_before(decl, depth))
         match self.store.stmt(s) {
             .FnDecl(name, tparams, params, ret, body) -> {
-                let name_sig = "${self.fn_mark(s)}fn ${source_name(name.text())}${self.type_params(tparams)}"
+                let name_sig = "${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}"
                 let params_sig = "${name_sig}${self.params_wrapped(params, depth, col_after(name_sig, depth * 4))}"
                 let head = "${params_sig}${self.ret_arrow(ret, depth, col_after(params_sig, depth * 4))}"
                 lead
@@ -1390,13 +1371,13 @@ impl SourceText {
             .GrammarLit(source) -> grouped("grammar {${source}}", atom_tier, parent),
             .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) or .Index(_, _) or .Force(_) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
-            .CtxRead(name) -> grouped("ctx.${source_name(name.text())}", atom_tier, parent),
+            .CtxRead(name) -> grouped("ctx.${source_name(name.of)}", atom_tier, parent),
             .Range(lo, hi) -> grouped(
                 "(${self.expression(lo, loosest_tier, depth, resolved_col(c, depth) + 1)}..${self.expression(hi, loosest_tier, depth)})",
                 atom_tier,
                 parent,
             ),
-            .Binary(op, left, right) -> self.binary(id, op, left, right, parent, depth, c),
+            .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .LetPattern(pat, subject, otherwise, held) -> grouped(
                 self.let_pattern_text(pat, subject, otherwise, held, depth),
                 loosest_tier,
@@ -1443,7 +1424,7 @@ impl SourceText {
             .ElseArm(value) -> self.headed_arm("else -> ", value, depth),
             .Collect(stmts) -> grouped("collect ${self.block_expr(stmts, null, id, depth)}", loosest_tier, parent),
             .Call(callee, pins, args) -> {
-                let head = "${source_name(callee.text())}${self.pins(pins)}"
+                let head = "${source_name(callee.of)}${self.pins(pins)}"
                 grouped(
                     "${head}${self.call_tail(id, args, depth, col_after(head, c))}",
                     atom_tier,
@@ -1477,7 +1458,7 @@ impl SourceText {
             .MatchOpt(subject, bind, present, absent) -> self
                 .match_optional(
                     subject,
-                    bind.text(),
+                    bind.of,
                     present,
                     absent,
                     parent,
@@ -1925,29 +1906,27 @@ impl SourceText {
         }
     }
 
-    mut fn binary(
-        e: ExprId,
-        op: BinOp,
-        left: ExprId,
-        right: ExprId,
-        parent: int,
-        depth: int,
-        col: int = -1,
-    ) -> string {
+    mut fn binary(op: BinOp, left: ExprId, right: ExprId, parent: int, depth: int, col: int = -1) -> string {
         let p = binary_precedence(op)
         if chainable(op) { return self.chain_grouped(op, left, right, p, parent, depth, col) }
         // Comparisons do not chain. The bitwise band does, but the
         // language deliberately refuses a run mixing operators; a
-        // mixed left child WRITTEN in parentheses keeps its group even
-        // though a conventional precedence table would drop it. One
-        // written flat prints flat: the printer never chooses a grouping
-        // the checker refuses.
-        let lp = if comparison(op) || mixed_grouped(self.store, e, op, left) { p + 1 } else { p }
+        // mixed left child therefore needs its group even though a
+        // conventional precedence table would drop it.
+        let lp = if comparison(op) || self.mixed_bitwise(op, left) { p + 1 } else { p }
         grouped(
             "${self.expression(left, lp, depth, col)} ${op_symbol(op)} ${self.expression(right, p + 1, depth)}",
             p,
             parent,
         )
+    }
+
+    fn mixed_bitwise(op: BinOp, left: ExprId) -> bool {
+        if !bitwise(op) { return false }
+        match self.store.expr(left) {
+            .Binary(held, _, _) -> bitwise(held) && op_symbol(held) != op_symbol(op),
+            rest -> false,
+        }
     }
 
     mut fn comprehension(elem: ExprId, clauses: List<CompClause>, parent: int, depth: int) -> string {
@@ -1961,7 +1940,7 @@ impl SourceText {
     mut fn comp_clause_text(c: CompClause, depth: int) -> string {
         match c {
             .Head(index, name, source, hi) -> {
-                let binds = self.loop_binds(index?.text(), name.text())
+                let binds = self.loop_binds(index?.of, name.of)
                 let range = if hi == null { self.expression(source, loosest_tier, depth) } else { "${self.expression(source, loosest_tier, depth)}..${self.expression(hi!, loosest_tier, depth)}" }
                 "for ${binds} in ${range}"
             },
@@ -2050,9 +2029,7 @@ impl SourceText {
         for j, hole in holes {
             out.push("\${")
             if self.store.is_run_hole(hole) { out.push("..") }
-            self.unbroken = self.unbroken + 1
             out.push(self.expression(hole, loosest_tier, depth))
-            self.unbroken = self.unbroken - 1
             out.push("}")
             out.push(parts[j + 1])
         }
@@ -2137,9 +2114,9 @@ impl SourceText {
         depth: int,
     ) -> string {
         let binds = when {
-            bind.spells("") -> ""
-            index.spells("") -> "${source_name(bind.text())} in "
-            _ -> "${source_name(index.text())}, ${source_name(bind.text())} in "
+            bind.of == "" -> ""
+            index.of == "" -> "${source_name(bind.of)} in "
+            _ -> "${source_name(index.of)}, ${source_name(bind.of)} in "
         }
         let guarded = if guard == null { "" } else { " if ${self.expression(guard!, 0, depth + 1)}" }
         self
@@ -2275,7 +2252,7 @@ impl SourceText {
             .Wild -> "_",
             .Member(_, _) or .Typed(_, _) -> self.worded_pat(id, depth),
             .Rest -> "rest",
-            .Bind(name) -> source_name(name.text()),
+            .Bind(name) -> source_name(name.of),
             .Variant(name, args) -> ".${source_name(name.of)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
             .Lit(value) -> self.pattern_lit(value, depth),
             .Format(head, parts) -> format_source(head, parts),
@@ -2354,7 +2331,7 @@ impl SourceText {
 
     /// The name a `..` binds, or nothing for a wildcard.
     fn rest_binder(middle: PatId) -> string {
-        match self.store.pat(middle) { .Bind(name) -> source_name(name.text()), _ -> "" }
+        match self.store.pat(middle) { .Bind(name) -> source_name(name.of), _ -> "" }
     }
 
     /// `P { x, y: pattern, .. }`: a field whose pattern binds its own
@@ -2480,7 +2457,7 @@ impl SourceText {
         // A link lands at `depth + 1` once the chain breaks (postfix_chain_doc's
         // own `nest(4, ...)`), so its OWN call — if IT also wraps — must
         // nest from THAT column, never from the chain's.
-        ".${source_name(name.of)}${self.pins(self.store.struct_targs_of(call))}${self.call_tail(call, args, depth + 1)}"
+        ".${source_name(name.of)}${self.call_tail(call, args, depth + 1)}"
     }
 
     /// A postfix `.` chain's root and its links, walked from the
@@ -2699,54 +2676,6 @@ fn comparison(op: BinOp) -> bool {
     }
 }
 
-/// The other operator of a bitwise run that `e`, of `op` over `left`, mixes; absent where it mixes
-/// none. The band groups left, so a run's earlier operator is the left operand's.
-fn mixed_with(store: SyntaxArena, op: BinOp, left: ExprId) -> BinOp? {
-    if !bitwise(op) { return null }
-    match store.expr(left) {
-        .Binary(held, _, _) -> if bitwise(held) && op_symbol(held) != op_symbol(op) { held } else { null },
-        rest -> null,
-    }
-}
-
-/// Whether `e`, of `op` over `left`, mixes a bitwise run whose left operand was WRITTEN in
-/// parentheses: as the checker reads it, a left operand beginning where its parent begins was
-/// written in the same run. A node no text spans (a generated one) keeps its group.
-fn mixed_grouped(store: SyntaxArena, e: ExprId, op: BinOp, left: ExprId) -> bool {
-    if mixed_with(store, op, left) == null { return false }
-    let at? = store.expr_span(e) else { return true }
-    let left_at? = store.expr_span(left) else { return true }
-    left_at.lo != at.lo
-}
-
-/// THE FIRST RUN OF `store` MIXING TWO BITWISE OPERATORS AS WRITTEN — flat, with no parentheses
-/// saying which applies first: its two operators and where it begins. A text holding one is one the
-/// checker refuses (`type.mixed_bitwise`), and the formatter never chooses its grouping.
-export fn flat_mixed_run(store: SyntaxArena) -> FlatRun? {
-    for i in 0..store.expr_count() {
-        let e = ExprId { index: i }
-        let run = match store.expr(e) {
-            .Binary(op, left, _) -> flat_run_at(store, e, op, left),
-            rest -> null,
-        }
-        if run != null { return run }
-    }
-    null
-}
-
-/// `e`, of `op` over `left`, as a flat mixed run; absent where it mixes none, or its left operand
-/// was written in parentheses.
-fn flat_run_at(store: SyntaxArena, e: ExprId, op: BinOp, left: ExprId) -> FlatRun? {
-    let held? = mixed_with(store, op, left) else { return null }
-    let at? = store.expr_span(e) else { return null }
-    let left_at? = store.expr_span(left) else { return null }
-    if left_at.lo != at.lo { return null }
-    FlatRun { first: op_symbol(held), next: op_symbol(op), at: at.lo }
-}
-
-/// A flat run mixing two bitwise operators: the first and the next, and the offset it begins at.
-export type FlatRun = { first: string, next: string, at: int }
-
 fn bitwise(op: BinOp) -> bool {
     match op {
         .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> true,
@@ -2900,8 +2829,8 @@ fn jump_line(again: bool, label: string?) -> string {
 /// for a bare value.
 fn catch_head(a: CatchArm) -> string {
     if a.variant.of.is_empty() {
-        if a.bind.text().is_empty() { return "" }
-        return "${source_name(a.bind.text())} -> "
+        if a.bind.of.is_empty() { return "" }
+        return "${source_name(a.bind.of)} -> "
     }
-    ".${source_name(a.variant.of)}${if a.bind.text().is_empty() { "" } else { "(${source_name(a.bind.text())})" }} -> "
+    ".${source_name(a.variant.of)}${if a.bind.of.is_empty() { "" } else { "(${source_name(a.bind.of)})" }} -> "
 }

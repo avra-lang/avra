@@ -1,7 +1,7 @@
 //! An app on a live page, by its law: a paint is one frame of what
 //! changed, an echo runs the handler bound to who spoke, and nothing is
 //! sent for a page that did not change.
-use @std.ui.app.{remounted}
+use @std.ui.app.{plain, remounted}
 use @std.ui.components.{button, column, field, text}
 use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.tests.support.{named, seat_for, Event}
@@ -19,6 +19,7 @@ fn counting(count: Cell<int>, host: Host) -> Paged {
             text "${count.get()}"
             button "Raise" { on press { count.set(count.get() + 1) } }
         },
+        plain,
         live(),
         (sent: Bytes) -> host.frames.push(sent),
     )
@@ -61,6 +62,7 @@ spec "an app on a live page" {
             let host = Host {}
             let on = paged(
                 () -> button "Still" { on press {} },
+                plain,
                 live(),
                 (sent: Bytes) -> host.frames.push(sent),
             )
@@ -92,6 +94,7 @@ spec "an app on a live page" {
             let host = Host {}
             let on = paged(
                 () -> field "Name" { on input { typed -> held.set(typed) } },
+                plain,
                 live(),
                 (sent: Bytes) -> host.frames.push(sent),
             )
@@ -105,10 +108,16 @@ spec "an app on a live page" {
     given "a handler that mounts another view" {
         then "the paint that follows the handler shows the new view, never the one it replaced" {
             let host = Host {}
-            let on = paged(() -> text "starting", live(), (sent: Bytes) -> host.frames.push(sent))
+            let on = paged(
+                () -> text "starting",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
             remounted(
                 on.app,
-                () -> button "Go" { on press { remounted(on.app, () -> button "Back" { on press {} }) } },
+                () -> button "Go" { on press { remounted(on.app, () -> button "Back" { on press {} }, plain) } },
+                plain,
             )
             on.app.paint()
             let ran = press(on, "Go")
@@ -117,8 +126,13 @@ spec "an app on a live page" {
         then "the new view's handlers are the ones bound" {
             let hits: Cell<int> = Cell.new(0)
             let host = Host {}
-            let on = paged(() -> text "starting", live(), (sent: Bytes) -> host.frames.push(sent))
-            remounted(on.app, () -> button "Count" { on press { hits.set(hits.get() + 1) } })
+            let on = paged(
+                () -> text "starting",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            remounted(on.app, () -> button "Count" { on press { hits.set(hits.get() + 1) } }, plain)
             on.app.paint()
             press(on, "Count") && press(on, "Count") && hits.get() == 2
         }
@@ -127,8 +141,12 @@ spec "an app on a live page" {
         then "its first frame says only what differs from the page" {
             let host = Host {}
             let page = live()
-            paged(() -> text "one", page, (sent: Bytes) -> host.frames.push(sent)).app.paint()
-            paged(() -> text "two", page, (sent: Bytes) -> host.frames.push(sent)).app.paint()
+            paged(() -> text "one", plain, page, (sent: Bytes) -> host.frames.push(sent))
+                .app
+                .paint()
+            paged(() -> text "two", plain, page, (sent: Bytes) -> host.frames.push(sent))
+                .app
+                .paint()
             let frames = host.frames.get()
             frames.length == 2 && frames[1].length < frames[0].length
         }
@@ -168,6 +186,7 @@ spec "an app on a live page" {
                         }
                     }
                 },
+                plain,
                 live(),
                 (sent: Bytes) -> host.frames.push(sent),
             )
@@ -205,41 +224,6 @@ spec "what a host is told of a seat" {
             frames.length == 2 &&
                 defines(frames[1]) == 1 &&
                 records(frames[1]).filter(it.starts_with("listen")).length == 1
-        }
-    }
-}
-
-spec "a control on a live page is held to what the program shows" {
-    given "a field shown otherwise than it was typed" {
-        then "the page is sent what the program shows, after the handler heard what was typed" {
-            let held: Cell<string> = Cell.new("")
-            let host = Host {}
-            let on = paged(
-                () -> field "Name" {
-                    shown: "${held.get()}!"
-                    on input { typed -> held.set(typed) }
-                },
-                live(),
-                (sent: Bytes) -> host.frames.push(sent),
-            )
-            on.app.paint()
-            let who = named(on.page, "Name")[0].n
-            let said = on.heard(who, seat_for(.Input).number(), Says.Text.code(), 0, "Ada")
-            let frames = host.frames.get()
-            said &&
-                held.get() == "Ada" &&
-                frames.length == 2 &&
-                records(frames[1]).any(it.starts_with("prop ") && it.ends_with("value=3:\"Ada!\""))
-        }
-    }
-    given "a field that keeps what was typed" {
-        then "the page is sent nothing: it already holds it" {
-            let host = Host {}
-            let on = paged(() -> field "Name", live(), (sent: Bytes) -> host.frames.push(sent))
-            on.app.paint()
-            let who = named(on.page, "Name")[0].n
-            on.heard(who, seat_for(.Input).number(), Says.Text.code(), 0, "Ada") &&
-                host.frames.get().length == 1
         }
     }
 }

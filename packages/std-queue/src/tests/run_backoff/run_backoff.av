@@ -11,7 +11,7 @@ fn refused(starts: Cell<List<int>>, began: int, d: Delivery<int>) -> Result<int,
     .Err("no ${d.attempt}")
 }
 
-fn why(f: Fate) -> string {
+fn why(f: Fate<string>) -> string {
     match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
 }
 
@@ -19,11 +19,10 @@ fn said(r: Result<int, DrainError>) -> string {
     match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
 }
 
-state began: Cell<int> = Cell.new(0)
-state starts: Cell<List<int>> = Cell.new([])
 avra_clock_virtual(1)
-began.set(now_ms())
-queue<Dead<int>> letters {}
+let began = now_ms()
+let starts: Cell<List<int>> = Cell.new([])
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     retries: 6
     backoff: secs(5)
@@ -31,7 +30,7 @@ queue<int> jobs {
 }
 worker never {
     reads: jobs
-    each: (d: Delivery<int>) -> refused(starts, began.get(), d)
+    each: (d: Delivery<int>) -> refused(starts, began, d)
     dead: letters
 }
 use tests.support.letters.{first_letter}

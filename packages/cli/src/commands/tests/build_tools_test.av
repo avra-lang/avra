@@ -1,15 +1,13 @@
-// A KEPT BINARY IS A FUNCTION OF THE TOOLS THAT LINKED IT. A build on the program layer asks for its
-// binary by every tool its link runs, each by its identity (`tools_marked`: its path, and the disk's
-// mark of what stands there), so a binary stands only while those tools stand as they did: the C
-// compiler or the linker replaced in place — a new build of clang, an upgraded lld — is another
-// question, and the binary is linked again. Each build runs as a user's does, a process of its own,
-// the two sharing only the store; the tools are wrappers the test owns, first on the PATH.
-use @std.io.{env, make_dirs, write_text, stamp as disk_mark}
-use @std.path.{dir_of, joined_path}
+// A kept binary is reused only while every tool that made it stands as it
+// did: each build mints a fresh workspace, so two builds over one root share
+// only the store.
+use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
-use @std.process.{tool, cmd, inherited}
+use @std.avrac.compiler.{build_program}
+use @std.avrac.compiler.host.{Stamp}
+use commands.{root_workspace, toolchain}
 
-/// One directory per run, so no earlier run's store answers for this one.
+/// One directory per run, so no earlier run's cache answers for this one.
 once fn run_base() -> string { "/tmp/avra-build-tools-test/${stamp()}" }
 
 /// A program of one line.
@@ -21,116 +19,59 @@ fn program(name: string) -> string {
     r
 }
 
-/// The real tool `word` stands for: the one the PATH finds; `ld.lld` beside `clang` where it stands
-/// there, as the link looks for it, else on the PATH, else the host's `ld`: on a host with no lld the
-/// driver links with `ld`, and the wrapper the link is told to run must still link.
-fn real_tool(word: string) -> string {
-    let cc = match tool("clang") { .Ok(t) -> t.path, .Err(_) -> "" }
-    if word == "ld.lld" {
-        let beside = joined_path(dir_of(cc), "ld.lld")
-        let found = match tool(beside) { .Ok(t) -> t.path, .Err(_) -> "" }
-        if found != "" { return found }
-        let lld = match tool("ld.lld") { .Ok(t) -> t.path, .Err(_) -> "" }
-        if lld != "" { return lld }
-        return match tool("ld") { .Ok(t) -> t.path, .Err(_) -> "" }
+/// Whether a build of the program at `r`, under the host's own toolchain
+/// with `tools` as the tools that made it, reused a kept binary.
+fn reused(r: string, tools: List<Stamp>) -> bool? {
+    let ws = root_workspace(r)
+    let host = match toolchain(ws, "", false, false, false) {
+        .Ok(t) -> t,
+        .Err(_) -> { return null },
     }
-    cc
-}
-
-/// A directory of wrappers, one for `clang` and one for `ld.lld`, each running the real tool; `extra`
-/// lines appended to `ld.lld`'s, so a wrapper rewritten with more of them is a linker replaced in place.
-fn wrappers(name: string, cc_extra: string = "", ld_extra: string = "") -> string {
-    let dir = "${run_base()}/${name}-tools"
-    let _ = make_dirs(dir)
-    wrote(joined_path(dir, "clang"), real_tool("clang"), cc_extra)
-    wrote(joined_path(dir, "ld.lld"), real_tool("ld.lld"), ld_extra)
-    dir
-}
-
-/// The wrapper at `path` running `real`, with `extra` lines, made executable.
-fn wrote(path: string, real: string, extra: string) {
-    let _ = write_text(path, "#!/bin/sh\n${extra}exec ${real} \"\$@\"\n")
-    let t = match tool("chmod") { .Ok(t) -> t, .Err(_) -> { return } }
-    let _ = cmd(t, ["+x", path]).outcome()
-}
-
-/// The wrappers in `dir`, once the host can tell them: a file written a moment ago has no mark yet
-/// (the disk's mark waits out a write still landing), and a tool the host can't tell vouches for
-/// no binary. The wait is the mark's own — real time, whatever clock the case runs on.
-fn settled(dir: string) -> string {
-    mut asked = 0
-    while (disk_mark(joined_path(dir, "clang")) == null ||
-            disk_mark(joined_path(dir, "ld.lld")) == null) &&
-        asked < 100000000 {
-        asked = asked + 1
-    }
-    dir
-}
-
-/// Whether `avra build <r>` with the wrappers in `tools` first on the PATH found its binary standing
-/// (`time: lower+emit · cache hit`); absent where the build failed.
-fn stood(r: string, tools: string) -> bool? {
-    let t = match tool(avra_bin()) { .Ok(t) -> t, .Err(_) -> { return null } }
-    let run = (cmd(t, ["build", r, "--time"]) with { env: inherited().with_var("PATH", "${tools}:${env("PATH") ?? ""}").with_var("AVRA_PROGRAM_NET", "0"), timeout: hang_bound(), ok_exits: [0, 1, 2] })
-        .outcome()
-    match run {
-        .Ok(o) -> match o.exit {
-            .Code(0) or .Clean -> o.out.stderr.contains("time: lower+emit · cache hit"),
-            rest -> null,
-        },
+    match build_program(ws, "${r}/src/main.av", host with { tools: tools }) {
+        .Ok(b) -> b.reused,
         .Err(_) -> null,
     }
 }
 
-spec "cli build — a kept binary is a function of the tools that linked it" {
-    given "a program built twice, its tools standing as they did" {
-        then "the second build finds the first's binary standing" {
+fn marked(mark: int?) -> List<Stamp> { [Stamp { path: "/opt/cc", mark: mark }] }
+
+spec "cli build — a kept binary names its tools" {
+    given "a toolchain that names no tools" {
+        then "no build under it reuses a binary, however often asked" {
+            let r = program("none")
+            let _ = reused(r, [])
+            reused(r, []) == false
+        }
+    }
+    given "a program built twice under one toolchain" {
+        then "the second build reuses the first's binary" {
             let r = program("same")
-            let tools = settled(wrappers("same"))
-            let _ = stood(r, tools)
-            stood(r, tools) == true
+            let _ = reused(r, marked(7))
+            reused(r, marked(7)) == true
         }
     }
-    given "the linker replaced in place by one of a different size" {
+    given "a program built again after a tool moved" {
         then "the binary is linked again" {
-            let r = program("ld-moved")
-            let tools = settled(wrappers("ld-moved"))
-            let _ = stood(r, tools)
-            let _ = settled(wrappers("ld-moved", "", "# a linker of another build\n"))
-            stood(r, tools) == false
-        }
-        then "and the build after that stands on the new linker" {
-            let r = program("ld-moved-again")
-            let tools = settled(wrappers("ld-moved-again"))
-            let _ = stood(r, tools)
-            let _ = settled(wrappers("ld-moved-again", "", "# a linker of another build\n"))
-            let _ = stood(r, tools)
-            stood(r, tools) == true
+            let r = program("moved")
+            let _ = reused(r, marked(7))
+            reused(r, marked(8)) == false
         }
     }
-    given "the C compiler replaced in place" {
-        then "the binary is linked again" {
-            let r = program("cc-moved")
-            let tools = settled(wrappers("cc-moved"))
-            let _ = stood(r, tools)
-            let _ = settled(wrappers("cc-moved", "# a compiler of another build\n", ""))
-            stood(r, tools) == false
-        }
-    }
-    given "a tool the host can't tell yet, written a moment ago" {
-        then "no build stands on it, however often asked" {
+    given "a tool the host cannot tell" {
+        then "no build reuses a binary it made, however often asked" {
             let r = program("untold")
-            let tools = wrappers("untold")
-            let _ = stood(r, tools)
-            let _ = wrappers("untold")
-            stood(r, tools) == false
+            let _ = reused(r, marked(null))
+            reused(r, marked(null)) == false
+        }
+        then "a build that names no tools never reuses a binary made under it" {
+            let r = program("untold-then-none")
+            let _ = reused(r, marked(null))
+            reused(r, []) == false
         }
         then "a binary made under it is linked again once the tool can be told" {
             let r = program("told-later")
-            let tools = wrappers("told-later")
-            let _ = stood(r, tools)
-            let _ = settled(tools)
-            stood(r, tools) == false
+            let _ = reused(r, marked(null))
+            reused(r, marked(7)) == false
         }
     }
 }

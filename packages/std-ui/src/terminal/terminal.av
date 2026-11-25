@@ -7,7 +7,6 @@
 //! A FIELD SHOWS WHAT THE VIEW SAYS IT HOLDS: a typed character says the
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
-use style.theme.{Theme}
 use @std.text.{ascii_lower, codepoints, from_codepoints}
 use app.{Act, Shown, Want, running, shown, stood, notice_node}
 use tree.controls.{Control, said_by_control}
@@ -15,6 +14,7 @@ use tree.node.{Said, Node, Attribute}
 use realize.tui.said.{said_of}
 use realize.tui.tui.{focused, placed, raster}
 use realize.tui.hit.{hit, list_at, list_nodes, places}
+use tree.lists.{flatten}
 use tree.view.{View, rooted}
 use terminal.screen.{Screen, screen}
 use native.net.{over_http}
@@ -194,10 +194,7 @@ fn moded_nothing(_mode: int) {}
 /// the control says on a key, and a control that sends its form sends it
 /// when the form's seat names the key.
 fn keyed(c: Control, k: Key) -> bool {
-    let mine = c.node.events.find(said_by_control(it) && answers(it.seat, k))
-    let own = mine?.fire(key_said(c)) ?? false
-    // A field that hears its own submit sends that alone, never its form's too.
-    if mine != null && c.node.prim == .Field { return own }
+    let own = c.node.events.find(said_by_control(it) && answers(it.seat, k))?.fire(key_said(c)) ?? false
     let form = sends_form(c) &&
         (c.form?.events ?? []).find(!said_by_control(it) && answers(it.seat, k))?.fire(null) ?? false
     own || form
@@ -279,9 +276,6 @@ fn erased(c: Control) -> bool {
 }
 
 impl Terminal {
-    /// The theme the control or text wearing `words` is drawn in, as the terminal carries it down.
-    fn theme_of(words: string) -> Theme? { self.shown.theme_of(words) }
-
     /// The controls the focus can rest on, in reading order: on the
     /// screen and able to speak.
     fn reachable() -> List<Control> { [c for c in self.shown.controls() if !c.disabled()] }

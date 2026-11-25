@@ -17,12 +17,10 @@ export async function webkitLaunch(playwright) {
 // The browser is the caller's: closing a page closes its context only.
 // `device` names one of Playwright's device descriptors ("iPhone 15"): a touch screen, a phone's
 // viewport and user agent, and a press that is a tap.
-// `scheme` ("light" or "dark") is the colour scheme the page's reader asks for, as a phone's
-// setting says it; none leaves the engine's own.
-export async function openPage(browser, url, { width = 900, height = 700, device = null, playwright = null, scheme = null } = {}) {
+export async function openPage(browser, url, { width = 900, height = 700, device = null, playwright = null } = {}) {
   const shape = device ? playwright.devices[device] : null;
   if (device && !shape) throw new Error(`no device named ${device}`);
-  const context = await browser.newContext({ ...(shape ?? { viewport: { width, height } }), ...(scheme ? { colorScheme: scheme } : {}) });
+  const context = await browser.newContext(shape ?? { viewport: { width, height } });
   const page = await context.newPage();
   const logged = [];
   page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") logged.push(`${m.type() === "warning" ? "warn" : "error"}: ${m.text()}`); });

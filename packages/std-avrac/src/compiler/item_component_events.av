@@ -47,7 +47,7 @@ fn names_of(joined: string) -> List<string> { [n for n in joined.split(NAMES_APA
 /// where the event is declared; handed the event and the seat.
 fn seats_named_twice(view: ItemView) -> List<Found> {
     let item = view.item
-    [Found { at: item.store.expr_span(d!), args: [e.name, n!] } for c in components_in(item.store, item.stmts) for e in c.parts.events() for n in [seat_twice_in([s.name.text() for s in e.says])] for d in [e.holder.default] if n != null && d != null]
+    [Found { at: item.store.expr_span(d!), args: [e.name, n!] } for c in components_in(item.store, item.stmts) for e in c.parts.events() for n in [seat_twice_in([s.name.of for s in e.says])] for d in [e.holder.default] if n != null && d != null]
 }
 
 /// The first of `names` written more than once.
@@ -55,7 +55,7 @@ fn seat_twice_in(names: List<string>) -> string? { names.find([m for m in names 
 
 /// Every component the written item `at` of `file` declares marking more than one member `@default`;
 /// handed the component and the members, its events then its fields.
-fn defaults_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn defaults_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(c.at), args: [c.parts.name, defaults.join(NAMES_APART)] } for c in components_in(item.store, item.stmts) for defaults in [default_members(c.parts)] if defaults.length > 1]
@@ -64,14 +64,14 @@ fn defaults_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> L
 /// The members `c` marks `@default`: its events, then its fields.
 fn default_members(c: ComponentParts) -> List<string> {
     [e.name for e in c.events() if e.holder.marks.any(it.name == default_mark)]
-        .concat([f.name.text() for f in c.fields() if f.marks.any(it.name == default_mark)])
+        .concat([f.name.of for f in c.fields() if f.marks.any(it.name == default_mark)])
 }
 
 /// Every field a component the written item `view` shows declares marks `@default`, its only
 /// default, that no `collect` fills: no `List`, or a `state`. Handed the component and the field.
 fn defaults_on_fields(view: ItemView) -> List<Found> {
     let item = view.item
-    [Found { at: item.store.stmt_span(c.at), args: [c.parts.name, f.name.text()] } for c in components_in(item.store, item.stmts) if default_members(c.parts).length <= 1 for f in c.parts.fields() if f.marks.any(it.name == default_mark) && (f.ty?.name != "List" || f.state)]
+    [Found { at: item.store.stmt_span(c.at), args: [c.parts.name, f.name.of] } for c in components_in(item.store, item.stmts) if default_members(c.parts).length <= 1 for f in c.parts.fields() if f.marks.any(it.name == default_mark) && (f.ty?.name != "List" || f.state)]
 }
 
 /// Every event a composition the written item `view` shows declares never reads off `self`, to

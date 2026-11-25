@@ -3,11 +3,12 @@
 //! subject holds; a match on an enum is a region over the subject's tag, each arm reading what its
 //! pattern binds inside its own region; a match on a number or text tries each arm in turn.
 use core.{
-    HoleReading,
     FieldSeat,
     FormatPart,
     FormatScan,
     OwnType,
+    hole_read,
+    reads_int,
     binds,
     BoxKind,
     TypeRef,
@@ -280,7 +281,7 @@ fn presence_taken(cx: Lowering, p: PatId) -> Taken? {
 /// The const a pattern's bare name compares the subject with; absent for any other pattern.
 fn compared_name(cx: Lowering, p: PatId) -> string? {
     match cx.store.pat(p) {
-        .Bind(name) -> if compares(cx, p, name.text()) { name.text() } else { null },
+        .Bind(name) -> if compares(cx, p, name.of) { name.of } else { null },
         .Wild or .Rest or .Lit(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
     }
 }
@@ -298,7 +299,7 @@ fn absence_pattern(cx: Lowering, p: PatId) -> bool {
 fn rest_name(cx: Lowering, p: PatId) -> string? {
     match cx.store.pat(p) {
         .Wild or .Rest -> "",
-        .Bind(name) -> if compares(cx, p, name.text()) { null } else { name.text() },
+        .Bind(name) -> if compares(cx, p, name.of) { null } else { name.of },
         .Lit(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
     }
 }
@@ -361,7 +362,7 @@ fn field_taken(cx: Lowering, seats: List<FieldSeat>, name: string, p: PatId) -> 
 fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bool) -> Taken? {
     match cx.store.pat(p) {
         .Wild or .Rest -> Taken.Whole(null),
-        .Bind(name) -> if compares(cx, p, name.text()) { Taken.Compared(name.text(), cx.store.pat_home(p)) } else { Taken.Whole(name.text()) },
+        .Bind(name) -> if compares(cx, p, name.of) { Taken.Compared(name.of, cx.store.pat_home(p)) } else { Taken.Whole(name.of) },
         .Variant(name, args) -> {
             let tag? = variants.find_index(it.name == name.of) else { return null }
             let payloads = variants[tag].payloads
@@ -371,9 +372,9 @@ fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bo
             Taken.Variant(tag, [bind_name(cx.store, a) for a in args], subs)
         },
         .Lit(lit) -> if scalar && !cx.store.null_literal(lit) { Taken.Equal(lit) } else { null },
-        .Member(name, bind) -> member_taken(variants, name.of, bind.text()),
+        .Member(name, bind) -> member_taken(variants, name.of, bind.of),
         .Quote(body) -> Taken.Quoted(body, quote_pat_names(quote_pat_holes(cx.store, body))),
-        .Typed(name, written) -> typed_taken(cx, name.text(), written),
+        .Typed(name, written) -> typed_taken(cx, name.of, written),
         .Format(head, parts) -> Taken.Formatted(head, parts),
         .Seq(_, _, _) or .Fields(_, _, _) -> null,
     }
@@ -444,7 +445,7 @@ fn takes_rest(t: Taken) -> bool {
 fn takes_any(cx: Lowering, p: PatId) -> bool {
     match cx.store.pat(p) {
         .Wild -> true,
-        .Bind(name) -> !compares(cx, p, name.text()),
+        .Bind(name) -> !compares(cx, p, name.of),
         .Rest or .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
     }
 }
@@ -490,7 +491,7 @@ fn element_taken(cx: Lowering, elem: SignedType, a: PatId) -> Taken? {
 
 /// The name a pattern binds, absent for a hole.
 fn bind_name(store: SyntaxArena, p: PatId) -> string? {
-    match store.pat(p) { .Bind(name) -> name.text(), rest -> null }
+    match store.pat(p) { .Bind(name) -> name.of, rest -> null }
 }
 
 /// Whether the name `name` in the pattern `p` stands for a value the subject is compared with, rather
@@ -505,7 +506,7 @@ fn compares(cx: Lowering, p: PatId, name: string) -> bool {
 /// value a pattern compares with, which no binder's question reads.
 fn made_compared(cx: Lowering, p: PatId) -> List<string> {
     match cx.store.pat(p) {
-        .Bind(name) -> if (cx.program.compared)(name.text(), cx.store.pat_home(p)) == null { [name.text()] } else { [] },
+        .Bind(name) -> if (cx.program.compared)(name.of, cx.store.pat_home(p)) == null { [name.of] } else { [] },
         .Variant(_, args) -> flatten([made_compared(cx, a) for a in args]),
         .Wild or .Rest or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> [],
     }
@@ -788,7 +789,7 @@ fn bound(mut cx: Lowering, s: Chosen, a: Planned, scan: FormatScan?) {
 /// What the holes `parts` that bind hold, `held` in hole order, each bound to its hole's name; none
 /// where the scan read nothing, its miss said already.
 fn formats_bound(mut cx: Lowering, s: Chosen, parts: List<FormatPart>, held: List<Reg>) {
-    let types = formatted_types(cx, s.ty, parts)
+    let types = formatted_types(s.ty, parts)
     if held.length < types.length { return }
     for j, p in [p for p in parts if binds(p.hole)] { cx.bind(p.hole.name, Bound.Value(held[j], types[j])) }
 }
@@ -861,7 +862,7 @@ fn bound_types(cx: Lowering, ty: SignedType, t: Taken) -> List<SignedType>? {
         .Quoted(_, _) -> null,
         .Equal(_) or .Compared(_, _) or .Absent -> [],
         .Typed(_, _, of) -> [of],
-        .Formatted(_, parts) -> formatted_types(cx, ty, parts),
+        .Formatted(_, parts) -> formatted_types(ty, parts),
         .Fielded(fields) -> {
             let seats? = cx.fields_of(ty) else { return null }
             let held = [subs_types(cx, seats[f.n].ty, f.taken) for f in fields]
@@ -946,19 +947,20 @@ fn sub_reads(mut cx: Lowering, s: Chosen, tag: int, k: int, sub: Taken?) -> List
     taken_reads(cx, held, t)
 }
 
-/// The scan of the subject by the format whose head is `head` and whose holes are `parts`.
-fn format_scan(mut cx: Lowering, s: Chosen, head: string, parts: List<FormatPart>) -> FormatScan? { cx.format_scanned(s.v, octets_held(s), head, parts) }
-
-/// The types of what the holes `parts` that bind bind of a subject of `ty`, in hole order: an `int`
-/// where a hole reads as one, a value of the type a hole reads through its text form, else a span of
-/// the subject.
-fn formatted_types(cx: Lowering, ty: SignedType, parts: List<FormatPart>) -> List<SignedType> {
-    [read_type(cx.hole_read_as(p.hole), ty) for p in parts if binds(p.hole)]
+/// The scan of the subject by the format whose head is `head` and whose holes are `parts`; absent,
+/// said, for a hole of a type no text reads as.
+fn format_scan(mut cx: Lowering, s: Chosen, head: string, parts: List<FormatPart>) -> FormatScan? {
+    if !parts.all(hole_read(it.hole)) {
+        cx.missed("a format pattern's hole of a type no text reads as")
+        return null
+    }
+    cx.format_scanned(s.v, octets_held(s), head, parts)
 }
 
-/// What a hole reading as `reading` binds of a subject of `ty`.
-fn read_type(reading: HoleReading, ty: SignedType) -> SignedType {
-    match reading { .Text -> ty, .Int -> owned_type("int"), .Form(of) -> of }
+/// The types of what the holes `parts` that bind bind of a subject of `ty`, in hole order: an `int`
+/// where a hole reads as one, else a span of the subject.
+fn formatted_types(ty: SignedType, parts: List<FormatPart>) -> List<SignedType> {
+    [if reads_int(p.hole) { owned_type("int") } else { ty } for p in parts if binds(p.hole)]
 }
 
 /// Whether the subject is octets rather than text.

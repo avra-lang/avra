@@ -1,0 +1,379 @@
+diff --git a/packages/std-avrac/src/compiler/references.av b/packages/std-avrac/src/compiler/references.av
+index d059ff83..0c1c3767 100644
+--- a/packages/std-avrac/src/compiler/references.av
++++ b/packages/std-avrac/src/compiler/references.av
+@@ -105,19 +105,19 @@ fn refs_index(ws: Workspace) -> RefsIndex { ws.indexed_references() }
+ /// The references to one declaration.
+ @query
+ @scoped_by(decl_places)
+-export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}")?.get() ?? [] } }
++export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: ws.index_unheard().by_decl.get().get("${d.index}")?.get() ?? [] } }
+ 
+ /// The references one file makes.
+ @query
+ @scoped_by(file_places)
+-export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
++export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: ws.index_unheard().by_file.get().get("${f.index}")?.get() ?? [] } }
+ 
+ /// What a reader of `d`'s references stands on: their rows' fold, each row by durable name and
+-/// the rows in any order, so an edit that moves no row of `d` moves no reader of it.
++/// the rows in any order. It reads nothing: a run whose file's rows name `d` differently says so
++/// (`rows_moved`), so an edit that moves no row of `d` is nothing to its readers.
+ @query
+ @lasting
+ fn refs_print(ws: Workspace, d: DeclId) -> int {
+-    let _ = ws.references()
+     let rows: Cell<List<Ref>> = Cell.new([])
+     ws.db.kernel.unheard(() -> rows.set(ws.refs_rows(d)))
+     let ids = ws.decls.ids()
+@@ -125,6 +125,33 @@ fn refs_print(ws: Workspace, d: DeclId) -> int {
+ }
+ 
+ impl Workspace {
++    /// The index, as what its projections are made from: they name no read of every file's rows.
++    fn index_unheard() -> RefsIndex {
++        let held: Cell<RefsIndex?> = Cell.new(null)
++        self.db.kernel.unheard(() -> held.set(refs_index(self)))
++        held.get()!
++    }
++
++    /// The declarations whose references these files' rows moved since their record.
++    fn rows_moved(files: List<FileId>) -> List<DeclId> {
++        let ids = self.decls.ids()
++        mut folds: Map<string, int> = {}
++        mut named: List<DeclId> = []
++        for f in files {
++            for r in file_refs_made_kept(self, f)?.rows ?? [] {
++                let at = "${r.decl.index}"
++                if !folds.has(at) { named.push(r.decl) }
++                folds.set(at, (folds.get(at) ?? 0) + ref_fp(ids, r))
++            }
++            for r in file_refs_made(self, f).rows {
++                let at = "${r.decl.index}"
++                if !folds.has(at) { named.push(r.decl) }
++                folds.set(at, (folds.get(at) ?? 0) - ref_fp(ids, r))
++            }
++        }
++        [d for d in named if (folds.get("${d.index}") ?? 0) != 0]
++    }
++
+     /// The references to `d`, standing on their fold.
+     fn refs_to_now(d: DeclId) -> List<Ref> {
+         let _ = refs_print(self, d)
+diff --git a/packages/std-avrac/src/compiler/store/pack.av b/packages/std-avrac/src/compiler/store/pack.av
+index 4c19dab1..cb56a749 100644
+--- a/packages/std-avrac/src/compiler/store/pack.av
++++ b/packages/std-avrac/src/compiler/store/pack.av
+@@ -24,10 +24,10 @@ use @std.io.{
+     truncate_to,
+     env,
+     open_beneath,
+-    Opened,
+     AppendFile,
+ }
+ use @std.path.{joined_path, dir_of, file_name}
++use compiler.store.mapped.{Mapped, mapped, mapped_at, mapped_close}
+ use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
+ use @std.relation.engine.{map_cell, list_cell}
+ use @std.text.{parse_int}
+@@ -181,7 +181,7 @@ export type Pack = {
+     seen_rev: Cell<int>,
+     lock_fd: Cell<int>,
+     /// The value file, open once for the revision it was opened at (none or one handle).
+-    val_open: Cell<List<Opened>>,
++    val_open: Cell<List<Mapped>>,
+     val_open_rev: Cell<int>,
+     /// This writer's own segment, open once for the path it was opened at (none or one handle).
+     seg_open: Cell<List<AppendFile>>,
+@@ -976,28 +976,29 @@ fn content_of(pack: Pack, digest: string) -> Bytes? {
+ fn spilled(pack: Pack, digest: string) -> Bytes? {
+     let slot? = pack.slots.get().get(digest) ?? sealed_slot(pack, digest) else { return null }
+     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
+-    let o? = value_file(pack) else { return null }
+-    let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
++    let m? = value_file(pack, slot.at + slot.len) else { return null }
++    let raw = mapped_at(m, slot.at, slot.len) ?? "".bytes()
+     if digest_of_octets(raw) != digest { return null }
+     let t = pack.traffic.get()
+     pack.traffic.set(t with { values: t.values + 1, bytes: t.bytes + slot.len })
+     raw
+ }
+ 
+-/// The value file for the open revision, opened once and kept: a value is a seek and a read,
+-/// never an open. A revision that moved closes the old handle first.
+-fn value_file(pack: Pack) -> Opened? {
++/// The value file for the open revision, mapped once and kept: a value is a copy out of the
++/// mapping, never an open. A revision that moved, or a file grown past `reach`, maps it again.
++fn value_file(pack: Pack, reach: int) -> Mapped? {
+     let rev = pack.val_rev.get()
+     if pack.val_open_rev.get() == rev {
+         let held = pack.val_open.get().first()
+-        if held != null { return held }
++        if held != null && held!.len >= reach { return held }
+     }
+-    for old in pack.val_open.get() { old.close() }
+-    // LICENSED input.store_io: the store's own value file, opened once to seek for its values
+-    let o = match open_beneath(pack.dir, val_name(rev)) { .Ok(o) -> o, .Err(_) -> { return null } }
+-    pack.val_open.set([o])
++    for old in pack.val_open.get() { mapped_close(old) }
++    pack.val_open.set([])
++    // LICENSED input.store_io: the store's own value file, mapped once to read its values
++    let m? = mapped(joined_path(pack.dir, val_name(rev))) else { return null }
++    pack.val_open.set([m])
+     pack.val_open_rev.set(rev)
+-    o
++    m
+ }
+ 
+ export fn pack_traffic(pack: Pack) -> Traffic { pack.traffic.get() }
+diff --git a/packages/std-avrac/src/compiler/verdict.av b/packages/std-avrac/src/compiler/verdict.av
+index bf7f4ae6..552cc754 100644
+--- a/packages/std-avrac/src/compiler/verdict.av
++++ b/packages/std-avrac/src/compiler/verdict.av
+@@ -7,7 +7,7 @@
+ //! tokens say (`shape_digest`). A text that moved and kept its shape leaves every answer
+ //! standing but the places printed, so the files that point into it are said again from
+ //! their facts rows, placed against a lex of the text now; nothing is parsed.
+-use core.{FileId, sorted_texts, touch}
++use core.{FileId, sorted_texts, touch, same_file}
+ use compiler.families.{Family}
+ use compiler.host.{InputKind}
+ use features.{FileInfo}
+@@ -426,14 +426,22 @@ impl Workspace {
+         for path in rewritten { again.put(path, true) }
+         self.records.read_again.set(again.get())
+         for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
+-        rdb.suspects_from(flatten([self.text_kins(path) for path in rewritten]))
++        let texts = flatten([self.text_kins(path) for path in rewritten])
++        // what stands past a parse is known once it has parsed
++        let parses = [rdb.kin_at(parsed_in_key(self, fi.id)) ?? 0 for fi in self.decls.files_standing() if again.get().get(fi.path) ?? false]
++        rdb.suspects_from(texts.concat(parses), parses)
+         for path in self.entry_files(null) { let _ = self.file_id(path) }
+         self.admit_all()
+         self.records.names_stood.set(self.decls.file_count())
+         self.timed("rows", t0)
+         let t1 = self.clock()
+         if !rewritten.all((path) -> self.declares_alike(path)) { return Rechecked.Anew }
+-        rdb.suspects_also(flatten([self.moved_bodies(path) for path in rewritten]))
++        let ends = flatten([self.unmoved_kins(self.file_id(path)) for path in rewritten])
++        self.records.refs_moved.set([self.file_id(path) for path in rewritten])
++        let seeds = texts
++            .concat(flatten([self.moved_bodies(path) for path in rewritten]))
++            .concat(self.refs_kins(self.records.refs_moved.get()))
++        rdb.suspects_from(seeds, ends)
+         let files = self.decls.all_files()
+         let moved_parse = [fi.path for fi in files if !(again.get().get(fi.path) ?? false) &&
+             !(rdb.answer_stands(parsed_in_key(self, fi.id)) &&
+@@ -441,8 +449,7 @@ impl Workspace {
+         if !moved_parse.is_empty() { return Rechecked.Anew }
+         self.timed("parses judged", t1)
+         let t6 = self.clock()
+-        self.records.refs_moved.set([self.file_id(path) for path in rewritten])
+-        let read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
++        let read = self.files_said_again(said, files, rewritten, seeds, ends)
+         self.timed("sayings judged", t6)
+         if read.any((f) -> self.generates_or_generic(f)) { return Rechecked.Anew }
+         let t2 = self.clock()
+@@ -478,10 +485,55 @@ impl Workspace {
+             .Said(said with { files: [fresh.find(it.path == f.path) ?? f for f in said.files] })
+     }
+ 
++    /// The kins of the references these files' rows moved.
++    fn refs_kins(files: List<FileId>) -> List<int> {
++        let rdb = self.query_db()
++        [rdb.read_moved(refs_print_key(self, d)) ?? 0 for d in self.rows_moved(files)]
++    }
++
++    /// The files whose saying no longer stands: a file read for that may move another's references,
++    /// and that file's reader then falls too.
++    fn files_said_again(
++        said: CheckSaid,
++        files: List<FileInfo>,
++        rewritten: List<string>,
++        seeds: List<int>,
++        ends: List<int>,
++    ) -> List<FileId> {
++        let rdb = self.query_db()
++        mut known = seeds
++        mut seen = [self.file_id(path) for path in rewritten]
++        mut read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
++        while true {
++            let more = [f for f in read if !seen.any(same_file(it, f))]
++            if more.is_empty() { return read }
++            seen = seen.concat(more)
++            self.records.refs_moved.set(seen)
++            let moved = self.refs_kins(more)
++            if moved.is_empty() { return read }
++            known = known.concat(moved)
++            rdb.judged_again(rdb.reached_from(known, ends))
++            read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
++        }
++        read
++    }
++
+     /// The bodies of a rewritten file whose syntax moved, by the name compile-time runs file them.
+     fn moved_bodies(path: string) -> List<int> {
+         let rdb = self.query_db()
+-        [rdb.kin_of(BODY_RUN, self.decl_ref(d)) for d in self.decls.decls_so_far(self.file_id(path)) if !rdb.answer_stands(syntax_in_key(self, d))]
++        [rdb.kin_of(BODY_RUN, self.decl_ref(d)) for d in self.decls.decls_so_far(self.file_id(path)) if !rdb.answer_unmoved(syntax_in_key(self, d))]
++    }
++
++    /// What a rewritten file's parse feeds whose answer came out as its record says.
++    fn unmoved_kins(f: FileId) -> List<int> {
++        let own = flatten(
++            [[syntax_in_key(self, d), signed_key(self, d), names_in_key(self, d)] for d in self.decls.decls_so_far(f)],
++        )
++        let whole = [Family.Items, Family.Resolved, Family.Expanded].map(key_at(it.ordinal, f.index))
++        let rdb = self.query_db()
++        let path = self.decls.file(f).path
++        let words = [file_visible_made_key(self, f), declares_component_in_key(rdb, path), block_forms_in_key(rdb, path)]
++        [rdb.kin_at(k) ?? 0 for k in own.concat(whole).concat(words) if rdb.answer_unmoved(k)]
+     }
+ 
+     /// A rewritten text's reads as the store files them.
+diff --git a/packages/std-avrac/src/compiler/workspace_analysis.av b/packages/std-avrac/src/compiler/workspace_analysis.av
+index 9a04436c..f54bc33f 100644
+--- a/packages/std-avrac/src/compiler/workspace_analysis.av
++++ b/packages/std-avrac/src/compiler/workspace_analysis.av
+@@ -73,7 +73,9 @@ use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
+ /// How the bodies compile-time runs lowered are filed.
+ const BODY_RUN: string = "body run"
+ 
+-/// How the bodies compile-time runs lowered are filed.
++/// How the instantiations whose law is an answer are listed.
++const LAWS_LISTED: string = "laws listed"
++
+ 
+ /// An interned table's answer for one name: already there, or freshly
+ /// minted at `next` (the table's own current length) — registered in
+@@ -480,7 +482,10 @@ impl Workspace {
+     /// One unit of a whole program, an instantiation's law answered as it lowers.
+     fn program_unit(w: Wanted) -> Unit {
+         let u = self.lowered(self.spec_id(w))
+-        if self.decls.instantiated(w) { let _ = unit_laws(self, w) }
++        if self.decls.instantiated(w) {
++            let _ = unit_laws(self, w)
++            self.query_db().read_listed(LAWS_LISTED, unit_laws_key(self, w))
++        }
+         u
+     }
+ 
+@@ -492,6 +497,7 @@ impl Workspace {
+     /// The instantiations the program still wants whose law no longer stands, walked from what
+     /// each file's record wants: a kept row's unit is lowered only when one of these names it.
+     fn laws_moved() -> List<Wanted> {
++        if !self.query_db().listed_fell(LAWS_LISTED) { return [] }
+         mut seen: Map<string, bool> = {}
+         mut todo = flatten([file_laws_kept(self, fi.id) ?? [] for fi in self.decls.all_files()])
+         mut moved: List<Wanted> = []
+diff --git a/packages/std-relation/src/db.av b/packages/std-relation/src/db.av
+index fd83bdd3..f9351f85 100644
+--- a/packages/std-relation/src/db.av
++++ b/packages/std-relation/src/db.av
+@@ -374,6 +374,9 @@ fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
+ const NOT_ASKED: int = 0 - 1
+ const NO_KIN: int = 0 - 2
+ 
++/// The name of a call a list holds, by its kin.
++const LISTED: string = "listed"
++
+ /// Where a read's readers are kept.
+ const READERS: string = "readers"
+ 
+@@ -1039,24 +1042,21 @@ impl Db {
+     }
+ 
+     /// From here a read outside what `seeds` reach stands unjudged.
+-    fn suspects_from(seeds: List<int>) { self.suspects.set(self.reached_from(seeds)) }
+-
+-    /// `seeds`' readers suspected too.
+-    fn suspects_also(seeds: List<int>) {
+-        let among? = self.suspects.get() else { return }
+-        mut held = among
+-        for k, v in self.reached_from(seeds) { held.set(k, v) }
+-        self.suspects.set(held)
++    fn suspects_from(seeds: List<int>, unmoved: List<int>) {
++        self.suspects.set(self.reached_from(seeds, unmoved))
+     }
+ 
+-    /// Every kin some read of `seeds` reaches, by the readers on record.
+-    fn reached_from(seeds: List<int>) -> Map<string, bool> {
++    /// Every kin some read of `seeds` reaches, by the readers on record; nothing is reached past
++    /// one of `ends`, whose answer stands — a seed among them is itself reached.
++    fn reached_from(seeds: List<int>, ends: List<int>) -> Map<string, bool> {
+         let seen: Cell<Map<string, bool>> = map_cell()
+-        mut todo = seeds
++        let ended: Cell<Map<string, bool>> = map_cell()
++        for e in ends { ended.put("${e}", true) }
++        mut todo = [s for s in seeds if !(ended.get().get("${s}") ?? false)]
+         for s in seeds { seen.put("${s}", true) }
+         while !todo.is_empty() {
+             for r in self.readers_of(todo.pop()) {
+-                if seen.get().get("${r}") ?? false { continue }
++                if (seen.get().get("${r}") ?? false) || (ended.get().get("${r}") ?? false) { continue }
+                 seen.put("${r}", true)
+                 todo.push(r)
+             }
+@@ -1088,8 +1088,10 @@ impl Db {
+ 
+     /// Whether the answer a key names is the one its record digests, its record's reads moved or
+     /// not: asked when they moved.
+-    fn answer_stands(k: Key) -> bool {
+-        if self.read_stands(k) { return true }
++    fn answer_stands(k: Key) -> bool { self.read_stands(k) || self.answer_unmoved(k) }
++
++    /// Whether the answer a key names digests as its record says, whatever it read.
++    fn answer_unmoved(k: Key) -> bool {
+         let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return false }
+         let spelled? = owner.spelled_at(k.arg) else { return false }
+         let query? = (owner.kept_name)() else { return false }
+@@ -1105,6 +1107,49 @@ impl Db {
+         owner.hash_at(k.arg) == head.digest
+     }
+ 
++    /// A call listed under `list`, by its name, for `listed_fell` to judge unasked.
++    fn read_listed(list: string, k: Key) {
++        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return }
++        let spelled? = owner.spelled_at(k.arg) else { return }
++        let kin = self.kin_of(owner.name, spelled)
++        self.reader_filed(self.kin_of(list, ""), kin)
++        let keep = self.durable.keep
++        keep(LISTED, kin, encoded_with([owner.name, self.saved_spelling(spelled)], (w, ns) -> written_list(w, ns, (x: Writer, s: string) -> x.text(s))))
++    }
++
++    /// Whether some call listed under `list` no longer stands on its record.
++    fn listed_fell(list: string) -> bool {
++        self.readers_of(self.kin_of(list, "")).any((kin) -> self.suspected(kin) && !self.listed_stands(kin))
++    }
++
++    fn listed_stands(kin: int) -> bool {
++        let answer = self.durable.answer
++        let bytes? = answer(LISTED, kin) else { return false }
++        let named: List<string>? = match decoded_with(bytes, (r: Reader) -> read_list(r, (x: Reader) -> x.text())) { .Ok(ns) -> ns, .Err(_) -> null }
++        let parts? = named else { return false }
++        let owner? = self.answer_named(parts[0]) else { return false }
++        self.record_digest(owner, parts[1], "${parts[0]}\t${parts[1]}") != null
++    }
++
++    /// The kin of a read a run knows moved: a reader compares what it answers now.
++    fn read_moved(k: Key) -> int? {
++        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
++        let spelled? = owner.spelled_at(k.arg) else { return null }
++        let made? = owner.hash_at(k.arg) else { return null }
++        self.known_now()
++        self.digests_made.put("${owner.name}\t${spelled}", made)
++        self.kin_of(owner.name, spelled)
++    }
++
++    /// What a run judged, judged again: its suspects grew.
++    fn judged_again(suspects: Map<string, bool>) {
++        self.suspects.set(suspects)
++        let none: List<int> = []
++        self.leaf_judged.set(none)
++        let no_digests: Map<string, int> = {}
++        self.digests_known.set(no_digests)
++    }
++
+     /// Whether a kin may have moved; every kin when no run has asked.
+     fn suspected(kin: int) -> bool {
+         let among? = self.suspects.get() else { return true }

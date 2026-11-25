@@ -95,19 +95,9 @@ spec "compiler/lower — the test after a call" {
             times(text, "return r") >= 1
     }
     then "the call that runs a `defer` carries no test; the deferred closure's own call is its own" {
-        // relay's call through a value, the closure's call to relay, and the entry's call to work: a
-        // call through a value may reach a cancel point, so each is tested, yet it parks nothing, so
-        // the cleanup is no unbounded wait (a deferred call that parks is refused before it lowers)
+        // nap's row call, the closure's call to nap, and the entry's call to work
         tests(
-            [
-                "fn quiet() { }",
-                "fn relay(f: fn()) { f() }",
-                "fn work(f: fn()) -> int {",
-                "    defer { relay(f) }",
-                "    7",
-                "}",
-                "work(quiet)",
-            ],
+            napping().concat(["fn work() -> int {", "    defer { nap() }", "    7", "}", "work()"]),
         ) == 3
     }
     then "the entry's unwind arm answers C's `int`, and its LLVM verifies" {

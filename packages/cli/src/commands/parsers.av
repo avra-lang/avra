@@ -3,7 +3,7 @@
 //! and how long each took. Says each file they differ on and exits 1 if any.
 use @std.cli.{CliResult, Runnable, command, option}
 use @std.avrac.compiler.{avra, avra_untold, avra_builders, avra_lits, Language}
-use @std.avrac.grammar.{Token, avra_lexeme, lex_blocks, avra_token_tables}
+use @std.avrac.grammar.{Token, avra_lexeme, lex_source, avra_token_tables}
 use @std.avrac.features.{LangNode, build_named, BlockWords}
 use @std.avrac.core.{new_node_store, loc_span}
 use @std.grammar.{Captured, RunOutcome, run_untold}
@@ -55,10 +55,7 @@ alias Indexed = fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Capture
 fn held_file(lang: Language, path: string, mutants: int) -> List<Held> {
     // LICENSED input.command_subject: the files the command was pointed at, never an input of what is built
     let text = match read_text(path) { .Ok(t) -> t, .Err(_) -> "" }
-    // Lexed as a parse lexes it, the language's keywords marked, so a `ctx`, `state` or `on` form
-    // reaches both parsers as the token its rule reads; the components a file imports are words only
-    // resolution knows, so an instance of one is held as the names it is spelled with.
-    let tokens = lex_blocks(text, [], [], [], lang.keywords).tokens
+    let tokens = lex_source(text).tokens
     [held_tokens(lang, path, text, tokens)]
         .concat([held_tokens(lang, "${path} mutant ${k}", text, mutated(tokens, k)) for k in 0..mutants])
 }

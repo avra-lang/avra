@@ -8,17 +8,16 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.program.source_facts.{source_text}
 
-/// A file the program reads, the path its diagnostics name it by, and the package the program is
-/// rooted at, where its own gathering is judged too.
-export type ProgramFile = { file: SourceFileAddress, full: string, program: string = "" }
+/// A file the program reads, and the path its diagnostics name it by.
+export type ProgramFile = { file: SourceFileAddress, full: string }
 
 /// What fails a build in the file `h` of the program whose entry is `entry`: each refusal its laws,
-/// or its manifest's, find, then — said only of a file its laws refuse nothing in, as lowering is
-/// reached — each statement it runs where it isn't the entry, or where it is, an answer no text spells.
+/// or its manifest's, find, then each statement it runs where it isn't the entry, or where it is, an
+/// answer no text spells — said only of a file its laws refuse nothing in, as lowering is reached.
 export fn file_refusals(engine: QueryEngine, h: ProgramFile, entry: ProgramFile) -> List<Diag> {
     let found = if is_manifest(h.file) { manifest_diags(engine, h) } else { file_law_diags(engine, h) }
     let own = !is_manifest(h.file) && h.full == entry.full
-    let strays = if is_manifest(h.file) || own || has_errors(found) { [] } else { strays_of(engine, h.file) }
+    let strays = if is_manifest(h.file) || own { [] } else { strays_of(engine, h.file) }
     let unspelled = if own && !has_errors(found) { entry_lowered(engine, h.file)?.unprojected } else { null }
     [d for d in found if !(d.severity is .Warning)]
         .concat([entry_only_refused(Loc { file: h.full, lo: s.lo, hi: s.hi }, entry.full) for s in strays])
@@ -30,18 +29,10 @@ export fn file_refusals(engine: QueryEngine, h: ProgramFile, entry: ProgramFile)
 /// The diagnostics every law finds in the file `h`, item by item, after what a source that holds no
 /// text says of itself.
 export fn file_law_diags(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
-    let gathered = if h.program == "" || !gathers_per_program(engine, h.file) { [] } else { program_gathered(engine, h.file, h.program).findings }
     some_list(standing_said(standing_of(engine, h.file), h.full))
         .concat(
-            [d! for f in file_found(engine, h.file).findings for d in [finding_diag(f, h.full)] if d != null],
+            [d! for at in 0..item_count(engine, h.file) for f in findings_in_file(engine, h.file, at) for d in [finding_diag(f, h.full)] if d != null],
         )
-        .concat([d! for f in gathered for d in [finding_diag(f, h.full)] if d != null])
-}
-
-/// The diagnostics the laws find in the `then` cases of the file `h` past its items' own (`case_found`):
-/// what a suite says before it makes them.
-export fn case_law_diags(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
-    [d! for f in case_found(engine, h.file).findings for d in [finding_diag(f, h.full)] if d != null]
 }
 
 /// What a source the program lists says of itself where it holds no text, in its cause's words.

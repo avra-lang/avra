@@ -27,23 +27,21 @@ type ItemChecked = { rows: List<InstanceSaid> }
 /// What the `check` of each component instance the written item `at` of `file` writes says of it, in
 /// every body the item holds — its fns', its defaults' and consts', a declared instance's own, and the statements it runs where
 /// it runs where its file is an entry (the entry read only by an item that runs one). An instance is judged only where it settles alone (`settles_alone`); an item
-/// that writes no instance reads nothing more: one its summary says wears no instance word — what
-/// it says is every word its tape's store wears, so never fewer than its item read back wears — is
-/// never read back here, and a new body for it asks nothing more.
+/// that writes no instance reads nothing more.
 /// A query of its own: a check runs a program, so whether it runs again is the engine's to judge,
 /// apart from the laws that read what it says.
-@query("laws")
-fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemChecked {
+@query
+fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
     if !item_held(engine, file, at) { return ItemChecked { rows: [] } }
-    if !item_said(engine, file, at).instanced { return ItemChecked { rows: [] } }
     let item = read_item(engine, file, at)
     if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
     let fns = [b! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns_at(item, a) if item.store.fn_parts(s) != null for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
-    let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item))
+    let declared = [b for d in file_declares_at(engine, file, at).names if d.item == at && built_instance(engine, d) for b in declared_body(engine, d)]
+    let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item)).concat(declared)
     let entry = if runs_in(engine, file, at) { entry_read(engine, file) } else { null }
     let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
-    let judged = [judged_in(engine, file, b, ItemId(-1)) for b in bodies].concat(ran)
+    let judged = [judged_in(engine, file, b, -1) for b in bodies].concat(ran)
     ItemChecked { rows: flatten([instances_said(engine, file, entry, j) for j in judged]) }
 }
 
@@ -59,7 +57,7 @@ fn instances_checked_seen(view: ItemView) -> ItemChecked {
 
 /// A typed body an item holds, over the store its nodes stand in: the statement it's lowered as
 /// written by, and for an entry's statements the item whose nodes alone are its (-1: every node).
-type Judged = { store: SyntaxArena, typed: TypedBody, owner: StmtId, only: ItemId }
+type Judged = { store: SyntaxArena, typed: TypedBody, owner: StmtId, only: int }
 
 /// What the checks of the instances `j` types say of them: each instance its component judges, the
 /// body types, that is the item's own and settles alone.
@@ -68,7 +66,7 @@ fn instances_said(engine: QueryEngine, file: SourceFileAddress, entry: EntryRead
 > {
     let instances = [e for e in every_node(j.store) if j.store.checked_by(e) != null &&
         typed_here(j.typed, e) &&
-        (j.only.of < 0 || item_holding(entry!, e.index) == j.only)]
+        (j.only < 0 || item_holding(entry!, e.index) == j.only)]
     flatten([instance_checked(engine, file, j, e) for e in instances if settles_here(j, e)])
 }
 
@@ -127,9 +125,14 @@ fn instance_checked(engine: QueryEngine, file: SourceFileAddress, j: Judged, e: 
     }
 }
 
+/// The body the instance `d` declares its value by; none where it has none.
+fn declared_body(engine: QueryEngine, d: DeclaredName) -> List<SignedBody> {
+    match const_body(engine, d) { .Ok(b) -> [b], .Err(_) -> [] }
+}
+
 /// The body `b` judged in a store of its own, typed through each node's meaning there; `only` the
 /// item whose instances it judges, -1 for every one.
-fn judged_in(engine: QueryEngine, file: SourceFileAddress, b: SignedBody, only: ItemId) -> Judged {
+fn judged_in(engine: QueryEngine, file: SourceFileAddress, b: SignedBody, only: int) -> Judged {
     let own = own_store(b)
     Judged {
         store: own.item.store,

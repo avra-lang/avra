@@ -53,7 +53,7 @@ use features.{
     arg_lit,
     bound_decl_of,
 }
-use features.enums.{binders}
+use features.enums.{answering_arms, binders}
 use @std.errors.{Loc}
 use @std.meta.{Subject}
 
@@ -469,6 +469,15 @@ impl Code {
     /// call, never a name merely read as a method's own RECEIVER.
     fn call_args() -> List<Code> { [self.held(a) for a in self.syntax().call_args()] }
 
+    /// What a name USE resolves to — null for a Stmt/Pat seat and
+    /// for an expression that names nothing.
+    fn binding() -> Binding? {
+        match self.at {
+            .Expr(id) -> self.analysed().names.binding(id),
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
     /// The type this expression was typed at — null for a Stmt/Pat
     /// seat, since only an expression answers one.
     fn type() -> RuleType? {
@@ -476,6 +485,13 @@ impl Code {
             .Expr(id) -> self.of.facts.type_at(id),
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
+    }
+
+    /// The bound name's DECLARED type — the annotation or signature
+    /// that named it, never a later narrow.
+    fn declared() -> Ty? {
+        let b? = self.binding() else { return null }
+        declared_ty(self.analysed(), self.at, b)
     }
 
     /// PURITY: evaluating this code has no effect and answers the
@@ -500,6 +516,39 @@ impl Code {
             .Expr(id) -> pure_at(self.of, id),
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
+    }
+
+    /// A `match`'s ANSWERING-ARM count — the same count F2040 reads
+    /// to tell a PROJECTION (one) from a REGISTRY (two or more);
+    /// null for anything that is not a `match`.
+    fn answering() -> int? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Match(_, arms) -> answering_arms(self.of.view.store, self.analysed().names, arms),
+                _ -> null,
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// Whether this `match` is a REGISTRY (two or more answering
+    /// arms) — false for a projection and for anything that is not
+    /// a `match` at all.
+    fn is_registry() -> bool {
+        match self.answering() {
+            n? -> n >= 2
+            null -> false
+        }
+    }
+
+    /// This node's own declaration's `///` doc, its lines joined — null
+    /// where it wrote none, and for every node that is not a declaring
+    /// statement itself (a call inside a body answers null, not its
+    /// enclosing fn's doc).
+    fn doc() -> string? {
+        let d? = self.declaring() else { return null }
+        let lines? = self.analysed().view.decls.doc_of(d) else { return null }
+        lines.join("\n")
     }
 
     /// This fn declaration's own body, in this code's store; absent for any other node.

@@ -97,32 +97,3 @@ spec "compiler/failures — a mutually recursive pair" {
         j.raised_of(RAISE_PATH, "f").length == 2 && j.raised_of(RAISE_PATH, "g").length == 2
     }
 }
-
-/// A file of one failing fn and one `_` fn that catches it and re-raises it, failing with `err`;
-/// two such files are alike node for node, so their sites share raw indexes.
-fn twin_source(catcher: string, err: string, fail_with: string) -> string {
-    "enum E {\n    E\n}\n" +
-        "fn a() -> Result<int, ${err}> {\n    fail ${fail_with}\n}\n" +
-        "export fn ${catcher}() -> Result<int, _> {\n    let v = a() catch e -> {\n        a()?\n    }\n    v\n}\n"
-}
-
-spec "compiler/failures — what a concretely typed fn and two alike files raise" {
-    then "a concretely typed fn infers nothing: it raises the error it declares" {
-        raise_judged(inferring_source()).raised_of(RAISE_PATH, "a").join(",") == "string"
-    }
-    then "two files alike node for node each raise only their own error" {
-        let j = held_at(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/one.av": twin_source("one", "string", "\"boom\""),
-                "/w/src/two.av": twin_source("two", "E", "E.E"),
-                RAISE_PATH: "use one.{one}\nuse two.{two}\n1\n",
-            },
-            "/w",
-        )
-            .judged_at(RAISE_PATH)
-        j.clean() &&
-            j.raised_of("/w/src/one.av", "one").join(",") == "string" &&
-            j.raised_of("/w/src/two.av", "two").join(",") == "E"
-    }
-}

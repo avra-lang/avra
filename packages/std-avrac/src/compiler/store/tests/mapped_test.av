@@ -5,7 +5,6 @@
 // the same octets, so the two spellings cannot drift.
 use @std.io.{write_text, write_bytes, make_dirs}
 use @std.time.{stamp}
-use @std.hash.{blake3_hex}
 use @std.relation.stable.{writer, reader, Reader}
 use compiler.store.mapped.{
     Mapped,
@@ -14,7 +13,6 @@ use compiler.store.mapped.{
     mapped_at,
     mapped_check,
     mapped_close,
-    mapped_digest,
     mapped_holds,
     window_count,
     window_done,
@@ -154,19 +152,6 @@ spec "compiler/store/mapped — a file read where it lies" {
             let half = mapped_check(m, 0, 100000)
             mapped_close(m)
             whole != null && whole?.length == 16 && half != null && half != whole
-        }
-        then "a whole file's digest, a window at a time, is the digest of its octets read whole" {
-            let text = ["abcdefgh" for _i in 0..20000].join("") + "tail"
-            let m = map_of("digested.txt", text)
-            let digest = mapped_digest(m)
-            mapped_close(m)
-            digest == blake3_hex(text.bytes())
-        }
-        then "an empty file's digest is the digest of no octets" {
-            let m = map_of("digested_empty.txt", "")
-            let digest = mapped_digest(m)
-            mapped_close(m)
-            digest == blake3_hex("".bytes())
         }
     }
     given "a reverse section, as the store writes one" {

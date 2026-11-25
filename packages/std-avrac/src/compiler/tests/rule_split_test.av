@@ -1,47 +1,41 @@
-// A file's rule findings are the same whether the file is judged whole or one declaration at a
-// time: a rule's subject is one node, so a declaration is the grain a per-item answer takes — and
-// the program layer runs the rules item by item. A licence on the line above a finding travels
-// with its declaration. Findings are compared by rule and text, in order.
-use @std.avrac.testing.{judged}
+// A file's rule findings are the same whether the rules run over the whole statement list or
+// over one statement at a time: a rule's subject is one node, so the statement is the grain a
+// per-declaration answer may take. Rendered findings are compared, order and licences included.
+use @std.avrac.testing.old_path.{provided}
+use @std.avrac.compiler.{rule_findings}
+use @std.avrac.features.{Analysed}
+use @std.avrac.core.{flatten}
 
-/// What `avra check` finds in a one-file program, each as its rule and its line.
-fn found(source: string) -> List<string> { ["${f.rule}: ${f.text}" for f in judged(source).findings()] }
-
-/// The findings of a file of `decls` over the entry `entry`, judged whole.
-fn whole(decls: List<string>, entry: string) -> string { found(decls.join("\n") + "\n" + entry).join("\n") }
-
-/// The findings of each declaration of `decls` judged alone, each over the same entry, in order.
-fn split(decls: List<string>, entry: string) -> string {
-    [d + "\n" + entry for d in decls].map((p) -> found(p).join("\n")).filter(it != "").join("\n")
+fn analysed_entry(source: string) -> Analysed {
+    let a = provided(source, "").entry_file()!
+    Analysed { view: a.view, names: a.names, facts: a.facts }
 }
 
-spec "compiler/rule_pass (split by declaration)" {
-    given "findings in several declarations" {
+fn whole_rendered(source: string) -> string {
+    let a = provided(source, "").entry_file()!
+    a.rendered(rule_findings(analysed_entry(source), a.view.stmts))
+}
+
+fn split_rendered(source: string) -> string {
+    let a = provided(source, "").entry_file()!
+    let an = analysed_entry(source)
+    a.rendered(flatten([rule_findings(an, [s]) for s in a.view.stmts]))
+}
+
+spec "compiler/rule_pass (split by statement)" {
+    given "findings in several statements" {
         then "three dead parameters render alike whole and split" {
-            let decls = [
-                "fn a(x: int) -> int { 1 }",
-                "fn b(y: int) -> int { 2 }",
-                "fn c(z: int) -> int { 3 }",
-            ]
-            let w = whole(decls, "a(0) + b(0) + c(0)")
-            w == [found("${d}\n${n}(0)").join("\n") for d in decls for n in [d.substring(3, 4)]]
-                    .join("\n") &&
-                w.split("dead_parameter").length == 4
+            let src = "fn a(x: int) -> int { 1 }\nfn b(y: int) -> int { 2 }\nfn c(z: int) -> int { 3 }\na(0) + b(0) + c(0)"
+            whole_rendered(src) == split_rendered(src) &&
+                whole_rendered(src).contains("dead_parameter")
         }
         then "a licence on the line above a finding stands in both" {
-            let decls = [
-                "// LICENSED fns.dead_parameter: kept for the seat\nfn a(x: int) -> int { 1 }",
-                "fn b(y: int) -> int { 2 }",
-            ]
-            let w = whole(decls, "a(0) + b(0)")
-            w == [found("${decls[0]}\na(0)").join("\n"), found("${decls[1]}\nb(0)").join("\n")]
-                    .filter(it != "")
-                    .join("\n") &&
-                w.split("dead_parameter").length == 2
+            let src = "// LICENSED fns.dead_parameter: kept for the seat\nfn a(x: int) -> int { 1 }\nfn b(y: int) -> int { 2 }\na(0) + b(0)"
+            whole_rendered(src) == split_rendered(src)
         }
         then "a clean file has no findings either way" {
-            whole(["fn a(x: int) -> int { x }"], "a(1)") == "" &&
-                split(["fn a(x: int) -> int { x }"], "a(1)") == ""
+            let src = "fn a(x: int) -> int { x }\na(1)"
+            whole_rendered(src) == split_rendered(src)
         }
     }
 }

@@ -9,23 +9,12 @@ use core.{
     some_list,
     DeclId,
     Binding,
-    Scoped,
-    scoped,
+    found_at,
     same_file,
 }
 use core.{binds_type, binds_name}
 use core.{SeatMark}
-use diagnostics.{
-    Diag,
-    Voice,
-    const_fix,
-    guess_fix,
-    guessed,
-    loc_at,
-    refusal,
-    said_as,
-    unread_behind,
-}
+use diagnostics.{Diag, Voice, guess_fix, guessed, refusal, said_as, unread_behind}
 use features.{
     ResolveCx,
     SelfSeat,
@@ -37,9 +26,6 @@ use features.{
     nothing,
     Bound,
     owned_as_value,
-    ScopeKey,
-    OverlayHit,
-    OWN_WRITING,
 }
 use features.structs.{literal_fault}
 use @std.errors.{Loc, Frame}
@@ -119,23 +105,22 @@ impl ResolveCx {
     fn check_params(fparams: List<Param>, s: StmtId) {
         let at = self.stmt_loc(s)
         for pp in fparams {
-            if self.keywords.contains(pp.name.text()) {
-                self.refuse_keyword(pp.name.text(), at, remedy_for(self.view.lang, pp.name.text()))
+            if self.keywords.contains(pp.name.of) {
+                self.refuse_keyword(pp.name.of, at, remedy_for(self.view.lang, pp.name.of))
             } else {
-                let _ = self.refused_binder(pp.name.text(), at, self.view.origin_of_stmt(s))
+                let _ = self.refused_binder(pp.name.of, at, self.view.origin_of_stmt(s))
             }
         }
     }
 
-    mut fn use_name(e: ExprId, named: Scoped) {
+    mut fn use_name(e: ExprId, name: string) {
         if self.met(e) { return }
-        let name = named.text()
         // The SAME naming law every other site runs: a keyword can
         // never be a name, so "not defined" would send the reader
         // hunting for a definition that could not exist.
         if self.refused_name(name, self.loc_of(e)) { return }
         let origin: FileId? = self.view.origin_of(e)
-        let found: Binding? = self.value_binding(named, origin)
+        let found: Binding? = self.value_binding(name, origin)
         if found != null {
             let b = found!
             self.bind_use(e, b)
@@ -150,9 +135,9 @@ impl ResolveCx {
         }
         let at = self.loc_of(e)
         if name == "it" { return self.unbound_pronoun(at) }
-        if self.hidden_def(keyed(named, origin)) { return self.runtime_binding(name, at) }
-        if origin != null && self.local_binding(keyed(named, null)) != null { return self.emit(read_past_hole(at, name)) }
-        let later: StmtId? = self.later_def(keyed(named, origin))
+        if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, at) }
+        if origin != null && self.local_binding(name) != null { return self.emit(read_past_hole(at, name)) }
+        let later: StmtId? = self.later_def(keyed(name, origin))
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
@@ -176,23 +161,18 @@ impl ResolveCx {
             self
                 .view
                 .stmts
-                .any((s) -> (self.view.store.struct_parts(s)?.fields ?? []).any(it.name.spells(name)))
+                .any((s) -> (self.view.store.struct_parts(s)?.fields ?? []).any(it.name.of == name))
     }
 
     /// THE ONE SCOPE RITUAL: a fresh overlay opens, binds made inside
     /// are visible onward, and it closes with them.
     fn open_overlay() {
-        self.overlays.push(self.binds.length)
+        let fresh: Map<string, Binding> = {}
+        self.overlays.push(fresh)
     }
 
     fn close_overlay() {
-        let start = self.overlays.pop()
-        // LICENSED loops.push_loop: popping the field in place — a slice would copy what stays
-        while self.binds.length > start {
-            let _ = self.binds.pop()
-            let _ = self.bind_names.pop()
-            let _ = self.bind_origins.pop()
-        }
+        let _ = self.overlays.pop()
     }
 
     /// `self` — the receiver of the innermost enclosing method,
@@ -338,14 +318,13 @@ impl ResolveCx {
     /// never reach into — a param, a `let`, a `for` binder, a lambda
     /// param, a match binder and a capture all shadow a same-named fn
     /// for a call exactly as they do for a plain read.
-    mut fn use_call(e: ExprId, named: Scoped) {
+    mut fn use_call(e: ExprId, name: string) {
         if self.met(e) { return }
-        let name = named.text()
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
         if self.refused_name(name, self.loc_of(e)) { return }
         let origin: FileId? = self.view.origin_of(e)
-        let local: Binding? = self.local_binding(keyed(named, origin))
+        let local: Binding? = self.local_binding(keyed(name, origin))
         if local != null {
             self.bind_use(e, local!)
             return
@@ -372,7 +351,7 @@ impl ResolveCx {
             self.bind_use(e, Binding.Decl(as_type!))
             return
         }
-        if self.hidden_def(keyed(named, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
+        if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
         if self.refused_read(names, [NameKind.Fn, NameKind.Type], name, self.loc_of(e)) { return }
         self.emit(self.suggested(call_unbound(name), e, name, names.fn_suggestions()))
     }
@@ -415,10 +394,9 @@ impl ResolveCx {
     /// params, then the program scope, then a TYPE used as a value
     /// (`Color` in `Color.red`, which typing gives the compile-only
     /// TypeName shape).
-    fn value_binding(named: Scoped, origin: FileId?) -> Binding? {
-        let local: Binding? = self.local_binding(keyed(named, origin))
+    fn value_binding(name: string, origin: FileId?) -> Binding? {
+        let local: Binding? = self.local_binding(keyed(name, origin))
         if local != null { return local }
-        let name = named.text()
         // a type's name, then a NAMED FN as a value — both global,
         // so no capture chains
         let names = self.names_in(origin)
@@ -439,29 +417,25 @@ impl ResolveCx {
     /// the outer world, and every frame between records a CAPTURE
     /// (nesting chains Capture through Capture). Asked with the
     /// name's KEY, so a template's binders and a hole's never meet.
-    fn local_binding(key: ScopeKey) -> Binding? {
-        let ohit: OverlayHit? = overlay_hit(self, key)
-        let fhit: int? = frame_param_hit(self.lframes, key)
-        let ohome = if ohit == null { no_frame } else { overlay_home(self.lframes, ohit!.overlay) }
+    fn local_binding(name: string) -> Binding? {
+        let ohit: int? = overlay_index(self.overlays, name)
+        let fhit: int? = frame_param_hit(self.lframes, name)
+        let ohome = if ohit == null { no_frame } else { overlay_home(self.lframes, ohit!) }
         let fhome = fhit ?? no_frame
         // the deeper home wins; a tie is the overlay's — a `let`
         // after the params shadows them
         if ohit != null && ohome >= fhome {
-            return self.chained_key(ohome + 1, key, ohit!.binding)
+            return self.chained(ohome + 1, name, overlay_at(self.overlays, ohit!, name)!)
         }
         if fhit != null {
             let f = self.lframes[fhit!]
             return self
-                .chained_key(
-                    fhit! + 1,
-                    key,
-                    Binding.LambdaParam(f.lam, key_at(f.param_names, f.param_origins, key)!),
-                )
+                .chained(fhit! + 1, name, Binding.LambdaParam(f.lam, found_at(f.params, name)!))
         }
-        let idx: int? = key_at(self.scope_names, self.scope_origins, key)
-        if idx != null { return self.chained_key(0, key, Binding.Param(idx! + self.seat_base())) }
-        let outer? = self.outer_binding(key) else { return null }
-        self.chained_key(0, key, outer)
+        let idx: int? = found_at(self.scope, name)
+        if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
+        let outer? = self.outer_binding(name) else { return null }
+        self.chained(0, name, outer)
     }
 
     /// Whether a bare name in a pattern is a CONST'S here, by the
@@ -471,11 +445,10 @@ impl ResolveCx {
     /// const never turns a binder: the file's own names, its imports
     /// and the module's exports are what a pattern compares to.
     fn names_const(name: string, origin: FileId?) -> bool {
-        let key = keyed(scoped(name), origin)
-        if frame_param_hit(self.lframes, key) != null ||
-            key_at(self.scope_names, self.scope_origins, key) != null { return false }
-        let ohit: OverlayHit? = overlay_hit(self, key)
-        if ohit != null { return self.const_def(ohit!.binding) }
+        let key = keyed(name, origin)
+        if frame_param_hit(self.lframes, key) != null || found_at(self.scope, key) != null { return false }
+        let ohit: int? = overlay_index(self.overlays, key)
+        if ohit != null { return self.const_def(overlay_at(self.overlays, ohit!, key)) }
         let outer: Binding? = self.outer_binding(key)
         if outer != null { return self.const_def(outer) }
         let names = self.names_in(origin)
@@ -496,27 +469,19 @@ impl ResolveCx {
     /// The top level's binding for a name — unless a fn body is
     /// asking: its floor hides the run-time values around it. (A
     /// `const` is a declaration, found in the namespace after this.)
-    fn outer_binding(key: ScopeKey) -> Binding? {
-        if !self.floors.is_empty() { return null }
-        let at? = held_at(self, 0, self.overlays.first() ?? self.binds.length, key) else { return null }
-        self.binds[at]
+    fn outer_binding(name: string) -> Binding? {
+        if self.floors.is_empty() { return self.visible.get(name) }
+        null
     }
 
     /// A name a body cannot see: the top level's RUN-TIME binding —
     /// declared before the body or after it, all the same. A const
     /// is not one; it is a declaration, and the namespace answered
     /// for it before this is asked.
-    fn hidden_def(key: ScopeKey) -> bool {
-        if self.floors.is_empty() || key.origin != OWN_WRITING { return false }
+    fn hidden_def(name: string) -> bool {
+        if self.floors.is_empty() { return false }
         let store = self.view.store
-        self.all_defs.any((d) -> d.name == key.name && store.const_value(d.stmt) == null)
-    }
-
-    /// A binding found under `key`, wrapped for every frame from `from_k`
-    /// inward; the key's text is read only when a frame captures it.
-    fn chained_key(from_k: int, key: ScopeKey, b: Binding) -> Binding {
-        if from_k >= self.lframes.length { return b }
-        self.chained(from_k, key_text(key), b)
+        self.all_defs.any((d) -> d.name == name && store.const_value(d.stmt) == null)
     }
 
     /// Wrap a binding in Capture links for every frame from
@@ -556,19 +521,8 @@ impl ResolveCx {
 
     fn unbound_pronoun(at: Loc?) { self.emit(unresolved_at(at, pronoun_unbound())) }
 
-    /// A read at `at` of `name`, a run-time binding of the top level, refused: offering to make it a
-    /// `const` where its value is one (`let_made_const`).
     fn runtime_binding(name: string, at: Loc?) {
-        let store = self.view.store
-        let made = [l! for d in self.all_defs if d.name.spells(name) for l in [loc_at(self.view.source.file, store.let_made_const(d.stmt))] if l != null]
-        self
-            .emit(
-                said_as(
-                    "resolve.runtime_binding",
-                    at,
-                    if self.in_instance { instance_bound(name) } else { runtime_bound(name) },
-                ) with { suggestions: [const_fix(name, l) for l in made.take(1)] },
-            )
+        self.emit(said_as("resolve.runtime_binding", at, runtime_bound(name)))
     }
 
     fn refuse_self(at: Loc?) { self.emit(unnamed(at, implementor_named())) }
@@ -587,11 +541,10 @@ impl ResolveCx {
 
     /// The first PROGRAM-SCOPE definition of `name` anywhere — a
     /// scoped binder (a loop counter) is not one.
-    fn later_def(key: ScopeKey) -> StmtId? {
-        if key.origin != OWN_WRITING { return null }
+    fn later_def(name: string) -> StmtId? {
         // the table is named because `it` binds to the NEAREST call
-        let scoped_binders = self.scoped
-        self.all_defs.find((d) -> d.name == key.name && !scoped_binders.get(d.stmt.index))?.stmt
+        let scoped = self.scoped
+        self.all_defs.find((d) -> d.name == name && !scoped.get(d.stmt.index))?.stmt
     }
 
     /// A statement's binding, run through the naming law — the one
@@ -604,7 +557,7 @@ impl ResolveCx {
         let name? = self.view.store.loop_index(s) else { return }
         if self.refused_binder(name, self.stmt_loc(s), self.view.origin_of_stmt(s)) { return }
         if name == self.view.store.let_name(s) ?? "" { return self.paired_alike(s, name) }
-        self.bind(keyed(scoped(name), self.view.origin_of_stmt(s)), Binding.Index(s))
+        self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
     }
 
     /// A pairing loop names its index and its element apart — one
@@ -618,17 +571,21 @@ impl ResolveCx {
         // a DECLARED statement (a top-level `const`) is the namespace's:
         // order-free and module-wide, it binds nowhere in the sequence
         if self.view.decls.decl_of(self.view.file, s) != null { return }
-        self.bind(keyed(self.view.store.let_named(s)!, self.view.origin_of_stmt(s)), Binding.Def(s))
+        self.bind(keyed(binds!, self.view.origin_of_stmt(s)), Binding.Def(s))
     }
 
-    /// Latest binding wins: a scope is read latest first, so a later
-    /// binding of a key shadows the earlier. Inside a block, the binding
-    /// lives in the innermost overlay and dies with it. Bound by the
-    /// name's KEY.
-    mut fn bind(key: ScopeKey, b: Binding) {
-        self.bind_names.push(key.name)
-        self.bind_origins.push(key.origin)
-        self.binds.push(b)
+    /// Latest binding wins — Map.set IS shadowing. Inside a block,
+    /// the binding lives in the innermost overlay and dies with it.
+    /// Bound by the name's KEY.
+    mut fn bind(name: string, b: Binding) {
+        if self.overlays.is_empty() {
+            self.visible.set(name, b)
+        } else {
+            let at = self.overlays.length - 1
+            mut top = self.overlays[at]
+            top.set(name, b)
+            self.overlays.set(at, top)
+        }
     }
 
     fn loc_of(e: ExprId) -> Loc? { self.view.loc_of(e) }
@@ -784,17 +741,6 @@ export fn runtime_bound(name: string) -> Voice {
         message: "`${name}` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it",
         label: "read here",
         help: "pass `${name}` in as a parameter, or make it a fn",
-    }
-}
-
-/// A run-time binding of the top level read in a named instance's value: an instance is a
-/// declaration, built once wherever it's read, so it reads declarations; a value it keeps across the
-/// program is a `state`'s.
-export fn instance_bound(name: string) -> Voice {
-    Voice {
-        message: "`${name}` is a run-time binding of the top level — an instance is a declaration and reads declarations, not the values around it",
-        label: "read here",
-        help: "make `${name}` a `state`, or pass it in where the instance's value is read",
     }
 }
 

@@ -12,7 +12,7 @@ human reading code.
 
 | detector | reads | finds | where |
 |---|---|---|---|
-| **census sites** | the runtime's exact per-site counters (boxes, retains, releases, clones, opens of an empty literal, string compares, list writes) over the fixed workloads | the hottest sites, each CLASSIFIED to the technique that would remove its cost (below) | `avra census --candidates` |
+| **census sites** | the runtime's exact per-site counters (boxes, retains, releases, clones, string compares, list writes) over the fixed workloads | the hottest sites, each CLASSIFIED to the technique that would remove its cost (below) | `avra census --candidates` |
 | **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid, as a TYPED reason per technique (`Declined`: `DeferDecline`, `ProbeDecline`, `SettleDecline`, `ConsumeDecline`, `DynDecline`, `PackDecline`), its words rendered by one voice fn | `avra explain --cost @fn`, grouped by reason and counted; `cost_remarks` is a query, so the remarks are facts in the DB. A build never notes them: zero cost unless asked |
 | **shape rules** | the source, as `rule` declarations `avra check` finds | the patterns that cost by construction | `avra check`, ratcheted like idioms |
 | **exact-count gate** | the census totals per cold workload, and the answers a warm run works out again after each fixed edit, over one pinned snapshot, against `tools/cost.baseline` | regressions: any counter that rose past tolerance, cold or warm | a gate slice (`make cost`); lowering a counter needs `make cost-accept` |
@@ -24,9 +24,7 @@ human reading code.
 | a box freed in the fn that made it | stack records (escape analysis) |
 | a free at rc 1 followed by an alloc of the same size | reuse in place |
 | a retain whose release is the binding's last use | move at last use |
-| an owned twin read (`avra_slot_get_owned`, `avra_array_get_owned`) and its release, in a fn whose borrow is read across a call handed only scalars (`AVRA_RC_REASONS`: `candidate: a borrow a scalar call makes owned`) | borrows across quiet calls |
 | `avra_streq`/name compare callers | interned names |
-| an open of the binary's empty literal (`[]`, `{}`) by a first write | fresh empties |
 | a box of flat scalar fields pushed into a list | strided list |
 | a slot box over a crossed box (`F?`) | nullable flat record |
 | a list made and only walked once | deforestation |
@@ -36,13 +34,6 @@ human reading code.
 `avra census --candidates` prints the top sites per technique with their counts and the source
 line, so a ranked work list is one command. Run per batch on the gate's workloads, its output
 diffed against the last run is how a NEW candidate appears without anyone looking.
-
-`make cost` runs every compiler workload with the site tables on (`cold-with-store-fill` measures the store, not the compiler, and takes none), resolves each site to its symbol and
-writes `build/cost/candidates.txt` (`avra census --candidates [--root <tree>] <report>…`, the top
-ten per technique). A `(technique, fn)` that `tools/cost.candidates` lacks is NAMED, never failed;
-`make cost-accept` rewrites that record. Deforestation and devirtualization have no census hook
-yet, and borrows across quiet calls are found by the memory pass's own tally (`AVRA_RC_REASONS`), so
-the classifier reads the other eight shapes.
 
 ## How work is assessed
 
@@ -65,9 +56,7 @@ the classifier reads the other eight shapes.
 | release rows | landed (batch 48) | release call sites |
 | interned names | proposed | string compares in lookups |
 | reuse in place (Perceus/FBIP) | proposed | free + alloc pairs |
-| fresh empties: a first write into `[]` makes its buffer, never a clone of the static | proposed | the open of the empty literal (`empty_opens`) |
 | move at last use (borrow inference) | partial (params' consumes) | retain/release pairs |
-| borrows across quiet calls: a borrowed read stands across a call whose callee writes no cell (`writes_no_cell`, read once of its own instructions) and is handed only scalars | done (lowering-quality, to land) | a retain and release per borrowed cell read across an out-of-line scalar fn (`HashKeyedTable.position_at` with its slot arithmetic as a fn: 3 owned reads and 2 release runs a search); the callee's bit rides `BodySeen`, so a callee that comes to write a cell remakes its callers |
 | devirtualization | proposed | indirect calls with one target |
 | deforestation | partial (walk chains) | intermediate lists |
 | scalar replacement / stack records | proposed | boxes that never escape |

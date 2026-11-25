@@ -1,0 +1,127 @@
+diff --git a/packages/std-avrac/src/compiler/build.av b/packages/std-avrac/src/compiler/build.av
+index d2a321e..03e3f4c 100644
+--- a/packages/std-avrac/src/compiler/build.av
++++ b/packages/std-avrac/src/compiler/build.av
+@@ -817,7 +817,7 @@ impl Workspace {
+     /// builds of one tree share a file only when they would write the same bytes.
+     fn object_of(store: Store, a: Analysis) -> Made {
+         let path = a.view.source.file
+-        let key = self.read_okey(store, path)
++        let key = self.held_okey(store, path)
+         Made {
+             which: Owned.File(a.view.file),
+             key: key,
+@@ -826,14 +826,6 @@ impl Workspace {
+         }
+     }
+ 
+-    /// A read file's object key: its parts, with the sets its collects gather now —
+-    /// a member that moved what a collect bakes moves the object its collector builds.
+-    fn read_okey(store: Store, path: string) -> string {
+-        let parts = self.key_parts_cached(store, self.module_path_of(path), path)
+-        let now = [self.gathered_set(g, self.file_id(path)) for g in self.gatherings(path)]
+-        if fields_wire(now) == fields_wire(parts.gathered) { self.held_okey(store, path) } else { key_of_parts(parts with { gathered: now }) }
+-    }
+-
+     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered
+     /// here — written every build, compiled only when they moved, so a home's edit
+     /// that moves no instantiation compiles nothing — and by what it is a function
+diff --git a/packages/std-avrac/src/compiler/derive.av b/packages/std-avrac/src/compiler/derive.av
+index 817f822..ebefad3 100644
+--- a/packages/std-avrac/src/compiler/derive.av
++++ b/packages/std-avrac/src/compiler/derive.av
+@@ -472,6 +472,7 @@ impl Workspace {
+ 
+     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
+     fn stands_in(s: Store, okey: string, want: Want) -> bool {
++        if traced() { qtrace("Q\tstands\t${okey}\t${s.has(Stored.Warn, said_key(okey))}\t${s.has(Stored.Unit, self.asks_key(okey))}\t${s.has(Stored.Unit, self.codes_key(okey))}\t${s.has(Stored.Obj, okey)}\n") }
+         if !s.has(Stored.Warn, said_key(okey)) ||
+             !s.has(Stored.Unit, self.asks_key(okey)) ||
+             !s.has(Stored.Unit, self.codes_key(okey)) {
+diff --git a/packages/std-avrac/src/compiler/interface.av b/packages/std-avrac/src/compiler/interface.av
+index 3f15996..4657890 100644
+--- a/packages/std-avrac/src/compiler/interface.av
++++ b/packages/std-avrac/src/compiler/interface.av
+@@ -114,7 +114,7 @@ impl Workspace {
+     }
+ 
+     fn const_unit_key(store: Store, m: ModulePath, path: string, name: string) -> string {
+-        node_key(Stored.Unit, ["const", obj_key_cached(self, store, m, path), name])
++        node_key(Stored.Unit, ["const", obj_key_of(self, store, m, path), name])
+     }
+ 
+     // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
+diff --git a/packages/std-avrac/src/compiler/record.av b/packages/std-avrac/src/compiler/record.av
+index 94efbe0..e3d2d7f 100644
+--- a/packages/std-avrac/src/compiler/record.av
++++ b/packages/std-avrac/src/compiler/record.av
+@@ -11,6 +11,7 @@
+ //! the imports first — a field of another module's type interns only once that
+ //! module's types exist.
+ use @std.text.{parse_int}
++use core.{traced, qtrace}
+ use core.{
+     CollectKind,
+     Plain,
+@@ -306,16 +307,15 @@ fn bytes_key_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
+     made
+ }
+ 
+-/// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
+-/// the file's path, so a module-level ask and a file-level ask do not collide.
+-// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+-fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+-    let key = "${m.text()}\t${path}"
+-    let known: string? = ws.keys.object_keys.get().get(key)
+-    if known != null { return known! }
+-    let made = key_of_parts(ws.key_parts_cached(store, m, path))
+-    ws.keys.object_keys.put(key, made)
+-    made
++/// ONE FILE'S OBJECT KEY: its key parts, with the sets its collects gather now — a
++/// member that moved what a collect bakes moves the object its collector builds.
++/// Every reader of an object's key asks this one, and it is not memoized: its parts
++/// are read from the store as they stand, so an answer asked early is never the
++/// answer asked later.
++fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
++    let parts = ws.key_parts(store, m, path)
++    let now = [ws.gathered_set(g, ws.file_id(path)) for g in ws.gatherings(path)]
++    if fields_wire(now) == fields_wire(parts.gathered) { key_of_parts(parts) } else { key_of_parts(parts with { gathered: now }) }
+ }
+ 
+ /// A TYPE'S SHAPE, as one line — the declaration it belongs to, and what it stands over.
+@@ -947,7 +947,7 @@ fn read_why(
+     let forced: Reads? = ws.hold.forced.get().get(f)
+     if forced != null { return forced! }
+     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
+-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
++    if !ws.stands_in(store, obj_key_of(ws, store, m, f), want) { return Reads.Unkept }
+     let rows = file_rows(record_fields(ws, store, m), at)
+     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+     if !holdable(rows) { return Reads.Unholdable }
+@@ -1227,13 +1227,6 @@ fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>)
+ /// Files' interface digests as one — in name order, so the order they were asked in is no part of it.
+ fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts(ifaces), "\n")) }
+ 
+-/// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
+-/// text, the texts its compile-time runs read, and the interfaces its bodies can see.
+-// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
+-export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+-    key_of_parts(ws.key_parts(store, m, path))
+-}
+-
+ /// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
+ /// digest of each text its compile-time runs read ("" for one that is gone), the
+ /// set each of its package-wide collects gathered, and every module its bodies can
+diff --git a/packages/std-avrac/src/compiler/workspace_analysis.av b/packages/std-avrac/src/compiler/workspace_analysis.av
+index b08ecc3..89dc81e 100644
+--- a/packages/std-avrac/src/compiler/workspace_analysis.av
++++ b/packages/std-avrac/src/compiler/workspace_analysis.av
+@@ -490,7 +490,7 @@ impl Workspace {
+ 
+     fn held_okey(s: Store, path: string) -> string {
+         let ws = self
+-        obj_key_cached(ws, s, self.module_path_of(path), path)
++        obj_key_of(ws, s, self.module_path_of(path), path)
+     }
+ 
+     /// One unit lowered. A HELD FILE HAS NO BODY TO LOWER: asked for one — a

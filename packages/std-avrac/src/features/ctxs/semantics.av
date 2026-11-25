@@ -1,10 +1,10 @@
-//! The shared typer's word on `ctx`: a defect. The program layer checks and builds every `ctx`
-//! form before a body is typed, so no typer meets one.
+//! The old path's word on `ctx`: each form refused where it stands, so a program that uses one is
+//! the program layer's to check and build.
 use core.{ExprId, StmtId, TypeId, Reg}
 use core.stmt.{CtxDecl, CtxSet}
 use core.expr.{CtxRead}
 use features.{StmtSemantics, Meaning, ResolveCx, TypeCx, LowerCx}
-use diagnostics.{defect_kind, error_at}
+use diagnostics.{Voice, said_as}
 use @std.errors.{Loc}
 
 impl StmtSemantics for CtxDecl {
@@ -18,15 +18,17 @@ impl StmtSemantics for CtxSet {
 impl Meaning for CtxRead {
     fn resolve(mut cx: ResolveCx, e: ExprId) {}
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { refused_here(cx, cx.loc_of(e)) }
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.lower_defect(e, "a `ctx` read the typer refused was lowered") }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.lower_defect(e, "a `ctx` read the old path refused was lowered") }
 }
 
-/// A `ctx` form met by the shared typer: a defect, never reached. The program layer checks and
-/// builds every `ctx` form before a body is typed, so a typer that meets one is the compiler
-/// blaming itself.
-fn refused_here(mut cx: TypeCx, at: Loc?) -> TypeId { cx.spoken(error_at(defect_kind, at, ctx_typed())) }
+/// A `ctx` form, refused at `at`.
+fn refused_here(mut cx: TypeCx, at: Loc?) -> TypeId { cx.spoken(said_as("ctx.old_path", at, old_path_voice())) }
 
-/// The defect's words.
-fn ctx_typed() -> string {
-    "defect: the shared typer met a `ctx` form, which the program layer checks and builds before any body is typed"
+/// What the old path says of a `ctx` form.
+fn old_path_voice() -> Voice {
+    Voice {
+        message: "`ctx` is checked and built by the program layer",
+        label: "a context's form",
+        help: "build with the program layer (`AVRA_PROGRAM_NET=0`)",
+    }
 }

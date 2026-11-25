@@ -294,13 +294,6 @@ extern const char avra_rt_held_avra_ctx_frame __asm__(AVRA_RT_LABEL(avra_ctx_fra
 extern const char avra_rt_held_avra_ctx_enter __asm__(AVRA_RT_LABEL(avra_ctx_enter));
 extern const char avra_rt_held_avra_ctx_frame_pushed __asm__(AVRA_RT_LABEL(avra_ctx_frame_pushed));
 extern const char avra_rt_held_avra_ctx_reframed __asm__(AVRA_RT_LABEL(avra_ctx_reframed));
-extern const char avra_rt_held_avra_ctx_entry __asm__(AVRA_RT_LABEL(avra_ctx_entry));
-extern const char avra_rt_held_avra_ctx_heard __asm__(AVRA_RT_LABEL(avra_ctx_heard));
-extern const char avra_rt_held_avra_ctx_listen __asm__(AVRA_RT_LABEL(avra_ctx_listen));
-extern const char avra_rt_held_avra_ctx_listened __asm__(AVRA_RT_LABEL(avra_ctx_listened));
-extern const char avra_rt_held_avra_ctx_heard_drop __asm__(AVRA_RT_LABEL(avra_ctx_heard_drop));
-extern const char avra_rt_held_avra_ctx_reheard __asm__(AVRA_RT_LABEL(avra_ctx_reheard));
-extern const char avra_rt_held_avra_ctx_holds __asm__(AVRA_RT_LABEL(avra_ctx_holds));
 extern const char avra_rt_held_avra_task_id __asm__(AVRA_RT_LABEL(avra_task_id));
 extern const char avra_rt_held_avra_task_ended_by __asm__(AVRA_RT_LABEL(avra_task_ended_by));
 extern const char avra_rt_held_avra_unwind_push __asm__(AVRA_RT_LABEL(avra_unwind_push));
@@ -345,7 +338,6 @@ extern const char avra_rt_held_avra_embed __asm__(AVRA_RT_LABEL(avra_embed));
 extern const char avra_rt_held_avra_embed_octets __asm__(AVRA_RT_LABEL(avra_embed_octets));
 extern const char avra_rt_held_avra_embed_digest __asm__(AVRA_RT_LABEL(avra_embed_digest));
 extern const char avra_rt_held_avra_type_named __asm__(AVRA_RT_LABEL(avra_type_named));
-extern const char avra_rt_held_avra_fn_declared __asm__(AVRA_RT_LABEL(avra_fn_declared));
 extern const char avra_rt_held_avra_exec_self __asm__(AVRA_RT_LABEL(avra_exec_self));
 extern const char avra_rt_held_avra_spawn_status __asm__(AVRA_RT_LABEL(avra_spawn_status));
 extern const char avra_rt_held_avra_spawn_in __asm__(AVRA_RT_LABEL(avra_spawn_in));
@@ -582,13 +574,6 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_ctx_enter,
     &avra_rt_held_avra_ctx_frame_pushed,
     &avra_rt_held_avra_ctx_reframed,
-    &avra_rt_held_avra_ctx_entry,
-    &avra_rt_held_avra_ctx_heard,
-    &avra_rt_held_avra_ctx_listen,
-    &avra_rt_held_avra_ctx_listened,
-    &avra_rt_held_avra_ctx_heard_drop,
-    &avra_rt_held_avra_ctx_reheard,
-    &avra_rt_held_avra_ctx_holds,
     &avra_rt_held_avra_task_id,
     &avra_rt_held_avra_task_ended_by,
     &avra_rt_held_avra_unwind_push,
@@ -633,7 +618,6 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_embed_octets,
     &avra_rt_held_avra_embed_digest,
     &avra_rt_held_avra_type_named,
-    &avra_rt_held_avra_fn_declared,
     &avra_rt_held_avra_exec_self,
     &avra_rt_held_avra_spawn_status,
     &avra_rt_held_avra_spawn_in,
@@ -1103,20 +1087,6 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_frame_pushed(AVR
     "avra_ctx_frame_pushed: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_ctx_reframed(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_ctx_reframed: its row answers ptr, so its C body answers a pointer");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_entry(AVRA_RT_I64)), int64_t),
-    "avra_ctx_entry: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_heard(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), void),
-    "avra_ctx_heard: its row answers void, so its C body answers void");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_listen()), void),
-    "avra_ctx_listen: its row answers void, so its C body answers void");
-_Static_assert(__builtin_classify_type(avra_ctx_listened()) == AVRA_RT_POINTER,
-    "avra_ctx_listened: its row answers ptr, so its C body answers a pointer");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_heard_drop(AVRA_RT_PTR)), void),
-    "avra_ctx_heard_drop: its row answers void, so its C body answers void");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_reheard(AVRA_RT_PTR)), void),
-    "avra_ctx_reheard: its row answers void, so its C body answers void");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_holds(AVRA_RT_PTR)), int64_t),
-    "avra_ctx_holds: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_id()), int64_t),
     "avra_task_id: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_ended_by(AVRA_RT_PTR)), int64_t),
@@ -1205,8 +1175,6 @@ _Static_assert(__builtin_classify_type(avra_embed_digest(AVRA_RT_PTR)) == AVRA_R
     "avra_embed_digest: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_type_named(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_type_named: its row answers ptr, so its C body answers a pointer");
-_Static_assert(__builtin_classify_type(avra_fn_declared(AVRA_RT_PTR)) == AVRA_RT_POINTER,
-    "avra_fn_declared: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_exec_self(AVRA_RT_PTR)), int64_t),
     "avra_exec_self: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_spawn_status(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),

@@ -15,7 +15,7 @@ use core.{
     flatten,
     some_list,
 }
-use compiler.laws.{Found, FoundFix, law}
+use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.annotations.{
     derives_no_trait,
@@ -24,7 +24,6 @@ use features.annotations.{
     foreign_diagnostics,
     miscounted,
     names_no_fn,
-    mark_unimported,
     takes_another_kind,
     takes_nothing,
     field_not_bare,
@@ -47,16 +46,9 @@ type Worn = { name: string, at: Span?, named: DeclaredName? }
 /// Every annotation the written item `at` of `file` wears, its name resolved where it's written: a
 /// rule's example marks aside, which name no fn, and a template's statements', judged where they
 /// land.
-fn worn_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Worn> {
+fn worn_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Worn> {
     if !item_held(engine, file, at) { return [] }
-    worn_in_viewed(item_view(engine, file, at))
-}
-
-/// `worn_in` through the view its law's judging holds, looking no item up again.
-fn worn_in_viewed(view: ItemView) -> List<Worn> {
-    let engine = view.engine
-    let file = view.file
-    let item = view.item
+    let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     [Worn { name: a.name, at: a.span, named: resolved(engine, file, Space.Value, a.name).named() } for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
 }
@@ -70,36 +62,28 @@ fn source_wrote_annotation(store: SyntaxArena, a: Annotation) -> bool { !example
 fn source_wrote_stmt(store: SyntaxArena, s: StmtId) -> bool { store.stmt_origins.at(s.index) == null }
 
 /// Every annotation of the written item `at` of `file` that `breaks`, as its law finds it.
-fn worn_where(engine: QueryEngine, file: SourceFileAddress, at: ItemId, breaks: fn(Worn) -> bool) -> List<
+fn worn_where(engine: QueryEngine, file: SourceFileAddress, at: int, breaks: fn(Worn) -> bool) -> List<
     Found,
 > {
-    if !item_held(engine, file, at) { return [] }
-    worn_where_viewed(item_view(engine, file, at), breaks)
-}
-
-/// `worn_where` through the view its law's judging holds, looking no item up again.
-fn worn_where_viewed(view: ItemView, breaks: fn(Worn) -> bool) -> List<Found> {
-    let at = view.at
-    [Found { at: w.at, args: [w.name] } for w in worn_in_viewed(view) if breaks(w)]
+    [Found { at: w.at, args: [w.name] } for w in worn_in(engine, file, at) if breaks(w)]
 }
 
 /// Every annotation whose name names a declaration that is no fn, or a run-time binding of the top
 /// level; a name nothing binds or declares is the naming law's.
-fn fnless_annotations(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
+fn fnless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     let bound = top_level_defined(engine, file)
-    worn_where_viewed(
-        view,
+    worn_where(
+        engine,
+        file,
+        at,
         (w: Worn) -> w.named != null && w.named?.kind != ItemKind.Fn ||
             w.named == null && bound.contains(w.name),
     )
 }
 
 /// Every annotation naming a fn that takes no seat for the declaration.
-fn seatless_annotations(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    worn_where_viewed(view, (w: Worn) -> takes_no_seat(engine, w.named))
+fn seatless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    worn_where(engine, file, at, (w: Worn) -> takes_no_seat(engine, w.named))
 }
 
 /// Whether `d` names a fn that takes no seat.
@@ -113,136 +97,15 @@ fn takes_no_seat(engine: QueryEngine, d: DeclaredName?) -> bool {
 /// an annotation names a fn over a declaration
 export law annotation_names_a_fn {
     kind: "annotation.callee"
-    reads_view: fnless_annotations
+    reads: fnless_annotations
     voice: fnless_words
     witness: "const tag: int = 1\n\n@tag\nfn g() -> int { 1 }\n"
 }
 
-/// a mark names a fn its file imports
-export law mark_imported {
-    kind: "annotation.unimported"
-    reads_view: marks_unimported
-    voice: unimported_mark_words
-    witness: "use @std.meta.{derive}\nuse kit.{Reads}\n\n@derive(Reads)\ntype R = { @flag n: int }\n0\n"
-    witness_files: {
-        "src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\nexport trait Reads {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n",
-    }
-}
-
-/// Every mark and annotation of the item `view` holds whose word names nothing there, where a module
-/// in reach exports a mark's fn of that word: handed the word and the `use` that brings it. The file's
-/// first wearing of a word carries the fix, that line written above the file's first `use`; one line
-/// brings every wearing. The items before it are read only where a home is found.
-fn marks_unimported(view: ItemView) -> List<Found> {
-    if !read_cleanly(view) || !wears_a_word(view.item) { return [] }
-    let engine = view.engine
-    let file = view.file
-    let worn = [w for w in worn_words(view.item) if resolved(engine, file, Space.Value, w.name).named() == null]
-    if worn.is_empty() { return [] }
-    let homed = [Homed { word: w, home: home!, first: worn.find_index(it.name == w.name) == j } for j, w in worn for home in [mark_home(engine, file, w.name)] if home != null]
-    if homed.is_empty() { return [] }
-    let items = file_items(engine, file)
-    let here = items.find_index(it.id == view.at) ?? 0
-    let earlier = flatten(
-        [[w.name for w in worn_words(read_item(engine, file, i.id))] for i in items.take(here)],
-    )
-    [unimported_found(engine, file, h.word, h.home, h.first && !earlier.contains(h.word.name)) for h in homed]
-}
-
-/// A word worn with no name behind it, the `use` that brings it, and whether it is the item's first
-/// wearing of that word.
-type Homed = { word: WornWord, home: string, first: bool }
-
-/// Whether a statement of `item` wears an annotation, or a member of one a mark: asked before any
-/// list of words is made, which an item wearing none never makes.
-fn wears_a_word(item: ReadItem) -> bool {
-    let store = item.store
-    for s in item.stmts {
-        if !store.annotations_of(s).is_empty() { return true }
-        let parts = store.struct_parts(s)
-        if parts != null && parts!.fields.any(!it.marks.is_empty()) { return true }
-    }
-    false
-}
-
-/// Every word the statements `item`'s source wrote wear, as an annotation or a member's mark.
-fn worn_words(item: ReadItem) -> List<WornWord> {
-    let store = item.store
-    [WornWord { name: a.name, at: a.span } for s in item.stmts if source_wrote_stmt(store, s) for a in store.annotations_of(s) if source_wrote_annotation(store, a)]
-        .concat(
-            [WornWord { name: m.name, at: m.span } for s in item.stmts if source_wrote_stmt(store, s) for p in store.struct_parts(s)?.fields ?? [] for m in p.marks],
-        )
-}
-
-/// A word an annotation or a mark wears, and where.
-type WornWord = { name: string, at: Span? }
-
-/// The module in reach of `file` that exports a fn answering `@std/meta`'s `Marker` named `word`, as a
-/// `use` line spells it; absent where none does. Each package the file names is asked by the word,
-/// one probe of what it exports.
-fn mark_home(engine: QueryEngine, file: SourceFileAddress, word: string) -> string? {
-    let own = module_written(file.package_name, file)
-    for p in packages_used(engine, file) {
-        for h in fn_exports(engine, p).homes.get(word) ?? [] {
-            let f = SourceFileAddress { package_name: h.package, path_in_package: h.path }
-            let module = module_written(file.package_name, f)
-            if module != own && marker_answered(engine, f, word) { return "${spelled_home(engine, file, h.package, module)}.{${word}}" }
-        }
-    }
-    null
-}
-
-/// The module a `use` of `file` names a home by: its package, as a line of the file's own already
-/// names it or where the home's own spelling is empty; else the home's own spelling.
-fn spelled_home(engine: QueryEngine, file: SourceFileAddress, package: string, module: string) -> string {
-    let dotted = package.replace("/", ".")
-    if module.is_empty() || file_imports(engine, file).any(it == dotted) { dotted } else { module }
-}
-
-/// Whether the fn `file` declares as `word` answers `@std/meta`'s `Marker`.
-fn marker_answered(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
-    let sig? = fn_signature(engine, file, word) else { return false }
-    meta_named(sig.answer, "Marker")
-}
-
-/// The finding of the mark `w`, which `home` would bring, carrying the fix where `fixes`: the line
-/// written above the file's first `use`, or at its start where it has none.
-fn unimported_found(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    w: WornWord,
-    home: string,
-    fixes: bool,
-) -> Found {
-    if !fixes { return Found { at: w.at, args: [w.name, home] } }
-    let items = file_items(engine, file)
-    let first = items.find((i) -> starts_a_use(i.text)) ?? items.first()
-    let fix = FoundFix {
-        description: "import `${w.name}` — `use ${home}`",
-        at: Span { lo: use_offset(first?.text ?? ""), hi: use_offset(first?.text ?? "") },
-        replacement: "use ${home}\n",
-        sure: true,
-        item: first?.id,
-    }
-    Found { at: w.at, args: [w.name, home], fixes: [fix] }
-}
-
-/// Whether an item's text holds a `use` line of its own.
-fn starts_a_use(text: string) -> bool { text.starts_with("use ") || text.contains("\nuse ") }
-
-/// Where an item's text writes its first `use` line; its start where it writes none.
-fn use_offset(text: string) -> int {
-    if text.starts_with("use ") { return 0 }
-    let at = text.index_of("\nuse ")
-    if at < 0 { 0 } else { at + 1 }
-}
-
-fn unimported_mark_words(a: List<string>) -> Voice { mark_unimported(a[0], a[1]) }
-
 /// an annotation's fn takes the declaration as its first seat
 export law annotation_takes_the_declaration {
     kind: "annotation.receiver"
-    reads_view: seatless_annotations
+    reads: seatless_annotations
     voice: seatless_words
     witness: "fn tag() { }\n\n@tag\ntype P = { x: int }\n"
 }
@@ -250,7 +113,7 @@ export law annotation_takes_the_declaration {
 /// an annotation's fn takes a declaration of the kind it stands on
 export law annotation_takes_this_kind {
     kind: "annotation.receiver"
-    reads_view: misplaced_annotations
+    reads: misplaced_annotations
     voice: misplaced_words
     witness: "use @std.meta.{Fn, Diagnostic}\nfn vet(f: Fn) -> List<Diagnostic> { [] }\n\n@vet\ntype P = { x: int }\n"
 }
@@ -258,13 +121,11 @@ export law annotation_takes_this_kind {
 /// Every annotation the written item `at` of `file` wears whose fn's first seat takes a declaration
 /// of `@std/meta`'s, and not one of the kind it stands on: a `Fn` seat on a type, a `Type` seat on a
 /// fn or a const.
-fn misplaced_annotations(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
+fn misplaced_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if !item_held(engine, file, at) { return [] }
     let kinds = [d.kind for d in file_declares_at(engine, file, at).names if d.item == at]
     if kinds.length != 1 { return [] }
-    [Found { at: w.at, args: [w.name, seat.spelled(), stood_on(kinds[0])] } for w in worn_in_viewed(view) for seat in first_seat_of(engine, w.named) if !seat.takes(kinds[0])]
+    [Found { at: w.at, args: [w.name, seat.spelled(), stood_on(kinds[0])] } for w in worn_in(engine, file, at) for seat in first_seat_of(engine, w.named) if !seat.takes(kinds[0])]
 }
 
 /// The declaration the first seat of the fn `d` names takes, as a list: none for a name that names
@@ -298,21 +159,13 @@ type SeatedAnnotation = { name: string, at: Span?, written: int, least: int, mos
 
 /// Every annotation the written item `at` of `file` wears whose fn takes the declaration as its first
 /// seat, `@std/meta`'s, and fits it: a rule's, which takes a value, and a template's left out.
-fn annotations_seated(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<
+fn annotations_seated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     SeatedAnnotation,
 > {
     if !item_held(engine, file, at) { return [] }
-    annotations_seated_viewed(item_view(engine, file, at))
-}
-
-/// `annotations_seated` through the view its law's judging holds, looking no item up again.
-fn annotations_seated_viewed(view: ItemView) -> List<SeatedAnnotation> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
     let kinds = [d.kind for d in file_declares_at(engine, file, at).names if d.item == at]
     if kinds.length != 1 { return [] }
-    let item = view.item
+    let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     [r! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) for r in [seated_annotation(engine, file, kinds[0], a)] if r != null]
 }
@@ -355,14 +208,13 @@ fn answer_shown(ty: SignedType) -> string {
 }
 
 /// Every annotation writing more or fewer arguments than its fn takes after the declaration.
-fn miscounted_annotations(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn miscounted_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [Found { at: r.at, args: [r.name, "${r.least}", "${r.most}", "${r.written}"] } for r in annotations_seated(engine, file, at) if r.written < r.least || r.written > r.most]
 }
 
 /// Every annotation, its arguments counted right, whose fn answers no effect.
-fn effectless_annotations(view: ItemView) -> List<Found> {
-    let at = view.at
-    [Found { at: r.at, args: [r.name, answer_shown(r.answer)] } for r in annotations_seated_viewed(view) if r.written >= r.least && r.written <= r.most && !answers_an_effect(r.answer)]
+fn effectless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: r.at, args: [r.name, answer_shown(r.answer)] } for r in annotations_seated(engine, file, at) if r.written >= r.least && r.written <= r.most && !answers_an_effect(r.answer)]
 }
 
 /// an annotation's arguments fill the seats its fn takes after the declaration
@@ -376,7 +228,7 @@ export law annotation_fills_its_seats {
 /// an annotation's fn answers an effect
 export law annotation_answers_an_effect {
     kind: "annotation.answer"
-    reads_view: effectless_annotations
+    reads: effectless_annotations
     voice: effectless_words
     witness: "use @std.meta.{Fn}\nfn tag(f: Fn) -> int { 1 }\n@tag\nfn g() -> int { 1 }\ng()\n"
 }
@@ -399,13 +251,7 @@ fn derives_refused(view: ItemView) -> List<Found> {
 
 /// The kind of the declaration the statement `s` of the item `at` of `file` makes; absent for one
 /// that declares nothing.
-fn stmt_kind(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    store: SyntaxArena,
-    s: StmtId,
-) -> ItemKind? {
+fn stmt_kind(engine: QueryEngine, file: SourceFileAddress, at: int, store: SyntaxArena, s: StmtId) -> ItemKind? {
     let name? = store.declared_name(s) else { return null }
     file_declares_at(engine, file, at).names.find(it.item == at && it.name == name)?.kind
 }
@@ -502,23 +348,20 @@ impl WornOn {
 }
 
 /// Every annotation a declaration of the written item `at` of `file` wears, written by its source.
-fn worn_on(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<WornOn> {
+fn worn_on(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<WornOn> {
     if !item_held(engine, file, at) { return [] }
-    worn_on_viewed(item_view(engine, file, at))
-}
-
-/// `worn_on` through the view its law's judging holds, looking no item up again.
-fn worn_on_viewed(view: ItemView) -> List<WornOn> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
-    let item = view.item
+    let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     [WornOn { decl: d.name, kind: d.kind, store: item.store, a: a, read: item } for d in file_declares_at(engine, file, at).names if d.item == at for s in item.stmts if source_wrote_stmt(item.store, s) && item.store.declared_name(s) == d.name for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
 }
 
-/// The words `w` writes as names of its declaration's fields; none where it writes none.
-fn words_of(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<ExprId> { annotation_field_words(engine, file, w.store, w.a, fielded(w.kind)) }
+/// The words `w` writes into seats of its fn taking fields; none where it writes none.
+fn words_of(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<ExprId> {
+    seat_field_words(
+        annotation_seats(engine, file, w.a.name),
+        [e for e in w.a.args if w.store.arg_label(e) == null],
+    )
+}
 
 /// Whether a declaration of `kind` has fields an annotation may name: a record's, a component's.
 fn fielded(kind: ItemKind) -> bool { kind == ItemKind.Record || kind == ItemKind.Component }
@@ -526,10 +369,8 @@ fn fielded(kind: ItemKind) -> bool { kind == ItemKind.Record || kind == ItemKind
 /// Every word an annotation on a record of the item `at` of `file` writes into a seat taking fields
 /// that names no field of the record: at the word, its voice handed the word, the record and its
 /// fields, the word respelled as the field it's nearest.
-fn fields_unknown(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    flatten([unknown_words(engine, file, w) for w in worn_on_viewed(view) if fielded(w.kind)])
+fn fields_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten([unknown_words(engine, file, w) for w in worn_on(engine, file, at) if fielded(w.kind)])
 }
 
 fn unknown_words(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<Found> {
@@ -544,16 +385,14 @@ fn unknown_words(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> Lis
 }
 
 /// Every argument written into a seat taking fields that is no bare word.
-fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [Found { at: w.store.expr_span(e), args: [w.a.name] } for w in worn_on(engine, file, at) for e in words_of(engine, file, w) if w.store.ident_name(e) == null]
 }
 
 /// Every annotation whose fn names fields on a declaration with none to name: an enum, a type over
 /// another, a `collect enum` — what its `Type` seat takes and has no fields.
-fn fieldless_annotations(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    [Found { at: w.a.span, args: [w.a.name, stood_on(w.kind)] } for w in worn_on_viewed(view) if !fielded(w.kind) && seats_take_fields(annotation_seats(engine, file, w.a.name))]
+fn fieldless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: w.a.span, args: [w.a.name, stood_on(w.kind)] } for w in worn_on(engine, file, at) if !fielded(w.kind) && seats_take_fields(annotation_seats(engine, file, w.a.name))]
 }
 
 /// Every annotation's fn the written item `view` shows declares with a seat taking fields past a
@@ -573,7 +412,7 @@ fn untyped_annotation(sig: FnSignature) -> bool {
 /// an annotation's word names a field of the record it stands on
 export law annotation_field_named {
     kind: "annotation.seats"
-    reads_view: fields_unknown
+    reads: fields_unknown
     voice: unknown_field_words
     witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(entitty)\ntype F = { entity: string }\n"
 }
@@ -589,7 +428,7 @@ export law annotation_field_bare {
 /// an annotation naming fields stands on a declaration with fields
 export law annotation_fields_on_fields {
     kind: "annotation.receiver"
-    reads_view: fieldless_annotations
+    reads: fieldless_annotations
     voice: fieldless_words
     witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(a)\nenum E { A }\n"
 }
@@ -612,10 +451,8 @@ fn unanchored_words(a: List<string>) -> Voice { fields_without_type(a[0]) }
 
 /// Every annotation a declaration of the item `at` of `file` wears whose fn makes declarations and
 /// is written in that same file: expanding it would need the names the file is still making.
-fn same_file_generators(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    [w.found() for w in worn_on_viewed(view) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) if d.kind == ItemKind.Fn && same_file(d.file, file) && makes_declarations(engine, d)]
+fn same_file_generators(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [w.found() for w in worn_on(engine, file, at) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) if d.kind == ItemKind.Fn && same_file(d.file, file) && makes_declarations(engine, d)]
 }
 
 /// Whether the fn `d` is an annotation's that makes declarations: its first seat takes one, and it
@@ -628,7 +465,7 @@ fn makes_declarations(engine: QueryEngine, d: DeclaredName) -> bool {
 /// an annotation that makes declarations is written in another file than the one it stands in
 export law generator_stands_elsewhere {
     kind: "annotation.seats"
-    reads_view: same_file_generators
+    reads: same_file_generators
     voice: same_file_words
     witness: "use @std.meta.{Type, Declared}\nfn here(t: Type) -> Declared { Declared { made: [] } }\n\n@here\ntype R = { n: int }\n"
 }
@@ -637,32 +474,20 @@ fn same_file_words(a: List<string>) -> Voice { stands_in_this_file(a[0]) }
 
 /// Every annotation whose fn makes declarations that is handed an argument the source doesn't spell:
 /// no literal, no hole-less quote, and no bare name of a declaration — a call, an aggregate.
-fn computed_arguments(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    [w.found() for w in declaring_worn_viewed(view) if w.a.args.any((e) -> computed(engine, file, w, e))]
+fn computed_arguments(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [w.found() for w in declaring_worn(engine, file, at) if w.a.args.any((e) -> computed(engine, file, w, e))]
 }
 
 /// Every argument of an annotation whose fn makes declarations that names a const whose value is no
 /// literal, followed through the consts it names: at the argument.
-fn consts_unspelled(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
+fn consts_unspelled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     let scope? = file_scope(engine, file) else { return [] }
-    [Found { at: w.store.expr_span(e), args: [w.a.name, w.store.ident_name(e) ?? ""] } for w in declaring_worn_viewed(view) if !w.a.args.any((x) -> computed(engine, file, w, x)) for e in w.a.args if spelled_arg(engine, scope, file, w.read, w.store.unnamed(e), 0) is .Settled]
+    [Found { at: w.store.expr_span(e), args: [w.a.name, w.store.ident_name(e) ?? ""] } for w in declaring_worn(engine, file, at) if !w.a.args.any((x) -> computed(engine, file, w, x)) for e in w.a.args if spelled_arg(engine, scope, file, w.read, w.store.unnamed(e), 0) is .Settled]
 }
 
 /// The annotations of the item `at` of `file` whose fn makes declarations.
-fn declaring_worn(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<WornOn> {
-    if !item_held(engine, file, at) { return [] }
-    declaring_worn_viewed(item_view(engine, file, at))
-}
-
-/// `declaring_worn` through the view its law's judging holds, looking no item up again.
-fn declaring_worn_viewed(view: ItemView) -> List<WornOn> {
-    let engine = view.engine
-    let file = view.file
-    [w for w in worn_on_viewed(view) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) if d.kind == ItemKind.Fn && makes_declarations(engine, d)]
+fn declaring_worn(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<WornOn> {
+    [w for w in worn_on(engine, file, at) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) if d.kind == ItemKind.Fn && makes_declarations(engine, d)]
 }
 
 /// Whether the argument `e` of `w` is computed: it spells no literal or hole-less quote, and is no
@@ -678,7 +503,7 @@ fn computed(engine: QueryEngine, file: SourceFileAddress, w: WornOn, e: ExprId) 
 /// an annotation that makes declarations is handed only what the source spells
 export law declaring_arguments_spelled {
     kind: "annotation.seats"
-    reads_view: computed_arguments
+    reads: computed_arguments
     voice: computed_words
     witness: "use gen.{traced}\n\nfn label() -> string { \"x\" }\n\n@traced(label())\nfn sum() -> int { 1 }\n"
     witness_files: {
@@ -689,7 +514,7 @@ export law declaring_arguments_spelled {
 /// a const an annotation that makes declarations is handed names a literal
 export law declaring_const_literal {
     kind: "annotation.seats"
-    reads_view: consts_unspelled
+    reads: consts_unspelled
     voice: unspelled_words
     witness: "use gen.{labelled}\n\nconst Label = \"a\" + \"b\"\n\n@labelled(Label)\nfn sum() -> int { 1 }\n"
     witness_files: {
@@ -703,11 +528,9 @@ fn unspelled_words(a: List<string>) -> Voice { const_unspelled(a[0], a[1]) }
 
 /// Every annotation whose fn's first seat takes a type of its own program named as `@std/meta`'s
 /// declarations are — `Fn`, `Type`, `Named`, `Trait` — which crosses nothing.
-fn counterfeit_annotations(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let unread = [u.at!.lo for u in refusals_seen(view).unread if u.at != null]
-    [Found { at: w.a.span, args: [w.a.name, took] } for w in worn_on_viewed(view) if !w.a.args.any(unread_at(unread, w, it)) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) for took in counterfeit_seat(engine, d)]
+fn counterfeit_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unread = [u.at!.lo for u in item_refusals(engine, file, at).unread if u.at != null]
+    [Found { at: w.a.span, args: [w.a.name, took] } for w in worn_on(engine, file, at) if !w.a.args.any(unread_at(unread, w, it)) for d in some_list(resolved(engine, file, Space.Value, w.a.name).named()) for took in counterfeit_seat(engine, d)]
 }
 
 /// Whether the argument `e` of `w` stands where a place in `unread` starts.
@@ -731,7 +554,7 @@ fn counterfeit_seat(engine: QueryEngine, d: DeclaredName?) -> List<string> {
 /// an annotation's first seat takes `@std/meta`'s own declaration, not one named like it
 export law annotation_receiver_is_meta {
     kind: "annotation.receiver"
-    reads_view: counterfeit_annotations
+    reads: counterfeit_annotations
     voice: counterfeit_words
     witness: "type Fn = {}\nfn mark(f: Fn) { }\n\n@mark\nfn answer() -> int { 1 }\n"
 }

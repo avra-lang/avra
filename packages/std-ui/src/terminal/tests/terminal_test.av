@@ -46,7 +46,7 @@ fn waited(n: int) {
 /// An open dialog of two buttons, sent away into `open`.
 fn about(open: Cell<bool>) -> dialog {
     dialog "About" {
-        shown: open.get()
+        open: open.get()
         items: [button "Back" { on press {} }, button "Close" { on press {} }]
         on dismiss { open.set(false) }
     }
@@ -86,7 +86,7 @@ fn rows(b: Board) -> list {
         item {
             items: [
                 checkbox t.title {
-                    shown: t.done
+                    checked: t.done
                     on change { checked -> b.mark(t.id, checked) }
                 },
                 button "Remove" { on press { b.remove(t.id) } },
@@ -98,7 +98,7 @@ fn rows(b: Board) -> list {
 fn board(b: Board) -> column {
     column {
         field "New task" {
-            shown: b.draft.get()
+            value: b.draft.get()
             on input { typed -> b.draft.set(typed) }
         }
         button "Add" { on press { b.add() } }
@@ -202,7 +202,7 @@ spec "one control holds the focus" {
             let open: Cell<bool> = Cell.new(true)
             let on = terminal(
                 () -> dialog "About" {
-                    shown: open.get()
+                    open: open.get()
                     items: [button "Close" { on press {} }]
                     on dismiss { open.set(false) }
                 },
@@ -249,7 +249,7 @@ spec "one control holds the focus" {
             let held: Cell<string> = Cell.new("")
             let on = terminal(
                 () -> field "Name" {
-                    shown: held.get()
+                    value: held.get()
                     on input { typed -> held.set(typed) }
                 },
             )
@@ -262,24 +262,6 @@ spec "one control holds the focus" {
                 },
             )
             held.get() == "[A"
-        }
-    }
-    given "a field shown otherwise than it is typed" {
-        then "a typed key is heard, and the field shows what the program says" {
-            let held: Cell<string> = Cell.new("")
-            let on = terminal(
-                () -> field "Name" {
-                    shown: "${held.get()}!"
-                    on input { typed -> held.set(typed) }
-                },
-            )
-            on.feed("a")
-            held.get() == "!a" && on.screen().contains("!a!")
-        }
-        then "a field given none keeps what is typed" {
-            let on = terminal(() -> field "Name")
-            on.feed("ab")
-            on.screen().contains("ab")
         }
     }
     given "a screen with no control" {
@@ -332,7 +314,7 @@ spec "a key acts on the control that holds the focus" {
                 () -> form {
                     on submit { sent.set(held.get()) }
                     field "Name" {
-                        shown: held.get()
+                        value: held.get()
                         on input { typed -> held.set(typed) }
                     }
                 },
@@ -356,31 +338,6 @@ spec "a key acts on the control that holds the focus" {
             let filled = b.draft.get() == "Buy milk"
             on.feed("\t${from_codepoint(27)}[200~\n\n${from_codepoint(27)}[201~")
             filled && b.told() == ""
-        }
-        then "Enter sends a field's own submit, the whole of what was typed already its place's" {
-            let sent: Cell<string> = Cell.new("")
-            let held: Cell<string> = Cell.new("")
-            let on = terminal(
-                () -> field "Task" {
-                    shown: held.get()
-                    on input { typed -> held.set(typed) }
-                    on submit { sent.set(held.get()) }
-                },
-            )
-            on.feed("Write the tour\n")
-            sent.get() == "Write the tour"
-        }
-        then "a field's own submit inside a form is sent alone, never the form's too" {
-            let own: Cell<int> = Cell.new(0)
-            let sent: Cell<int> = Cell.new(0)
-            let on = terminal(
-                () -> form {
-                    on submit { sent.set(sent.get() + 1) }
-                    field "Name" { on submit { own.set(own.get() + 1) } }
-                },
-            )
-            on.feed("Ada\n")
-            own.get() == 1 && sent.get() == 0
         }
         then "Enter outside a form does nothing" {
             let b = Board {}

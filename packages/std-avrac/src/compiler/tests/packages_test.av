@@ -1,10 +1,12 @@
 // Packages over an in-memory host: a root manifest names a path
 // dependency, `use @scope.name.a.{x}` reaches its module, the graph's
-// laws refuse in their own words. The entry a manifest names is the
-// CLI's to find (cli/src/commands/tests/entry_bin_test.av).
+// laws refuse in their own words, and the entry is the manifest's.
+use @std.avrac.testing.old_path.{test_workspace}
 use @std.avrac.testing.held.{Held, Judged, held_at}
 use @std.avrac.diagnostics.{suggested}
 use diagnostics.{Diag}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
 
 /// A program (`app`) with a vendored dependency (`@acme/greet`)
 /// that itself depends on a second one (`@acme/words`), and a
@@ -46,6 +48,7 @@ fn only_listed(fs: Map<string, string>, listing: List<string>) -> Map<string, st
 
 /// The same package as the old workspace reads it, for what only it answers: a file's module
 /// name, the root's files, the manifest's entry.
+fn old_workspace(fs: Map<string, string>) -> Workspace { test_workspace(memory_host(fs, names()), "/w") }
 
 /// The package with one file replaced.
 fn with_file(path: string, text: string) -> Held {
@@ -129,14 +132,14 @@ spec "compiler/packages" {
             ) == "84"
         }
         then "a dependency file's module carries its package" {
-            let fns = workspace().judged_at("/w/src/main.av").lowered().fns
-            fns.any(it.name.starts_with("@acme/greet/")) &&
-                fns.any(it.name.starts_with("@acme/words/"))
+            let ws = old_workspace(files())
+            ws.module_of("/w/vendor/greet/src/greet.av") == "@acme.greet" &&
+                ws.module_of("/w/vendor/greet/src/deep/x.av") == "@acme.greet.deep" &&
+                ws.module_of("/w/src/main.av") == ""
         }
         then "a nested package is not a module of the package above it" {
             let kind: string? = main_diag(with_file("/w/src/main.av", "use tools.src.t.{t}\n1\n"))?.kind
-            let own = [p for p in workspace().judged_at("/w/src/main.av").source_paths() if p.starts_with("/w/src/")]
-            own.length == 1 && own[0] == "/w/src/main.av" && kind == "resolve.no_module"
+            old_workspace(files()).root_files().length == 1 && kind == "resolve.no_module"
         }
     }
     given "a package sees only what its manifest declares" {
@@ -222,6 +225,17 @@ spec "compiler/packages" {
         }
     }
     given "the entry and the warnings" {
+        then "the entry is `[bin]`, else src/main.av" {
+            let plain: string? = old_workspace(files()).entry_of()
+            mut binned_files = files()
+            binned_files
+                .set(
+                    "/w/avra.toml",
+                    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/app.av\"\n",
+                )
+            let binned: string? = old_workspace(binned_files).entry_of()
+            plain == "/w/src/main.av" && binned == "/w/src/app.av"
+        }
         then "an unknown section warns and never blocks" {
             let p = with_file(
                 "/w/avra.toml",

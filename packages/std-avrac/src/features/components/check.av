@@ -78,7 +78,7 @@ fn seats_law(mut cx: TypeCx, c: ComponentParts) {
         let names = [s.name.of for s in e.says]
         let twice? = names.find([n for n in names if n == it].length > 1) else { continue }
         let declared? = e.holder.default else { continue }
-        cx.emit(seat_twice(cx.loc_of(declared), e.name, twice.text()))
+        cx.emit(seat_twice(cx.loc_of(declared), e.name, twice))
     }
 }
 
@@ -89,7 +89,7 @@ fn default_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     let defaults = [e.name for e in c.events() if e.holder.marks.any(it.name == default_mark)]
     if defaults.length > 1 { cx.emit(default_twice(cx.stmt_loc(s), c.name, defaults)) }
     for f in c.fields() {
-        if f.marks.any(it.name == default_mark) { cx.emit(default_field(cx.stmt_loc(s), c.name, f.name.text())) }
+        if f.marks.any(it.name == default_mark) { cx.emit(default_field(cx.stmt_loc(s), c.name, f.name.of)) }
     }
 }
 
@@ -310,21 +310,6 @@ export fn default_unmade(word: string, member: string, field: string) -> Voice {
         message: "`${word}`'s `${member}` starts from `self.${field}`, which isn't one of its plain inputs",
         label: "not a plain input",
         help: "a member's default reads the component's plain inputs, once, as the instance is made — give `${word}` an input `${member}` starts from",
-    }
-}
-
-/// A ring among a component's seeds at need, said of its members in the order declared.
-export fn seeds_ring(word: string, members: List<string>) -> Voice {
-    let named = ["`state ${m}`" for m in members]
-    let message = match named.length {
-        1 -> "`${word}`'s ${named[0]} starts from itself",
-        2 -> "`${word}`'s ${named[0]} and ${named[1]} each start from the other",
-        _ -> "`${word}`'s ${named.slice(0, named.length - 1).join(", ")} and ${named.last()!} start from each other in a ring",
-    }
-    Voice {
-        message: message,
-        label: "starts from a seed that starts from it",
-        help: "a seed may read another `state` of its own, never one whose seed reads it back — start one of them from a plain input",
     }
 }
 

@@ -2762,30 +2762,6 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
-### Native generator runs — a design note, not now
-
-Every generator site's run is INTERPRETED, while a generator's program is one per generator and
-print: compiled natively once, kept in the machine store like any object, a site would call it.
-Measured on 4888de75 (a cold `check packages/cli`): the runs are ~4.8 s self of `generated`'s
-12.5 s, ~22 M evaluator steps over 2,816 runs (`Saved.derive` 4.84 M over 363, `relation` 4.23 M,
-the two `query` derives 3.28 M and 2.61 M, `codec` 3.05 M); the splices are ~1.4 s, and a derive
-run's 4.5 s NESTED is the lifting of the declarations it names, which native code would not touch.
-So native runs win at most the ~4.8 s (5% of check CPU), for a large build. What a native run
-would owe that the evaluator gives a run today:
-1. THE SETTLE BUDGET IS SEMANTICS. A run past its steps or bytes is refused, "ran past its
-   budget", deterministically, and a program is held to it. A native run must count the same
-   steps (fuel in the lowering, which spends part of the gain) or the budget means something else.
-2. Code crosses both ways: the declaration in as a MetaVal heap (`handed_values`), the answer back
-   as Node/Map/Octets values decoded into the compiler's arena (`declared_made`, `directives`). A
-   native run needs a native layout for Code and a crossing each way.
-3. A run reads other declarations lazily (`named_lifted`, a read of the query engine): a native
-   run needs a host callback into the engine mid-run.
-4. The late door (`task_survey`), the `spelled` reader and the embed refusal: small host services,
-   each owed.
-5. Loading the native code per (generator, print) from the machine store: a kept object opened
-   at run time, as the layered dev build's shared objects already are.
-The cut that came first is the nested lifting (one declaration lifted ~28 times a check).
-
 ## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
 
 Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.
@@ -3246,19 +3222,6 @@ queries and moves 118: 482 call sites go through a box the lowering notes no typ
 lambdas are taken into boxes typed by the generic seat rather than the instantiated type. Noting the
 instantiated type at those sites brings an editor's rebuild down to the true dependents.
 
-### A frontier holds which places a read named, never which part (measured 2026-11-24)
-
-A frontier keeps each answer's reads as places, so a warm open's walk from what an edit changed meets
-every reader of a place that moved, whatever part of it the reader read. A reader of a part that held
-is now met only where its one record's reads of that place no longer hold (`QueryEngine.meets`, by
-`stands_now`'s rule): a signature edit to one fn of the cli's `commands` module re-checks 61 `resolved`
-answers where it re-checked 5,999, and its check takes 0.29-0.35 s against a body edit's 0.20-0.24 s.
-PART COLUMNS IN THE FRONTIER WERE MEASURED AND GAVE NOTHING OVER THE PART-AWARE MEET: keeping each
-read's part name beside its place (sparse columns, a seal bump) took the record read out of each meet,
-left the checks at 0.26-0.39 s and the same 61 re-checks, and grew the cli's frontier bases from some
-63-81 MB to 96-114 MB (branch `avra-lane-replay-wrong-answers-partb-unlanded`, never landed). The gap
-between signature and body edits is elsewhere.
-
 ### A program-layer object is keyed by its answers, and two conditions hold the key up
 
 `keyed_objects` (compiler/item_program.av) keys each bucket's object by its bodies' answer hashes, what
@@ -3497,35 +3460,6 @@ was typed as text (std-ui/src/forms). The split is clean in its own right;
 the want is a `once fn` with type parameters — one cache per
 instantiation — so `$kept` can be derived for `X<T>`.
 
-### A type holds a computed answer under its own name
-
-A derive that holds a per-type answer writes it as a top-level `once fn`, because
-`static once fn` does not parse ("expected BREAK") and a `once fn` in an `impl` is
-`type.once_fn`. The top-level name must be unique in the module, so `@codec` names its
-three held fns `<snake>_codec_<file mark>_…`, hashing the declaration's file name at compile
-time because two files of one module may each declare a private type of one name
-(`held_names`, `file_mark`). A `once fn` answering `int` is refused too ("which the runtime
-cannot keep"), so the fingerprint is held as `List<int>` and read back as `[0]`. The want: a
-`static once fn` on a type, which has no receiver and so answers from nothing but the
-program, as a top-level one does. It answers any type, a scalar held beside its done mark.
-Wanting sites: std-relation's `stored_generated` and `held_names`, and `@relation`'s
-`stores_name`/`filing_name`. Second user: std-ui's derived `once fn X$kept()`
-(tree/view.av's `composition`), which spells a `$` so the name cannot collide. Repro:
-`engine_repros/static_once_fn`.
-
-### Eight octets of `Bytes` read as one word
-
-`Bytes` has `at` and no word read, so every binary format hand-rolls one: eight `at` calls
-with shifts and ors (`b.word_le(at)` is "`Bytes` has none"). In the evaluator that is about
-ten steps per octet, which is what a compile-time hash pays: before the hashing moved to run
-time, `@codec`'s fingerprint spent 208k of the TypeFacts derive's 585k steps (budget 600k)
-in that loop. The want: `word_le(at)`/`word_be(at)`, one runtime row each, trapping past the
-end as `at` does. Wanting sites: std-relation's `stable.av` `word_at` (every stable hash),
-std-program's `saved_layout.av` `word_in` (whose mapped twin is already the row
-`avra_mmap_word_at`), std-avrac's `core/digest.av`, std-program's `syntax_tape.av`. Second
-user: std-http's SHA-1 `word_at` (`codec.av`) and HTTP/2's `u32_at` (`h2.av`), the same read
-at width four. Repro: `engine_repros/bytes_word_read`.
-
 ### A `match` in a component body composes its arms' views
 
 In a component body `if`/`else` draws whichever branch holds, while a
@@ -3746,63 +3680,6 @@ import the verb), `std-ui`'s `exact.av` index and `cli`'s `fmt.av` grouping.
 
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
-### Interim record — a component's law cannot ask whether a member was written
-
-A component's `check` reads what each member HOLDS, never whether the instance WROTE it, so a
-member with a default cannot be refused for being written where it means nothing: the default and
-a written value equal to it read alike. The wanting site is `field`'s `submit_label`
-(packages/std-ui/src/components/field.av): a return key's word means something only on a field that
-hears `on submit`, and the law that refuses it elsewhere could see a written `.Done` only by making
-the member optional (`SubmitLabel?`, unsaid read as Done). The want: a check asks whether a member
-was given at the instance (`given(self.submit_label)`, or a `@written` mark the derive answers), so
-`submit_label: SubmitLabel = .Done` states its default in the type and still refuses
-`submit_label: .Done` on a field that sends nothing.
-
-### Interim record — a composition takes no type parameter
-
-A component with a body is refused a type parameter's use: `component tab<T>(label: string, state
-chosen: T) { shows: T … }` loses every member it declares (`tab` has no field `label`, `shows`,
-`key`, …). Ticket avra-8sb5.10.209. The wanting site is the board's `tab` and `scheme_tab`
-(tools/ui-board/src/board.av), one choice over `Show` and the same over `Mode`, each a place the
-press writes. The want: `tab<T>` with `state chosen: T` and `shows: T`, so the two are one, and a
-value-and-callback form is never the way around it in the exemplar.
-
-### Interim record — the config component's asks
-
-Filed here because this session's tasks server holds no `avra-8sb5.10`;
-they replace the first wording of tickets `avra-8sb5.10.203`–`.205`. The
-wanting site of each is `@std/config`'s component declaration,
-`docs/2026_11_24_CONFIG.md` §2.0. A declaration already IS a type, takes
-field lines with marks, and has its body composed by a `@composes` trait
-(probes D1–D6, §13, on the gate's compiler from `b455e144`), so what is
-left is ceremony and one silent hole.
-
-- **A1 — two bounds on one type parameter.**
-  `Example: fn load<T: Decode + Configured>() -> Result<T, Issues>`.
-  Today: `parse.expected: expected (` at the `+`.
-  `Callsite:` `@std/config`'s `load`, which instead takes the sources from
-  a `static fn` its derive writes per type.
-- **A2 — two `@composes` traits visible in one file compose neither, and
-  nothing says so.**
-  `Example:` a file importing `@std/config`'s `Configured` and a second
-  composer, declaring `component App { … file "app.toml" }`.
-  Today: only `type.method: App has no method sourced` at the use; the
-  two-composers voice in features/components/check.av does not fire.
-  `Callsite:` a config component in a file that also imports `@std/ui`.
-- **A3 — a composer that also derives `Decode`.**
-  `Example: component App { port: int = 8080  file "app.toml" }` with no
-  `@derive(Decode)` written beside it.
-  Today: the annotation is written by hand.
-  `Callsite:` every config component, §2.0.
-- **A4 — `env_names()` in `@std/io`.**
-  `Example: env_names().filter(it.starts_with("SHOP__"))`.
-  Today: no verb lists the environment.
-  `Callsite:` the env source's strict refusal of a variable no field names.
-- **A5 — an upper-case text verb in `@std/text`.**
-  `Example: "db".upper() == "DB"`.
-  Today: none; `@std/config` keeps a private ASCII `shouted`.
-  `Callsite:` the env source's variable names.
-
 ### Interim record — the tasks server was unreachable at landing
 
 The two asks of `docs/2026_10_01_FIRST_OF_AND_IS_BINDING.md`
@@ -3836,19 +3713,6 @@ The ask the kids walk raised stands in the same way:
   core/shape_derive.av). It cut 0.32% of a cli check's boxes, too little to
   carry six licences.
 
-The ask identifiers as Names raised (NAME_DESIGN) stands in the same way:
-
-- **A map keyed on an interned name.** A map's keys are strings only ("a map's
-  keys are strings, not `int`"), so a table by name cannot key on the program
-  layer's `Name`. It either keys on `name.text()`, which hashes and compares the
-  text the Name exists to stop comparing, or holds a DenseWindow indexed by the
-  id, which is the process's own and must never be saved.
-  `Example: mut bound: Map<Name, DeclaredName> = {}` with `bound.get(ident)`
-  costing one int hash and one int compare, and saved as text like a Name field.
-  `Callsite:` resolve's by-name tables: `Bound`'s values/types/syntaxes maps and
-  FileScope's sibling names (compiler/item_scope.av), and resolve's scope and
-  overlay lookups once identifiers are Names (compiler/resolve/walk.av).
-
 The ask the mmap slice raised (db-05a, `store/mapped.av`) stands in the
 same way:
 
@@ -3863,43 +3727,6 @@ same way:
   `Example: extern fn avra_mmap_slice(h: ptr, lo: int, hi: int) -> Bytes`.
   `Callsite:` `packages/std-avrac/src/compiler/store/mapped.av`'s
   `mapped_at`, the store's whole in-place read.
-- **A derive reads which names an annotation's ARGUMENTS resolve to.**
-  `Annotation.decl` says which fn a mark is; nothing says what its
-  arguments name. `@matches(password, "password")` reads a sibling
-  field, and a derive learns so only by scanning each argument's TEXT
-  for a field's name as a word of its own, so an argument that merely
-  mentions the word, or names it through a path, is misread. Wanted:
-  each argument as the names it resolves to where it is written (a
-  field of the record, a top-level declaration, a literal), read by
-  identity as `marks` reads the fn.
-  `Example: [j for j, a in rules if a.reads.any(it.field != null)].first()`.
-  `Callsite:` `packages/std-validate/src/derive.av`'s `waits_from` /
-  `names_a_field`.
-
-The ask a services lane raised stands in the same way, a language addition for the owner to take:
-
-- **`is_ok` and `is_err` as prelude verbs on `Result`.** The language gives `Result` no member of
-  its own, so the question "did it fail" is a `match` whose arms answer `true` and `false`. P1's
-  case: a writer who has met any other language reaches for the verb first — an LLM writes
-  `r.is_ok()` before it writes the `match` — and today that is refused at check ("`.is_ok(…)` calls
-  a method, and `Result<int, string>` has none"). As a prelude `verbs/Result.av` with bodies
-  (`match self { .Ok(_) -> true, .Err(_) -> false }`) they lower through the path every bodied
-  prelude verb takes, so the ask is the two verbs and their witness (eval == native), no lowering.
-  `Example: println("${source(1).run().is_ok()}")`.
-  `Callsite:` the services lead's `lambda_fail` repro (`src/main.av`, its last line), whose
-  workaround is a `match` in a helper fn (`said(r)` in
-  `tools/program-refusals/lambda_fail_seat_result`).
-- **An annotation argument may be an enum variant.** A generator's arguments come from the source
-  alone, and today `@query(Pass.Typing)` is refused as a computed argument ("its arguments come from
-  the source alone"), so a query names its pass by its word, `@query("typing")`, and the generator
-  maps the word back to `Pass` and refuses one no pass wears: a string tag standing in for the
-  variant. A variant path written in the source is source-alone, not computed, so the generator
-  can take the variant itself and the word goes.
-  `Example: @query(Pass.Typing)` over `fn typed_fn(engine: QueryEngine, …)`.
-  `Callsite:` the 220 query annotations that name their pass (`@query`, `@cut_query`, `@input`,
-  `@parted_query`, `@cut_parted_query`, `@folded_query`, across std-avrac's compiler, std-program
-  and the cli), whose seat is `pass: string` in std-program/src/saved_query.av, read by
-  `pass_named` (std-program/src/pass.av).
 
 ### Deadline — the change log watches cells, never a whole collection
 

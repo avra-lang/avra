@@ -9,21 +9,21 @@
 //!
 //!     GET    /                         every queue, its terms and counts
 //!     GET    /{queue}                  one queue; 404
-//!     GET    /{queue}/items            its items, oldest first: `limit`, `after`; 422
+//!     GET    /{queue}/items            its items, oldest first: `limit`, `after`
 //!     POST   /{queue}/items/{id}/retry hand it out again now; 404, 409 held, 422
 //!     DELETE /{queue}/items/{id}       let it go; 404, 409 held
 //!
 //! A queue's name is one segment, percent-encoded where it holds a `/`
 //! (`resize%2Fdead`).
 use @std.http.http.{Request, Response, Unrouted, status, text}
+use @std.http.query.{Asked}
 use @std.http.route.{Mounted, Route, delete, get, post}
-use @std.http.typed.{captured, either, found}
 use @std.json.{Json, field}
-use @std.meta.{derive}
 use @std.queue.{HomeError, order_word, overflow_word}
 use @std.sqlite.{Db}
+use @std.text.{from_codepoint, parse_int}
 use @std.time.{Time, now}
-use @std.validate.{Decode, range}
+use @std.url.{decoded}
 use operate.{Acted, Peeked, Stage, Standing, discard, peek, queue_named, queues, retry}
 
 /// The operating routes over `db`, each answering 403 to a request
@@ -32,11 +32,19 @@ use operate.{Acted, Peeked, Stage, Standing, discard, peek, queue_named, queues,
 export fn queue_admin(db: Db, allowed: fn(Request<Unrouted>) -> bool, clock: fn() -> Time = now) -> Mounted {
     Mounted {
         found: [guarded(r, allowed) for r in [
-            get "/" { _req -> either(listed(db, clock)) },
-            get "/{queue}" { req -> either(one(db, req.params.queue, clock)) },
-            get "/{queue}/items" { req -> either(page(db, req.params.queue, req.query_as(), clock)) },
-            post "/{queue}/items/{id}/retry" { req -> either(acted_on(db, req.params.queue, req.params.id, retry, clock)) },
-            delete "/{queue}/items/{id}" { req -> either(acted_on(db, req.params.queue, req.params.id, discard, clock)) },
+            get "/" { _req -> listed(db, clock) },
+            get "/{queue}" { req -> one(db, req.params.queue, clock) },
+            get "/{queue}/items" { req ->
+                page(
+                    db,
+                    req.params.queue,
+                    req.query().one("limit"),
+                    req.query().one("after"),
+                    clock,
+                )
+            },
+            post "/{queue}/items/{id}/retry" { req -> acted_on(db, req.params.queue, req.params.id, retry, clock) },
+            delete "/{queue}/items/{id}" { req -> acted_on(db, req.params.queue, req.params.id, discard, clock) },
         ]],
     }
 }
@@ -46,30 +54,35 @@ fn guarded(r: Route, allowed: fn(Request<Unrouted>) -> bool) -> Route {
     r with { serve: (q: Request<Unrouted>, t: Bytes) -> if !r.reads(t) || allowed(q) { (r.serve)(q, t) } else { status(403) } }
 }
 
-/// A page's query: `limit` items, fifty unless asked, after the item
-/// `after` names.
-@derive(Decode)
-type Paging = { @range(0, 1000) limit: int = 50, after: string? = null }
-
 // ── The answers ──
 
-fn listed(db: Db, clock: fn() -> Time) -> Result<Response, Response> {
-    Response.json(Json.Arr([standing_json(s) for s in served(queues(db, clock))?]))
+fn listed(db: Db, clock: fn() -> Time) -> Response {
+    match queues(db, clock) {
+        .Ok(all) -> Response.json(Json.Arr([standing_json(s) for s in all])),
+        .Err(why) -> failed(why),
+    }
 }
 
-fn one(db: Db, raw: string, clock: fn() -> Time) -> Result<Response, Response> {
-    let name = captured(raw)?
-    found(served(queue_named(db, name, clock))?, standing_json, missing: text(404, no_queue(name)))
+fn one(db: Db, raw: string, clock: fn() -> Time) -> Response {
+    let name? = queue_word(raw) else { return unnamed(raw) }
+    match queue_named(db, name, clock) {
+        .Ok(s) -> if s == null { text(404, no_queue(name)) } else { Response.json(standing_json(s!)) },
+        .Err(why) -> failed(why),
+    }
 }
 
-fn page(db: Db, raw: string, asked: Result<Paging, Response>, clock: fn() -> Time) -> Result<
-    Response,
-    Response,
-> {
-    let name = captured(raw)?
-    let p = asked?
-    let items = served(peek(db, name, limit: p.limit, after: p.after, clock: clock))?
-    Response.json(Json.Arr([peeked_json(i) for i in items]))
+fn page(db: Db, raw: string, limit: Asked, after: Asked, clock: fn() -> Time) -> Response {
+    let name? = queue_word(raw) else { return unnamed(raw) }
+    let n? = limit_of(limit) else { return text(400, bad_limit()) }
+    let from = match after {
+        .Absent -> null,
+        .Value(v) -> v.text(),
+        .Bare or .Repeated(_) -> { return text(400, bad_after()) },
+    }
+    match peek(db, name, limit: n, after: from, clock: clock) {
+        .Ok(items) -> Response.json(Json.Arr([peeked_json(p) for p in items])),
+        .Err(why) -> failed(why),
+    }
 }
 
 fn acted_on(
@@ -78,20 +91,39 @@ fn acted_on(
     raw_id: string,
     verb: fn(Db, string, string, fn() -> Time) -> Result<Acted, HomeError>,
     clock: fn() -> Time,
-) -> Result<Response, Response> {
-    let name = captured(raw)?
-    let id = captured(raw_id)?
-    match served(verb(db, name, id, clock))? {
-        .Done(fresh) -> Response.json(Json.Obj([field("id", Json.Str(fresh))])),
-        .Missing -> text(404, no_item(name, id)),
-        .Held(until) -> Response { status: 409, body: held_words(until).bytes() },
-        .Unread -> text(422, unread_letter(id)),
+) -> Response {
+    let name? = queue_word(raw) else { return unnamed(raw) }
+    let id? = queue_word(raw_id) else { return unnamed(raw_id) }
+    match verb(db, name, id, clock) {
+        .Ok(a) -> match a {
+            .Done(fresh) -> Response.json(Json.Obj([field("id", Json.Str(fresh))])),
+            .Missing -> text(404, no_item(name, id)),
+            .Held(until) -> Response { status: 409, body: held_words(until).bytes() },
+            .Unread -> text(422, unread_letter(id)),
+        },
+        .Err(why) -> failed(why),
     }
 }
 
-/// What a home answered, or the status its failure earns.
-fn served<T>(r: Result<T, HomeError>) -> Result<T, Response> {
-    match r { .Ok(v) -> v, .Err(why) -> { fail failed(why) } }
+/// A segment as the name it encodes; absent where it decodes to no text
+/// or to one holding a NUL.
+fn queue_word(raw: string) -> string? {
+    let b? = decoded(raw.bytes()) else { return null }
+    let s? = b.text() else { return null }
+    if s.contains(from_codepoint(0)) { return null }
+    s
+}
+
+/// A page's `limit`: fifty when absent, a count up to a thousand.
+fn limit_of(a: Asked) -> int? {
+    match a {
+        .Absent -> 50,
+        .Value(v) -> {
+            let n? = parse_int(v.text() ?? "") else { return null }
+            if n < 0 || n > 1000 { null } else { n }
+        },
+        .Bare or .Repeated(_) -> null,
+    }
 }
 
 fn failed(why: HomeError) -> Response {
@@ -152,18 +184,12 @@ fn peeked_json(p: Peeked) -> Json {
                 field("sent_at", instant(p.sent_at)),
                 field("ready_at", instant(p.ready_at)),
                 field("leased_until", instant(p.leased_until)),
-                field("reader", str_or_null(p.reader)),
+                field("reader", if p.reader == null { Json.Null } else { Json.Str(p.reader!) }),
                 field("shape", Json.Int(p.shape)),
                 field("item", p.item ?? Json.Null),
                 field("read", Json.Bool(p.item != null)),
-                field("unread", str_or_null(p.unread)),
             ],
         )
-}
-
-fn str_or_null(s: string?) -> Json {
-    let v? = s else { return Json.Null }
-    Json.Str(v)
 }
 
 fn instant(t: Time?) -> Json {
@@ -182,6 +208,18 @@ fn stage_word(s: Stage) -> string {
 }
 
 // ── The voices ──
+
+fn unnamed(raw: string) -> Response {
+    text(400, "a segment names a queue or an item in percent-encoded text, and `${raw}` is none")
+}
+
+fn bad_limit() -> string {
+    "`limit` is a count from 0 to 1000, given once"
+}
+
+fn bad_after() -> string {
+    "`after` is an item's id, given once"
+}
 
 fn no_queue(name: string) -> string {
     "no queue `${name}` stands in this database"

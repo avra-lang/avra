@@ -23,19 +23,14 @@
 //! reads that field's value. A rule on the record itself reads the
 //! whole value once every field has passed — the cross-field rules.
 //! A `type Name = shape` carrying rules reads its shape, then wraps
-//! it: a `Username` is proof it passed. `@secret` on a field, or a
-//! field whose type implements `Hidden`, is no rule: no issue about it
-//! ever shows what it received.
+//! it: a `Username` is proof it passed. `@secret` on a field is no
+//! rule: no issue about it ever shows what it received.
 //!
 //! `from_json` reads the text directly (json.av): a record takes its
 //! keys in the order the text writes them, matched by length then by
 //! bytes, reads each field's value where it stands, then settles the
 //! fields in declaration order — absence, then each rule — so a rule
 //! naming a sibling reads it as the tree path does.
-//!
-//! A field of a FLAT record — one field, a scalar — that decodes by no
-//! derive of its own is its scalar on the wire: `type Ratio = { r: float }`
-//! reads and writes as a number, wrapped as `Ratio { r: … }` once read.
 use @std.text.{admits}
 use @std.json.reading.{
     bind,
@@ -54,10 +49,6 @@ use @std.meta.{
     Field,
     Kind,
     Annotation,
-    Marker as Unrun,
-    Named as Marked,
-    marks,
-    decl,
     Directive,
     Code,
     Decls,
@@ -68,10 +59,6 @@ use @std.meta.{
     implements,
     type_named,
     beside,
-    flat,
-    flat_field,
-    flat_made,
-    stored_scalar,
 }
 use decode.{
     Decoding,
@@ -99,8 +86,7 @@ use json.{
     json_read_bool,
 }
 use value.{Value, Entry}
-use issue.{Issues}
-use @std.json.typed.{Path}
+use issue.{Issues, root}
 use check.{Checking, filed}
 use shape.{FieldShape, FieldKind}
 
@@ -120,14 +106,6 @@ export trait Decode {
         Self,
         Issues,
     >
-
-    /// JSON text read as this type: it, or every issue — what `decode`
-    /// answers over the text's `Value`, read with no tree between.
-    static fn from_json(
-        text: string,
-        coercion: Coercion = Coercion.Strict,
-        limits: Limits = Limits {},
-    ) -> Result<Self, Issues>
 
     /// The fields a form draws, in declaration order — none for a type
     /// that is no record.
@@ -151,7 +129,7 @@ export trait Decode {
 
     /// Every annotation on a field is a rule this derive calls.
     static fn marks(t: Type) -> List<string> {
-        [[a.name for a in f.annotations] for f in t.fields].flatten()
+        flatten([[a.name for a in f.annotations] for f in t.fields])
     }
 }
 
@@ -170,7 +148,7 @@ export trait Checked {
 
     /// Every annotation on a field is a rule this derive calls.
     static fn marks(t: Type) -> List<string> {
-        [[a.name for a in f.annotations] for f in t.fields].flatten()
+        flatten([[a.name for a in f.annotations] for f in t.fields])
     }
 }
 
@@ -184,7 +162,7 @@ export fn checker(t: Type) -> Decls {
             fn check() -> Issues {
                 mut c = Checking {}
                 ${[field_check(f) for f in t.fields]}
-                let ${bind().at} = Path { up: [] }
+                let ${bind().at} = root()
                 let seen: Value? = null
                 let ${bind().got}: ${t}? = self
                 ${[judging(a, checking_ruling) for a in rules(t)]}
@@ -220,7 +198,7 @@ fn field_decoder(t: Type, projection: Code) -> Decls {
 fn field_check(f: Field) -> Stmts {
     quote {
         let ${f.name} = {
-            let ${bind().at} = Path { up: [] }.field(${literal(f.name)})
+            let ${bind().at} = root().field(${literal(f.name)})
             let ${bind().got}: ${inner(f.kind).spelled()}? = self.${f.name}
             let seen: Value? = ${shown(f, inner(f.kind))}
             ${[judging(a, checking_ruling) for a in field_rules(f)]}
@@ -232,7 +210,7 @@ fn field_check(f: Field) -> Stmts {
 /// The field's value as a `Value`, when it is a scalar a person can
 /// read in a report; null for a secret and for any shape that is not.
 fn shown(f: Field, k: Kind) -> Code {
-    if secret_field(f) { return quote { null } }
+    if f.annotations.any(is_secret(it)) { return quote { null } }
     match k {
         .Str -> quote { if ${name(bind().got)} == null { null } else { Value.Text(${name(bind().got)}!) } },
         .Int -> quote { if ${name(bind().got)} == null { null } else { Value.Int(${name(bind().got)}!) } },
@@ -267,8 +245,20 @@ export fn decoder(t: Type) -> Decls {
             static fn fields() -> List<FieldShape> { ${shape_list(t)} }
 
             fn value() -> Value { ${valued(t)} }
+        }
 
-            static fn from_json(text: string, coercion: Coercion, limits: Limits) -> Result<${t}, Issues> {
+        impl Args for ${t} {
+            fn args() -> Value { self.value() }
+        }
+
+        impl ${t} {
+
+            /// JSON text read as this type: it, or every issue — what
+            /// `decode` answers over the text's `Value`.
+            static fn from_json(text: string, coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}) -> Result<
+                ${t},
+                Issues,
+            > {
                 decode_json(
                     text,
                     (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${name(t.name)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret),
@@ -277,13 +267,6 @@ export fn decoder(t: Type) -> Decls {
                     limits,
                 )
             }
-        }
-
-        impl Args for ${t} {
-            fn args() -> Value { self.value() }
-        }
-
-        impl ${t} {
 
             static fn decoded(mut ${bind().d}: Decoding, s: Slot) -> ${t}? {
                 ${b.lines}
@@ -321,8 +304,6 @@ fn entry_of(key: Code, value: Code) -> Code {
 /// What a value of kind `k`, read by `v`, is in the tree — the shape each
 /// kind's reader takes back. `depth` names a nested walk's binders apart.
 fn encoded(k: Kind, v: Code, depth: int) -> Code {
-    let flat = flat_of(k)
-    if flat != null { return encoded(flat!.scalar, flat_held(flat!, v), depth) }
     let each_word = "e${depth}"
     let key_word = "k${depth}"
     let each = name(each_word)
@@ -335,10 +316,7 @@ fn encoded(k: Kind, v: Code, depth: int) -> Code {
         .Opt(inner) -> quote { if ${v} == null { Value.Null } else { ${encoded(inner, quote { ${v}! }, depth)} } },
         .List(inner) -> quote { Value.List([${encoded(inner, each, depth + 1)} for ${each_word} in ${v}]) },
         .Map(_, inner) -> quote { Value.Map([${entry_of(key, encoded(inner, each, depth + 1))} for ${key_word}, ${each_word} in ${v}]) },
-        .Named(n, _) -> when {
-            texted(n) -> quote { Value.Text(${v}.text_form()) }
-            _ -> quote { ${v}.value() }
-        },
+        .Named(n, _) -> if texted(n) { quote { Value.Text(${v}.text_form()) } } else { quote { ${v}.value() } },
         .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> quote { Value.Null },
     }
 }
@@ -352,7 +330,7 @@ fn shape_list(t: Type) -> Code {
 
 fn field_shape(t: Type, f: Field) -> Code {
     let owed = if optional(f) { quote { false } } else { quote { true } }
-    let hidden = if secret_field(f) { quote { true } } else { quote { false } }
+    let hidden = if f.annotations.any(is_secret(it)) { quote { true } } else { quote { false } }
     quote { FieldShape { name: ${literal(f.name)}, kind: ${field_kind(inner(f.kind), t.name)}, required: ${owed}, secret: ${hidden} } }
 }
 
@@ -360,14 +338,16 @@ fn field_shape(t: Type, f: Field) -> Code {
 /// record by its own fields — unless it leads back to `owner`, whose
 /// fields would then never end — and any other type by its spelling.
 fn field_kind(k: Kind, owner: string) -> Code {
-    let flat = flat_of(k)
-    if flat != null { return field_kind(flat!.scalar, owner) }
     match k {
         .Str -> quote { FieldKind.Text },
         .Int -> quote { FieldKind.Int },
         .Float -> quote { FieldKind.Float },
         .Bool -> quote { FieldKind.Bool },
-        .Named(n, _) -> if nested(k) != null && !reaches(n, owner, []) { quote { FieldKind.Record(${name(n)}.fields()) } } else { spelled_kind(k) },
+        .Named(n, _) -> if nested(k) != null && !reaches(n, owner, []) {
+            quote { FieldKind.Record(${name(n)}.fields()) }
+        } else {
+            spelled_kind(k)
+        },
         .List(each) -> if nested(each) != null { quote { FieldKind.Records(${literal(k.spelled())}) } } else { spelled_kind(k) },
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> spelled_kind(k),
     }
@@ -381,7 +361,7 @@ fn spelled_kind(k: Kind) -> Code { quote { FieldKind.Other(${literal(k.spelled()
 fn nested(k: Kind) -> Type? {
     match k {
         .Named(n, args) -> {
-            if !args.is_empty() || texted(n) || flat_of(k) != null { return null }
+            if !args.is_empty() || texted(n) { return null }
             let t? = type_named(n) else { return null }
             if t.shape_over() != null || !t.variants.is_empty() { null } else { t }
         },
@@ -530,24 +510,11 @@ fn projection_slot(f: Field) -> Code {
 }
 
 fn hidden_slot(f: Field, at: Code) -> Code {
-    if secret_field(f) { quote { ${at}.secret() } } else { at }
+    if f.annotations.any(is_secret(it)) { quote { ${at}.secret() } } else { at }
 }
 
-/// `@secret`: a field whose value is never echoed. No rule, so never run: its word marks what the
-/// field received as hidden. Its seat's and answer's types are imported under other names, since a
-/// derive's code reads a name here first and a program may declare its own `Named` or `Marker`.
-export fn secret(_d: Marked) -> Unrun { Unrun {} }
-
-/// Whether `a` is `@secret`, by the fn it names.
-fn is_secret(a: Annotation) -> bool { marks(a, secret) }
-
-/// Whether nothing about the field ever shows what it received: it
-/// carries `@secret`, or its type implements `Hidden`.
-fn secret_field(f: Field) -> bool { f.annotations.any(is_secret(it)) || secret_type(inner(f.kind)) }
-
-fn secret_type(k: Kind) -> bool {
-    match k { .Named(n, _) -> implements(n, "Hidden"), _ -> false }
-}
+/// `@secret` is no rule: it hides what the field received.
+fn is_secret(a: Annotation) -> bool { a.name == "secret" }
 
 /// One rule over the value read so far, recorded where it refuses.
 /// The value is bound where the rule's call lands, under a name no
@@ -583,8 +550,6 @@ fn json_typed(n: string) -> bool {
 
 /// The reader for a shape at `at`.
 fn reader(k: Kind) -> Code {
-    let flat = flat_of(k)
-    if flat != null { return flat_wrapped(flat!, reader(flat!.scalar)) }
     match k {
         .Str -> quote { ${name(bind().d)}.text(${name(bind().at)}) },
         .Int -> quote { ${name(bind().d)}.int(${name(bind().at)}) },
@@ -617,18 +582,15 @@ fn unread(k: Kind) -> Code {
 /// A list element's decoder, as a fn value — absent for an element
 /// no reader takes yet.
 fn element(k: Kind) -> Code? {
-    if flat_of(k) != null {
-        return quote { (mut ${bind().d}: Decoding, s: Slot) -> { let ${bind().at} = s
-${reader(k)} } }
-    }
     match k {
         .Str -> quote { read_text },
         .Int -> quote { read_int },
         .Float -> quote { read_float },
         .Bool -> quote { read_bool },
-        .Named(n, _) -> when {
-            texted(n) -> quote { (mut ${bind().d}: Decoding, s: Slot) -> ${form_read(n, quote { s })} }
-            _ -> quote {
+        .Named(n, _) -> if texted(n) {
+            quote { (mut ${bind().d}: Decoding, s: Slot) -> ${form_read(n, quote { s })} }
+        } else {
+            quote {
                 (mut ${bind().d}: Decoding, s: Slot) -> {
                     let ${bind().got}: ${k.spelled()}? = ${name(n)}.decoded(${name(bind().d)}, s)
                     ${name(bind().got)}
@@ -746,14 +708,7 @@ fn late(t: Type, f: Field) -> List<Annotation> {
 
 /// A field's rules, in the order they run: every annotation it wears
 /// but `@secret`.
-fn field_rules(f: Field) -> List<Annotation> { [a for a in f.annotations if !is_secret(a) && !marker(a)] }
-
-/// Whether `a`'s fn answers `@std/meta`'s `Marker`: a mark another
-/// derive reads, never a rule this one calls.
-fn marker(a: Annotation) -> bool {
-    let f? = decl(a) else { return false }
-    match f.answers { .Named(n, _) -> n == "Marker", _ -> false }
-}
+fn field_rules(f: Field) -> List<Annotation> { [a for a in f.annotations if !is_secret(a)] }
 
 /// Where a field's rules first read a sibling: the index of the first
 /// rule an argument of which names a field of `t`.
@@ -789,7 +744,7 @@ const word_char: Bytes = admits(
 fn absent(f: Field) -> Code {
     quote {
         {
-            let ${bind().at} = Slot { value: null, at: Path { up: [] }, required: ${required_code(f)}, hidden: ${name(hidden)} }
+            let ${bind().at} = Slot { value: null, at: root(), required: ${required_code(f)}, hidden: ${name(hidden)} }
             ${reader(inner(f.kind))}
         }
     }
@@ -797,12 +752,10 @@ fn absent(f: Field) -> Code {
 
 fn required_code(f: Field) -> Code { if optional(f) { quote { false } } else { quote { true } } }
 
-fn secret_code(f: Field) -> Code { if secret_field(f) { quote { true } } else { name(hidden) } }
+fn secret_code(f: Field) -> Code { if f.annotations.any(is_secret(it)) { quote { true } } else { name(hidden) } }
 
 /// The direct reader for a shape, at `depth`.
 fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
-    let flat = flat_of(k)
-    if flat != null { return flat_wrapped(flat!, reading(flat!.scalar, depth, required, secret)) }
     match k {
         .Str -> quote { ${name(bind().d)}.json_text(${depth}, ${required}, ${secret}) },
         .Int -> quote { ${name(bind().d)}.json_int(${depth}, ${required}, ${secret}) },
@@ -833,42 +786,6 @@ fn unread_json(k: Kind, depth: Code) -> Code {
     }
 }
 
-/// A FLAT record seen as its scalar — one field, a present scalar, and no
-/// decoder of its own — which is how it crosses: every kind dispatcher here
-/// asks `flat_of` first and handles the scalar instead.
-type Flat = { scalar: Kind, named: string }
-
-/// The scalar a value `v` of a flat record holds.
-fn flat_held(f: Flat, v: Code) -> Code { quote { ${v}.${flat_field(f.named)} } }
-
-/// A read of a flat record's scalar, wrapped in the record once present.
-fn flat_wrapped(f: Flat, read: Code) -> Code {
-    quote {
-        {
-            let ${own("flat")} = ${read}
-            if ${mine("flat")} == null { null } else { ${flat_made(f.named, quote { ${mine("flat")}! })} }
-        }
-    }
-}
-
-/// The kind as a flat record, absent for any other kind.
-fn flat_of(k: Kind) -> Flat? {
-    match k {
-        .Named(n, args) -> {
-            if !args.is_empty() || texted(n) || !flat(n) || own_decoder(n) { return null }
-            let held? = stored_scalar(n) else { return null }
-            if held is .Opt { null } else { Flat { scalar: held, named: n } }
-        },
-        rest -> null,
-    }
-}
-
-/// Whether a named type decodes by its own derive.
-fn own_decoder(n: string) -> bool {
-    let t? = type_named(n) else { return false }
-    implements(n, "Decode") || t.annotations.any(it.name == "derive" && it.args.contains("Decode"))
-}
-
 /// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.
 fn texted(n: string) -> bool { implements(n, "TextForm") }
 
@@ -896,23 +813,15 @@ fn form_json_element(n: string) -> Code {
 /// A list element's direct reader, as a fn value — absent for an
 /// element with none, whose whole list the tree reads.
 fn json_element(k: Kind) -> Code? {
-    if flat_of(k) != null {
-        let read = reading(
-            k,
-            quote { ${name(bind().depth)} },
-            quote { ${name(bind().required)} },
-            quote { secret },
-        )
-        return quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${read} }
-    }
     match k {
         .Str -> quote { json_read_text },
         .Int -> quote { json_read_int },
         .Float -> quote { json_read_float },
         .Bool -> quote { json_read_bool },
-        .Named(n, _) -> when {
-            texted(n) -> form_json_element(n)
-            _ -> quote {
+        .Named(n, _) -> if texted(n) {
+            form_json_element(n)
+        } else {
+            quote {
                 (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> {
                     let ${bind().got}: ${k.spelled()}? = ${name(n)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret)
                     ${name(bind().got)}
@@ -925,4 +834,10 @@ fn json_element(k: Kind) -> Code? {
         },
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
     }
+}
+
+fn flatten<T>(xss: List<List<T>>) -> List<T> {
+    mut out: List<T> = []
+    for xs in xss { out = out.concat(xs) }
+    out
 }

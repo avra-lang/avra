@@ -7,7 +7,6 @@
 //! unless a step of the path is a `state` field, whose cell takes the write and asks nothing of the
 //! root — a path under the receiver or a `mut` seat is a place.
 use core.{
-    NodeKind,
     same_stmt,
     At,
     BindSite,
@@ -23,7 +22,7 @@ use core.{
     flatten,
     some_list,
 }
-use compiler.laws.{Found, FoundFix, ItemAnalysis, law}
+use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
 use features.{measured_slot, type_no_place}
 use features.mutation.{
@@ -72,7 +71,7 @@ type AssignedBody = {
 }
 
 /// Every assignment of the written item `at` of `file` that lands on no place.
-fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
@@ -81,7 +80,7 @@ fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Fo
 
 /// The bodies the written item `at` of `file` writes: each fn's, each method's of its impls, and its
 /// share of its file's entry, each typed as its query keeps it.
-fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     AssignedBody,
 > {
     let fns = [whole(sb! with { typed: typed_fn(engine, file, p!.name) }) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
@@ -104,16 +103,15 @@ fn whole(signed: SignedBody) -> AssignedBody {
 }
 
 /// The entry's statements the written item `at` of `file` writes, under the typing the entry's query
-/// keeps; none where it runs none — a `use` line, an impl, a declaration — which asks nothing of the
-/// entry, so an edit elsewhere in the file leaves its findings standing.
-fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<AssignedBody> {
-    if !runs_in(engine, file, at) { return [] }
+/// keeps; none where it runs none.
+fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<AssignedBody> {
+    if file_declares_at(engine, file, at).names.any(it.item == at) && !runs_in(engine, file, at) { return [] }
     let types = entry_types(engine, file)
     if types.bases.is_empty() { return [] }
     let read = entry_read(engine, file)
     let mine? = read.items.find(it.at == at) else { return [] }
     let signed? = entry_signed(read) else { return [] }
-    let hi = read.base_after(at)
+    let hi = read.items.find(it.at > at)?.base ?? read.store.expr_count()
     [
         AssignedBody {
             store: signed.item.store,
@@ -238,10 +236,10 @@ fn seat_under(signed: SignedBody, i: int) -> Unplaced? {
 fn expr_place(store: SyntaxArena, e: ExprId, n: string) -> Unplaced? {
     match store.expr(e) {
         .Lambda(params, _) or .BlockLambda(params, _) -> {
-            let p? = params.find(it.name.spells(n)) else { return null }
+            let p? = params.find(it.name.of == n) else { return null }
             if p.promises.mutable || p.state { null } else { Unplaced.Param }
         },
-        .MatchOpt(_, bind, _, _) -> if bind.spells(n) { Unplaced.Bind } else { null },
+        .MatchOpt(_, bind, _, _) -> if bind.of == n { Unplaced.Bind } else { null },
         rest -> null,
     }
 }
@@ -351,22 +349,16 @@ fn measured(b: AssignedBody, e: ExprId, subject: ExprId, name: string) -> Found?
 export law assignment_names_a_slot {
     kind: "type.place"
     reads_view: unslotted
-    through: [ASSIGNMENTS]
     voice: unslotted_words
     witness: "fn f() -> int {\n    mut xs = [1]\n    xs.length = 3\n    2\n}\n"
 }
 
 fn unslotted_words(a: List<string>) -> Voice { if a.length == 1 { type_no_place(a[0]) } else { measured_slot(a[0], a[1]) } }
 
-/// The assignments an item's bodies write, every assignment law's reading: found only at an
-/// assignment statement.
-const ASSIGNMENTS: ItemAnalysis = ItemAnalysis { name: "assignments", needs: [NodeKind.StmtAssign] }
-
 /// an assignment lands on a place a write may replace
 export law assignment_lands {
     kind: "resolve.immutable"
     reads: unplaced
-    through: [ASSIGNMENTS]
     voice: unplaced_words
     witness: "let x = 1\nx = 2\nx\n"
 }

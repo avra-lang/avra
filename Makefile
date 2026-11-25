@@ -344,31 +344,6 @@ wasm-runtime: $(WASM_RUNTIME_LIB)
 # The package objects every wasm build may link — the manifests declare them.
 wasm-packages: $(WASM_PACKAGE_OBJS)
 
-# THE RUNTIME FOR AN APPLE SDK, one object per file plus the tick, MINUS the
-# core: an app may not fork. It stands in build/<sdk>/, where the compiler
-# looks beside the native archive (packages/cli/src/commands/shared.av,
-# `apple_toolchain`), built for the release the compiler settles a bare triple
-# on — one of two copies; packages/std-avrac/src/compiler/targets.av's
-# `APPLE_OSES` is the other.
-APPLE_SDK ?= iphonesimulator
-APPLE_TRIPLE_iphonesimulator := arm64-apple-ios17.0-simulator
-APPLE_TRIPLE_iphoneos := arm64-apple-ios17.0
-APPLE_SDKROOT = $(shell xcrun --sdk $(APPLE_SDK) --show-sdk-path 2>/dev/null)
-APPLE_RUNTIME_OBJS := $(patsubst runtime/%.c,build/$(APPLE_SDK)/%.o,$(filter-out runtime/avra_cores.c,$(wildcard runtime/*.c))) build/$(APPLE_SDK)/avra_tick.o
-APPLE_RUNTIME_LIB := build/$(APPLE_SDK)/libavra_runtime.a
-
-build/$(APPLE_SDK)/%.o: %.c build/%.sha
-	@mkdir -p build/$(APPLE_SDK)
-	clang -target $(APPLE_TRIPLE_$(APPLE_SDK)) -isysroot $(APPLE_SDKROOT) -c -O2 -MMD -MP $(SECTIONS) -Wall -Werror -Iruntime $(CFLAGS_$*) -o $@ $<
-
--include $(patsubst %.o,%.d,$(APPLE_RUNTIME_OBJS))
-
-$(APPLE_RUNTIME_LIB): $(APPLE_RUNTIME_OBJS)
-	@rm -f $@
-	@ar rcs $@ $^
-
-apple-runtime: $(APPLE_RUNTIME_LIB)
-
 # THE WASM PROOF: build the fixtures native and for wasm32 and require
 # identical stdout. Skips, spoken, where the wasm toolchain or node is absent.
 wasm-check:
@@ -544,17 +519,9 @@ avra: $(COMPILER_OBJS)
 	@cp packages/cli/src/main build/avra.next && mv -f build/avra.next build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
-	@# what this binary was built from, for a worktree that wants to start from it, and its generation
-	@# of that source: the record still standing is its builder's
-	@sh tools/work built-from . build/.avra-built-from > build/.avra-built-from.next 2>/dev/null && mv -f build/.avra-built-from.next build/.avra-built-from || rm -f build/.avra-built-from build/.avra-built-from.next
+	@# what this binary was built from, for a worktree that wants to start from it
+	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@sh tools/work deposit . || true
-	@# THE CHECKOUT'S STD ANSWERS, made as `make install` makes an install's: the binary's packs over
-	@# this tree's std and its verdict, beside it in build/answers, so a check here reads std as a
-	@# user's does — the compiler's own package among them, cli's import. Kept as they stand where
-	@# neither the binary nor std moved; a std package its own compiler refuses (a std mid-edit) ships
-	@# its answers and no verdict, so a check here judges its files. AVRA_STD_ANSWERS=0 makes none:
-	@# the gate's compilers, whose slices never read them.
-	@[ "$${AVRA_STD_ANSWERS:-1}" = 0 ] || STD_ANSWERS_COMPILER=1 STD_ANSWERS_REFUSED=skip sh tools/std_answers.sh $(CURDIR)/build/avra $(CURDIR)/packages $(CURDIR)/build/answers || find $(CURDIR)/build/answers -delete 2>/dev/null || true
 	@echo "avra: build/avra"
 
 # WHAT A COMPILER BUILD LEAVES, one path a line: the binary, its hot leaves
@@ -726,9 +693,6 @@ build/runtime-tests/io_fork_test: runtime/tests/io_fork_test.c $(RUNTIME_OBJS) b
 	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS) build/std_io.o
 runtime-tests: $(RUNTIME_TESTS)
 	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
-# one runtime test alone (`make runtime-test-pool_claim_test`): the gate's rows, each timed apart
-runtime-test-%: build/runtime-tests/%
-	@$<
 
 # THE TESTS, TESTED: one line of the scheduler broken at a time, and some
 # runtime test must fail for each (runtime/tests/mutations.py).
@@ -1111,7 +1075,7 @@ cost:
 	@sh tools/cost.sh
 	@python3 tools/cost_ratchet.py --judge build/cost
 cost-accept:
-	@COST_ACCEPTING=1 sh tools/cost.sh
+	@sh tools/cost.sh
 	@python3 tools/cost_ratchet.py --accept build/cost
 
 warm-edit:
@@ -1474,19 +1438,13 @@ pool-check:
 # assembled grammar's untold run written as code, one fn per rule. A
 # parser the grammar no longer prints never runs (`avra()` holds it to
 # the grammar's print and falls back to the engine), so a stale one is
-# a slow compiler, never a wrong one; this keeper refuses it. A fresh one
-# is then held to the engine on every file of std-avrac: a form whose
-# rule the generated parser cannot hold traps or differs there.
+# a slow compiler, never a wrong one; this keeper refuses it.
 parser:
 	@./avra grammar --untold > build/untold_parser.av.gen
 	@cmp -s build/untold_parser.av.gen packages/std-avrac/src/compiler/untold_parser.av || { \
 	  echo "parser: packages/std-avrac/src/compiler/untold_parser.av is not what the grammar makes — it is generated, never edited:"; \
 	  echo "parser:   ./avra grammar --untold > packages/std-avrac/src/compiler/untold_parser.av"; \
 	  diff packages/std-avrac/src/compiler/untold_parser.av build/untold_parser.av.gen 2>/dev/null | head -20; exit 1; }
-	@./avra parsers packages/std-avrac > build/parsers.out 2>&1 || { \
-	  grep -vE '^watch' build/parsers.out | tail -20; \
-	  echo "parser: the generated parser and the grammar engine part on a file of std-avrac, whose feature cases hold every form"; exit 1; }
-	@grep '^parsers:' build/parsers.out
 	@echo "parser: $$(grep -c '^fn avra_r' packages/std-avrac/src/compiler/untold_parser.av) rule(s) run as generated code, made from the grammar the compiler assembles"
 
 # EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.

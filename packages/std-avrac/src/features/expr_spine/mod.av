@@ -43,13 +43,12 @@ use diagnostics.{DiagCode, Remedy}
 
 export fn expr_spine() -> LanguageFeature {
     let codes = table<DiagCode> {
-        kind                 | summary                                                   | remedy
-        "type.mismatch"      | "an operand has the wrong type"                           | Remedy.Fix
-        "type.unbranched"    | "a value of an @unbranched type is read, never chosen by" | Remedy.Help
-        "type.unknown_prop"  | "a property name nothing answers to"                      | Remedy.Fix
-        "type.shift_count"   | "a shift count is between 0 and 63"                       | Remedy.Help
-        "type.mixed_bitwise" | "a run of bitwise operators uses one operator"            | Remedy.Help
-        "parse.leading_pipe" | "a continuing operator ends the line it continues"        | Remedy.Help
+        kind                 | summary                                            | remedy
+        "type.mismatch"      | "an operand has the wrong type"                    | Remedy.Fix
+        "type.unknown_prop"  | "a property name nothing answers to"               | Remedy.Fix
+        "type.shift_count"   | "a shift count is between 0 and 63"                | Remedy.Help
+        "type.mixed_bitwise" | "a run of bitwise operators uses one operator"     | Remedy.Help
+        "parse.leading_pipe" | "a continuing operator ends the line it continues" | Remedy.Help
     }
     LanguageFeature expr_spine {
         gram: grammar {
@@ -79,7 +78,7 @@ export fn expr_spine() -> LanguageFeature {
             } -> Expr.Binary
             unary = "!" value:unary -> Expr.Not | "-" value:unary -> Expr.Neg | "~" value:unary -> Expr.Bitnot | withed
             withed = subject:postfix "with" "{" BREAK? fields:NAME ":" values:expression ( "," BREAK? fields:NAME ":" values:expression )* ","? BREAK? "}" -> Expr.With | v:postfix
-            postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> Expr.TypeLiteral | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "<" pins:type ( "," pins:type )* ","? ">" "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.MethodCall by method_pinned_written | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.MethodCall | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" blocks:trailing )? @trailer(blocks) -> Expr.Trailed )* @fold(subject) -> subject
+            postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> Expr.TypeLiteral | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.MethodCall | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" blocks:trailing )? @trailer(blocks) -> Expr.Trailed )* @fold(subject) -> subject
             primary = bits:FRACTION -> Expr.FloatLit | value:INTEGER -> Expr.IntLit | name:NAME -> Expr.Ident | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
         }
         diags: codes

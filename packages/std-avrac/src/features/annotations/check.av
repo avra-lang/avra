@@ -255,16 +255,6 @@ export fn names_no_fn(name: string) -> Voice {
     }
 }
 
-/// A mark whose word a module in reach exports as a mark's fn, which `home` brings and the file
-/// doesn't import.
-export fn mark_unimported(word: string, home: string) -> Voice {
-    Voice {
-        message: "a mark names a fn its file imports — the `use` shows where it comes from",
-        label: "`@${word}` is imported nowhere here",
-        help: "import it — `use ${home}`",
-    }
-}
-
 /// An annotation naming a fn that takes no declaration.
 export fn takes_nothing(name: string) -> Voice {
     Voice {
@@ -389,6 +379,10 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
                 return true
             }
             let m = member!
+            if same_file(cx.view.decls.decl(m).file, cx.view.file) {
+                derived_same_file(cx, a)
+                return true
+            }
             // THE SEAT LAW REACHES THE SECOND HOP TOO. `@derive` itself
             // takes `Named`, which fits every declaration by design, so
             // the door above passes whatever is written — and the
@@ -492,6 +486,21 @@ export fn derives_nothing(name: string) -> Voice {
     }
 }
 
+/// A `@derive` trait's associated `derive` must stand in another
+/// file: expanding needs this file's names, which are still being made.
+fn derived_same_file(mut cx: TypeCx, a: Annotation) {
+    let _ = cx
+        .spoken(
+            refusal(
+                "annotation.seats",
+                at_annotation(cx, a),
+                seats_law,
+                "`${a.name}` derives from a trait whose `derive` stands in this file",
+                "declare the trait — with its `derive` — in another file; expanding it needs this file's names, which are still being made",
+            ),
+        )
+}
+
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
     let shown = match cx.view.types.shape_of(ret) {
         .List(e) if cx.view.types.name_of(e) == "Diagnostic" -> foreign_diagnostics,
@@ -564,16 +573,17 @@ fn bad_kind(mut cx: TypeCx, a: Annotation, x: Diagnostic) {
 /// against. The crossing reads and writes by SLOT, so a shape that
 /// moved reads a different value in every seat — the annotation
 /// cannot run at all.
-fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) { let _ = cx.spoken(said_as("annotation.meta", at_annotation(cx, a), meta_foreign(moved))) }
-
-/// A loaded `@std/meta` whose shapes part from the ones this compiler was built against, where
-/// `moved` says the first that does.
-export fn meta_foreign(moved: string) -> Voice {
-    Voice {
-        message: "the compiler crosses `@std/meta`'s own shapes",
-        label: "the compiler was built against another `@std/meta` — ${moved}",
-        help: "build against the `@std/meta` this compiler ships",
-    }
+fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) {
+    let _ = cx
+        .spoken(
+            refusal(
+                "annotation.meta",
+                at_annotation(cx, a),
+                "the compiler crosses `@std/meta`'s own shapes",
+                "the compiler was built against another `@std/meta` — ${moved}",
+                "build against the `@std/meta` this compiler ships",
+            ),
+        )
 }
 
 fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {

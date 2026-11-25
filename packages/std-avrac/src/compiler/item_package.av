@@ -1,6 +1,6 @@
 //! WHAT A PACKAGE READS AS: every source file's items and what its top level sees, asked as one
 //! question, so a process asking it of a package nobody edited checks one record of inputs.
-use core.{flatten, distinct, some_list}
+use core.{flatten, distinct}
 use @std.meta.{derive}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -8,13 +8,13 @@ use @std.program.worked_ahead.{WorkAhead, Worked, cores_online, engine_worked_ah
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 use @std.program.source_facts.{listed}
-use @std.path.{dir_of, stem_of}
+use @std.path.{dir_of}
 
 /// A package read whole: its source files, how many items they hold, and how many names clashed.
 @derive(Saved)
 export type PackageRead = { files: List<string>, items: int, clashes: int }
 
-@query("summary")
+@query
 export fn package_read(engine: QueryEngine, package: string) -> PackageRead {
     let files = package_sources(engine, package, "src")
     let reads = [file_tally(engine, source_at(package, f)) for f in files]
@@ -29,7 +29,7 @@ export fn package_read(engine: QueryEngine, package: string) -> PackageRead {
 @derive(Saved)
 export type FileTally = { items: int, clashes: int }
 
-@query("summary")
+@query
 export fn file_tally(engine: QueryEngine, file: SourceFileAddress) -> FileTally {
     FileTally {
         items: file_items_saved(engine, file).node.length,
@@ -64,22 +64,12 @@ export fn package_sources(engine: QueryEngine, package: string, dir: string) -> 
     )
 }
 
-/// Whether the source `file` is a program of its own and not a module file: a proof stands beside
-/// it, so its top-level statements are its own to run.
-export fn marked_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    let path = file.path_in_package
-    let names = listed(
-        engine,
-        DirectoryAddress { package_name: file.package_name, path_in_package: dir_of(path) },
-    ) ?? []
-    program_markers().any((m) -> names.contains("${stem_of(path)}.${m}"))
-}
 /// The files a package reaches: its own sources, then each file of every module one of them imports,
 /// and so on, each once.
 @derive(Saved)
 type ClosureFiles = { files: List<SourceFileAddress> }
 
-@cut_query("summary")
+@cut_query
 fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
     closure_from(
         engine,
@@ -90,7 +80,7 @@ fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
 /// The files the program whose entry is `entry` reaches: the entry and every file of its own module,
 /// then each file of every module one of them imports, and so on, each once — what its build reads,
 /// and never a file of another module of its package nothing it reaches imports.
-@cut_query("summary")
+@cut_query
 fn entry_closure(engine: QueryEngine, entry: SourceFileAddress) -> ClosureFiles {
     closure_from(engine, [entry].concat(module_mates(engine, entry)))
 }
@@ -135,34 +125,11 @@ fn closure_from(engine: QueryEngine, roots: List<SourceFileAddress>) -> ClosureF
 @derive(Saved)
 export type ReachedPackages = { packages: List<string> }
 
-@query("summary")
+@query
 export fn package_reach(engine: QueryEngine, package: string) -> ReachedPackages {
     ReachedPackages {
         packages: distinct([f.package_name for f in package_closure(engine, package).files]),
     }
-}
-
-/// The std packages the library of `package` reaches through its files' `use` lines, itself among them,
-/// each once, widened until a step adds none — asked once a package, as a re-export's cycle law
-/// asks it of each package it re-exports from. A package is its library: what its tests use is no
-/// edge of it.
-@query("summary")
-export fn package_uses_reached(engine: QueryEngine, package: string) -> List<string> { uses_widened(engine, [package]) }
-
-/// `keys` and every package they reach through `use` lines, widened until a step adds none.
-fn uses_widened(engine: QueryEngine, keys: List<string>) -> List<string> {
-    let wider = distinct(keys.concat(flatten([package_uses(engine, k) for k in keys])))
-    if wider.length == keys.length { keys } else { uses_widened(engine, wider) }
-}
-
-/// The std packages the library of `package` names in its `use` lines, itself aside: what a
-/// re-export's cycle can close through, where no manifest row stands between them.
-@query("summary")
-fn package_uses(engine: QueryEngine, package: string) -> List<string> {
-    let files = [source_at(package, p) for p in package_source_paths(engine, package).paths]
-    distinct(
-        [m.package for f in files for u in file_words(engine, f).uses for m in some_list(imported_module(engine, f, u)) if m.package != package && m.package.starts_with(STD)],
-    )
 }
 
 collect listed_package_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

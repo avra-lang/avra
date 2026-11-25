@@ -1,0 +1,58 @@
+diff --git a/packages/std-program/src/query_engine.av b/packages/std-program/src/query_engine.av
+index b9a3a94a..37ec838f 100644
+--- a/packages/std-program/src/query_engine.av
++++ b/packages/std-program/src/query_engine.av
+@@ -938,6 +938,19 @@ impl QueryEngine {
+         let outer = self.opened(asked, reads)
+         let definition = self.definition_of(asked)
+         self.computed.push(definition.query_name)
++        if env("AVRA_WHY_TRACE") != null {
++            let label = (q: ContentHash) -> {
++                let k = self.store.question_known_as(q)
++                if k == null { "?" } else { "${k!.query_name}(${(k!.arguments.text() ?? "?").replace("\n", " ")})" }
++            }
++            let open = self.frontier_open()
++            let at = open?.frontier?.place_of(asked.known_as)
++            let moved = if open == null || at == null { "(new)" } else {
++                [label(open!.frontier.question_at(r)) for r in open!.frontier.reads_at(at!) ?? [] if open!.suspects[r] && !(self.settled_held(open!.frontier.question_at(r))?.answer()?.same_as(open!.frontier.entry_at(r).answer()) ?? false)]
++                    .join(" ; ")
++            }
++            eprintln("WHY ${definition.query_name}(${(asked.arguments.text() ?? "?").replace("\n", " ")}) <= ${moved}")
++        }
+         let compute = definition.compute
+         let bytes = compute(self, asked.arguments)
+         self.open_questions.set(outer)
+@@ -1032,7 +1045,25 @@ impl QueryEngine {
+ 
+     /// Whoever is asking now has made this read; with nobody asking, the question is a root, which
+     /// the frontier keeps with what it reads.
++    fn whole_read_stop(question: ContentHash) {
++        let stop = env("AVRA_STOP_READ")
++        if stop != null {
++            let asker = self.open_questions.get().last()
++            let read = self.store.question_known_as(question)
++            if asker != null && read != null {
++                let a_text = "${asker!.query_name}(${asker!.arguments.text() ?? "?"})"
++                let r_text = "${read!.query_name}(${read!.arguments.text() ?? "?"})"
++                let asks = env("AVRA_STOP_ASKER") ?? "item_receivers"
++                if a_text.contains(asks) && a_text.contains(env("AVRA_STOP_ASKER2") ?? "") && r_text.contains(stop!) &&
++                    r_text.contains(env("AVRA_STOP_READ2") ?? "") {
++                    defect("STOP ${a_text} reads ${r_text}")
++                }
++            }
++        }
++    }
++
+     fn record_read(read: RecordedRead) {
++        if env("AVRA_STOP_READ") != null && env("AVRA_STOP_REPLAY") != null { self.whole_read_stop(read.question) }
+         self.gathered(read)
+         let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
+         asker.reads.put(read)
+@@ -1041,6 +1072,7 @@ impl QueryEngine {
+     /// A read of the whole answer `answer` to the question known as `question`, recorded as
+     /// `record_read` records it: a table that holds this read already is left as it stands.
+     fn whole_read(question: ContentHash, answer: ContentHash) {
++        self.whole_read_stop(question)
+         let gathering = self.gathering.get()
+         if !gathering.is_empty() {
+             let depth = self.open_questions.get().length

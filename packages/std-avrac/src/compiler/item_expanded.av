@@ -16,7 +16,7 @@ export fn file_expanded(engine: QueryEngine, file: SourceFileAddress) -> string 
     joined(
         flatten(
             [written_chunks(engine, file, at)
-                .concat(flatten([made_chunks(engine, file, s) for s in sites if s.item == at])) for at in item_ids(engine, file)],
+                .concat(flatten([made_chunks(engine, file, s) for s in sites if s.item == at])) for at in 0..item_count(engine, file)],
         ),
         "\n\n",
     )
@@ -28,12 +28,12 @@ export type CompiledItem = { store: SyntaxArena, stmts: List<StmtId> }
 
 /// Each written item of `file` as compiled, in the order written.
 export fn file_compiled_items(engine: QueryEngine, file: SourceFileAddress) -> List<CompiledItem> {
-    [CompiledItem { store: item.store, stmts: item.stmts } for at in item_ids(engine, file) for item in [read_item(engine, file, at)]]
+    [CompiledItem { store: item.store, stmts: item.stmts } for at in 0..item_count(engine, file) for item in [read_item(engine, file, at)]]
 }
 
 /// The written item `at` of `file`: each statement as canonical source, then what each instance in
 /// it became and what each sugar in it means.
-fn written_chunks(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<string> {
+fn written_chunks(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<string> {
     let item = read_item(engine, file, at)
     flatten(
         [[render_statement(item.store, s)]

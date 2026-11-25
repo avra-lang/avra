@@ -433,8 +433,7 @@ fi
 # working ahead on the cores or in one process alone (`AVRA_WORK_AHEAD_OFF`), and the second build
 # the other way about. Each product must be the cold one: an answer one mode's build saved is the
 # answer the other's would work out. `modes-whole` ends each case whole, `modes-layered` layered,
-# `modes` both; `modes-whole-1` (or -2, and the same of layered) runs that mode's first (or second)
-# case alone, over its own cold product, so a gate deals the cases to runners of their own.
+# `modes` both.
 asked_mode=${AVRA_PROGRAM_MODE-}
 # The cli built as `$1` (whole or layered), alone in one process where `$2` is `alone`.
 built_as() {
@@ -445,16 +444,12 @@ built_as() {
 # The cli's product as `$1` builds it, into `$2`.
 product_as() { case $1 in whole) AVRA_PROGRAM_MODE=release ;; layered) AVRA_PROGRAM_MODE=dev ;; esac; export AVRA_PROGRAM_MODE; unsigned "$2"; }
 for m in whole layered; do
-    if [ -n "${WITNESS_ONLY:-}" ] && ! printf ' %s ' "$WITNESS_ONLY" | grep -qE " (modes|modes-$m|modes-$m-[12]) "; then continue; fi
+    if [ -n "${WITNESS_ONLY:-}" ] && ! printf ' %s ' "$WITNESS_ONLY" | grep -qE " (modes|modes-$m) "; then continue; fi
     cold
     built_as $m ahead
     product_as $m "$tmp/modes.$m"
     if [ $m = whole ]; then other=layered; else other=whole; fi
-    n=0
     for case in "alone ahead" "ahead alone"; do
-        n=$((n + 1))
-        if [ -n "${WITNESS_ONLY:-}" ] && printf ' %s ' "$WITNESS_ONLY" | grep -qE " modes-$m-[12] " &&
-            ! printf ' %s ' "$WITNESS_ONLY" | grep -qE " (modes|modes-$m|modes-$m-$n) "; then continue; fi
         set -- $case
         cold
         built_as $other "$1"

@@ -36,6 +36,7 @@ use features.{
     TypeRow,
     type_row,
     Decl,
+    new_type_facts,
     TypeFacts,
     NameFacts,
     FileView,
@@ -49,6 +50,45 @@ use features.specs.{fits_case}
 use features.annotations.{check_annotation}
 use features.closures.{takes_by_name}
 use features.impls.{derive_contract}
+
+/// A type context over one expression range of a file, reading the
+/// SHARED declaration table — a signature may name any file's
+/// types, and asking for one computes it. The table is born total:
+/// every slot pre-typed as the hole.
+export fn new_type_cx(
+    dispatch: Dispatch,
+    keywords: List<string>,
+    view: FileView,
+    names: NameFacts,
+    elsewhere: Elsewhere,
+    lo: int,
+    hi: int,
+    stmt_lo: int,
+    stmt_hi: int,
+) -> TypeCx {
+    let hole = view.types.intern(Type.Error)
+    TypeCx {
+        view: view,
+        names: names,
+        elsewhere: elsewhere,
+        writer: null,
+        facts: new_type_facts(lo, hi, stmt_lo, stmt_hi, view.store.stmts.count(), hole),
+        error_type: hole,
+        dispatch: dispatch,
+        keywords: keywords,
+        scope: [],
+        narrow_defs: [],
+        narrow_params: [],
+        fn_ret: [],
+        lam_bar: [],
+        lam_promise: [],
+        tscope: [],
+        pairs: [],
+        task_bodies: [],
+        starving: false,
+        aliased_warned: [],
+    }
+}
 
 impl TypeCx {
     /// One declaration typed, then its facts: a fn's or method's body

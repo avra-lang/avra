@@ -1,23 +1,12 @@
 //! The typing rule of a format pattern: each hole binds the piece it stands for, octets over `Bytes`
-//! or a name over it and text over text, the `int` it reads as where its written type is one, or a
-//! value of any other type it is written with, read through that type's text form.
-use core.{Checking, HoleReading, Hole, PatChecks, PatId, SignedType, hole_reading, owned_type}
+//! or a name over it and text over text, or the `int` it reads as where its written type is one.
+use core.{Checking, PatChecks, PatId, SignedType, owned_type, reads_int}
 use core.pat.{Format}
 
 impl PatChecks for Format {
     fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
         let seen = cx.seen(subject)
         let piece = if seen != null && seen!.word() == "Bytes" { seen! with { nulls: 0 } } else { owned_type("string") }
-        for part in self.parts { cx.bind(part.hole.name, read_type(cx, part.hole, piece)) }
-    }
-}
-
-/// What the hole `h` binds over a subject whose pieces are `piece`s.
-fn read_type(cx: Checking, h: Hole, piece: SignedType) -> SignedType {
-    let written? = h.ty else { return piece }
-    match hole_reading(cx.written(written)) {
-        .Text -> piece,
-        .Int -> owned_type("int"),
-        .Form(ty) -> ty,
+        for part in self.parts { cx.bind(part.hole.name, if reads_int(part.hole) { owned_type("int") } else { piece }) }
     }
 }

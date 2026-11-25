@@ -175,11 +175,11 @@ spec "features/formats" {
                     "error[type.format_repeat]: `a` names two spans of this format\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}z{a}\" -> 1\n  ·             ┬\n  ·             ╰── written twice\n──╯\nhelp: rename one, or write `{_}` for a span you do not need",
                 )
         }
-        then "a hole of a type that crosses no text names the protocol it may take" {
+        then "a hole of a type no text reads as names the two it may take" {
             judged("match \"x\" { \"{n: float}z\" -> 1\n    _ -> 0 }")
                 .report()
                 .starts_with(
-                    "error[type.format_parse]: `{n: float}` reads its span as `float`, which crosses no text\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: float}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: implement `@std/text`'s `TextForm` for `float`, or take the span as text and convert it",
+                    "error[type.format_parse]: `{n: float}` reads its span as `float`, and a hole reads text as `string` or `int`\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: float}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm",
                 )
         }
     }
@@ -211,10 +211,10 @@ spec "features/formats" {
                 "grammar V = \"v{major: int}\"\n\"\${V.parse(\"vx\") == null} \${V.parse(\"v+1\") == null} \${V.parse(\"v\") == null} \${V.parse(\"v99999999999999999999\") == null}\"",
             ) == "true true true true"
         }
-        then "a hole of a type that crosses no text is refused" {
+        then "a hole of a type no text reads as is refused" {
             refused_with(
                 "grammar Typed = \"{n: float}z\"\n1",
-                "`{n: float}` reads its span as `float`, which crosses no text",
+                "reads `{n}` as `float`, and a hole reads text as `string` or `int`",
             )
         }
         then "two holes with nothing between them cannot be scanned, so cannot be declared" {

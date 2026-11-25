@@ -1,0 +1,614 @@
+diff --git a/packages/std-avrac/src/compiler/backend/interp.av b/packages/std-avrac/src/compiler/backend/interp.av
+index 57b64514..3c1356db 100644
+--- a/packages/std-avrac/src/compiler/backend/interp.av
++++ b/packages/std-avrac/src/compiler/backend/interp.av
+@@ -32,6 +32,7 @@ use core.{
+     reversed,
+     rt_index,
+     hosted_symbol,
++    CENSUS_LABEL,
+     fp,
+     fp_list,
+     fp_str,
+@@ -806,6 +807,7 @@ export fn reaches_world(b: Body, permits_embed: bool) -> bool {
+ /// which is a program's own extern and reaches whatever it likes.
+ fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
+     let h? = hosted_symbol(i) else { return false }
++    if h.starts_with(CENSUS_LABEL) { return false }
+     let row? = rows.get(h) else { return true }
+     match row.reach { .Pure or .Lookup -> false, .Embed -> !permits_embed, .World -> true }
+ }
+@@ -1822,6 +1824,7 @@ impl Machine {
+     }
+ 
+     fn rt_void(callee: string, args: List<Reg>, pc: int) -> int {
++        if callee.starts_with(CENSUS_LABEL) { return pc + 1 }
+         let _ = self.rt_dispatch(callee, [self.value(r) for r in args])
+         pc + 1
+     }
+diff --git a/packages/std-avrac/src/compiler/backend/llvm_emit.av b/packages/std-avrac/src/compiler/backend/llvm_emit.av
+index 4770c5ba..59aec078 100644
+--- a/packages/std-avrac/src/compiler/backend/llvm_emit.av
++++ b/packages/std-avrac/src/compiler/backend/llvm_emit.av
+@@ -13,6 +13,7 @@ use core.{
+     RtSig,
+     retires,
+     flatten,
++    CENSUS_LABEL,
+ }
+ use features.{nothing, absent_tag}
+ 
+@@ -186,6 +187,7 @@ impl Emit {
+             .ConstStr(_, s) -> self.define(avra_llvm_build_interned_text(self.b, s.bytes(), s.length)),
+             .Bin(_, op, a, x) -> self.define(self.binary_value(op, a, x)),
+             .Un(_, op, src) -> self.define(self.un_value(op, self.v(src))),
++            .CallRtVoid(callee, _) if callee.starts_with(CENSUS_LABEL) -> self.census_row(callee.substring(CENSUS_LABEL.length, callee.length)),
+             .CallRtVoid(callee, args) -> {
+                 self.census_row(callee)
+                 self.void_rt_call(callee, args)
+diff --git a/packages/std-avrac/src/compiler/memory/memory.av b/packages/std-avrac/src/compiler/memory/memory.av
+index a6711199..4f831d57 100644
+--- a/packages/std-avrac/src/compiler/memory/memory.av
++++ b/packages/std-avrac/src/compiler/memory/memory.av
+@@ -40,6 +40,7 @@ use core.{
+     reversed,
+     flatten,
+     opens_region,
++    CENSUS_LABEL,
+ }
+ use compiler.lower.{Lowered, Body}
+ use compiler.soundness.{checked}
+@@ -112,13 +113,16 @@ fn body_ins(
+     let immortal = immortal_regs(layouts.length, ins)
+     runs_joined(
+         noted_pairs(
+-            [i for i in memory_ins(
+-                layouts,
+-                ins,
+-                standing_regs(immortal, ins, seats, marks),
+-                consuming_seats(seats, marks),
+-                by_name,
+-            ) if !immortal_rc_op(i, immortal)],
++            mortal_ops(
++                memory_ins(
++                    layouts,
++                    ins,
++                    standing_regs(immortal, ins, seats, marks),
++                    consuming_seats(seats, marks),
++                    by_name,
++                ),
++                immortal,
++            ),
+         ),
+     )
+ }
+@@ -245,14 +249,14 @@ fn memory_ins(
+             .ScopeExit(gives) -> {
+                 let scope = open_scopes.pop() ?? empty_scope()
+                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
+-                for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
++                for s in life.closed(noted_all("a region's close", scope.settled(gives))) { out.push(s) }
+                 // SOMETHING ALWAYS RECEIVES A YIELD: an enclosing scope adopts
+                 // it, or — at the outermost — the caller takes it as the
+                 // answer. A yield the scope does not own takes its own
+                 // reference either way: a param answered is the caller's
+                 // to keep, and the param was never this body's.
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for s in noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives)) { out.push(s) }
++                for s in noted_all(life.yield_why(gives), moved_out(layouts, scope, gives)) { out.push(s) }
+                 adopts(layouts, open_scopes, gives)
+                 out.push(i)
+             },
+@@ -273,7 +277,7 @@ fn memory_ins(
+             .ArmEnd(gives) -> {
+                 let scope = open_scopes.pop() ?? empty_scope()
+                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
+-                for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
++                for s in life.closed(noted_all("a region's close", scope.settled(gives))) { out.push(s) }
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+                 for s in arm_handed(layouts, scope, gives, handing.last() ?? []) { out.push(s) }
+                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
+@@ -284,7 +288,7 @@ fn memory_ins(
+                 let scope = open_scopes.pop() ?? empty_scope()
+                 let handed = handing.pop()
+                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
+-                for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
++                for s in life.closed(noted_all("a region's close", scope.settled(gives))) { out.push(s) }
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+                 for s in arm_handed(layouts, scope, gives, handed) { out.push(s) }
+                 for r in handed { disowns(open_scopes, r) }
+@@ -315,7 +319,7 @@ fn memory_ins(
+                     root_handed(life, i, ar)]
+                 noted("retain+release: a view held across a call", lent.length)
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for r in lent { out.push(Ins.Retain(r)) }
++                for s in labelled("a view held across a call", [Ins.Retain(r) for r in lent]) { out.push(s) }
+                 let marks: List<SeatMark> = callee_marks(by_name, i)
+                 for j, ar in lent_args(i) {
+                     if consumed_mark(marks, j) && layouts[ar.index].counted() {
+@@ -324,14 +328,19 @@ fn memory_ins(
+                             disowns(open_scopes, ar)
+                         } else {
+                             noted("retain: a consuming seat", 1)
+-                            out.push(Ins.Retain(ar))
++                            for s in labelled(
++                                life.kept_why("a consuming seat", open_scopes, ar, at),
++                                [Ins.Retain(ar)],
++                            ) {
++                                out.push(s)
++                            }
+                         }
+                     }
+                 }
+                 manages(layouts, open_scopes, i)
+                 out.push(i)
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for r in lent { out.push(Ins.Release([r])) }
++                for s in labelled("a view held across a call", [Ins.Release([r]) for r in lent]) { out.push(s) }
+             },
+             // An EARLY exit settles EVERY open scope's debts at the
+             // site — nothing pops, because other paths continue.
+@@ -339,7 +348,7 @@ fn memory_ins(
+                 // an answer no scope owns is the caller's to keep: its own reference, first
+                 if layouts[gives.index].counted() && !owned_open(open_scopes, gives) {
+                     noted("retain: an early answer no scope owns", 1)
+-                    out.push(Ins.Retain(gives))
++                    for s in labelled("an early answer no scope owns", [Ins.Retain(gives)]) { out.push(s) }
+                 }
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+                 for s in noted_all("an early exit", owed_from(open_scopes, 0, gives)) { out.push(s) }
+@@ -378,14 +387,19 @@ fn memory_ins(
+                             disowns(open_scopes, src)
+                         } else {
+                             noted("retain: a value stored in a cell", 1)
+-                            out.push(Ins.Retain(src))
++                            for s in labelled(
++                                life.kept_why("a value stored in a cell", open_scopes, src, at),
++                                [Ins.Retain(src)],
++                            ) {
++                                out.push(s)
++                            }
+                         }
+                     }
+                     // EVERY store settles what the cell held: a fresh
+                     // cell holds nothing (the alloca nulls it), and a
+                     // store inside a loop runs many times where the
+                     // pass sees it once
+-                    out.push(cell_settle(slot))
++                    for s in labelled("a store into a cell", [cell_settle(slot)]) { out.push(s) }
+                 }
+                 out.push(i)
+             },
+@@ -398,7 +412,7 @@ fn memory_ins(
+                 if layouts[dst.index].counted() &&
+                     borrow_outlives(twins, defs, next_barrier, layouts, ins, at, dst, slot, false) {
+                     noted("retain: a load that outlives its cell", 1)
+-                    out.push(Ins.Retain(dst))
++                    for s in labelled("a load that outlives its cell", [Ins.Retain(dst)]) { out.push(s) }
+                     manages(layouts, open_scopes, i)
+                 }
+             },
+@@ -440,7 +454,7 @@ fn memory_ins(
+                 }
+                 if layouts[dst.index].counted() {
+                     noted("retain: a flat record's pack", 1)
+-                    out.push(Ins.Retain(dst))
++                    for s in labelled(life.pack_why(open_scopes, elems, at), [Ins.Retain(dst)]) { out.push(s) }
+                 }
+                 manages(layouts, open_scopes, i)
+             },
+@@ -460,6 +474,12 @@ fn memory_ins(
+                         1,
+                     )
+                 }
++                if rc_kinds_flag() != null && twins[at] {
++                    out.push(census_label("owned: ${life.owned_why(raw)}"))
++                }
++                if rc_kinds_flag() != null && rt_reusing_twin(callee) != null && !args.is_empty() {
++                    out.push(census_label("reuse: ${life.reuse_why(open_scopes, args[0], at)}"))
++                }
+                 match life.handover(open_scopes, at) {
+                     .Kept -> out.push(i),
+                     .Owned -> {
+@@ -496,7 +516,7 @@ fn memory_ins(
+         // copies the whole box.
+         for r in life.dead_here(open_scopes, at) {
+             noted("release: a last read", 1)
+-            out.push(Ins.Release([r]))
++            for s in labelled("a last read", [Ins.Release([r])]) { out.push(s) }
+             disowns(open_scopes, r)
+         }
+     }
+@@ -967,11 +987,15 @@ fn moved_out(layouts: List<Layout>, scope: Scope, gives: Reg?) -> List<Ins> {
+ fn arm_handed(layouts: List<Layout>, scope: Scope, gives: Reg, handed: List<Reg>) -> List<Ins> {
+     if handed.any(same_reg(it, gives)) && !scope.managed.any(same_reg(it, gives)) {
+         noted("moved: an arm's yield into the merge", 1)
+-        return [Ins.Release([r]) for r in handed if !same_reg(r, gives)]
++        return labelled(
++            "an arm's yield into the merge",
++            [Ins.Release([r]) for r in handed if !same_reg(r, gives)],
++        )
+     }
+     let kept = noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives))
+     noted("release: a value another arm hands to the merge", handed.length)
+-    kept.concat([Ins.Release([r]) for r in handed])
++    kept
++        .concat(labelled("a value another arm hands to the merge", [Ins.Release([r]) for r in handed]))
+ }
+ 
+ impl Scope {
+@@ -1244,6 +1268,106 @@ type Lives = {
+ }
+ 
+ impl Lives {
++    /// Census only: `site` and why a count of `r` at `at` was taken rather than moved.
++    fn kept_why(site: string, open_scopes: Stack<Scope>, r: Reg, at: int) -> string {
++        if rc_kinds_flag() == null { return site }
++        let why = if self.last[r.index] > at {
++            "read again after"
++        } else if [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length > 1 {
++            "read twice there"
++        } else if !self.views(r, at).all(self.last[it.index] < at) {
++            "a view rides it past"
++        } else if owned_top(open_scopes, r) {
++            "dies there, owned by the innermost scope"
++        } else if owned_open(open_scopes, r) {
++            "dies there, owned by an outer scope"
++        } else if self.defs[r.index] < 0 {
++            "dies there, a param"
++        } else {
++            "dies there, owned by no scope"
++        }
++        "${site}: ${why}"
++    }
++
++    /// Census only: why the read `i` takes its owned twin — the row never lends, its answer escapes,
++    /// or something may change its subject while the answer is read.
++    fn owned_why(i: Ins) -> string {
++        let callee = match i { .CallRt(_, c, _) -> c, rest -> "" }
++        let dst? = dst_of(i) else { return "?" }
++        if !rt_lends(callee) { return "the row never lends, ${callee}" }
++        mut views: List<Reg> = [dst]
++        mut j = self.defs[dst.index] + 1
++        while j < self.ins.length {
++            let k = self.ins[j]
++            if reads_any(k, views) {
++                if k is .RetVal || k is .FnExit { return "answered" }
++                if k is .Store { return "stored in a cell" }
++                if k is .Pack { return "packed" }
++                if gives_upward(k) { return "yielded" }
++                let d: Reg? = view_of(k)
++                if d != null && self.layouts[d!.index].counted() && !self.twins[j] { views.push(d!) }
++            }
++            j = j + 1
++        }
++        "a call or a bracket may change its subject"
++    }
++
++    /// Census only: whether a row with a reusing twin was handed its subject, and why not.
++    fn reuse_why(open_scopes: Stack<Scope>, r: Reg, at: int) -> string {
++        match self.handover(open_scopes, at) {
++            .Owned -> "handed, owned",
++            .Emptied(_) -> "handed, from a cell",
++            .Kept -> self.kept_why("kept", open_scopes, r, at),
++        }
++    }
++
++    /// Census only: why a flat record's pack took its own count.
++    fn pack_why(open_scopes: Stack<Scope>, elems: List<Reg>, at: int) -> string {
++        if rc_kinds_flag() == null { return "a flat record's pack" }
++        if part_dies(open_scopes, self, elems, at) { return "a flat record's pack: a part dies there" }
++        "a flat record's pack: no part dies there"
++    }
++
++    /// Census only: why a scope's yield takes its own count.
++    fn yield_why(gives: Reg?) -> string {
++        if rc_kinds_flag() == null || gives == null { return YIELD_NOT_OWNED }
++        let r = gives!
++        let d = self.defs[r.index]
++        let why = if d < 0 { "a param" } else if view_of(self.ins[d]) != null { "a view" } else { "owned further out" }
++        "${YIELD_NOT_OWNED}: ${why}"
++    }
++
++    /// Census only: `placed` with each release label naming why the register waited for its
++    /// scope's close.
++    fn closed(placed: List<Ins>) -> List<Ins> {
++        if rc_kinds_flag() == null { return placed }
++        mut out: List<Ins> = []
++        for k, i in placed {
++            let next = if k + 1 < placed.length { released_regs(placed[k + 1]) } else { [] }
++            if is_census_label(i) && next.length == 1 {
++                out.push(census_label("release: a region's close: ${self.close_why(next[0])}"))
++            } else {
++                out.push(i)
++            }
++        }
++        out
++    }
++
++    /// Census only: why `r` was not released where it was last read.
++    fn close_why(r: Reg) -> string {
++        let last = self.last[r.index]
++        let d = self.defs[r.index]
++        if last < 0 || last <= d { return "never read" }
++        if self.death[r.index] != last { return "a view rides it past its last read" }
++        let i = self.ins[last]
++        if i is .Store { return "last read by a store" }
++        if i is .Pack { return "last read by a pack" }
++        if gives_upward(i) { return "last read by a yield" }
++        if opens(i) || closes(i) || turns(i) { return "last read at a bracket" }
++        if !level_span(self.ins, d, last) { return "last read deeper than its definition" }
++        "owned twice, or its own scope is not the innermost"
++    }
++
+     /// The registers whose reference the innermost scope gives up right
+     /// after `at`: each dies there — it and every view riding it read for
+     /// the last time — at its own definition's nesting, so the release
+@@ -1581,11 +1705,59 @@ fn noted(reason: string, n: int) {
+ 
+ /// `placed`, each retain and release tallied as placed at `site`.
+ fn noted_all(site: string, placed: List<Ins>) -> List<Ins> {
+-    if !tallying() { return placed }
++    if !tallying() { return labelled(site, placed) }
+     noted("retain: ${site}", placed.filter(it is .Retain).length)
+     noted("release: ${site}", flatten([released_regs(i) for i in placed]).length)
+     noted("settle: ${site}", placed.length - placed.filter(it is .Retain || it is .Release).length)
+-    placed
++    labelled(site, placed)
++}
++
++once fn rc_kinds_flag() -> string? {
++    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
++    env("AVRA_RC_KINDS")
++}
++
++/// `placed`, each count it moves led by a census label naming `site` when `AVRA_RC_KINDS` asks: a
++/// census build counts each label where it runs.
++fn labelled(site: string, placed: List<Ins>) -> List<Ins> {
++    if rc_kinds_flag() == null { return placed }
++    mut out: List<Ins> = []
++    for i in placed {
++        if i is .Retain { out.push(census_label("retain: ${site}")) }
++        for _r in released_regs(i) { out.push(census_label("release: ${site}")) }
++        if settles_cell(i) { out.push(census_label("cell: ${site}")) }
++        out.push(i)
++    }
++    out
++}
++
++fn census_label(text: string) -> Ins { Ins.CallRtVoid("${CENSUS_LABEL}${text}", []) }
++
++fn is_census_label(i: Ins) -> bool {
++    match i { .CallRtVoid(callee, _) -> callee.starts_with(CENSUS_LABEL), rest -> false }
++}
++
++fn settles_cell(i: Ins) -> bool {
++    match i { .CallRtVoid(callee, _) -> callee == "avra_cell_release", rest -> false }
++}
++
++/// `placed` without its counts of immortal registers, and without the labels that lead them.
++fn mortal_ops(placed: List<Ins>, immortal: List<bool>) -> List<Ins> {
++    if rc_kinds_flag() == null { return [i for i in placed if !immortal_rc_op(i, immortal)] }
++    mut out: List<Ins> = []
++    mut labels: List<Ins> = []
++    for i in placed {
++        if is_census_label(i) {
++            labels.push(i)
++            continue
++        }
++        if !immortal_rc_op(i, immortal) {
++            for l in labels { out.push(l) }
++            out.push(i)
++        }
++        labels = []
++    }
++    out
+ }
+ 
+ /// Whether `callee` answers a box that already stood, retained.
+diff --git a/packages/std-avrac/src/core/ir.av b/packages/std-avrac/src/core/ir.av
+index 05f1d571..6fa0d181 100644
+--- a/packages/std-avrac/src/core/ir.av
++++ b/packages/std-avrac/src/core/ir.av
+@@ -277,6 +277,10 @@ export fn digest_ins(d: Digest, i: Ins) -> Digest {
+ 
+ /// An instruction's payload as words: its tag, its numbers (a register
+ /// by its index, a list by its length then its members), its texts.
++/// A `CallRtVoid` row named with this prefix is no row: a census build counts the rest of its name
++/// where it stands, and any other build emits nothing for it.
++export const CENSUS_LABEL: string = "census:"
++
+ type InsWords = { tag: int, ints: List<int>, texts: List<string> }
+ 
+ fn ins_words(i: Ins) -> InsWords {
+@@ -1264,7 +1268,12 @@ export fn body_symbol(i: Ins) -> string? { body_symbol_role(i) }
+ /// THE HOSTED FN a step calls — the runtime's rows and the program's
+ /// own externs share one call shape, so they share one projection.
+ /// Every name here must be a declared row.
+-export fn hosted_symbol(i: Ins) -> string? { hosted_symbol_role(i) }
++/// A census label names no row.
++export fn hosted_symbol(i: Ins) -> string? {
++    let h? = hosted_symbol_role(i) else { return null }
++    if h.starts_with(CENSUS_LABEL) { return null }
++    h
++}
+ 
+ /// THE SETTLED AGGREGATE a step takes the address of — the one global
+ /// a read looks up by name. Every such name must be a static the
+diff --git a/packages/std-avrac/src/features/facts.av b/packages/std-avrac/src/features/facts.av
+index 61530f1e..b81d7447 100644
+--- a/packages/std-avrac/src/features/facts.av
++++ b/packages/std-avrac/src/features/facts.av
+@@ -20,6 +20,7 @@ use core.{
+     Ins,
+     dst_of,
+     rt_sig_of,
++    CENSUS_LABEL,
+     expr_window,
+     stmt_window,
+     pat_window,
+@@ -710,7 +711,7 @@ impl Emitter {
+ 
+     /// A callee neither the registry nor the program's externs name.
+     fn unknown_callee(name: string) -> bool {
+-        rt_sig_of(name) == null && !self.externs.contains(name)
++        rt_sig_of(name) == null && !self.externs.contains(name) && !name.starts_with(CENSUS_LABEL)
+     }
+ 
+     fn give(i: Ins) {
+diff --git a/runtime/avra_hot.c b/runtime/avra_hot.c
+index b2dd4db8..1557133f 100644
+--- a/runtime/avra_hot.c
++++ b/runtime/avra_hot.c
+@@ -22,6 +22,7 @@ void avra_rc_release(void* p) {
+     if (__builtin_expect(avra_rc_guard_on, 0)) { avra_release_guarded(p, h); return; }
+     if (avra_kind(h) < 0) return;
+     CENSUS(g_rc_releases++);
++    CENSUS(if (g_in_reclaim) g_rc_cascade_releases++);
+     h->rc--;
+     if (__builtin_expect(h->rc > 0, 1)) return;
+     CENSUS(g_rc_frees++);
+@@ -82,7 +83,7 @@ void* avra_array_get_owned(void* arr, int64_t i) {
+     if (__builtin_expect(i < 0 || i >= a->len, 0)) avra_trap_bounds(i, a->len);
+     void* v = (void*)(uintptr_t)a->data[i];
+     Header* h = avra_hdr(v);
+-    if (h != 0 && avra_kind(h) >= 0) { CENSUS(g_rc_retains++); h->rc++; }
++    if (h != 0 && avra_kind(h) >= 0) { CENSUS(g_rc_retains++); CENSUS(g_rc_owned_retains++); h->rc++; }
+     return v;
+ }
+ 
+@@ -102,6 +103,7 @@ void* avra_slot_get_owned(void* box, int64_t i) {
+     if (h != 0 && avra_kind(h) >= 0) {
+         if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(v, h); return v; }
+         CENSUS(g_rc_retains++);
++        CENSUS(g_rc_owned_retains++);
+         h->rc++;
+     }
+     return v;
+diff --git a/runtime/avra_hot.h b/runtime/avra_hot.h
+index 4e1ad3ce..94b2ac8f 100644
+--- a/runtime/avra_hot.h
++++ b/runtime/avra_hot.h
+@@ -15,6 +15,8 @@
+ #ifdef AVRA_CENSUS
+ #define CENSUS(x) x
+ extern int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets, g_list_pushes;
++// Retains an owned read made, and releases a reclaim made of what the dead box held.
++extern int64_t g_rc_owned_retains, g_rc_cascade_releases, g_in_reclaim;
+ void note_retain(void* site);
+ void note_push(void* site);
+ #else
+diff --git a/runtime/avra_runtime.c b/runtime/avra_runtime.c
+index 341e717d..132464da 100644
+--- a/runtime/avra_runtime.c
++++ b/runtime/avra_runtime.c
+@@ -333,6 +333,8 @@ static intptr_t image_slide(void) {
+ #ifdef AVRA_CENSUS
+ 
+ int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
++int64_t g_rc_owned_retains, g_rc_cascade_releases, g_in_reclaim;
++static int64_t g_rc_cell_releases;
+ int64_t g_list_pushes;
+ static int64_t g_empty_made, g_empty_grown;
+ static int64_t g_once_reads, g_once_steps;
+@@ -479,6 +481,9 @@ static int64_t g_type_at_slots = 0;
+ // read, write and count traffic is asked for.
+ static Site g_row_sites[SITES];
+ static int64_t g_row_slots = 0;
++// The same calls by the row's name alone, keyed by the label's address: no site table to outgrow.
++static Site g_row_labels[SITES];
++static int64_t g_row_label_slots = 0;
+ 
+ // A table's heaviest sites with their labels, most first; a printed row is spent.
+ static int by_made_first(const void* a, const void* b);
+@@ -512,12 +517,18 @@ static int by_made(const void* a, const void* b) {
+ 
+ // The labels with the most boxes, most first. One label stands at
+ // one address per module that spells it, so equal texts are summed.
++static void report_labels(const char* name, Site* tbl, int64_t slots, int limit);
++
+ static void report_types(int limit) {
+-    if (g_type_slots == 0) return;
+-    Site* rows = malloc((size_t)g_type_slots * sizeof(Site));
++    report_labels("type", g_type_sites, g_type_slots, limit);
++}
++
++static void report_labels(const char* name, Site* tbl, int64_t slots, int limit) {
++    if (slots == 0) return;
++    Site* rows = malloc((size_t)slots * sizeof(Site));
+     if (!rows) return;
+     int64_t n = 0;
+-    for (int i = 0; i < SITES; i++) if (g_type_sites[i].site) rows[n++] = g_type_sites[i];
++    for (int i = 0; i < SITES; i++) if (tbl[i].site) rows[n++] = tbl[i];
+     qsort(rows, (size_t)n, sizeof(Site), by_label);
+     int64_t merged = 0;
+     for (int64_t i = 0; i < n; i++) {
+@@ -530,12 +541,15 @@ static void report_types(int limit) {
+     qsort(rows, (size_t)merged, sizeof(Site), by_made);
+     int64_t total = 0;
+     for (int64_t i = 0; i < merged; i++) total += rows[i].made;
+-    avra_say("type: %lld boxes answered by owning rows (a _reusing row may answer the box it was handed), %lld labels\n",
+-            (long long)total, (long long)merged);
++    if (strcmp(name, "type") == 0)
++        avra_say("type: %lld boxes answered by owning rows (a _reusing row may answer the box it was handed), %lld labels\n",
++                (long long)total, (long long)merged);
++    else
++        avra_say("%s: %lld calls, %lld labels\n", name, (long long)total, (long long)merged);
+     for (int64_t i = 0; i < merged && i < limit; i++) {
+         // a share in tenths of a percent, rounded
+         long long share = total ? ((long long)rows[i].made * 2000 / total + 1) / 2 : 0;
+-        avra_say("type: %12lld  %3lld.%lld%%  %14lld B  %s\n", (long long)rows[i].made, share / 10, share % 10,
++        avra_say("%s: %12lld  %3lld.%lld%%  %14lld B  %s\n", name, (long long)rows[i].made, share / 10, share % 10,
+                (long long)rows[i].count, (const char*)rows[i].site);
+     }
+     free(rows);
+@@ -626,6 +640,8 @@ static void acc_report(void) {
+ #ifdef AVRA_CENSUS
+     avra_say("rc: %lld retains, %lld releases, %lld reclaims\n",
+             (long long)g_rc_retains, (long long)g_rc_releases, (long long)g_rc_frees);
++    avra_say("rc: %lld retains by owned reads, %lld releases by reclaims, %lld by cells\n",
++            (long long)g_rc_owned_retains, (long long)g_rc_cascade_releases, (long long)g_rc_cell_releases);
+     avra_say("rc: %lld empty lists made, %lld grown\n", (long long)g_empty_made, (long long)g_empty_grown);
+     avra_say("rc: %lld list reads, %lld list writes\n",
+             (long long)g_list_gets, (long long)g_list_pushes);
+@@ -668,6 +684,7 @@ static void acc_report(void) {
+     }
+     const char* types_top = getenv("AVRA_CENSUS_TYPES_TOP");
+     report_types(types_top ? (int)avra_number(types_top, 10) : 40);
++    if (g_sites_census) report_labels("rowname", g_row_labels, g_row_label_slots, 400);
+     report_sizes();
+     report_deaths(slide);
+ #endif
+@@ -756,6 +773,8 @@ void avra_census_row(const char* label) {
+     if (!g_sites_census) return;
+     Site* at = site_in(g_row_sites, &g_row_slots, __builtin_return_address(0));
+     if (at) { at->made++; at->sample = (void*)(uintptr_t)label; }
++    Site* by = site_in(g_row_labels, &g_row_label_slots, (void*)(uintptr_t)label);
++    if (by) by->made++;
+ #else
+     (void)label;
+ #endif
+@@ -1578,6 +1597,7 @@ void avra_release_guarded(void* p, Header* h) {
+ __attribute__((noinline))
+ void avra_release_dead(void* p, int32_t kind) {
+     CENSUS(cascade_opened(__builtin_return_address(0)));
++    CENSUS(g_in_reclaim++);
+     if (kind == KIND_ARRAY) {
+         array_reclaim(p);
+     } else if (kind == KIND_MAP) {
+@@ -1585,6 +1605,7 @@ void avra_release_dead(void* p, int32_t kind) {
+     } else {
+         box_free(p);
+     }
++    CENSUS(g_in_reclaim--);
+     CENSUS(cascade_closed());
+ }
+ 
+@@ -2881,6 +2902,7 @@ void* avra_get_owned_guarded(void* arr, int64_t i) {
+ // scope re-entered (a loop body) finds an empty cell, so an
+ // iteration that never stores releases nothing.
+ void avra_cell_release(void* slot) {
++    CENSUS(if (*(void**)slot && avra_hdr(*(void**)slot) && avra_kind(avra_hdr(*(void**)slot)) >= 0) g_rc_cell_releases++);
+     avra_rc_release(*(void**)slot);
+     *(void**)slot = NULL;
+ }

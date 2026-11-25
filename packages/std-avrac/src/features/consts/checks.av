@@ -1,17 +1,14 @@
 //! The typing rule of a `const` in a body: its value checks against its annotation, and its name
-//! binds to the annotation's type, or else to the value's. A named instance the entry builds where
-//! it's written is the declaration, judged as one: its name binds to the declaration's type.
+//! binds to the annotation's type, or else to the value's.
 use core.{Checking, Seating, StmtChecks, StmtId}
 use core.stmt.{ConstDecl}
 
 impl StmtChecks for ConstDecl {
     fn stmt_checked(mut cx: Checking, s: StmtId) {
-        let built = if cx.store.is_component_inst(s) { (cx.program.value_named)(self.name.text(), null) } else { null }
-        if built != null { return cx.bind(self.name.text(), built!, true) }
         let declared = if self.ty == null { null } else { cx.written(self.ty!) }
         cx.const_opened(s)
-        let read = cx.check_seated(self.value, declared, Seating.Binding(self.name.text()))
+        let read = cx.check_seated(self.value, declared, Seating.Binding(self.name.of))
         cx.const_closed()
-        cx.bind(self.name.text(), declared ?? read, true)
+        cx.bind(self.name.of, declared ?? read, true)
     }
 }

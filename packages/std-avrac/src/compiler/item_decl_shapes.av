@@ -31,7 +31,7 @@ use core.{
     flatten,
     same_stmt,
 }
-use compiler.laws.{Found, law, no_findings}
+use compiler.laws.{Found, law}
 use compiler.resolve.{builtin_named, index_as_element}
 use compiler.typing.{
     beyond_trait,
@@ -62,7 +62,6 @@ use compiler.typing.{
 }
 use diagnostics.{Voice}
 use features.{
-    build_reads_itself,
     const_reads_itself,
     method_row,
     property_row,
@@ -74,7 +73,7 @@ use features.{
     nested_uses,
 }
 use features.specs.{case_group}
-use features.collects.{enum_gathers_nothing, lawful_header, no_trait_said, unimplemented_said}
+use features.collects.{enum_gathers_nothing, lawful_header}
 use features.sublang.{
     GrammarAction,
     action_miscounted,
@@ -107,16 +106,11 @@ type OwnNames = { owner: string, names: List<string> }
 fn taken_again(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     own: fn(SyntaxArena, StmtId) -> OwnNames?,
 ) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
-    taken_again_viewed(item_view(engine, file, at), own)
-}
-
-/// `taken_again` through the view its law's judging holds, looking no item up again.
-fn taken_again_viewed(view: ItemView, own: fn(SyntaxArena, StmtId) -> OwnNames?) -> List<Found> {
-    let item = view.item
+    let item = read_item(engine, file, at)
     flatten(
         [again_in(item.store, s, o!) for s in item.stmts for o in [own(item.store, s)] if o != null],
     )
@@ -137,9 +131,9 @@ fn tparams_owned(view: ItemView) -> List<Found> {
 /// A fn's seats, or an extern's.
 fn fn_seats(store: SyntaxArena, s: StmtId) -> OwnNames? {
     let f = store.fn_parts(s)
-    if f != null { return OwnNames { owner: f!.name, names: [p.name.text() for p in f!.params] } }
+    if f != null { return OwnNames { owner: f!.name, names: [p.name.of for p in f!.params] } }
     let host? = store.extern_parts(s) else { return null }
-    OwnNames { owner: host.name, names: [p.name.text() for p in host.params] }
+    OwnNames { owner: host.name, names: [p.name.of for p in host.params] }
 }
 
 /// A fn's or a type declaration's type parameters.
@@ -165,16 +159,12 @@ fn fields_again(view: ItemView) -> List<Found> {
     )
 }
 
-fn seats_again(view: ItemView) -> List<Found> {
-    taken_again_viewed(view, fn_seats)
-}
+fn seats_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { taken_again(engine, file, at, fn_seats) }
 
-fn tparams_again(view: ItemView) -> List<Found> {
-    taken_again_viewed(view, own_type_params)
-}
+fn tparams_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { taken_again(engine, file, at, own_type_params) }
 
-fn variants_again(view: ItemView) -> List<Found> {
-    taken_again_viewed(view, enum_variants)
+fn variants_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    taken_again(engine, file, at, enum_variants)
 }
 
 /// Every member a trait the written item `view` shows declares names again, found where the
@@ -194,14 +184,9 @@ fn enums_empty(view: ItemView) -> List<Found> {
 type Seated = { stmt: StmtId, name: string, params: List<Param> }
 
 /// The fns the written item `at` of `file` declares at its top level, each with its seats.
-fn seated_fns(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Seated> {
+fn seated_fns(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Seated> {
     if !item_held(engine, file, at) { return [] }
-    seated_fns_viewed(item_view(engine, file, at))
-}
-
-/// `seated_fns` through the view its law's judging holds, looking no item up again.
-fn seated_fns_viewed(view: ItemView) -> List<Seated> {
-    let item = view.item
+    let item = read_item(engine, file, at)
     [Seated { stmt: s, name: f!.name, params: f!.params } for s in item.stmts for f in [item.store.fn_parts(s)] if f != null]
 }
 
@@ -209,7 +194,7 @@ fn seated_fns_viewed(view: ItemView) -> List<Seated> {
 /// a second one.
 fn rests_misplaced(view: ItemView) -> List<Found> {
     let store = view.item.store
-    [Found { at: store.stmt_span(f.stmt), args: [f.params[r!].name.text(), f.name] } for f in seated_fns(view.engine, view.file, view.at) for r in [f.params.find_index(it.is_rest())] if r != null && (r! != f.params.length - 1 || f.params.filter(it.is_rest()).length > 1)]
+    [Found { at: store.stmt_span(f.stmt), args: [f.params[r!].name.of, f.name] } for f in seated_fns(view.engine, view.file, view.at) for r in [f.params.find_index(it.is_rest())] if r != null && (r! != f.params.length - 1 || f.params.filter(it.is_rest()).length > 1)]
 }
 
 /// Every seat written with no type in the written item `view` shows: a fn's at its top level, and a
@@ -220,7 +205,7 @@ fn seats_typeless(view: ItemView) -> List<Found> {
     let fns = item
         .stmts
         .concat([f for s in item.stmts for f in item.store.impl_parts(s)?.fns ?? []])
-    [Found { at: item.store.stmt_span(f), args: [p.name.text()] } for f in fns for p in item.store.fn_parts(f)?.params ?? [] if p.ty == null && p.seated()]
+    [Found { at: item.store.stmt_span(f), args: [p.name.of] } for f in fns for p in item.store.fn_parts(f)?.params ?? [] if p.ty == null && p.seated()]
 }
 
 /// a fn's seat declares its type
@@ -236,7 +221,7 @@ fn typeless_words(a: List<string>) -> Voice { param_typeless(a[0]) }
 /// Every fn of the written item `view` shows whose one last `..` seat is written as no list.
 fn rests_unlisted(view: ItemView) -> List<Found> {
     let store = view.item.store
-    [Found { at: store.stmt_span(f.stmt), args: [p.name.text(), f.name] } for f in seated_fns(view.engine, view.file, view.at) for p in some_list(f.params.last()) if p.is_rest() && f.params.filter(it.is_rest()).length == 1 && p.ty != null && p.ty!.name != LIST]
+    [Found { at: store.stmt_span(f.stmt), args: [p.name.of, f.name] } for f in seated_fns(view.engine, view.file, view.at) for p in some_list(f.params.last()) if p.is_rest() && f.params.filter(it.is_rest()).length == 1 && p.ty != null && p.ty!.name != LIST]
 }
 
 /// The type a `..` seat collects its arguments into.
@@ -246,10 +231,7 @@ const LIST: string = "List"
 /// found at the first default.
 fn defaults_misplaced(view: ItemView) -> List<Found> {
     let store = view.item.store
-    [Found {
-        at: store.expr_span(f.params[d!].default!),
-        args: [u!.name.text(), f.params[d!].name.text()],
-    } for f in seated_fns(view.engine, view.file, view.at) for d in [f.params.find_index(it.default != null)] if d != null for u in [f.params.slice(d!, f.params.length).find(it.default == null)] if u != null]
+    [Found { at: store.expr_span(f.params[d!].default!), args: [u!.name.of, f.params[d!].name.of] } for f in seated_fns(view.engine, view.file, view.at) for d in [f.params.find_index(it.default != null)] if d != null for u in [f.params.slice(d!, f.params.length).find(it.default == null)] if u != null]
 }
 
 /// Every fn of the written item `view` shows, and every method of its impls that takes no type
@@ -276,11 +258,11 @@ fn fn_defaults_unlowered(store: SyntaxArena, f: Seated, sign: FnSignature?) -> L
         .find(f.params[it].default != null && s[it].ty?.generic() ?? false)
     if open != null {
         let p = f.params[open!]
-        return [Found { at: store.expr_span(p.default!), args: [p.name.text(), "generic", f.name] }]
+        return [Found { at: store.expr_span(p.default!), args: [p.name.of, "generic", f.name] }]
     }
     [Found {
         at: store.expr_span(p.default!),
-        args: [p.name.text(), if p.promises.mutable { "`mut`" } else { "`const`" }, f.name],
+        args: [p.name.of, if p.promises.mutable { "`mut`" } else { "`const`" }, f.name],
     } for p in f.params if p.default != null && (p.promises.mutable || p.promises.settled || p.promises.state)]
 }
 
@@ -288,38 +270,26 @@ fn fn_defaults_unlowered(store: SyntaxArena, f: Seated, sign: FnSignature?) -> L
 fn marked_fns(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     mark: fn(SyntaxArena, StmtId) -> bool,
 ) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    marked_fns_viewed(item_view(engine, file, at), mark)
-}
-
-/// `marked_fns` through the view its law's judging holds, looking no item up again.
-fn marked_fns_viewed(view: ItemView, mark: fn(SyntaxArena, StmtId) -> bool) -> List<Found> {
-    let store = view.item.store
-    [Found { at: store.stmt_span(f.stmt), args: [f.name] } for f in seated_fns_viewed(view) if mark(store, f.stmt)]
+    let store = read_item(engine, file, at).store
+    [Found { at: store.stmt_span(f.stmt), args: [f.name] } for f in seated_fns(engine, file, at) if mark(store, f.stmt)]
 }
 
 fn mutating(store: SyntaxArena, s: StmtId) -> bool { store.is_mutating(s) }
 
 fn static_marked(store: SyntaxArena, s: StmtId) -> bool { store.is_static(s) }
 
-fn stray_muts(view: ItemView) -> List<Found> {
-    marked_fns_viewed(view, mutating)
-}
+fn stray_muts(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { marked_fns(engine, file, at, mutating) }
 
-fn stray_statics(view: ItemView) -> List<Found> {
-    marked_fns_viewed(view, static_marked)
-}
+fn stray_statics(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { marked_fns(engine, file, at, static_marked) }
 
 /// Whether `s` is a `once fn` that takes arguments.
 fn once_seated(store: SyntaxArena, s: StmtId) -> bool { store.is_once(s) && !(store.fn_parts(s)?.params?.is_empty() ?? true) }
 
 /// Every top-level `once fn` of the written item `at` of `file` that takes arguments.
-fn onces_with_seats(view: ItemView) -> List<Found> {
-    marked_fns_viewed(view, once_seated)
-}
+fn onces_with_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { marked_fns(engine, file, at, once_seated) }
 
 /// Every top-level `once fn` of the written item `view` shows, taking nothing, whose answer is a
 /// scalar the language owns, which no box holds; handed its name and its answer.
@@ -370,7 +340,7 @@ fn methods_stated(view: ItemView) -> List<Found> {
     let store = item.store
     let methods = [m for s in item.stmts for m in store.impl_parts(s)?.fns ?? [] if (store.fn_parts(m)?.tparams ?? []).is_empty()]
     let members = methods.concat(flatten([store.trait_parts(s)?.fns ?? [] for s in item.stmts]))
-    [Found { at: store.stmt_span(m), args: [p.name.text()] } for m in members for f in some_list(store.fn_parts(m)) for p in f.params if p.promises.state]
+    [Found { at: store.stmt_span(m), args: [p.name.of] } for m in members for f in some_list(store.fn_parts(m)) for p in f.params if p.promises.state]
 }
 
 /// a `state` seat is a free fn's
@@ -400,8 +370,8 @@ fn once_methods(view: ItemView) -> List<Found> {
 }
 
 /// Every named type the written item `at` of `file` declares with type parameters.
-fn named_generic(view: ItemView) -> List<Found> {
-    named_found_viewed(view, (n) -> !n.tparams.is_empty())
+fn named_generic(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    named_found(engine, file, at, (n) -> !n.tparams.is_empty())
 }
 
 /// Every named type the written item `view` shows declares over a shape that holds nothing,
@@ -412,35 +382,29 @@ fn named_over_nothing(view: ItemView) -> List<Found> {
 }
 
 /// Every named type the written item `at` of `file` declares that `keep` holds of, handed its name.
-fn named_found(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    keep: fn(NamedParts) -> bool,
-) -> List<Found> {
+fn named_found(engine: QueryEngine, file: SourceFileAddress, at: int, keep: fn(NamedParts) -> bool) -> List<
+    Found,
+> {
     if !item_held(engine, file, at) { return [] }
-    named_found_viewed(item_view(engine, file, at), keep)
-}
-
-/// `named_found` through the view its law's judging holds, looking no item up again.
-fn named_found_viewed(view: ItemView, keep: fn(NamedParts) -> bool) -> List<Found> {
-    let item = view.item
+    let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n!.name] } for s in item.stmts for n in [item.store.named_parts(s)] if n != null && keep(n!)]
 }
 
 /// Every named type the written item `at` of `file` declares whose shape, named type by named
 /// type, comes back to it, where it's the first of that loop declared: the loop's later names stand
 /// over it, which is refused already.
-fn named_circular(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
-    named_found_viewed(view, (n) -> n.tparams.is_empty() && first_of_loop(engine, file, at, n.name))
+fn named_circular(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    named_found(
+        engine,
+        file,
+        at,
+        (n) -> n.tparams.is_empty() && first_of_loop(engine, file, at, n.name),
+    )
 }
 
 /// Whether the named type `name` the written item `at` of `file` declares stands over itself, and
 /// every other name its loop passes through is declared after it.
-fn first_of_loop(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
+fn first_of_loop(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
     let others? = loop_back(engine, file, name, file, name, 0) else { return false }
     others.all((o) -> declared_after(engine, o, ItemKind.Named, file, at))
 }
@@ -465,29 +429,27 @@ fn loop_back(
 }
 
 /// Whether `d`, a declaration of `kind`, is declared after the written item `at` of `file`: in a
-/// file whose path comes later, or later in the same file — by where each item stands among the
-/// file's items (`item_order`), never by its id, which says nothing of where it stands. Every
-/// declaration stands after no item at all; one the file doesn't declare stands after none.
+/// file whose path comes later, or later in the same file.
 fn declared_after(
     engine: QueryEngine,
     d: DeclaredAt,
     kind: ItemKind,
     file: SourceFileAddress,
-    at: ItemId?,
+    at: int,
 ) -> bool {
     if !same_file(d.file, file) { return text_before(file.path_in_package, d.file.path_in_package) }
-    let item? = file_declares_named(engine, d.file, d.name)
+    let item = file_declares_named(engine, d.file, d.name)
         .names
-        .find(it.name == d.name && it.kind == kind)?.item else { return false }
-    let here? = at else { return true }
-    item_order(engine, file, item) > item_order(engine, file, here)
+        .find(it.name == d.name && it.kind == kind)?.item ?? -1
+    item > at
 }
 
 /// Every record the written item `at` of `file` declares that spreads itself; handed its name.
-fn records_spreading_themselves(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let item = view.item
+fn records_spreading_themselves(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
+    Found,
+> {
+    if !item_held(engine, file, at) { return [] }
+    let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(r.stmt), args: [r.parts.name] } for r in records_written(item) if r
         .parts
         .spreads
@@ -546,7 +508,7 @@ fn first_spread(engine: QueryEngine, t: DeclaredAt, file: SourceFileAddress, nam
     let chain? = spread_chain(engine, t, home, []) else { return false }
     let t_at = file_declares_named(engine, t.file, t.name)
         .names
-        .find(it.name == t.name && it.kind == ItemKind.Record)?.item
+        .find(it.name == t.name && it.kind == ItemKind.Record)?.item ?? -1
     chain
         .concat([home])
         .all((d) -> same_declared(d, t) || declared_after(engine, d, ItemKind.Record, t.file, t_at))
@@ -667,7 +629,7 @@ fn grammar_words(a: List<string>) -> Voice {
 
 /// Every impl the written item `at` of `file` writes on a type another package declares, of no
 /// trait its own package declares; handed its heading, its type and the type's package.
-fn orphans(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn orphans(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found {
@@ -757,7 +719,7 @@ fn first_alias(engine: QueryEngine, h: DeclaredAt, closing: DeclaredAt) -> bool 
     let between? = alias_path(engine, h, closing, []) else { return false }
     let h_at = file_declares_named(engine, h.file, h.name)
         .names
-        .find(it.name == h.name && it.kind == ItemKind.Alias)?.item
+        .find(it.name == h.name && it.kind == ItemKind.Alias)?.item ?? -1
     between
         .concat(if same_declared(h, closing) { [] } else { [closing] })
         .all((d) -> declared_after(engine, d, ItemKind.Alias, h.file, h_at))
@@ -872,7 +834,7 @@ fn heads_paired_alike(store: SyntaxArena, e: ExprId) -> List<string> {
 
 fn head_paired_alike(c: CompClause) -> List<string> {
     match c {
-        .Head(index, name, _, _) -> if index?.of == name.of { [name.text()] } else { [] },
+        .Head(index, name, _, _) -> if index?.of == name.of { [name.of] } else { [] },
         .Filter(_) -> [],
     }
 }
@@ -909,44 +871,6 @@ fn enums_gathering_nothing(view: ItemView) -> List<Found> {
         enum_signature(view.engine, view.file, c!.name)?.variants?.is_empty() ?? false]
 }
 
-/// Every trait a `collect enum` of the written item `view` is written over that names a declaration
-/// other than a trait: at the word, its voice handed the enum and the word. A word naming nothing is
-/// resolve's to refuse.
-fn enum_traits_untraited(view: ItemView) -> List<Found> {
-    // the item is in hand: a statement that is no `collect enum` is passed over, and nothing is read
-    let item = view.item
-    let store = item.store
-    [Found { at: store.expr_span(t), args: [c!.name, word!] } for s in item.stmts for c in [store.collect_enum_parts(s)] if c != null for t in c!.traits for word in [store.ident_name(t)] if word != null && names_no_trait(view.engine, view.file, word!)]
-}
-
-/// Every declaration of the written item `view` a `collect enum` of its package gathers that writes
-/// no impl of a trait the enum is written over, where that trait derives none for it: at the
-/// declaration, its voice handed the enum, the trait and the member.
-fn members_unimplemented(view: ItemView) -> List<Found> {
-    // only a type implements a trait: an item declaring none owes no impl, and reads nothing more
-    let store = view.item.store
-    if !view.item.stmts.any((s) -> store.type_decl_name(s) != null) { return [] }
-    // a package whose members owe nothing says so in one word, and no item of it reads its gatherings
-    if !owes_impls(view.engine, view.file.package_name) { return [] }
-    let owed? = package_gatherings(view.engine, view.file.package_name)
-        .owed
-        .get(view.file.path_in_package) else { return [] }
-    [Found { at: declared_span(view, o.member), args: [o.owner, o.word, o.member] } for o in owed if o.item == view.at && !written_traits(view.engine, view.file, o.member).contains(o.word)]
-}
-
-/// Where the written item `view` declares `name`: the statement declaring it.
-fn declared_span(view: ItemView, name: string) -> Span? {
-    let store = view.item.store
-    let s? = view.item.stmts.find((x) -> store.declared_name(x) == name) else { return null }
-    store.stmt_span(s)
-}
-
-/// Whether `word`, read from `file` as a type, names a declaration that is no trait.
-fn names_no_trait(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
-    let d? = resolved(engine, file, Space.Type, word).named() else { return false }
-    d.kind != ItemKind.Trait
-}
-
 /// Whether the `collect enum` `c` of `file` asks lawfully: its header names a scope that exists and
 /// an order, and the component it gathers, where it names one, is one this file sees.
 fn gathers_lawfully(engine: QueryEngine, file: SourceFileAddress, c: CollectEnumParts) -> bool {
@@ -960,7 +884,7 @@ fn gathers_lawfully(engine: QueryEngine, file: SourceFileAddress, c: CollectEnum
 /// a record spreads another record's fields
 export law record_spreads_itself {
     kind: "type.spread"
-    reads_view: records_spreading_themselves
+    reads: records_spreading_themselves
     voice: spreads_itself_words
     witness: "type P = { ..P, a: int }\n"
 }
@@ -993,11 +917,8 @@ export law spreads_in_a_loop {
 
 /// Every const the written item `at` of `file` declares with no type whose value reads back to it;
 /// handed its name.
-fn consts_reading_themselves(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
-    declared_found_viewed(view, const_named, (n) -> first_const_of_loop(engine, file, at, n))
+fn consts_reading_themselves(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    declared_found(engine, file, at, const_named, (n) -> first_const_of_loop(engine, file, at, n))
 }
 
 /// The name the const `s` declares, where it's one with a value.
@@ -1008,36 +929,18 @@ fn const_named(store: SyntaxArena, s: StmtId) -> string? { if store.const_value(
 fn declared_found(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     name_of: fn(SyntaxArena, StmtId) -> string?,
     keep: fn(string) -> bool,
 ) -> List<Found> {
     if !item_held(engine, file, at) { return [] }
-    declared_found_viewed(item_view(engine, file, at), name_of, keep)
-}
-
-/// `declared_found` through the view its law's judging holds, looking no item up again.
-fn declared_found_viewed(
-    view: ItemView,
-    name_of: fn(SyntaxArena, StmtId) -> string?,
-    keep: fn(string) -> bool,
-) -> List<Found> {
-    found_named(view.item, name_of, keep)
-}
-
-/// Each statement of `item` that `name_of` names, where `keep` keeps the name: found at the
-/// statement, handed the name.
-fn found_named(
-    item: ReadItem,
-    name_of: fn(SyntaxArena, StmtId) -> string?,
-    keep: fn(string) -> bool,
-) -> List<Found> {
+    let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n!] } for s in item.stmts for n in [name_of(item.store, s)] if n != null && keep(n!)]
 }
 
 /// Whether the const `name` the written item `at` of `file` declares reads back to itself, and
 /// every other const that loop passes through is declared after it.
-fn first_const_of_loop(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
+fn first_const_of_loop(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
     let loop? = const_loop(engine, file, name) else { return false }
     loop.drop(1).all((d) -> declared_after(engine, d, ItemKind.Const, file, at))
 }
@@ -1045,101 +948,9 @@ fn first_const_of_loop(engine: QueryEngine, file: SourceFileAddress, at: ItemId,
 /// a const's value settles without its own type
 export law const_reads_itself_law {
     kind: "const.cycle"
-    reads_view: consts_reading_themselves
+    reads: consts_reading_themselves
     voice: const_cycle_words
     witness: "const a = a\n"
-}
-
-/// a named instance's build, or a module `state`'s start, never reads what it builds
-export law build_reads_itself_law {
-    kind: "const.cycle"
-    reads_view: builds_reading_themselves
-    voice: build_cycle_words
-    witness: "component box {\n    n: int = 0\n}\n\nfn size() -> int { b.n }\n\nbox b { n: size() }\n\nprintln(\"\${b.n}\")\n"
-}
-
-fn build_cycle_words(a: List<string>) -> Voice { build_reads_itself(a[0]) }
-
-/// Every named instance and module `state` the written item `at` of `file` declares whose build reads
-/// it back (`build_loop`), found where it's declared.
-fn builds_reading_themselves(view: ItemView) -> List<Found> {
-    let item = view.item
-    if !item.stmts.any((s) -> built_named(item.store, s) != null) { return no_findings() }
-    found_named(item, built_named, (n) -> build_loop(view.engine, declared_place(view.file, n)))
-}
-
-/// The name the statement `s` builds at run time: a named instance's, or a module `state`'s.
-fn built_named(store: SyntaxArena, s: StmtId) -> string? {
-    if store.is_component_inst(s) || store.is_module_state(s) { store.let_name(s) } else { null }
-}
-
-/// Whether the build of `home` — a named instance's value, a module `state`'s start — reads `home`
-/// before it has one: through the fns, methods and statics it calls, and the builds of the instances
-/// and states it reads, each asked for first. A fn only named, held as a value, and a lambda's body,
-/// run nothing here.
-fn build_loop(engine: QueryEngine, home: DeclaredAt) -> bool {
-    let first? = build_body(engine, home) else { return false }
-    mut bodies = [first]
-    mut walked: Map<string, bool> = {}
-    mut k = 0
-    while k < bodies.length {
-        let b = bodies[k]
-        k = k + 1
-        if walked.has(b.key) { continue }
-        walked.set(b.key, true)
-        let store = b.item.store
-        let nodes = under(store, At.Expr(b.root))
-        let bound = b.seats.concat(flatten([bound_at(store, n) for n in nodes]))
-        let held = [x for l in nodes for e in some_list(expr_at(l)) if store.lambda_parts(e) != null for x in under(store, l).drop(1)]
-        for n in nodes {
-            if held.any((h) -> same_at(h, n)) { continue }
-            let e? = expr_at(n) else { continue }
-            let called = store.call_parts(e)?.callee?.text()
-            let read = if called == null { store.ident_name(e) } else { null }
-            let name? = called ?? read else { continue }
-            if bound.contains(name) { continue }
-            let d? = resolved(engine, b.file, Space.Value, name).named() else { continue }
-            if called != null {
-                if d.kind == ItemKind.Fn { bodies = bodies.concat(some_list(fn_body(engine, d))) }
-                continue
-            }
-            let place = declared_place(d.file, d.name)
-            let built = build_body(engine, place)
-            if built == null { continue }
-            if same_declared(place, home) { return true }
-            bodies.push(built!)
-        }
-        bodies = bodies.concat(methods_run(engine, b))
-    }
-    false
-}
-
-/// The expression the node `at` is; absent for any other node.
-fn expr_at(at: At) -> ExprId? { match at { .Expr(e) -> e, rest -> null } }
-
-/// Whether two nodes are one.
-fn same_at(a: At, b: At) -> bool {
-    match a { .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), rest -> false }, rest -> false }
-}
-
-/// The build of the named instance or module `state` at `place`, as a body a run asks for: its value,
-/// or its start. Absent for any other declaration.
-fn build_body(engine: QueryEngine, place: DeclaredAt) -> RunBody? {
-    for kind in [ItemKind.Const, ItemKind.State] {
-        let at? = declared_item(engine, place.file, place.name, kind) else { continue }
-        let item = read_item(engine, place.file, at)
-        let s? = item.stmts.find((s) -> built_named(item.store, s) == place.name) else { continue }
-        let v? = item.store.stmt_value(s) ?? item.store.const_value(s) else { continue }
-        return RunBody {
-            file: place.file,
-            at: at,
-            item: item,
-            root: v,
-            seats: [],
-            key: "${place.file.package_name}/${place.file.path_in_package}/${place.name}\$build",
-        }
-    }
-    null
 }
 
 /// Every method an impl of a trait the written item `view` shows writes that the trait doesn't
@@ -1168,8 +979,8 @@ export law impl_beyond_trait {
 }
 
 /// Every type the written item `at` of `file` declares under a name the language owns for a type.
-fn builtins_declared(view: ItemView) -> List<Found> {
-    declared_found_viewed(view, type_named, (n) -> builtin_type_name(avra().rows.types, n))
+fn builtins_declared(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    declared_found(engine, file, at, type_named, (n) -> builtin_type_name(avra().rows.types, n))
 }
 
 /// The name the type declaration `s` declares, where it's one.
@@ -1185,7 +996,7 @@ fn cases_twice(view: ItemView) -> List<Found> {
 /// a type takes a name the language doesn't own
 export law builtin_type_declared {
     kind: "resolve.builtin_type"
-    reads_view: builtins_declared
+    reads: builtins_declared
     voice: builtin_words_declared
     witness: "enum bool {\n    a\n}\n"
 }
@@ -1209,7 +1020,7 @@ export law field_twice {
 /// a fn names each seat once
 export law seat_twice {
     kind: "type.duplicate_param"
-    reads_view: seats_again
+    reads: seats_again
     voice: again_words
     witness: "fn f(a: int, a: int) -> int { a }\n"
 }
@@ -1217,7 +1028,7 @@ export law seat_twice {
 /// a declaration names each type parameter once
 export law type_param_twice {
     kind: "type.tparam"
-    reads_view: tparams_again
+    reads: tparams_again
     voice: again_words
     witness: "fn f<T, T>(x: T) -> T { x }\n"
 }
@@ -1235,7 +1046,7 @@ fn tparam_owned_words(a: List<string>) -> Voice { tparam_owned(a[0]) }
 /// an enum names each variant once
 export law variant_twice {
     kind: "type.enum_decl"
-    reads_view: variants_again
+    reads: variants_again
     voice: again_words
     witness: "enum E {\n    a\n    a\n}\n"
 }
@@ -1297,7 +1108,7 @@ fn unlowered_default_words(a: List<string>) -> Voice {
 /// `mut fn` marks a method
 export law mut_fn_outside_impl {
     kind: "type.mut_fn"
-    reads_view: stray_muts
+    reads: stray_muts
     voice: mut_words
     witness: "mut fn f() -> int { 1 }\n"
 }
@@ -1305,7 +1116,7 @@ export law mut_fn_outside_impl {
 /// `static fn` marks a method
 export law static_fn_outside_impl {
     kind: "type.static_fn"
-    reads_view: stray_statics
+    reads: stray_statics
     voice: static_words
     witness: "static fn f() -> int { 1 }\n"
 }
@@ -1313,7 +1124,7 @@ export law static_fn_outside_impl {
 /// a `once` fn takes no arguments
 export law once_fn_with_seats {
     kind: "type.once_fn"
-    reads_view: onces_with_seats
+    reads: onces_with_seats
     voice: once_seats_words
     witness: "once fn seed(n: int) -> string { \"s\" }\n"
 }
@@ -1337,7 +1148,7 @@ export law once_fn_as_method {
 /// a named type stands over one written shape
 export law named_type_generic {
     kind: "type.named"
-    reads_view: named_generic
+    reads: named_generic
     voice: named_generic_words
     witness: "type X<T> = List<T>\n"
 }
@@ -1355,7 +1166,7 @@ fn named_nothing_words(a: List<string>) -> Voice { named_unslotted(a[0], a[1]) }
 /// a named type stands over a shape it does not name
 export law named_type_circular {
     kind: "type.named"
-    reads_view: named_circular
+    reads: named_circular
     voice: named_circular_words
     witness: "type X = X\n"
 }
@@ -1499,22 +1310,6 @@ export law index_named_as_element {
     witness: "fn f() -> int {\n    for i, i in [1] {\n        1\n    }\n    1\n}\n"
 }
 
-/// a collected enum is written over traits
-export law collect_enum_over_a_trait {
-    kind: "collect_enum.trait"
-    reads_view: enum_traits_untraited
-    voice: untraited_words
-    witness: "type Nope = {}\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n"
-}
-
-/// each member of a collected enum implements the traits it is written over
-export law collect_enum_member_implements {
-    kind: "collect_enum.trait"
-    reads_view: members_unimplemented
-    voice: unimplemented_words
-    witness: "use @std.meta.{Named, Marker}\n\nexport fn shape(_d: Named) -> Marker { Marker {} }\n\ntrait Area {\n    fn area() -> int\n}\n\n@shape\ntype Dot = {}\n\ncollect enum Shape: Area = @shape in self by it.name\n"
-}
-
 /// a collected enum gathers at least one member
 export law collect_enum_empty {
     kind: "collect_enum.empty"
@@ -1572,10 +1367,6 @@ fn stray_words(_a: List<string>) -> Voice { no_method() }
 fn paired_words(a: List<string>) -> Voice { index_as_element(a[0]) }
 
 fn gathers_words(a: List<string>) -> Voice { enum_gathers_nothing(a[0]) }
-
-fn untraited_words(a: List<string>) -> Voice { no_trait_said(a[0], a[1]) }
-
-fn unimplemented_words(a: List<string>) -> Voice { unimplemented_said(a[0], a[1], a[2]) }
 
 fn nested_use_words(_a: List<string>) -> Voice { nested_uses() }
 

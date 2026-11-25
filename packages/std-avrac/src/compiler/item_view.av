@@ -19,7 +19,7 @@ export type ItemView = {
     engine: QueryEngine,
     reader: int,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     item: ReadItem,
     impls: Cell<List<ImplAt>?>,
     typed: Cell<List<TypedNodes>?>,
@@ -43,8 +43,6 @@ export type ItemView = {
     unreached: Cell<ItemUnreached?>,
     unwritten: Cell<ItemUnwritten?>,
     holes: Cell<ItemHoles?>,
-    refusals: Cell<ItemRefusals?>,
-    broken: Cell<ItemBroken?>,
 }
 
 /// An item's nodes as a law walks them: by kind, and the node each stands under.
@@ -110,7 +108,7 @@ type StatedHeld = { bodies: List<StatedBody>, reads: List<RecordedRead> }
 
 impl ItemView {
     /// Whether this is `reader`'s view, in `engine`, of the item `at` of `file`.
-    fn shows(engine: QueryEngine, reader: int, file: SourceFileAddress, at: ItemId) -> bool { self.reader == reader && self.holds(engine, file, at) }
+    fn shows(engine: QueryEngine, reader: int, file: SourceFileAddress, at: int) -> bool { self.reader == reader && self.holds(engine, file, at) }
 
     /// The nodes of any of the kinds `on` that `reach` reaches in the item, in the order it reaches
     /// them; those a quote writes only where `quotes`.
@@ -140,18 +138,6 @@ impl ItemView {
 
     /// The item's walk, made the first time it is asked for and held from here on.
     fn walked() -> ItemWalk { self.walk.get() ?? self.walk_made() }
-
-    /// Whether the item holds a node of the kind `k` as a law walks it: read off the walk every
-    /// judging law shares, so a law over a form the item lacks reads nothing more of it.
-    fn holds_kind(k: NodeKind) -> bool { self.walked().kinds.any(it.kind == k && !it.nodes.get().is_empty()) }
-
-    /// Whether the item's store holds a node of any of the kinds `kinds`, or `kinds` names none: read
-    /// off the one filing of every node it holds, so a law over forms the item lacks is never asked.
-    fn holds_any(kinds: List<NodeKind>) -> bool {
-        if kinds.is_empty() { return true }
-        (self.stored.get() ?? self.held_stored())
-            .any((b) -> kinds.contains(b.kind) && !b.nodes.get().is_empty())
-    }
 
     /// The item's nodes walked once as a law walks them, filed by kind and by what each stands under.
     fn walk_made() -> ItemWalk {
@@ -198,7 +184,7 @@ impl ItemView {
 
     /// Whether this is a view, in `engine`, of the item `at` of `file`, whoever's it is: the item it
     /// holds is that item read back, which one process reads back alike for every reader.
-    fn holds(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> bool {
+    fn holds(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
         self.at == at &&
             self.engine.serial == engine.serial &&
             self.file.path_in_package == file.path_in_package &&
@@ -240,20 +226,12 @@ once fn views_held() -> Cell<List<ItemView>> {
 
 /// The view of the item `at` of `file` for whoever is asking `engine` now: the one held for that
 /// reader, else made, its item read back with each query it stands on asked.
-fn item_view(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemView {
+fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView {
     let reader = engine.reader()
     for v in views_pinned().get() { if v.shows(engine, reader, file, at) { return v } }
     let held = views_held().get()
     for v in held { if v.shows(engine, reader, file, at) { return v } }
-    let view = view_made(engine, file, at, held.find(it.holds(engine, file, at))?.item)
-    views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
-    view
-}
-
-/// A view of the item at `at` in `file` no asker holds, read again where `read` is absent: what a
-/// judgement over other nodes than the item's own pins (`case_found`), never held for the next asker.
-fn view_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: ReadItem?) -> ItemView {
-    let reader = engine.reader()
+    let read = held.find(it.holds(engine, file, at))?.item
     let impls: Cell<List<ImplAt>?> = Cell.new(null)
     let typed: Cell<List<TypedNodes>?> = Cell.new(null)
     let stated: Cell<StatedHeld?> = Cell.new(null)
@@ -276,9 +254,7 @@ fn view_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: Rea
     let unreached: Cell<ItemUnreached?> = Cell.new(null)
     let unwritten: Cell<ItemUnwritten?> = Cell.new(null)
     let holes: Cell<ItemHoles?> = Cell.new(null)
-    let refusals: Cell<ItemRefusals?> = Cell.new(null)
-    let broken: Cell<ItemBroken?> = Cell.new(null)
-    ItemView {
+    let view = ItemView {
         engine: engine,
         reader: reader,
         file: file,
@@ -306,17 +282,17 @@ fn view_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: Rea
         unreached: unreached,
         unwritten: unwritten,
         holes: holes,
-        refusals: refusals,
-        broken: broken,
     }
+    views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
+    view
 }
 
 /// The item at `at` in `file`, read back: the asker's view of it.
-export fn read_item(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadItem { item_view(engine, file, at).item }
+fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem { item_view(engine, file, at).item }
 
 /// The impls the written item `at` of `file` holds, each as a method's typing reaches it: the
 /// asker's view of them.
-fn impls_at(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ImplAt> {
+fn impls_at(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ImplAt> {
     let view = item_view(engine, file, at)
     let made? = view.impls.get() else {
         let impls = item_impls_read(engine, file, at)
@@ -327,7 +303,7 @@ fn impls_at(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Im
 }
 
 /// The nodes the written item `at` of `file` holds, typed: the asker's view of them.
-fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     TypedNodes,
 > {
     let view = item_view(engine, file, at)
@@ -342,12 +318,9 @@ fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId, it
 /// Every body the written item `at` of `file` holds, typed, each beside the statement that declares
 /// it: the asker's view of them, taken from another reader's view of the item where one holds them,
 /// its reads made again, else gathered with the reads their gathering makes.
-export fn item_stated_bodies(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    item: ReadItem,
-) -> List<StatedBody> {
+export fn item_stated_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    StatedBody,
+> {
     let view = item_view(engine, file, at)
     let mine? = view.stated.get() else { return stated_taken(engine, view, item).bodies }
     mine.bodies
@@ -373,7 +346,7 @@ fn stated_elsewhere(engine: QueryEngine, view: ItemView) -> StatedHeld? {
 
 /// The bodies of the item `at` of `file`, gathered with the reads the gathering makes, which are the
 /// asker's already.
-fn stated_gathered(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> StatedHeld {
+fn stated_gathered(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> StatedHeld {
     engine.reads_begun()
     let bodies = stated_bodies_read(engine, file, at, item)
     StatedHeld { bodies: bodies, reads: engine.reads_gathered() }

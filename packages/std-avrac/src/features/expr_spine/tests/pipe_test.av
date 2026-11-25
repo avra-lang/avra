@@ -1,8 +1,8 @@
 // The pipe: application and nothing else. Every stage shape, every
 // neighbour on the ladder, the line law, each refusal rendered whole,
 // and the printer spelling it back.
-use @std.avrac.testing.{shown, refused_with, refusals, projected, judged}
-use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{shown, refused_with, refusals, projected}
+use @std.avrac.compiler.{analyze_source, parse_source}
 
 const fns: string = "fn dbl(n: int) -> int { n * 2 }\nfn add(a: int, b: int) -> int { a + b }\nfn scale(a: int, by: int = 10, off: int = 0) -> int { a * by + off }\nfn some(n: int) -> int? { if n > 0 { n } else { null } }\n"
 
@@ -12,7 +12,7 @@ const walks: string = "fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { 
 fn piped(tail: string) -> string { shown("${fns}${tail}") }
 
 /// The whole report a program earns.
-fn report(source: string) -> string { judged(source).report().trim() }
+fn report(source: string) -> string { analyze_source(source).report().trim() }
 
 /// A source the printer answers unchanged.
 fn canonical(source: string) -> bool { projected(source) == source }
@@ -111,7 +111,7 @@ spec "features/expr_spine (pipe)" {
             refusals("${law}xs |> grow(9)") == 1 && refusals("${law}grow(xs, 9)") == 1
         }
         then "a wrong value is refused at the value" {
-            report("fn dbl(n: int) -> int { n * 2 }\n\"s\" |> dbl") == "error[type.mismatch]: argument 1 of `dbl` wants `int`, found `string`\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── this is `string`\n──╯\nhelp: make the value `int`, or change the declaration that wants it"
+            report("fn dbl(n: int) -> int { n * 2 }\n\"s\" |> dbl") == "error[type.mismatch]: argument 1 of `dbl` wants `int`, found `string`\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── this is `string`\n──╯\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── `\"s\" |> dbl` calls the stage with the piped value as its first argument\n──╯\nhelp: make the value `int`, or change the declaration that wants it"
         }
         then "a stage short of arguments counts the value" {
             refused_with("${fns}1 |> add", "`add` takes 2 arguments, found 1")
@@ -319,7 +319,7 @@ spec "features/expr_spine (pipe)" {
             refused_with("${fns}mut a = 0\na |> dbl = 3", "a mutation lands on a place")
         }
         then "a table cell names the parentheses" {
-            judged(
+            analyze_source(
                 "${fns}type R = { a: int, b: int }\nlet rows = table<R> {\n    a | b\n    1 | 2 |> dbl\n}\n1",
             )
                 .report()

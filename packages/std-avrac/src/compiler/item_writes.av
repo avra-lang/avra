@@ -64,7 +64,7 @@ fn method_key(m: MethodAt) -> string {
 
 /// What the method `method` of the type `file` declares as `owner` does to its receiver: each method
 /// it reaches through its receiver surveyed once, in one walk, so a recursion asks nothing twice.
-@query("typing")
+@query
 export fn receiver_use(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -121,7 +121,7 @@ fn chain_from(engine: QueryEngine, start: MethodAt) -> List<string>? {
 type OwnersOf = { names: List<string> }
 
 /// The types `file` declares that write a method `name`, in the order they're declared.
-@cut_query("typing")
+@cut_query
 fn method_owners(engine: QueryEngine, file: SourceFileAddress, name: string) -> OwnersOf {
     OwnersOf {
         names: [d.name for d in file_declares(engine, file).names if !impls_with(engine, file, d.name, name, false).is_empty()],
@@ -169,7 +169,7 @@ type Surveyed = { name: string, evidence: Evidence }
 /// The evidence of the method `m`: the one impl's that gives it, or every impl's where several give
 /// it, a call reaching any one of them; else the one default body of a trait its type implements.
 /// One no body gives is unproved.
-@query("typing")
+@query
 fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
     let impls = impls_given(engine, m.file, m.owner, m.name, false, m.reader)
     if impls.length > 1 {
@@ -210,7 +210,7 @@ export fn body_receiver_use(
 
 /// The evidence of each method the impl at `at` writes, its receiver the type `file` declares as
 /// `owner`, read from the impl read back once.
-@query("typing")
+@query
 fn impl_evidence(engine: QueryEngine, at: ImplAt, file: SourceFileAddress, owner: string) -> List<
     Surveyed,
 > {
@@ -232,7 +232,7 @@ fn impl_evidence(engine: QueryEngine, at: ImplAt, file: SourceFileAddress, owner
 /// The body of the method, or when `statics` the static, `name` the impl at `at` gives, typed: each
 /// node's type by its index in the item read back, and what its seats refused; none where it gives
 /// none. The door and the lowering both read this one typing.
-@query("typing")
+@query
 fn method_body_typed(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> TypedBody {
     let method? = signed_method(engine, at, name, statics) else { return TypedBody { types: [] } }
     typed_under(engine, at.file, method.signed)
@@ -396,7 +396,7 @@ fn body_evidence(
         at: at,
         types: types,
         signed: signed,
-        locals: [p.name.text() for p in parts.params].concat(bodies.lets),
+        locals: [p.name.of for p in parts.params].concat(bodies.lets),
         written: false,
         unproved: null,
         reached: [],
@@ -450,7 +450,7 @@ impl Survey {
     /// type marks.
     mut fn called_evidence(e: ExprId) {
         let call = self.store.call_parts(e)
-        if call != null { return self.named_evidence(call!.callee.text(), call!.args) }
+        if call != null { return self.named_evidence(call!.callee, call!.args) }
         let applied? = self.store.applied_parts(e) else { return }
         if !self.hands_write(applied.args) { return }
         let f? = self.typed_at(applied.subject) else { return self.unread(handed_to_value()) }
@@ -549,7 +549,7 @@ impl Survey {
         let s? = trait_fns(item).find((f) -> item.store.fn_parts(f)?.name == name) else { return self.unread(no_method(ty, name)) }
         if item.store.is_mutating(s) { self.written = true }
         let params = item.store.fn_parts(s)!.params
-        self.fed([p.promises.mutable for p in params], args, name, [p.name.text() for p in params])
+        self.fed([p.promises.mutable for p in params], args, name, [p.name.of for p in params])
     }
 
     /// A call of the fn a field of `ty` holds: its arguments feed the fn type's seats.
@@ -639,7 +639,7 @@ impl Survey {
     fn path_words(e: ExprId) -> string {
         let step? = self.store.place_step(e) else { return "…" }
         match step {
-            .Root(n) -> n.text(),
+            .Root(n) -> n.of,
             .Field(subject, name) -> "${self.path_words(subject)}.${name.of}",
             .At(subject, _) -> "${self.path_words(subject)}[…]",
             .Unwrap(subject) -> "${self.path_words(subject)}!",
@@ -714,11 +714,12 @@ fn seat_marks(ty: SignedType?) -> List<bool>? {
 /// a name that's neither.
 fn written_seats(engine: QueryEngine, d: DeclaredName) -> List<bool>? { seats_written(engine, d.file, d.item, d.name) }
 
-/// Which seats of the fn the item `at` of `file` declares as `name` are `mut`, as the item's read
-/// parts hold them: what a new body for it leaves standing.
-fn seats_written(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> List<
-    bool,
->? { item_seats_marked(engine, file, at, name) }
+/// Which seats of the fn the item `at` of `file` declares as `name` are `mut`: one answer per name,
+/// which a new body for it leaves standing.
+@cut_query
+fn seats_written(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> List<bool>? {
+    [p.promises.mutable for p in seats_declared(read_item(engine, file, at), name)?]
+}
 
 /// The seats of the fn `item` declares as `name`, as written: an extern's or a declared fn's; absent
 /// for a name that's neither.
@@ -735,11 +736,9 @@ fn seat_names(engine: QueryEngine, d: DeclaredName) -> List<string?> { [n for n 
 
 /// The names of the seats of the fn the item `at` of `file` declares as `name`, in order: one answer
 /// per name, which a new body for it leaves standing.
-@cut_query("typing")
-fn seats_named(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> List<
-    string,
->? {
-    [p.name.text() for p in seats_declared(read_item(engine, file, at), name)?]
+@cut_query
+fn seats_named(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> List<string>? {
+    [p.name.of for p in seats_declared(read_item(engine, file, at), name)?]
 }
 
 /// The types the language owns whose values a seat copies.

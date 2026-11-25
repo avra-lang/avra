@@ -24,7 +24,7 @@
 
 use @std.meta.{derive}
 use fielded_derive.{Fielded}
-use util.{distinct, is_name_start}
+use util.{flatten, distinct, is_name_start}
 use diagnostics.{Want}
 /// A named bag of rules and which one parsing begins at. `start` always
 /// names a rule in `rules`.
@@ -36,14 +36,13 @@ impl Grammar {
     /// first-appearance order — the words this grammar claims, which
     /// a language refuses as names.
     fn keywords() -> List<string> {
-        distinct([alt_words(r.body) for r in self.rules].flatten())
+        distinct(flatten([alt_words(r.body) for r in self.rules]))
     }
 }
 
 fn alt_words(a: Alt) -> List<string> {
-    [item_words(x) for x in a.items()]
-        .flatten()
-        .concat([operator_words(s) for s in a.seqs()].flatten())
+    flatten([item_words(x) for x in a.items()])
+        .concat(flatten([operator_words(s) for s in a.seqs()]))
 }
 
 fn operator_words(s: Seq) -> List<string> {
@@ -105,11 +104,6 @@ export type Seq = {
     build: Build?,
     recover: Recover?,
     @unwritten start: BranchStart? = null,
-    /// How many leading members this branch shares with the branch before it, each a single
-    /// terminal: the engine matches them once for both. Filled by `ready`, never authored.
-    @unwritten shared: int = 0,
-    /// How many leading members the branch after this one shares with it: that one's `shared`.
-    @unwritten lends: int = 0,
     operators: Operators? = null,
     fold: string? = null,
     seed: string? = null,
@@ -178,10 +172,9 @@ export type Operators = {
 /// which without spelling the ladder twice. `slot` is a `.Named` prim's
 /// class, as its place in the ready grammar's `terms`, or a `.Lit` prim's
 /// text, as its place in `lits` — -1 until `ready` numbers it, and for any
-/// other prim. `label_slot` is its label's place in the ready grammar's
-/// `labels`, -1 until then and for an item with no label.
+/// other prim.
 @derive(Fielded)
-export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect?, head: bool = false, trailer: bool = false, @unwritten listed: bool = false, @unwritten slot: int = 0 - 1, @unwritten label_slot: int = 0 - 1 }
+export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect?, head: bool = false, trailer: bool = false, @unwritten listed: bool = false, @unwritten slot: int = 0 - 1 }
 
 /// THE LIST LAW: a label that can bind MORE THAN ONCE in one match
 /// COLLECTS, and one that binds once carries its value. `listed` is
@@ -310,14 +303,7 @@ export const DELIMITERS: List<Delimiter> = [
 ]
 
 /// The literal closing what `text` opens, absent when `text` opens nothing.
-export fn closer_of(text: string) -> string? { closers().get(text) }
-
-/// Each delimiter's closer, by its opener, made once a process.
-once fn closers() -> Map<string, string> {
-    mut by_opener: Map<string, string> = {}
-    for d in DELIMITERS { by_opener.set(d.opener, d.closer) }
-    by_opener
-}
+export fn closer_of(text: string) -> string? { DELIMITERS.find(it.opener == text)?.closer }
 
 impl Prim {
     /// The token this atom answers to by name — what an `@expect`
@@ -366,12 +352,12 @@ impl Seq {
 
     /// This branch, then every branch nested in its groups.
     fn seqs() -> List<Seq> {
-        [self].concat([group_seqs(m.prim) for m in self.items].flatten())
+        [self].concat(flatten([group_seqs(m.prim) for m in self.items]))
     }
 
     /// This branch's items, nested groups opened.
     fn deep_items() -> List<Item> {
-        [s.items for s in self.seqs()].flatten()
+        flatten([s.items for s in self.seqs()])
     }
 
     /// The branch whose labels this one is judged by: itself when it
@@ -384,12 +370,12 @@ impl Seq {
 impl Alt {
     /// Every branch under this alternation, nested groups opened.
     fn seqs() -> List<Seq> {
-        [s.seqs() for s in self.branches].flatten()
+        flatten([s.seqs() for s in self.branches])
     }
 
     /// Every item under this alternation, nested groups opened.
     fn items() -> List<Item> {
-        [s.deep_items() for s in self.branches].flatten()
+        flatten([s.deep_items() for s in self.branches])
     }
 }
 

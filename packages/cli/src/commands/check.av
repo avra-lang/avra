@@ -6,20 +6,24 @@
 //! prunes it down to sites still found — never grows it (idiom_baseline.av).
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
-use @std.path.{dir_of, joined_path, relative_path, under_dir}
-use @std.avrac.compiler.host.{no_manifest, no_source}
-use @std.avrac.diagnostics.{render_among}
-use @std.program.sorted.{sorted_by}
-use @std.text.{text_before}
-
-use @std.avrac.compiler.{Finding}
+use @std.path.{relative_path, under_dir}
+use @std.relation.engine.{count_reads}
+use @std.avrac.compiler.{Checked, Finding, work_counts, work_whole_reads, work_whys}
 
 type CheckCmd = {}
 
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
         let path? = slotted_path(args) else { return 2 }
-        program_door_checked(args, path)
+        if program_door() { return program_door_checked(args, path) }
+        if args.has_flag("counts") { count_reads() }
+        match checked_at(path) {
+            .Ok(c) -> said(args, path, c),
+            .Err(report) -> {
+                println(report)
+                1
+            },
+        }
     }
 }
 
@@ -27,43 +31,17 @@ impl Runnable for CheckCmd {
 /// path's own rule (`file_home`), or, belonging to none, a package of that one file — checked as the
 /// old `check` says it, held to its baseline where one is named.
 fn program_door_checked(args: CliResult, path: string) -> int {
-    if is_a_dir(path) {
-        let dir = rooted(path)
-        if !exists_at(joined_path(dir, "avra.toml")) {
-            println(render_among(no_manifest(dir, package_root(dir_of(dir))), []))
-            return 1
-        }
-        if !is_a_dir(joined_path(dir, "src")) { return root_programs_checked(args, dir) }
-    }
+    let net = net_said([path], NetJudge.Check)
     let disk? = checked_disk(path) else { return std_unfound() }
     disk_checked(
         disk,
         args.option("baseline"),
         timed(args),
         args.has_flag("baseline_accept"),
+        net,
         args.has_flag("counts"),
         args.has_flag("read_lists"),
-        if args.has_flag("passes_shown") { if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table } } else { LedgerSaid.Unsaid },
     )
-}
-
-/// A package root with no `src/`: each source file directly in it checked as `check` checks that file
-/// alone, the worst exit theirs — or, holding none, refused: nothing was checked.
-fn root_programs_checked(args: CliResult, dir: string) -> int {
-    let names = sorted_by(
-        [n for n in names_at(dir) ?? [] if n.ends_with(".av")],
-        (a, b) -> text_before(a, b),
-    )
-    if names.is_empty() {
-        println(render_among(no_source(dir), []))
-        return 1
-    }
-    mut worst = 0
-    for n in names {
-        let code = program_door_checked(args, joined_path(dir, n))
-        if code > worst { worst = code }
-    }
-    worst
 }
 
 /// The program `check` of `path` reads on the program layer; absent where no std stands beside this
@@ -73,6 +51,44 @@ fn checked_disk(path: string) -> Disk? {
     let at = rooted(path)
     let home? = sourced_home(at) else { return lone_disk_at(at) }
     disk_at(home, "")
+}
+
+/// A clean program's warnings, printed; exit 0 — unless `--baseline`
+/// asks for the ratchet instead.
+fn said(args: CliResult, path: string, c: Checked) -> int {
+    let baseline = args.option("baseline")
+    if args.has_flag("baseline_accept") { return accepted(path, baseline, c) }
+    if !c.licenses.is_empty() { return refused_licenses(rendered_licenses(c.licenses)) }
+    if baseline != "" {
+        let bad = loaded_baseline(baseline).news(c.findings)
+        if !bad.is_empty() { return refused_sites(bad) }
+    }
+    if !c.warnings.is_empty() { println(c.warnings) }
+    if timed(args) { eprintln(time_line(c)) }
+    if args.has_flag("counts") {
+        eprintln(work_counts())
+        for line in work_whole_reads() { eprintln("whole: ${line}") }
+        for line in work_whys() { eprintln("why: ${line}") }
+    }
+    0
+}
+
+/// What `--time` says: a hit's phases (open, judge, load) or a derivation's.
+fn time_line(c: Checked) -> string {
+    if c.reused { "time: check · cache hit — ${c.timed}" } else { "time: ${c.timed}" }
+}
+
+/// `Checked.licenses`'s own lines (`file\tline\tid`,
+/// compiler/licenses.av) rendered against THIS caller's directory —
+/// never cached pre-rendered, since a warm answer may be read back
+/// from a different directory than the one that minted it.
+fn rendered_licenses(raw: string) -> List<string> {
+    [rendered_license(line) for line in raw.split("\n") if line != ""]
+}
+
+fn rendered_license(line: string) -> string {
+    let parts = line.split("\t")
+    stale_citation(parts[0], parts[1], parts[2])
 }
 
 /// A `// LICENSED` citation at `line` of the file at `path` that names nothing.
@@ -87,6 +103,38 @@ fn refused_licenses(stale: List<string>) -> int {
     println("licenses: ${stale.length} stale `// LICENSED` id(s):")
     for s in stale { println("  ${s}") }
     1
+}
+
+/// `--baseline_accept`'s whole verb: prune, write, report — exit 0
+/// whatever it kept, since pruning never fails the gate on its own.
+/// `c` is the SAME checked answer `said` already holds for `path` —
+/// the ratchet's "does it still fire" reads that check's own `Finding`
+/// rows, never a second derivation that could disagree (a bare
+/// `root_program` once answered `unused_import` wrong: its own analysis
+/// skips the cross-file References a full check populates).
+///
+/// REACHED IS `path`'S OWN FILES, NEVER EVERY FILE ITS PROGRAM
+/// ANALYZED: `root_program(path).files` also holds every dependency
+/// `path` reaches — `packages/cli` alone pulls in `@std/grammar` — and
+/// a fix to one of THIS package's files can never make a dependency's
+/// own finding disappear. Counting a dependency file as REACHED would
+/// read its silence as "stopped firing" and drop another package's
+/// own accepted row out from under it; narrowed to files under `path`
+/// itself, a dependency is simply never asked.
+export fn accepted(path: string, baseline: string, c: Checked) -> int {
+    // `path` ARRIVES ABSOLUTE (`argued_path` roots every path argument
+    // there); a reached file's own key is `here()`-relative
+    // (`sites_of`'s convention, idiom_baseline.av) — the same currency
+    // on both sides, or an absolute `path` never matches a relative
+    // `f` and every file reads as outside the package.
+    let own = relative_path(here(), path)
+    let prog = c.program ?? root_program(path)
+    let reached = [f for f in [relative_path(here(), a.view.source.file) for a in prog.files] if f == own || under_dir(f, own)]
+    let kept = loaded_baseline(baseline)
+        .pruned((f) -> prog.ws.there(f), keyed(reached), keyed(fresh_keys(c.findings)))
+    let _ = write_text(baseline, baseline_header + joined_lines(kept))
+    println("baseline: ${kept.length} site(s) kept")
+    0
 }
 
 fn joined_lines(lines: List<string>) -> string {
@@ -115,7 +163,7 @@ export option baseline {
 
 export command check {
     description: "Report everything wrong with a source file or a package root"
-    flags: [time, counts, passes_shown, passes_rows, read_lists, baseline_accept]
+    flags: [time, counts, read_lists, baseline_accept]
     options: [baseline]
     args: [file]
     run: CheckCmd {}

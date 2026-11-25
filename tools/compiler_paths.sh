@@ -18,8 +18,7 @@ cd "${1:-.}"
 # package; outside a git tree, every `.av` there
 sources() {
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        # one `cat` for the whole list: a file git tracks and the tree no longer holds says nothing
-        git ls-files -z -- "$1/*.av" | xargs -0 cat 2>/dev/null || :
+        git ls-files -- "$1" | grep '\.av$' | while IFS= read -r f; do [ ! -f "$f" ] || cat "$f"; done
     else
         find "$1" -name '*.av' -type f -exec cat {} +
     fi

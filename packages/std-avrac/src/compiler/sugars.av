@@ -4,7 +4,6 @@
 //! rewrites; a generator's declarations (`Directive.source`) are copied into a store of their own,
 //! its holes values. Each copied node reads its names where its template was written.
 use core.{
-    scoped,
     ForeignOrigin,
     LandedSeat,
     apart_name,
@@ -201,27 +200,16 @@ fn template_binds(store: SyntaxArena, stmts: List<StmtId>, arms: List<Arm>) -> L
     )
 }
 
-/// `at` and every node under it, in the order a walk meets them: each node appended once, never a
-/// list made again at every level.
-fn under(store: SyntaxArena, at: At) -> List<At> {
-    mut met: List<At> = []
-    walked_into(store, at, met)
-    met
-}
-
-/// `at` and every node under it, appended to `met` in the order a walk meets them.
-fn walked_into(store: SyntaxArena, at: At, mut met: List<At>) {
-    met.push(at)
-    for k in store.kids_walked(at) { walked_into(store, k, met) }
-}
+/// `at` and every node under it.
+fn under(store: SyntaxArena, at: At) -> List<At> { [at].concat(flatten([under(store, k) for k in store.kids_walked(at)])) }
 
 /// The names one node binds.
 fn bound_at(store: SyntaxArena, at: At) -> List<string> {
     match at {
         .Stmt(s) -> [n! for n in [store.let_name(s)] if n != null]
-            .concat([p.name.text() for p in store.fn_parts(s)?.params ?? []]),
+            .concat([p.name.of for p in store.fn_parts(s)?.params ?? []]),
         .Pat(p) -> [b.name for b in store.pattern_binds(p)],
-        .Expr(e) -> [p.name.text() for p in store.lambda_parts(e)?.params ?? []],
+        .Expr(e) -> [p.name.of for p in store.lambda_parts(e)?.params ?? []],
         .Field(_, _) or .Param(_, _) -> [],
     }
 }
@@ -271,10 +259,9 @@ fn literal_inits(src: SyntaxArena, stmts: List<StmtId>, mut rb: Rebuilder) -> In
     match src.expr(e) { .StructLit(_, names, values) -> rb.inits(names, values), rest -> null }
 }
 
-/// Whether a template's runs are nothing but holes: its kind is then whatever fills them. Read off
-/// the quote where it was written when the splice reaches it, else off the quote its runs weave.
-fn bare_template(lang: Language, written: Scratch?, parts: List<string>) -> bool {
-    let s? = written ?? scratch(lang, woven_quote(parts)) else { return false }
+/// Whether a template's runs are nothing but holes: its kind is then whatever fills them.
+fn bare_template(lang: Language, parts: List<string>) -> bool {
+    let s? = scratch(lang, woven_quote(parts)) else { return false }
     match quote_kind(s.store, s.body) {
         .Holes -> true,
         .Expr or .Stmts or .Arms or .Decls -> false,
@@ -449,13 +436,12 @@ impl Splice {
     /// A template written in `file` at `at`, copied as `seat` takes it; a body of nothing but holes
     /// is its fills in that seat.
     fn copied(file: string, at: int, parts: List<string>, fills: List<Node>, seat: HoleKind) -> TemplateCopy {
-        let written = (self.written)(file, at)
-        if bare_template(self.lang, written, parts) { return self.bare(fills, seat) }
+        if bare_template(self.lang, parts) { return self.bare(fills, seat) }
         let sp = self
         let copy? = template_copied(
             self.lang,
             self.store,
-            written,
+            (self.written)(file, at),
             parts,
             [(kind: HoleKind) -> sp.filled(kind, fill) for fill in fills],
             seat,
@@ -504,7 +490,7 @@ impl Splice {
         match node {
             .Template(file, at, parts, fills) -> self.template_expr(file, at, parts, fills),
             .Name(text) -> {
-                let read = self.store.alloc_expr(Expr.Ident(scoped(text)))
+                let read = self.store.alloc_expr(Expr.Ident(Scoped(text)))
                 self.spliced.put("${read.index}", true)
                 read
             },
@@ -614,7 +600,7 @@ fn lambdas_apart(store: SyntaxArena) {
 fn binders_apart(store: SyntaxArena, spliced: Map<string, bool>, holed: List<PatId>, here: string?) {
     for s in store.stmt_ids() {
         let f? = store.fn_parts(s) else { continue }
-        let seats = [p.name.text() for p in f.params]
+        let seats = [p.name.of for p in f.params]
         for e in store.every_expr(f.body) {
             let stmts = store.block_stmts(e)
             if stmts != null { store.lets_kept_apart(stmts!, here) }
@@ -639,7 +625,7 @@ fn lambda_apart(
 ) {
     let home? = store.home_of(e) else { return }
     let inside = store.every_expr(lam.body)
-    let clashing = [p.name.text() for p in lam.params if seats.contains(p.name.text()) && spliced_read(store, spliced, inside, p.name.text())]
+    let clashing = [p.name.of for p in lam.params if seats.contains(p.name.of) && spliced_read(store, spliced, inside, p.name.of)]
     if clashing.is_empty() { return }
     renamed_reads(store, spliced, inside, clashing, home)
     store
@@ -648,7 +634,7 @@ fn lambda_apart(
             e.index,
             Expr
                 .Lambda(
-                    [if clashing.contains(p.name.text()) { p with { name: scoped(apart_name(p.name.text())) } } else { p } for p in lam.params],
+                    [if clashing.contains(p.name.of) { p with { name: Scoped(apart_name(p.name.of)) } } else { p } for p in lam.params],
                     lam.body,
                 ),
         )
@@ -689,8 +675,8 @@ fn arm_apart(
     let named = [b for p in a.pats for b in store.pattern_binds(p) if holed.contains(b.pat) && seats.contains(b.name)]
     for b in named {
         if !written_read(store, spliced, reads, b.name) || store.bind_name(b.pat) == null { continue }
-        for x in reads { if store.ident_name(x) == b.name && spliced.has("${x.index}") { store.exprs.replaced(x.index, Expr.Ident(scoped(apart_name(b.name)))) } }
-        store.pat_replaced(b.pat, Pat.Bind(scoped(apart_name(b.name))))
+        for x in reads { if store.ident_name(x) == b.name && spliced.has("${x.index}") { store.exprs.replaced(x.index, Expr.Ident(Scoped(apart_name(b.name)))) } }
+        store.pat_replaced(b.pat, Pat.Bind(Scoped(apart_name(b.name))))
     }
 }
 
@@ -714,7 +700,7 @@ fn renamed_reads(
 ) {
     for x in reads {
         let n? = store.ident_name(x) else { continue }
-        if names.contains(n) && !spliced.has("${x.index}") && store.home_of(x) == home { store.exprs.replaced(x.index, Expr.Ident(scoped(apart_name(n)))) }
+        if names.contains(n) && !spliced.has("${x.index}") && store.home_of(x) == home { store.exprs.replaced(x.index, Expr.Ident(Scoped(apart_name(n)))) }
     }
 }
 

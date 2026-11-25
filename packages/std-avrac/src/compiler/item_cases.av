@@ -15,31 +15,27 @@ use @std.program.source_facts.{source_text}
 /// One case a file writes: the item its spec stands in, its place among that spec's cases, its
 /// spec's, group's and own names, and the line its `then` stands on.
 @derive(Saved)
-export type CaseAt = { item: ItemId, index: int, suite: string, group: string, name: string, line: int }
+export type CaseAt = { item: int, index: int, suite: string, group: string, name: string, line: int }
 
 /// Every case a file writes, in the order it writes them.
 @derive(Saved)
 export type FileCases = { cases: List<CaseAt> }
 
 /// Every case `file` writes, in its items' order and each spec's own.
-@query("generate")
+@query
 export fn file_cases(engine: QueryEngine, file: SourceFileAddress) -> FileCases {
     let text = source_text(engine, file) ?? ""
     FileCases {
         cases: flatten(
-            [item_cases(engine, file, read_item(engine, file, at), at, text) for at in item_ids(engine, file)],
+            [item_cases(engine, file, read_item(engine, file, at), at, text) for at in 0..item_count(engine, file)],
         ),
     }
 }
 
 /// The cases the item `at` of `file`, whose text is `text`, writes in its spec.
-fn item_cases(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    item: ReadItem,
-    at: ItemId,
-    text: string,
-) -> List<CaseAt> {
+fn item_cases(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, at: int, text: string) -> List<
+    CaseAt,
+> {
     flatten(
         [[CaseAt {
             item: at,
@@ -77,8 +73,8 @@ const CASE_HEAD: string = "fn case_body() -> bool "
 
 /// The source of the case `index` the spec in the item `at` of `file` writes: what its unit is read
 /// from, so an edit elsewhere in its spec reads it again and asks nothing more of it.
-@query("generate")
-fn case_source(engine: QueryEngine, file: SourceFileAddress, at: ItemId, index: int) -> CaseSource? {
+@query
+fn case_source(engine: QueryEngine, file: SourceFileAddress, at: int, index: int) -> CaseSource? {
     let item = read_item(engine, file, at)
     let stmt? = item.stmts.find((s) -> item.store.spec_parts(s) != null) else { return null }
     let parts? = item.store.spec_parts(stmt) else { return null }
@@ -94,7 +90,7 @@ fn case_source(engine: QueryEngine, file: SourceFileAddress, at: ItemId, index: 
 
 /// The case `index` the spec in the item `at` of `file` writes, read from its own source as a fn,
 /// its body signed: no seats, a bool answered.
-fn case_signed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, index: int) -> SignedBody? {
+fn case_signed(engine: QueryEngine, file: SourceFileAddress, at: int, index: int) -> SignedBody? {
     let src? = case_source(engine, file, at, index) else { return null }
     let under = ItemUnder { text: src.text, context: src.context }
     let item = held_read(
@@ -114,7 +110,7 @@ fn case_signed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, index: 
 
 /// Each case the spec in the item `at` of `file` writes, signed as its unit reads it: none for an
 /// item that writes no spec.
-export fn case_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<SignedBody> {
+export fn case_bodies(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<SignedBody> {
     let item = read_item(engine, file, at)
     let count = flatten(
         [parts!.cases for s in item.stmts for parts in [item.store.spec_parts(s)] if parts != null],
@@ -123,19 +119,17 @@ export fn case_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
     [b! for k in 0..count for b in [case_signed(engine, file, at, k)] if b != null]
 }
 
-/// The case `index` the spec in the item `at` of `file` writes, lowered as the unit `symbol`, its
-/// lambdas `framed` carrying their frame of contexts.
-@query("lower")
+/// The case `index` the spec in the item `at` of `file` writes, lowered as the unit `symbol`.
+@query
 export fn lowered_case(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     index: int,
     symbol: string,
-    framed: List<string>,
 ) -> LoweredFn? {
     let signed? = case_signed(engine, file, at, index) else { return null }
-    lowered_signed(engine, file, signed, symbol, null, [], framed)
+    lowered_signed(engine, file, signed, symbol, null)
 }
 
 collect listed_case_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
@@ -171,7 +165,6 @@ export fn made_suite(
         null,
         [],
         files.first()?.package_name,
-        framing: files,
     )
     let lowered = match made {
         .Made(l) -> l,
@@ -202,7 +195,7 @@ fn found_called(c: CaseFound) -> CalledFn {
         symbol: case_symbol(c.file, c.k),
         external: false,
         plain: true,
-        case_item: c.at.item.of,
+        case_item: c.at.item,
         case_index: c.at.index,
     }
 }

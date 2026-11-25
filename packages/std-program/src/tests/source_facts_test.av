@@ -107,19 +107,19 @@ fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name
 fn low_word_of(hash: ContentHash?) -> int { hash?.low_word ?? 0 }
 
 /// Stands for any fact made from one item's signature, like its type.
-@query("tape")
+@query
 fn signature_read(engine: QueryEngine, file: SourceFileAddress, item_part: string) -> int {
     low_word_of(item_hash(engine, file, item_part, ItemAspect.Signature))
 }
 
 /// Stands for any fact made from one item's body.
-@query("tape")
+@query
 fn body_read(engine: QueryEngine, file: SourceFileAddress, item_part: string) -> int {
     low_word_of(item_hash(engine, file, item_part, ItemAspect.Body))
 }
 
 /// Stands for any fact made from where items sit, like a printed line number.
-@query("tape")
+@query
 fn places_read(engine: QueryEngine, file: SourceFileAddress) -> int { item_places(engine, file).length }
 
 fn process(store: StoreInMemory) -> QueryEngine {
@@ -350,18 +350,6 @@ spec "source_facts — an item reads under its file's context" {
             let _ = file_tapes(engine, file_at("a.x"))
             let _ = file_tapes(engine, file_at("b.x"))
             reads().get() == 1
-        }
-    }
-}
-
-spec "source_facts — a directory's names" {
-    given "a store standing beside a package's files" {
-        then "the listing names the files and never the store, which comes and goes as processes save" {
-            set_world("v1")
-            files().set({"a.x": "ka=b;", ".avra-cache": ""})
-            let engine = process(store_in_memory())
-            (listed(engine, DirectoryAddress { package_name: "@test/p", path_in_package: "" }) ?? [])
-                .join(",") == "a.x"
         }
     }
 }

@@ -5,7 +5,6 @@
 //! projection, the component being the one source of truth.
 use tree.sites.{Reading}
 use style.box.{Box}
-use style.theme.{Theme}
 use style.tokens.{Size}
 use style.layout.{Axis}
 use @std.meta.{derive}
@@ -159,16 +158,6 @@ export enum Urgency {
     @word(assertive) Assertive
 }
 
-/// What a field's return key says it does where the field submits: the same choice on every target
-/// (a page's `enterkeyhint`, a native keyboard's action key). Moving the focus on is not among them.
-@derive(Words)
-export enum SubmitLabel {
-    @word(done) Done
-    @word(go) Go
-    @word(send) Send
-    @word(search) Search
-}
-
 /// A component property, projected from the component's own fields.
 /// Semantic STATE crosses as an attribute (`Disabled`, `Open`, `Invalid`);
 /// a visual variant resolves to `Style` at the component.
@@ -201,8 +190,6 @@ export enum Attribute {
     /// The control holds a secret: what it holds is drawn masked and
     /// never echoed.
     Masked(flag: bool)
-    /// The word a field's return key wears where the field submits.
-    SubmitLabel(label: SubmitLabel)
     /// Rows a windowed list at `path` leaves unbuilt here, each `extent`
     /// tall in the target's own measure: the room they would take.
     Skipped(path: string, rows: int, extent: int)
@@ -224,24 +211,6 @@ export type Node = {
     events: List<Action> = [],
     sites: List<Reading> = [],
     drawn_by_order: bool = false,
-    /// The theme the node was drawn in, where it was drawn under another set of `ctx theme` than the
-    /// node above it: the root always carries it, and a realizer carries the nearest down its walk.
-    theme: Stamp? = null,
-}
-
-/// A theme a node was drawn in, and the frame entry it was read from: two stamps of one set are one.
-export type Stamp = { theme: Theme, entry: int }
-
-/// The theme the first node of `n` wearing `words` is drawn in, as a realizer's walk carries it: the
-/// nearest stamp above it, `carried` where none is; none where no node wears them.
-export fn drawn_theme(n: Node, words: string, carried: Theme) -> Theme? {
-    let here = n.theme?.theme ?? carried
-    if n.words() == words { return here }
-    for c in n.children {
-        let found? = drawn_theme(c, words, here) else { continue }
-        return found
-    }
-    null
 }
 
 // ── neutral projections every target reads ──────────────────────

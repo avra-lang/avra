@@ -35,7 +35,7 @@ spec "features/components — a record's instance" {
         then "the body's statements are its children, loops and branches included" {
             answered(
                 built(
-                    "const orders = [3, 4, 5]\ngrid report {\n    for o in orders {\n        if o != 4 { row o }\n    }\n    row 99\n}\n[\"\${r.id}\" for r in report.rows].join(\",\")",
+                    "let orders = [3, 4, 5]\ngrid report {\n    for o in orders {\n        if o != 4 { row o }\n    }\n    row 99\n}\n[\"\${r.id}\" for r in report.rows].join(\",\")",
                 ),
             ) == "3,5,99"
         }
@@ -68,7 +68,7 @@ spec "features/components — a record's instance" {
         then "a comprehension child spreads its rows into the slot" {
             answered(
                 built(
-                    "const orders = [3, 4, 5]\ngrid g {\n    [row o for o in orders if o != 4]\n    row 9\n}\ng.rows.length",
+                    "let orders = [3, 4, 5]\ngrid g {\n    [row o for o in orders if o != 4]\n    row 9\n}\ng.rows.length",
                 ),
             ) == "3"
         }
@@ -170,7 +170,7 @@ spec "features/components — a record's instance" {
             )
         }
     }
-    given "a named instance is a declaration" {
+    given "an exported instance is a declaration" {
         then "another module imports it by name, built once and holding behaviour" {
             let decks = Module {
                 name: "decks",
@@ -184,14 +184,8 @@ spec "features/components — a record's instance" {
                 ),
             ) == "hi #0 #1 report 1"
         }
-        then "one not exported is its file's own declaration, built from declarations" {
-            answered(built("const base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id")) == "5"
-        }
-        then "its build reads no run-time binding of the top level, offered a `const`" {
-            refused_in(
-                built("let base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id"),
-                "`base` is a run-time binding of the top level",
-            )
+        then "one not exported stays the statement it was written as" {
+            answered(built("let base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id")) == "5"
         }
         then "a const holding behaviour is refused with the way to build it" {
             refused_with(

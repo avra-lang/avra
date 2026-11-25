@@ -5,7 +5,6 @@
 //! bodies in one process, which then finds what every law finds in the file, reached or not, so a
 //! build fails on any error. A body the walk never reaches is lowered for nothing,
 //! and a generic one waits for the walk, which alone knows its layouts.
-use @std.program.pass.{Pass}
 use core.{some_list}
 use @std.program.address.{SourceFileAddress}
 use @std.program.layered_store.{LayeredStore}
@@ -37,15 +36,13 @@ enum DeclaredBody {
 /// The store at `directory` a program rooted at `package` is made from, and the engine over
 /// `definitions` to make it with, worked ahead across `process_count` processes, or by none with
 /// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
-/// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
-/// first engine, stands on the verdict that vouches for it: no law is asked of it.
+/// `timed`, each process and each phase says where its time went.
 export fn program_worked(
     directory: string,
     package: string,
     definitions: List<QueryDefinition>,
     process_count: int,
     timed: bool,
-    vouched: fn(QueryEngine) -> List<string>,
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
@@ -56,13 +53,12 @@ export fn program_worked(
     wave_gathers(GATHERED)
     let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
     if process_count < 2 || few_moved(alone.engine) { return alone }
-    let stands = vouched(alone.engine)
     let _ = alone.store.saved()
     let clock = query_times()
-    clock.opened("files parsed", TimedSide.Outside, Pass.Tape)
+    clock.opened("files parsed", TimedSide.Outside)
     let parsed = files_parsed(at, package)
     clock.closed()
-    clock.opened("generators run", TimedSide.Outside, Pass.Generate)
+    clock.opened("generators run", TimedSide.Outside)
     let _ = parsed.worked.store.saved()
     let generated = ahead(
         at,
@@ -71,16 +67,16 @@ export fn program_worked(
         generators_run,
     )
     clock.closed()
-    clock.opened("impls filed", TimedSide.Outside, Pass.Summary)
+    clock.opened("impls filed", TimedSide.Outside)
     let filed = impls_filed_for(generated.engine, package)
     let _ = generated.store.saved()
     clock.closed()
-    clock.opened("bodies lowered", TimedSide.Outside, Pass.Lower)
+    clock.opened("bodies lowered", TimedSide.Outside)
     let lowered = ahead(
         at,
         (_engine: QueryEngine) -> parsed.program,
-        (e, f) -> file_worked_is_known(e, f, stands.contains(spelled_file(f))),
-        (e, f) -> file_worked(e, f, stands.contains(spelled_file(f))),
+        file_worked_is_known,
+        file_worked,
     )
     clock.closed()
     if at.timed { eprintln(phases_said(clock, filed)) }
@@ -91,7 +87,13 @@ export fn program_worked(
 /// the walk, read from the bodies' facts, says which tests each body keeps, and each process
 /// places the bodies it takes, reading each one's code once, so the asking process reads no
 /// body's code at all. Only a build that worked ahead places ahead; whether any process ran.
-export fn program_placed(worked: Worked, entry: SourceFileAddress, process_count: int, timed: bool) -> bool {
+export fn program_placed(
+    worked: Worked,
+    directory: string,
+    entry: SourceFileAddress,
+    process_count: int,
+    timed: bool,
+) -> bool {
     if process_count < 2 || !has_worked_ahead() { return false }
     let walked = match program_walked(worked.engine, entry) {
         .Walked(w) -> w,
@@ -100,6 +102,7 @@ export fn program_placed(worked: Worked, entry: SourceFileAddress, process_count
     asked_across<WalkedUnit, int>(
         worked.store,
         worked.engine,
+        directory,
         WorkAhead {
             items: (_engine: QueryEngine) -> walked.units,
             is_known: unit_placed_is_known,
@@ -116,6 +119,7 @@ export fn program_placed(worked: Worked, entry: SourceFileAddress, process_count
 /// before the fork. Only a build that worked ahead forks; whether `meanwhile` was done.
 export fn program_shaped_beside(
     worked: Worked,
+    directory: string,
     entry: SourceFileAddress,
     process_count: int,
     timed: bool,
@@ -128,6 +132,7 @@ export fn program_shaped_beside(
     asked_beside<SourceFileAddress, int>(
         worked.store,
         worked.engine,
+        directory,
         WorkAhead {
             items: (_engine: QueryEngine) -> [entry],
             is_known: program_code_hashes_is_known,
@@ -306,30 +311,21 @@ fn bodies_known(engine: QueryEngine, file: SourceFileAddress) -> bool { declared
 /// Every body `file` declares lowered: how many lowered.
 fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declared_bodies(engine, file).filter((b) -> body_lowered(engine, b)).length }
 
-/// Whether anything is kept about the lowering of every body `file` declares and, unless a verdict
-/// vouches for it, about what its laws find, asking only what its declarations are.
-fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress, vouched: bool) -> bool {
-    (vouched || file_erring_is_known(engine, file)) && bodies_known(engine, file)
-}
+/// Whether anything is kept about the lowering of every body `file` declares and about what its laws
+/// find, asking only what its declarations are.
+fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress) -> bool { file_erring_is_known(engine, file) && bodies_known(engine, file) }
 
-/// Every body `file` declares lowered, then, unless a verdict vouches for it, what every law finds in
-/// its written items, in one process so the laws read the typing the lowering held, then what a
-/// program's whole shape reads of the file alone: the host fns it declares, the fns its hosts are
-/// judged against, and whether it runs a statement at its top. How many lowered.
-fn file_worked(engine: QueryEngine, file: SourceFileAddress, vouched: bool) -> int {
+/// Every body `file` declares lowered, then what every law finds in its written items, in one process
+/// so the laws read the typing the lowering held, then what a program's whole shape reads of the
+/// file alone: the host fns it declares, the fns its hosts are judged against, and whether it
+/// runs a statement at its top. How many lowered.
+fn file_worked(engine: QueryEngine, file: SourceFileAddress) -> int {
     let lowered = bodies_lowered(engine, file)
-    if !vouched { let _ = file_erring(engine, file) }
+    let _ = file_erring(engine, file)
     let _ = file_host_fns(engine, file)
     let _ = file_bound_fns(engine, file)
     let _ = strays_in(engine, file)
     lowered
-}
-
-/// WHAT A PROGRAM OVER `file` READS OF IT, the file's laws aside: every body it declares lowered,
-/// what a program's shape reads of it alone, and the names it declares. How many lowered.
-export fn dependent_worked(engine: QueryEngine, file: SourceFileAddress) -> int {
-    let _ = file_declares(engine, file)
-    file_worked(engine, file, true)
 }
 
 /// Every body `file` declares, written or generated, that the walk asks for with no layouts.
@@ -343,25 +339,20 @@ fn free_bodies(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredBod
 /// The methods and statics of every impl in `file` whose target takes no type parameters, written
 /// then generated, each impl where the walk finds it.
 fn method_bodies(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredBody> {
-    impl_declared_bodies(engine, file, written_impls(engine, file), false)
-        .concat(impl_declared_bodies(engine, file, generated_impls(engine, file), true))
+    let first = item_count(engine, file)
+    impl_declared_bodies(engine, file, written_impls(engine, file), 0)
+        .concat(impl_declared_bodies(engine, file, generated_impls(engine, file), first))
 }
 
-/// The methods and statics of `by_item`'s impls, the file's generated items' where `generated`,
-/// else its written ones', each item by its id.
+/// The methods and statics of `by_item`'s impls, item `at` standing at `first + at`.
 fn impl_declared_bodies(
     engine: QueryEngine,
     file: SourceFileAddress,
     by_item: List<List<ItemImpl>>,
-    generated: bool,
+    first: int,
 ) -> List<DeclaredBody> {
-    [b for k, held in by_item for nth, i in held for d in [impl_target(engine, file, i)] if d != null for b in plain_impl_bodies(
-        ImplAt {
-            file: file,
-            item: nth_item_id(engine, file, generated, k),
-            params: impl_params(engine, i, d!),
-            nth: nth,
-        },
+    [b for at, held in by_item for nth, i in held for d in [impl_target(engine, file, i)] if d != null for b in plain_impl_bodies(
+        ImplAt { file: file, item: first + at, params: impl_params(engine, i, d!), nth: nth },
         i,
     )]
 }
@@ -411,7 +402,7 @@ export fn share_replayed(
 ) -> int {
     let files = widest_first(asking, program_files(asking, package))
     let _ = store.saved()
-    let engine = query_engine(store, avra_fact_definitions(), asking.program)
+    let engine = query_engine(store, avra_fact_definitions())
     [bodies_lowered(engine, f) for at, f in files if at % of == core && !bodies_known(engine, f)]
         .sum()
 }

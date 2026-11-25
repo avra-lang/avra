@@ -3,13 +3,7 @@
 //! decides, so nothing here types: a file is asked for its text and its words' shapes, and no more.
 //! The same whole read says which of its `// LICENSED` citations name nothing.
 use core.{Expr, ExprId, StmtId, SyntaxArena, flatten, joined}
-use compiler.format.{
-    FlatRun,
-    flat_mixed_run,
-    lossless_defect,
-    remarks_and_docs_defect,
-    render_source_of,
-}
+use compiler.format.{lossless_defect, remarks_and_docs_defect, render_source_of}
 use diagnostics.{SourceFile, has_errors, new_source_file, render_among}
 use features.{BlockWords}
 use @std.meta.{derive}
@@ -51,20 +45,11 @@ export fn file_write_checked(engine: QueryEngine, file: SourceFileAddress) -> Re
 /// A TEXT AS CANONICAL AVRA, read under `words`, without its closing newline — or its parse's
 /// report. It prints the text AS WRITTEN, never a generated declaration; and it refuses one whose
 /// parse speaks, since a tree with holes prints those regions back as nothing. A text that doesn't
-/// type is no bar, with one exception: a run mixing two bitwise operators as written, which the
-/// checker refuses for having no agreed order. Printing it would choose a grouping and turn a refused
-/// program into a wrong one, so it is refused here and the text stands as it was.
+/// type is no bar.
 export fn formatted_under(src: SourceFile, words: BlockWords) -> Result<string, string> {
     let parsed = parse_program(avra(), src, words)
-    if has_errors(parsed.voices.list) { return .Err(joined([render_among(d, [src]) for d in parsed.voices.list], "\n\n")) }
-    let run? = flat_mixed_run(parsed.store) else { return .Ok(render_source_of(parsed.store, parsed.stmts, src.text)) }
-    .Err(run_unordered(src, run))
-}
-
-/// A text refused for a run mixing two bitwise operators as written, said where it begins.
-fn run_unordered(src: SourceFile, run: FlatRun) -> string {
-    let line = src.text.substring(0, run.at).split("\n").length
-    "${src.file}:${line}: `${run.first}` and `${run.next}` in one run have no agreed order — fmt never chooses its grouping; parenthesise it as you mean it"
+    if !has_errors(parsed.voices.list) { return .Ok(render_source_of(parsed.store, parsed.stmts, src.text)) }
+    .Err(joined([render_among(d, [src]) for d in parsed.voices.list], "\n\n"))
 }
 
 /// `formatted_under`, gated for a write: the LOSSLESS receipt must hold — the same significant
@@ -126,21 +111,13 @@ fn verbatim_stmts(e: Expr) -> List<StmtId> {
     match b.view { .Verbatim(stmts, _) -> stmts, rest -> [] }
 }
 
-/// WHETHER A FILE STANDS CANONICAL: its text printed back is its text, byte for byte — refused where
-/// a write of it would be (`file_write_checked`), so `--check` and `--write` say the same of a file.
-/// The answer is kept with what it read — the file's text and its words' shapes — so a file nobody
-/// edited, under providers nobody edited, is not parsed or printed again.
-@query("laws")
+/// WHETHER A FILE STANDS CANONICAL: its text printed back is its text, byte for byte. The answer is
+/// kept with what it read — the file's text and its words' shapes — so a file nobody edited, under
+/// providers nobody edited, is not parsed or printed again.
+@query
 export fn file_canonical(engine: QueryEngine, file: SourceFileAddress) -> Canonical {
-    canonical_of(source_text(engine, file) ?? "", file_write_checked(engine, file))
-}
-
-/// What a file holding `text` stands as, given what a write of it answers (`write_checked_under`):
-/// the text it would write, which stands where it is `text` and differs where it isn't, or the
-/// write's refusal — its parse's report, or the receipt it fails — said by its first line.
-export fn canonical_of(text: string, written: Result<string, string>) -> Canonical {
-    match written {
-        .Ok(canonical) -> if "${canonical}\n" == text { Canonical.Stands } else { Canonical.Differs },
+    match file_formatted(engine, file) {
+        .Ok(text) -> if "${text}\n" == source_text(engine, file) ?? "" { Canonical.Stands } else { Canonical.Differs },
         .Err(report) -> Canonical.Refused(report.split("\n").first() ?? report),
     }
 }
@@ -150,15 +127,16 @@ export fn canonical_of(text: string, written: Result<string, string>) -> Canonic
 export type StaleCitation = { line: int, id: string }
 
 /// EACH `// LICENSED` CITATION OF A FILE THAT NAMES NOTHING: no rule `avra rules` lists, and no
-/// keeper's family — read off the remarks each item's tape keeps, so a string is never a comment and
-/// nothing is lexed again; the file's text is read for a line only where a citation is stale.
-@query("laws")
+/// keeper's family — read off a lex of the file under its words, so a raw block's body is never
+/// read as a comment.
+@query
 export fn stale_citations(engine: QueryEngine, file: SourceFileAddress) -> List<StaleCitation> {
-    let known = known_rule_ids()
-    let unbacked = [u with { at: item_start(engine, file, i) + u.at } for i in item_ids(engine, file) for u in claims_naming_nothing(read_item(engine, file, i).store.remarks.get(), known)]
-    if unbacked.is_empty() { return [] }
     let src = whole_source(engine, file)
-    [StaleCitation { line: src.linecol(u.at).line, id: u.id } for u in unbacked]
+    citations_naming_nothing(
+        src,
+        lexed_under(src.text, words_lexed(whole_words(engine, file)), avra().keywords).remarks,
+        known_rule_ids(),
+    )
 }
 
 collect listed_canonical_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

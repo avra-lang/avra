@@ -1912,7 +1912,6 @@ static void switched_to_fresh(Fiber* self, Fiber* next) {
     g_current = next;
     avra_task_local = next->local;
     avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
-    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);
@@ -1934,7 +1933,6 @@ static inline void switch_to(Fiber* next) {
     g_current = next;
     avra_task_local = next->local;
     avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
-    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);
@@ -2941,15 +2939,13 @@ int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
     // A CANCEL IS HEARD BEFORE THE TURN IS COUNTED: a schedule decides who
     // runs next, never whether a request is heard, and a task that
-    // unwinds draws nothing from it. A CHECKED BACK-EDGE IN A SHIELDED TASK
-    // RAISES NOTHING, as the compiled one's (`avra_tick_cold`): a deferred
-    // call that loops runs to its end under a cancel.
+    // unwinds draws nothing from it.
     if (g_seeded) {
-        if (!f->shield_depth && f->cancel_by != 0) { f->unwinding = 1; return 0; }
+        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }
         return tick_turn_comes(f);
     }
     if (g_timers_len > 0) fire_due_timers(now_ns());
-    if (!f->shield_depth && (deadline_passed(f) || f->cancel_by != 0)) f->unwinding = 1;
+    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
     return g_ready_head != NULL;
 }
 

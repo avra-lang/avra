@@ -3,15 +3,14 @@
 //! frame current where it is made, entered where it runs. The survey reads every body as it is
 //! lowered with nothing framed — framing a lambda changes nothing of what it reads — and a body the
 //! program frames a lambda of is asked again with those lambdas framed, its own answer apart from the
-//! one every other program shares. A body that boxes, calls through or places a box of a placed
-//! trait is framed too, so those boxes carry the frame they are placed under. A program that declares
-//! no context frames nothing, and reads nothing here but that.
+//! one every other program shares. A program that declares no context frames nothing, and reads
+//! nothing here but that.
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use core.{CalledFn, ContextMarks, PLACED_FRAMES, distinct, flatten, some_list}
+use core.{CalledFn, flatten, some_list}
 
 /// The lambdas of one body a program frames: the body's unit, and the symbol each lambda lifts under.
 @derive(Saved)
@@ -21,56 +20,27 @@ type UnitFraming = { unit: string, lambdas: List<string> }
 @derive(Saved)
 type ProgramFraming = { units: List<UnitFraming> }
 
-/// What the body known by `unit` frames in the program that runs from the files `roots` — a file's
-/// statements, and each case it writes: none where the files a root reaches declare no context, or
-/// the body makes no lambda that reads one and boxes, calls through or places no placed box.
-export fn framed_lambdas(engine: QueryEngine, roots: List<SourceFileAddress>, unit: string) -> List<
-    string,
-> {
-    distinct(
-        flatten(
-            [u.lambdas for r in roots for u in entry_framing(engine, r).units if u.unit == unit],
-        ),
-    )
+/// The lambdas of the body known by `unit` the program of the package `package` frames; none where
+/// the program declares no context, or the body makes none that reads one.
+export fn framed_lambdas(engine: QueryEngine, package: string, unit: string) -> List<string> {
+    program_framing(engine, package).units.find(it.unit == unit)?.lambdas ?? []
 }
 
 /// The unit a file's entry is framed by.
 export fn entry_unit(file: SourceFileAddress) -> string { "entry:${file.package_name}:${file.path_in_package}" }
 
-/// What a program run from the file `entry` frames, body by body — from its statements, and from each
-/// case it writes, which a suite runs: nothing where the files it reaches declare no context, so a
-/// package's other programs pay nothing for one that sets one.
-@query("laws")
-fn entry_framing(engine: QueryEngine, entry: SourceFileAddress) -> ProgramFraming {
-    if entry_contexts(engine, entry).is_empty() { return ProgramFraming { units: [] } }
-    let survey = read_survey(engine, entry.package_name)
-    let statements = [UnitBody { unit: entry_unit(entry), body: b } for b in some_list(entry_plain(engine, entry))]
-    let cases = file_cases(engine, entry).cases
-    let specs = [UnitBody { unit: case_symbol(entry, k), body: b } for k, c in cases for b in some_list(lowered_case(engine, entry, c.item, c.index, case_symbol(entry, k), []))]
-    let bodies = statements.concat(specs)
-    for b in bodies { let _ = survey.settled(b.body) }
-    let own = [UnitFraming { unit: b.unit, lambdas: framed_in(survey, b.body) } for b in bodies]
-    let called = [UnitFraming { unit: c.symbol, lambdas: framed_in(survey, b) } for c in survey.met_calls.get() for b in some_list(reached_body(engine, c))]
+@query
+fn program_framing(engine: QueryEngine, package: string) -> ProgramFraming {
+    if program_contexts(engine, package).is_empty() { return ProgramFraming { units: [] } }
+    let survey = program_survey(engine, package)
+    let entries = [EntryAt { file: f, body: e } for f in program_files(engine, package) if f.package_name == package for e in some_list(entry_plain(engine, f))]
+    let own = [UnitFraming { unit: entry_unit(e.file), lambdas: reading_lifts(survey, e.body) } for e in entries]
+    let called = [UnitFraming { unit: c.symbol, lambdas: reading_lifts(survey, b) } for c in survey.met_calls.get() for b in some_list(reached_body(engine, c))]
     ProgramFraming { units: [u for u in own.concat(called) if !u.lambdas.is_empty()] }
 }
 
-/// A body a program runs from, and the unit it is known by.
-type UnitBody = { unit: string, body: LoweredFn }
-
-/// What `f` frames: each lambda it lifts whose body reads a context, and its placed boxes where it
-/// boxes, calls through or places one.
-fn framed_in(survey: ReadSurvey, f: LoweredFn) -> List<string> {
-    let placing = [f.marks].concat([l.marks for l in f.lifts]).any((m) -> places(m))
-    reading_lifts(survey, f).concat(if placing { [PLACED_FRAMES] } else { [] })
-}
-
-/// Whether a body marked `m` boxes, calls through, places or rehomes a box of a placed trait.
-fn places(m: ContextMarks) -> bool {
-    m.boxes.any(it.placed) ||
-        m.dyns.any(it.placed) ||
-        !m.placings.is_empty() ||
-        !m.rehomes.is_empty()
-}
+/// An entry the survey starts at: its file, and its body lowered with nothing framed.
+type EntryAt = { file: SourceFileAddress, body: LoweredFn }
 
 /// The lambdas `f` lifts whose body reads a context, walked from no frame with every box the survey
 /// met known.

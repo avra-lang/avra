@@ -1,0 +1,21 @@
+diff --git a/packages/std-avrac/src/core/checking.av b/packages/std-avrac/src/core/checking.av
+index 36a3f641..f5d4dab6 100644
+--- a/packages/std-avrac/src/core/checking.av
++++ b/packages/std-avrac/src/core/checking.av
+@@ -1760,13 +1760,14 @@ impl Checking {
+     /// What a lambda's body `body` answers into the fn seat `seat`: checked against the seat's answer
+     /// where it's known, else read as it is, an arms block's match widened as `tailed_answer` says.
+     /// The seat's answer is what a `return`, `?` or `fail` inside answers, where the lambda
+-    /// `promises`; a lambda taking no seat hears none, so no fn encloses its body.
++    /// `promises`; a lambda taking no seat hears none, and one whose seat's answer isn't known has
++    /// none to give, so no fn encloses its body.
+     mut fn lambda_answered(body: ExprId, seat: SignedType?, promises: bool = true) -> SignedType? {
+         let wanted = known(seat?.answer)
+         let outer = self.answer
+         let outer_fnless = self.fnless
+         self.answer = if promises { wanted } else { null }
+-        self.fnless = outer_fnless || !promises
++        self.fnless = outer_fnless || !promises || wanted == null
+         let read = self
+             .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
+         self.answer = outer

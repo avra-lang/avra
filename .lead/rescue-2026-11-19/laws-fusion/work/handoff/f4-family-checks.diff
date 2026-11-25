@@ -1,0 +1,67 @@
+diff --git a/packages/std-avrac/src/compiler/item_bound_calls.av b/packages/std-avrac/src/compiler/item_bound_calls.av
+index 94ffb55a..e22f4211 100644
+--- a/packages/std-avrac/src/compiler/item_bound_calls.av
++++ b/packages/std-avrac/src/compiler/item_bound_calls.av
+@@ -195,7 +195,7 @@ const TYPEWIDE: string = "typewide"
+ /// Whether a written item of `file` calls a method on a type parameter's value that its bound
+ /// doesn't give: a build that reaches the file fails on it.
+ export fn asks_ungiven(engine: QueryEngine, file: SourceFileAddress) -> bool {
+-    file_found_by(engine, file, ["bound_lacks", "unbounded_called"])
++    (0..item_count(engine, file)).any(!item_ungiven(engine, file, it).rows.is_empty())
+ }
+ 
+ collect listed_bound_call_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+diff --git a/packages/std-avrac/src/compiler/item_generic_methods.av b/packages/std-avrac/src/compiler/item_generic_methods.av
+index e4be6f19..c09cdf79 100644
+--- a/packages/std-avrac/src/compiler/item_generic_methods.av
++++ b/packages/std-avrac/src/compiler/item_generic_methods.av
+@@ -46,7 +46,7 @@ fn generic_methods(store: SyntaxArena, s: StmtId) -> List<GenericMethodAt> {
+ 
+ /// Whether a written item of `file` holds a generic method: a build that reaches the file fails on it.
+ export fn writes_generic_methods(engine: QueryEngine, file: SourceFileAddress) -> bool {
+-    file_found_by(engine, file, ["generic_method"])
++    (0..item_count(engine, file)).any(!item_generic_methods(engine, file, it).rows.is_empty())
+ }
+ 
+ /// Each generic method the written item `at` of `file` writes: its name.
+diff --git a/packages/std-avrac/src/compiler/item_methods_twice.av b/packages/std-avrac/src/compiler/item_methods_twice.av
+index 64e6b027..c1ff9f62 100644
+--- a/packages/std-avrac/src/compiler/item_methods_twice.av
++++ b/packages/std-avrac/src/compiler/item_methods_twice.av
+@@ -110,7 +110,7 @@ fn declared_before(a: ImplAt, file: SourceFileAddress, at: int) -> bool {
+ /// Whether a written item of `file` declares a method whose name its type already took: a build that
+ /// reaches the file fails on it.
+ export fn takes_method_names(engine: QueryEngine, file: SourceFileAddress) -> bool {
+-    file_found_by(engine, file, ["method_declared_twice", "member_named_as_method"])
++    (0..item_count(engine, file)).any(!item_methods_taken(engine, file, it).rows.is_empty())
+ }
+ 
+ /// Every method of the written item `at` of `file` declared where its name is already taken.
+diff --git a/packages/std-avrac/src/compiler/item_misnamed.av b/packages/std-avrac/src/compiler/item_misnamed.av
+index a057c23a..25c84135 100644
+--- a/packages/std-avrac/src/compiler/item_misnamed.av
++++ b/packages/std-avrac/src/compiler/item_misnamed.av
+@@ -75,7 +75,7 @@ fn misnamed_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemM
+ /// Whether a written item of `file` holds a word that cannot be the name it's written as: a build
+ /// that reaches the file fails on it.
+ export fn misnames(engine: QueryEngine, file: SourceFileAddress) -> bool {
+-    file_found_by(engine, file, ["keyword_as_name", "implementor_as_name", "reserved_as_name"])
++    (0..item_count(engine, file)).any(!item_misnamed(engine, file, it).rows.is_empty())
+ }
+ 
+ /// The names the top-level statement `s` declares — a fn's, a type's — where it stands.
+diff --git a/packages/std-avrac/src/compiler/law_findings.av b/packages/std-avrac/src/compiler/law_findings.av
+index 2badb09e..9e1b028f 100644
+--- a/packages/std-avrac/src/compiler/law_findings.av
++++ b/packages/std-avrac/src/compiler/law_findings.av
+@@ -262,10 +262,3 @@ collect listed_law_facts: List<ListedQuery> = @query_definition in self as Liste
+ 
+ /// The queries the laws are read through, for a process to hand its engine.
+ export fn law_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_law_facts) }
+-
+-/// Whether a law among `laws`, by name, finds anything in a written item of `file`: what its items'
+-/// findings say, read once an item.
+-export fn file_found_by(engine: QueryEngine, file: SourceFileAddress, laws: List<string>) -> bool {
+-    (0..item_count(engine, file))
+-        .any((at: int) -> law_findings(engine, file, at).findings.any((f) -> laws.contains(f.by)))
+-}

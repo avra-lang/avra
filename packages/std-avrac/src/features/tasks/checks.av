@@ -17,22 +17,10 @@ impl Checks for Within {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let span = cx.toolchain_type("@std.time", "Duration")
         let late = cx.toolchain_type("@std.time", "TimedOut")
-        let before = cx.refused.get().length
         let _ = cx
             .check(self.limit, if span == null { Expected.Free } else { Expected.Exactly(span!) })
-        let limited = cx.refused.get().length == before
         let body? = cx.check(self.body, Expected.Free) else { return null }
-        // as the old path judges it: a limit refused is the only word; then a block answering nothing,
-        // at the block; then a program loading no `@std/time`, at the `within`
-        if !limited { return null }
-        if body.owns(OwnType.Void) {
-            cx.within_refused(self.body, false)
-            return null
-        }
-        if span == null || late == null {
-            cx.within_refused(e, true)
-            return null
-        }
+        if body.owns(OwnType.Void) || span == null || late == null { return null }
         owned_type("Result") with { args: [body, late!] }
     }
 }

@@ -1072,40 +1072,10 @@ LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRe
     return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
 }
 
-// A headered global another module lays out, declared here so a read
-// finds it by name; its payload stands 16 bytes in, as every one's does.
-// A static's name is a logical one, so a global modules share wears it as
-// the linker's (`avra_mangle_symbol`), as a fn's does.
-void avra_llvm_static_declared(LLVMModuleRef m, const char* name) {
-    char* linked = avra_mangle_symbol(name);
-    if (!LLVMGetNamedGlobal(m, linked)) {
-        LLVMValueRef g = LLVMAddGlobal(m, LLVMInt8TypeInContext(LLVMGetModuleContext(m)), linked);
-        LLVMSetLinkage(g, LLVMExternalLinkage);
-    }
-    free(linked);
-}
-
-// A headered global laid out here, made the other modules' to read under
-// the linker's name for it.
-void avra_llvm_static_shared(LLVMModuleRef m, const char* name) {
-    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
-    if (!g) { avra_trap("compiler defect: a shared static names no data"); }
-    char* linked = avra_mangle_symbol(name);
-    LLVMSetValueName2(g, linked, strlen(linked));
-    LLVMSetLinkage(g, LLVMExternalLinkage);
-    free(linked);
-}
-
-// The payload address of a headered global already laid out, or of one
-// another module lays out (`avra_llvm_static_declared`).
+// The payload address of a headered global already laid out.
 LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMValueRef g = LLVMGetNamedGlobal(m, name);
-    if (!g) {
-        char* linked = avra_mangle_symbol(name);
-        g = LLVMGetNamedGlobal(m, linked);
-        free(linked);
-    }
     if (!g) { avra_trap("compiler defect: a static read names no data"); }
     LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(ctx), 16, 0);
     return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
@@ -1941,14 +1911,12 @@ int64_t avra_file_bytes(const char* path) {
 
 // THE FILE `from` PLACED AT `to` WITHOUT A BYTE WRITTEN: linked beside `to`, then renamed onto it, so
 // `to` is the old file or the new and never half of one. 0, or -errno where the two stand on file
-// systems a link can't join (the caller copies then). The link beside `to` never outlives the call:
-// a rename onto a link of the same file succeeds and moves nothing (POSIX), so it is unlinked after.
+// systems a link can't join (the caller copies then).
 int64_t avra_file_placed(const char* from, const char* to) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.placing.%d", to, (int)getpid()) >= (int)sizeof(tmp)) return -ENAMETOOLONG;
     unlink(tmp);
     if (link(from, tmp) != 0) return -errno;
     if (rename(tmp, to) != 0) { int e = errno; unlink(tmp); return -e; }
-    unlink(tmp);
     return 0;
 }

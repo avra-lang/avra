@@ -25,7 +25,7 @@ use answer_record.{
     words_of,
 }
 use defect.{defect}
-use @std.io.{append_bytes, env}
+use @std.io.{env}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{Saved}
 use saved_layout.{
@@ -52,24 +52,6 @@ const CHAIN_DELTAS: int = 4
 /// entries over this in entries and stale places; a change past it folds into a new base, which
 /// spares every reader an overlay as big as the base.
 const DELTA_SHARE: int = 4
-
-/// THE CHAIN IS BOUNDED BY ITS SIZE: what its deltas and a change write or find stale, together,
-/// number at most its base's entries over this, or `CHAIN_FLOOR` where that is more. A change past
-/// it folds into a new base where it is written, so no later reader lays a large overlay over the
-/// base on every open, nor turns its readers round.
-const CHAIN_SHARE: int = 16
-
-/// The places a chain may hold over a small base, whatever its share.
-const CHAIN_FLOOR: int = 256
-
-/// Whether a change of `change` places is written as a delta over a chain of `links` deltas holding
-/// `chain` places, over a base of `base` places: the chain has room for another delta, the change is
-/// at most its base's share, and the chain with it at most its room.
-export fn chain_takes(base: int, links: int, chain: int, change: int) -> bool {
-    links < CHAIN_DELTAS &&
-        change * DELTA_SHARE <= base &&
-        chain + change <= max_of(base / CHAIN_SHARE, CHAIN_FLOOR)
-}
 
 /// One answer as a frontier holds it: its question, its answer, the places of what it read, whether
 /// it's an input, read afresh in every process, and whether it's a root, asked with nobody asking.
@@ -341,7 +323,7 @@ fn delta_read(file: FrontierFile) -> DeltaLayer? {
 type Overlaid = { place: int, delta: int?, index: int, stale: bool }
 
 /// A place as a table key: places are dense, so each lands in a slot of its own.
-export fn place_key(place: int) -> ContentHash { ContentHash { high_word: place, low_word: place } }
+fn place_key(place: int) -> ContentHash { ContentHash { high_word: place, low_word: place } }
 
 /// A place's newest entry where it lies: the columns holding it and its index there, whether it's
 /// stale, and how many places its frontier holds, one of which each of its reads names.
@@ -365,24 +347,6 @@ impl EntryAt {
 
 /// How a walk of what a change reaches decides a place: a cutting answer that stands, which the walk
 /// stops at; one that moved, whose readers are decided in turn; any other.
-/// Each place's readers a delta wrote: `readers` from `starts[at]` up to `starts[at + 1]`.
-type WrittenReaders = { starts: List<int>, readers: List<int> }
-
-/// What a change can reach in a frontier: the places that changed, each place it found, then by each
-/// one's index among them: the indexes of the changed, the indexes of the places that read each (once
-/// each), and how many of those each waits on.
-export type FrontierReach = {
-    changed: List<int>,
-    found: List<int>,
-    changed_at: List<int>,
-    readers: List<List<int>>,
-    waiting: List<int>,
-}
-
-/// The readers a chain's deltas wrote, turned round over the chain of `links` deltas and `extent`
-/// places they were turned round for.
-type HeldReaders = { links: int, extent: int, readers: WrittenReaders }
-
 export const CUT_STANDS: int = 1
 export const CUT_MOVED: int = 2
 export const NOT_CUT: int = 3
@@ -399,9 +363,6 @@ export type Frontier = {
     extent: int,
     /// Whether more than one delta extends its newest state, so the next write folds.
     forked: bool,
-    /// The readers its chain's deltas wrote, once they were asked for: the open asks, and the save
-    /// over the same frontier reads them again.
-    readers_held: Cell<List<HeldReaders>>,
 }
 
 impl Frontier {
@@ -480,144 +441,39 @@ impl Frontier {
     /// EVERY PLACE REACHED FROM `changed` BY READING: each answer that read one, and each that read
     /// one of those, each once — walked forward along the base's readers and the reads of each place
     /// a delta wrote, so only what a change reaches is read. A base reader a delta since rewrote is
-    /// reached as well, which only checks it. Absent when a delta's entry's reads, or a reader the walk
-    /// meets, don't lie within the frontier, or the readers met go round.
-    ///
-    /// THE PLACES ARE SETTLED IN READING ORDER, never in the order of their questions' hashes: every
-    /// place the change can reach is found first, then each is settled only once every place it reads
-    /// among them is, so what it meets is final. Each place that read a place reached is decided, the
-    /// change reaching it through a place that moved or one merely reached alike: a cut that stands
-    /// (`CUT_STANDS`) was just worked out equal, so it is neither reached nor walked past; any other is
-    /// reached. So the places reached, and the places decided, are the same whatever order the
-    /// frontier keeps its places in: a hash that moves with unrelated code moves no warm work.
+    /// reached as well, which only checks it. Each reader of a changed place, and of a place `decide`
+    /// called a cut that moved, is decided as the walk meets it: a cut that stands (`CUT_STANDS`) is
+    /// neither reached nor walked past. Absent when a delta's entry's reads, or a reader the walk
+    /// meets, don't lie within the frontier.
     fn readers_of(changed: List<int>, decide: fn(int) -> int) -> List<bool>? {
-        let reach? = self.reach_of(changed) else { return null }
-        self.settled(reach, decide, (_reader, _by) -> true)
-    }
-
-    /// EVERY PLACE THE CHANGE CAN REACH, walked once: each with the places that read it, read once
-    /// here and held, and how many of those it waits on. Absent when a reader the walk meets doesn't
-    /// lie within the frontier, or a delta's entry's reads don't.
-    fn reach_of(changed: List<int>) -> FrontierReach? {
-        let written? = self.written_readers() else { return null }
-        mut index = [-1 for _i in 0..self.extent]
-        mut named_by = [-1 for _i in 0..self.extent]
-        mut found: List<int> = []
-        mut readers: List<List<int>> = []
-        mut pending = changed
-        while !pending.is_empty() {
-            let at = pending.pop()
-            if index[at] >= 0 { continue }
-            index.set(at, found.length)
-            found.push(at)
-            let now = self.readers_now(at, written)
-            if !now.all((r) -> place_below(r, self.extent)) { return null }
-            mut distinct: List<int> = []
-            for r in now {
-                if named_by[r] == at { continue }
-                named_by.set(r, at)
-                distinct.push(r)
-                if index[r] < 0 { pending.push(r) }
-            }
-            readers.push(distinct)
-        }
-        let readers_at = [[index[r] for r in each] for each in readers]
-        mut waiting = [0 for _i in 0..found.length]
-        for each in readers_at {
-            for k in each { waiting.set(k, waiting[k] + 1) }
-        }
-        FrontierReach {
-            changed: changed,
-            found: found,
-            changed_at: [index[c] for c in changed],
-            readers: readers_at,
-            waiting: waiting,
-        }
-    }
-
-    /// The places `reach` reaches, each settled once all it reads among them are: reached, or cut
-    /// off where `decide` says a cutting answer stands. A place reached meets each of its readers
-    /// that `meets` says it does — one whose read of it no longer sees what it saw — and a reader met
-    /// by none stands. The first ready are taken in place order. Absent when the places reached go
-    /// round.
-    fn settled(reach: FrontierReach, decide: fn(int) -> int, meets: fn(int, int) -> bool) -> List<
-        bool,
-    >? {
-        let count = reach.found.length
-        mut waiting = [w for w in reach.waiting]
-        mut reached_here = [false for _i in 0..count]
-        mut met = [false for _i in 0..count]
-        mut changed_here = [false for _i in 0..count]
-        for k in reach.changed_at { changed_here.set(k, true) }
-        mut ready = sorted_by(
-            [i for i in 0..count if waiting[i] == 0],
-            (a, b) -> reach.found[a] < reach.found[b],
-        )
-        mut at_ready = 0
-        while at_ready < ready.length {
-            let i = ready[at_ready]
-            at_ready = at_ready + 1
-            let reaches = changed_here[i] || met[i] && decide(reach.found[i]) != CUT_STANDS
-            if reaches { reached_here.set(i, true) }
-            for k in reach.readers[i] {
-                if reaches && !met[k] && meets(reach.found[k], reach.found[i]) { met.set(k, true) }
-                waiting.set(k, waiting[k] - 1)
-                if waiting[k] == 0 { ready.push(k) }
-            }
-        }
-        if ready.length != count { return null }
-        mut reached = [false for _i in 0..self.extent]
-        for i in 0..count { if reached_here[i] { reached.set(reach.found[i], true) } }
-        reached
-    }
-
-    /// The readers of `at` now: the base's, and each place a delta wrote whose reads name it.
-    fn readers_now(at: int, written: WrittenReaders) -> List<int> {
-        let own = [written.readers[i] for i in written.starts[at]..written.starts[at + 1]]
-        if at < self.base.columns.length() { self.base.columns.readers_at(at).concat(own) } else { own }
-    }
-
-    /// THE READERS DELTAS WROTE, laid flat: the places each delta's entry reads, turned round into
-    /// each place's readers, two lists of numbers however many places there are. Absent when a delta's
-    /// entry's reads don't lie within the frontier. Turned round once for a chain and held, so what a
-    /// save asks of the frontier its process opened costs what the save changed.
-    fn written_readers() -> WrittenReaders? {
-        let held? = self.readers_held.get().first() else { return self.readers_kept() }
-        if held.links == self.chain.length && held.extent == self.extent { return held.readers }
-        self.readers_kept()
-    }
-
-    /// The readers deltas wrote, turned round and held.
-    fn readers_kept() -> WrittenReaders? {
-        let turned? = self.readers_turned() else { return null }
-        self
-            .readers_held
-            .set([HeldReaders { links: self.chain.length, extent: self.extent, readers: turned }])
-        turned
-    }
-
-    /// The readers deltas wrote, turned round.
-    fn readers_turned() -> WrittenReaders? {
-        mut count = [0 for _i in 0..self.extent + 1]
-        mut wrote: List<int> = []
-        mut read: List<int> = []
+        mut written: List<List<int>> = [[] for _i in 0..self.extent]
         for o in self.overlaid.values() {
             if o.delta == null { continue }
             let reads? = self.reads_at(o.place) else { return null }
-            for r in reads {
-                count.set(r + 1, count[r + 1] + 1)
-                wrote.push(o.place)
-                read.push(r)
+            for r in reads { written[r].push(o.place) }
+        }
+        let base = self.base.columns
+        mut reached = [false for _i in 0..self.extent]
+        mut deciding = [false for _i in 0..self.extent]
+        for c in changed { deciding.set(c, true) }
+        mut pending = changed
+        while !pending.is_empty() {
+            let at = pending.pop()
+            if reached[at] { continue }
+            reached.set(at, true)
+            let readers = if at < base.length() { base.readers_at(at).concat(written[at]) } else { written[at] }
+            if !readers.all((r) -> place_below(r, self.extent)) { return null }
+            for r in readers {
+                if reached[r] { continue }
+                if deciding[at] {
+                    let decided = decide(r)
+                    if decided == CUT_STANDS { continue }
+                    if decided == CUT_MOVED { deciding.set(r, true) }
+                }
+                pending.push(r)
             }
         }
-        for at in 0..self.extent { count.set(at + 1, count[at + 1] + count[at]) }
-        mut filled = count
-        mut readers = [0 for _i in 0..wrote.length]
-        for i, r in read {
-            readers.set(filled[r], wrote[i])
-            filled.set(r, filled[r] + 1)
-        }
-        WrittenReaders { starts: count, readers: readers }
+        reached
     }
 
     /// The way a change in `changed` reaches the place `to` by reading: a changed place first, each
@@ -671,17 +527,9 @@ impl Frontier {
     /// Whether a change is small enough to write as a delta over it.
     fn takes(change: FrontierChange) -> bool {
         !self.forked &&
-            chain_takes(
-                self.base_length(),
-                self.chain.length,
-                self.chain_size(),
-                change.written.length + change.stale.length,
-            )
+            self.chain.length < CHAIN_DELTAS &&
+            (change.written.length + change.stale.length) * DELTA_SHARE <= self.base_length()
     }
-
-    /// How many places its chain's deltas write or find stale, in all: what every reader lays over
-    /// the base.
-    fn chain_size() -> int { self.chain.fold(0, (n, d) -> n + d.places.length + d.stale.length) }
 
     /// Whether `d` extends this state: it holds no fewer places, writes no place twice, and writes
     /// each place past the state's end.
@@ -724,7 +572,6 @@ fn based_on(base: BaseLayer) -> Frontier {
             .put(place_key(place), Overlaid { place: place, delta: null, index: place, stale: true })
     }
     let placed: HashKeyedTable<int> = hash_keyed_table()
-    let readers_held: Cell<List<HeldReaders>> = Cell.new([])
     Frontier {
         base: base,
         chain: [],
@@ -732,7 +579,6 @@ fn based_on(base: BaseLayer) -> Frontier {
         placed: placed,
         extent: base.columns.length(),
         forked: false,
-        readers_held: readers_held,
     }
 }
 
@@ -1015,21 +861,13 @@ impl FrontierChange {
 fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> FrontierChange? {
     let before = state?.length() ?? 0
     let moved = held.filter((h) -> moved_from(state, h))
-    let existing = moved.filter((h) -> place_in(state, h.question) != null)
-    let closed = fresh_reached(
+    let closed = fresh_closed(
         state,
-        existing,
-        fresh_closed(
-            state,
-            sorted_by_hash(
-                moved.filter((h) -> place_in(state, h.question) == null),
-                (h) -> h.question,
-            ),
-            before,
-        ),
+        sorted_by_hash(moved.filter((h) -> place_in(state, h.question) == null), (h) -> h.question),
         before,
     )
     let fresh = closed.entries
+    let existing = moved.filter((h) -> place_in(state, h.question) != null)
     let existing_reads = [placed_reads(state, closed.places, h) for h in existing]
     let placeable = [h for at, h in existing if existing_reads[at] != null]
     let places = [place_in(state, h.question)! for h in placeable]
@@ -1082,14 +920,10 @@ const FEW_READS: int = 16
 /// of its readers did, and the walk goes down from `cut` only through such places. Each place it
 /// meets counts its readers outside the lost that are reached, once; a reader that joins the lost
 /// takes itself off the count of each place it reads, and a place whose count runs out joins them.
-/// The lost are exactly the places the whole walk from the roots leaves. A WALK OVER WHAT WAS
-/// STORED IS BOUNDED: each place joins the lost once, and past `WALK_PER_PLACE` steps a place the
-/// walk costs more than the whole walk from the roots, which it then takes — so a frontier read
-/// back, whatever its reads hold, cycles included, is walked in time linear in its size. Absent
-/// when a read the walk meets doesn't lie within the frontier.
+/// Reads never close a cycle, so the lost are exactly the places the whole walk from the roots
+/// leaves. Absent when a read the walk meets doesn't lie within the frontier.
 fn lost_from(s: Frontier, change: FrontierChange, cut: List<int>) -> List<bool>? {
     let readers? = readers_beside(s, change) else { return null }
-    let budget = Cell.new(WALK_PER_PLACE * change.extent + cut.length)
     mut lost = [false for _i in 0..change.extent]
     mut holding = [-1 for _i in 0..change.extent]
     mut pending = [c for c in cut]
@@ -1097,16 +931,13 @@ fn lost_from(s: Frontier, change: FrontierChange, cut: List<int>) -> List<bool>?
         let at = pending.pop()
         if lost[at] || change.root_at(at) { continue }
         if holding[at] < 0 {
-            let count? = holders_of(s, change, readers, lost, at, budget) else { return null }
-            if budget.get() < 0 { return whole_lost(change) }
+            let count? = holders_of(s, change, readers, lost, at) else { return null }
             holding.set(at, count)
         }
         if holding[at] > 0 { continue }
         lost.set(at, true)
         let stood = stood_before(s, change, at)
         let reads? = change.reads_at(at) else { return null }
-        budget.set(budget.get() - reads.length)
-        if budget.get() < 0 { return whole_lost(change) }
         for r in reads {
             if !place_below(r, change.extent) || lost[r] { continue }
             // a reader that stood was counted; one that didn't is counted again
@@ -1117,52 +948,29 @@ fn lost_from(s: Frontier, change: FrontierChange, cut: List<int>) -> List<bool>?
     lost
 }
 
-/// HOW MUCH THE WALK FROM THE CUT MAY DO, per place of the frontier: past it the walk costs more than
-/// the whole walk from the roots, which finds the same places in time linear in the frontier.
-const WALK_PER_PLACE: int = 4
-
-/// Every place no root reaches once `change` is laid over its state, by the whole walk from the
-/// roots: the places the walk from the cut finds, found in time linear in the frontier whatever its
-/// reads hold. Absent when a read the walk meets doesn't lie within the frontier.
-fn whole_lost(change: FrontierChange) -> List<bool>? {
-    let reached? = change.reached_from_roots() else { return null }
-    [!reached[at] for at in 0..change.extent]
-}
-
 /// Whether the place `at` stood before `change`: then a root reached it.
 fn stood_before(s: Frontier, change: FrontierChange, at: int) -> bool { at < change.before() && s.stands(at) }
 
-/// The readers of each place a delta of `s`'s chain or `change` wrote, as they read once `change` is
-/// laid over `s`: the readers the base's turned-round columns don't hold. The chain's are the ones
-/// `s` turned round and holds, less each entry `change` rewrites; `change`'s are its own.
-type Beside = { written: WrittenReaders, changed: HashKeyedTable<List<int>> }
-
-/// What `change` and `s`'s chain wrote that reads each place. Absent when a chain's entry's reads
-/// don't lie within the frontier.
-fn readers_beside(s: Frontier, change: FrontierChange) -> Beside? {
-    let written? = s.written_readers() else { return null }
-    let changed: HashKeyedTable<List<int>> = hash_keyed_table()
-    for index, place in change.places {
-        for r in change.written_reads[index] {
-            if place_below(r, change.extent) { changed.put(place_key(r), (changed.get(place_key(r)) ?? []).concat([place])) }
-        }
+/// The places whose entries a delta of `s`'s chain or `change` wrote that read each place, as they
+/// read once `change` is laid over `s`: the readers the base's turned-round columns don't hold.
+/// Absent when such an entry's reads don't lie within the frontier.
+fn readers_beside(s: Frontier, change: FrontierChange) -> List<List<int>>? {
+    mut readers: List<List<int>> = [[] for _i in 0..change.extent]
+    for o in s.overlaid.values() {
+        if o.delta == null || change.written_at[o.place] != 0 { continue }
+        let reads? = s.reads_at(o.place) else { return null }
+        for r in reads { if place_below(r, change.extent) { readers[r].push(o.place) } }
     }
-    Beside { written: written, changed: changed }
+    for index, place in change.places {
+        for r in change.written_reads[index] { if place_below(r, change.extent) { readers[r].push(place) } }
+    }
+    readers
 }
 
-/// The places that read `at` once `change` is laid over `s`: those a delta of the chain wrote that
-/// `change` doesn't rewrite, those `change` wrote, then the base's readers whose reads still name
-/// it.
-fn readers_now(s: Frontier, change: FrontierChange, beside: Beside, at: int) -> List<int>? {
-    mut now: List<int> = []
-    let starts = beside.written.starts
-    if at + 1 < starts.length {
-        for i in starts[at]..starts[at + 1] {
-            let r = beside.written.readers[i]
-            if change.written_at[r] == 0 { now.push(r) }
-        }
-    }
-    now = now.concat(beside.changed.get(place_key(at)) ?? [])
+/// The places that read `at` once `change` is laid over `s`: the base's readers whose reads still
+/// name it, then those `beside` holds.
+fn readers_now(s: Frontier, change: FrontierChange, beside: List<List<int>>, at: int) -> List<int>? {
+    mut now = [r for r in beside[at]]
     if at >= s.base_length() { return now }
     for r in s.base.columns.readers_at(at) {
         if change.written_at[r] != 0 || s.overlaid.get(place_key(r))?.delta != null { continue }
@@ -1177,22 +985,19 @@ fn readers_now(s: Frontier, change: FrontierChange, beside: Beside, at: int) -> 
 fn holders_of(
     s: Frontier,
     change: FrontierChange,
-    beside: Beside,
+    beside: List<List<int>>,
     lost: List<bool>,
     at: int,
-    budget: Cell<int>,
 ) -> int? {
     let readers? = readers_now(s, change, beside, at) else { return null }
     mut count = 0
     for r in readers {
-        budget.set(budget.get() - 1)
-        if budget.get() < 0 { return count }
         if lost[r] { continue }
         if stood_before(s, change, r) {
             count = count + 1
             continue
         }
-        let reached? = reached_above(s, change, beside, lost, r, budget) else { return null }
+        let reached? = reached_above(s, change, beside, lost, r) else { return null }
         if reached { count = count + 1 }
     }
     count
@@ -1204,16 +1009,13 @@ fn holders_of(
 fn reached_above(
     s: Frontier,
     change: FrontierChange,
-    beside: Beside,
+    beside: List<List<int>>,
     lost: List<bool>,
     from: int,
-    budget: Cell<int>,
 ) -> bool? {
     let seen: HashKeyedTable<bool> = hash_keyed_table()
     mut pending = [from]
     while !pending.is_empty() {
-        budget.set(budget.get() - 1)
-        if budget.get() < 0 { return false }
         let r = pending.pop()
         if seen.get(place_key(r)) != null { continue }
         seen.put(place_key(r), true)
@@ -1229,19 +1031,10 @@ fn whole_walk_held(change: FrontierChange, stale_now: List<bool>, unreached: Lis
     let reached? = change.reached_from_roots() else { return }
     let whole = [at for at in 0..change.extent if !reached[at] && !stale_now[at] && change.stands_at(at)]
     if whole.length != unreached.length || !(0..whole.length).all(whole[it] == unreached[it]) {
-        let message = "the walk from where reads were cut left ${unreached.length} places unreached, the whole walk ${whole.length}"
-        walk_trip_kept(message)
-        defect(message)
+        defect(
+            "the walk from where reads were cut left ${unreached.length} places unreached, the whole walk ${whole.length}",
+        )
     }
-}
-
-/// `message` appended to the file `AVRA_FRONTIER_WALK_CHECK` names, where it names one: a save that
-/// traps after its process answered says so where a gate can read it.
-fn walk_trip_kept(message: string) {
-    let to = whole_walk_checked() ?? ""
-    if to == "" || to == "1" { return }
-    // LICENSED input.debug_flag: a trip is said where the flag says, never read by an answer
-    let _ = append_bytes(to, "${message}\n".bytes()) catch ""
 }
 
 // LICENSED input.debug_flag: a debug flag is the process's own, not an input
@@ -1295,37 +1088,6 @@ fn fresh_closed(state: Frontier?, fresh: List<HeldEntry>, before: int) -> Placed
     let reads = [placed_reads(state, places, h) for h in fresh]
     if reads.all(it != null) { return PlacedFresh { entries: fresh, places: places, reads: [r! for r in reads] } }
     fresh_closed(state, [h for at, h in fresh if reads[at] != null], before)
-}
-
-/// THE NEW QUESTIONS SOMETHING REACHES, placed: each a root, or read by an answer the change rewrites
-/// or by another reached, so no answer no root reaches is written as standing — one a process
-/// settled checking a record that then didn't stand, which nothing read. An answer the change
-/// rewrites that no root reaches any more is found lost from where its reads were cut, and what it
-/// read new is lost with it. Over no state, every question is new and the write folds, keeping only
-/// what the roots reach: nothing is walked here.
-fn fresh_reached(state: Frontier?, existing: List<HeldEntry>, closed: PlacedFresh, before: int) -> PlacedFresh {
-    if state == null { return closed }
-    let count = closed.entries.length
-    mut kept = [h.root for h in closed.entries]
-    mut pending = [i for i in 0..count if kept[i]]
-    for h in existing {
-        let reads? = placed_reads(state, closed.places, h) else { continue }
-        for p in reads {
-            if p < before || kept[p - before] { continue }
-            kept.set(p - before, true)
-            pending.push(p - before)
-        }
-    }
-    while !pending.is_empty() {
-        let i = pending.pop()
-        for p in closed.reads[i] {
-            if p < before || kept[p - before] { continue }
-            kept.set(p - before, true)
-            pending.push(p - before)
-        }
-    }
-    if kept.all(it) { return closed }
-    fresh_closed(state, [h for i, h in closed.entries if kept[i]], before)
 }
 
 /// Whether `h` says something `state` doesn't: a question it doesn't hold, one stale there, or

@@ -8,9 +8,8 @@ use @std.errors.{Confidence, Edit, Loc, Suggestion}
 /// it guesses was meant where it guesses one.
 export type Voice = { message: string, label: string? = null, help: string? = null, guess: Guess? = null }
 
-/// A name written and the near one it guesses was meant, how many edits apart they stand, and
-/// whether another name stands as near.
-export type Guess = { written: string, meant: string, distance: int, tied: bool = false }
+/// A name written and the near one it guesses was meant, and how many edits apart they stand.
+export type Guess = { written: string, meant: string, distance: int }
 
 /// `v` guessing, among `candidates`, the one name nearest `written`; `v` itself where none is near.
 export fn guessed(v: Voice, written: string, candidates: List<string>) -> Voice {
@@ -18,26 +17,12 @@ export fn guessed(v: Voice, written: string, candidates: List<string>) -> Voice 
     v with { help: "did you mean `${n.name}`?", guess: Guess { written: written, meant: n.name, distance: n.distance } }
 }
 
-/// The fix a guess offers: the written name at `at` respelled as the one meant, sure only one edit
-/// off and with no other name as near.
+/// The fix a guess offers: the written name at `at` respelled as the one meant.
 export fn guess_fix(g: Guess, at: Loc) -> Suggestion {
     Suggestion {
-        confidence: if g.distance == 1 && !g.tied { Confidence.High } else { Confidence.Medium },
+        confidence: if g.distance == 1 { Confidence.High } else { Confidence.Medium },
         description: "replace `${g.written}` with `${g.meant}`",
         edits: [Edit { loc: at, replacement: g.meant }],
-    }
-}
-
-/// What the fix that makes the top-level binding `name` a `const` does.
-export fn made_const(name: string) -> string { "make `${name}` a `const`" }
-
-/// The fix that writes `const` over the `let` at `at` of the top-level binding `name`: sure, a value
-/// of literals alone settling as a const's does.
-export fn const_fix(name: string, at: Loc) -> Suggestion {
-    Suggestion {
-        confidence: Confidence.High,
-        description: made_const(name),
-        edits: [Edit { loc: at, replacement: "const" }],
     }
 }
 

@@ -1,0 +1,167 @@
+diff --git a/packages/std-program/src/layered_store.av b/packages/std-program/src/layered_store.av
+index d9321b4b..de3f0f2a 100644
+--- a/packages/std-program/src/layered_store.av
++++ b/packages/std-program/src/layered_store.av
+@@ -26,7 +26,7 @@ use disk_store.{
+ use frontier.{Frontier, FrontierLearned}
+ use input_stamps.{InputStamp}
+ use query_engine.{AnswerStore}
+-use saved_layout.{SavedBytes}
++use saved_layout.{SavedBytes, answer_origin_said}
+ use sorted.{sorted_by}
+ 
+ /// Where a package's sources stand, and whether the shared store serves it.
+@@ -133,7 +133,25 @@ impl AnswerStore for LayeredStore {
+         )
+     }
+ 
+-    fn answer_bytes(answer: ContentHash) -> SavedBytes? { self.own.answer_bytes(answer) ?? self.shared?.answer_bytes(answer) ?? wave_answer(answer) }
++    fn answer_bytes(answer: ContentHash) -> SavedBytes? {
++        let draft = self.own.unpublished_answer(answer)
++        if draft != null {
++            answer_origin_said(0)
++            return draft
++        }
++        let packed = self.own.answer_bytes(answer)
++        if packed != null {
++            answer_origin_said(1)
++            return packed
++        }
++        let machine = self.shared?.answer_bytes(answer)
++        if machine != null {
++            answer_origin_said(2)
++            return machine
++        }
++        answer_origin_said(3)
++        wave_answer(answer)
++    }
+ 
+     fn claimed(question: ContentHash) -> int { wave_claimed(question) }
+ 
+diff --git a/packages/std-program/src/query_engine.av b/packages/std-program/src/query_engine.av
+index 99261cce..bbb8f5c8 100644
+--- a/packages/std-program/src/query_engine.av
++++ b/packages/std-program/src/query_engine.av
+@@ -16,7 +16,7 @@ use input_stamps.{InputStamp, places_now}
+ use defect.{defect}
+ use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+ use query_times.{QueryTimes, TimedSide, query_times}
+-use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
++use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource, answer_decoded, decode_clock}
+ use answer_record.{
+     AnswerRecord,
+     ContentHash,
+@@ -345,6 +345,10 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
+ 
+ impl QueryEngine {
+     /// The answer's bytes where they lie, recorded as a read of the whole answer.
++    fn decode_began() -> int { decode_clock() }
++
++    fn decode_ended(began: int, bytes: SavedBytes, cell: bool) { answer_decoded(began, bytes, cell) }
++
+     fn answer_to(asked: Question) -> SavedBytes {
+         self.answer_bytes_of(asked, self.hash_of_answer_to(asked))
+     }
+diff --git a/packages/std-program/src/query_times.av b/packages/std-program/src/query_times.av
+index 4157d287..0793d35f 100644
+--- a/packages/std-program/src/query_times.av
++++ b/packages/std-program/src/query_times.av
+@@ -121,6 +121,10 @@ impl QueryTimes {
+             .join(", ")
+     }
+ 
++    fn spoken_ms() -> string {
++        ["${t.family} ${t.own / 1000000}ms / ${t.whole / 1000000}ms (${t.asks})" for t in self.by_own_time()].join(", ")
++    }
++
+     fn spoken(most: int) -> string {
+         ["${t.family} ${seconds(t.own)} / ${seconds(t.whole)} (${t.asks})" for t in self.by_own_time().take(most)]
+             .join(", ")
+diff --git a/packages/std-program/src/saved_layout.av b/packages/std-program/src/saved_layout.av
+index 9c0e0be8..b20788e4 100644
+--- a/packages/std-program/src/saved_layout.av
++++ b/packages/std-program/src/saved_layout.av
+@@ -564,3 +564,33 @@ export fn word_in(octets: Bytes, at: int) -> int {
+ fn unknown_variant(variant: int, variant_count: int) -> string {
+     "a saved answer holds variant ${variant} of a type with ${variant_count}"
+ }
++
++// MEASUREMENT ONLY: where each answer read back came from, and the time its decoding took.
++extern fn avra_cpu_ns() -> int
++
++once fn decode_origin() -> Cell<List<int>> {
++    let held: Cell<List<int>> = Cell.new([0])
++    held
++}
++
++once fn decode_tally() -> Cell<List<int>> {
++    let held: Cell<List<int>> = Cell.new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
++    held
++}
++
++export fn answer_origin_said(k: int) { decode_origin().set([k]) }
++
++export fn decode_clock() -> int { avra_cpu_ns() }
++
++export fn answer_decoded(began: int, bytes: SavedBytes, cell: bool) {
++    let k = if cell { 5 } else { decode_origin().get()[0] }
++    let t = decode_tally().get()
++    let next = [if i == 3 * k { v + 1 } else if i == 3 * k + 1 { v + avra_cpu_ns() - began } else if i == 3 * k + 2 { v + bytes.to - bytes.from } else { v } for i, v in t]
++    decode_tally().set(next)
++}
++
++export fn decode_tally_said() -> string {
++    let t = decode_tally().get()
++    let names = ["draft", "packs", "machine", "wave", "unknown", "cell"]
++    [" ${names[k]} ${t[3 * k]}/${t[3 * k + 1] / 1000000}ms/${t[3 * k + 2] / 1024}KB" for k in 0..6].join("")
++}
+diff --git a/packages/std-program/src/saved_query.av b/packages/std-program/src/saved_query.av
+index e3604f4e..9d54fdd4 100644
+--- a/packages/std-program/src/saved_query.av
++++ b/packages/std-program/src/saved_query.av
+@@ -280,7 +280,10 @@ fn asking_wrapper(f: Fn) -> Decls {
+                 ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
+                 return fresh!.value
+             }
+-            let value = ${answer_read_door(f)}(${engine_of(f)}.answer_bytes_of(asked, answer))
++            let began = ${engine_of(f)}.decode_began()
++            let bytes = ${engine_of(f)}.answer_bytes_of(asked, answer)
++            let value = ${answer_read_door(f)}(bytes)
++            ${engine_of(f)}.decode_ended(began, bytes, false)
+             if answers_held() { ${held_door(f)}().put(answer, HeldAnswer { value: value }) }
+             value
+         }
+@@ -291,7 +294,11 @@ fn asking_wrapper(f: Fn) -> Decls {
+ fn decoding_wrapper(f: Fn) -> Decls {
+     quote {
+         fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
+-            ${answer_read_door(f)}(${engine_of(f)}.answer_to(${asked_of(f)}.question))
++            let began = ${engine_of(f)}.decode_began()
++            let bytes = ${engine_of(f)}.answer_to(${asked_of(f)}.question)
++            let value = ${answer_read_door(f)}(bytes)
++            ${engine_of(f)}.decode_ended(began, bytes, true)
++            value
+         }
+     }
+ }
+diff --git a/packages/std-program/src/worked_ahead.av b/packages/std-program/src/worked_ahead.av
+index ae7fd414..31020eaa 100644
+--- a/packages/std-program/src/worked_ahead.av
++++ b/packages/std-program/src/worked_ahead.av
+@@ -3,6 +3,7 @@
+ //! store already lets many processes publish at once, so nothing is shared but the directory, and
+ //! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
+ //! didn't work ahead reaches the same ones by itself.
++use saved_layout.{decode_tally_said}
+ use layered_store.{LayeredStore, program_store_at}
+ use disk_store.{
+     key_shares,
+@@ -585,7 +586,7 @@ fn ahead_times(times: QueryTimes) -> string { "ahead: time: ${times.spoken(15)};
+ 
+ /// Where a core's asks spent their time.
+ fn core_times(core: int, answered: int, times: QueryTimes) -> string {
+-    "core ${core}: ${answered} answered; time: ${times.spoken(15)}; split: ${times.split()}; ${waits_said()}"
++    "core ${core}: ${answered} answered; decoded:${decode_tally_said()}; time: ${times.spoken_ms()}; split: ${times.split()}; ${waits_said()}"
+ }
+ 
+ /// ONE ANSWER A CORE LEARNED, as the asking process takes it: the question, its answer, the

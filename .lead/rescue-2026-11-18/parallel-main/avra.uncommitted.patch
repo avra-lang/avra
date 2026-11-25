@@ -1,0 +1,575 @@
+diff --git a/packages/std-avrac/src/compiler/backend/interp.av b/packages/std-avrac/src/compiler/backend/interp.av
+index cdc07c67..91a26325 100644
+--- a/packages/std-avrac/src/compiler/backend/interp.av
++++ b/packages/std-avrac/src/compiler/backend/interp.av
+@@ -1151,8 +1151,8 @@ impl Machine {
+                 self.retain_reg(r)
+                 pc + 1
+             },
+-            .Release(r) -> {
+-                self.release_reg(r)
++            .Release(rs) -> {
++                for r in rs { self.release_reg(r) }
+                 pc + 1
+             },
+             // the run loop owns calls and returns
+diff --git a/packages/std-avrac/src/compiler/backend/ir_text.av b/packages/std-avrac/src/compiler/backend/ir_text.av
+index 0361e548..d9ca458f 100644
+--- a/packages/std-avrac/src/compiler/backend/ir_text.av
++++ b/packages/std-avrac/src/compiler/backend/ir_text.av
+@@ -171,7 +171,7 @@ export fn body_lines(ins: List<Ins>) -> List<string> {
+                 lines.push(line(depth, "}"))
+             },
+             .LoopJump(outward, again) -> lines.push(line(depth, "${jump_word(again)} ${outward}")),
+-            .Release(r) -> lines.push(line(depth, "release r${r.index}")),
++            .Release(rs) -> { for r in rs { lines.push(line(depth, "release r${r.index}")) } },
+             .Retain(r) -> lines.push(line(depth, "retain r${r.index}")),
+             .RetVal(r) -> lines.push(line(depth, "ret r${r.index}")),
+             .FnExit(r) -> lines.push(line(depth, "return r${r.index}")),
+diff --git a/packages/std-avrac/src/compiler/backend/llvm_emit.av b/packages/std-avrac/src/compiler/backend/llvm_emit.av
+index be085174..8d4f1bb2 100644
+--- a/packages/std-avrac/src/compiler/backend/llvm_emit.av
++++ b/packages/std-avrac/src/compiler/backend/llvm_emit.av
+@@ -171,9 +171,9 @@ impl Emit {
+             .OnceCommit(sym, value) -> self.once_committed(sym, value),
+             .FlagRead(_, flag) -> self.define(self.flag_value(flag)),
+             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
+-            .Release(r) -> {
+-                self.census_row("release")
+-                self.released(r)
++            .Release(rs) -> {
++                for _r in rs { self.census_row("release") }
++                self.released_run(rs)
+             },
+             .Retain(r) -> {
+                 self.census_row("retain")
+@@ -685,6 +685,33 @@ impl Emit {
+ 
+     fn released(r: Reg) { self.counted_by(tagged_release, "avra_rc_release", r) }
+ 
++    /// Each of `rs` released, in order: those released by their pointer go to the runtime a row of
++    /// up to four at a call, a value enum's word by its tag alone between them.
++    fn released_run(rs: List<Reg>) {
++        mut row: List<ptr> = []
++        for r in rs {
++            if self.layouts[r.index].tag_mask() != null {
++                self.row_released(row)
++                row = []
++                self.released(r)
++                continue
++            }
++            row.push(self.counted(self.vals[r.index], self.layouts[r.index]))
++            if row.length == RELEASE_ROW {
++                self.row_released(row)
++                row = []
++            }
++        }
++        self.row_released(row)
++    }
++
++    /// The pointers of `row` released by the one row that takes as many; none, nothing.
++    fn row_released(row: List<ptr>) {
++        if row.is_empty() { return }
++        let _ = self
++            .call(if row.length == 1 { "avra_rc_release" } else { "avra_rc_release${row.length}" }, row)
++    }
++
+     fn retained(r: Reg) { self.counted_by(tagged_retain, "avra_rc_retain", r) }
+ 
+     /// `r`'s count moved: a value enum's word by `by_tag` when its tag's variant carries a pointer,
+@@ -871,3 +898,6 @@ fn plain_shift(v: ptr) -> bool {
+ /// The rows that count a value enum's word by its tag.
+ const tagged_retain: string = "avra_rc_retain_tagged"
+ const tagged_release: string = "avra_rc_release_tagged"
++
++/// How many pointers the widest release row takes.
++const RELEASE_ROW: int = 4
+diff --git a/packages/std-avrac/src/compiler/memory/memory.av b/packages/std-avrac/src/compiler/memory/memory.av
+index 69ced5e1..b0baa6db 100644
+--- a/packages/std-avrac/src/compiler/memory/memory.av
++++ b/packages/std-avrac/src/compiler/memory/memory.av
+@@ -110,14 +110,16 @@ fn body_ins(
+     by_name: Map<string, List<SeatMark>>,
+ ) -> List<Ins> {
+     let immortal = immortal_regs(layouts.length, ins)
+-    noted_pairs(
+-        [i for i in memory_ins(
+-            layouts,
+-            ins,
+-            standing_regs(immortal, ins, seats, marks),
+-            consuming_seats(seats, marks),
+-            by_name,
+-        ) if !immortal_rc_op(i, immortal)],
++    runs_joined(
++        noted_pairs(
++            [i for i in memory_ins(
++                layouts,
++                ins,
++                standing_regs(immortal, ins, seats, marks),
++                consuming_seats(seats, marks),
++                by_name,
++            ) if !immortal_rc_op(i, immortal)],
++        ),
+     )
+ }
+ 
+@@ -183,7 +185,11 @@ fn immortal_dst(i: Ins) -> Reg? {
+ /// register the same way, so stripping only the retain leaves the release
+ /// unmatched — a debt this body never took.
+ fn immortal_rc_op(i: Ins, immortal: List<bool>) -> bool {
+-    match i { .Retain(r) or .Release(r) -> immortal[r.index], rest -> false }
++    match i {
++        .Retain(r) -> immortal[r.index],
++        .Release(rs) -> rs.all((r) -> immortal[r.index]),
++        rest -> false,
++    }
+ }
+ 
+ /// The memory instructions as every scope's strategy places them — the pass's
+@@ -324,7 +330,7 @@ fn memory_ins(
+                 manages(layouts, open_scopes, i)
+                 out.push(i)
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for r in lent { out.push(Ins.Release(r)) }
++                for r in lent { out.push(Ins.Release([r])) }
+             },
+             // An EARLY exit settles EVERY open scope's debts at the
+             // site — nothing pops, because other paths continue.
+@@ -489,7 +495,7 @@ fn memory_ins(
+         // copies the whole box.
+         for r in life.dead_here(open_scopes, at) {
+             noted("release: a last read", 1)
+-            out.push(Ins.Release(r))
++            out.push(Ins.Release([r]))
+             disowns(open_scopes, r)
+         }
+     }
+@@ -909,7 +915,7 @@ fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
+ /// value the exit answers, excluded.
+ fn owed_from(open_scopes: Stack<Scope>, floor: int, kept: Reg?) -> List<Ins> {
+     [cell_settle(c) for c in exit_cells(open_scopes, floor)]
+-        .concat([Ins.Release(r) for r in exit_releases(open_scopes, floor, kept)])
++        .concat([Ins.Release([r]) for r in exit_releases(open_scopes, floor, kept)])
+ }
+ 
+ /// Everything each open scope from `floor` in owes at an early exit,
+@@ -960,11 +966,11 @@ fn moved_out(layouts: List<Layout>, scope: Scope, gives: Reg?) -> List<Ins> {
+ fn arm_handed(layouts: List<Layout>, scope: Scope, gives: Reg, handed: List<Reg>) -> List<Ins> {
+     if handed.any(same_reg(it, gives)) && !scope.managed.any(same_reg(it, gives)) {
+         noted("moved: an arm's yield into the merge", 1)
+-        return [Ins.Release(r) for r in handed if !same_reg(r, gives)]
++        return [Ins.Release([r]) for r in handed if !same_reg(r, gives)]
+     }
+     let kept = noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives))
+     noted("release: a value another arm hands to the merge", handed.length)
+-    kept.concat([Ins.Release(r) for r in handed])
++    kept.concat([Ins.Release([r]) for r in handed])
+ }
+ 
+ impl Scope {
+@@ -1197,7 +1203,7 @@ impl Scope {
+     /// then the releases its yield leaves behind.
+     fn settled(gives: Reg?) -> List<Ins> {
+         [cell_settle(c) for c in reversed(self.cells)]
+-            .concat([Ins.Release(r) for r in self.releases_for(gives)])
++            .concat([Ins.Release([r]) for r in self.releases_for(gives)])
+     }
+ }
+ 
+@@ -1568,7 +1574,7 @@ fn noted(reason: string, n: int) {
+ fn noted_all(site: string, placed: List<Ins>) -> List<Ins> {
+     if !tallying() { return placed }
+     noted("retain: ${site}", placed.filter(it is .Retain).length)
+-    noted("release: ${site}", placed.filter(it is .Release).length)
++    noted("release: ${site}", flatten([released_regs(i) for i in placed]).length)
+     noted("settle: ${site}", placed.length - placed.filter(it is .Retain || it is .Release).length)
+     placed
+ }
+@@ -1601,7 +1607,7 @@ fn paired_ahead(placed: List<Ins>, k: int, i: Ins) -> bool {
+     let r? = retained_reg(i) else { return false }
+     for j in k + 1..placed.length {
+         let next = placed[j]
+-        if released_reg(next)?.index == r.index { return true }
++        if released_regs(next).any((x) -> x.index == r.index) { return true }
+         if opens(next) || closes(next) || turns(next) || calls(next) { return false }
+     }
+     false
+@@ -1611,8 +1617,29 @@ fn retained_reg(i: Ins) -> Reg? {
+     match i { .Retain(r) -> r, rest -> null }
+ }
+ 
+-fn released_reg(i: Ins) -> Reg? {
+-    match i { .Release(r) -> r, rest -> null }
++fn released_regs(i: Ins) -> List<Reg> {
++    match i { .Release(rs) -> rs, rest -> [] }
++}
++
++/// `placed`, each run of releases standing side by side made one release of them all, in their
++/// order: what the pass decided is what runs, said in fewer instructions.
++fn runs_joined(placed: List<Ins>) -> List<Ins> {
++    mut out: List<Ins> = []
++    mut run: List<Reg> = []
++    for i in placed {
++        match i {
++            .Release(rs) -> { for r in rs { run.push(r) } },
++            rest -> {
++                if !run.is_empty() {
++                    out.push(Ins.Release(run))
++                    run = []
++                }
++                out.push(i)
++            },
++        }
++    }
++    if !run.is_empty() { out.push(Ins.Release(run)) }
++    out
+ }
+ 
+ /// The tally of why the pass placed each count, most first; absent unless `AVRA_RC_REASONS` is set.
+diff --git a/packages/std-avrac/src/compiler/soundness/soundness.av b/packages/std-avrac/src/compiler/soundness/soundness.av
+index 1bb7e890..a6b6ecea 100644
+--- a/packages/std-avrac/src/compiler/soundness/soundness.av
++++ b/packages/std-avrac/src/compiler/soundness/soundness.av
+@@ -331,10 +331,13 @@ fn dispatch(
+             sim.refs.set(r.index, sim.refs[r.index] + 1)
+             stepped(sim, born, i + 1)
+         },
+-        .Release(r) -> {
+-            let before = sim.refs[r.index]
+-            sim.refs.set(r.index, before - 1)
+-            let rdiags = if !ctx.owning[r.index] && before <= 0 { [releases_unowned(ctx.name, i, r)] } else { [] }
++        .Release(rs) -> {
++            mut rdiags: List<Diag> = []
++            for r in rs {
++                let before = sim.refs[r.index]
++                sim.refs.set(r.index, before - 1)
++                if !ctx.owning[r.index] && before <= 0 { rdiags.push(releases_unowned(ctx.name, i, r)) }
++            }
+             Stepped { sim: sim, diags: rdiags, born: born, diverges: false, next: i + 1 }
+         },
+         .CallRt(_, callee, args) -> {
+diff --git a/packages/std-avrac/src/compiler/soundness/tests/soundness_test.av b/packages/std-avrac/src/compiler/soundness/tests/soundness_test.av
+index ca86e58f..457f8b2f 100644
+--- a/packages/std-avrac/src/compiler/soundness/tests/soundness_test.av
++++ b/packages/std-avrac/src/compiler/soundness/tests/soundness_test.av
+@@ -92,8 +92,8 @@ fn double_release_ins() -> List<Ins> {
+     [
+         Ins.ScopeEnter(Level.Application),
+         new_list(reg(0)),
+-        Ins.Release(reg(0)),
+-        Ins.Release(reg(0)),
++        Ins.Release([reg(0)]),
++        Ins.Release([reg(0)]),
+         Ins.ScopeExit(null),
+         Ins.Ret(0),
+     ]
+@@ -102,7 +102,7 @@ fn double_release_ins() -> List<Ins> {
+ /// A register this body never owns (never an owning definition —
+ /// what a param or a view rides) released anyway.
+ fn release_unowned_ins() -> List<Ins> {
+-    [Ins.ScopeEnter(Level.Application), Ins.Release(reg(0)), Ins.ScopeExit(null), Ins.Ret(0)]
++    [Ins.ScopeEnter(Level.Application), Ins.Release([reg(0)]), Ins.ScopeExit(null), Ins.Ret(0)]
+ }
+ 
+ /// A box born BEFORE an `IfStart` region, released on one arm and
+@@ -113,12 +113,12 @@ fn region_disagreement_ins() -> List<Ins> {
+         new_list(reg(0)),
+         Ins.ConstBool(reg(1), true),
+         Ins.IfStart(reg(1)),
+-        Ins.Release(reg(0)),
++        Ins.Release([reg(0)]),
+         new_list(reg(2)),
+         Ins.ArmEnd(reg(2)),
+         new_list(reg(3)),
+         Ins.RegionEnd(reg(4), reg(3)),
+-        Ins.Release(reg(4)),
++        Ins.Release([reg(4)]),
+         Ins.ScopeExit(null),
+         Ins.Ret(0),
+     ]
+@@ -132,7 +132,7 @@ fn unprotected_view_ins() -> List<Ins> {
+         Ins.ScopeEnter(Level.Application),
+         Ins.Extract(reg(1), reg(0), 0),
+         Ins.Call(reg(2), "somefn", [reg(0), reg(1)]),
+-        Ins.Release(reg(2)),
++        Ins.Release([reg(2)]),
+         Ins.ScopeExit(null),
+         Ins.Ret(0),
+     ]
+@@ -179,7 +179,7 @@ fn yielding(r: Reg, second: List<Ins>, after: List<Ins>) -> List<Ins> {
+                 Ins.ArmEnd(r),
+             ],
+             second,
+-            [new_list(reg(5)), Ins.RegionEnd(reg(6), reg(5)), Ins.Release(reg(6))],
++            [new_list(reg(5)), Ins.RegionEnd(reg(6), reg(5)), Ins.Release([reg(6)])],
+             after,
+             [Ins.ScopeExit(null), Ins.Ret(0)],
+         ],
+@@ -262,7 +262,7 @@ spec "compiler/soundness" {
+                     Ins.ScopeEnter(Level.Application),
+                     new_list(reg(0)),
+                     Ins.Call(reg(1), "taker", [reg(0)]),
+-                    Ins.Release(reg(1)),
++                    Ins.Release([reg(1)]),
+                     Ins.ScopeExit(null),
+                     Ins.Ret(0),
+                 ],
+@@ -278,7 +278,7 @@ spec "compiler/soundness" {
+                     Ins.ScopeEnter(Level.Application),
+                     new_list(reg(0)),
+                     Ins.Call(reg(1), "reader", [reg(0)]),
+-                    Ins.Release(reg(1)),
++                    Ins.Release([reg(1)]),
+                     Ins.ScopeExit(null),
+                     Ins.Ret(0),
+                 ],
+@@ -351,7 +351,7 @@ spec "compiler/soundness" {
+                         forgot(reg(0)),
+                         reused(reg(3), reg(2), reg(2)),
+                         Ins.Store(reg(0), reg(3)),
+-                        Ins.Release(reg(4)),
++                        Ins.Release([reg(4)]),
+                     ],
+                 ),
+                 10,
+@@ -399,16 +399,16 @@ spec "compiler/soundness" {
+     }
+     given "an arm's yield hands the region one reference" {
+         then "an outer box yielded with no retain, released on the other arm, reads clean (R2a)" {
+-            witness("r2a", yielding(reg(1), [Ins.Release(reg(1))], []), 8).is_empty()
++            witness("r2a", yielding(reg(1), [Ins.Release([reg(1)])], []), 8).is_empty()
+         }
+         then "a borrowed register yielded with no reference of its own is refused" {
+-            let ds = witness("borrowed_yield", yielding(reg(7), [], [Ins.Release(reg(1))]), 8)
++            let ds = witness("borrowed_yield", yielding(reg(7), [], [Ins.Release([reg(1)])]), 8)
+             ds.length == 1 && words(ds).contains("yields r7 holding no reference of its own")
+         }
+         then "an outer box read after the merge took its count is a use after release" {
+             let ds = witness(
+                 "read_after",
+-                yielding(reg(1), [Ins.Release(reg(1))], [length_of(reg(7), reg(1))]),
++                yielding(reg(1), [Ins.Release([reg(1)])], [length_of(reg(7), reg(1))]),
+                 8,
+             )
+             ds.length == 1 && words(ds).contains("reads r1 after it was released")
+@@ -416,7 +416,7 @@ spec "compiler/soundness" {
+         then "an outer box the merge took and the scope releases again is refused" {
+             let ds = witness(
+                 "twice",
+-                yielding(reg(1), [Ins.Release(reg(1))], [Ins.Release(reg(1))]),
++                yielding(reg(1), [Ins.Release([reg(1)])], [Ins.Release([reg(1)])]),
+                 8,
+             )
+             ds.length == 1 && words(ds).contains("r1")
+@@ -484,7 +484,7 @@ spec "compiler/soundness" {
+                     new_list(reg(1)),
+                     Ins.ConstInt(reg(2), 1),
+                     pushed_in(reg(1), reg(2)),
+-                    Ins.Release(reg(1)),
++                    Ins.Release([reg(1)]),
+                     Ins.ScopeExit(null),
+                     Ins.Ret(0),
+                 ],
+diff --git a/packages/std-avrac/src/compiler/suite_entry.av b/packages/std-avrac/src/compiler/suite_entry.av
+index fed69e3c..09d8058c 100644
+--- a/packages/std-avrac/src/compiler/suite_entry.av
++++ b/packages/std-avrac/src/compiler/suite_entry.av
+@@ -152,9 +152,9 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
+     // `text` and `line` are each a fresh owned string this hand-built
+     // entry minted and the memory pass never walks — release both
+     // once their one use (the concat, then the print) has read them.
+-    e.give(Ins.Release(text))
++    e.give(Ins.Release([text]))
+     e.give(Ins.CallRtVoid("avra_puts", [line]))
+-    e.give(Ins.Release(line))
++    e.give(Ins.Release([line]))
+ }
+ 
+ /// One case: run as a task under its schedules, judged, and counted
+diff --git a/packages/std-avrac/src/compiler/tests/lower_test.av b/packages/std-avrac/src/compiler/tests/lower_test.av
+index 9fb0dc6a..b8a3a1f9 100644
+--- a/packages/std-avrac/src/compiler/tests/lower_test.av
++++ b/packages/std-avrac/src/compiler/tests/lower_test.av
+@@ -32,7 +32,7 @@ fn indexed(index: Map<string, RtSig>, s: RtSig) -> bool {
+ }
+ 
+ fn count_releases(l: Lowered) -> int {
+-    l.entry.ins.filter(it is .Release).length
++    flatten([released_regs(i) for i in l.entry.ins]).length
+ }
+ 
+ /// Every box a program builds, across all bodies — the counting
+@@ -549,11 +549,11 @@ fn called_in(ins: List<Ins>) -> Reg? {
+ }
+ 
+ fn releases_of(ins: List<Ins>, r: Reg) -> int {
+-    ins.filter(releases(it, r)).length
++    flatten([released_regs(i) for i in ins]).filter(same_reg(it, r)).length
+ }
+ 
+ fn releases(i: Ins, r: Reg) -> bool {
+-    match i { .Release(x) -> same_reg(x, r), _ -> false }
++    released_regs(i).any(same_reg(it, r))
+ }
+ 
+ /// The register the FIRST slot read in the slice defines.
+@@ -718,14 +718,13 @@ fn view_read_after_release(ins: List<Ins>) -> bool {
+ }
+ 
+ fn outlives_its_source(ins: List<Ins>, at: int) -> bool {
+-    let freed? = released_reg(ins[at]) else { return false }
+-    let views = flatten([some_list(extracted_from(ins[j], freed)) for j in 0..at])
++    let views = flatten([some_list(extracted_from(ins[j], freed)) for freed in released_regs(ins[at]) for j in 0..at])
+     [k for k in at + 1..ins.length]
+         .any((k: int) -> reads_of(ins[k]).any((r: Reg) -> views.any(same_reg(it, r))))
+ }
+ 
+-fn released_reg(i: Ins) -> Reg? {
+-    match i { .Release(r) -> r, _ -> null }
++fn released_regs(i: Ins) -> List<Reg> {
++    match i { .Release(rs) -> rs, _ -> [] }
+ }
+ 
+ fn extracted_from(i: Ins, src: Reg) -> Reg? {
+diff --git a/packages/std-avrac/src/core/ir.av b/packages/std-avrac/src/core/ir.av
+index 6dc5cd24..4fecacd8 100644
+--- a/packages/std-avrac/src/core/ir.av
++++ b/packages/std-avrac/src/core/ir.av
+@@ -248,7 +248,8 @@ export enum Ins {
+ 
+     // Memory: inserted by the memory pass, never by lowering.
+     Retain(r: Reg)
+-    Release(r: Reg)
++    /// Each of `rs` released, in order: a run of releases is one instruction.
++    Release(rs: List<Reg>)
+ 
+     // Effects.
+     Ret(code: int)
+@@ -306,7 +307,7 @@ fn ins_words(i: Ins) -> InsWords {
+         .LoopEnd -> InsWords { tag: 27, ints: [], texts: [] },
+         .LoopJump(outward, again) -> InsWords { tag: 33, ints: [outward, if again { 1 } else { 0 }], texts: [] },
+         .Retain(r) -> InsWords { tag: 28, ints: [r.index], texts: [] },
+-        .Release(r) -> InsWords { tag: 29, ints: [r.index], texts: [] },
++        .Release(rs) -> InsWords { tag: 29, ints: [r.index for r in rs], texts: [] },
+         .Ret(code) -> InsWords { tag: 30, ints: [code], texts: [] },
+     }
+ }
+@@ -358,7 +359,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
+         .LoopEnd -> Ins.LoopEnd,
+         .LoopJump(outward, again) -> Ins.LoopJump(outward, again),
+         .Retain(r) -> Ins.Retain(m(r)),
+-        .Release(r) -> Ins.Release(m(r)),
++        .Release(rs) -> Ins.Release([m(r) for r in rs]),
+         .Ret(code) -> Ins.Ret(code),
+     }
+ }
+@@ -769,7 +770,10 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
+         .LoopEnd -> match b { .LoopEnd -> true, rest -> false },
+         .LoopJump(o1, a1) -> match b { .LoopJump(o2, a2) -> o1 == o2 && a1 == a2, rest -> false },
+         .Retain(r1) -> match b { .Retain(r2) -> same_reg(r1, r2), rest -> false },
+-        .Release(r1) -> match b { .Release(r2) -> same_reg(r1, r2), rest -> false },
++        .Release(rs1) -> match b {
++            .Release(rs2) -> rs1.length == rs2.length && (0..rs1.length).all((k: int) -> same_reg(rs1[k], rs2[k])),
++            rest -> false,
++        },
+         .Ret(c1) -> match b { .Ret(c2) -> c1 == c2, rest -> false },
+     }
+ }
+diff --git a/packages/std-avrac/src/core/runtime_api.av b/packages/std-avrac/src/core/runtime_api.av
+index e6362a54..6eeb66ea 100644
+--- a/packages/std-avrac/src/core/runtime_api.av
++++ b/packages/std-avrac/src/core/runtime_api.av
+@@ -76,6 +76,36 @@ export once fn rt_sigs() -> List<RtSig> {
+             host: RtHost.Unhosted,
+             inert: true,
+         },
++        RtSig {
++            name: "avra_rc_release2",
++            ret: RtKind.Void,
++            params: [RtKind.Ptr, RtKind.Ptr],
++            writes: [true, true],
++            owns_result: false,
++            has_owned_twin: false,
++            host: RtHost.Unhosted,
++            inert: true,
++        },
++        RtSig {
++            name: "avra_rc_release3",
++            ret: RtKind.Void,
++            params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
++            writes: [true, true, true],
++            owns_result: false,
++            has_owned_twin: false,
++            host: RtHost.Unhosted,
++            inert: true,
++        },
++        RtSig {
++            name: "avra_rc_release4",
++            ret: RtKind.Void,
++            params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
++            writes: [true, true, true, true],
++            owns_result: false,
++            has_owned_twin: false,
++            host: RtHost.Unhosted,
++            inert: true,
++        },
+         RtSig {
+             name: "avra_rc_retain",
+             ret: RtKind.Void,
+diff --git a/packages/std-avrac/src/core/tests/ir_roles_test.av b/packages/std-avrac/src/core/tests/ir_roles_test.av
+index 865267f7..6aa8274b 100644
+--- a/packages/std-avrac/src/core/tests/ir_roles_test.av
++++ b/packages/std-avrac/src/core/tests/ir_roles_test.av
+@@ -414,7 +414,7 @@ fn rows() -> List<Row> {
+             host: "-",
+         },
+         Row {
+-            ins: Ins.Release(r(44)),
++            ins: Ins.Release([r(44)]),
+             dst: "-",
+             reads: "44",
+             seats: "",
+diff --git a/runtime/avra_hot.c b/runtime/avra_hot.c
+index 14446d9b..fc503539 100644
+--- a/runtime/avra_hot.c
++++ b/runtime/avra_hot.c
+@@ -40,6 +40,24 @@ void avra_rc_retain_tagged(int64_t word, int64_t tag, int64_t counted) {
+     if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_retain((void*)(uintptr_t)word);
+ }
+ 
++void avra_rc_release2(void* a, void* b) {
++    avra_rc_release(a);
++    avra_rc_release(b);
++}
++
++void avra_rc_release3(void* a, void* b, void* c) {
++    avra_rc_release(a);
++    avra_rc_release(b);
++    avra_rc_release(c);
++}
++
++void avra_rc_release4(void* a, void* b, void* c, void* d) {
++    avra_rc_release(a);
++    avra_rc_release(b);
++    avra_rc_release(c);
++    avra_rc_release(d);
++}
++
+ void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted) {
+     if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_release((void*)(uintptr_t)word);
+ }
+diff --git a/runtime/avra_hot.h b/runtime/avra_hot.h
+index a927f071..383c2a41 100644
+--- a/runtime/avra_hot.h
++++ b/runtime/avra_hot.h
+@@ -44,6 +44,10 @@ static inline uint8_t avra_box_flags(const void* payload) {
+ // The leaves themselves (avra_hot.c).
+ void avra_rc_retain(void* p);
+ void avra_rc_release(void* p);
++// A row of releases, each as `avra_rc_release` releases it, in order.
++void avra_rc_release2(void* a, void* b);
++void avra_rc_release3(void* a, void* b, void* c);
++void avra_rc_release4(void* a, void* b, void* c, void* d);
+ void avra_rc_retain_tagged(int64_t word, int64_t tag, int64_t counted);
+ void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted);
+ int64_t avra_array_get(void* arr, int64_t i);

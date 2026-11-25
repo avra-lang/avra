@@ -24,13 +24,13 @@ type UnwrittenSeat = { at: FindingAt?, seat: string, fn_name: string }
 type ItemSeats = { seats: List<UnwrittenSeat> }
 
 /// Each `mut` seat of the item `at` of `file` its fn never writes through.
-fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [Found { at: span_of(s.at), args: [s.seat, s.fn_name] } for s in item_seats(engine, file, at).seats]
 }
 
 /// Every `mut` seat a free fn or an inherent method of the written item `at` of `file` declares
 /// that its body never writes through, in the order they're declared.
-fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemSeats {
+fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
     if !item_held(engine, file, at) { return seats_made(engine, file, at) }
     let view = item_view(engine, file, at)
     let held? = view.seats.get() else {
@@ -42,7 +42,7 @@ fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemS
 }
 
 /// What `item_seats` answers, made.
-fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemSeats {
+fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
     if !item_held(engine, file, at) { return ItemSeats { seats: [] } }
     let item = read_item(engine, file, at)
     let judged = [s for s in item.stmts if judged_fn(item, s)]
@@ -56,7 +56,7 @@ fn seats_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemS
 fn judged_fn(item: ReadItem, s: StmtId) -> bool { item.store.fn_parts(s) != null }
 
 /// The methods and statics the inherent impls of the written item `at` of `file` declare.
-fn inherent_fns(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+fn inherent_fns(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     StmtId,
 > {
     flatten(
@@ -74,17 +74,14 @@ fn unwritten_seats(engine: QueryEngine, cx: Copies, file: SourceFileAddress, s: 
     let parts? = cx.store.fn_parts(s) else { return [] }
     let span? = cx.store.stmt_span(s) else { return [] }
     let at = kept_at(span)
-    [UnwrittenSeat { at: at, seat: p.name.text(), fn_name: parts.name } for p in parts.params if p.promises.mutable &&
+    [UnwrittenSeat { at: at, seat: p.name.of, fn_name: parts.name } for p in parts.params if p.promises.mutable &&
         p.seated() &&
-        !written_through(
-            engine,
-            seat_body_evidence(engine, cx, file, p.name.text(), span.lo, span.hi),
-        )]
+        !written_through(engine, seat_body_evidence(engine, cx, file, p.name.of, span.lo, span.hi))]
 }
 
 /// A seat of a declared fn: the fn, by its file, its item and its name, and the seat's place.
 @derive(Saved)
-type SeatOf = { file: SourceFileAddress, item: ItemId, fn_name: string, at: int }
+type SeatOf = { file: SourceFileAddress, item: int, fn_name: string, at: int }
 
 /// What a fn's body does with one seat: whether it writes through it itself or may, and the `mut`
 /// seats of declared fns it hands it to, which write it where they write theirs.
@@ -122,7 +119,7 @@ fn same_seat(a: SeatOf, b: SeatOf) -> bool {
 
 /// What the declared fn `s` names does with its seat, read from its body; a fn whose body isn't
 /// read may write it.
-@query("typing")
+@query
 fn seat_evidence(engine: QueryEngine, s: SeatOf) -> SeatEvidence {
     let item = read_item(engine, s.file, s.item)
     let stmt? = item.stmts.find((st) -> item.store.fn_parts(st)?.name == s.fn_name) else { return seat_written_here() }
@@ -133,7 +130,7 @@ fn seat_evidence(engine: QueryEngine, s: SeatOf) -> SeatEvidence {
         engine,
         copies_in(engine, s.file, s.item, item),
         s.file,
-        params[s.at].name.text(),
+        params[s.at].name.of,
         span.lo,
         span.hi,
     )
@@ -172,7 +169,7 @@ fn rooted_in(cx: Copies, e: ExprId, name: string) -> bool {
 fn writes_seat(engine: QueryEngine, cx: Copies, file: SourceFileAddress, e: ExprId, name: string) -> SeatEvidence {
     let mp? = cx.store.method_parts(e) else {
         let call? = cx.store.call_parts(e) else { return applied_with_seat(cx, e, name) }
-        return called_with_seat(engine, cx, file, call.callee.text(), call.args, name)
+        return called_with_seat(engine, cx, file, call.callee, call.args, name)
     }
     let ty? = (cx.type_at)(mp.subject.index) else {
         return SeatEvidence {

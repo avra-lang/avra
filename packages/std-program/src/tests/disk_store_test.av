@@ -1,13 +1,11 @@
 // Separate stores over one directory stand in for separate processes. What matters is what a later
 // process finds: answers that stand aren't run, and damage to the directory costs work, never a
 // wrong answer.
-use @std.io.{exists, list_dir, make_dirs, read_bytes, remove, write_bytes}
+use @std.io.{exists, list_dir, read_bytes, remove, write_bytes}
 use @std.time.{stamp}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{question}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
-use answer_record.{ContentHash}
-use frontier.{FrontierLearned, HeldEntry}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use worked_ahead.{WorkAhead, asked_across_while, engine_worked_ahead}
 use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
@@ -17,33 +15,23 @@ once fn disk_world() -> Cell<Map<string, string>> {
     Cell.new(world)
 }
 
-@input("summary")
+@input
 fn disk_text(_engine: QueryEngine, path: string) -> string { disk_world().get().get(path) ?? "" }
 
-@parted_query("summary")
+@parted_query
 fn disk_names(engine: QueryEngine, path: string) -> AnswerParts {
     answer_parts(
         [NamedValue { name: word, value: word.bytes() } for word in disk_text(engine, path).split(" ")],
     )
 }
 
-@query("summary")
+@query
 fn disk_is_named(engine: QueryEngine, path: string, word: string) -> bool { disk_names_part(engine, path, word) != null }
 
-@query("summary")
+@query
 fn disk_length(engine: QueryEngine, path: string) -> int { disk_text(engine, path).length }
 
-/// The length at the path one path names: which path it reads moves with what `chooser` holds.
-@query("summary")
-fn disk_chosen_length(engine: QueryEngine, chooser: string) -> int {
-    disk_shown_length(engine, disk_text(engine, chooser))
-}
-
-/// The length at `path`, read through `disk_length`.
-@query("summary")
-fn disk_shown_length(engine: QueryEngine, path: string) -> int { disk_length(engine, path) }
-
-@query("summary")
+@query
 fn disk_echo(_engine: QueryEngine, text: string) -> string { text }
 
 collect disk_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
@@ -88,52 +76,6 @@ fn process_over(directory: string, path: string, word: string) -> QueryEngine {
     engine
 }
 
-/// What a whole process that asked two words of one path answered, and how many queries it worked out.
-type BothNamed = { answers: string, worked: int }
-
-/// A whole process asking whether `path` names `first` and `second`.
-fn both_named(directory: string, path: string, first: string, second: string) -> BothNamed {
-    let store = disk_store_at(directory)
-    let engine = engine_over(store)
-    let answers = "${disk_is_named(engine, path, first)},${disk_is_named(engine, path, second)}"
-    engine.frontier_kept()
-    let _ = store.saved()
-    BothNamed { answers: answers, worked: engine.computed_count() }
-}
-
-/// The queries a whole process worked out: it asks `padding` echoes, the length at the path
-/// `chooser` names, and whether `kept` names a word it doesn't, so `kept`'s text stays read.
-fn chosen_worked(directory: string, chooser: string, kept: string, padding: int) -> List<string> {
-    let store = disk_store_at(directory)
-    let engine = engine_over(store)
-    for i in 0..padding { let _ = disk_echo(engine, "padding ${i}") }
-    let _ = disk_chosen_length(engine, chooser)
-    let _ = disk_is_named(engine, kept, "absent")
-    engine.frontier_kept()
-    let _ = store.saved()
-    engine.computed_queries()
-}
-
-/// THE RENAME SHAPE: a path chosen, then another, so what read the first path's length stands no
-/// more while the first path's text, still read, stands; then that text edited and a third path
-/// chosen. The first process's echoes make the frontier big enough that each later write is a
-/// delta, which keeps what stands no more. The queries the third process worked out.
-fn chosen_after_edit(label: string) -> List<string> {
-    let directory = fresh_directory(label)
-    let first = "${label}-first"
-    let choice = "${label}-choice"
-    disk_world().put(first, "xx")
-    disk_world().put("${label}-second", "yyy")
-    disk_world().put("${label}-third", "z")
-    disk_world().put(choice, first)
-    let _ = chosen_worked(directory, choice, first, 60)
-    disk_world().put(choice, "${label}-second")
-    let _ = chosen_worked(directory, choice, first, 0)
-    disk_world().put(first, "xxxx")
-    disk_world().put(choice, "${label}-third")
-    chosen_worked(directory, choice, first, 0)
-}
-
 /// How many queries a whole process ran.
 fn process_asking(directory: string, path: string, word: string) -> int { process_over(directory, path, word).computed_count() }
 
@@ -170,27 +112,6 @@ fn three_binaries_compacted(directory: string) -> QueryEngine {
     let _ = version_asking(directory, "v3", "p.av")
     let _ = disk_store_at(directory).compacted()
     oldest
-}
-
-/// The newest file of the frontier `store` reads for the binary printed `print`, by its name; empty
-/// when it reads none.
-fn frontier_named(store: DiskStore, print: string) -> string {
-    let frontier? = store.frontier_of(print) else { return "" }
-    let id = frontier.id()
-    "${id.high_word}_${id.low_word}"
-}
-
-fn hash_of(n: int) -> ContentHash { ContentHash { high_word: n, low_word: n * 7 + 1 } }
-
-/// A root that read nothing, asking question `n`, answered by answer `1000 + version`.
-fn rooted_entry(n: int, version: int) -> HeldEntry {
-    HeldEntry {
-        question: hash_of(n),
-        answer: hash_of(1000 + version),
-        reads: [],
-        input: false,
-        root: true,
-    }
 }
 
 fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
@@ -257,28 +178,6 @@ spec "disk_store — answers outlive the process" {
             disk_world().put("c.av", "alpha gamma")
             process_asking(directory, "c.av", "alpha") == 2
         }
-        then "it is met and answers as a cold process when its own part goes, while a reader of another stands" {
-            let directory = fresh_directory("part-own")
-            disk_world().put("d.av", "alpha beta")
-            let _ = both_named(directory, "d.av", "alpha", "beta")
-            disk_world().put("d.av", "alpha")
-            let warm = both_named(directory, "d.av", "alpha", "beta")
-            let cold = both_named(fresh_directory("part-own-cold"), "d.av", "alpha", "beta")
-            warm.answers == cold.answers && warm.answers == "true,false" && warm.worked == 3
-        }
-        then "a reader no root reaches any more is met without asking what it read: an edit under it works out nothing" {
-            let worked = chosen_after_edit("unread-edited")
-            worked.filter(it == "disk_length").length == 1
-        }
-        then "a reader that saw a part absent is met when the part appears, and answers as a cold process" {
-            let directory = fresh_directory("part-absent")
-            disk_world().put("g.av", "alpha")
-            let _ = both_named(directory, "g.av", "alpha", "gamma")
-            disk_world().put("g.av", "alpha gamma")
-            let warm = both_named(directory, "g.av", "alpha", "gamma")
-            let cold = both_named(fresh_directory("part-absent-cold"), "g.av", "alpha", "gamma")
-            warm.answers == cold.answers && warm.answers == "true,true" && warm.worked == 3
-        }
     }
     given "going back to an earlier state" {
         then "its answers are still found, across every pack" {
@@ -320,59 +219,6 @@ spec "disk_store — answers outlive the process" {
             let _ = other.saved()
             process_over(directory, "e.av", "alpha").worked_count() == 0 &&
                 process_over(directory, "f.av", "beta").worked_count() == 0
-        }
-    }
-    given "a store that read its frontier" {
-        then "it reads the same one again while no other process writes one, and another's once it does" {
-            let directory = fresh_directory("frontier-again")
-            disk_world().put("g.av", "alpha")
-            let _ = process_over(directory, "g.av", "alpha")
-            let store = disk_store_at(directory)
-            let print = engine_over(store).frontier_print()
-            let first = frontier_named(store, print)
-            let again = frontier_named(store, print)
-            disk_world().put("g.av", "alpha beta")
-            let _ = process_over(directory, "g.av", "beta")
-            let after = frontier_named(store, print)
-            first != "" &&
-                again == first &&
-                after != first &&
-                after == frontier_named(disk_store_at(directory), print)
-        }
-    }
-    given "a delta holding an answer this process settled that nothing reads and no one asked" {
-        then "the frontier read back holds none of it: what no root reaches is never written as standing" {
-            let directory = fresh_directory("orphan")
-            let _ = make_dirs(directory) catch ""
-            let first = disk_store_at(directory)
-            first
-                .keep_frontier(
-                    "orphans",
-                    FrontierLearned {
-                        on: null,
-                        entries: [rooted_entry(i, 0) for i in 0..20],
-                        stale: [],
-                    },
-                )
-            let _ = first.saved()
-            let second = disk_store_at(directory)
-            let on = second.frontier_of("orphans")
-            let orphan = HeldEntry {
-                question: hash_of(500),
-                answer: hash_of(501),
-                reads: [],
-                input: false,
-                root: false,
-            }
-            second
-                .keep_frontier(
-                    "orphans",
-                    FrontierLearned { on: on, entries: [rooted_entry(3, 1), orphan], stale: [] },
-                )
-            let _ = second.saved()
-            let read? = disk_store_at(directory).frontier_of("orphans") else { return false }
-            let moved? = read.place_of(hash_of(3)) else { return false }
-            read.answer_at(moved).same_as(hash_of(1001)) && read.place_of(hash_of(500)) == null
         }
     }
     given "a compaction" {
@@ -559,6 +405,7 @@ spec "disk_store — answers outlive the process" {
             let forked = asked_across_while<string, int>(
                 worked.store,
                 worked.engine,
+                directory,
                 WorkAhead {
                     items: (_engine: QueryEngine) -> paths,
                     is_known: disk_length_is_known,

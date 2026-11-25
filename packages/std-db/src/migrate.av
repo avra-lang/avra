@@ -4,13 +4,13 @@
 //! opens a database.
 //!
 //! GROWTH applies by itself: a model with no table, a new column that is
-//! nullable or that carries a default, a column renamed under a hint, an
-//! index ended, one begun — a key's statement is refused by the database
-//! over rows that already repeat, and the whole plan with it — and a
-//! column's type word changed for one that holds every value alike, which
-//! changes the record and no table.
-//! An index is its line: one whose columns change, or are renamed, or whose
-//! rows or uniqueness change, ends and begins again.
+//! nullable or that carries a default, a column renamed under a hint, a
+//! several-column key ended, one begun — the database refuses that
+//! statement over rows that already repeat, and the whole plan with it —
+//! and a column's type word changed for one that holds every value alike,
+//! which changes the record and no table.
+//! A key is its columns in order: one whose columns change, or are renamed,
+//! ends and begins again.
 //! MOVING never does: a dropped column, a changed type, a tightened or
 //! loosened NOT NULL, a changed default, link or key, a new column that must
 //! hold a value yet has none to give the rows already there, and a new
@@ -19,14 +19,13 @@
 use @std.text.{ascii_lower}
 use shape.{
     ColumnFacts,
-    Index,
     Shape,
     column_ddl,
     create_sql,
-    index_line,
-    index_sql,
     quoted,
-    unindex_sql,
+    unique_line,
+    unique_sql,
+    ununique_sql,
 }
 
 /// A column whose name changed: the old name, the new one.
@@ -37,8 +36,8 @@ export enum Step {
     Create(shape: Shape)
     Add(column: ColumnFacts)
     Rename(from: string, to: string)
-    Indexed(index: Index)
-    Unindexed(index: Index)
+    Unique(columns: List<string>)
+    Ununique(columns: List<string>)
     /// The column's recorded type word becomes the declared one. The table is
     /// left as it is: both words hold every value alike.
     Reword(column: string, was: string, now: string)
@@ -72,9 +71,9 @@ export fn diff(stored: Shape?, declared: Shape, renames: List<Renamed>) -> Plan 
     let pairs = [paired(had, d, renames) for d in declared.columns]
     Plan {
         name: declared.name,
-        steps: indexes_between(declared, had, (i) -> Step.Unindexed(i))
+        steps: keys_between(declared, had, (u) -> Step.Ununique(u))
             .concat([step for p in pairs for step in steps_of(p)])
-            .concat(indexes_between(had, declared, (i) -> Step.Indexed(i))),
+            .concat(keys_between(had, declared, (u) -> Step.Unique(u))),
         moving: [m for p in pairs for m in moves_of(p)].concat(dropped(had, pairs)),
     }
 }
@@ -101,9 +100,9 @@ fn lines_of(p: Plan) -> List<string> {
         .concat(["  ! ${w}" for w in refusals(p)])
 }
 
-/// A step for each index `to` holds and `from` lacks.
-fn indexes_between(from: Shape, to: Shape, step: fn(Index) -> Step) -> List<Step> {
-    [step(i) for i in to.indexes if !from.indexes.any((j) -> index_line(j) == index_line(i))]
+/// A step for each several-column key `to` holds and `from` lacks.
+fn keys_between(from: Shape, to: Shape, step: fn(List<string>) -> Step) -> List<Step> {
+    [step(u) for u in to.uniques if !from.uniques.any((v) -> unique_line(v) == unique_line(u))]
 }
 
 /// A declared column and the recorded one it continues, if any.
@@ -203,14 +202,14 @@ fn dropped(had: Shape, pairs: List<Pair>) -> List<Moving> {
 /// The statements applying a plan's steps, in order.
 export fn statements(p: Plan) -> List<string> { [text for s in p.steps for text in said(p.name, s)] }
 
-/// One step's statements: a table is made, then each of its indexes.
+/// One step's statements: a table is made, then each of its keys.
 fn said(name: string, s: Step) -> List<string> {
     match s {
         .Create(shape) -> made_sql(shape),
         .Add(c) -> ["ALTER TABLE ${quoted(name)} ADD COLUMN ${column_ddl(c)}"],
         .Rename(from, to) -> ["ALTER TABLE ${quoted(name)} RENAME COLUMN ${quoted(from)} TO ${quoted(to)}"],
-        .Indexed(i) -> [index_sql(name, i)],
-        .Unindexed(i) -> [unindex_sql(name, i)],
+        .Unique(columns) -> [unique_sql(name, columns)],
+        .Ununique(columns) -> [ununique_sql(name, columns)],
         .Reword(_, _, _) -> [],
     }
 }
@@ -221,13 +220,13 @@ export fn notes(p: Plan) -> List<string> { [n! for n in [noted(p.name, s) for s 
 fn noted(name: string, s: Step) -> string? {
     match s {
         .Reword(c, was, now) -> reworded_voice(name, c, was, now),
-        .Create(_) or .Add(_) or .Rename(_, _) or .Indexed(_) or .Unindexed(_) -> null,
+        .Create(_) or .Add(_) or .Rename(_, _) or .Unique(_) or .Ununique(_) -> null,
     }
 }
 
-/// The statements that make a table whole: the table, then each index.
+/// The statements that make a table whole: the table, then each several-column key.
 export fn made_sql(s: Shape) -> List<string> {
-    [create_sql(s.name, s.columns)].concat([index_sql(s.name, i) for i in s.indexes])
+    [create_sql(s.name, s.columns)].concat([unique_sql(s.name, u) for u in s.uniques])
 }
 
 /// A plan's moving changes in words, one per change.

@@ -15,8 +15,7 @@
 #ifdef AVRA_CENSUS
 #define CENSUS(x) x
 extern int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets, g_list_pushes;
-void note_retain(void* box, void* site);
-void note_release(void* box, void* site);
+void note_retain(void* site);
 void note_push(void* site);
 #else
 #define CENSUS(x)

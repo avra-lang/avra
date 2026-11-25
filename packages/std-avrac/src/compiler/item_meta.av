@@ -29,20 +29,8 @@ use core.{
     headed_type,
     sorted_by,
     spelled,
-    decl_key,
-    decl_keyed,
 }
-use features.{
-    Lifted,
-    MetaHeap,
-    MetaVal,
-    arg_lit,
-    meta_of_fn,
-    meta_of_named,
-    meta_of_type,
-    new_meta_heap,
-    written_slots,
-}
+use features.{Lifted, MetaHeap, MetaVal, arg_lit, meta_of_named, meta_of_type, new_meta_heap}
 use @std.errors.{Loc}
 use @std.meta.{
     derive,
@@ -64,15 +52,13 @@ use @std.meta.{
 }
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
-use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, memo, query, query_definition}
+use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 use @std.program.saved_derive.{Saved}
 use @std.program.source_facts.{source_text}
 use @std.text.{parse_int, text_before}
 
 /// The record, enum or named type `file` declares as `name`, as `@std/meta`'s `Type`; absent when it
-/// declares none of that name. Held for the process (`@memo`): a generator's run lifts one
-/// declaration many times, once each run that names it, and every one reads the same `Type`.
-@memo
+/// declares none of that name.
 export fn meta_of_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaType? {
     [t! for d in file_declares_named(engine, file, name).names if d.name == name for t in [declared_meta(engine, d)] if t != null]
         .first()
@@ -195,7 +181,7 @@ fn param_kind_meta(
     kind: Kind,
 ) -> MetaParam {
     MetaParam {
-        name: p.name.text(),
+        name: p.name.of,
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         mutable: p.promises.mutable,
         settled: p.promises.settled,
@@ -249,13 +235,13 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
     match d.kind {
         .Record or .Component -> {
             let parts? = item.store.struct_parts(s) else { return null }
-            let signed = record_signature_written(engine, d.file, d.name)?.fields ?? []
+            let signed = record_signature(engine, d.file, d.name)?.fields ?? []
             base with { fields: [field_meta(
                 engine,
                 d.file,
                 item,
                 p,
-                field_kind(signed, p.name.text()),
+                field_kind(signed, p.name.of),
                 written_default(engine, d.file, item, p),
                 field_cell(engine, signed, p),
             ) for p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
@@ -318,7 +304,7 @@ fn gathered_files(
 ) -> List<SourceFileAddress>? {
     let files = match scope {
         .Self -> [owner],
-        .Package -> [owner with { path_in_package: p } for p in package_listed_sources(engine, owner.package_name).paths],
+        .Package -> [owner with { path_in_package: p } for p in package_sources(engine, owner.package_name, "src")],
         .Closure -> package_closure(engine, if program.is_empty() { owner.package_name } else { program }).files,
         .UnknownScope(_) -> { return null },
     }
@@ -394,10 +380,10 @@ type FileMarks = { worn: List<WornMark> }
 /// One mark a declaration wears: the declaration's name and item, the mark's name, and the literals
 /// it's written with — absent where one of its arguments is no literal.
 @derive(Saved)
-type WornMark = { name: string, item: ItemId, mark: string, literals: List<Literal>? }
+type WornMark = { name: string, item: int, mark: string, literals: List<Literal>? }
 
 /// The marks `file`'s written declarations wear.
-@cut_query("summary")
+@cut_query
 fn file_marks(engine: QueryEngine, file: SourceFileAddress) -> FileMarks {
     FileMarks {
         worn: flatten([declared_marks(engine, d) for d in file_declares(engine, file).names]),
@@ -406,7 +392,7 @@ fn file_marks(engine: QueryEngine, file: SourceFileAddress) -> FileMarks {
 
 /// The marks the declarations generators make in `file` wear: apart from its written ones', so a
 /// gathering that reads no generator's work never asks a generator.
-@query("summary")
+@query
 fn generated_marks(engine: QueryEngine, file: SourceFileAddress) -> FileMarks {
     FileMarks {
         worn: flatten([declared_marks(engine, d) for d in generated_declares(engine, file).names]),
@@ -517,7 +503,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
     let item = read_item(engine, m.file, m.item)
     let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
     let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
-    let signed = record_signature_written(engine, m.file, m.name)?.fields ?? []
+    let signed = record_signature(engine, m.file, m.name)?.fields ?? []
     MetaVariant {
         name: m.name,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
@@ -527,7 +513,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
             m.file,
             item,
             p,
-            field_kind(signed, p.name.text()),
+            field_kind(signed, p.name.of),
             written_default(engine, m.file, item, p),
             field_cell(engine, signed, p),
         ) for p in fields],
@@ -547,7 +533,7 @@ fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
 /// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
 /// `@std/meta`'s `Marker`.
 fn marks_a_member(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
-    let d? = written_resolution(engine, file, Space.Value, name).named() else { return false }
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
     let sig? = fn_signature(engine, d.file, d.name) else { return false }
     meta_named(sig.answer, MARKER)
 }
@@ -559,8 +545,8 @@ const MARKER: string = "Marker"
 /// stands.
 fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
     let item = read_item(engine, m.file, m.item)
-    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
-    [f for f in record_signature_written(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
+    let carried = [p.name.of for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
+    [f for f in record_signature(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
 }
 
 /// A record's field or a variant's payload `file` writes as a `Field`: its name, its type as written
@@ -576,7 +562,7 @@ fn field_meta(
     cell: bool,
 ) -> MetaField {
     MetaField {
-        name: p.name.text(),
+        name: p.name.of,
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
         kind: if cell { Kind.Cell(kind) } else { kind },
@@ -593,7 +579,7 @@ fn field_meta(
 /// Whether the field `p`, among `signed`, is a cell: written `state`, or a prop whose type compares by
 /// value, which its instance keeps as one though it wasn't written `state`.
 fn field_cell(engine: QueryEngine, signed: List<FieldSeat>, p: Param) -> bool {
-    p.state || p.prop && by_value(engine, signed.find((s) -> p.name.spells(s.name))?.ty)
+    p.state || p.prop && by_value(engine, signed.find(it.name == p.name.of)?.ty)
 }
 
 /// Whether two values of `ty` compare by value: a number, a truth or text, an enum of no payloads, a
@@ -609,7 +595,7 @@ fn by_value(engine: QueryEngine, ty: SignedType?) -> bool {
             if shape != null { return by_value(engine, shape) }
             let e = enum_signature(engine, file, name)
             if e != null { return e!.variants.all(it.payloads.is_empty()) }
-            let fields = record_signature_written(engine, file, name)?.fields ?? []
+            let fields = record_signature(engine, file, name)?.fields ?? []
             fields.length == 1 && !fields[0].state && by_value(engine, fields[0].ty)
         },
         rest -> false,
@@ -658,7 +644,7 @@ fn variant_meta(
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
         at: meta_place(engine, file, item, v.span),
-        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.text()), null, false) for p in v.payloads],
+        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.of), null, false) for p in v.payloads],
         marks: [mark_meta(engine, file, item, m) for m in v.marks],
     }
 }
@@ -682,8 +668,7 @@ fn mark_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Ma
 /// A mark's named arguments, each as its label and literal.
 fn named_args(m: Mark) -> List<MetaMarkArg> { [MetaMarkArg { label: n.label, value: n.value } for n in m.named] }
 
-/// A member's mark `file` writes as its own `Annotation`, with the call a rule splices and the
-/// identity of the fn its name resolves to.
+/// A member's mark `file` writes as its own `Annotation`, with the call a rule splices.
 fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaAnnotation {
     MetaAnnotation {
         name: m.name,
@@ -691,42 +676,27 @@ fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadIt
         at: meta_place(engine, file, item, m.span),
         call: call_written(engine, file, item, m.name, m.span),
         named: named_args(m),
-        key: key_of(named_decl(engine, file, m.name)),
     }
 }
 
 /// An annotation a statement of `file` wears as an `Annotation`: each argument as the literal it
-/// writes, the call a rule splices where it is one, and the identity of the fn its name resolves to.
+/// writes, and the call a rule splices where it is one.
 fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaAnnotation {
     let store = item.store
-    let named = named_decl(engine, file, a.name)
     MetaAnnotation {
         name: a.name,
-        key: key_of(named),
-        call: if rule_of(engine, named) { call_written(engine, file, item, a.name, a.span) } else { null },
+        call: if rule_named(engine, file, a.name) { call_written(engine, file, item, a.name, a.span) } else { null },
         args: [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null],
         at: meta_place(engine, file, item, a.span),
         named: [MetaMarkArg { label: store.arg_label(e)!, value: arg_lit(store, store.unnamed(e)).text } for e in a.args if store.arg_label(e) != null],
     }
 }
 
-/// The declaration an annotation `file` writes as `name` resolves to, read once for both its call
-/// and its identity; absent where it resolves to none.
-fn named_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> DeclaredName? {
-    let scope? = written_file_scope(engine, file) else { return null }
-    stratum_resolved(engine, scope, file, Space.Value, name).named()
-}
-
-/// The identity of the fn `d` is, which `decl` builds only when a derive asks; empty for no fn.
-fn key_of(d: DeclaredName?) -> string {
-    let held? = d else { return "" }
-    if held.kind != ItemKind.Fn { "" } else { decl_key(held.file, held.name) }
-}
-
 /// THE CALL LAW: an annotation whose fn's first seat takes a value is a rule and carries a call; one
 /// whose first seat takes a declaration runs at compile time and carries none.
-fn rule_of(engine: QueryEngine, named: DeclaredName?) -> bool {
-    let d? = named else { return true }
+fn rule_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let scope? = file_scope(engine, file) else { return true }
+    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return true }
     let sig? = fn_signature(engine, d.file, d.name) else { return true }
     let first? = sig.params.first() else { return true }
     !takes_a_declaration(first.ty)
@@ -850,18 +820,9 @@ export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: strin
     let path = name.split(".")
     let last? = path.last() else { return absent_lifted() }
     let reader? = (if path.length == 1 { file } else { dotted_file(engine, path.take(path.length - 1)) }) else { return absent_lifted() }
-    let scope? = written_file_scope(engine, reader) else { return absent_lifted() }
-    let d? = stratum_resolved(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
+    let scope? = file_scope(engine, reader) else { return absent_lifted() }
+    let d? = resolved_in(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
     lifted_decl(engine, d.file, d.name)
-}
-
-/// What `decl` answers a derive's run: the fn the key names, as `@std/meta`'s `Fn`, crossed into a
-/// heap of its own; absent where it names none. Made only when a derive asks.
-export fn declared_lifted(engine: QueryEngine, key: string) -> Lifted {
-    let at? = decl_keyed(key) else { return absent_lifted() }
-    let f? = meta_of_fn_decl(engine, at.file, at.name) else { return absent_lifted() }
-    mut heap = new_meta_heap()
-    Lifted { answer: meta_of_fn(f, written_slots("Fn"), heap), heap: heap }
 }
 
 /// The type `file` declares as `name`, crossed into a heap of its own; absent for none.

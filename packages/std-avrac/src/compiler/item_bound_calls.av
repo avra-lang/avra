@@ -52,7 +52,7 @@ type ItemUngiven = { rows: List<UngivenAt> }
 /// value of a type parameter that the parameter's bound doesn't give; a generic method is no
 /// method an impl lands, and asks nothing. A body that didn't parse asks
 /// nothing.
-fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
+fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
     if !item_held(engine, file, at) { return ungiven_made(engine, file, at) }
     ungiven_seen(item_view(engine, file, at))
 }
@@ -68,7 +68,7 @@ fn ungiven_seen(view: ItemView) -> ItemUngiven {
 }
 
 /// What `item_ungiven` answers, made.
-fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
+fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUngiven {
     if !item_held(engine, file, at) { return ItemUngiven { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
@@ -80,7 +80,7 @@ fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Ite
 
 /// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
 /// fn's, then each method's and static's an impl there writes.
-fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     CheckedBody,
 > {
     let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
@@ -98,14 +98,13 @@ fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<Ungiv
     let signed = b.signed
     let typed = b.typed
     let store = signed.item.store
-    let own = [p.name.text() for p in store.fn_parts(signed.stmt)?.tparams ?? []]
+    let own = [p.name.of for p in store.fn_parts(signed.stmt)?.tparams ?? []]
     [r! for k in 0..typed.types.length if called_on(store, ExprId { index: k }) != null for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
 }
 
 /// The type parameter of `sig` the node `e` names, where it is written as a bare name: a static
 /// called through the parameter itself.
 fn parameter_named(store: SyntaxArena, sig: FnSignature, e: ExprId) -> SignedType? {
-    if sig.type_params.is_empty() { return null }
     let name? = store.ident_name(e) else { return null }
     let at = sig.type_params.index_of(name)
     if at < 0 { null } else { headed_type(TypeHead.Parameter(at, name)) }

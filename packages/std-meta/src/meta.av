@@ -41,8 +41,6 @@ extern fn avra_embed(path: string) -> string
 
 extern fn avra_type_named(name: string) -> Type?
 
-extern fn avra_fn_declared(key: string) -> Fn?
-
 /// A TYPE AS A SHAPE, beside the spelling every seat has always
 /// carried. A rule that DISPATCHES on a type asks this; a rule that
 /// PRINTS one asks `spelled()`, which answers the same words the
@@ -184,32 +182,7 @@ export type MarkArg = { label: string, value: string }
 /// refusals pointing here. `args` holds the positional arguments and
 /// `named` each `label: value`, as a `Mark`'s do; a list argument's
 /// text is its source spelling (`["open", "done"]`).
-/// `key` is the identity of the fn the annotation names, empty where the
-/// name resolves to no fn: ask which fn it is with `marks`, never by its
-/// name, and read the fn itself with `decl`, which builds it only then.
-export type Annotation = { name: string, args: List<string>, at: Loc?, call: Code? = null, named: List<MarkArg> = [], key: string = "" }
-
-/// The fn the annotation `a` names, as a `Fn`: its seats, its answer and
-/// the annotations it wears, each of those asked after by `decl` in turn.
-/// The compiler builds it when a derive asks, and never for an annotation
-/// no derive reads; absent where the name resolves to no fn, and where no
-/// compiler answers.
-export fn decl(a: Annotation) -> Fn? {
-    if a.key.is_empty() { return null }
-    avra_fn_declared(a.key)
-}
-
-/// WHETHER `a` IS AN ANNOTATION BY THE FN `f`, by the declaration's
-/// identity: `marks(a, secret)` holds for `@secret` and for the same fn
-/// worn under any name a `use` gave it, and for nothing else. `f` is a
-/// declared fn, named where it is called, so a misspelt or moved one is
-/// a resolve error. The compiler answers it; this body, reached only
-/// where no compiler did, answers false.
-export fn marks<F>(_a: Annotation, _f: F) -> bool { false }
-
-/// `marks`'s answer, as the compiler lowers it: `a`'s fn has the
-/// identity `key`.
-fn marked_by(a: Annotation, key: string) -> bool { !a.key.is_empty() && a.key == key }
+export type Annotation = { name: string, args: List<string>, at: Loc?, call: Code? = null, named: List<MarkArg> = [] }
 
 /// The annotation called over a value — `@range(13, 130)` over `v`
 /// is `range(v, 13, 130)`. An annotation whose first seat takes a value is
@@ -418,22 +391,6 @@ export fn composes(_tr: Trait, _carried: Named) {}
 /// `@identity` is a `Cell<…>`, or another `@identity` type.
 export fn identity(_t: Type) {}
 
-/// `@seeded_at_need`: the type's own `state` is seeded at first need,
-/// from its declaration's expression over the members the value holds
-/// then. Until then a copy owns no cell to share. A seed runs at most
-/// once per instance that is kept. On a trait, it marks every type the
-/// trait is derived over. A marker the compiler reads
-/// (`compiler/typing/declare.av`).
-export fn seeded_at_need(_t: Named) {}
-
-/// `v`, every own `state` of it seeded now: a value of a type
-/// `@seeded_at_need` keeps the cells its seeds fill, so a copy of it
-/// shares them and no seed of it runs again. Any other value is `v`
-/// itself, and so is one whose type is a type parameter where it is
-/// called: call it where the type is named. The compiler lowers a call
-/// of it.
-export fn seeded<T>(v: T) -> T { v }
-
 /// The fn is a member of the named fixpoint or table BRACKET: it may
 /// read that bracket's own hook-free accessors — the table as it
 /// stands, mid-computation — because it IS the computation trusted to
@@ -474,13 +431,6 @@ export fn host(_f: Fn, _on: Host) {}
 /// checked constructor the module exports is then the type's one door.
 /// A marker the compiler's checker reads (`features/sealed.av`).
 export fn sealed(_t: Type) {}
-
-/// The type is UNBRANCHED: a value of it is read and never chosen by —
-/// no `==`, `!=` or `match` decides on it, while every read stays open
-/// (a field, an interpolation, a method). What would differ by such a
-/// value is a value of its own. A marker the compiler's checker reads
-/// (`type.unbranched`).
-export fn unbranched(_t: Type) {}
 
 /// The record LACKS `field` on purpose, and `why` says so: a read or a
 /// literal naming it refuses in those words. A marker the compiler's
@@ -555,28 +505,6 @@ export fn code_hash<F>(_f: F) -> string? { null }
 /// run, and refuses it handed on as a value (`type.guard_value`).
 export fn guarded(_body: fn() -> bool) -> string? { null }
 
-/// `@placed`, on a trait: a `dyn` box of it is drawn under the frame of
-/// contexts in force where it is PLACED, not where it was built: where it
-/// joins the list a body gathers, a set before it in that body reaches
-/// it, and a call through the box runs under that frame. A box a program
-/// that sets no context makes carries nothing.
-export fn placed(_trait: Named) {}
-
-/// The fn value `f`, made to run under the frame of contexts in force
-/// HERE rather than the one it was made under: what a placed view does
-/// to the handlers it draws, so a handler its caller built hears the
-/// contexts of the body that placed it. The compiler lowers a DIRECT
-/// CALL of this fn; in a program that sets no context it is `f` itself,
-/// and so is any value that is no fn.
-export fn rehomed<F>(f: F) -> F { f }
-
-/// The frame entry the context read `read` reads, as one word: the same word for every read under
-/// one set of the context, another under another, and 0 where nothing set it and its default
-/// stands. What tells two places apart by the set in force at each, with one compare and no read of
-/// the value: the compiler lowers a DIRECT CALL whose argument is a `ctx.name` read; any other
-/// call answers 0.
-export fn ctx_entry<T>(_read: T) -> int { 0 }
-
 /// RUNS `body` UNDER A CATCH POINT and brings back what it answered, of
 /// any type: `.Ok(answer)`, or `.Err(words)` when a trap on this task ended
 /// it. The answer travels through a slot this fn owns, so the runtime reads
@@ -610,6 +538,9 @@ export fn type_named(name: string) -> Type? {
     avra_type_named(name)
 }
 
+/// The one scalar a named record stores as, or null for any other kind. A record of
+/// exactly one scalar field and no `@model` is flat at runtime, so its field travels
+/// alone; the structure decides it, not the name.
 /// Whether a kind is one scalar a flat record can store as.
 export fn scalar_kind(k: Kind) -> bool {
     match k {
@@ -632,29 +563,13 @@ export fn implements(name: string, tr: string) -> bool {
     t.impls.contains(tr)
 }
 
-/// The field a flat value's one value is read through: a record's one
-/// field, a named type's `of`.
 export fn flat_field(name: string) -> string {
     let t? = type_named(name) else { return "" }
-    if t.shape_over() != null { return "of" }
     t.fields[0].name
 }
 
-/// A flat value of the type `named`, made from its one value `v`: a
-/// record's literal, a named type's conversion.
-export fn flat_made(named: string, v: Code) -> Code {
-    let t? = type_named(named) else { return v }
-    if t.shape_over() != null { return quote { ${named}(${v}) } }
-    quote { ${named} { ${flat_field(named)}: ${v} } }
-}
-
-/// The one kind a named type is held as alone, or null for any other: a
-/// record of exactly one field and no `@model`, which is flat at runtime so
-/// its field travels alone, or a named type, which is its shape. The
-/// structure decides it, not the name.
 export fn stored_scalar(name: string) -> Kind? {
     let t? = type_named(name) else { return null }
-    if t.shape_over() != null { return t.shape_over() }
     if t.annotations.any(it.name == "model") || t.fields.length != 1 { return null }
     t.fields[0].kind
 }
@@ -1047,79 +962,4 @@ fn paired(v: Variant, names: List<string>, call: Code, other: Code) -> Code {
     let first? = names.first() else { return call }
     let inner = paired(v, names.drop(1), call, other)
     quote { match ${name(first)} { .${v} as ${first} -> ${inner}, rest -> ${other} } }
-}
-
-/// What one format answers of another: it accepts every text the other accepts, it misses one, or
-/// that can't be told without reading a type's own text form.
-export enum Subsumed {
-    Covers
-    Misses
-    Unknown
-}
-
-/// WHETHER THE FORMAT `a` ACCEPTS EVERY TEXT `b` ACCEPTS, under the scan both are read by: the head a
-/// prefix, the last piece a suffix, each piece between them at its first place (its last where its
-/// hole is greedy), and each span read as its hole reads it. A `b` of no holes is one text, scanned by
-/// `a`: exact. Otherwise `a` covers where its holes stand where `b`'s do — one head, one piece, one greed
-/// at each place — each reading at least what `b`'s reads (text reads anything; an `int` an `int`;
-/// a type that crosses text only itself), or where `a` is one hole reading text between a prefix of
-/// `b`'s head and a suffix of `b`'s last piece. Anything else can't be told: the answer is `Unknown`,
-/// never `Misses`.
-export fn format_subsumes(a: FormatShape, b: FormatShape) -> Subsumed {
-    if b.holes.is_empty() { return text_read_by(a, b.head) }
-    if holes_aligned(a, b) || spans_around(a, b) { Subsumed.Covers } else { Subsumed.Unknown }
-}
-
-/// What the format `a` answers of the one text `text`: whether its scan takes it, and each span reads
-/// as its hole reads; a span read through a type's text form can't be told here.
-fn text_read_by(a: FormatShape, text: string) -> Subsumed {
-    let spans? = format_spans(
-        text.bytes(),
-        a.head.bytes(),
-        [h.piece.bytes() for h in a.holes],
-        [h.greedy for h in a.holes],
-    ) else { return Subsumed.Misses }
-    let reads = [span_read(h, text.substring(spans[2 * k], spans[2 * k + 1])) for k, h in a.holes]
-    if reads.any(it is .Misses) { return Subsumed.Misses }
-    if reads.any(it is .Unknown) { Subsumed.Unknown } else { Subsumed.Covers }
-}
-
-/// Whether the span `span` reads as the hole `h` reads it.
-fn span_read(h: FormatHole, span: string) -> Subsumed {
-    match h.reads {
-        .Text -> Subsumed.Covers,
-        .Int -> if format_int(span) != null { Subsumed.Covers } else { Subsumed.Misses },
-        .Form -> Subsumed.Unknown,
-    }
-}
-
-/// Whether `a`'s holes stand where `b`'s do, each reading at least what `b`'s reads: one head, and at
-/// each place one piece and one greed, so every text `b` takes `a` splits alike.
-fn holes_aligned(a: FormatShape, b: FormatShape) -> bool {
-    a.head == b.head &&
-        a.holes.length == b.holes.length &&
-        (0..a.holes.length).all((k) -> hole_covers(a.holes[k], b.holes[k]))
-}
-
-/// Whether the hole `x` stands as `y` does and reads at least what `y` reads.
-fn hole_covers(x: FormatHole, y: FormatHole) -> bool {
-    x.piece == y.piece && x.greedy == y.greedy && reads_at_least(x, y)
-}
-
-/// Whether the hole `x` reads every span `y` reads: text reads anything, and any other reading only
-/// its own type's.
-fn reads_at_least(x: FormatHole, y: FormatHole) -> bool {
-    match x.reads {
-        .Text -> true,
-        .Int -> y.reads is .Int,
-        .Form -> y.reads is .Form && x.ty == y.ty,
-    }
-}
-
-/// Whether `a` is one hole reading text between a prefix of `b`'s head and a suffix of `b`'s last
-/// piece: every text `b` takes then starts and ends as `a` asks, its middle `a`'s span.
-fn spans_around(a: FormatShape, b: FormatShape) -> bool {
-    if a.holes.length != 1 || !(a.holes[0].reads is .Text) { return false }
-    let last? = b.holes.last() else { return false }
-    b.head.starts_with(a.head) && last.piece.ends_with(a.holes[0].piece)
 }

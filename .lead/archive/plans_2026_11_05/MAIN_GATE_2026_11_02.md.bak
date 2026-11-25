@@ -1,0 +1,54 @@
+# hd-clean against main's full gate (2026-11-02)
+
+First full run of checks.yml on GitHub's free runners: run 41391654747 on hd-gate
+(hd-clean 6c1c123f + hd-inputkey 42415f86 + the dispatch-rungs fix). The compiler
+built (rungs climbed, 11 min); suites and keepers ran in parallel (~10 min).
+My Sprite gate was a subset, so these are new to us. Each must be green before
+hd-clean lands on main.
+
+| # | failure | owner |
+|---|---|---|
+| 1 | cli suites: `packages/cli/src/main.av:42 cli avra {` "expected BREAK" (the cli's component instance does not parse in the suite's build) | hd-nodes (component forms) |
+| 2 | ~~features-c: `defect: memo family marks_of reused missing key 0` (Typed > marks_of)~~ fixed (gate 41432886444: features-c green) | hd-verdict (Marks @query) |
+| 3 | ~~features/fns/tests/const_seat: eval FAILED~~ FIXED 83a88084 (a settled-seat body keeps its substitution; caa0c320 had dropped it) | s-gate |
+| 4 | ~~core/grammar_derive 330/331 (hand transcription)~~ fixed (gate 41432886444: core 328/328) | hd-nodes2 (hand() deleted, local) |
+| 5 | codecs keeper: record.av:563 `form_wire` hand codec | hd-nodes |
+| 6 | census-gate: +2.6M pushes `core.filled<ExprId>`, +2.4M `map_claim`, +2.2M retains `core.merged_by` vs main | hd-typed (census, find the cause; SPEED_ACCEPT only with a reason) |
+| 7 | speed-ratchet: "check answered no time line" (the `--time` output changed) | hd-decl (it changed --time) |
+| 8 | ~~dogfooding-rules: DOGFOODING.md:140 generated block stale~~ fixed (green in gate 41432886444) | hd-fixes |
+| 9 | ~~attack: a new mutant survivor (`when_expr`)~~ fixed (gate 41432886444: 38 survivors, all in the baseline) | hd-fixes |
+| 10 | fmt-lossless: grammar/tests/fold_test.av differs — SAME CAUSE AS #1: the 32 refused are packages/cli's `command`/`cli` files (CONFIRMED by name, hd-gate fmt change: all 32 are packages/cli files refused with `error[parse.expected]: expected BREAK while parsing stmt` — 31 commands/*.av incl. shared.av and fmt.av, plus main.av) | hd-fixes |
+| 11 | ~~voices: new gaps `type.fraction_pattern` no_remedy, `type.mixed_bitwise` no_witness~~ fixed (green in gate 41432886444) | hd-fixes |
+| 12 | cache-attacks b2: store-clean 4 failed (window of two left 3 bodies; cache show on an evicted revision) | hd-store (.304.6) |
+| 13 | cache-attacks a: the 11 hold expectations | hd-hold |
+| 14 | warm-edit: main's ceilings (#1223) | at landing, after the conversions |
+
+How to run the gate: push the branch, `gh workflow run checks.yml --repo avra-lang/avra --ref <branch>`
+(needs hd-gate's "a hand-dispatched run climbs its branch's rungs too" commit), then
+`gh run view <id> --log-failed`.
+
+Found by s-gate (in every gate since 41422086942, unlisted): #15 std-avrac/@features-a: `features/node_print — the language's own nodes` traps `unwrapped an absent value` (node_print_test.av:181): `avra().wordings` has no `Expr.Range` (loops' bare `counted = lo ".." hi` and ranges' parenthesised rule read differently, so "one node, one surface" drops it) and no `Pat.Wild` (five rules build it). Owner: hd-nodes. FIXED cb752647: a loop head's range and a pattern's `..` are `by` computed builders (core/computed.av), so each node keeps one wording; green in gate 41439910381.
+
+## #12 / #13 triage (gate 41439910381, hd-gate cb752647; s-gate)
+cache-attacks (a): 11 failed of 519 steps. cache-attacks (b2): store-clean 4 failed of 17. Messages are the script's own first line. Owners are by mechanism read from the case, not confirmed by the owner.
+
+| case | first message | owner |
+|---|---|---|
+| ur: an entry edit parses the entry alone | a warm check parsed '', wanted 'ur/src/main.av' | s-hold (a held check parses nothing where the entry changed) |
+| ur: the edited sibling is held again | parsed '', wanted 'ur/src/main.av' | s-hold |
+| ur: the new file is held from its first clean check | parsed '', wanted 'ur/src/main.av' | s-hold |
+| us: an entry edit parses the entry alone | parsed '', wanted 'us/src/main.av' | s-hold |
+| rx: and back — the store still keeps the first build's importer | wanted held, got read: ../rxl/src/other/o.av, src/show.av — "its key moved when the records were written" | s-hold (held keys move with the records) |
+| sl: a record whose only sealer left a read file stayed boxed under the hold | attempts: '' | s-decl (flat-record lowering rows under a hold) |
+| d: and back, to a key the store knows | wanted hit, got built (restoring a reached toolchain file) | s-decl (the binary's key / lowered unit key) |
+| d: by the compiler itself | wanted hit, got built | s-decl (same key) |
+| ~~st: --verify cases~~ | FIXED by s-gate: `inputs` timing restored (verdict_read_stands); the --verify half retired with stamp trust (529a46c6) — cache-attacks st,abx 0 failed | s-gate |
+| ~~abx: a check from another entry~~ | FIXED by s-gate: the `inputs` timing restored | s-gate |
+| store-clean: a window of two left 3 bodies | store-clean 4 FAILED | s-store |
+| store-clean: the reclaim did not name the evicted revision 82 | | s-store |
+| store-clean: cache show on an evicted revision did not say so | | s-store |
+| store-clean: cache show 82 exited 1, not 1 | | s-store |
+
+Unowned: none. The `ur`/`us` rows are the least certain: a warm check that printed no `Q parse` line at all could be a held entry (hold) or the trace line's moved spelling (decl); s-hold should check the trace first.
+
+abx re-opened by gate 41446148140: AB wanted `held N/M` in the output, and a comment edit is now answered by the verdict (`cache cache hit`, ea06d1b2). AB accepts a cache hit as a hold (hd-gate, after 48704c95).

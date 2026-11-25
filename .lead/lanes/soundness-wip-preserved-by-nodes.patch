@@ -1,0 +1,93 @@
+diff --git a/packages/std-avrac/src/compiler/soundness/soundness.av b/packages/std-avrac/src/compiler/soundness/soundness.av
+index 68d48b9d..41fe1516 100644
+--- a/packages/std-avrac/src/compiler/soundness/soundness.av
++++ b/packages/std-avrac/src/compiler/soundness/soundness.av
+@@ -45,6 +45,8 @@ use core.{
+     rt_owns,
+     rt_lends,
+     flatten,
++    ins_words,
++    joined,
+ }
+ use compiler.lower.{Body, Lowered}
+ use diagnostics.{Diag, defect_at}
+@@ -563,7 +565,13 @@ fn kept(r: Reg, escaping: Reg?) -> bool {
+ }
+ 
+ fn leak_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
+-    if sim.refs[r.index] <= 0 { [] } else { [leaked(ctx.name, at, r)] }
++    if sim.refs[r.index] <= 0 { [] } else { [leaked(ctx, at, r)] }
++}
++
++/// PROBE: a short rendering of one instruction's words.
++fn l2_note(i: Ins) -> string {
++    let w = ins_words(i)
++    "tag=${w.tag} ints=[${joined(["${n}" for n in w.ints], ",")}] texts=[${joined(w.texts, ",")}]"
+ }
+ 
+ // ── Regions: fork per arm, merge on the way out ─────────────────────
+@@ -701,7 +709,7 @@ fn merged_region(ctx: Ctx, open_at: int, region_end_at: int, sim0: Sim, walks: L
+         if ctx.defs[r] < open_at {
+             let states = [w.sim.refs[r] > 0 for w in live]
+             if states.any(it != states[0]) {
+-                diags.push(region_disagreement(ctx.name, region_end_at, Reg { index: r }))
++                diags.push(region_disagreement(ctx, open_at, region_end_at, Reg { index: r }))
+                 merged.refs.set(r, 0)
+             } else if states[0] {
+                 merged.refs.set(r, largest([w.sim.refs[r] for w in live]))
+@@ -803,10 +811,12 @@ fn releases_unowned(name: string, at: int, r: Reg) -> Diag {
+     )
+ }
+ 
+-fn region_disagreement(name: string, at: int, r: Reg) -> Diag {
++fn region_disagreement(ctx: Ctx, open_at: int, at: int, r: Reg) -> Diag {
++    let d = ctx.defs[r.index]
++    let birth = if d >= 0 { l2_note(ctx.ins[d]) } else { "param" }
+     defect_at(
+         null,
+-        "in `${name}`, a region ending at instruction ${at} leaves r${r.index} released on one arm and not on another — the two paths must agree",
++        "in `${ctx.name}`, a region [${open_at}..${at}] leaves r${r.index} born[${d}]=${birth} open[${l2_note(ctx.ins[open_at])}] released on one arm and not on another — the two paths must agree",
+     )
+ }
+ 
+@@ -817,9 +827,22 @@ fn unprotected_view(name: string, at: int, r: Reg) -> Diag {
+     )
+ }
+ 
+-fn leaked(name: string, at: int, r: Reg) -> Diag {
++fn leaked(ctx: Ctx, at: int, r: Reg) -> Diag {
++    let d = ctx.defs[r.index]
++    let birth = if d >= 0 { l2_note(ctx.ins[d]) } else { "param" }
++    let touch = joined(
++        [
++            "${j}:${l2_note(ctx.ins[j])}"
++            for j in 0..at + 1
++            if reads_of(ctx.ins[j]).any(same_reg(it, r)) ||
++                (dst_of(ctx.ins[j]) != null && same_reg(dst_of(ctx.ins[j])!, r))
++        ],
++        "\n    ",
++    )
++    let lo = if d > 3 { d - 3 } else { 0 }
++    let window = if at - d < 60 { joined(["${j}:${l2_note(ctx.ins[j])}" for j in lo..at + 2], "\n    ") } else { "(wide)" }
+     defect_at(
+         null,
+-        "in `${name}`, r${r.index} is a fresh box still alive at instruction ${at} — never released, transferred, or answered on this path",
++        "in `${ctx.name}`, r${r.index} born[${d}]=${birth} still alive at ${at}=${l2_note(ctx.ins[at])}\n  touches:\n    ${touch}\n  window:\n    ${window} — never released, transferred, or answered on this path",
+     )
+ }
+diff --git a/packages/std-avrac/src/core/ir.av b/packages/std-avrac/src/core/ir.av
+index ffe992ec..6fb7da41 100644
+--- a/packages/std-avrac/src/core/ir.av
++++ b/packages/std-avrac/src/core/ir.av
+@@ -306,9 +306,9 @@ export fn digest_ins(d: Digest, i: Ins) -> Digest {
+ 
+ /// An instruction's payload as words: its tag, its numbers (a register
+ /// by its index, a list by its length then its members), its texts.
+-type InsWords = { tag: int, ints: List<int>, texts: List<string> }
++export type InsWords = { tag: int, ints: List<int>, texts: List<string> }
+ 
+-fn ins_words(i: Ins) -> InsWords {
++export fn ins_words(i: Ins) -> InsWords {
+     match i {
+         .ConstInt(dst, v) -> InsWords { tag: 0, ints: [dst.index, v], texts: [] },
+         .ConstFloat(dst, bits) -> InsWords { tag: 1, ints: [dst.index, bits], texts: [] },

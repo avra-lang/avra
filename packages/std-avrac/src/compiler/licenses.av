@@ -40,27 +40,29 @@ export fn belongs(id: string, f: LicenceFamily) -> bool {
 
 fn fits(tail: string, shape: string) -> bool { if shape == "snake" { snake(tail) } else { tail == shape } }
 
-/// Every rule a citation may name, as a set: a citation is one lookup, never a walk of the rules.
-once fn known_rule_ids() -> Map<string, bool> {
-    mut known: Map<string, bool> = {}
-    for r in rule_entries() { known.set(rule_id(r), true) }
-    known
-}
+/// Every rule a citation may name.
+fn known_rule_ids() -> List<string> { [rule_id(r) for r in rule_entries()] }
 
 /// Whether a citation's id names nothing that reads it: no rule among
 /// `known`, and no member of a keeper's family.
-export fn cites_nothing(id: string, known: Map<string, bool>) -> bool {
-    !known.has(id) && !families().any(belongs(id, it))
+export fn cites_nothing(id: string, known: List<string>) -> bool {
+    !known.contains(id) && !families().any(belongs(id, it))
 }
 
-/// A remark's `// LICENSED` citation that names nothing: the offset the remark stands at, and its id.
-export type UnbackedClaim = { at: int, id: string }
+fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
+    stale_lines_of(a.view.source, a.view.store.remarks.get(), known)
+}
 
-/// Each of `remarks` whose `// LICENSED` citation names nothing among `known`.
-export fn claims_naming_nothing(remarks: List<Remark>, known: Map<string, bool>) -> List<
-    UnbackedClaim,
+/// A source's stale citations among `remarks`, each as its file, line and id.
+fn stale_lines_of(src: SourceFile, remarks: List<Remark>, known: List<string>) -> List<string> {
+    ["${src.file}\t${c.line}\t${c.id}" for c in citations_naming_nothing(src, remarks, known)]
+}
+
+/// Each of `remarks` in `src` whose `// LICENSED` citation names nothing among `known`.
+export fn citations_naming_nothing(src: SourceFile, remarks: List<Remark>, known: List<string>) -> List<
+    StaleCitation,
 > {
-    [UnbackedClaim { at: r.at, id: c!.id } for r in remarks for c in [claimed(r)] if c != null && cites_nothing(c!.id, known)]
+    [StaleCitation { line: src.linecol(r.at).line, id: c!.id } for r in remarks for c in [claimed(r)] if c != null && cites_nothing(c!.id, known)]
 }
 
 /// One `// LICENSED <id>: <reason>` comment, parsed — the id and

@@ -35,7 +35,7 @@ type Owned = { key: string, name: string, generic: bool, stmt: StmtId }
 
 /// Every method the written item `at` of `file` declares whose name an earlier one of its type
 /// already took.
-fn item_methods_taken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemTaken {
+fn item_methods_taken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
     if !item_held(engine, file, at) { return methods_taken_made(engine, file, at) }
     methods_taken_seen(item_view(engine, file, at))
 }
@@ -51,7 +51,7 @@ fn methods_taken_seen(view: ItemView) -> ItemTaken {
 }
 
 /// What `item_methods_taken` answers, made.
-fn methods_taken_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemTaken {
+fn methods_taken_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
     if !item_held(engine, file, at) { return ItemTaken { rows: [] } }
     let item = read_item(engine, file, at)
     let blocks = [s for s in item.stmts if item.store.impl_parts(s) != null]
@@ -64,26 +64,20 @@ fn methods_taken_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
     }
 }
 
-/// The methods the impl `s` declares whose name is already taken on its type: by a member a generator
-/// gives the type (an accessor a derive makes of a field, say), which owns its name wherever the impl
-/// stands; by an impl of the type declared earlier in the package; or by an earlier method of `s`
-/// itself.
+/// The methods the impl `s` declares whose name is already taken on its type: by an impl of the
+/// type declared earlier in the package, or by an earlier method of `s` itself.
 fn taken_in(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     store: SyntaxArena,
     s: StmtId,
     i: ItemImpl,
 ) -> List<TakenAt> {
     let d? = impl_target(engine, file, i) else { return [] }
-    let made = [Owned { key: n, name: n, generic: false, stmt: StmtId { index: -1 } } for f in impls_in(package_generated_impls_part(engine, file.package_name, d.name), d.file) if f.implements == null for n in f.methods.concat(f.statics)]
-    let earlier = made
-        .concat(
-            flatten(
-                [owned_by(engine, f.at) for f in impls_in(package_impls_part(engine, file.package_name, d.name), d.file) if declared_before(engine, f.at, file, at)],
-            ),
-        )
+    let earlier = flatten(
+        [owned_by(engine, f.at) for f in impls_in(package_impls_part(engine, file.package_name, d.name), d.file) if declared_before(f.at, file, at)],
+    )
     let mine = owned_in(store, s)
     [r! for k, m in mine for r in [taken(earlier.concat(mine.take(k)), m, i.target, store)] if r != null]
 }
@@ -113,8 +107,8 @@ fn owned_in(store: SyntaxArena, s: StmtId) -> List<Owned> {
 
 /// Whether the impl at `a` is declared before the written item `at` of `file`: in a file whose path
 /// comes first, or earlier in the same file.
-fn declared_before(engine: QueryEngine, a: ImplAt, file: SourceFileAddress, at: ItemId) -> bool {
-    if same_file(a.file, file) { item_order(engine, file, a.item) < item_order(engine, file, at) } else { text_before(a.file.path_in_package, file.path_in_package) }
+fn declared_before(a: ImplAt, file: SourceFileAddress, at: int) -> bool {
+    if same_file(a.file, file) { a.item < at } else { text_before(a.file.path_in_package, file.path_in_package) }
 }
 
 /// Whether a written item of `file` declares a method whose name its type already took: a build that

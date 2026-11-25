@@ -11,7 +11,6 @@ use core.{
     BoxKind,
     Bound,
     CalledFn,
-    decl_key,
     ExprId,
     Layout,
     Lowering,
@@ -38,17 +37,13 @@ impl Lowers for Call {
     /// the program declares (a generic one's unit under its arguments' layouts): its arguments in
     /// order, each into the seat it fills, then the call. Any other call isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
-        let value = cx.bound(self.callee.text())
+        let value = cx.bound(self.callee.of)
         if value != null { return called_value(cx, self, e, value!) }
         let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.missed_as(uncalled(cx, self, e)) }
         if self.args.length == 1 && metas(cx, named, GUARDED) { return guarded_run(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, CODE_HASH) { return code_hash_read(cx, e, self.args[0]) }
-        if self.args.length == 2 && metas(cx, named, MARKS) { return marks_read(cx, e, self.args) }
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
-        if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
-        if self.args.length == 1 && metas(cx, named, CTX_ENTRY) { return ctx_entry_read(cx, self.args[0]) }
-        if self.args.length == 1 && metas(cx, named, SEEDED) { return seeded_value(cx, self.args[0]) }
         let reached? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
         let settled = settled_args(cx, reached, self.args, e)
         let callee = if settled == null { reached } else { settled_unit(reached, settled!) }
@@ -131,21 +126,6 @@ const GUARDED: string = "guarded"
 /// `@std/meta`'s fn whose answer the program gives.
 const CODE_HASH: string = "code_hash"
 
-/// `@std/meta`'s fn whose answer is an annotation's fn held to a named fn's identity.
-const MARKS: string = "marks"
-
-/// `@std/meta`'s fn that answers `marks`, handed the identity.
-const MARKED_BY: string = "marked_by"
-
-/// `@std/meta`'s fn whose fn value runs under the frame of contexts in force where it is called.
-const REHOMED: string = "rehomed"
-
-/// `@std/meta`'s fn whose answer is the frame entry a context read reads.
-const CTX_ENTRY: string = "ctx_entry"
-
-/// `@std/meta`'s fn that seeds a value's `state` fields seeded at need, now.
-const SEEDED: string = "seeded"
-
 /// `@std/meta`'s fn whose file's text a const reads.
 const EMBED: string = "embed"
 
@@ -204,62 +184,15 @@ const EMBED_UNPLACED: string = "an embedded file's path the embed law refuses"
 /// value is, then a call of the body the program answers `f`'s code hash with. Any other argument
 /// isn't lowered yet.
 fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
-    let name? = cx.store.ident_name(target) ?? cx.store.callee_name(target) else { return cx.missed_as(unhashed()) }
+    let name? = cx.store.ident_name(target) ?? cx.store.call_parts(target)?.callee else { return cx.missed_as(unhashed()) }
     let named? = cx.named(target, name) else { return cx.missed_as(unhashed()) }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unhashed()) }
     let _ = cx.lower(target)
     cx.code_hash_called(cx.layout_at(e), callee)
 }
 
-/// `marks(a, f)` over a fn the program declares: `@std/meta`'s `marked_by` of `a` and `f`'s identity,
-/// so the answer holds `a`'s fn to the declaration `f` names and never to a name. Any other argument
-/// isn't lowered yet.
-fn marks_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
-    let target = cx.store.unnamed(args[1])
-    let name? = cx.store.ident_name(target) else { return cx.missed_as(unmarked()) }
-    let named? = cx.named(target, name) else { return cx.missed_as(unmarked()) }
-    let marked? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unmarked()) }
-    let by? = (cx.program.toolchain_fn)(META_MODULE, MARKED_BY) else { return cx.missed_as(unmarked()) }
-    let mark = cx.handing_mark()
-    let r = cx
-        .call_fn(
-            cx.layout_at(e),
-            by,
-            [cx.lower(cx.store.unnamed(args[0])), cx.const_str(decl_key(marked.file, marked.name))],
-        )
-    cx.handed_back(mark)
-    r
-}
-
 /// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on
 /// this task ended it, then answering the trap's words, or the body ran to its end, answering none.
-/// `rehomed(f)`: the fn value `f`, made to run under the frame of contexts in force here; any other
-/// value as it is.
-fn rehomed_value(mut cx: Lowering, f: ExprId) -> Reg {
-    let r = cx.lower(f)
-    let ty? = cx.type_at(f) else { return r }
-    if ty.callable() { cx.rehomed(r) } else { r }
-}
-
-/// `seeded(v)`: `v`, each `state` field of it seeded at need given its cell now.
-fn seeded_value(mut cx: Lowering, v: ExprId) -> Reg {
-    let r = cx.lower(v)
-    let ty? = cx.type_at(v) else { return r }
-    cx.seeded_now(r, ty)
-}
-
-/// `ctx_entry(ctx.name)`: the cell the frame in force holds for the context, as a word, 0 where its
-/// default stands — one scan of the frame, no read of the value, nothing retained. Any other
-/// argument is lowered for what it does and answers 0.
-fn ctx_entry_read(mut cx: Lowering, read: ExprId) -> Reg {
-    let name? = cx.store.ctx_read(read) else {
-        let _ = cx.lower(read)
-        return cx.const_int(0)
-    }
-    let c? = cx.context(name, read) else { return cx.unlowered(read) }
-    cx.call_row(Layout.Word, rt_sig_of("avra_ctx_entry")!, [cx.const_int(c.key)])
-}
-
 fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
     let ty? = cx.type_at(e) else { return cx.unlowered(e) }
     let status = cx.call_row(Layout.Word, rt_sig_of("avra_guard_run")!, [cx.lower(body)])
@@ -274,8 +207,8 @@ fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
 /// `Name(value)`: the value as it is, a named type being its shape to the machine. Absent for a call
 /// of any other name.
 fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
-    if call.args.length != 1 || cx.bound(call.callee.text()) != null { return null }
-    let named? = (cx.program.checked.type_value)(call.callee.text(), cx.store.home_of(e))?.described() else { return null }
+    if call.args.length != 1 || cx.bound(call.callee.of) != null { return null }
+    let named? = (cx.program.checked.type_value)(call.callee.of, cx.store.home_of(e))?.described() else { return null }
     if cx.program.checked.named_shape(named) == null { return null }
     cx.lower(call.args[0])
 }
@@ -283,8 +216,8 @@ fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
 /// The fn a call names, when the program declares it with seats a call fills, pinning each of its
 /// type parameters or none.
 fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
-    if cx.bound(call.callee.text()) != null { return null }
-    let named? = cx.named(e, call.callee.text()) else { return null }
+    if cx.bound(call.callee.of) != null { return null }
+    let named? = cx.named(e, call.callee.of) else { return null }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
     if !callee.plain && callee.params.is_empty() || call.pins.length > callee.type_params { null } else { callee }
 }
@@ -334,10 +267,10 @@ impl StmtLowers for Return {
 /// A call of a name that is no fn a call here reaches, by what the name is.
 fn uncalled(cx: Lowering, call: Call, e: ExprId) -> string {
     let name = call.callee.of
-    let named? = cx.named(e, name.text()) else { return "a call of `${name.text()}`, which names nothing this body reads" }
+    let named? = cx.named(e, name) else { return "a call of `${name}`, which names nothing this body reads" }
     match named {
-        .Fn(_) -> "a call of `${name.text()}` with type arguments it doesn't declare, or into seats a call doesn't fill",
-        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> "a call of `${name.text()}`, which names a value",
+        .Fn(_) -> "a call of `${name}` with type arguments it doesn't declare, or into seats a call doesn't fill",
+        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> "a call of `${name}`, which names a value",
     }
 }
 
@@ -352,5 +285,3 @@ fn unlaid(callee: CalledFn) -> string { "a call of the generic `${callee.name}` 
 
 /// A code hash's argument naming no fn the program declares.
 fn unhashed() -> string { "a code hash of what names no declared fn" }
-
-fn unmarked() -> string { "a mark asked after what names no declared fn" }

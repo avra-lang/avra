@@ -1,20 +1,19 @@
-// A BODY'S TYPED ANSWER IS ITS OWN: the program layer types each item on its own tape, its nodes
-// counted from where the declaration starts, so a declaration written above it leaves what typing
-// found standing, and a change to its own body moves it. Read as the rules read it: the item's
-// typed facts (`RuleFacts.Typed`), each node's type spelled.
-use @std.avrac.testing.{judged}
-use features.{RuleFacts}
+// A BODY'S TYPED DIGEST IS ITS CODEC'S BYTES UNDER ITS OWN WINDOW: ids counted from where the
+// declaration starts, types and declarations by their durable names. So a declaration written
+// above it moves every id it holds and leaves its digest standing, and a change to its own body
+// moves the digest.
+use features.{TypeFacts}
+
+fn td_path() -> string { "/w/src/main.av" }
 
 fn td_body(n: string) -> string { "fn b(x: int) -> int {\n    let y = x + ${n}\n    y * 2\n}\n\nb(1)\n" }
 
-/// What typing found in `b`'s item, in a program of `text`: each node's type, by its index.
-fn td_digest(text: string) -> string {
-    let items = judged(text).rule_items("/alone/src/main.av")
-    let item? = items.find((i) -> i.stmts.any((s) -> i.file.view.store.declared_name(s) == "b")) else { return "no item" }
-    match item.file.facts {
-        .Typed(t) -> [t2?.spelled() ?? "_" for t2 in t.types].join(","),
-        .Analysed(_) -> "old facts",
-    }
+/// `b`'s typed digest, in a process over `text`.
+fn td_digest(text: string) -> int {
+    let ws = a_process_over({td_path(): text}, [td_path()])
+    let _ = checked(ws, td_path())
+    let facts = ws.typed(decl_in_file(ws, td_path(), "b"))
+    TypeFacts.digest_in(ws.facts_scope(facts.of_expr.lo(), facts.stmt_flags.lo()), facts)
 }
 
 spec "compiler/typed digest — a body's digest is its own" {
@@ -25,8 +24,5 @@ spec "compiler/typed digest — a body's digest is its own" {
     }
     given "a change to b's own body" {
         then "b's typed digest moves" { td_digest(td_body("1")) != td_digest(td_body("\"s\".length")) }
-    }
-    given "any program" {
-        then "b's item is typed at all" { td_digest(td_body("1")).contains("int") }
     }
 }

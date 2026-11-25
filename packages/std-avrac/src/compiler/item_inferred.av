@@ -47,7 +47,7 @@ export type OwnFailures = { direct: List<SignedType>, forwards: List<InferringFn
 export type RaisedSet = { members: List<SignedType>, unnamed: bool }
 
 /// What the body of the fn `at` raises of its own, read off its typing under written answers.
-@query("typing")
+@query
 export fn own_failures(engine: QueryEngine, at: InferringFn) -> OwnFailures {
     let surveyed? = surveyed_body(engine, at) else { return OwnFailures { direct: [], forwards: [], unnamed: true } }
     let store = surveyed.store
@@ -66,7 +66,7 @@ export fn own_failures(engine: QueryEngine, at: InferringFn) -> OwnFailures {
 }
 
 /// What the `_` fn `at` raises: the union of what every fn it reaches through `?` raises of its own.
-@query("typing")
+@query
 export fn raised(engine: QueryEngine, at: InferringFn) -> RaisedSet {
     let fns: Cell<Map<string, InferringFn>> = Cell.new({})
     let types: Cell<Map<string, SignedType>> = Cell.new({})
@@ -91,7 +91,7 @@ export fn raised(engine: QueryEngine, at: InferringFn) -> RaisedSet {
 
 /// The fn `file` declares as `name`, signed with the error its answer infers: its written signature
 /// where its answer infers none, or where what it raises isn't known, which a law refuses.
-@query("typing")
+@query
 export fn fn_answered(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
     let written? = fn_signature(engine, file, name) else { return null }
     let answer? = inferred_answer(engine, InferringFn { file: file, name: name }, written.answer) else { return written }
@@ -234,7 +234,7 @@ fn called_fn(engine: QueryEngine, at: InferringFn, surveyed: SurveyedBody, v: Ex
     let file = signed_file(at)
     match surveyed.store.expr(v) {
         .Call(callee, _, _) -> {
-            let d? = resolved(engine, file, Space.Value, callee.text()).named() else { return null }
+            let d? = resolved(engine, file, Space.Value, callee.of).named() else { return null }
             if !(d.kind is .Fn) { return null }
             InferringFn { file: d.file, name: d.name }
         },
@@ -287,7 +287,7 @@ fn fn_key(f: InferringFn) -> string {
 type InferringDecl = { f: InferringFn, at: Span? }
 
 /// Each `_` fn the written item `at` of `file` declares: its fns, and the methods its impls give.
-fn inferring_decls(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<InferringDecl> {
+fn inferring_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<InferringDecl> {
     let item = read_item(engine, file, at)
     let own = [InferringDecl { f: InferringFn { file: file, name: p!.name }, at: item.store.stmt_span(s) } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && infers(fn_signature(engine, file, p!.name)?.answer ?? headed_type(TypeHead.Never))]
     own.concat(flatten([methods_inferring(engine, a) for a in impls_at(engine, file, at)]))
@@ -306,12 +306,12 @@ fn methods_inferring(engine: QueryEngine, a: ImplAt) -> List<InferringDecl> {
 }
 
 /// Each `_` fn the item declares that reaches a site raising what nothing names.
-fn unnamed_raised(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn unnamed_raised(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [found_at(d) for d in inferring_decls(engine, file, at) if raised(engine, d.f).unnamed]
 }
 
 /// Each `_` fn the item declares that raises nothing.
-fn nothing_raised(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+fn nothing_raised(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [found_at(d) for d in inferring_decls(engine, file, at) for r in [raised(engine, d.f)] if !r.unnamed && r.members.is_empty()]
 }
 

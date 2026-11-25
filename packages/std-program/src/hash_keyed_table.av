@@ -1,6 +1,6 @@
-//! A TABLE KEYED BY CONTENT HASH, or by any two words: a key's words, mixed, pick the slot its
-//! search starts at, and no text is made. Open addressing over a power-of-two list of slots, never
-//! more than half full. Values keep the order they were first put in. An identity: every
+//! A TABLE KEYED BY CONTENT HASH. A key is already uniformly spread, so its own low word picks its
+//! slot: nothing is hashed and no text is made. Open addressing over a power-of-two list of slots,
+//! never more than half full. Values keep the order they were first put in. An identity: every
 //! holder sees one table.
 use answer_record.{AnswerRecord, ContentHash, PartSeen, RecordedRead}
 use @std.meta.{identity}
@@ -51,14 +51,6 @@ impl HashKeyedTable<T> {
         }
     }
 
-    /// `value` under `key` where no value is yet, saying whether it was put: one look at the table
-    /// where `get` and `put` would make two.
-    fn first_put(key: ContentHash, value: T) -> bool {
-        if self.position_at(key.high_word, key.low_word) != null { return false }
-        self.added(key.high_word, key.low_word, value)
-        true
-    }
-
     /// Every value, in the order its key first arrived.
     fn values() -> List<T> { self.held_values.get() }
 
@@ -74,12 +66,11 @@ impl HashKeyedTable<T> {
 
     /// Where the key of these two words sits, absent when it's not here. A free slot ends the search.
     fn position_at(high_word: int, low_word: int) -> int? {
-        let start = slot_of(high_word, low_word)
         let slots = self.slots.get()
         if slots.is_empty() { return null }
         let highs = self.high_words.get()
         let lows = self.low_words.get()
-        mut slot = start & slots.length - 1
+        mut slot = low_word & slots.length - 1
         while slots[slot] != 0 {
             let position = slots[slot] - 1
             if highs[position] == high_word && lows[position] == low_word { return position }
@@ -88,40 +79,15 @@ impl HashKeyedTable<T> {
         null
     }
 
-    /// How many slots a search for `key` steps past before it ends, found or not: what a search
-    /// costs beyond its first slot, nought in an empty table.
-    fn steps_to(key: ContentHash) -> int {
-        let start = slot_of(key.high_word, key.low_word)
-        let slots = self.slots.get()
-        if slots.is_empty() { return 0 }
-        let highs = self.high_words.get()
-        let lows = self.low_words.get()
-        mut slot = start & slots.length - 1
-        mut steps = 0
-        while slots[slot] != 0 {
-            let position = slots[slot] - 1
-            if highs[position] == key.high_word && lows[position] == key.low_word { return steps }
-            slot = slot + 1 & slots.length - 1
-            steps = steps + 1
-        }
-        steps
-    }
-
     /// A key that isn't here yet, added.
     fn added(high_word: int, low_word: int, value: T) {
         let position = self.high_words.get().length
         if (position + 1) * 2 > self.slots.get().length {
             self
                 .slots
-                .set(
-                    slots_holding(
-                        self.high_words.get(),
-                        self.low_words.get(),
-                        slot_count_after(self.slots.get().length),
-                    ),
-                )
+                .set(slots_holding(self.low_words.get(), slot_count_after(self.slots.get().length)))
         }
-        self.slots.set_at(free_slot(self.slots.get(), high_word, low_word), position + 1)
+        self.slots.set_at(free_slot(self.slots.get(), low_word), position + 1)
         self.high_words.push(high_word)
         self.low_words.push(low_word)
         self.held_values.push(value)
@@ -131,33 +97,18 @@ impl HashKeyedTable<T> {
 fn slot_count_after(count: int) -> int { if count == 0 { FIRST_SLOT_COUNT } else { count * 2 } }
 
 /// The first free slot from where `low_word` lands.
-fn free_slot(slots: List<int>, high_word: int, low_word: int) -> int {
-    mut slot = slot_of(high_word, low_word) & slots.length - 1
+fn free_slot(slots: List<int>, low_word: int) -> int {
+    mut slot = low_word & slots.length - 1
     while slots[slot] != 0 { slot = slot + 1 & slots.length - 1 }
     slot
 }
 
 /// `slot_count` slots holding every key so far.
-fn slots_holding(high_words: List<int>, low_words: List<int>, slot_count: int) -> List<int> {
+fn slots_holding(low_words: List<int>, slot_count: int) -> List<int> {
     mut slots = [0 for _slot in 0..slot_count]
-    for position, low_word in low_words { slots[free_slot(slots, high_words[position], low_word)] = position + 1 }
+    for position, low_word in low_words { slots[free_slot(slots, low_word)] = position + 1 }
     slots
 }
-
-/// WHERE A KEY'S SEARCH STARTS, ITS WORDS MIXED: a table probes on from the slot a key's low bits
-/// name, so keys whose low bits run on — places, ids, any number counted up — would fill one run of
-/// slots and send every miss landing in it to the run's end, a search as long as the run. Both
-/// words are folded, times an odd number, and the high bits brought down, so a run of keys lands
-/// apart and keys differing only in their high bits do too. Only the start of a search: the slot is
-/// in memory, never written.
-fn slot_of(high_word: int, low_word: int) -> int {
-    let mixed = (low_word ^ high_word.wrapping_mul(SLOT_FOLD)).wrapping_mul(SLOT_SPREAD)
-    mixed ^ (mixed >> 29)
-}
-
-/// The odd numbers `slot_of` multiplies by: the golden ratio's and another's, in 64 bits.
-const SLOT_SPREAD: int = -7046029254386353131
-const SLOT_FOLD: int = -4658895280553007687
 
 /// THE READS A QUESTION MAKES, AS COLUMNS: a read is its key's two words, the two words of the whole
 /// answer it saw, and for a part read its question and the part's name and hash beside them; no read
@@ -312,12 +263,11 @@ impl ReadTable {
 
     /// Where the key of these two words sits, absent when it's not here. A free slot ends the search.
     fn row_at(high_word: int, low_word: int) -> int? {
-        let start = slot_of(high_word, low_word)
         let slots = self.slots.get()
         if slots.is_empty() { return null }
         let highs = self.key_highs.get()
         let lows = self.key_lows.get()
-        mut slot = start & slots.length - 1
+        mut slot = low_word & slots.length - 1
         while slots[slot] != 0 {
             let row = slots[slot] - 1
             if highs[row] == high_word && lows[row] == low_word { return row }
@@ -332,15 +282,9 @@ impl ReadTable {
         if (row + 1) * 2 > self.slots.get().length {
             self
                 .slots
-                .set(
-                    slots_holding(
-                        self.key_highs.get(),
-                        self.key_lows.get(),
-                        slot_count_after(self.slots.get().length),
-                    ),
-                )
+                .set(slots_holding(self.key_lows.get(), slot_count_after(self.slots.get().length)))
         }
-        self.slots.set_at(free_slot(self.slots.get(), high_word, low_word), row + 1)
+        self.slots.set_at(free_slot(self.slots.get(), low_word), row + 1)
         self.key_highs.push(high_word)
         self.key_lows.push(low_word)
         self.answer_highs.push(answer.high_word)

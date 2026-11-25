@@ -92,7 +92,7 @@ type ComponentAt = { home: SourceFileAddress, declared: string }
 @derive(Saved)
 type ComponentClosure = { contents: List<ComponentContent> }
 
-@query("generate")
+@query
 fn component_content(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ComponentContent {
     let held? = declaration(engine, home, declared) else {
         return ComponentContent {
@@ -117,7 +117,7 @@ fn component_content(engine: QueryEngine, home: SourceFileAddress, declared: str
 
 /// A component's content and every one it means by, as one hash: components that name each other
 /// are one closure, walked once.
-@query("generate")
+@query
 fn component_key(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ContentHash {
     mut met: Map<string, bool> = {}
     mut order: List<ComponentAt> = [ComponentAt { home: home, declared: declared }]
@@ -212,7 +212,7 @@ type ExpansionInputs = { components: List<ContentHash>, grammars: List<GrammarWo
 /// An item meaning what its words make of it: its written tape read back, each block read by its
 /// grammar, each instance handed its component and given its meaning, and the item written again
 /// whole, so each meaning reads back where a parse makes it.
-@query("generate")
+@query
 fn item_expanded(engine: QueryEngine, item_text: string, context: Bytes, inputs: Bytes) -> SyntaxTape {
     let store = new_node_store()
     let stmts = written_back(engine, store, item_text, context)
@@ -241,7 +241,7 @@ fn expanded_whole(store: SyntaxArena, item_text: string, words: BlockWords) {
 /// back, each block read by the file's grammar, each instance handed its component and given its
 /// meaning, and the item written again whole — what `item_expanded` makes of a written item, where a
 /// generator's copy of a template was never parsed.
-@query("generate")
+@query
 fn generated_expanded(engine: QueryEngine, file: SourceFileAddress, tape: SyntaxTape) -> SyntaxTape {
     let store = new_node_store()
     let stmts = item_read_back(store, PlacedTape { start: 0, tape: tape })
@@ -306,12 +306,12 @@ fn distinct_components(cs: List<ComponentWord>) -> List<ComponentWord> { [c for 
 
 /// Each item of a file read for what it means: its expanded tape where it names a component, its
 /// written tape elsewhere.
-@query("generate")
+@query
 export fn file_meant(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
     [PlacedTape {
         start: item_start(engine, file, at),
         tape: tape_read(meant_tape(engine, file, item_under(engine, file, at))),
-    } for at in item_ids(engine, file)]
+    } for at in 0..item_count(engine, file)]
 }
 
 /// An item's tape for what it means, where it lies: expanded where it names a component or a block

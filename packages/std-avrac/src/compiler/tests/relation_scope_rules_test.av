@@ -2,9 +2,8 @@
 //! file_id_across_relation (a per-file id matched across a whole
 //! store) and compiler.one_body_arms (a join only where both arms
 //! bind alike). The fixture texts write the shapes under test.
-use @std.avrac.testing.{judged}
 use @std.avrac.testing.held.{held_at}
-use compiler.{fix_applied}
+use compiler.{analyze_source, fix_applied}
 
 /// A relation over the store `@std/relation` declares, its ids the compiler's own package's.
 const relation_prelude: string = "use @std.relation.{Db}\ntype ExprId = { index: int }\ntype DeclId = { index: int }\ntype FileView = { db: Db }\ntype Site = { owner: DeclId, holder: ExprId? }\nimpl Site {\n    static fn all(db: Db) -> List<Site> { [] }\n    static fn by_owner(db: Db, owner: DeclId) -> List<Site> { [] }\n}\nfn holder_is(w: ExprId?, c: ExprId) -> bool { (w?.index ?? -1) == c.index }\n"
@@ -36,7 +35,7 @@ fn joins(text: string) -> bool { findings_of_source(text).any(it.rule == "compil
 /// Whether the join `one_body_arms` suggests over `text`, applied, analyses clean.
 fn join_compiles(text: string) -> bool {
     let after = fix_applied(text, fix_apps_of(text, "compiler.one_body_arms")) ?? text
-    after != text && judged(after).clean()
+    after != text && analyze_source(after).clean()
 }
 
 /// Two variants carrying the same two payload types in opposite orders.

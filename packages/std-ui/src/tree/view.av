@@ -10,17 +10,6 @@
 //!     on input(typed: string)         an event the node speaks
 //!     ..Box                           the shared box, read field for field
 //!
-//! A primitive may keep ONE KIND OF PLACE: a `state` member its own gesture moves.
-//!
-//!     initial: string = ""                read by the place's default: what it starts from
-//!     @attr(.Value) state value: string = self.initial
-//!     @over(value) shown: string? = null   what the node shows where it is given
-//!     @sets(value) on input(typed: string) what the gesture says is written first
-//!
-//! Given a place, the instance shares it; given none, the instance first built where it stands
-//! is kept, as a composition's is. The node shows `shown ?? value`, so a target the gesture moved
-//! is drawn back to what the program shows.
-//!
 //! NO MEANING IS READ FROM A MEMBER'S NAME: a member that says nothing is
 //! refused where it stands. Every word a member says is checked against
 //! the library's own declaration — a primitive against `Prim`, an
@@ -61,34 +50,22 @@ use @std.meta.{
     composes,
     beside,
     declares,
-    placed,
-    rehomed,
-    ctx_entry,
-    seeded,
-    seeded_at_need,
-    as_code,
-    int_node,
 }
-use @std.text.{parse_int}
-use tree.node.{Node, Prim, Attribute, Action, Handler, Stamp}
+use tree.node.{Node, Prim, Attribute, Action, Handler}
 use tree.seats.{SeatRow, seat, seat_named}
+use tree.lists.{flatten}
 // LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
 use tree.sites.{sighted}
 use tree.identity.{Stand, Step, stand_of, stepped}
 use tree.standing.{Standing, Kept, standing, kept, stood}
 use style.box.{Box}
-use style.theme.{theme}
 use compose.{gathered}
 
 /// A component that projects to a neutral `Node`. A COMPONENT WITH A
 /// BODY IS A VIEW: the compiler derives this trait over it, and it
 /// carries a `Stand` — its key, the site it was written at — with
-/// nothing written. A view is drawn under the contexts in force where
-/// it is PLACED — the statement of the body that yields it — not where
-/// it was built.
+/// nothing written.
 @composes(Stand)
-@placed
-@seeded_at_need
 export trait View {
     /// What this view says of where it stands among its siblings.
     fn stand() -> Stand
@@ -113,79 +90,26 @@ export trait View {
                 children: ${held_by([c for p in parts for c in p.children])},
                 events: ${joined([c for p in parts for c in p.events])},
                 sites: ${sites_code(t)},
-                theme: drawn,
             }
         }
-        let rows = [said.seat_row(t, f) for f in t.fields if f.says != null]
-        if !t.fields.any(it.state && !it.prop) {
-            return Declared {
-                made: [
-                    beside(
-                        t,
-                        quote {
-                            impl View for ${t} {
-                                fn stand() -> Stand { stand_of(self.key, self.site) }
-
-                                fn describe(at: Standing) -> List<Node> {
-                                    let was = at.entry.get()
-                                    let drawn = drawn_in(at)
-                                    let made = [${node}]
-                                    at.entry.set(was)
-                                    made
-                                }
-                            }
-                        },
-                    ),
-                ]
-                    .concat(rows),
-            }
-        }
-        // A primitive that keeps a place stands as a composition does: the instance first built
-        // where it stands is kept and handed this paint's props, so a gesture's write to its own
-        // `state` lasts to the next paint.
-        let seat = unwritable(t, "kept")
-        let drawn = unwritable(t, "node")
-        let me = said.standing_instance(t, seat, said.primitive_props(t))
         Declared {
             made: [
-                declares(
-                    seat,
-                    t.at,
-                    quote { once fn ${seat}() -> Kept<${t}> { kept(${literal(t.name)}) } },
-                ),
-                beside(
-                    t,
-                    quote {
-                        impl ${t} {
-                            fn ${drawn}(at: Standing) -> Node {
-                                let was = at.entry.get()
-                                let drawn = drawn_in(at)
-                                let made = ${node}
-                                at.entry.set(was)
-                                made
-                            }
-                        }
-                    },
-                ),
                 beside(
                     t,
                     quote {
                         impl View for ${t} {
                             fn stand() -> Stand { stand_of(self.key, self.site) }
 
-                            fn describe(at: Standing) -> List<Node> {
-                                let me = ${me}
-                                [me.${drawn}(at)]
-                            }
+                            fn describe(at: Standing) -> List<Node> { [${node}] }
                         }
                     },
                 ),
             ]
-                .concat(rows),
+                .concat([said.seat_row(t, f) for f in t.fields if f.says != null]),
         }
     }
 
-    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark, over_mark, sets_mark] }
+    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark] }
 }
 
 /// A view that was refused: the impl that stands in for it, and why.
@@ -207,17 +131,6 @@ fn refused_view(t: Type) -> Directive {
     )
 }
 
-/// The theme the node standing at `at` is drawn in, where it is another than the one the node drawn
-/// above it was: one compare of the frame's entry for `ctx theme`, the theme read only where it
-/// moved. The walk's cell holds the entry from now, so what the node draws under it compares with
-/// it; the node's describe gives the cell back once its own subtree is drawn.
-export fn drawn_in(at: Standing) -> Stamp? {
-    let entry = ctx_entry(ctx.theme)
-    if entry == at.entry.get() { return null }
-    at.entry.set(entry)
-    Stamp { theme: ctx.theme, entry: entry }
-}
-
 /// A view's tree standing ALONE: no paint came before it and none
 /// follows, so every instance in it is new.
 /// A page that persists paints through `Live.paint_view`.
@@ -228,16 +141,12 @@ export fn tree_of(v: dyn View) -> Node { rooted(v.describe(standing())) }
 /// them, a column of them.
 export fn rooted(drawn: List<Node>) -> Node {
     if drawn.length == 1 { return drawn[0] }
-    // The column stands where its first node was drawn; a node beside it drawn under the same set
-    // carries nothing of its own.
-    let stamp = drawn.first()?.theme
-    let under = [if n.theme?.entry == stamp?.entry { n with { theme: null } } else { n } for n in drawn]
-    Node { prim: Prim.Column, attrs: [], box: Box {}, children: under, theme: stamp }
+    Node { prim: Prim.Column, attrs: [], box: Box {}, children: drawn }
 }
 
 /// What `items` draw under the node standing at `at`, each standing
 /// under it at its own step.
-export fn described(at: Standing, items: List<dyn View>) -> List<Node> { each_described(at, items, true).flatten() }
+export fn described(at: Standing, items: List<dyn View>) -> List<Node> { flatten(each_described(at, items, true)) }
 
 /// What a COMPOSITION standing at `at` draws: what `items` draw, IN
 /// PLACE — under the composition's own parent, with no node of its own
@@ -246,7 +155,7 @@ export fn described(at: Standing, items: List<dyn View>) -> List<Node> { each_de
 /// node it draws wears the composition's `key` where it wears none of
 /// its own, so a keyed row is found on a page by its key.
 export fn made_of(at: Standing, items: List<dyn View>, key: NodeKey?) -> List<Node> {
-    let drawn = each_described(at, items, false).flatten()
+    let drawn = flatten(each_described(at, items, false))
     [drawn_through(n, at.step.get(), if j == 0 { key } else { null }, at.by_order.get()) for j, n in drawn]
 }
 
@@ -279,7 +188,7 @@ fn composition(said: Vocabulary, t: Type) -> Declared {
     let seat = unwritable(t, "kept")
     let composed = unwritable(t, "made")
     let stateful = t.fields.any(it.state)
-    let me = if stateful { said.standing_instance(t, seat, said.prop_names(t)) } else { quote { self } }
+    let me = if stateful { said.standing_instance(t, seat) } else { quote { self } }
     let made = [
         beside(
             t,
@@ -326,12 +235,11 @@ fn composition(said: Vocabulary, t: Type) -> Declared {
 fn unwritable(t: Type, role: string) -> string { "${t.name}\$${role}" }
 
 impl Vocabulary {
-    /// The instance that stands: the one kept, with this paint's props —
-    /// `props` — laid over it — a copy shares its `state` cells — else this
-    /// one, its own `state` seeded as it starts to stand.
-    fn standing_instance(t: Type, seat: string, props: List<string>) -> Code {
+    /// The instance that stands: the one kept, with this paint's props
+    /// laid over it — a copy shares its `state` cells — else this one.
+    fn standing_instance(t: Type, seat: string) -> Code {
         mut carried = quote { held }
-        for name in props { carried = quote { ${carried} with { ${name}: self.${name} } } }
+        for name in self.prop_names(t) { carried = quote { ${carried} with { ${name}: self.${name} } } }
         let synced: List<Stmts> = [quote { if held.${p} != self.${p} { held.${p} = self.${p} } } for p in self.cell_props(t)]
         quote {
             match stood(${seat}(), at, self) {
@@ -339,7 +247,7 @@ impl Vocabulary {
                     ${synced}
                     ${carried}
                 }
-                null -> seeded(self)
+                null -> self
             }
         }
     }
@@ -359,14 +267,6 @@ impl Vocabulary {
     /// The members a later instance hands the one that stands: every one
     /// that is no `state`, and where it says it stands.
     fn prop_names(t: Type) -> List<string> { [f.name for f in t.fields if !f.state].concat([f.name for f in self.stand]) }
-
-    /// What a later instance of a primitive hands the one that stands: its own props, and every
-    /// field its spreads place — the box's and what it says its words with — each this paint's.
-    fn primitive_props(t: Type) -> List<string> {
-        let boxed = if t.spreads.any(is_box(it)) { [f.name for f in self.box] } else { [] }
-        let sighted = if t.spreads.any(is_sighted(it)) { self.sighted } else { [] }
-        self.prop_names(t).concat(boxed).concat(sighted)
-    }
 }
 
 /// What a composition gets wrong: a box of its own, or a member marked
@@ -388,7 +288,6 @@ type Vocabulary = {
     box: List<Field>,
     style: List<Field>,
     stand: List<Field>,
-    sighted: List<string>,
 }
 
 /// The modules that declare the vocabulary, as `Type.module` spells them.
@@ -415,7 +314,6 @@ fn vocabulary() -> Vocabulary? {
         box: box.fields,
         style: style.fields,
         stand: stand.fields,
-        sighted: sighted_fields,
     }
 }
 
@@ -447,66 +345,38 @@ fn refused(why: Diagnostic) -> Part { Part { problems: [why] } }
 
 impl Vocabulary {
     /// What `f` projects to: its event, or the one thing its mark says.
-    /// A primitive's `state` is a place its own gesture moves: refused where no event of it
-    /// `@sets` it, since a place nothing writes is a value spelled as a place. A member marked
-    /// `@over` is what the node shows in its place where it is given, and projects nothing itself.
     fn part(t: Type, f: Field) -> Part {
-        if self.kept_state(f) && !set_by_any(t, f.name) { return refused(stateful_primitive(f)) }
-        let over? = marks_of(f, over_mark).first() else {
-            let says? = f.says else { return self.marked(t, f) }
-            let marked? = f.marks.find(it.name != sets_mark) else { return self.event(t, f, says) }
-            return refused(marked_event(f, marked))
-        }
-        over_part(t, f, over)
+        if self.kept_state(f) { return refused(stateful_primitive(f)) }
+        let says? = f.says else { return self.marked(f) }
+        let marked? = f.marks.first() else { return self.event(t, f, says) }
+        refused(marked_event(f, marked))
     }
 
     /// The one thing a member's marks say. Each mark is read by its own
     /// word, so a member saying two things shows as two parts.
-    fn marked(t: Type, f: Field) -> Part {
-        let said = [self.attribute(t, f, m) for m in marks_of(f, attr_mark)]
+    fn marked(f: Field) -> Part {
+        let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
             .concat([children(f, m) for m in marks_of(f, children_mark)])
             .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
         if said.length > 1 { return refused(says_twice(f)) }
-        let one? = said.first() else {
-            // A member that projects nothing stands where another member's default reads it — the
-            // place `state value: string = self.initial` starts from.
-            if f.marks.is_empty() && f.says == null && !f.state && read_by_default(t, f.name) { return Part {} }
-            return refused(says_nothing(f))
-        }
-        one
+        said.first() ?? refused(says_nothing(f))
     }
 
     /// `@attr(.Label) label` → the code `Attribute.Label(self.label)`.
     /// AN OPTIONAL MEMBER NAMES ITS ATTRIBUTE ONLY WHEN GIVEN: a node
     /// whose instance wrote no `value` carries no `Value`, so a target
     /// can tell what the program draws from what it leaves alone.
-    fn attribute(t: Type, f: Field, m: Mark) -> Part {
+    fn attribute(f: Field, m: Mark) -> Part {
         let word? = m.args.first() else { return refused(unnamed_mark(m, "@attr(.Label)")) }
         let v? = self.attributes.find(it.name == word) else {
             return refused(no_attribute(m, word, [a.name for a in self.attributes]))
         }
         let carried? = v.fields.first() else { return refused(bare_attribute(m, v.name)) }
-        if carried.kind.spelled() != filled_by(held_kind(f)).spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
+        if carried.kind.spelled() != filled_by(f.kind).spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
         let said = [Saying { word: v.name, content: is_content(v), at: m }]
-        // What the node shows of a kept place: the member over it where that is given, else the
-        // place — so a target is held to what the program shows, whatever the gesture wrote.
-        let shown? = shown_over(t, f.name) else {
-            if carried.kind.spelled() == held_kind(f).spelled() {
-                return Part {
-                    attrs: [quote { Attribute.${v.name}(self.${f.name}) }],
-                    said_attrs: said,
-                }
-            }
-            return self.optional_attribute(f, v, said)
+        if carried.kind.spelled() == f.kind.spelled() {
+            return Part { attrs: [quote { Attribute.${v.name}(self.${f.name}) }], said_attrs: said }
         }
-        Part {
-            attrs: [quote { Attribute.${v.name}(self.${shown.name} ?? self.${f.name}) }],
-            said_attrs: said,
-        }
-    }
-
-    /// An optional member's attribute: named only where the member is given.
-    fn optional_attribute(f: Field, v: Variant, said: List<Saying>) -> Part {
         Part {
             named: [
                 quote {
@@ -536,26 +406,9 @@ impl Vocabulary {
 
     /// `on press` → the action the node binds while an instance hears
     /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
-    /// no action, so a control nobody hears emits nothing. The handler
-    /// runs under the contexts the node is drawn under, wherever its
-    /// caller built it.
+    /// no action, so a control nobody hears emits nothing.
     fn event(t: Type, f: Field, says: List<Param>) -> Part {
-        let sets? = marks_of(f, sets_mark).first() else { return self.heard(t, f, says) }
-        let into? = sets.args.first() else { return refused(unnamed_mark(sets, "@sets(value)")) }
-        let place? = kept_named(t, into) else { return refused(sets_no_place(f, sets, into)) }
-        let wrote? = written_by(says, place, sets) else { return refused(sets_misfit(f, sets, place, says)) }
-        let fn_value? = written_then_heard(f, says, into, wrote) else { return refused(unsayable(f, says)) }
-        let handler? = hearing(says, quote { rehomed(${fn_value}) }) else { return refused(unsayable(f, says)) }
-        Part {
-            events: [
-                quote { [Action { seat: seat_named(${literal(t.name)}, ${literal(f.name)}), handler: ${handler} }] },
-            ],
-        }
-    }
-
-    /// An event the caller alone hears: bound only where a handler is given.
-    fn heard(t: Type, f: Field, says: List<Param>) -> Part {
-        let handler? = hearing(says, quote { rehomed(bound) }) else { return refused(unsayable(f, says)) }
+        let handler? = hearing(says, quote { bound }) else { return refused(unsayable(f, says)) }
         Part {
             events: [
                 quote {
@@ -627,12 +480,6 @@ fn marks_of(f: Field, word: string) -> List<Mark> { [m for m in f.marks if m.nam
 /// The box's field a styling member is laid over.
 const style_field = "style"
 
-/// What a member holds: a `state` member's value, which the record keeps in a Cell.
-fn held_kind(f: Field) -> Kind {
-    if !f.state { return f.kind }
-    match f.kind { .Cell(inner) -> inner, rest -> f.kind }
-}
-
 /// What fills an optional field: the type it may hold.
 fn filled_by(k: Kind) -> Kind {
     match k { .Opt(inner) -> inner, rest -> k }
@@ -644,130 +491,6 @@ fn children(f: Field, m: Mark) -> Part {
         .List(.Dyn(_)) -> Part { children: [quote { self.${f.name} }] },
         rest -> refused(not_children(m, f)),
     }
-}
-
-/// The marks that tie a primitive's gesture to its place: `@sets(value)` on an event writes what
-/// it says into the `state` member `value` (`@sets(open, false)` writes `false` for an event that
-/// says nothing), and `@over(value)` on a member makes it what the node shows where it is given.
-const sets_mark = "sets"
-const over_mark = "over"
-
-/// Whether some member of `t` reads `name` in its default (`self.name`): what the default makes,
-/// and so what an instance that keeps its own place starts from.
-fn read_by_default(t: Type, name: string) -> bool {
-    for f in t.fields {
-        let code? = f.default else { continue }
-        if reads_member(code.text(), name) { return true }
-    }
-    false
-}
-
-/// Whether the code `text` reads the member `name` of `self` — `self.name`, the name whole.
-fn reads_member(text: string, name: string) -> bool {
-    let read = "self.${name}"
-    let at = text.index_of(read)
-    if at < 0 { return false }
-    let after = at + read.length
-    if after >= text.length { return true }
-    let next = text.substring(after, after + 1)
-    !(next == "_" || is_word_char(next)) || reads_member(text.substring(after, text.length), name)
-}
-
-/// Whether one character can continue a name.
-fn is_word_char(c: string) -> bool { "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".contains(c) }
-
-/// Whether an event of `t` sets the place `name`.
-fn set_by_any(t: Type, name: string) -> bool { t.fields.any(sets_member(it) == name) }
-
-/// The member of `t` shown over the place `name`, where one is.
-fn shown_over(t: Type, name: string) -> Field? { t.fields.find(over_member(it) == name) }
-
-/// The kept place of `t` named `name`: a `state` member no parent writes.
-fn kept_named(t: Type, name: string) -> Field? { t.fields.find(it.name == name && it.state && !it.prop) }
-
-/// The place an event writes, as its `@sets` names it; none for a member that is no event.
-fn sets_member(f: Field) -> string? {
-    if f.says == null { return null }
-    marks_of(f, sets_mark).first()?.args?.first()
-}
-
-/// The place a member is shown over, as its `@over` names it.
-fn over_member(f: Field) -> string? { marks_of(f, over_mark).first()?.args?.first() }
-
-/// What a gesture writes into `place`: what it says, or the one flag its mark names for an
-/// event that says nothing — absent where that does not fit the place.
-fn written_by(says: List<Param>, place: Field, sets: Mark) -> Code? {
-    if says.is_empty() {
-        if sets.args.length != 2 { return null }
-        return constant_of(sets.args[1], held_kind(place))
-    }
-    if sets.args.length != 1 ||
-        says.length != 1 ||
-        says[0].kind.spelled() != held_kind(place).spelled() { return null }
-    quote { said }
-}
-
-/// The constant `word` names, as code of the place's kind `k`: a flag for a `bool` place, a whole
-/// number for an `int` one — absent where it fits neither.
-fn constant_of(word: string, k: Kind) -> Code? {
-    match k {
-        .Bool -> match word { "true" -> quote { true }, "false" -> quote { false }, _ -> null },
-        .Int -> {
-            let n? = parse_int(word) else { return null }
-            as_code(int_node(n))
-        },
-        rest -> null,
-    }
-}
-
-/// The fn a gesture runs: the place written first, then the caller's handler where one is given,
-/// told what was said — so a handler reads the place as the gesture left it.
-fn written_then_heard(f: Field, says: List<Param>, into: string, wrote: Code) -> Code? {
-    if says.is_empty() {
-        return quote {
-            () -> {
-                self.${into} = ${wrote}
-                let heard = self.${f.name}
-                if heard != null { heard!() }
-            }
-        }
-    }
-    match says[0].kind {
-        .Str -> quote {
-            (said: string) -> {
-                self.${into} = ${wrote}
-                let heard = self.${f.name}
-                if heard != null { heard!(said) }
-            }
-        },
-        .Bool -> quote {
-            (said: bool) -> {
-                self.${into} = ${wrote}
-                let heard = self.${f.name}
-                if heard != null { heard!(said) }
-            }
-        },
-        .Int -> quote {
-            (said: int) -> {
-                self.${into} = ${wrote}
-                let heard = self.${f.name}
-                if heard != null { heard!(said) }
-            }
-        },
-        .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
-    }
-}
-
-/// A member shown over a kept place: optional of the place's own type, no place itself, and
-/// saying nothing else — it projects only through the place's attribute.
-fn over_part(t: Type, f: Field, over: Mark) -> Part {
-    let into? = over.args.first() else { return refused(unnamed_mark(over, "@over(value)")) }
-    let place? = kept_named(t, into) else { return refused(over_no_place(f, over, into)) }
-    if f.state || f.kind.spelled() != Kind.Opt(held_kind(place)).spelled() { return refused(over_misfit(f, over, place)) }
-    let first? = shown_over(t, into) else { return refused(over_no_place(f, over, into)) }
-    if first.name != f.name { return refused(over_twice(f, over, first, into)) }
-    let other? = f.marks.find(it.name != over_mark) else { return Part {} }
-    refused(over_marked(f, other))
 }
 
 /// The `Handler` arm that hears what an event says: ONE arm per thing a
@@ -801,7 +524,7 @@ fn attrs_code(parts: List<Part>) -> Code {
 fn joined(runs: List<Code>) -> Code {
     if runs.is_empty() { return quote { [] } }
     if runs.length == 1 { return runs[0] }
-    quote { [${..runs}].flatten() }
+    quote { flatten([${..runs}]) }
 }
 
 /// The readings a primitive carries: what its spread `Sighted` holds, the
@@ -812,11 +535,8 @@ fn sites_code(t: Type) -> Code {
     quote { sighted(self.site, self.words, self.reads) }
 }
 
-/// What a primitive that says text spreads in, and the fields it places: what `Sighted` is in
-/// `tree/sites.av`, named here since reading the tree's own exports from its derive asks the
-/// derive of itself.
+/// What a primitive that says text spreads in.
 const sighted_name = "Sighted"
-const sighted_fields: List<string> = ["words", "reads"]
 
 /// The mark the compiler gives a composition's head prop it made a cell of.
 
@@ -865,7 +585,7 @@ fn unread(t: Type) -> Diagnostic {
         "defect",
         t.at,
         "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
-        "`Prim`, `Attribute`, `Box`, `Style`, `Stand` and `Sighted` are read by their modules' names — one moved",
+        "`Prim`, `Attribute`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
     )
 }
 
@@ -874,7 +594,7 @@ fn says_nothing(f: Field) -> Diagnostic {
         "unprojected",
         f.at,
         "a primitive says what each member projects to, and `${f.name}` says nothing",
-        "mark it `@attr(.Label)`, `@children` or `@style(color)`, declare it an event — `on ${f.name}` — or read it in a place's default — `state value: T = self.${f.name}`",
+        "mark it `@attr(.Label)`, `@children` or `@style(color)`, or declare it an event — `on ${f.name}`",
     )
 }
 
@@ -999,75 +719,8 @@ fn stateful_primitive(f: Field) -> Diagnostic {
     refuse_as_at(
         "stateful-primitive",
         f.at,
-        "a primitive keeps a place its own gesture moves, and no event of it sets `${f.name}`",
-        "mark the event that moves it — `@sets(${f.name}) on change(…)` — or keep the state in the composition that uses the primitive",
-    )
-}
-
-fn sets_no_place(f: Field, m: Mark, into: string) -> Diagnostic {
-    refuse_as_at(
-        "sets",
-        m.at,
-        "`${f.name}` sets `${into}`, and `${into}` is no `state` member of this primitive",
-        "name the primitive's own place — `state ${into}: T = …` beside it",
-    )
-}
-
-fn sets_misfit(f: Field, m: Mark, place: Field, says: List<Param>) -> Diagnostic {
-    if says.is_empty() && m.args.length == 2 {
-        return refuse_as_at(
-            "sets",
-            m.at,
-            "`${f.name}` sets `${place.name}` to `${m.args[1]}`, and `${place.name}` is `${held_kind(place).spelled()}`",
-            "set it to a value of its type — a `bool` place takes `true` or `false`, an `int` one a whole number",
-        )
-    }
-    let told = if says.is_empty() { "nothing" } else { ["`${s.ty}`" for s in says].join(", ") }
-    refuse_as_at(
-        "sets",
-        m.at,
-        "`${f.name}` says ${told}, and the place it sets, `${place.name}`, is `${held_kind(place).spelled()}`",
-        "an event sets a place of the type it says — or, saying nothing, a flag it names: `@sets(${place.name}, false)`",
-    )
-}
-
-fn over_no_place(f: Field, m: Mark, into: string) -> Diagnostic {
-    refuse_as_at(
-        "over",
-        m.at,
-        "`${f.name}` is marked `@${m.name}(${into})`, and `${into}` is no `state` member of this primitive",
-        "name the primitive's own place — `state ${into}: T = …` beside it",
-    )
-}
-
-fn over_misfit(f: Field, m: Mark, place: Field) -> Diagnostic {
-    let mark = state_mark(f)
-    refuse_as_at(
-        "over",
-        m.at,
-        "what is shown over `${place.name}` is told each paint and may be left out, and `${f.name}` is `${mark}${f.kind.spelled()}`",
-        "declare it `${f.name}: ${held_kind(place).spelled()}? = null`",
-    )
-}
-
-/// How a member's own `state` is spelled before its type, in a refusal's words.
-fn state_mark(f: Field) -> string { if f.state { "state " } else { "" } }
-
-fn over_twice(f: Field, m: Mark, first: Field, into: string) -> Diagnostic {
-    refuse_as_at(
-        "over",
-        m.at,
-        "`${into}` is shown under one member, and `${first.name}` is already shown over it",
-        "drop `@over(${into})` from `${f.name}` — a place shows one thing told over it",
-    )
-}
-
-fn over_marked(f: Field, m: Mark) -> Diagnostic {
-    refuse_as_at(
-        "over",
-        m.at,
-        "`${f.name}` is tied to its place and says nothing of its own, and is marked `@${m.name}` too",
-        "drop the mark — the place says what the node holds",
+        "a primitive draws what it is told, and `${f.name}` is a place it would keep",
+        "state is kept by the composition that uses the primitive — a component whose body is made of views",
     )
 }
 

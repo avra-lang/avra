@@ -5,32 +5,36 @@
 # runs every row on the program layer, the net off but where a row's claim is the net, empties the
 # stores a cold row reads, bounds every command, keeps each row's words under build/gate/<slice>/, and
 # ends with ONE line:
-#   GATE <slice> <sha8> PASS|FAIL|OVER rows=<n> failed=<n> <seconds>s
-# exiting 0 on PASS, 1 on FAIL or OVER. A SLICE HAS A WALL BUDGET (GATE_SLICE_SECS, 900 s), its
-# compiler build included: one past it is stopped, its rows say `row <slice> OVER`, its verdict OVER.
+#   GATE <slice> <sha8> PASS|FAIL rows=<n> failed=<n> <seconds>s
+# exiting 0 on PASS, 1 on FAIL.
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
-#   sh tools/gate.sh jobs               the runner jobs: each job, then the slices it runs, dealt by seconds
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
-#   sh tools/gate.sh seed               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler of generation 2,
-#                                       built here first where none of HEAD's stands, and every object a
-#                                       tree links with; `pack` is its other name. Run it once; every slice
-#                                       then starts from `unpack` and builds no compiler but a cost slice's
-#                                       census compiler.
+#   sh tools/gate.sh seed               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler — ONE generation, built
+#                                       here first where none of HEAD's stands — and every object a tree
+#                                       links with; `pack` is its other name. Run it once; every slice
+#                                       then starts from `unpack` and builds nothing.
 #   sh tools/gate.sh unpack <file>      seeds this tree from a pack, and holds its stamp to HEAD's: a
 #                                       seeded slice builds no compiler
-#   sh tools/gate.sh census             build/gate/census-<sha8>.tar.gz: the census compiler, built by the
-#                                       seed's compiler of generation 2, with its record. Run once after
-#                                       the seed; a cost slice that holds it builds no census compiler.
 #
 # A test row runs every suite (AVRA_SUITE_ALL=1), so it names every failing case, never only the first.
 #
+# GATE_OLD_PATH=0 drops every row that compares against the old path (they read AVRA_PROGRAM=0);
+# when the old path goes, its default goes to 0 and those rows go with one line each.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
+# THE NET IS OFF unless a row's claim is the net: the old path's check before every program-layer
+# compile doubles what each row costs and proves nothing a row here asks of it. The rows that keep it
+# (AVRA_PROGRAM_NET=1) are the ones that count what it says: the build slice's net-on cli builds and
+# their "program-layer false refusal" count, the findings slices' build of every package, held to that
+# same count, and the cli's suite, which holds the words a user meets through a child build/avra (at
+# slice_cli). `tapes --findings` passes no door, so the net never stood in it.
+export AVRA_PROGRAM_NET=0
 
+OLD_PATH=${GATE_OLD_PATH:-1}
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
 # every `test` row's failing NAMES are held to tools/gate/<package>.names, the cases a sandbox fails
@@ -40,63 +44,42 @@ DOORS_B="std-ui std-http"
 
 slices() {
     cat <<'EOF'
-build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm
+build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm, net on and off, 0 false refusals
 avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
 avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
+avrac-b    test packages/std-avrac — src/features/[a-e]*
+avrac-c    test packages/std-avrac — src/features/[f-m]*
 avrac-d    test packages/std-avrac — src/features/[n-r]*
+avrac-e    test packages/std-avrac — src/features/[s-z]*
 avrac-f    test packages/std-avrac — src/features' own files, and every dir of src/ but compiler and features
+cli        test packages/cli, its failing names held to tools/gate/cli.names
+program    test packages/std-program and std-relation; make runtime-tests, rt-header and rt-ns: every runtime row's C body and typed method
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
-cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
-cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
-cost-laid  make cost, COST_PART=laid: the cli's cold check over the std answers the census compiler makes of the snapshot's std, laid into an empty store
-cost-ledger-cold-a make cost, COST_PART=ledger-cold-a: the pass ledger of cold-a's run, made again uncounted beside it; each pass's asks and asks per unit within 0.05% of its row
-cost-ledger-cold-b make cost, COST_PART=ledger-cold-b: the same of cold-b's runs
-cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's cold check and every warm edit, made again uncounted beside cost-warm; asks per moved item
+cost       make cost: the census compiler, cold, over tools/cost.baseline's snapshot; every count within 0.05% of its row
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
-ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
-findings-a tapes --findings on std-avrac and cli, 0 refusals
+findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
 findings-d the last third
-warnings-a witness_program_warnings — the cli built cold and again with no change
-warnings-b witness_program_warnings — the cases under tools/program-warnings/, against their frozen warnings
+refusal-a  witness_program_refusal over a third of its cases, dealt in turn
+refusal-b  the next third
+refusal-c  the last third
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, chunk_owed_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack, case_leftover_attack, witness_program_fixes, root_listing_attack, two_compilers_attack, flow_trace_swap_attack; std_answers_attack; tools/queue-witness run native
+warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
+warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
-edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived", the frontier walk checked
-edit-b     witness_program_edit, WITNESS_ONLY=1, the frontier walk checked
-edit-c     witness_program_edit, WITNESS_ONLY=5, the frontier walk checked
-edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
-edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
-EOF
-    splits | while IFS='|' read -r family parts what; do
-        n=1
-        while [ "$n" -le "$parts" ]; do
-            printf '%-10s %s — part %d of %d\n' "$family-$n" "$what" "$n" "$parts"
-            n=$((n + 1))
-        done
-    done
-}
-
-# THE SPLITS: a slice too long for one runner is the parts of its own list, dealt in turn — its family,
-# how many parts, what the list holds. `list` names each part (the workflow's matrix is that list) and a
-# part runs its share; a row, a case or a path added joins its family's list, never one part's.
-splits() {
-    cat <<'EOF'
-avrac-b|3|test packages/std-avrac — src/features/[a-e]*, its dirs dealt in turn
-avrac-c|2|test packages/std-avrac — src/features/[f-m]*, its dirs dealt in turn
-avrac-e|2|test packages/std-avrac — src/features/[s-z]*, its dirs dealt in turn
-edit-f|2|witness_program_edit's whole-mode cases (modes-whole), each alone over its own cold product, the frontier walk checked
-edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone over its own cold product, the frontier walk checked
-cli|6|test packages/cli, its tests dealt in turn, failing names held to tools/gate/cli.names
-program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-ns and each runtime test (runtime/tests/*.c) — dealt in turn
-refusal|8|witness_program_refusal over its cases, dealt in turn
-needs|6|witness_program_needs over every package and refusal witness, dealt in turn
-witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
-cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
+edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived"
+edit-b     witness_program_edit, WITNESS_ONLY=1
+edit-c     witness_program_edit, WITNESS_ONLY=5
+edit-d     witness_program_edit, WITNESS_ONLY=10
+edit-e     witness_program_edit, WITNESS_ONLY=rename
+edit-f     witness_program_edit, WITNESS_ONLY=modes-whole
+edit-g     witness_program_edit, WITNESS_ONLY=modes-layered
 EOF
 }
 
@@ -145,90 +128,23 @@ unpacked() {
     exit 0
 }
 
-# THE RUNNER JOBS: the slices dealt into jobs by their measured seconds (tools/gate/slice.seconds; a slice
-# it does not name weighs 300), heaviest first, each into the first job it fits under the budget
-# (GATE_JOB_SECS, 420 s) — a slice past the budget is a job alone, and so is a cost slice, which holds
-# the one measuring directory and the census compiler. One a line: the job, then its slices;
-# a job of one slice is named by it, a job of several `jobs-<n>`. Each slice of a job still runs alone,
-# in a tree of its own (gate.yml lays the unpacked tree down afresh before each).
-jobs() {
-    budget=${GATE_JOB_SECS:-420}
-    slices | awk '{ print $1 }' | awk -v budget="$budget" '
-        NR == FNR { if ($0 !~ /^#/ && NF == 2) secs[$1] = $2; next }
-        { n++; name[n] = $1; w[n] = ($1 in secs) ? secs[$1] : 300 }
-        END {
-            # heaviest first; ties by name, so a tree deals one way
-            for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++)
-                if (w[j] > w[i] || (w[j] == w[i] && name[j] < name[i])) { t = w[i]; w[i] = w[j]; w[j] = t; t = name[i]; name[i] = name[j]; name[j] = t }
-            bins = 0
-            for (i = 1; i <= n; i++) {
-                placed = 0
-                alone = (w[i] >= budget || name[i] ~ /^cost-/)
-                if (!alone) for (b = 1; b <= bins; b++) if (open[b] && load[b] + w[i] <= budget) { load[b] += w[i]; held[b] = held[b] " " name[i]; count[b]++; placed = 1; break }
-                if (!placed) { bins++; load[bins] = w[i]; held[bins] = name[i]; count[bins] = 1; open[bins] = !alone }
-            }
-            k = 0
-            for (b = 1; b <= bins; b++) if (count[b] == 1) print held[b], held[b]; else print "jobs-" (++k), held[b]
-        }' "$root/tools/gate/slice.seconds" -
-}
-
 [ $# -ge 1 ] || { echo "gate: name a slice, or \`list\`" >&2; exit 2; }
 slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
-if [ "$slice" = jobs ]; then jobs; exit 0; fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
 [ "$slice" = seed ] && slice=pack
-[ "$slice" = pack ] || [ "$slice" = census ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
+[ "$slice" = pack ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
 
 sha8=$(git rev-parse --short=8 HEAD)
-# THE WALL BUDGET: the slice runs again inside it, under tools/bounded.sh; past it, the slice is named.
-# Every process the slice starts carries its budget's token in its environment, so a row's own bound
-# (another `timeout`, another process group) is stopped with it, not left running past the verdict.
-SLICE_SECS=${GATE_SLICE_SECS:-900}
-if [ -z "${GATE_IN_BUDGET:-}" ] && [ "$slice" != pack ]; then
-    started=$(date +%s)
-    token="$slice-$$"
-    GATE_IN_BUDGET=$token sh "$root/tools/bounded.sh" "$SLICE_SECS" sh "$root/tools/gate.sh" "$slice" "$@"
-    st=$?
-    case $st in
-        124 | 137)
-            for p in /proc/[0-9]*; do
-                tr '\0' '\n' < "$p/environ" 2> /dev/null | grep -qx "GATE_IN_BUDGET=$token" && kill -9 "${p#/proc/}" 2> /dev/null
-            done
-            mkdir -p "$root/build/gate/$slice"
-            echo "row $slice OVER ${SLICE_SECS}s" >> "$root/build/gate/$slice/rows"
-            echo "gate: $slice ran past its ${SLICE_SECS} s wall budget — stopped"
-            # what it finished, and the row it was in when stopped: the row an OVER is planned by
-            sed 's/^/gate: /' "$root/build/gate/$slice/rows"
-            [ ! -s "$root/build/gate/$slice/.running" ] || echo "gate: row $(cat "$root/build/gate/$slice/.running") was running"
-            echo "GATE $slice $sha8 OVER rows=$(grep -c '^row ' "$root/build/gate/$slice/rows") failed=1 $(( $(date +%s) - started ))s"
-            exit 1
-            ;;
-    esac
-    exit "$st"
-fi
 out="$root/build/gate/$slice"
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
-# A SLICE WRITES NO CORE: the rows crash children on purpose (a fault, an overflow, a trap), and a
-# process of this runtime reserves its address space up front (~128 GB), which a core then holds
-# whole; a runner's host reads each through its core handler for minutes, a verdict the wait status
-# already says
-ulimit -c 0
 export AVRA_CACHE_DIR="$out/machine"
 # a slice copies, counts and empties stores between builds, so each build saves its own before it
 # answers; the build slice's timing rows alone leave the save to an heir, as a user's build does
 export AVRA_STORE_KEPT_HERE=1
 mkdir -p "$AVRA_CACHE_DIR"
-# THE SEED'S GENERATION 1 READS THE BUILDER'S OWN STORES where the landing kept them (gate.yml lays them at
-# build/gate/builder-store): the cli's in place, the machine's into this run's
-if [ "$slice" = pack ] && [ -d build/gate/builder-store ]; then
-    laid=$(find build/gate/builder-store -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
-    for d in build/gate/builder-store/packages/cli/.avra-cache; do [ ! -d "$d" ] || { mkdir -p packages/cli/.avra-cache && cp -R "$d/." packages/cli/.avra-cache/; }; done
-    for d in build/gate/builder-store/build/gate/*/machine; do [ ! -d "$d" ] || cp -R "$d/." "$AVRA_CACHE_DIR/"; done
-    echo "fact builder-store laid ($laid part(s))" >>"$out/rows"
-fi
 began=$(date +%s)
 rows=0
 failed=0
@@ -239,7 +155,6 @@ row() {
     name=$1; shift
     rows=$((rows + 1))
     t0=$(date +%s)
-    echo "$name" >"$out/.running"
     if sh tools/bounded.sh "$ROW_SECS" "$@" >"$out/$name.log" 2>&1; then
         echo "row $name pass $(( $(date +%s) - t0 ))s" >>"$out/rows"
         return 0
@@ -253,17 +168,15 @@ row() {
 # a row that judges what an earlier row left: `$1` its name, `$2` the verdict (0 holds)
 judged() {
     rows=$((rows + 1))
-    # a suite's seconds, where `tested` timed it; the row's alone, never the next judged row's
-    secs=${took:+ $took}
-    took=
-    if [ "$2" = 0 ]; then echo "row $1 pass$secs" >>"$out/rows"; return 0; fi
+    if [ "$2" = 0 ]; then echo "row $1 pass" >>"$out/rows"; return 0; fi
     failed=$((failed + 1))
     failures="$failures $1"
-    echo "row $1 FAIL$secs" >>"$out/rows"
+    echo "row $1 FAIL" >>"$out/rows"
     return 1
 }
 
 # a row that compares against the old path: run only while the old path stands
+old_row() { [ "$OLD_PATH" = 1 ] || return 0; row "$@"; }
 
 # every store under the packages named emptied — a nested package's and a program test's too — so the
 # rows after read them cold
@@ -272,40 +185,36 @@ cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec fin
 # build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made in
 # ONE generation — from the committed seed's link where no compiler stands, else from the one that does
 # — with the package libraries beside it, built without building the compiler again. A gate's
-# two-generation fixed point is the build slice's.
+# compiler makes no claim of the net, so it is built without it; the two-generation fixed point is the
+# build slice's.
 compiler() {
     if compiler_stands; then return 0; fi
     if [ ! -x build/avra ]; then row compiler-recover make recover || return 1; fi
-    row compiler-gen1 env AVRA_STD_ANSWERS=0 make avra || return 1
-    row compiler-libs make -o avra libs
+    row compiler-gen1 env AVRA_PROGRAM_NET=0 make avra || return 1
+    row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
 }
 
-# what the cold build of packages/cli took, in seconds, and the warm one after it
+# what `$1`'s cold build of packages/cli took, in seconds, net on or off by `$2`
 cli_built() {
     cold cli
     find "$AVRA_CACHE_DIR" -mindepth 1 -delete
     c0=$(date +%s)
-    row cli-build-cold env -u AVRA_STORE_KEPT_HERE build/avra build packages/cli || return 1
+    row "cli-build-$1-cold" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
     c1=$(date +%s)
-    row cli-build-warm env -u AVRA_STORE_KEPT_HERE build/avra build packages/cli || return 1
-    echo "cli build: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
+    row "cli-build-$1-warm" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
+    echo "cli build net $1: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
     # the warm build's heir waited out, before a row after empties the store it saves
-    build/avra build packages/cli >/dev/null 2>&1 || :
+    env AVRA_PROGRAM_NET="$2" build/avra build packages/cli >/dev/null 2>&1 || :
 }
 
 slice_build() {
     row try make try
-    row avra-a env AVRA_STD_ANSWERS=0 make avra && cp build/avra "$out/avra-a"
-    # THE NEXT GATE'S GENERATION 1 STARTS WARM: this gate's compiler of generation 2 is what landing makes
-    # the next gate's builder, and the cli's stores it has just filled building the cli are the ones that
-    # builder reads first (a store answers only the compiler whose print it holds); the landing keeps them
-    # beside the builder as builder-store.tar.gz
-    { find packages/cli -name .avra-cache -type d -prune; echo "${AVRA_CACHE_DIR#"$root"/}"; } > "$out/stores"
-    row builder-store tar -czf build/gate/builder-store.tar.gz -T "$out/stores" &&
-        echo "fact builder-store $(du -k build/gate/builder-store.tar.gz | cut -f1) KB" >>"$out/rows"
+    row avra-a make avra && cp build/avra "$out/avra-a"
     cold cli
-    row avra-b env AVRA_STD_ANSWERS=0 make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
-    cli_built
+    row avra-b make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
+    cli_built on 1
+    cli_built off 0
+    judged cli-build-false-refusals "$(cat "$out"/cli-build-*.log | grep -c 'program-layer false refusal')"
 }
 
 # the std-avrac suite over `$@`, its paths under the package: one row for every path of std-avrac's
@@ -329,7 +238,10 @@ slice_avrac_a() {
     )
 }
 slice_avrac_g() { avrac $({ compiler_tests_half 1; echo packages/std-avrac/src/compiler/soundness; } | sort); }
+slice_avrac_b() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[a-e]*' | sort); }
+slice_avrac_c() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[f-m]*' | sort); }
 slice_avrac_d() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[n-r]*' | sort); }
+slice_avrac_e() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[s-z]*' | sort); }
 slice_avrac_f() {
     avrac $(
         {
@@ -352,11 +264,8 @@ dealt() { awk -v k="$1" -v n="$2" '(NR - 1) % n == k'; }
 tested() {
     name=$1; shift
     pkg=$(echo "$1" | cut -d/ -f2)
-    t0=$(date +%s)
-    echo "$name" >"$out/.running"
     sh tools/bounded.sh "$ROW_SECS" build/avra test "$@" >"$out/$name.log" 2>&1
     ran=$?
-    took="$(( $(date +%s) - t0 ))s"
     grep '^    ✗' "$out/$name.log" | sed 's/ @ .*//; s/^    ✗ //' | sort -u >"$out/$name.failed"
     listed "tools/gate/$pkg.names" >"$out/$name.known"
     comm -23 "$out/$name.failed" "$out/$name.known" >"$out/$name.unpinned"
@@ -373,46 +282,16 @@ tested() {
 # the lines the pin file `$1` lists, sorted, each once; none where there is no such file
 listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
-# THE CLI'S SUITE: the one suite that runs the compiler as a child; every other test row holds what it
-# runs in-process.
+# THE CLI'S SUITE RUNS WITH THE NET: its cases run build/avra as a user does and hold the words a user
+# meets, refusals among them, and where the program layer accepts a program the old path refuses, those
+# words are the net's — so the suite holds the shipped default, the net on. The one suite that runs the
+# compiler as a child; every other test row holds what it runs in-process.
 slice_cli() {
     cold cli
-    children_kept tested cli-suite "${@:-packages/cli}"
-    children_of_failed cli-suite
-    ci_captured
+    export AVRA_PROGRAM_NET=1
+    children_kept tested cli-suite packages/cli
     export AVRA_PROGRAM_NET=0
-}
-
-# WHAT A RED CLI SLICE STOOD ON, kept under $out/capture for its artifact: for each failed case whose
-# child checked an embedding package (embed_law_test), that package's own store and the machine's
-# (`$AVRA_CACHE_DIR`) as they were, this machine's cores, its AVRA_ environment and the compiler's
-# print; then that one check run again under the suite's own environment with the query and trap
-# traces on, its stderr held to 20 MB. A green slice keeps nothing.
-ci_captured() {
-    grep -q '^row cli-suite FAIL' "$out/rows" 2>/dev/null || return 0
-    cap="$out/capture"
-    mkdir -p "$cap"
-    { echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null)"; "$root/build/avra" --version 2>&1 | head -3; env | grep '^AVRA' | sort; } > "$cap/facts.txt"
-    n=0
-    for d in "$out"/children/*/; do
-        grep -q 'embed_law_test' "$d/case" 2>/dev/null || continue
-        for a in "$d"*.args; do
-            [ "$(head -1 "$a")" = check ] || continue
-            pkg=$(sed -n 2p "$a")
-            [ -d "$pkg" ] || continue
-            n=$((n + 1))
-            mkdir -p "$cap/$n"
-            cp "$d/case" "$a" "$cap/$n/"
-            [ -d "$pkg/.avra-cache" ] && cp -R "$pkg/.avra-cache" "$cap/$n/pkg-avra-cache"
-            [ -n "${AVRA_CACHE_DIR:-}" ] && [ -d "$AVRA_CACHE_DIR" ] && cp -R "$AVRA_CACHE_DIR" "$cap/$n/machine-cache"
-            AVRA_QTRACE=1 AVRA_TRAP_TRACE=1 "$root/build/avra" check "$pkg" > "$cap/$n/rerun.out" 2> "$cap/$n/rerun.err.full"
-            echo "exit $?" >> "$cap/$n/rerun.out"
-            head -c 20971520 "$cap/$n/rerun.err.full" > "$cap/$n/rerun.err"
-            find "$cap/$n/rerun.err.full" -delete
-            break
-        done
-    done
-    echo "captured: $n embed check(s)" >> "$cap/facts.txt"
+    children_of_failed cli-suite
 }
 
 # A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: `$@` with every child
@@ -433,17 +312,15 @@ children_of_failed() {
     done
 }
 
-# THE ROWS' CLAIMS among them, generated from rt_sigs(): the C header and the typed methods. A row added
-# without its regeneration is refused here, never left for the next lane to find.
-program_rows() {
-    cat <<'EOF'
-tested std-program packages/std-program
-tested std-relation packages/std-relation
-row rt-header make rt-header
-row rt-ns make rt-ns
-EOF
-    # every runtime test a row of its own, so a part holds a share of them and a slow one is named
-    for t in runtime/tests/*.c; do t=${t##*/}; echo "row runtime-${t%.c} make -s runtime-test-${t%.c}"; done
+slice_program() {
+    cold std-program std-relation
+    tested std-program packages/std-program
+    tested std-relation packages/std-relation
+    row runtime-tests make runtime-tests
+    # THE ROWS' CLAIMS, generated from rt_sigs(): the C header and the typed methods. A row added without
+    # its regeneration is refused here, never left for the next lane to find.
+    row rt-header make rt-header
+    row rt-ns make rt-ns
 }
 
 # each package the diff from the base sha `$1` touches, whose name the pattern `$3` matches (`$2` keep)
@@ -473,37 +350,8 @@ slice_sound() {
     judged sound-check-defects "$(grep -c 'language.defect' "$out/sound-check-run.log")"
 }
 
-# a cost part `$1` (with its edits' share `$2`), counted by the census compiler this slice builds from
-# the seed's compiler of generation 2 (tools/cost.sh refuses one less), or the one it already holds
-slice_cost() {
-    census_stands || census_made || return 1
-    row "cost-$1" env COST_PART="$1" COST_EDITS="${2:-}" COST_COMPILER=build/avra.census make -s -o avra cost
-    st=$?
-    # each workload's seconds and the std answers', as cost.sh says them: what a cost split is dealt by
-    grep -E '^cost: [^ ]+ [0-9]+ s$|^cost: the snapshot.s std answers [0-9]+ s$' "$out/cost-$1.log" | sed 's/^cost: /fact cost /' >>"$out/rows"
-    return $st
-}
-
-# build/avra of generation 2, this tree's compiler built by this tree's compiler — as it stands where it
-# is already: a seed unpacked from the release of a tree of the same compiler source takes it as it is
-gen2_made() {
-    read -r _h _a gen _ < build/.avra-built-from 2> /dev/null || gen=1
-    [ "${gen:-1}" -ge 2 ] || row compiler-gen2 env AVRA_PROGRAM_NET=0 AVRA_STD_ANSWERS=0 make avra
-}
-# the census compiler, built by this tree's compiler of generation 2
-census_made() {
-    gen2_made || return 1
-    census_stands || row census-compiler env CENSUS_BUILDER=build/avra sh tools/census_compiler.sh build/avra.census
-}
-
-# whether build/avra.census is this tree's: built by a compiler of this compiler source, of generation
-# 2, by this tools/census_compiler.sh
-census_stands() {
-    [ -x build/avra.census ] || return 1
-    read -r c_hash _c_at c_gen c_script < build/.avra.census-built-from 2> /dev/null || return 1
-    [ "$c_hash" = "$(sh tools/work built-from . | cut -d' ' -f1)" ] && [ "${c_gen:-1}" -ge 2 ] &&
-        [ "$c_script" = "$(sha256sum tools/census_compiler.sh | cut -d' ' -f1)" ]
-}
+# the census compiler builds from build/avra, the compiler this slice stands on
+slice_cost() { row cost env CENSUS_BUILDER=build/avra make -s -o avra cost; }
 
 doors() { for p in "$@"; do cold "$p"; tested "test-$p" "packages/$p"; done; }
 slice_doors_a() { doors $DOORS_A; }
@@ -513,24 +361,16 @@ slice_doors_b() {
     row ui-host make -s -o avra ui-host
 }
 
-# THE UI BOARD WHERE A BROWSER RUNS: its wasm claims over the real page glue, then its claims in
-# headless Firefox, which no machine but a runner holds for every lane. First, what the run stood on,
-# in its own row's log: node, the browser, the wasm linker and the libc it links (a libc without
-# setjmp cannot link the board). A board that SKIPPED ran no claim, and is no pass.
-slice_ui_browser() {
-    row ui-machine sh -c 'node --version && firefox --version && wasm-ld-22 --version 2>/dev/null | head -1; for d in /usr/lib/wasm32-wasi /usr/lib/wasm32-wasip1 "${WASI_SYSROOT:-/nonexistent}/lib/wasm32-wasip1"; do [ ! -d "$d" ] || echo "libc $d: setjmp $(ls "$d"/libsetjmp.a 2>/dev/null || echo absent)"; done'
-    row ui-board sh tools/ui_board.sh
-    judged ui-board-ran "$(grep -c 'SKIPPED' "$out/ui-board.log")"
-    row ui-browser env CI=true sh tools/ui_board_browser.sh
-    row board-dev env CI=true sh tools/witness_board_dev.sh build/avra
-}
-
-# each package named: tapes --findings with no refusal
+# each package named: tapes --findings with no refusal; built — a library stops at "declares no entry
+# point", which is no refusal — with no program-layer false refusal; the cli's builds are the build slice's
 findings_on() {
     for p in "$@"; do
         cold "$p"
         row "findings-$p" build/avra tapes "$root/packages/$p" --findings
         judged "refusals-$p" "$(grep -c '^error\[' "$out/findings-$p.log")"
+        [ "$p" != cli ] || continue
+        sh tools/bounded.sh "$ROW_SECS" env AVRA_PROGRAM_NET=1 build/avra build "packages/$p" >"$out/build-$p.log" 2>&1
+        judged "false-refusals-$p" "$(grep -c 'program-layer false refusal' "$out/build-$p.log")"
     done
 }
 HEAVY_FINDINGS="std-avrac cli"
@@ -540,192 +380,89 @@ findings_third() {
     findings_on $(for d in packages/*/src; do basename "$(dirname "$d")"; done | grep -vxE "$(echo $HEAVY_FINDINGS | tr ' ' '|')" | dealt "$1" 3)
 }
 
-
-witness_b_rows() {
-    cat <<'EOF'
-row runs-witness sh tools/witness_program_runs.sh build/avra
-row page-closure-witness sh tools/witness_page_closure.sh build/avra
-row board-native-witness sh tools/witness_board_native.sh build/avra
-row store-broken-edit-witness sh tools/witness_store_broken_edit.sh build/avra
-row waits-witness sh tools/witness_program_waits.sh build/avra
-row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
-row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
-row beside-attack env BESIDE_ATTACK_AVRA="$root/build/avra" sh tools/beside_attack.sh
-row wave-share-attack env WAVE_ATTACK_AVRA="$root/build/avra" sh tools/wave_share_attack.sh
-row flow-trace make -s -o avra flow-trace
-row compiler-key sh tools/witness_compiler_key.sh build/avra
-row docs-cache-attack sh tools/docs_cache_attack.sh
-row obj-gone-attack sh tools/obj_gone_attack.sh
-row chunk-owed-attack sh tools/chunk_owed_attack.sh
-row frame-place-attack sh tools/frame_place_attack.sh
-row wrapper-marks-attack sh tools/wrapper_marks_attack.sh
-row moved-tree-attack sh tools/moved_tree_attack.sh
-row layer-sites-attack sh tools/layer_sites_attack.sh
-row closure-gather-attack sh tools/closure_gather_attack.sh
-row store-bound-attack sh tools/store_bound_attack.sh
-row path-leak-attack sh tools/path_leak_attack.sh
-row case-leftover-attack sh tools/case_leftover_attack.sh
-row fixes-witness sh tools/witness_program_fixes.sh build/avra
-row root-listing-attack sh tools/root_listing_attack.sh
-row two-compilers-attack sh tools/two_compilers_attack.sh
-row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
-row queue-witness build/avra run tools/queue-witness
-row std-answers-attack sh tools/std_answers_attack.sh build/avra
-row std-answers-checkout-witness sh tools/std_answers_checkout_witness.sh build/avra
-row carried-store-attack env CARRIED_ATTACK_AVRA="$root/build/avra" sh tools/carried_store_attack.sh
-row derive-members-witness sh tools/derive_members_witness.sh build/avra
-row ledger-witness sh tools/witness_program_ledger.sh build/avra
-row suites-witness sh tools/witness_program_suites.sh build/avra
-row differential-witness sh tools/witness_program_differential.sh build/avra
-EOF
-    # the doors witness a row for each of its cases, so a part holds a share of the doors
-    sh tools/witness_program_doors.sh --cases | while read -r c; do echo "row doors-witness-$c sh tools/witness_program_doors.sh build/avra $c"; done
+# the refusal witness over a third of its cases — each a package (tools/lib/cases.sh) — the `$1`-th (from 0)
+refusal_third() {
+    old_row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$1" 3)
 }
 
-# THE PART `$2` OF `$3` OF A LIST OF ROWS `$1` NAMES, each line a row as the script would write it: read
-# from a file, in this shell, so every row is counted, and handed no input of the list's
-rows_dealt() {
-    "$1" | dealt "$(($2 - 1))" "$3" > "$out/dealt"
-    while IFS= read -r line; do eval "$line" < /dev/null; done < "$out/dealt"
-}
-
-# std-avrac's feature dirs whose names match `$1`, sorted
-features() { find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name "$1" | sort; }
-
-# the part `$2` of `$3` of the split family `$1`; a family `splits` doesn't name, or a part past its
-# count, fails rather than passing on no rows
-part_of() {
-    case $2 in '' | *[!0-9]*) judged "part-$slice" 1; return ;; esac
-    [ -n "$3" ] && [ "$2" -ge 1 ] && [ "$2" -le "$3" ] || { judged "part-$slice" 1; return; }
-    case $1 in
-        avrac-b) avrac $(features '[a-e]*' | dealt "$(($2 - 1))" "$3") ;;
-        avrac-c) avrac $(features '[f-m]*' | dealt "$(($2 - 1))" "$3") ;;
-        avrac-e) avrac $(features '[s-z]*' | dealt "$(($2 - 1))" "$3") ;;
-        edit-f) edit_part "modes-whole-$2" ;;
-        edit-g) edit_part "modes-layered-$2" ;;
-        cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt "$(($2 - 1))" "$3") ;;
-        program)
-            cold std-program std-relation
-            rows_dealt program_rows "$2" "$3"
-            ;;
-        refusal) row refusal-witness sh tools/witness_program_refusal.sh build/avra $(sh tools/witness_program_refusal.sh --cases | dealt "$(($2 - 1))" "$3") ;;
-        needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
-        witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
-        cost-warm) slice_cost warm "$2/$3" ;;
-    esac
+slice_witness_b() {
+    row runs-witness sh tools/witness_program_runs.sh build/avra
+    row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
+    row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
+    row beside-attack env BESIDE_ATTACK_AVRA="$root/build/avra" sh tools/beside_attack.sh
+    row wave-share-attack env WAVE_ATTACK_AVRA="$root/build/avra" sh tools/wave_share_attack.sh
+    row flow-trace make -s -o avra flow-trace
+    row compiler-key sh tools/witness_compiler_key.sh build/avra
+    row docs-cache-attack sh tools/docs_cache_attack.sh
+    row obj-gone-attack sh tools/obj_gone_attack.sh
+    row chunk-owed-attack sh tools/chunk_owed_attack.sh
+    row moved-tree-attack sh tools/moved_tree_attack.sh
+    row layer-sites-attack sh tools/layer_sites_attack.sh
+    row closure-gather-attack sh tools/closure_gather_attack.sh
+    row store-bound-attack sh tools/store_bound_attack.sh
+    row path-leak-attack sh tools/path_leak_attack.sh
+    row case-leftover-attack sh tools/case_leftover_attack.sh
+    old_row fixes-witness sh tools/witness_program_fixes.sh build/avra
+    row root-listing-attack sh tools/root_listing_attack.sh
+    row two-compilers-attack sh tools/two_compilers_attack.sh
+    row flow-trace-swap-attack sh tools/flow_trace_swap_attack.sh
+    row queue-witness build/avra run tools/queue-witness
+    row std-answers-attack sh tools/std_answers_attack.sh build/avra
+    old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
+    old_row suites-witness sh tools/witness_program_suites.sh build/avra
+    old_row doors-witness sh tools/witness_program_doors.sh build/avra
+    old_row differential-witness sh tools/witness_program_differential.sh build/avra
 }
 
 # the warnings witness's part `$1`
-warnings_part() { row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
+warnings_part() { old_row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
 
 # the edit witness's edits `$1`
-# THE WALK IS CHECKED WHERE IT IS WRITTEN: every warm build an edit witness makes checks a frontier
-# write's walk from where reads were cut against the whole walk from the roots, and says a mismatch in
-# the row's trips file — a save that traps after its process answered fails no build, so the trips
-# are judged apart: none holds.
-edit_part() {
-    trips="$out/walk-check.trips"
-    : >"$trips"
-    row edit-witness env WITNESS_ONLY="$1" AVRA_FRONTIER_WALK_CHECK="$trips" sh tools/witness_program_edit.sh build/avra
-    judged edit-walk-check "$([ -s "$trips" ] && echo 1 || echo 0)"
-}
-
-# where two binaries differ: `<bytes differing> first=<offset> in <section>`, the sections by readelf
-differs_at() {
-    n=$(cmp -l "$1" "$2" 2>/dev/null | wc -l | tr -d ' ')
-    first=$(cmp "$1" "$2" 2>/dev/null | awk '{ sub(/,$/, "", $5); print $5 - 1 }')
-    sect=$(readelf -S -W "$2" 2>/dev/null | python3 -c '
-import re, sys
-at = int(sys.argv[1])
-for line in sys.stdin:
-    m = re.match(r"\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", line)
-    if m and int(m.group(2), 16) <= at < int(m.group(2), 16) + int(m.group(3), 16):
-        print(m.group(1)); break' "${first:-0}")
-    echo "$n first=${first:-?} in ${sect:-?}"
-}
-
-# WHAT THIS MACHINE IS, the first line of the slice's rows: its cores as a process may use them and as
-# the machine has them, its cgroup's cpu and memory bounds, its load, the memory pool's slot files,
-# and what one process costs to start — a plain one, and the compiler asked its version, a program
-# of this runtime. A slice slower than its rows' own work says why here first.
-facts() {
-    t0=$(date +%s%N)
-    for _ in 1 2 3 4 5 6 7 8 9 10; do /bin/true; done
-    t1=$(date +%s%N)
-    for _ in 1 2 3 4 5 6 7 8 9 10; do build/avra --version >/dev/null 2>&1; done
-    t2=$(date +%s%N)
-    echo "facts cpu=$(awk -F': ' '/^model name/ { gsub(/ +/, "_", $2); print $2; exit }' /proc/cpuinfo 2>/dev/null) cores=$(nproc) of $(nproc --all) cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo -)" \
-        "memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo -) load=$(cut -d' ' -f1-3 /proc/loadavg)" \
-        "pool-slots=$(find "/tmp/avra-$(id -u)/avra-pool" -name 'slot-*' 2>/dev/null | wc -l)" \
-        "start=$(( (t1 - t0) / 10000000 ))ms avra-version=$(( (t2 - t1) / 10000000 ))ms" >>"$out/rows"
-}
-[ ! -x build/avra ] || facts
+edit_part() { row edit-witness env WITNESS_ONLY="$1" sh tools/witness_program_edit.sh build/avra; }
 
 if compiler; then
     case $slice in
         pack)
-            # THE SEED ENDS AT GENERATION 2: every slice runs this tree's own compiler of its fixed point.
-            # The census compiler is the cost slices' alone, built in each of them beside the others,
-            # never before every slice starts and never in the pack every slice unpacks
-            # WHETHER GENERATION 2 IS GENERATION 1'S BYTES, said beside the rows: where it is, a slice run on
-            # generation 1 judged the very binary generation 2 is
-            read -r _h _a seed_gen _ < build/.avra-built-from 2> /dev/null || seed_gen=1
-            [ "${seed_gen:-1}" -ge 2 ] || cp build/avra "$out/avra-gen1"
-            gen2_made || { echo "GATE $slice $sha8 FAIL rows=$rows failed=$failed $(( $(date +%s) - began ))s"; exit 1; }
-            if [ -f "$out/avra-gen1" ]; then
-                if cmp -s build/avra "$out/avra-gen1"; then same=yes; else same=no; fi
-                echo "fact gen2-is-gen1 $same $(wc -c < "$out/avra-gen1" | tr -d ' ') $(wc -c < build/avra | tr -d ' ')" >>"$out/rows"
-                # WHERE THEY DIFFER: how many bytes, the first, and the ELF section it falls in — a stamp or one
-                # constant reads otherwise than a lowering that moved
-                [ "$same" = yes ] || echo "fact gen2-differs $(differs_at "$out/avra-gen1" build/avra)" >>"$out/rows"
-                find "$out/avra-gen1" -delete
-            else
-                echo "fact gen2-is-gen1 - (the seed stood at generation 2)" >>"$out/rows"
-            fi
-            # the package libraries as this tree's sources make them: nothing rebuilt where none moved
-            row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
             tarball="build/gate/compiler-$sha8.tar.gz"
             packed >"$out/files"
             row pack tar -czf "$tarball" -T "$out/files" && echo "pack: $tarball, $(wc -l <"$out/files" | tr -d ' ') files, $(du -k "$tarball" | cut -f1) KB" >>"$out/rows"
             ;;
-        census)
-            # THE CENSUS COMPILER IS ONE BUILD A GATE: every cost slice counts with the same binary, so
-            # it is made here once and each cost slice unpacks it, held by census_stands as a built one is
-            census_made || { echo "GATE $slice $sha8 FAIL rows=$rows failed=$failed $(( $(date +%s) - began ))s"; exit 1; }
-            row census-pack tar -czf "build/gate/census-$sha8.tar.gz" build/avra.census build/.avra.census-built-from
-            ;;
         build) slice_build ;;
         avrac-a) slice_avrac_a ;;
+        avrac-b) slice_avrac_b ;;
+        avrac-c) slice_avrac_c ;;
         avrac-g) slice_avrac_g ;;
         avrac-d) slice_avrac_d ;;
+        avrac-e) slice_avrac_e ;;
         avrac-f) slice_avrac_f ;;
+        cli) slice_cli ;;
+        program) slice_program ;;
         idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
         idioms-cli) idioms_on "${1:-}" keep cli ;;
         idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
         fmt) fmt_on "${1:-}" ;;
         sound) slice_sound ;;
+        cost) slice_cost ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
-        ui-browser) slice_ui_browser ;;
         findings-a) slice_findings_a ;;
         findings-b) findings_third 0 ;;
         findings-c) findings_third 1 ;;
         findings-d) findings_third 2 ;;
+        refusal-a) refusal_third 0 ;;
+        refusal-b) refusal_third 1 ;;
+        refusal-c) refusal_third 2 ;;
+        witness-b) slice_witness_b ;;
         warnings-a) warnings_part cold ;;
-        warnings-b) warnings_part cases ;;
+        warnings-b) warnings_part "check cases" ;;
         warnings-c) warnings_part edit ;;
         edit-a) edit_part "embed infer composed gathered check lawed derived" ;;
         edit-b) edit_part 1 ;;
         edit-c) edit_part 5 ;;
         edit-d) edit_part 10 ;;
         edit-e) edit_part rename ;;
-        cost-cold-a) slice_cost cold-a ;;
-        cost-cold-b) slice_cost cold-b ;;
-        cost-laid) slice_cost laid ;;
-        cost-ledger-cold-a) slice_cost ledger-cold-a ;;
-        cost-ledger-cold-b) slice_cost ledger-cold-b ;;
-        cost-ledger-warm) slice_cost ledger-warm ;;
-        *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
+        edit-f) edit_part modes-whole ;;
+        edit-g) edit_part modes-layered ;;
     esac
 fi
 
@@ -733,7 +470,5 @@ find "$AVRA_CACHE_DIR" -delete
 verdict=PASS
 [ "$failed" = 0 ] || verdict=FAIL
 [ -z "$failures" ] || echo "gate: failed:$failures — their words under build/gate/$slice/"
-# every row and its seconds, in the job's own log: what a split is planned by
-sed 's/^/gate: /' "$out/rows"
 echo "GATE $slice $sha8 $verdict rows=$rows failed=$failed $(( $(date +%s) - began ))s"
 [ "$verdict" = PASS ]

@@ -3,8 +3,8 @@
 //! doesn't hold — or, for the module's own test, holds privately in two files. Read off the item's
 //! `use` lines and the surfaces of the modules they name, in the old reader's order: the path first,
 //! then each item.
-use core.{ModulePath, Span, distinct, flatten, module_path, some_list}
-use compiler.laws.{Found, Unread, law, no_findings}
+use core.{ModulePath, Span, distinct, flatten, module_path}
+use compiler.laws.{Found, Unread, law}
 use diagnostics.{Voice}
 use features.{import_clashed}
 use compiler.{
@@ -52,21 +52,21 @@ type UseFaultAt = { at: Span?, path: List<string>, fault: UseFault, unread: Unre
 
 /// Every fault of the `use` lines the written item `at` of `file` writes, line by line, each read
 /// after every `use` line the file writes before it.
-fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<UseFaultAt> {
+fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<UseFaultAt> {
     if !item_held(engine, file, at) { return [] }
-    use_faults_viewed(item_view(engine, file, at))
-}
-
-/// `use_faults` through the view its law's judging holds, looking no item up again.
-fn use_faults_viewed(view: ItemView) -> List<UseFaultAt> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
-    let item = view.item
+    let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let lines = uses_written(item)
     if lines.is_empty() { return [] }
-    let before = [UseWritten { at: null, path: l.path, items: l.items, bound: l.bound, exported: l.exported } for l in front_before(engine, file, at).uses]
+    let before = flatten(
+        [[UseWritten {
+            at: if l.placed { Span { lo: l.lo, hi: l.hi } } else { null },
+            path: l.path,
+            items: l.items,
+            bound: l.bound,
+            exported: l.exported,
+        } for l in item_front(engine, file, k).uses] for k in 0..at],
+    )
     flatten([line_faults(engine, file, l, before.concat(lines.take(j))) for j, l in lines])
 }
 
@@ -217,7 +217,7 @@ export fn unread_in_module(
 ) -> Unread? {
     if module.package != file.package_name { return null }
     for f in module_files(engine, module.package, module.local, module.as_root) {
-        for i in item_ids(engine, f) {
+        for i in 0..item_count(engine, f) {
             let r? = read_item(engine, f, i).store.refusals().first() else { continue }
             let found = refused_found(r)
             let at = if found.at == null { null } else { span_of(file_placed(engine, f, i, kept_at(found.at)!)) }
@@ -285,49 +285,46 @@ fn exported_names(engine: QueryEngine, module: ModuleAt) -> List<string> {
 fn faults_said(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     words: fn(UseFault) -> List<string>,
 ) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    faults_said_viewed(item_view(engine, file, at), words)
+    [Found { at: f.at, args: [f.path.join(".")].concat(w), unread: f.unread } for f in use_faults(engine, file, at) for w in [words(f.fault)] if !w.is_empty()]
 }
 
-/// `faults_said` through the view its law's judging holds, looking no item up again.
-fn faults_said_viewed(view: ItemView, words: fn(UseFault) -> List<string>) -> List<Found> {
-    let at = view.at
-    [Found { at: f.at, args: [f.path.join(".")].concat(w), unread: f.unread } for f in use_faults_viewed(view) for w in [words(f.fault)] if !w.is_empty()]
+fn unpackaged_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(engine, file, at, (f: UseFault) -> match f { .Unpackaged -> ["-"], rest -> [] })
 }
 
-fn unpackaged_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(view, (f: UseFault) -> match f { .Unpackaged -> ["-"], rest -> [] })
+fn packageless_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(engine, file, at, (f: UseFault) -> match f { .Packageless -> ["-"], rest -> [] })
 }
 
-fn packageless_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(view, (f: UseFault) -> match f { .Packageless -> ["-"], rest -> [] })
-}
-
-fn undeclared_uses(view: ItemView) -> List<Found> {
-    [found with { local: [2] } for found in faults_said_viewed(
-        view,
+fn undeclared_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [found with { local: [2] } for found in faults_said(
+        engine,
+        file,
+        at,
         (f: UseFault) -> match f { .Undeclared(key, manifest) -> [key, manifest], rest -> [] },
     )]
 }
 
-fn twofold_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(view, (f: UseFault) -> match f { .Twofold -> ["-"], rest -> [] })
+fn twofold_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(engine, file, at, (f: UseFault) -> match f { .Twofold -> ["-"], rest -> [] })
 }
 
-fn moduleless_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(view, (f: UseFault) -> match f { .Moduleless -> ["-"], rest -> [] })
+fn moduleless_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(engine, file, at, (f: UseFault) -> match f { .Moduleless -> ["-"], rest -> [] })
 }
 
-fn listed_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(view, (f: UseFault) -> match f { .Listed(item) -> [item], rest -> [] })
+fn listed_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(engine, file, at, (f: UseFault) -> match f { .Listed(item) -> [item], rest -> [] })
 }
 
-fn unexported_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(
-        view,
+fn unexported_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(
+        engine,
+        file,
+        at,
         (f: UseFault) -> match f {
             .Unexported(item, exports, own_test) -> [item, if own_test { "test" } else { "" }].concat(exports),
             rest -> [],
@@ -335,16 +332,20 @@ fn unexported_uses(view: ItemView) -> List<Found> {
     )
 }
 
-fn clashing_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(
-        view,
+fn clashing_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(
+        engine,
+        file,
+        at,
         (f: UseFault) -> match f { .Clash(item, holder) -> [item, holder], rest -> [] },
     )
 }
 
-fn apart_uses(view: ItemView) -> List<Found> {
-    faults_said_viewed(
-        view,
+fn apart_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(
+        engine,
+        file,
+        at,
         (f: UseFault) -> match f { .Apart(item, files) -> [item].concat(files), rest -> [] },
     )
 }
@@ -352,7 +353,7 @@ fn apart_uses(view: ItemView) -> List<Found> {
 /// a `use` stands in a file a package roots
 export law use_stands_in_a_package {
     kind: "resolve.unpackaged"
-    reads_view: unpackaged_uses
+    reads: unpackaged_uses
     voice: unpackaged_words
     witness: "use util.{twice}\n1\n"
 }
@@ -362,7 +363,7 @@ fn unpackaged_words(_a: List<string>) -> Voice { use_unpackaged() }
 /// a `use` names a package as `@scope.name`
 export law use_names_a_package {
     kind: "resolve.package_form"
-    reads_view: packageless_uses
+    reads: packageless_uses
     voice: packageless_words
     witness: "use @solo.{z}\n1\n"
 }
@@ -370,7 +371,7 @@ export law use_names_a_package {
 /// a `use` names a package its own package declares
 export law use_names_a_dependency {
     kind: "resolve.not_a_dependency"
-    reads_view: undeclared_uses
+    reads: undeclared_uses
     voice: undeclared_words
     witness: "use @x.y.{z}\n1\n"
 }
@@ -381,7 +382,7 @@ const EXPORTS_F: string = "export fn f() -> int { 1 }\n"
 /// a module is a directory or a file, not both
 export law use_names_one_module {
     kind: "resolve.module_ambiguous"
-    reads_view: twofold_uses
+    reads: twofold_uses
     voice: twofold_words
     witness: "use util.{f}\n1\n"
     witness_files: {"src/util.av": EXPORTS_F, "src/util/mod.av": "export fn g() -> int { 1 }\n"}
@@ -390,7 +391,7 @@ export law use_names_one_module {
 /// a `use` names a module the source root holds
 export law use_names_a_module {
     kind: "resolve.no_module"
-    reads_view: moduleless_uses
+    reads: moduleless_uses
     voice: moduleless_words
     witness: "use nope.{x}\n1\n"
 }
@@ -398,7 +399,7 @@ export law use_names_a_module {
 /// a `use` lists each name once
 export law use_lists_once {
     kind: "resolve.import_clash"
-    reads_view: listed_uses
+    reads: listed_uses
     voice: listed_words
     witness: "use util.{f, f}\nf()\n"
     witness_files: {"src/util.av": EXPORTS_F}
@@ -407,7 +408,7 @@ export law use_lists_once {
 /// a `use` binds a name no `use` before it bound to another declaration
 export law use_binds_a_name_once {
     kind: "resolve.import_clash"
-    reads_view: clashing_uses
+    reads: clashing_uses
     voice: clashing_words
     witness: "use util.{f}\nuse other.{f}\nf()\n"
     witness_files: {"src/util.av": EXPORTS_F, "src/other.av": EXPORTS_F}
@@ -415,47 +416,10 @@ export law use_binds_a_name_once {
 
 fn clashing_words(a: List<string>) -> Voice { import_clashed(a[1], "`${a[2]}`") }
 
-/// Every name a `use` line of the written item `at` of `file` imports that the file's own module
-/// already holds — the file's own declaration, or an export of its module; for an `export use`,
-/// which claims the name for the module, a sibling's private one too — beside the file that holds
-/// it. A name the module refuses as declared twice is that refusal's, and a re-export of a name
-/// already on the module's surface the surface law's.
-fn held_uses(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let item = view.item
-    if !item.stmts.any((s) -> item.store.use_parts(s) != null) || !item.store.refusals().is_empty() { return no_findings() }
-    let lines = uses_written(item)
-    let scope? = file_scope(engine, file) else { return [] }
-    if !scope.clashes.any(it.imported) { return [] }
-    let home = module_files(engine, file.package_name, module_segments(file), true)
-    let taken = [c for c in scope.clashes if c.imported && home.any(same_file(it, c.holder.file))]
-    if taken.is_empty() { return [] }
-    let twice = [c for c in module_kept(engine, file.package_name, module_segments(file), true).clashes if home.any(same_file(it, c.lost.file))]
-    [Found { at: l.at, args: [l.path.join("."), name, below_root(c!.holder.file.path_in_package)] } for l in lines for m in some_list(module_named(file, l.path)) for j, listed in l.items for name in [l.bound[j]] if !twice.any(it.lost.name == name) for c in [taken_by(engine, taken, m, listed, name)] if c != null && !(l.exported && c!.holder.exported)]
-}
-
-/// The clash among `taken` the import of `item` from the module `m`, bound as `name`, makes.
-fn taken_by(engine: QueryEngine, taken: List<NameClash>, m: ModuleAt, item: string, name: string) -> NameClash? {
-    let ds = module_declarations_of(engine, m, item)
-    taken.find((c) -> c.holder.name == name && ds.any((d) -> c.lost.is(d)))
-}
-
-/// a `use` binds no name its own module already holds
-export law use_meets_its_module {
-    kind: "resolve.import_clash"
-    reads_view: held_uses
-    voice: held_words
-    witness: "use util.{twice}\nfn twice(n: int) -> int { n }\ntwice(1)\n"
-    witness_files: {"src/util/m.av": "export fn twice(n: int) -> int { n + n }\n"}
-}
-
-fn held_words(a: List<string>) -> Voice { import_clashed(a[1], "this module (`${a[2]}`)") }
-
 /// a `use` names what its module exports
 export law use_names_an_export {
     kind: "resolve.not_exported"
-    reads_view: unexported_uses
+    reads: unexported_uses
     voice: unexported_words
     witness: "use util.{hidden}\n1\n"
     witness_files: {"src/util.av": "fn hidden() -> int { 1 }\n"}
@@ -464,7 +428,7 @@ export law use_names_an_export {
 /// a test reads a private name its module declares once
 export law test_reads_one_private {
     kind: "resolve.private_apart"
-    reads_view: apart_uses
+    reads: apart_uses
     voice: apart_words
     witness: "1\n"
     witness_files: {

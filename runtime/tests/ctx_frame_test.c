@@ -156,18 +156,11 @@ int main(void) {
     avra_ctx_set(WIDTH, w);
     avra_rc_release(w);
     CHECK(avra_ctx_enter(made) == 1, "entering another frame is a change");
-    CHECK(reads(DEPTH, d) && reads(WIDTH, w), "its contexts are laid over the caller's: what it set, and what the caller set that it didn't");
+    CHECK(reads(DEPTH, d) && avra_ctx_read(WIDTH) == NULL, "its contexts are the ones in force, the caller's none of them");
     avra_ctx_back();
     CHECK(avra_ctx_read(DEPTH) == NULL && reads(WIDTH, w), "its back puts the caller's frame back");
-    void* d2 = avra_array_new();
-    avra_ctx_set(DEPTH, d2);
-    avra_rc_release(d2);
-    CHECK(avra_ctx_enter(made) == 1 && reads(DEPTH, d) && reads(WIDTH, w), "a context both set reads as the made frame set it");
-    avra_ctx_back();
-    CHECK(reads(DEPTH, d2), "and the caller's again after its back");
-    avra_ctx_back();
     CHECK(avra_ctx_enter(NULL) == 1, "entering the empty frame over a set one is a change");
-    CHECK(reads(WIDTH, w), "and the caller's contexts still read under it");
+    CHECK(avra_ctx_read(WIDTH) == NULL, "and nothing is set under it");
     avra_ctx_back();
     avra_ctx_back();
 
@@ -256,68 +249,6 @@ int main(void) {
     void* two = spawned(WIDTH);
     CHECK(held_across(one) && held_across(two), "each task reads its own set across the switch, from no frame of its parent's");
     CHECK(avra_ctx_now == NULL && avra_ctx_read(DEPTH) == NULL, "and the parent's frame is its own after them");
-
-    // WHAT A RUNNING QUERY HEARS: one word a read tests, NULL with no query
-    // open; a recording opened and closed around a body files each read —
-    // a set's value by its word, a default apart from every set — and holds
-    // while the frame in force holds the same values; a closed recording
-    // is heard by the one open around it, as a reused answer's is.
-    CHECK(avra_ctx_heard_now == NULL, "with no query open the word a read tests is NULL");
-    avra_ctx_listen();
-    CHECK(avra_ctx_heard_now != NULL, "a query open sets it");
-    CHECK(avra_ctx_listened() == NULL && avra_ctx_heard_now == NULL, "a body that read no context hears nothing, and the word is NULL same_ten");
-    int64_t heard_live = avra_mem_live();
-    void* ten = avra_array_new();
-    avra_array_push(ten, 10);
-    avra_ctx_set(DEPTH, ten);
-    avra_ctx_listen();
-    avra_ctx_heard(DEPTH, 0, ten);
-    avra_ctx_heard(WIDTH, 0, NULL);
-    void* heard = avra_ctx_listened();
-    CHECK(heard && ((AvraArray*)heard)->len == 6, "two reads are two triples");
-    CHECK(avra_ctx_holds(heard) == 1, "they hold under the frame they were heard under");
-    avra_ctx_back();
-    CHECK(avra_ctx_holds(heard) == 0, "and not once the set is gone");
-    void* same_ten = avra_array_new();
-    avra_array_push(same_ten, 10);
-    avra_ctx_set(DEPTH, same_ten);
-    CHECK(avra_ctx_holds(heard) == 1, "a later set of the same value holds them");
-    avra_ctx_back();
-    void* other = avra_array_new();
-    avra_array_push(other, 11);
-    avra_ctx_set(DEPTH, other);
-    CHECK(avra_ctx_holds(heard) == 0, "a set of another value does not");
-    avra_ctx_set(WIDTH, same_ten);
-    avra_ctx_back();
-    avra_ctx_back();
-    avra_ctx_set(DEPTH, ten);
-    avra_ctx_set(WIDTH, same_ten);
-    CHECK(avra_ctx_holds(heard) == 0, "nor does a set where a default was heard");
-    avra_ctx_back();
-    avra_ctx_listen();
-    avra_ctx_listen();
-    avra_ctx_heard(DEPTH, 0, ten);
-    void* inner = avra_ctx_listened();
-    void* around = avra_ctx_listened();
-    CHECK(inner && around && ((AvraArray*)around)->len == 3, "what an inner query heard the one around it heard too");
-    avra_ctx_listen();
-    avra_ctx_reheard(inner);
-    void* reused = avra_ctx_listened();
-    CHECK(reused && ((AvraArray*)reused)->len == 3, "and so is what a reused answer heard");
-    avra_ctx_listen();
-    avra_ctx_heard(DEPTH, 2, ten);
-    void* untold = avra_ctx_listened();
-    CHECK(avra_ctx_holds(untold) == 0, "a value told apart by nothing never holds");
-    avra_ctx_back();
-    avra_ctx_heard_drop(heard);
-    avra_ctx_heard_drop(inner);
-    avra_ctx_heard_drop(around);
-    avra_ctx_heard_drop(reused);
-    avra_ctx_heard_drop(untold);
-    avra_rc_release(ten);
-    avra_rc_release(same_ten);
-    avra_rc_release(other);
-    CHECK(avra_mem_live() == heard_live, "every recording a cell let go is released");
 
     if (g_fails) {
         fprintf(stderr, "ctx_frame_test: %d of %d checks failed\n", g_fails, g_checks);

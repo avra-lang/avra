@@ -53,14 +53,14 @@ type Copies = {
     named: Cell<Map<string, List<StmtId>>?>,
 }
 
-fn copied_places(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, CopyKind.Place) }
+fn copied_places(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Place) }
 
-fn copied_holdings(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, CopyKind.Held) }
+fn copied_holdings(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Held) }
 
-fn local_paths(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { found_of(engine, file, at, CopyKind.Path) }
+fn local_paths(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Path) }
 
 /// Each write of the kind `kind` in the item `at` of `file`.
-fn found_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId, kind: CopyKind) -> List<Found> {
+fn found_of(engine: QueryEngine, file: SourceFileAddress, at: int, kind: CopyKind) -> List<Found> {
     [Found { at: span_of(w.at), args: [w.local, w.place] } for w in item_copies(engine, file, at).writes if same_kind(w.kind, kind)]
 }
 
@@ -72,7 +72,7 @@ fn same_kind(a: CopyKind, b: CopyKind) -> bool {
 /// first through each local, in node order; an item that declares no `mut` local typing nothing. An
 /// item among the statements its file runs adds what they make read as one body (`entry_copies`): a
 /// local one statement binds is written through by another.
-fn item_copies(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemCopies {
+fn item_copies(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCopies {
     if !item_held(engine, file, at) { return copies_made(engine, file, at) }
     let view = item_view(engine, file, at)
     let held? = view.copies.get() else {
@@ -84,7 +84,7 @@ fn item_copies(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Item
 }
 
 /// What `item_copies` answers, made.
-fn copies_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemCopies {
+fn copies_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCopies {
     if !item_held(engine, file, at) { return ItemCopies { writes: [] } }
     let own = own_copies(engine, file, at)
     let across = [c.write for c in entry_copies(engine, file).found if c.item == at && !own.any(it.local == c.write.local && it.place == c.write.place)]
@@ -92,7 +92,7 @@ fn copies_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Item
 }
 
 /// Every write the written item `at` of `file` makes through a `mut` local its own bodies declare.
-fn own_copies(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<CopyWrite> {
+fn own_copies(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<CopyWrite> {
     let item = read_item(engine, file, at)
     if !item.store.stmt_ids().any((s) -> item.store.stmt(s) is .MutLet) { return [] }
     [w.write for w in copies_in(engine, file, at, item).stayed()]
@@ -103,19 +103,19 @@ type Stayed = { node: int, write: CopyWrite }
 
 /// A write among the statements a file runs that stays in its local, and the written item it stands in.
 @derive(Saved)
-type EntryCopy = { item: ItemId, write: CopyWrite }
+type EntryCopy = { item: int, write: CopyWrite }
 
 /// The items a file's running statements stand in, and every write among them that stays in its
 /// local.
 @derive(Saved)
-type EntryCopies = { items: List<ItemId>, found: List<EntryCopy> }
+type EntryCopies = { items: List<int>, found: List<EntryCopy> }
 
 /// Every write the statements `file` runs make through a `mut` local that stays in it, each with the
 /// written item it stands in: the statements read and typed once, as one body, so a local and the
 /// write through it need not share an item. The writes are walked where the statements stand in the
 /// file, where one item's place orders against another's; each is kept where its node stands in its
 /// own item, read as each item reads it.
-@query("laws")
+@query
 fn entry_copies(engine: QueryEngine, file: SourceFileAddress) -> EntryCopies {
     let read = entry_read(engine, file)
     let placed = entry_read(engine, file, true)
@@ -141,7 +141,7 @@ fn entry_copies(engine: QueryEngine, file: SourceFileAddress) -> EntryCopies {
 }
 
 /// What the writes of the written item `at` of `file`, read back as `item`, read.
-fn copies_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> Copies {
+fn copies_in(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> Copies {
     let package = file.package_name
     Copies {
         store: item.store,
@@ -232,11 +232,7 @@ impl Copies {
     /// The writes the call by name at `e` makes, none for any other node.
     fn called_writes(e: ExprId) -> List<Write> {
         let call? = self.store.call_parts(e) else { return [] }
-        self
-            .handed(
-                self.local_marks(call.callee.text(), e) ?? (self.call_marks)(call.callee.text()),
-                call.args,
-            )
+        self.handed(self.local_marks(call.callee, e) ?? (self.call_marks)(call.callee), call.args)
     }
 
     /// Which seats of the fn value the local `callee` holds at the call `e` are `mut`: the last
@@ -292,7 +288,7 @@ impl Copies {
     fn root_name(root: ExprId) -> string? {
         if (self.type_at)(root.index)?.described() != null { return null }
         let step? = self.store.place_step(root) else { return null }
-        match step { .Root(n) -> n.text(), .Field(_, _) or .At(_, _) or .Unwrap(_) -> null }
+        match step { .Root(n) -> n.of, .Field(_, _) or .At(_, _) or .Unwrap(_) -> null }
     }
 
     /// Where the innermost fn statement that holds the node `at` starts, -1 for none.

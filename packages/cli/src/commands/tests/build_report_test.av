@@ -4,7 +4,7 @@
 //! line ever glued around it — real subprocess, the everyday path, no
 //! mocked pieces.
 use @std.io.{make_dirs, write_text}
-use @std.process.{tool, cmd, inherited, Exit, Outcome, ProcessError}
+use @std.process.{tool, cmd, Exit, Outcome, ProcessError}
 
 /// A program with two INDEPENDENT, unrelated errors — an undefined call
 /// and an undefined type — the shape a clean program most commonly
@@ -20,13 +20,6 @@ fn two_error_program() -> string {
 once fn outcome() -> Result<Outcome, ProcessError> {
     let t = tool(avra_bin())?
     (cmd(t, ["build", two_error_program()]) with { timeout: hang_bound() }).outcome()
-}
-
-/// The same build on the program layer, the net off: what it refuses, and where it says it.
-once fn layered() -> Result<Outcome, ProcessError> {
-    let t = tool(avra_bin())?
-    let env = inherited().with_var("AVRA_PROGRAM", "1").with_var("AVRA_PROGRAM_NET", "0")
-    (cmd(t, ["build", two_error_program()]) with { env: env, timeout: hang_bound() }).outcome()
 }
 
 fn exit_code_1(e: Exit) -> bool {
@@ -51,14 +44,6 @@ spec "avra build — a real multi-diagnostic failure" {
         }
         then "no Diag wrapper leaks its own kind or message around the real report" {
             !report().contains("build.command_failed") && !report().contains("the build failed")
-        }
-        then "the program layer says its refusals where `check` says them, on stdout" {
-            match layered() {
-                .Ok(o) -> exit_code_1(o.exit) &&
-                    o.out.stdout.contains("error[resolve.unresolved]") &&
-                    !o.out.stderr.contains("error[resolve.unresolved]"),
-                .Err(_) -> false,
-            }
         }
     }
 }

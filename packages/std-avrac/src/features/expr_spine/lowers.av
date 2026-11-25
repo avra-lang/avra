@@ -33,9 +33,9 @@ impl Lowers for Ident {
     /// A name is what it's bound to here: a parameter's or a `let`'s register, what a `mut`'s cell
     /// holds now, what a `const` is written as or settles to, or a declared fn as a value.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
-        let b = cx.bound(self.name.text())
+        let b = cx.bound(self.name.of)
         if b != null { return cx.read(e, b!) }
-        let named? = cx.named(e, self.name.text()) else { return cx.unlowered(e) }
+        let named? = cx.named(e, self.name.of) else { return cx.unlowered(e) }
         match named {
             .Fn(callee) -> cx.fn_value(e, callee),
             .Literal(_) or .Settled(_, _) or .Unsettled(_) -> {
@@ -88,7 +88,7 @@ impl Lowers for Prop {
         let v = cx.lower(self.subject)
         let l = cx.layout_at(e)
         match cx.laid_out(ty) {
-            .Boxed(_) -> cx.seat_read(v, ty, fields, laid, n, l),
+            .Boxed(_) -> cx.seat_read(v, fields, laid, n, l),
             .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> cx.extracted(l, v, n),
         }
     }

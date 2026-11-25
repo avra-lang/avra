@@ -4,7 +4,7 @@
 // wear one identity. Every node kind splicing two sequences is
 // attacked here by moving exactly one item across its boundary.
 use @std.avrac.core.{
-    scoped,
+    Scoped,
     Plain,
     FnSeat,
     CatchArm,
@@ -32,7 +32,7 @@ fn written(name: string, optional: bool) -> TypeRef {
 
 fn seat(store: SyntaxArena, name: string, t: TypeRef?) -> Param {
     Param {
-        name: scoped(name),
+        name: Scoped(name),
         ty: t,
         default: null,
         promises: plain_mark,
@@ -42,7 +42,7 @@ fn seat(store: SyntaxArena, name: string, t: TypeRef?) -> Param {
 
 fn seat_marked(store: SyntaxArena, name: string, t: TypeRef?, promises: SeatMark) -> Param {
     Param {
-        name: scoped(name),
+        name: Scoped(name),
         ty: t,
         default: null,
         promises: promises,
@@ -65,10 +65,9 @@ spec "core/nodes adversarial" {
     given "a boundary between two spliced sequences" {
         then "a pinned type is not an argument — `f<A>(B)` vs `f<A, B?>()`" {
             mut s = new_node_store()
-            let b = s.alloc_expr(Expr.Ident(scoped("B")))
-            let arg = s.alloc_expr(Expr.Call(scoped("f"), [written("A", false)], [b]))
-            let pin = s
-                .alloc_expr(Expr.Call(scoped("f"), [written("A", false), written("B", true)], []))
+            let b = s.alloc_expr(Expr.Ident("B"))
+            let arg = s.alloc_expr(Expr.Call("f", [written("A", false)], [b]))
+            let pin = s.alloc_expr(Expr.Call("f", [written("A", false), written("B", true)], []))
             s.expr_fingerprint(arg) != s.expr_fingerprint(pin)
         }
         then "a module path is not an item list — `use a.b` vs `use a.{b}`" {
@@ -82,10 +81,8 @@ spec "core/nodes adversarial" {
             let body = s.alloc_expr(Expr.IntLit(1))
             let t = seat(s, "T", null)
             let x = seat(s, "x", written("int", false))
-            let split = s
-                .alloc_stmt(Stmt.FnDecl(scoped("f"), [t], [x], written("int", false), body))
-            let both = s
-                .alloc_stmt(Stmt.FnDecl(scoped("f"), [t, x], [], written("int", false), body))
+            let split = s.alloc_stmt(Stmt.FnDecl("f", [t], [x], written("int", false), body))
+            let both = s.alloc_stmt(Stmt.FnDecl("f", [t, x], [], written("int", false), body))
             s.stmt_fingerprint(split) != s.stmt_fingerprint(both)
         }
         then "a then-branch is not an else-branch — `if c { a b }` vs `if c { a } else { b }`" {
@@ -134,12 +131,12 @@ spec "core/nodes adversarial" {
             let l = s
                 .alloc_expr(
                     Expr
-                        .Catch(subject, [CatchArm { variant: Plain("A"), bind: scoped("b"), value: v }]),
+                        .Catch(subject, [CatchArm { variant: Plain("A"), bind: Scoped("b"), value: v }]),
                 )
             let r = s
                 .alloc_expr(
                     Expr
-                        .Catch(subject, [CatchArm { variant: Plain("b"), bind: scoped("A"), value: v }]),
+                        .Catch(subject, [CatchArm { variant: Plain("b"), bind: Scoped("A"), value: v }]),
                 )
             s.expr_fingerprint(l) != s.expr_fingerprint(r)
         }
@@ -183,9 +180,9 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             // A nullable type read as `fp(2, [fp_str("B")])` and `.Ident("B")`
             // read the same: one is a PIN, the other an ARGUMENT.
-            let ident = s.alloc_expr(Expr.Ident(scoped("B")))
-            let pinned = s.alloc_expr(Expr.Call(scoped("f"), [written("B", true)], []))
-            let passed = s.alloc_expr(Expr.Call(scoped("f"), [], [ident]))
+            let ident = s.alloc_expr(Expr.Ident("B"))
+            let pinned = s.alloc_expr(Expr.Call("f", [written("B", true)], []))
+            let passed = s.alloc_expr(Expr.Call("f", [], [ident]))
             s.expr_fingerprint(pinned) != s.expr_fingerprint(passed)
         }
     }
@@ -193,11 +190,11 @@ spec "core/nodes adversarial" {
         then "plain, `mut`, `once`, `static` and a grammar mark are five fingerprints" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
-            let plain = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
-            let writes = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
-            let single = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
-            let fixed = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
-            let read = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
+            let plain = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
+            let writes = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
+            let single = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
+            let fixed = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
+            let read = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
             s.mark_mutating(writes)
             s.mark_once(single)
             s.mark_static(fixed)
@@ -223,9 +220,8 @@ spec "core/nodes adversarial" {
         then "`export fn` is not `fn`" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
-            let unmarked = s
-                .alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
-            let shown = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [], written("int", false), body))
+            let unmarked = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
+            let shown = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body))
             s.mark_exported(shown)
             s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(shown)
         }
@@ -233,18 +229,18 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
             let t = written("int", false)
-            let unmarked = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [seat(s, "x", t)], t, body))
+            let unmarked = s.alloc_stmt(Stmt.FnDecl("f", [], [seat(s, "x", t)], t, body))
             let writes = s
-                .alloc_stmt(Stmt.FnDecl(scoped("f"), [], [seat_marked(s, "x", t, mut_mark)], t, body))
+                .alloc_stmt(Stmt.FnDecl("f", [], [seat_marked(s, "x", t, mut_mark)], t, body))
             s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(writes)
         }
         then "a `const` seat is not a plain seat" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
             let t = written("int", false)
-            let unmarked = s.alloc_stmt(Stmt.FnDecl(scoped("f"), [], [seat(s, "x", t)], t, body))
+            let unmarked = s.alloc_stmt(Stmt.FnDecl("f", [], [seat(s, "x", t)], t, body))
             let settled = s
-                .alloc_stmt(Stmt.FnDecl(scoped("f"), [], [seat_marked(s, "x", t, const_mark)], t, body))
+                .alloc_stmt(Stmt.FnDecl("f", [], [seat_marked(s, "x", t, const_mark)], t, body))
             s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(settled)
         }
         then "a field's default belongs to its field" {
@@ -252,61 +248,50 @@ spec "core/nodes adversarial" {
             let one = s.alloc_expr(Expr.IntLit(1))
             let t = written("int", false)
             let a_def = Param {
-                name: scoped("a"),
+                name: "a",
                 ty: t,
                 default: one,
                 promises: plain_mark,
                 id: s.alloc_param_id(null),
             }
             let b_def = Param {
-                name: scoped("b"),
+                name: "b",
                 ty: t,
                 default: one,
                 promises: plain_mark,
                 id: s.alloc_param_id(null),
             }
-            let first = s.alloc_stmt(Stmt.StructDecl(scoped("S"), [], [a_def, seat(s, "b", t)], []))
-            let second = s
-                .alloc_stmt(Stmt.StructDecl(scoped("S"), [], [seat(s, "a", t), b_def], []))
+            let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat(s, "b", t)], []))
+            let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t), b_def], []))
             s.stmt_fingerprint(first) != s.stmt_fingerprint(second)
         }
         then "`dyn Show` is not `Show`" {
             mut s = new_node_store()
             let v = s.alloc_expr(Expr.IntLit(1))
-            let unmarked = s.alloc_stmt(Stmt.Let(scoped("x"), named_ref("Show"), v))
-            let boxed = s
-                .alloc_stmt(Stmt.Let(scoped("x"), named_ref("Show") with { dynamic: true }, v))
+            let unmarked = s.alloc_stmt(Stmt.Let("x", named_ref("Show"), v))
+            let boxed = s.alloc_stmt(Stmt.Let("x", named_ref("Show") with { dynamic: true }, v))
             s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(boxed)
         }
         then "a marked variant is not a plain one" {
             mut s = new_node_store()
             let t = written("int", false)
             let plain = s
-                .alloc_stmt(Stmt.EnumDecl(scoped("E"), [], [marked_variant("A", [seat(s, "x", t)], [])]))
+                .alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t)], [])]))
             let held = s
                 .alloc_stmt(
                     Stmt
-                        .EnumDecl(
-                            scoped("E"),
-                            [],
-                            [marked_variant("A", [seat(s, "x", t)], [marked("frozen", [])])],
-                        ),
+                        .EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t)], [marked("frozen", [])])]),
                 )
             s.stmt_fingerprint(plain) != s.stmt_fingerprint(held)
         }
         then "a marked field is not a plain one" {
             mut s = new_node_store()
             let t = written("int", false)
-            let plain = s.alloc_stmt(Stmt.StructDecl(scoped("S"), [], [seat(s, "a", t)], []))
+            let plain = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t)], []))
             let held = s
                 .alloc_stmt(
                     Stmt
-                        .StructDecl(
-                            scoped("S"),
-                            [],
-                            [seat(s, "a", t) with { marks: [marked("excluded", [])] }],
-                            [],
-                        ),
+                        .StructDecl("S", [], [seat(s, "a", t) with { marks: [marked("excluded", [])] }], []),
                 )
             s.stmt_fingerprint(plain) != s.stmt_fingerprint(held)
         }
@@ -316,20 +301,12 @@ spec "core/nodes adversarial" {
             let by_a = s
                 .alloc_stmt(
                     Stmt
-                        .EnumDecl(
-                            scoped("E"),
-                            [],
-                            [marked_variant("A", [seat(s, "x", t)], [marked("by", ["a"])])],
-                        ),
+                        .EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t)], [marked("by", ["a"])])]),
                 )
             let by_b = s
                 .alloc_stmt(
                     Stmt
-                        .EnumDecl(
-                            scoped("E"),
-                            [],
-                            [marked_variant("A", [seat(s, "x", t)], [marked("by", ["b"])])],
-                        ),
+                        .EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t)], [marked("by", ["b"])])]),
                 )
             s.stmt_fingerprint(by_a) != s.stmt_fingerprint(by_b)
         }
@@ -339,17 +316,13 @@ spec "core/nodes adversarial" {
             let with_arg = s
                 .alloc_stmt(
                     Stmt
-                        .EnumDecl(
-                            scoped("E"),
-                            [],
-                            [marked_variant("A", [seat(s, "x", t)], [marked("a", ["x"])])],
-                        ),
+                        .EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t)], [marked("a", ["x"])])]),
                 )
             let two = s
                 .alloc_stmt(
                     Stmt
                         .EnumDecl(
-                            scoped("E"),
+                            "E",
                             [],
                             [
                                 marked_variant(
@@ -367,15 +340,11 @@ spec "core/nodes adversarial" {
             let t = written("int", false)
             let m = marked("dst", [])
             let on_variant = s
-                .alloc_stmt(Stmt.EnumDecl(scoped("E"), [], [marked_variant("A", [seat(s, "x", t)], [m])]))
+                .alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t)], [m])]))
             let on_payload = s
                 .alloc_stmt(
                     Stmt
-                        .EnumDecl(
-                            scoped("E"),
-                            [],
-                            [marked_variant("A", [seat(s, "x", t) with { marks: [m] }], [])],
-                        ),
+                        .EnumDecl("E", [], [marked_variant("A", [seat(s, "x", t) with { marks: [m] }], [])]),
                 )
             s.stmt_fingerprint(on_variant) != s.stmt_fingerprint(on_payload)
         }
@@ -385,8 +354,8 @@ spec "core/nodes adversarial" {
             let t = written("int", false)
             let unmarked = named_ref("fn") with { arrow: true, seats: [FnSeat { ty: t }], answer: t }
             let writes = unmarked with { seats: [FnSeat { ty: t, mutable: true }] }
-            let a = s.alloc_stmt(Stmt.Let(scoped("f"), unmarked, v))
-            let b = s.alloc_stmt(Stmt.Let(scoped("f"), writes, v))
+            let a = s.alloc_stmt(Stmt.Let("f", unmarked, v))
+            let b = s.alloc_stmt(Stmt.Let("f", writes, v))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
     }

@@ -1,0 +1,823 @@
+diff --git a/packages/std-avrac/src/compiler/backend/interp.av b/packages/std-avrac/src/compiler/backend/interp.av
+index 57b64514..84f674ae 100644
+--- a/packages/std-avrac/src/compiler/backend/interp.av
++++ b/packages/std-avrac/src/compiler/backend/interp.av
+@@ -1900,6 +1900,7 @@ impl Machine {
+             .ArrayFilled -> self.array_filled_val(vals),
+             .ArrayPush -> self.array_push_val(vals),
+             .ArrayGet -> self.array_get_val(vals),
++            .LentView -> vals[1],
+             .ArrayLen -> self.array_len_val(vals),
+             .CellRelease -> self.cell_released(vals),
+             .CellForget -> self.cell_forgotten(vals),
+diff --git a/packages/std-avrac/src/compiler/item_lowered.av b/packages/std-avrac/src/compiler/item_lowered.av
+index 09a9d220..356aacff 100644
+--- a/packages/std-avrac/src/compiler/item_lowered.av
++++ b/packages/std-avrac/src/compiler/item_lowered.av
+@@ -73,6 +73,7 @@ use core.{
+ }
+ use features.collects.{collected_list}
+ use features.specs.{case_lowered}
++use compiler.memory.{lent_seats}
+ use @std.program.address.{SourceFileAddress}
+ use @std.program.source_facts.{source_text}
+ use diagnostics.{new_source_file}
+@@ -117,6 +118,10 @@ export type LoweredFn = {
+     /// Each seat it consumes, by its place among its seats: one it keeps whole on every path to its
+     /// answer, which a caller hands its own reference to. Empty where it consumes none.
+     consumed: List<bool> = [],
++    /// Each seat it lends its answer from, by its register: one every answer it gives projects —
++    /// through fields, index reads and arms — so the answer carries no reference of its own and a
++    /// caller reads it as a view of that argument. Empty where it lends from none.
++    lent: List<bool> = [],
+ }
+ 
+ /// An entry's answer whose type has no text projection: the type, spelled, and where the statement
+@@ -323,7 +328,45 @@ fn signed_lowered(
+     let names = cx.names
+     let places = seat_places(signature.params.length, settled)
+     let consumed = if eligible.any(it) { kept_seats(body.store, body.body, eligible, (e: ExprId) -> seat_read(names, places, e)) } else { [] }
+-    unit_lowered(cx, seated.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread, consumed: if consumed.any(it) { consumed } else { [] } }
++    let unit = unit_lowered(cx, seated.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread, consumed: if consumed.any(it) { consumed } else { [] } }
++    let lendable = lendable_seats(signed, name, seated, consumed)
++    if !lendable.any(it) { return unit }
++    unit with { lent: lent_seats(unit.ins, unit.layouts, lendable.length, lendable) }
++}
++
++/// The seats, by register, whose argument the body's answer may be a view into: a direct call reads
++/// the body's marks by name, so only a body every call through a value or a `dyn` box reaches through
++/// a wrapper that calls it by name may lend — a free fn, or a method of a type's own `impl`, never of
++/// a trait's. The receiver lends where the body never writes it; a seat lends where nothing else is
++/// promised of it.
++fn lendable_seats(signed: SignedBody, name: string, seated: List<SignedParam>, consumed: List<bool>) -> List<
++    bool,
++> {
++    let store = signed.item.store
++    if signed.case || store.is_host_fn(signed.stmt) || store.is_once(signed.stmt) { return [] }
++    if (signed.receiver != null || name.contains(".")) && !in_own_impl(signed) { return [] }
++    let receiver = if signed.receiver == null { [] } else { [!signed.receiver_written] }
++    receiver
++        .concat(
++            [p.ty != null &&
++                !p.mutable &&
++                !p.settled &&
++                !p.state &&
++                !p.unshared &&
++                !p.spread &&
++                !p.rest &&
++                !(j < consumed.length && consumed[j]) for j, p in seated],
++        )
++}
++
++/// Whether the body is a method an `impl` with no trait declares.
++fn in_own_impl(signed: SignedBody) -> bool {
++    let store = signed.item.store
++    for s in signed.item.stmts {
++        let p? = store.impl_parts(s) else { continue }
++        if p.of == null && p.fns.contains(signed.stmt) { return true }
++    }
++    false
+ }
+ 
+ /// `@std/meta`'s annotation for a fn that lets no other task run.
+diff --git a/packages/std-avrac/src/compiler/item_program.av b/packages/std-avrac/src/compiler/item_program.av
+index 3623d368..f1c04e3c 100644
+--- a/packages/std-avrac/src/compiler/item_program.av
++++ b/packages/std-avrac/src/compiler/item_program.av
+@@ -1375,7 +1375,15 @@ fn body_facts(engine: QueryEngine, asked: BodyAsked) -> UnitFacts? {
+         lift_sites: [[t.site for t in l.tests] for l in f.lifts],
+         callees: every_callee_of(f),
+         cancels: lowered_cancels(f),
+-        declared: [BodySeen { name: "", seats: f.params, answer: f.answer, consumed: f.consumed }]
++        declared: [
++            BodySeen {
++                name: "",
++                seats: f.params,
++                answer: f.answer,
++                consumed: f.consumed,
++                lent: f.lent,
++            },
++        ]
+             .concat([lifted_seen(l) for l in f.lifts]),
+         wrappers: f.wrappers,
+         refused: f.refused,
+@@ -1573,7 +1581,7 @@ type Seen = { bodies: List<BodySeen>, rows: List<string> }
+ 
+ /// A body as another body's module declares it.
+ @derive(Saved)
+-export type BodySeen = { name: string, seats: List<Layout>, answer: Layout, consumed: List<bool> = [] }
++export type BodySeen = { name: string, seats: List<Layout>, answer: Layout, consumed: List<bool> = [], lent: List<bool> = [] }
+ 
+ /// A program's bodies and rows by name, as the bodies naming them see them.
+ type ProgramSeen = { bodies: Map<string, BodySeen>, rows: Map<string, string> }
+@@ -2013,7 +2021,7 @@ fn extern_rows(engine: QueryEngine, externs: List<CalledFn>) -> List<RtSig> { fl
+ fn unit_bodies(c: CalledFn, placed: LoweredFn) -> List<Body> {
+     let home = spelled_file(c.file)
+     [
+-        unit_body(c.symbol, placed.params, placed.answer, placed.ins, placed.layouts, home) with { boxed: placed.boxed, hosted: c.hosted, marks: consumed_marks(placed.consumed) },
++        unit_body(c.symbol, placed.params, placed.answer, placed.ins, placed.layouts, home) with { boxed: placed.boxed, hosted: c.hosted, marks: seat_marks(placed.consumed, placed.lent) },
+     ]
+         .concat(lifted_bodies(placed, home))
+ }
+@@ -2118,11 +2126,14 @@ fn names_of(bodies: List<Body>, statics: List<Static>) -> Map<string, bool> {
+ /// A marks-only stand-in for each body that consumes a seat and that bucket `a` doesn't define, so
+ /// the memory pass reads what each consumes; it answers no instructions and leaves with the pass.
+ fn marked_elsewhere(a: BucketAsked) -> List<Body> {
+-    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: consumed_marks(d.consumed) } for d in a.declared if !d.consumed.is_empty() && !a.own.any(it.name == d.name)]
++    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: seat_marks(d.consumed, d.lent) } for d in a.declared if (!d.consumed.is_empty() || !d.lent.is_empty()) && !a.own.any(it.name == d.name)]
+ }
+ 
+-/// The seat marks of a body consuming the seats `consumed` says, by place: none where it consumes none.
+-fn consumed_marks(consumed: List<bool>) -> List<SeatMark> { [plain_mark with { consumed: c } for c in consumed] }
++/// The seat marks of a body consuming the seats `consumed` says and lending its answer from those
++/// `lent` says, by place: none where it does neither.
++fn seat_marks(consumed: List<bool>, lent: List<bool>) -> List<SeatMark> {
++    [plain_mark with { consumed: j < consumed.length && consumed[j], lent: j < lent.length && lent[j] } for j in 0..if consumed.length > lent.length { consumed.length } else { lent.length }]
++}
+ 
+ /// A body bucket `b` names and another bucket defines, declared and never defined here: it falls in
+ /// a bucket other than `b`.
+@@ -2598,7 +2609,7 @@ fn taken_bodies(
+                     t.body.ins,
+                     t.body.layouts,
+                     home,
+-                ) with { boxed: t.body.boxed, hosted: t.called.hosted, marks: consumed_marks(t.body.consumed) },
++                ) with { boxed: t.body.boxed, hosted: t.called.hosted, marks: seat_marks(t.body.consumed, t.body.lent) },
+             )
+         // LICENSED loops.push_loop: the program's lists grow in place, where a concat copies each whole every turn
+         for b in lifted_bodies(t.body, home) { fns.push(b) }
+diff --git a/packages/std-avrac/src/compiler/memory/memory.av b/packages/std-avrac/src/compiler/memory/memory.av
+index a6711199..456f4284 100644
+--- a/packages/std-avrac/src/compiler/memory/memory.av
++++ b/packages/std-avrac/src/compiler/memory/memory.av
+@@ -17,6 +17,7 @@ use core.{
+     Level,
+     SeatMark,
+     consumed_mark,
++    lent_mark,
+     Stack,
+     new_stack,
+     owned_dst,
+@@ -54,7 +55,7 @@ export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
+ /// marks of every body either holds.
+ export fn memory_late(among: List<Body>, late: List<Body>) -> List<Body> {
+     let by_name = marks_by_name(among.concat(late))
+-    [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name) } for b in late if !(b.weak && b.ins.is_empty())]
++    [body_made(b, by_name) for b in late if !(b.weak && b.ins.is_empty())]
+ }
+ 
+ export fn memory(l: Lowered) -> Lowered {
+@@ -72,8 +73,8 @@ export fn memory(l: Lowered) -> Lowered {
+     // reaching emission is an unterminated LLVM function, not a body.
+     let by_name = marks_by_name(l.fns)
+     let named = [b for b in l.fns if !(b.weak && b.ins.is_empty())]
+-    let fns = [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name) } for b in named]
+-    let entry = l.entry with { ins: body_ins(l.entry.layouts, l.entry.ins, 0, l.entry.marks, by_name) }
++    let fns = [body_made(b, by_name) for b in named]
++    let entry = body_made(l.entry, by_name, 0)
+     let out = l with { fns: fns, entry: entry }
+     if !sound_checked() { return out }
+     // L2: an independent proof over this pass's OWN output — never a
+@@ -108,6 +109,7 @@ fn body_ins(
+     seats: int,
+     marks: List<SeatMark>,
+     by_name: Map<string, List<SeatMark>>,
++    unmanaged: List<bool> = [],
+ ) -> List<Ins> {
+     let immortal = immortal_regs(layouts.length, ins)
+     runs_joined(
+@@ -118,11 +120,113 @@ fn body_ins(
+                 standing_regs(immortal, ins, seats, marks),
+                 consuming_seats(seats, marks),
+                 by_name,
++                lent_answer(ins, layouts, seats, marks),
++                unmanaged,
+             ) if !immortal_rc_op(i, immortal)],
+         ),
+     )
+ }
+ 
++/// `b` past the memory pass: each call to a body that lends its answer read as a view of the
++/// arguments it lends from, then every count placed. `seats` is how many registers are its seats.
++fn body_made(b: Body, by_name: Map<string, List<SeatMark>>, seats: int = 0 - 1) -> Body {
++    let read = lent_reads(b.layouts, b.ins, by_name)
++    let n = if seats < 0 { b.seats.length } else { seats }
++    b with { ins: body_ins(read.layouts, read.ins, n, b.marks, by_name, read.unmanaged), layouts: read.layouts }
++}
++
++/// A body's steps with each lent answer read as a view, the registers that grew, and the call answers
++/// that carry no count of their own.
++type LentReads = { ins: List<Ins>, layouts: List<Layout>, unmanaged: List<bool> }
++
++/// THE CALLER'S ONE RULE: a call to a body that lends its answer from some seats answers a register
++/// that owns nothing, read through `avra_lent_view` as a view of each argument it lends from, one
++/// after another, the last read being the call's own destination. A view that outlives what it rides
++/// takes the row's owned twin, as any lending read does.
++fn lent_reads(layouts: List<Layout>, ins: List<Ins>, by_name: Map<string, List<SeatMark>>) -> LentReads {
++    if !ins.any(!lent_sources(layouts, by_name, it).is_empty()) {
++        return LentReads { ins: ins, layouts: layouts, unmanaged: [] }
++    }
++    mut out: List<Ins> = []
++    mut shapes: List<Layout> = [l for l in layouts]
++    mut bare: List<int> = []
++    for i in ins {
++        let srcs = lent_sources(layouts, by_name, i)
++        let call? = lent_call(i) else {
++            out.push(i)
++            continue
++        }
++        if srcs.is_empty() {
++            out.push(i)
++            continue
++        }
++        let shape = layouts[call.dst.index]
++        let answer = Reg { index: shapes.length }
++        shapes.push(shape)
++        bare.push(answer.index)
++        out.push(Ins.Call(answer, call.callee, call.args))
++        mut held = answer
++        for k, src in srcs {
++            let last = k == srcs.length - 1
++            let viewed = if last { call.dst } else { Reg { index: shapes.length } }
++            if !last { shapes.push(shape) }
++            out.push(Ins.CallRt(viewed, LENT_VIEW, [src, held]))
++            held = viewed
++        }
++    }
++    mut unmanaged = [false for j in 0..shapes.length]
++    for j in bare { unmanaged.set(j, true) }
++    LentReads { ins: out, layouts: shapes, unmanaged: unmanaged }
++}
++
++/// The row a lent answer is read through as a view.
++const LENT_VIEW: string = "avra_lent_view"
++
++type LentCall = { dst: Reg, callee: string, args: List<Reg> }
++
++fn is_lent_view(i: Ins) -> bool {
++    match i { .CallRt(_, callee, _) -> callee == LENT_VIEW, rest -> false }
++}
++
++/// Whether a lent view's source reaches a cell — loaded from one, or riding a box that holds one: the
++/// call it reads the answer of may have changed what it rides, so the view takes its own count.
++fn lent_exposed(defs: List<int>, ins: List<Ins>, layouts: List<Layout>, r: Reg) -> bool {
++    if layouts[r.index].carries_cell() { return true }
++    let d = defs[r.index]
++    if d < 0 { return false }
++    if ins[d] is .Load { return true }
++    let src? = view_source(ins[d]) else { return false }
++    lent_exposed(defs, ins, layouts, src)
++}
++
++fn lent_call(i: Ins) -> LentCall? {
++    match i {
++        .Call(dst, callee, args) -> LentCall { dst: dst, callee: callee, args: args },
++        rest -> null,
++    }
++}
++
++/// The arguments a call's callee lends its answer from: none where the answer is no one pointer.
++fn lent_sources(layouts: List<Layout>, by_name: Map<string, List<SeatMark>>, i: Ins) -> List<Reg> {
++    let call? = lent_call(i) else { return [] }
++    if !(layouts[call.dst.index] is .Boxed) { return [] }
++    let marks? = by_name.get(call.callee) else { return [] }
++    [a for j, a in call.args if lent_mark(marks, j)]
++}
++
++/// The registers a body lending its answer gives it through: none where it lends from no seat.
++fn lent_answer(ins: List<Ins>, layouts: List<Layout>, seats: int, marks: List<SeatMark>) -> List<
++    bool,
++> {
++    let lent = [lent_mark(marks, j) for j in 0..seats]
++    if !lent.any(it) { return [] }
++    let chain? = answer_chain(ins, layouts, seats, lent) else { return [] }
++    chain.regs
++}
++
++/// Whether `r` is one of `regs`.
++fn among(regs: List<bool>, r: Reg) -> bool { r.index >= 0 && r.index < regs.length && regs[r.index] }
++
+ /// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
+ /// param (the caller's caller keeps it for this whole body), the binary's own
+ /// data, and a cell's load — a cell never leaves its body, so no callee changes
+@@ -206,6 +310,8 @@ fn memory_ins(
+     standing: List<bool>,
+     consuming: List<Reg>,
+     by_name: Map<string, List<SeatMark>>,
++    answer: List<bool>,
++    unmanaged: List<bool>,
+ ) -> List<Ins> {
+     mut out: List<Ins> = []
+     mut open_scopes: Stack<Scope> = new_stack()
+@@ -217,7 +323,7 @@ fn memory_ins(
+     let last = last_reads(layouts.length, ins)
+     let defs = def_sites(layouts.length, ins)
+     let next_barrier = barrier_positions(ins)
+-    let twins = twin_table(defs, next_barrier, layouts, ins)
++    let twins = twin_table(defs, next_barrier, layouts, ins, answer)
+     let immortal = immortal_regs(layouts.length, ins)
+     let life = Lives {
+         layouts: layouts,
+@@ -229,7 +335,14 @@ fn memory_ins(
+         viewed: viewed_regs(layouts, ins),
+         death: death_points(twins, ins, last),
+     }
++    // the releases of the views a call held across it, waiting for the lent views read right after it
++    mut held_over: List<Reg> = []
+     for at, raw in ins {
++        if !held_over.is_empty() && !is_lent_view(raw) {
++            // LICENSED loops.push_loop: the pass's OUTPUT accumulates
++            for r in held_over { out.push(Ins.Release([r])) }
++            held_over = []
++        }
+         let i = owned_form(twins, layouts, immortal, at, raw)
+         match i {
+             .ScopeEnter(tier) -> {
+@@ -252,8 +365,10 @@ fn memory_ins(
+                 // reference either way: a param answered is the caller's
+                 // to keep, and the param was never this body's.
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for s in noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives)) { out.push(s) }
+-                adopts(layouts, open_scopes, gives)
++                if gives == null || !among(answer, gives!) {
++                    for s in noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives)) { out.push(s) }
++                    adopts(layouts, open_scopes, gives)
++                }
+                 out.push(i)
+             },
+             // A branch is a scope at its enclosing tier. Its yield
+@@ -275,7 +390,7 @@ fn memory_ins(
+                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
+                 for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for s in arm_handed(layouts, scope, gives, handing.last() ?? []) { out.push(s) }
++                for s in arm_handed(layouts, scope, gives, handing.last() ?? [], answer) { out.push(s) }
+                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
+                 open_scopes.push(nested_scope(open_scopes))
+                 out.push(i)
+@@ -286,9 +401,9 @@ fn memory_ins(
+                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
+                 for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
+                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for s in arm_handed(layouts, scope, gives, handed) { out.push(s) }
++                for s in arm_handed(layouts, scope, gives, handed, answer) { out.push(s) }
+                 for r in handed { disowns(open_scopes, r) }
+-                manages(layouts, open_scopes, i)
++                if !(region_dst(i) != null && among(answer, region_dst(i)!)) { manages(layouts, open_scopes, i) }
+                 out.push(i)
+             },
+             // THE CALLER KEEPS ITS ARGUMENTS STANDING, and most stand already.
+@@ -328,16 +443,24 @@ fn memory_ins(
+                         }
+                     }
+                 }
+-                manages(layouts, open_scopes, i)
++                // a lent answer owns nothing: the view read of it next is what the scope holds, if anything
++                if !(dst_of(i) != null && among(unmanaged, dst_of(i)!)) { manages(layouts, open_scopes, i) }
+                 out.push(i)
+-                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+-                for r in lent { out.push(Ins.Release([r])) }
++                if at + 1 < ins.length && is_lent_view(ins[at + 1]) {
++                    // a lent answer takes its own count, where it must, before what it rides is let go
++                    held_over = lent
++                } else {
++                    // LICENSED loops.push_loop: the pass's OUTPUT accumulates
++                    for r in lent { out.push(Ins.Release([r])) }
++                }
+             },
+             // An EARLY exit settles EVERY open scope's debts at the
+             // site — nothing pops, because other paths continue.
+             .FnExit(gives) -> {
+                 // an answer no scope owns is the caller's to keep: its own reference, first
+-                if layouts[gives.index].counted() && !owned_open(open_scopes, gives) {
++                if layouts[gives.index].counted() &&
++                    !owned_open(open_scopes, gives) &&
++                    !among(answer, gives) {
+                     noted("retain: an early answer no scope owns", 1)
+                     out.push(Ins.Retain(gives))
+                 }
+@@ -500,6 +623,8 @@ fn memory_ins(
+             disowns(open_scopes, r)
+         }
+     }
++    // LICENSED loops.push_loop: the pass's OUTPUT accumulates
++    for r in held_over { out.push(Ins.Release([r])) }
+     out
+ }
+ 
+@@ -964,7 +1089,15 @@ fn moved_out(layouts: List<Layout>, scope: Scope, gives: Reg?) -> List<Ins> {
+ /// out — released after the arm's own yield took its count, which may ride that value. An arm
+ /// that already holds a count of its own for the value (a nested scope's yield took one) gives
+ /// that count to the merge, and the enclosing scope's dies on its way out like any other arm's.
+-fn arm_handed(layouts: List<Layout>, scope: Scope, gives: Reg, handed: List<Reg>) -> List<Ins> {
++fn arm_handed(
++    layouts: List<Layout>,
++    scope: Scope,
++    gives: Reg,
++    handed: List<Reg>,
++    answer: List<bool>,
++) -> List<Ins> {
++    // the lent answer's own arm gives the merge no count
++    if among(answer, gives) { return [Ins.Release([r]) for r in handed] }
+     if handed.any(same_reg(it, gives)) && !scope.managed.any(same_reg(it, gives)) {
+         noted("moved: an arm's yield into the merge", 1)
+         return [Ins.Release([r]) for r in handed if !same_reg(r, gives)]
+@@ -1086,14 +1219,20 @@ fn owned_form(twins: List<bool>, layouts: List<Layout>, immortal: List<bool>, at
+ /// WHETHER EACH READ TAKES ITS OWNED TWIN, by position, once per body. A
+ /// read's answer asks only about the reads AFTER it, so a reverse walk has
+ /// every answer it needs in hand.
+-fn twin_table(defs: List<int>, next_barrier: List<int>, layouts: List<Layout>, ins: List<Ins>) -> List<
+-    bool,
+-> {
++fn twin_table(
++    defs: List<int>,
++    next_barrier: List<int>,
++    layouts: List<Layout>,
++    ins: List<Ins>,
++    answer: List<bool>,
++) -> List<bool> {
+     mut out = [false for j in 0..ins.length]
+     // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
+     mut k = ins.length - 1
+     while k >= 0 {
+-        if takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) { out.set(k, true) }
++        let d: Reg? = dst_of(ins[k])
++        let lent = d != null && among(answer, d!)
++        if !lent && takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) { out.set(k, true) }
+         k = k - 1
+     }
+     out
+@@ -1120,6 +1259,7 @@ fn takes_twin(
+         .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
+             layouts[dst.index].counted() &&
+             (!rt_lends(callee) ||
++                callee == LENT_VIEW && !args.is_empty() && lent_exposed(defs, ins, layouts, args[0]) ||
+                 read_outlives(twins, defs, next_barrier, layouts, ins, at, dst, args)),
+         rest -> false,
+     }
+@@ -1231,6 +1371,90 @@ enum Handover {
+     Emptied(Reg)
+ }
+ 
++/// A BODY'S ANSWER AS VIEWS: every register its answer may be — each arm a region merges, each box a
++/// field or index read projects from — and the seats at the roots.
++export type AnswerChain = { regs: List<bool>, seats: List<bool> }
++
++/// THE SEATS A BODY LENDS ITS ANSWER FROM: of the `eligible` ones among its first `seats` registers,
++/// those its answer's chain roots in, where every answer it gives — the tail, each early exit, each
++/// arm of a region it merges — is a field, index or arm projection of an eligible seat, with no cell
++/// on the way. None where any answer is a box of its own: a fresh one, a call's, a cell's load.
++export fn lent_seats(ins: List<Ins>, layouts: List<Layout>, seats: int, eligible: List<bool>) -> List<
++    bool,
++> {
++    let chain? = answer_chain(ins, layouts, seats, eligible) else { return [] }
++    if !chain.seats.any(it) { return [] }
++    chain.seats
++}
++
++/// The answer's chain over `ins`, absent where some answer is no projection of an `eligible` seat.
++export fn answer_chain(ins: List<Ins>, layouts: List<Layout>, seats: int, eligible: List<bool>) -> AnswerChain? {
++    let defs = def_sites(layouts.length, ins)
++    let arms = merged_arms(ins, layouts.length)
++    mut regs = [false for j in 0..layouts.length]
++    mut roots = [false for j in 0..seats]
++    mut todo: List<Reg> = [r! for i in ins for r in [answered_reg(i)] if r != null]
++    if todo.is_empty() { return null }
++    while !todo.is_empty() {
++        let r = todo.pop()!
++        if r.index < 0 { return null }
++        if regs[r.index] { continue }
++        regs.set(r.index, true)
++        let shape = layouts[r.index]
++        if !(shape is .Boxed) || shape.carries_cell() { return null }
++        let d = defs[r.index]
++        if d < 0 {
++            if r.index >= seats || !(r.index < eligible.length && eligible[r.index]) { return null }
++            roots.set(r.index, true)
++            continue
++        }
++        let yields = arms[r.index]
++        if !yields.is_empty() {
++            for g in yields { todo.push(g) }
++            continue
++        }
++        let i = ins[d]
++        let viewed? = view_of(i) else { return null }
++        if viewed.index != r.index { return null }
++        let src? = view_source(i) else { return null }
++        todo.push(src)
++    }
++    // a step that writes a register of the chain where it stands would write the caller's box
++    for i in ins {
++        let written = match i {
++            .CallRt(_, callee, args) or .CallRtVoid(callee, args) -> args.any((a: Reg) -> among(regs, a) && writes_arg(callee, args, a)),
++            rest -> false,
++        }
++        if written { return null }
++    }
++    AnswerChain { regs: regs, seats: roots }
++}
++
++/// The register an answering step hands the caller.
++fn answered_reg(i: Ins) -> Reg? {
++    match i { .RetVal(r) or .FnExit(r) -> r, rest -> null }
++}
++
++/// Each region's merged register's arms' yields, by the merged register; an arm that never falls
++/// through yields nothing.
++fn merged_arms(ins: List<Ins>, count: int) -> List<List<Reg>> {
++    mut out: List<List<Reg>> = [[] for j in 0..count]
++    for k, i in ins {
++        if !(i is .IfStart || i is .SwitchStart) { continue }
++        let close = region_exit(ins, k)
++        let merged? = region_dst(ins[close]) else { continue }
++        mut gives: List<Reg> = []
++        mut j = k
++        while j < close {
++            let exit = arm_exit(ins, j + 1)
++            j = exit.boundary
++            if !exit.diverges { gives.push(arm_gives(ins[j])) }
++        }
++        out.set(merged.index, gives)
++    }
++    out
++}
++
+ /// ONE BODY'S LIVES: where each register is defined and last read.
+ type Lives = {
+     layouts: List<Layout>,
+diff --git a/packages/std-avrac/src/compiler/soundness/soundness.av b/packages/std-avrac/src/compiler/soundness/soundness.av
+index 7e651342..2a39a5a8 100644
+--- a/packages/std-avrac/src/compiler/soundness/soundness.av
++++ b/packages/std-avrac/src/compiler/soundness/soundness.av
+@@ -65,7 +65,8 @@ export fn checked(l: Lowered, by_name: Map<string, List<SeatMark>>) -> List<Diag
+ 
+ fn checked_body(b: Body, by_name: Map<string, List<SeatMark>>) -> List<Diag> {
+     let n = b.layouts.length
+-    let immortal = immortal_regs(n, b.ins)
++    let lent = lent_chain(b)
++    let immortal = [x || lent[j] for j, x in immortal_regs(n, b.ins)]
+     let consuming = owned_param_regs(b.seats.length, b.marks)
+     let facts = WalkFacts {
+         layouts: b.layouts,
+@@ -86,12 +87,124 @@ fn checked_body(b: Body, by_name: Map<string, List<SeatMark>>) -> List<Diag> {
+     // leak check is skipped — every OTHER check still runs, and a
+     // register genuinely left dangling inside a NESTED scope is still
+     // caught there, where a terminal is never in question.
+-    walk(facts, 0, b.ins.length, fresh_sim(n, consuming), null, ends_in_terminal(b.ins)).diags
++    unlent_reads(b, by_name)
++        .concat(
++            walk(facts, 0, b.ins.length, fresh_sim(n, consuming), null, ends_in_terminal(b.ins))
++                .diags,
++        )
++}
++
++/// Each call whose answer the body reads as a lent view though its callee lends from no seat it is
++/// read over: an answer counted by the callee and released by nobody.
++fn unlent_reads(b: Body, by_name: Map<string, List<SeatMark>>) -> List<Diag> {
++    mut out: List<Diag> = []
++    for at, i in b.ins {
++        let call: LentRead? = match i {
++            .Call(dst, callee, args) -> if read_as_lent(b.ins, at, dst) { LentRead { callee: callee, args: args, src: viewed_over(b.ins[at + 1]) } } else { null },
++            rest -> null,
++        }
++        let c? = call else { continue }
++        let marks = by_name.get(c.callee) ?? []
++        if ![j for j, a in c.args if same_reg(a, c.src) && lent_seat(marks, j)].is_empty() { continue }
++        out
++            .push(
++                defect_at(
++                    null,
++                    "in `${b.name}`, instruction ${at} reads the answer of `${c.callee}` as a view of r${c.src.index}, a seat it does not lend its answer from",
++                ),
++            )
++    }
++    out
++}
++
++type LentRead = { callee: string, args: List<Reg>, src: Reg }
++
++fn viewed_over(i: Ins) -> Reg {
++    match i { .CallRt(_, _, args) -> args[0], rest -> Reg { index: 0 - 1 } }
+ }
+ 
+ /// Which param registers a consuming seat mark names — this body's
+ /// OWN birth credit for each, arriving with the call rather than an
+ /// instruction in its stream.
++/// A LENT ANSWER IS A VIEW: in a body whose marks lend its answer from some seats, every register the
++/// answer may be — each arm a region merges, each box a lending read or Extract projects from — rides
++/// a seat the caller keeps standing past the call, so here it is counted by no retain and freed by
++/// no release, as the binary's own data is. Re-derived from the stream: a chain that roots anywhere
++/// but a lent seat exempts nothing, and what it left uncounted is reported as any other.
++fn lent_chain(b: Body) -> List<bool> {
++    let n = b.layouts.length
++    let none = [false for j in 0..n]
++    if !b.marks.any(it.lent) { return none }
++    let defs = def_sites(n, b.ins)
++    mut out = [false for j in 0..n]
++    mut todo: List<Reg> = flatten([answered_regs(i) for i in b.ins])
++    while !todo.is_empty() {
++        let r = todo.pop()!
++        if r.index < 0 || r.index >= n { return none }
++        if out[r.index] { continue }
++        out.set(r.index, true)
++        let d = defs[r.index]
++        if d < 0 {
++            if r.index >= b.seats.length || !lent_seat(b.marks, r.index) { return none }
++            continue
++        }
++        let i = b.ins[d]
++        if i is .RegionEnd {
++            let open? = region_opener(b.ins, d) else { return none }
++            for a in region_arms(b.ins, open) { if !arm_diverges(b.ins, a) { todo.push(a.gives) } }
++            continue
++        }
++        let src? = view_source(i) else { return none }
++        todo.push(src)
++    }
++    out
++}
++
++fn lent_seat(marks: List<SeatMark>, j: int) -> bool { j < marks.length && marks[j].lent }
++
++fn answered_regs(i: Ins) -> List<Reg> {
++    match i { .RetVal(r) or .FnExit(r) -> [r], rest -> [] }
++}
++
++/// The `IfStart`/`SwitchStart` the `RegionEnd` at `end_at` closes.
++fn region_opener(ins: List<Ins>, end_at: int) -> int? {
++    mut depth = 0
++    mut k = end_at - 1
++    while k >= 0 {
++        let step = ins[k]
++        if closes(step) {
++            depth = depth + 1
++        } else if opens(step) {
++            if depth == 0 { return if step is .IfStart || step is .SwitchStart { k } else { null } }
++            depth = depth - 1
++        }
++        k = k - 1
++    }
++    null
++}
++
++/// Whether the arm never reaches its merge: an exit stands at its own nesting.
++fn arm_diverges(ins: List<Ins>, a: ArmSpan) -> bool {
++    mut depth = 0
++    for k in a.lo..a.hi {
++        let step = ins[k]
++        if depth == 0 && step is .FnExit { return true }
++        if opens(step) { depth = depth + 1 } else if closes(step) { depth = depth - 1 }
++    }
++    false
++}
++
++/// Whether the call at `at` answers a lent answer: its very next step reads it as a view.
++fn read_as_lent(ins: List<Ins>, at: int, dst: Reg) -> bool {
++    if at + 1 >= ins.length { return false }
++    match ins[at + 1] {
++        .CallRt(_, callee, args) -> (callee == "avra_lent_view" || callee == "avra_lent_view_owned") &&
++            args.length == 2 &&
++            same_reg(args[1], dst),
++        rest -> false,
++    }
++}
++
+ fn owned_param_regs(seats: int, marks: List<SeatMark>) -> List<bool> {
+     [consumed_mark(marks, j) for j in 0..seats]
+ }
+@@ -143,6 +256,7 @@ fn owning_def(ins: List<Ins>, at: int, layouts: List<Layout>, immortal: List<boo
+     match i {
+         .CallRt(_, callee, _) if !rt_owns(callee) -> null,
+         .Load(_, _) -> if retained_next(ins, at, dst) { dst } else { null },
++        .Call(_, _, _) -> if read_as_lent(ins, at, dst) { null } else { dst },
+         rest -> dst,
+     }
+ }
+diff --git a/packages/std-avrac/src/core/ir.av b/packages/std-avrac/src/core/ir.av
+index 05f1d571..243aefd8 100644
+--- a/packages/std-avrac/src/core/ir.av
++++ b/packages/std-avrac/src/core/ir.av
+@@ -824,6 +824,8 @@ export enum RtKind { I64, Ptr, Void, I32, U32, F64 }
+ /// generated from the rows (`avra_rt.h`, `features/rt.av`) spells it,
+ /// so a new one goes where it reads best.
+ export enum RtHost {
++    /// A lent answer read as a view: its second seat.
++    LentView
+     Puts
+     Streq
+     ArrayNew
+diff --git a/packages/std-avrac/src/core/runtime_api.av b/packages/std-avrac/src/core/runtime_api.av
+index 0ff8e4a0..2e55718e 100644
+--- a/packages/std-avrac/src/core/runtime_api.av
++++ b/packages/std-avrac/src/core/runtime_api.av
+@@ -246,6 +246,29 @@ export once fn rt_sigs() -> List<RtSig> {
+         // the native read is a load with no bounds test; the evaluator
+         // keeps `avra_array_get`'s, which is how a row written short
+         // across a generation still refuses.
++        // A LENT ANSWER, read as a view of the argument it projects: a call whose callee lends its
++        // answer from seat `src` answers `v` with no reference of its own, and the caller reads it
++        // here as a view of `src`, so `v` stands while `src` does. The owned twin takes its own.
++        RtSig {
++            name: "avra_lent_view",
++            ret: RtKind.Ptr,
++            params: [RtKind.Ptr, RtKind.Ptr],
++            owns_result: false,
++            has_owned_twin: true,
++            host: RtHost.LentView,
++            lends: true,
++            inert: true,
++        },
++        RtSig {
++            name: "avra_lent_view_owned",
++            stood: true,
++            ret: RtKind.Ptr,
++            params: [RtKind.Ptr, RtKind.Ptr],
++            owns_result: true,
++            has_owned_twin: false,
++            host: RtHost.LentView,
++            inert: true,
++        },
+         RtSig {
+             name: "avra_slot_get",
+             ret: RtKind.I64,
+diff --git a/packages/std-avrac/src/core/types.av b/packages/std-avrac/src/core/types.av
+index f5201b48..d4d7084d 100644
+--- a/packages/std-avrac/src/core/types.av
++++ b/packages/std-avrac/src/core/types.av
+@@ -1091,7 +1091,16 @@ export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId
+ @derive(Fingerprint)
+ @codec
+ @derive(Taped)
+-export type SeatMark = { mutable: bool, settled: bool, state: bool = false, unshared: bool = false, consumed: bool = false }
++export type SeatMark = {
++    mutable: bool,
++    settled: bool,
++    state: bool = false,
++    unshared: bool = false,
++    consumed: bool = false,
++    /// The body's answer may be a VIEW into this seat's argument — a field, index or arm projection
++    /// of it — and carries no reference of its own. A body's fact, never a type's.
++    lent: bool = false,
++}
+ 
+ /// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.
+ export const plain_mark: SeatMark = SeatMark { mutable: false, settled: false }
+@@ -1148,6 +1157,11 @@ export fn consumed_mark(marks: List<SeatMark>, j: int) -> bool {
+     mark_at(marks, j).consumed
+ }
+ 
++/// Whether the body's answer may be a view into seat `j`'s argument.
++export fn lent_mark(marks: List<SeatMark>, j: int) -> bool {
++    mark_at(marks, j).lent
++}
++
+ /// A seat's written prefix — `const`, `mut` and `isolated`, in the
+ /// order the grammar takes them.
+ export fn mark_prefixed(m: SeatMark, word: string) -> string {
+@@ -1197,7 +1211,7 @@ fn trimmed_marks(t: Type) -> Type {
+ }
+ 
+ fn is_plain(m: SeatMark) -> bool {
+-    !m.mutable && !m.settled && !m.unshared && !m.consumed && !m.state
++    !m.mutable && !m.settled && !m.unshared && !m.consumed && !m.state && !m.lent
+ }
+ 
+ fn trimmed(marks: List<SeatMark>) -> List<SeatMark> {
+diff --git a/runtime/avra_hot.c b/runtime/avra_hot.c
+index b2dd4db8..f1617cbf 100644
+--- a/runtime/avra_hot.c
++++ b/runtime/avra_hot.c
+@@ -62,6 +62,19 @@ void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted) {
+     if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_release((void*)(uintptr_t)word);
+ }
+ 
++// A LENT ANSWER read as a view of the argument it projects: the answer itself, and the owned
++// twin's its own reference to it.
++void* avra_lent_view(void* src, void* v) {
++    (void)src;
++    return v;
++}
++
++void* avra_lent_view_owned(void* src, void* v) {
++    (void)src;
++    avra_rc_retain(v);
++    return v;
++}
++
+ int64_t avra_array_get(void* arr, int64_t i) {
+     CENSUS(g_list_gets++);
+     if (__builtin_expect(avra_rc_guard_on, 0)) return avra_get_guarded(arr, i);
+diff --git a/runtime/avra_hot.h b/runtime/avra_hot.h
+index 4e1ad3ce..63ee5445 100644
+--- a/runtime/avra_hot.h
++++ b/runtime/avra_hot.h
+@@ -54,6 +54,8 @@ int64_t avra_array_get(void* arr, int64_t i);
+ void* avra_array_get_owned(void* arr, int64_t i);
+ int64_t avra_slot_get(void* box, int64_t i);
+ void* avra_slot_get_owned(void* box, int64_t i);
++void* avra_lent_view(void* src, void* v);
++void* avra_lent_view_owned(void* src, void* v);
+ int64_t avra_array_len(void* arr);
+ int64_t avra_stride_len(void* arr, int64_t k);
+ int64_t avra_stride_at(void* arr, int64_t i, int64_t k);

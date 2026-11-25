@@ -38,24 +38,21 @@ fn said(r: Result<int, DrainError>) -> string {
     match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
 }
 
-/// The terms the queue's memory home is opened under.
-fn terms() -> Terms {
-    Terms {
-        capacity: 8,
-        lease: secs(1),
-        retries: 3,
-        dead: "jobs/dead",
-        overflow: Overflow.park,
-        order: Order.fifo,
-    }
-}
-
 avra_clock_virtual(1)
-state takes: Cell<int> = Cell.new(0)
-queue<Dead<int>> letters {}
+let takes = Cell.new(0)
+let terms = Terms {
+    capacity: 8,
+    lease: secs(1),
+    retries: 3,
+    dead: "jobs/dead",
+    overflow: Overflow.park,
+    order: Order.fifo,
+}
+let memory = open_memory<int>(terms)
+queue<Dead<int, string>> letters {}
 queue<int> jobs {
     lease: secs(1)
-    homed: match open_memory<int>(terms()) { .Ok(m) -> deaf(m.home(), takes), .Err(_) -> null }
+    homed: match memory { .Ok(m) -> deaf(m.home(), takes), .Err(_) -> null }
 }
 worker idle {
     reads: jobs

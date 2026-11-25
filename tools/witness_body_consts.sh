@@ -2,8 +2,7 @@
 # A CONST A BODY DECLARES, ITS VALUE READING, OF WHAT THE BODY BINDS, ONLY CONSTS BEFORE IT, IS
 # SETTLED AT COMPILE TIME on the program layer, and a read of it is the binary's own data. A package
 # whose fns declare them: a list a lambda computes, a record, a scalar, and a chain of three each
-# reading the one before. It must print on the program layer what the old path's run printed (its
-# last word, frozen at cbc437f4 before its deletion: `70 o42 43 126`); each
+# reading the one before. It must print on the program layer what the old path's run prints; each
 # fn's lowered code must read its const as a `static` — an address — and build nothing that
 # computes it; a control whose const reads a `let` is seen built at run time. Then THE CONST'S
 # INITIALIZER EDITED, at its own length, is worked out again in that one body: the warm build is the
@@ -55,14 +54,13 @@ EOF
 fail() { echo "witness_body_consts: $1" >&2; exit 1; }
 # A product compared byte for byte is the release one: a dev build's binary is an overlay linked beside
 # the world it last linked, so a warm dev product never holds a cold one's bytes.
-new() { (cd "$pkg" && AVRA_PROGRAM_MODE=release "$@" "$avra" build . >"$tmp/log" 2>&1) || { tail -5 "$tmp/log" >&2; fail "the program layer refused it"; }; }
+new() { (cd "$pkg" && AVRA_PROGRAM=1 AVRA_PROGRAM_MODE=release "$@" "$avra" build . >"$tmp/log" 2>&1) || { tail -5 "$tmp/log" >&2; fail "the program layer refused it"; }; }
 
-# what the old path's run printed, its last word on this package
-echo "70 o42 43 126" >"$tmp/old.out"
+(cd "$pkg" && AVRA_PROGRAM=0 "$avra" run src/main.av >"$tmp/old.out" 2>&1) || fail "the old path refused it"
 new env
 "$pkg/src/main" >"$tmp/new.out"
-cmp -s "$tmp/old.out" "$tmp/new.out" || fail "the program layer prints otherwise than the old path did: $(cat "$tmp/old.out") / $(cat "$tmp/new.out")"
-echo "witness_body_consts: prints $(cat "$tmp/new.out"), as the old path did"
+cmp -s "$tmp/old.out" "$tmp/new.out" || fail "the paths print differently: $(cat "$tmp/old.out") / $(cat "$tmp/new.out")"
+echo "witness_body_consts: prints $(cat "$tmp/new.out") on both paths"
 cp "$pkg/src/main" "$tmp/base"
 
 # what builds a list or a record at run time

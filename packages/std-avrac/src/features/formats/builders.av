@@ -6,7 +6,6 @@
 //! are re-derived from the node and spoken by typing, where they
 //! carry a span and a code.
 use core.{
-    scoped,
     Slots,
     Built,
     computed,
@@ -24,7 +23,7 @@ use core.{
     binds,
     plain_mark,
 }
-use features.formats.{read_format, has_holes, Format, Fault, Reads, read_type_name}
+use features.formats.{read_format, has_holes, Format, Fault, reads_of, read_type_name}
 
 /// A STRING in pattern position: the format it spells, or the literal
 /// pattern it always was when it spells no holes.
@@ -89,7 +88,7 @@ impl SyntaxArena {
             .alloc_stmt(
                 Stmt
                     .StructDecl(
-                        scoped(name),
+                        Scoped(name),
                         [],
                         [self.field_of(p.hole) for p in f.parts if binds(p.hole)],
                         [],
@@ -112,6 +111,8 @@ fn undeclarable(f: Format, name: string, written: bool) -> string? {
     if written && !has_holes(f) { return "`grammar ${name}` has no holes — a grammar names the fields its holes bind, and this format binds none" }
     let anonymous = f.parts.find(!binds(it.hole))
     if anonymous != null { return "`grammar ${name}` has a hole that binds nothing — every hole of a grammar names a field" }
+    let unread = f.parts.find(reads_of(it.hole) == null)
+    if unread != null { return "`grammar ${name}` reads `{${unread!.hole.name}}` as `${unread!.hole.ty!.name}`, and a hole reads text as `string` or `int`" }
     null
 }
 
@@ -129,8 +130,8 @@ impl SyntaxArena {
     /// its span as.
     fn field_of(h: Hole) -> Param {
         Param {
-            name: scoped(h.name),
-            ty: h.ty ?? named_ref(read_type_name(Reads.Text)),
+            name: Scoped(h.name),
+            ty: named_ref(read_type_name(reads_of(h)!)),
             default: null,
             promises: plain_mark,
             id: self.alloc_param_id(null),

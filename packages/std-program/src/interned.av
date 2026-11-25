@@ -8,7 +8,7 @@
 //! multiply-xor-rotate fold of 64-bit words with its own seed and prime: no box is made, and the two
 //! lanes together are the 128-bit key, equal for equal values in every process.
 use answer_record.{ContentHash}
-use @std.meta.{identity, plain_field}
+use @std.meta.{identity}
 
 /// A value's place in the table that interned it. Meaningless in any other table or process, so
 /// never saved: a boundary carries the value's content key.
@@ -20,8 +20,6 @@ const FIRST_SLOTS: int = 64
 /// Values each minted a dense id the first time an equal one arrives: open addressing over a
 /// power-of-two list of slots, never more than half full. An identity: every holder sees one table.
 @identity
-@plain_field("hashed")
-@plain_field("same")
 export type Interned<T> = {
     /// Each id's value.
     values: Cell<List<T>>,
@@ -30,46 +28,41 @@ export type Interned<T> = {
     /// Each slot holds one more than an id, or zero when it's free.
     slots: Cell<List<int>>,
     /// A value's hash: equal values hash alike; unequal ones may too, and are told apart by `same`.
-    hashed: fn(T) -> int,
+    hashed: Cell<fn(T) -> int>,
     /// Whether two values are one.
-    same: fn(T, T) -> bool,
+    same: Cell<fn(T, T) -> bool>,
 }
 
 /// A table interning values by `hashed` and `same`.
 export fn interned<T>(hashed: fn(T) -> int, same: fn(T, T) -> bool) -> Interned<T> {
     let values: Cell<List<T>> = Cell.new([])
-    interned_over(values, hashed, same)
-}
-
-/// A table interning values by `hashed` and `same` into `values`, a cell its holder may also read
-/// by id directly.
-export fn interned_over<T>(values: Cell<List<T>>, hashed: fn(T) -> int, same: fn(T, T) -> bool) -> Interned<
-    T,
-> {
     let hashes: Cell<List<int>> = Cell.new([])
     let slots: Cell<List<int>> = Cell.new([])
-    Interned { values: values, hashes: hashes, slots: slots, hashed: hashed, same: same }
+    Interned {
+        values: values,
+        hashes: hashes,
+        slots: slots,
+        hashed: Cell.new(hashed),
+        same: Cell.new(same),
+    }
 }
 
 impl Interned<T> {
     /// The id `value` is known by, minted the first time an equal value arrives.
     fn id_of(value: T) -> InternId {
-        let h = (self.hashed)(value)
+        let h = (self.hashed.get())(value)
         let standing? = self.standing(value, h) else { return self.minted(value, h) }
         InternId { index: standing }
     }
 
     /// The id an equal value already has, absent while none has arrived.
     fn found(value: T) -> InternId? {
-        let standing? = self.standing(value, (self.hashed)(value)) else { return null }
+        let standing? = self.standing(value, (self.hashed.get())(value)) else { return null }
         InternId { index: standing }
     }
 
     /// The value `id` names.
     fn value_of(id: InternId) -> T { self.values.get()[id.index] }
-
-    /// The hash the value of `id` was minted under: a fold of the value alone.
-    fn hash_of(id: InternId) -> int { self.hashes.get()[id.index] }
 
     /// How many values it holds.
     fn count() -> int { self.values.get().length }
@@ -80,7 +73,7 @@ impl Interned<T> {
         if slots.is_empty() { return null }
         let hashes = self.hashes.get()
         let values = self.values.get()
-        let same = self.same
+        let same = self.same.get()
         mut slot = spread(h) & slots.length - 1
         while slots[slot] != 0 {
             let id = slots[slot] - 1

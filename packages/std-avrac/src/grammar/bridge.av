@@ -136,10 +136,10 @@ fn token_class(t: Token) -> int {
         if t.kind == TokenKind.Num && t.is_fraction() { 1 } else { 0 }
 }
 
-/// What each token class wears, by `token_class`: -1 until a token of it is asked. It holds no
-/// class until one is asked, and grows to the class asked, so a token kind added to the lexer is
-/// never past its end.
-export fn token_classes_worn() -> Cell<List<int>> { Cell.new([]) }
+/// What each token class wears, by `token_class`: -1 until a token of it is asked.
+export fn token_classes_worn() -> Cell<List<int>> {
+    Cell.new([0 - 1 for _k in 0..84])
+}
 
 /// Each token's literal slot by `lits` and its classes by `kinds`, as `token_tables` answers
 /// them — a class asked of the lexeme once in `worn`, for every token of it.
@@ -159,10 +159,9 @@ export fn avra_token_tables(
 
 fn class_worn(worn: Cell<List<int>>, kinds: List<int>, t: Token) -> int {
     let key = token_class(t)
-    let seen = worn.get()
-    if key < seen.length && seen[key] >= 0 { return seen[key] }
+    let known = worn.get()[key]
+    if known >= 0 { return known }
     let bits = class_bits(avra_lexeme(), kinds, t)
-    if key >= seen.length { worn.set([if k < seen.length { seen[k] } else { 0 - 1 } for k in 0..key + 1]) }
     worn.set_at(key, bits)
     bits
 }
@@ -173,13 +172,8 @@ fn token_ends_statement(t: Token) -> bool { t.kind == TokenKind.Break }
 
 /// A terminal name's kind id: its place in `terminal_kinds`, -1 for a
 /// name Avra's lexer has no kind for.
-fn token_kind_of(term: string) -> int { terminal_places().get(term) ?? 0 - 1 }
-
-/// Each terminal name's place in `terminal_kinds`, made once a process.
-once fn terminal_places() -> Map<string, int> {
-    mut places: Map<string, int> = {}
-    for i, k in terminal_kinds { places.set(k.name, i) }
-    places
+fn token_kind_of(term: string) -> int {
+    [i for i, k in terminal_kinds if k.name == term].first() ?? 0 - 1
 }
 
 fn token_wears_kind(t: Token, k: int) -> bool {

@@ -1,0 +1,174 @@
+diff --git a/packages/std-process/src/c/std_process.c b/packages/std-process/src/c/std_process.c
+index d0103900..69f2859a 100644
+--- a/packages/std-process/src/c/std_process.c
++++ b/packages/std-process/src/c/std_process.c
+@@ -171,6 +171,7 @@ extern char** environ;
+ // The runtime's: a blocking call here holds the world, so a virtual
+ // clock flows at wall rate across it.
+ void avra_clock_hold(int64_t by);
++void avra_mem_settle(void);
+ 
+ enum {
+     PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
+@@ -372,6 +373,7 @@ int64_t avra_proc_spawn(int64_t token, const char* file, const char* cwd, int64_
+     /* what this program printed comes out before the child's words */
+     fflush(NULL);
+     pid_t pid = -1;
++    avra_mem_settle();
+     int started = (cargv && cenvp) ? posix_spawn(&pid, file, &fa, &at, cargv, cenvp) : ENOMEM;
+     posix_spawn_file_actions_destroy(&fa);
+     posix_spawnattr_destroy(&at);
+diff --git a/runtime/avra_pool.c b/runtime/avra_pool.c
+index e2d2114b..b8d0660c 100644
+--- a/runtime/avra_pool.c
++++ b/runtime/avra_pool.c
+@@ -132,6 +132,17 @@ int64_t avra_pool_allowed(int64_t in_use) {
+     return FREE_BYTES + (int64_t)g_held_count * SLOT_BYTES;
+ }
+ 
++// The slots this process holds past what `in_use` needs, given back to the machine; what it may
++// use before it asks again. Half a slot of slack stays, so a run that grows a little asks nobody.
++int64_t avra_pool_let_go(int64_t in_use) {
++    pool_settled();
++    if (g_slot_count <= 0) return INT64_MAX;
++    while (g_held_count > 0 && FREE_BYTES + (int64_t)(g_held_count - 1) * SLOT_BYTES >= in_use + SLOT_BYTES) {
++        close(g_held[--g_held_count]);
++    }
++    return FREE_BYTES + (int64_t)g_held_count * SLOT_BYTES;
++}
++
+ // How many slots this process holds.
+ int64_t avra_pool_held(void) { return g_held_count; }
+ 
+@@ -142,6 +153,8 @@ int64_t avra_pool_free_bytes(void) { return FREE_BYTES; }
+ 
+ int64_t avra_pool_allowed(int64_t in_use) { (void)in_use; return INT64_MAX; }
+ 
++int64_t avra_pool_let_go(int64_t in_use) { (void)in_use; return INT64_MAX; }
++
+ int64_t avra_pool_held(void) { return 0; }
+ 
+ int64_t avra_pool_free_bytes(void) { return INT64_MAX; }
+diff --git a/runtime/avra_runtime.c b/runtime/avra_runtime.c
+index d5f47b24..939c9a8d 100644
+--- a/runtime/avra_runtime.c
++++ b/runtime/avra_runtime.c
+@@ -573,6 +573,7 @@ static void acc_report(void) {
+ static int64_t g_mem_ceiling;
+ static int64_t g_mem_next;
+ int64_t avra_pool_allowed(int64_t in_use);
++int64_t avra_pool_let_go(int64_t in_use);
+ int64_t avra_pool_free_bytes(void);
+ #endif
+ 
+@@ -674,6 +675,18 @@ static void mem_ceiling_measure(void) {
+ }
+ #endif
+ 
++// THE POOL IS HELD FOR WHAT IS IN USE, NEVER FOR A PEAK: a run about to wait on a child gives back
++// the slots its own memory no longer fills, so the child and every other run may take them.
++void avra_mem_settle(void) {
++#if AVRA_MEASURES_MEMORY
++    if (g_mem_ceiling <= 0) return;
++    int64_t used = mem_in_use();
++    int64_t allowed = avra_pool_let_go(used);
++    int64_t limit = allowed < g_mem_ceiling ? allowed : g_mem_ceiling;
++    g_mem_next = g_live_bytes + (limit - used);
++#endif
++}
++
+ static inline void mem_ceiling_check(void) {
+ #if AVRA_MEASURES_MEMORY
+     if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_next, 0)) mem_ceiling_measure();
+@@ -4704,6 +4717,7 @@ int64_t avra_spawn_status(const char* prog, void* args) {
+     free(argv);
+     if (started != 0) return 127;
+     int status;
++    avra_mem_settle();
+     avra_clock_hold(1);
+     pid_t waited = waitpid(pid, &status, 0);
+     avra_clock_hold(-1);
+@@ -4735,6 +4749,7 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
+     free(argv);
+     if (started != 0) return 127;
+     int status;
++    avra_mem_settle();
+     avra_clock_hold(1);
+     pid_t waited = waitpid(pid, &status, 0);
+     avra_clock_hold(-1);
+diff --git a/runtime/avra_runtime.h b/runtime/avra_runtime.h
+index db4f05a1..f81043a7 100644
+--- a/runtime/avra_runtime.h
++++ b/runtime/avra_runtime.h
+@@ -115,6 +115,8 @@ int64_t avra_clock_jumped(int64_t at);
+ // waited on the world has waited — its count of clock reads begins
+ // again.
+ void avra_clock_hold(int64_t by);
++// The memory pool's slots this process no longer fills, given back.
++void avra_mem_settle(void);
+ // What tasks abandoned while holding the world held, let go: only that
+ // share, never the holds a live task stands in.
+ void avra_clock_holds_let_go(int64_t n);
+diff --git a/tools/pool/src/main.av b/tools/pool/src/main.av
+index e9aac468..ddc046fb 100644
+--- a/tools/pool/src/main.av
++++ b/tools/pool/src/main.av
+@@ -1,9 +1,32 @@
+ use @std.io.{env}
++use @std.process.{cmd, inherited, status_of, tool_at}
+ use @std.text.{parse_int}
+ use @std.time.{ms, sleep}
+ 
+-let count = 1000000 * (parse_int(env("POOL_MB") ?? "100") ?? 100) / 8
+-let xs = [i for i in 0..count]
++/// How many numbers a list of `mb` megabytes holds.
++fn held_in(mb: int) -> int { 1000000 * mb / 8 }
++
++/// A list of `mb` megabytes made and dropped: how many it held.
++fn peaked(mb: int) -> int {
++    let xs = [i for i in 0..held_in(mb)]
++    xs.length
++}
++
++/// This program run again as a child holding `mb` megabytes: its exit status, or -1 unstarted.
++fn child_status(self_path: string, mb: int) -> int {
++    match (cmd(tool_at("probe", self_path), []) with { env: inherited().with_var("POOL_MB", "${mb}").with_var("PEAK_MB", "0") })
++        .outcome() {
++        .Ok(ran) -> status_of(ran.exit),
++        .Err(_) -> -1,
++    }
++}
++
++let peak = parse_int(env("PEAK_MB") ?? "0") ?? 0
++if peak > 0 {
++    println("peaked ${peaked(peak)}")
++    println("child ${child_status(env("POOL_SELF") ?? "", parse_int(env("POOL_MB") ?? "100") ?? 100)}")
++}
++let xs = [i for i in 0..held_in(if peak > 0 { 1 } else { parse_int(env("POOL_MB") ?? "100") ?? 100 })]
+ println("allocated ${xs.length}")
+ sleep(ms(parse_int(env("HOLD_MS") ?? "0") ?? 0))
+ println("done ${xs[xs.length - 1]}")
+diff --git a/tools/pool_check.sh b/tools/pool_check.sh
+index 8b51464e..c6c5c164 100755
+--- a/tools/pool_check.sh
++++ b/tools/pool_check.sh
+@@ -1,7 +1,7 @@
+ #!/bin/sh
+ # THE MEMORY POOL, held to what it promises, with real processes: a run needing more than the whole
+ # pool refuses in its own words; a run inside it finishes; a run that finds the pool held waits for
+-# it and then finishes. Each case gets a pool of its own, so no real run's slots are touched.
++# it and then finishes; a run that waits on a child holds only what it still uses. Each case gets a pool of its own, so no real run's slots are touched.
+ set -u
+ cd "$(dirname "$0")/.."
+ probe_dir=tools/pool
+@@ -29,5 +29,9 @@ wait "$first"
+ case "$second" in *"waiting for memory"*"done 37499999"*) said "a run finding the pool held waits, then finishes";; *) said "FAIL: a run finding the pool held: $second"; failed=1;; esac
+ grep -q "done 62499999" "$pools/first.out" || { said "FAIL: the run holding the pool: $(cat "$pools/first.out")"; failed=1; }
+ 
+-[ "$failed" = 0 ] && said "3 cases held" && exit 0
++mkdir "$pools/peak"
++out=$(AVRA_MEM_POOL_DIR="$pools/peak" AVRA_MEM_POOL_MB=1024 AVRA_MEM_POOL_WAIT_MS=2000 PEAK_MB=400 POOL_MB=300 POOL_SELF="$PWD/$probe" "$probe" 2>&1)
++case "$out" in *"child 0"*) said "a run past its peak gives its slots back to the child it waits on";; *) said "FAIL: a run past its peak kept the pool from its child: $out"; failed=1;; esac
++
++[ "$failed" = 0 ] && said "4 cases held" && exit 0
+ exit 1

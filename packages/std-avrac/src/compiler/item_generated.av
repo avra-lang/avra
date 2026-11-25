@@ -8,7 +8,6 @@
 //! the generator's made program, so it runs once per change of either. A generator the program
 //! layer doesn't make says why instead.
 use core.{
-    scoped,
     distinct,
     template_file,
     template_home,
@@ -39,18 +38,7 @@ use @std.program.syntax_tape.{SyntaxTape}
 /// holds its moved body as a method of its owner, and its wrapper apart, on a tape no file declares:
 /// the body the written method is read as.
 @derive(Saved)
-export type GeneratedItem = {
-    tape: SyntaxTape,
-    wraps: bool = false,
-    wrapper: SyntaxTape? = null,
-    /// Where it was made: the written item holding the declaration its generator ran over, that
-    /// declaration, and the annotation that names the generator — where what it holds is said.
-    site: ItemId? = null,
-    owner: string = "",
-    by: string = "",
-    /// The file the generator is written in: where a mistake of its own is said.
-    from: SourceFileAddress? = null,
-}
+export type GeneratedItem = { tape: SyntaxTape, wraps: bool = false, wrapper: SyntaxTape? = null }
 
 /// What generators made, in the order their declarations are written, and what they said instead
 /// wherever they made nothing or the splice couldn't place what they made.
@@ -69,7 +57,7 @@ export type KeptProblem = {
     warning: bool,
     at: FindingAt?,
     home: string?,
-    item: ItemId = ItemId(-1),
+    item: int = -1,
     owner: string = "",
     by: string = "",
     from: string = "",
@@ -91,7 +79,7 @@ export type Handing = { args: List<HandedArg>, meanings: List<ContentHash> }
 /// What `generator` makes over the declaration `file` writes as `name`, its item's tape meaning
 /// `_declaration`, the generator's made program printing as `print`, handed `handed`; a method of the
 /// impl `method` where it's one.
-@query("generate")
+@query
 export fn generated(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -167,7 +155,7 @@ fn unsettled_run(why: string) -> GeneratedItems {
 
 /// What the generators every declaration of a file names make, in the order written, then what each
 /// format gives the record it reads.
-@cut_query("generate")
+@cut_query
 export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
     gathered_items(
         [site_generated(engine, file, site) for site in generator_sites(engine, file)]
@@ -178,7 +166,7 @@ export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> Genera
 /// What the validating annotations every declaration of a file wears say of it: no item, only their
 /// problems. Apart from what the file's generators make, so nothing a validator's own body needs of
 /// its package — an impl a generator there makes — waits on the validator's run.
-@cut_query("generate")
+@cut_query
 export fn file_validated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
     gathered_items([site_generated(engine, file, site) for site in validator_sites(engine, file)])
 }
@@ -227,65 +215,26 @@ fn written_quote(engine: QueryEngine, home: string, at: int) -> Scratch? {
 
 /// The written item of `file` holding the quote at the offset `at` of its text, none where none
 /// does: the item whose text holds the offset, where a quote stands there in it.
-@query("generate")
-fn quote_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemId> {
-    [i for i in item_ids(engine, file) for start in [item_start(engine, file, i)] if start <= at &&
+@query
+fn quote_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<int> {
+    [i for i in 0..item_count(engine, file) for start in [item_start(engine, file, i)] if start <= at &&
         at < start + item_under(engine, file, i).text.length &&
         read_item(engine, file, i).store.quote_at(at - start) != null]
         .take(1)
 }
 
-/// Every item of `file` by id: its written items, then its generated ones, each in order.
-export fn every_item_id(engine: QueryEngine, file: SourceFileAddress) -> List<ItemId> {
-    item_ids(engine, file)
-        .concat([generated_id(k) for k in 0..file_generated(engine, file).items.length])
-}
-
-/// The items of `file` the laws judge, by id: its written items, then every one its generators make
-/// but a wrap's, whose wrapper is judged as the written fn it wraps.
-export fn swept_item_ids(engine: QueryEngine, file: SourceFileAddress) -> List<ItemId> {
-    item_ids(engine, file)
-        .concat(
-            [generated_id(k) for k in 0..file_generated(engine, file).items.length if item_judged(engine, file, generated_id(k))],
-        )
-}
-
-/// The items of `file` that stand before the item `at`, by id, in order: for a written item, the
-/// written ones before it; for a generated one, every written item and the generated ones made
-/// before it; every written item where the file holds no `at`.
-export fn items_before(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ItemId> {
-    let ids = item_ids(engine, file)
-    let k? = generated_rank(at) else {
-        let rank = ids.index_of(at)
-        return if rank < 0 { ids } else { ids.take(rank) }
-    }
-    ids.concat([generated_id(j) for j in 0..k])
-}
-
-/// Where the item `at` stands among every item of `file`, counted from the first: a written item by
-/// its place among the written ones, a generated one past them all by its place among those made;
-/// past every written item for one the file doesn't hold. Read without what generators make.
-export fn item_order(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> int {
-    let ids = item_ids(engine, file)
-    let k? = generated_rank(at) else {
-        let rank = ids.index_of(at)
-        return if rank < 0 { ids.length } else { rank }
-    }
-    ids.length + k
-}
-
-/// What a file's generated items declare, each by its generated id.
+/// What a file's generated items declare, each standing at its place past the file's written items.
 export fn generated_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
+    let first = item_count(engine, file)
     Declarations {
-        names: [tape_declared(file, generated_id(k), n) for k, g in file_generated(engine, file).items for n in g.tape.declares],
+        names: [tape_declared(file, first + at, n) for at, g in file_generated(engine, file).items for n in g.tape.declares],
     }
 }
 
 /// What one site's generator makes, or why its generator isn't made.
 export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: GeneratorSite) -> GeneratedItems {
     let made = generator_print(engine, site.generator)
-    // a generator the layer can't make is said at the annotation that names it, never only downstream
-    let print? = made.print else { return if made.speaks { sited(unsettled_run(made.unmade), site) } else { said_only([made.unmade]) } }
+    let print? = made.print else { return said_only([made.unmade]) }
     let handed = Handing {
         args: site.handed,
         meanings: [item_meaning(engine, d.file, d.item) for h in site.handed for d in handed_decl(h)],
@@ -302,13 +251,7 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Gen
     )
     let taken = taken_names(engine, file, made_here.items)
     let kept = if taken.is_empty() { made_here } else { GeneratedItems { items: [], said: [], problems: [name_taken(n) for n in taken] } }
-    sited(kept, site)
-}
-
-/// What a site's generator made and said, each item and problem kept beside the site: the written
-/// item, the declaration, the annotation naming the generator.
-fn sited(kept: GeneratedItems, site: GeneratorSite) -> GeneratedItems {
-    kept with { items: [g with { site: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file } for g in kept.items], problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file.package_name } for p in kept.problems] }
+    kept with { problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file.package_name } for p in kept.problems] }
 }
 
 /// The names the items a generator made over `file` declare that the file already declares in
@@ -318,10 +261,10 @@ fn taken_names(engine: QueryEngine, file: SourceFileAddress, items: List<Generat
     string,
 > {
     if items.is_empty() { return [] }
-    let scope? = written_file_scope(engine, file) else { return [] }
+    let scope? = file_scope(engine, file) else { return [] }
     distinct(
-        [n.name for g in items if !g.wraps for n in g.tape.declares if stratum_resolved(engine, scope, file, Space.Value, n.name).named() != null ||
-            stratum_resolved(engine, scope, file, Space.Type, n.name).named() != null],
+        [n.name for g in items if !g.wraps for n in g.tape.declares if resolved_in(engine, scope, file, Space.Value, n.name).named() != null ||
+            resolved_in(engine, scope, file, Space.Type, n.name).named() != null],
     )
 }
 
@@ -342,7 +285,7 @@ fn name_taken(name: string) -> KeptProblem {
 fn handed_decl(h: HandedArg) -> List<HandedDecl> { match h { .Decl(d) -> [d], rest -> [] } }
 
 /// What the item `at` of `file` means: its tape's meaning hash, a generated item's own.
-fn item_meaning(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ContentHash {
+fn item_meaning(engine: QueryEngine, file: SourceFileAddress, at: int) -> ContentHash {
     let made = generated_at(engine, file, at)
     if made != null { return made!.tape.meaning_hash }
     let item = item_under(engine, file, at)
@@ -440,7 +383,7 @@ fn moved_method(engine: QueryEngine, m: MethodSite, name: string, store: SyntaxA
     let moved = store
         .alloc_stmt(
             Stmt
-                .FnDecl(scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+                .FnDecl(Scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
             store.stmt_span(s),
         )
     let marks = store.marks_at(s)
@@ -494,7 +437,7 @@ fn signature_spelled(store: SyntaxArena, s: StmtId) -> string {
         p.promises.settled,
         if p.ty == null { INFERRED } else { spelled(p.ty!) },
     ) for p in parts.params]
-    "<${[t.name.text() for t in parts.tparams].join(", ")}>(${seats.join(", ")}) -> ${spelled(parts.ret)}"
+    "<${[t.name.of for t in parts.tparams].join(", ")}>(${seats.join(", ")}) -> ${spelled(parts.ret)}"
 }
 
 /// The fn `file` writes as `name`, read into `store` under the name a wrap moves its body to, at the
@@ -509,7 +452,7 @@ fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store:
     let moved = store
         .alloc_stmt(
             Stmt
-                .FnDecl(scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+                .FnDecl(Scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
             store.stmt_span(s),
         )
     let marks = store.marks_at(s)
@@ -537,10 +480,10 @@ fn twin_of(
     let call = store
         .alloc_expr(
             Expr
-                .Call(scoped(name), [], [store.alloc_expr(Expr.Ident(p.name), at) for p in parts.params]),
+                .Call(Scoped(name), [], [store.alloc_expr(Expr.Ident(p.name), at) for p in parts.params]),
             at,
         )
-    store.alloc_stmt(Stmt.FnDecl(scoped(twin), parts.tparams, parts.params, parts.ret, call), at)
+    store.alloc_stmt(Stmt.FnDecl(Scoped(twin), parts.tparams, parts.params, parts.ret, call), at)
 }
 
 /// The name a wrap moves a written fn's body to, which no written name can take.
@@ -569,24 +512,12 @@ fn kept_problem(d: Diagnostic) -> KeptProblem {
 /// The generated item `at` names among a file's items, counting past its written ones; absent for
 /// a written one, and past the generated ones: a question kept from an older state of the file may
 /// name a place it no longer has, and is answered as a written place past the file's end is.
-export fn generated_at(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> GeneratedItem? {
-    let k? = generated_rank(at) else { return null }
+export fn generated_at(engine: QueryEngine, file: SourceFileAddress, at: int) -> GeneratedItem? {
+    if item_held(engine, file, at) { return null }
+    let k = at - item_count(engine, file)
     let items = file_generated(engine, file).items
     if k >= items.length { return null }
     items[k]
-}
-
-/// Where what the generated item `at` of `file` holds is said: the annotation on the written
-/// declaration that names its generator, else that declaration, counted from the file's start;
-/// absent for a written item, or one no site made.
-export fn generated_mark(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> FindingAt? {
-    let g? = generated_at(engine, file, at) else { return null }
-    let site? = g.site else { return null }
-    let item = read_item(engine, file, site)
-    let store = item.store
-    let s? = item.stmts.find((x) -> store.declared_name(x) == g.owner) else { return null }
-    let span? = store.annotations_of(s).find(it.name == g.by)?.span ?? store.stmt_span(s) else { return null }
-    file_placed(engine, file, site, FindingAt { lo: span.lo, hi: span.hi })
 }
 
 /// What each generated item of a file keeps for its words, in the order made.

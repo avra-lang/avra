@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { compiled, stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFeeds, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFeeds, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -26,8 +26,8 @@ const setAttr = (id, name, value) => [OP.set_attr, ...idBytes(id), ...str(name),
 const dropAttr = (id, name) => [OP.drop_attr, ...idBytes(id), ...str(name)];
 const setProp = (id, name, says, value) => [OP.set_prop, ...idBytes(id), ...str(name), ...i32(says), ...str(value)];
 const setText = (id, content) => [OP.set_text, ...idBytes(id), ...str(content)];
-const define = (kind, event, says, reads, prevents, key = "") => [OP.define, ...i32(kind), ...i32(says), ...str(event), ...str(reads), ...i32(prevents ? 1 : 0), ...str(key)];
-const listen = (id, kind, event, says, reads, prevents, key = "") => [...define(kind, event, says, reads, prevents, key), OP.listen, ...idBytes(id), ...i32(kind), ...i32(says)];
+const define = (kind, event, says, reads, prevents) => [OP.define, ...i32(kind), ...i32(says), ...str(event), ...str(reads), ...i32(prevents ? 1 : 0)];
+const listen = (id, kind, event, says, reads, prevents) => [...define(kind, event, says, reads, prevents), OP.listen, ...idBytes(id), ...i32(kind), ...i32(says)];
 const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
 const setVar = (id, property, value) => [OP.set_var, ...idBytes(id), ...str(property), ...str(value)];
 const dropVar = (id, property) => [OP.drop_var, ...idBytes(id), ...str(property)];
@@ -161,22 +161,6 @@ s.apply(frame(remove(3)));
 check("a sibling leaving takes nothing from it", state(s, sin), [true, 2, 4, "forward", "typed", 40]);
 s.apply(frame(remove(1)));
 check("an element that leaves takes its focus with it", s.doc.activeElement, null);
-
-// ── a field's submit: the keydown of its one key fires it, never another key, never mid-composition ──
-{
-  const fs = page();
-  fs.apply(frame(create(0, "input"), place(0, NO_ID, NO_ID), listen(0, 9, "keydown", SAYS.nothing, "", true, "Enter")));
-  const field = fs.mount.childNodes[0];
-  const down = (ev) => {
-    let prevented = false;
-    dispatch(fs.mount, field, "keydown", { preventDefault: () => { prevented = true; }, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, code: "", isComposing: false, keyCode: 0, ...ev });
-    return [prevented, fs.sent.splice(0).map((s) => s[1])];
-  };
-  check("Enter in a field that hears its submit sends it, and stops the page's own answer (a form's)", down({ key: "Enter", keyCode: 13 }), [true, [9]]);
-  check("any other key sends nothing and stops nothing", down({ key: "a", keyCode: 65 }), [false, []]);
-  check("an Enter that confirms a word being composed sends nothing", down({ key: "Enter", isComposing: true }), [false, []]);
-  check("nor one an input method still holds (keyCode 229, as Safari says it)", down({ key: "Enter", keyCode: 229 }), [false, []]);
-}
 
 // ── a shortcut: a key stands hidden, saying its chord, and is pressed by the keydown that meets it ──
 const sc = page();
@@ -690,30 +674,6 @@ const empty = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
 let lacking = "";
 try { await run(empty, { document: stubDocument(), mount: stubElement("root"), wasi: () => ({}) }); } catch (e) { lacking = e.message; }
 check("a module that mounts nothing refuses by the names it lacks", lacking.startsWith(`the module exports no ${HOST.entry}, ${HOST.event}, ${HOST.seat}`), true);
-
-// ── the module compiled as it arrives ──
-{
-  const asked = [];
-  const served = (body, kind, status = 200) => async (url) => { asked.push(url); return new Response(body, { status, headers: { "content-type": kind } }); };
-  let streamed = 0;
-  const real = WebAssembly.compileStreaming;
-  WebAssembly.compileStreaming = (res) => { streamed++; return real(res); };
-  const module = await compiled("./app.0123.wasm", served(empty, "application/wasm"));
-  check("a module served as wasm is compiled as it streams, from one fetch of the URL it was named by", [module instanceof WebAssembly.Module, streamed, asked.join()], [true, 1, "./app.0123.wasm"]);
-  const read = await compiled("./other.wasm", served(empty, "application/octet-stream"));
-  check("one served as anything else is read whole and compiled", [read instanceof WebAssembly.Module, streamed], [true, 1]);
-  let refused = "";
-  try { await compiled("./gone.wasm", served("no such module", "text/plain", 404)); } catch (e) { refused = e.message; }
-  check("a module that is not served says the answer it got", refused, "the module at ./gone.wasm answered 404");
-  const started = served(empty, "application/wasm");
-  const ahead = { "http://page/app.0123.wasm": started("./app.0123.wasm") };
-  asked.length = 0;
-  const once = await compiled("./app.0123.wasm", served(empty, "application/wasm"), ahead, "http://page/");
-  check("the fetch the document started is the one compiled, and no other is asked", [once instanceof WebAssembly.Module, asked.length, Object.keys(ahead).length], [true, 0, 0]);
-  await compiled("./app.0123.wasm", served(empty, "application/wasm"), ahead, "http://page/");
-  check("a module asked again is fetched anew", asked.join(), "./app.0123.wasm");
-  WebAssembly.compileStreaming = real;
-}
 
 console.log(fails === 0 ? `bootstrap: ${passes}/${passes}` : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

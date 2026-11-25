@@ -1,0 +1,85 @@
+- hd-onewriter (8cd5cab3, 51ccc8ac, fb6601a3): const type = the typing's answer (TypeFacts.const_types, one writer, ConstType.Known/Refused/Cyclic via const_type_at). Fits ONE_PATH; its cycle test reads Family.Typed open(d), which typed_body replaces by `typing_of(d)`. Port on hd-base after typed_body builds, as const_types column + const_type_at, substituting typing_of. Not yet ported.
+- hd-onewriter-gate (6b8c4a13..959ece9b + onewriter's 3): the extra 4 commits are work-run/CI tooling, not typing. Skipped.
+- hd-saved-wip (38c570e0, 3c324f50, 38b53f36): source of onewriter's pieces; "warm = derived-before mark" and "const-verdict lookup goes" (kept_settle) are s-hold's area; Typed-row keeping is superseded by typed_body @query. Not ported by L-typed.
+- nodes2-named-complete (local, 2b8b02db, 94de48d7, fb9ebbf7): older Family.Typed/Settled saved rows, NOT SAFE TO MERGE, superseded by @query typed_body/settled_ask. Only fb9ebbf7 (a Sig and Writes leaf asked before digested, leaves.av/receivers.av) may still apply; verify on hd-base.
+
+## s-harvest audit (2026-11-02; base origin/hd-clean d62b09a4)
+Method: 455 candidates minus noise, in-flight lanes and `git cherry` all-'-' -> 331 branches with patches in neither hd-clean nor main (all have unlanded commits vs main too). Dates are branch tip dates. Subjects read; code NOT diffed, so "likely value" is a judgement from subjects. Each row: branch (date, files) | area | what | owner.
+
+### Top 15 by likely value
+1. recover/wt/avra-codecs-fix-wip (10-22, 97 files) | CACHE/STORE | uncommitted state of a worktree: family ordinals -> name-order keying (DB 01e), codecs fix; largest uncommitted snapshot | L-engine / L-families
+2. recover/wt/avra-db06-wip + avra-db06-stats-wip + avra-db06-step3-wip (10-22, 30/30/16) | CACHE/STORE | DB 06: writer's segment stays open across frames; producer stamp named for what it stamps; store Reading as the saved-answer rule names it | L-engine
+3. batch-ac / store-sort-once / base-measure / store-open-index(-pre-squash) (10-22/25, 19/19/3/20) | CACHE/STORE | store seals into runs (small write never rewrites whole store); names no place (package:path keys); seal sorts once; names/views cached per workspace; closure-collect set rides program row | L-engine (check vs hd-store/hd-relpaths)
+4. t-handup / store-handup / t-speed-cpu (10-20, 22/4/22) | CACHE/STORE | `avra cache export`: rows a run holds over a base as one segment; CI shards' store segments ride up/down so main shards stop cold | L-engine + s-gate
+5. by-name / by-name-store (10-22, 3/24) | CACHE/STORE | relation: a key never settled in-process stands on its saved answer's reads; a key's durable name + rows a kernel finds its saved answer by | L-engine
+6. hold-delete family: hold-delete, hold-delete-{flush,typed,attach,env,said,keep,lowered,tools,vocab,fixes2,cut}, hd-wire, hd-keys, hd-delete, hd-verify, hd-int, hd-consts, hd-nohold(2), hd-fam, hd-said, hd-expanded, names-memo, base-cut, consumed, attach-test, refs-verify, flush-write, stub-case, scratch-stub, said-wip-expansion (10-25..10-27, 24-56 files) | HOLD | the earlier hold-deletion arc: one flush, FileSaid/NameEnv/Items saved, keys not ordinals, delete mint_files/producer doors/keep_const_units, hold keepers (hold_sweep, turn_memory_attack, verify_held) removed, AVRA_VERIFY_REVIVE, revived stubs linked never executed. Most likely the origin of what hd-clean redoes; mine for tests/keepers | L-hold
+7. hd-memos-g4-parked / hd-memos-g4-unkept (10-31, 4) | HOLD/ENGINE | module block record + file<->module as in-process queries, digests parked; a module with no record answered not kept | L-hold
+8. hd-sigfix / hd-sigfix-premerge (10-27/28, 65) | TYPING | one method entry per declaration (instantiations sharing a name); deletion on main's API; door fix; iteration-loop doc and stale-binary trap | L-typed
+9. t-db07f / t-bodyexprs / analysis-dissolves / db-07e-closure / db-07e-hold / db07e-step3 (10-20..22, 3-18) | TYPING/LOWERING | 07f: fn/method lowers from its own range's facts; Analysis holds workspace not 3 closures; Decl.body()/body_exprs(); read set settles hold (settle_holds deleted); FileSaid moves words only when words differ | L-typed / L-hold
+10. perf-load / recover/wt/avra-perf-load / edit-speed / edit-gathered / edit-hashes / edit-refs / parse-speed / batch-af (10-22/26) | TOOLING/SPEED | warm check asks only holds a moved input reaches; digest kept beside stamp (stat not read); only a link owes code hashes; one-body edit budget; one lex answers block/component words; sig producer + toolchain stamp once per process | L-engine / s-gate
+11. nodes arc: nodes-5-next, nodes-anchor, nodes-5-continue, nodes-typeref, triage-nodes52, nodes-finish (47), batch-ad (47), nodes-j, nodes-j-{door,body,carriers,tidy}, batch-am, batch-ba, nodes-d2, batch-ai, nodes-map, batch-at, nodes-for-old, nodes-if, nodes-struct, view-arms (10-20..27, 4-47) | NODES | step 5 rules name their node, anchor mark, TypeRef as Record row, Meaning-trait sugar door, InstanceFn/ArmsBody nodes, MapEntry, trait type params as payload, for reads its range once, one bind_pat. Some overlap with main (e.g. #1305 map entries/trait params); verify before porting | L-nodes
+12. cleanup-llvm / stack-1094 / needs/1094 / recover/wt/avra-cleanup-wip / avra-cleanup worktree (10-21/22, 15-20) | LOWERING/ENGINE | trap unwinding runs cleanup regions (evaluator + LLVM); one verb names a plain bracket and a place | L-hold (lowering)
+13. recover/wt/avra-bisA..E-wip, avra-arm-nobump/noloop/rows-wip, avra-codec-base-wip (10-22, 10-21 files) | ENGINE | "the compiler's relation Db records through the kernel"; settle loop and pins; arm compiler's Db through kernel; TypeFacts opts into @codec, round-trip witness | L-engine / L-typed
+14. recover/wt/avra-db-125-wip, avra-arm47-dbg-wip, avra-cn2-wip, avra-07a-gather-wip, avra-db-07a-wip, avra-db-a3-wip, avra-db-said-wip (10-22, 5-52) | CACHE/HOLD | cache: added file nothing reaches holds readers; admit: read file reaches components its dir declares; ComponentNames keyed by path; typed rows restore on db-stored codec; derive mints only modules a bucket read wants; store compaction + reachability gc + revision window (05c) | L-engine / L-families
+15. own-db-law / needs/479 (10-21, 9) | ENGINE | relation: own-Db law golden + measured read cost; foreign_read no longer refuses | L-engine
+
+### Dirty worktrees (uncommitted tracked changes in compiler/store/tools); never lose these
+Tracked-modified files, per worktree (path ../avra-<name>, branch). Check each with `git -C <wt> diff --stat`.
+- avra-squeeze-lists (squeeze-lists): compiler/store/names.av, core/lists.av +2 | CACHE/STORE | L-engine
+- avra-revert-45 (revert-45): compiler/consumes.av, memory/memory.av +2 (staged) | LOWERING | L-hold
+- avra-rel (trace/dbfork): structural_types.av, tests/decl_row_parity_test.av +2 | ENGINE/TYPING | L-engine
+- avra-q148-prototype: format/source_text.av, lower/lower.av +2 | LOWERING | L-hold
+- avra-probe-kids (fix-trait-default-merge): lower/state.av, typing/typing.av +2 | TYPING | L-typed
+- avra-nodes-arms (db04d-link-env): build.av, suite.av +2 | CACHE/ENGINE | L-engine
+- avra-hd-families2 (hd-families5): workspace.av, workspace_analysis.av +2 | FAMILIES (lane active) | L-families
+- avra-fmt-bugs (lane/wrap): expand.av, voices.av +2 | OTHER/TOOLING | s-gate
+- avra-errors-voices (db08a-verdict): build.av, cache_walk.av +2 (staged) | CACHE | L-engine
+- avra-codecs-fix (test-484-conflict): backend/llvm_emit.av, cancel_reach.av +2 (staged) | LOWERING | L-hold
+- avra-generic-events (conditional-impls): dev/remedies.av, dev/witnesses.av +2 | TOOLING | s-gate
+- avra-db08-verdict (land/db08-verdict): build.av, derive.av +1 | CACHE/HOLD | L-hold
+- avra-race-fix (ci-race-fix2): tools/ci_dup_run.py (A), tools/ci_invariants.py UU (merge conflict unresolved) | TOOLING | s-gate
+- avra-ui-x1 (ui-prop-cells): features/read_set.av, structs/lower.av | LOWERING | L-hold
+- avra-nodes-self (reentrant-once): soundness/soundness.av, core/ir.av | LOWERING | L-hold
+- avra-nodes-default2 (db09): tests/kept_marks/kept_marks_test.av (A), tools/closure_gather_attack.sh | HOLD/TOOLING | L-hold
+- avra-L-hold, avra-L-engine (L-engine: compiler/store/pack.av, std-relation/stable.av), avra-hd-store, avra-hd-fixes, avra-nohold (workspace.av): active lanes, mentioned for completeness
+- avra-ifmerge (shapes): core/parts.av, impls/tests/shaped_default_test.av (A) | NODES/TYPING | L-nodes
+- single-file dirty: avra-parse (compiler/program.av, staged) | ENGINE; avra-http-hygiene (workspace.av) | ENGINE; avra-fix-witness-base (tests/witness_test.av); avra-docfact-side (features/tests/doc_fact_test.av); avra-db10 (core/rebuild.av) | NODES; avra-db02-explain (cache_walk.av) | CACHE; avra-cores (lower/lower.av) | LOWERING; avra-arm-noloop (whole.av); avra-arm-nobump (features/decls.av); avra-07a-gather (settlement_wire.av) | TYPING; avra-wal (tools/libs.py); avra-decl-refile (tools/db_measure/t_tmp.sh); .claude/worktrees/agent-a4866be31854b20a3 (features/decls_mint.av) | HOLD
+- Not listed: other worktrees were dirty only by untracked files or UI/graph paths.
+
+### Other relevant, lower value
+- CACHE/STORE: edit-gathered, native-index-392, flat-result-391, rung-work, spoken-foreign, typo (lookup never mutates program), determinism (records), by-file-index (one per-file record index), component-home (index of exported components), collect-closure/collect-fold (`in closure`), store-open-index | L-engine
+- TYPING: bound-statics, generic-components, generic-composition, trait-defaults, implements-at, bounds-component-witness, generic-events, batch-av/aw/bg, weak-task, weak-builtin-name, template-hygiene-2, block-word-template, wasm-check (typing: decl field/payload/alias/spread/trait-arg), sibling-const-pattern-393, fix/lambda-seat-origin, hd-marks-cycle, hd-marks-fix (marks use inside own warnings' run; recursive clash kind) | L-typed
+- LOWERING: capture-inline, walk-inline, batch-ap (walk verbs inline lambdas), empty-list/batch-ar (empty list one block; map nullable write marks slot), frames (lowering defects name file+expr), const-json(-total), cell-shared-empty, fix/state-place(-wip) (writes rooted at a state land in its cell), body-exprs, overflow-trap/int-verbs-rung1/pr1176-* (wrapping_/checked_ int verbs; traps) | L-hold
+- ENGINE: bis-v1/v2/v13/va/vb/bis-trace (11-01 bisect branches; contain `@codec answer reads back by its own codec`, decls read-door recording; probable lane scratch), 11-02 run/hd-decl (66 files: unit_kept carries code; Bytes a stored kind), run/hd-saved (79), run/hd-nodes, run/hd-fixes (lane-run snapshots of today's lanes) | respective lanes
+- TOOLING/SPEED: speed baseline (t-accept-fresh, t-dup-run, t-ci-wall, t-defects), cache-attacks (cache-port, dry-cp-tooling), dry-one-door/dry-build-verb/dry-compiler-get (one compiler release door), batch-t/lander-t/batch-u1 (tools in POSIX shell; Makefile parse 1s), triage-stamps/batch-t2/t3, par shards by cost (cores, batch-be), batch-bk (pre-commit stale compiler), sprite-rungs, ci/census-sites, gitattributes union ledgers | s-gate
+- OTHER (unrelated, skipped): graph/*, backup/graph-*, ui-*, webkit-*, layout-oracle/text-oracle, json-door/*, time-stored, std-db/crud/board, mcp, MLX m02wt, sqlite, http. recover/wt/avra-1106*, avra-1018-wip are std-net/std-time/ui.
+
+### Caveats
+- Notably absent from HARVEST.md and not in hd-clean: the whole 10-25/26 hold-delete arc (row 6) and the 10-22 store run-sealing arc (row 3); these predate hd-clean's redesign, so port selectively, not wholesale.
+- Dirty-worktree list used a path regex; a dirty file outside packages/tools would be missed. `recover/wt/*-wip` branches are auto-snapshots of worktrees at 10-22 08:02Z, so their worktrees may since have changed.
+- 24 branches excluded as in-flight lanes by pattern may include some not actually being harvested (pattern `hd-nodes`, `hd-families`, `L-`).
+- item 5 (L-typed, read against d62b09a4): hd-sigfix 475aa67e (one method entry per declaration) is already in hd-clean (decls.av declare_method, same text); its other commits are store/door/CI (L-engine, hd-store). t-db07f b29d4c58 (Analysis holds its workspace) is in hd-clean (analysis.av `ws: Workspace`); 0e3850d7/bf1364b2/78b553c0 (a fn lowers from its own range's facts; the analysis is one when) not verified present — candidate, check on hd-base. t-bodyexprs c1a00d67 (Decl.body()/body_exprs(), raw_body_scan) is in hd-clean (decl_rows.av, idioms.av). db07e-step3 b31b2af9 (FileSaid moves words only when words differ) not present by grep — L-hold's. cleanup-llvm 780f3e56 (trap unwinds defers): in hd-clean (defers/tests/unwind_orders, interp cleanup regions). fix/state-place 6827e207/bf3d113f: in hd-clean (mutation tests state_paths, state_lost). avra-probe-kids: dirty tree (22 semantics.av files, `kids(e: Expr)` -> `kids(store: SyntaxArena, id: ExprId)`, +58/-39) is the nodes arc's Kids-signature change; hd-nodes owns it, not typing — untouched.
+
+### Dirty-worktree snapshots (s-gate, 2026-11-02)
+Each is `git stash create` of tracked changes, pushed to `origin` as `recover/wt/<name>-1102`; no working tree touched. Untracked files are not in a stash commit.
+pushed: squeeze-lists, revert-45, rel, q148-prototype, probe-kids, nodes-arms, hd-families2, fmt-bugs, errors-voices, generic-events, db08-verdict, nodes-self, nodes-default2, ifmerge, parse, http-hygiene, fix-witness-base, docfact-side, db10, db02-explain, cores, arm-noloop, arm-nobump, 07a-gather, wal, and agent-a4866be31854b20a3 (the .claude worktree).
+no tracked change to snapshot: ui-x1, decl-refile.
+skipped, unresolved merge (stash create refuses): race-fix (tools/ci_invariants.py UU), codecs-fix (Makefile UU, staged: checks.yml, seed.ll, ...).
+
+## L-hold harvest (2026-11-02)
+- hd-hold-1d-eager d43f9e5b (producer doors go; unread files minted from Items at admission): ported (L-hold 5bda0eef), then dropped — eager minting cost the features-a cold suite 2.5x (gate 41525716245, 189 s -> 472 s); the lazy door stands until restore answers it.
+- hd-decl-reads 978da4a9/cac6cab9 (Items row keeps its named reads): superseded — items_of_file is a @query, so the engine records its reads; its keep_items writer is the second mechanism ONE_PATH forbids. Its test idea (an edit to a folded const refiles the row) is worth a case on items_of_file.
+- hd-lowered 6338ba8d (declared want lowered over its root): already ported — `rooted` stands in workspace_analysis.av via hd-lowq.
+- hd-lowered 7eb43600 (impl-set read replays as its method table; held answer hashed when unsettled): superseded by unit_kept @query (no AnswerRef); the held-answer half dies with the hold.
+- hd-decl-split d416284f / hd-decl-file-rows 3776e4d4 (per-decl rows): dropped — WIP, its own commit says measured slower; per-file items_of_file is the grain.
+
+## L-engine harvest (2026-11-02, against hd-base 136e4f1c; diffs grepped, not every one read whole)
+- hd-relpaths 250c3966 ({tree}/… saved names, saved_in/unsaved_in at Store.keep): to port: the store-boundary half (~40 lines, store.av) is L-engine's; the rest (~150) is compiler-side. One path scheme only. Pick it against batch-ac 2b9237ed, which shares more (package:path keys).
+- hd-speller 0856c834 (FileId crosses as {tree}/…): partly superseded by facts_scope.av file_id_spelled (decls.file(f).name, package-relative since hd-codec e6a26c55). Port nothing until the path scheme is chosen.
+- hd-lowered: 882920a8, e33f9dd2 (digests half), ce43914a and 7eb43600 are already in (db.av keys_known/digests_known/known_now, kernel hash_forced, noted_by). 6338ba8d is dropped (no lowered_rows on hd-base). The lowered-unit wire arc (0dd417bc…a0e28d9a) is superseded by unit_kept @query.
+- Store run-sealing arc (base-measure dc402abb, 4ca1a769; store-sort-once 354000e7; 0d8208ad; e982621e; 6c3b2a91's fold): already in hd-base's body.av/pack.av. The keys half of batch-ac/store-open-index (2a842b9c, 284ac586, 2b9237ed: package:path keys, anchors, ~1000 lines, mostly compiler-side) is the candidate for job 6. 7c4ea34f names_place (~10 lines, store.av) is to port.
+- by-name 276792ca: superseded by db.av restored/answer_refs. by-name-store 172175ec saved.av: superseded by db.av durable names.
+- t-handup / store-handup ca4e9cd6 / 898e6005 `avra cache export` (~100 lines, store + cli cache.av): to port, with s-gate, for CI shards. c50c36d9 / c8741304 (checks.yml wiring): dropped.
+- db06-* branches: in already (4b, seal, qtrace, unitkind, fp-str, frame-pointers) or superseded (db06-stamp, by one stamp in 1c2f9f0c). misses/own-db-law/scan-store/store-stats/corpus: dropped (debug counters, unrelated law).
+- recover/wt db06-wip/-stats-wip/-step3-wip: dropped (cache data + a seed.ll deletion, no source). db-a3 6d67f83f: in already (pack.av compaction/gc/window). db-a3-wip: dropped (measure tarballs). bisA–E, bisect-v-*, hd-lowq-bis*: dropped (bisect scratch).
+- Measured today and recorded here: leaves are not transitive. The bulk is `Named` per-name reads (7.6M of 8.3M); leaf chunks landed on hd-base 136e4f1c (store -35%).

@@ -5,7 +5,6 @@
 //! a build asks it of every file it reaches for nothing more than the walk.
 use core.{
     At,
-    PatId,
     seat_worn_twice,
     ExprId,
     INFERRED,
@@ -19,17 +18,17 @@ use core.{
     spelled,
     width_named,
 }
-use compiler.laws.{Found, law, no_findings}
+use compiler.laws.{Found, law}
 use compiler.typing.{
     bound_no_trait,
     dyn_no_trait,
     builtin_type_name,
+    in_signature,
     names_no_type,
     width_off_seat,
-    written_label,
 }
 use diagnostics.{Voice}
-use features.{WrittenIn, apart_read, self_word}
+use features.{self_word}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -39,7 +38,7 @@ use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definiti
 /// A type name that names no type: the statement it's written in, the name, and whether it's a
 /// machine width written off an `extern fn`'s seats.
 @derive(Saved)
-type UnnamedAt = { at: FindingAt?, name: string, width: bool, pattern: bool = false }
+type UnnamedAt = { at: FindingAt?, name: string, width: bool }
 
 /// Every type name in one written item that names no type.
 @derive(Saved)
@@ -58,7 +57,7 @@ type TypeScope = {
 
 /// Every type name a statement of the written item `at` of `file` writes in its signature that names
 /// no type, statement by statement.
-fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnnamed {
+fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
     if !item_held(engine, file, at) { return unknown_types_made(engine, file, at) }
     unknown_types_seen(item_view(engine, file, at))
 }
@@ -74,7 +73,7 @@ fn unknown_types_seen(view: ItemView) -> ItemUnnamed {
 }
 
 /// What `item_unknown_types` answers, made.
-fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnnamed {
+fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnnamed {
     if !item_held(engine, file, at) { return ItemUnnamed { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemUnnamed { rows: [] } }
@@ -95,15 +94,6 @@ fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
                 flatten(
                     [seats_unnamed(scoped(top), item.store, e) for top in item.stmts for e in exprs_under(item.store, At.Stmt(top))],
                 ),
-            )
-            .concat(
-                if holds_typed_pattern(item.store) {
-                    flatten(
-                        [patterns_unnamed(scoped(top), item.store) for top in item.stmts.take(1)],
-                    )
-                } else {
-                    []
-                },
             ),
         bounds: flatten([bounds_untraited(scoped(s), item.store, s) for s in stmts]),
         contracts: flatten([contracts_untraited(scoped(s), item.store, s) for s in stmts]),
@@ -125,21 +115,6 @@ fn seats_unnamed(scope: TypeScope, store: SyntaxArena, e: ExprId) -> List<Unname
     }
     if seat_worn_twice(seats) != null { return [] }
     [UnnamedAt { at: kept_at(store.expr_span(e)), name: n, width: width_named(n) != null } for p in seats for t in some_list(p.ty) for n in scope.unnamed(t, false)]
-}
-
-/// Every name a type pattern of the item writes that names no type, where the pattern stands: the
-/// Whether `store` holds a type pattern (`c: T`): read by its patterns alone, so an item holding none
-/// reads nothing more for them.
-fn holds_typed_pattern(store: SyntaxArena) -> bool { (0..store.pat_count()).any((i) -> store.pat(PatId { index: i }) is .Typed) }
-
-/// type a type test names is read as a signature's is.
-fn patterns_unnamed(scope: TypeScope, store: SyntaxArena) -> List<UnnamedAt> {
-    [UnnamedAt { at: kept_at(store.pat_span(p)), name: n, width: false, pattern: true } for i in 0..store.pat_count() for p in [PatId { index: i }] for t in pattern_written(store, p) for n in scope.unnamed(t, false)]
-}
-
-/// The type the pattern `p` names, where it is a type test.
-fn pattern_written(store: SyntaxArena, p: PatId) -> List<TypeRef> {
-    match store.pat(p) { .Typed(_, ty) -> [ty], rest -> [] }
 }
 
 /// Every `dyn` a type `s` writes in its signature stands over that names no trait, where `s` stands.
@@ -255,10 +230,7 @@ impl TypeScope {
 }
 
 /// Each of `rows` as its law finds it, its voice handed the name.
-fn named_found(rows: List<UnnamedAt>) -> List<Found> { [Found { at: span_of(r.at), args: [r.name, if r.pattern { PATTERN_WORD } else { "" }] } for r in rows] }
-
-/// What a row written in a type pattern carries beside its name.
-const PATTERN_WORD: string = "pattern"
+fn named_found(rows: List<UnnamedAt>) -> List<Found> { [Found { at: span_of(r.at), args: [r.name] } for r in rows] }
 
 /// Each of `rows` of `file` as its law finds it, behind the parse refusal of a file of its module
 /// where one holds: the name may be declared where nothing could be read.
@@ -270,37 +242,16 @@ fn unread_named_found(engine: QueryEngine, file: SourceFileAddress, rows: List<U
 
 /// Every type name the written item `at` of `file` writes that names no type: a machine width off an
 /// `extern fn`'s seats where `widths`, any other where not.
-fn unnamed_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId, widths: bool) -> List<
-    Found,
-> {
+fn unnamed_found(engine: QueryEngine, file: SourceFileAddress, at: int, widths: bool) -> List<Found> {
     let rows = item_unknown_types(engine, file, at).rows.filter(it.width == widths)
     if widths { named_found(rows) } else { unread_named_found(engine, file, rows) }
 }
 
-/// Every type name the written item `at` of `file` writes that names no type; a name its module's
-/// files each keep private is the kept-apart law's.
-fn unknown_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [f for f in unnamed_found(engine, file, at, false) if apart_type_files(engine, file, f.args[0]).is_empty()]
-}
-
-/// Every type name the written item `at` of `file` writes that the other files of its module each
-/// declare privately, beside those files.
-fn apart_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    if !item_unknown_types(engine, file, at).rows.any(!it.width) { return no_findings() }
-    [f with { args: [f.args[0]].concat(apart) } for f in unnamed_found(engine, file, at, false) for apart in [apart_type_files(engine, file, f.args[0])] if !apart.is_empty()]
-}
-
-/// a type two files of a module each declare privately is each file's own
-export law kept_apart_type {
-    kind: "resolve.kept_apart"
-    reads: apart_types
-    voice: apart_type_words
-    witness: "fn f(t: T) -> int { 1 }\n1\n"
-    witness_files: {"src/a.av": "type T = { x: int }\n", "src/b.av": "type T = { y: int }\n"}
-}
+/// Every type name the written item `at` of `file` writes that names no type.
+fn unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, false) }
 
 /// Every machine width the written item `at` of `file` writes off an `extern fn`'s seats.
-fn widths_off_seats(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> { unnamed_found(engine, file, at, true) }
+fn widths_off_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unnamed_found(engine, file, at, true) }
 
 /// Every bound the written item `view` shows writes that names no trait.
 fn bounds_unknown(view: ItemView) -> List<Found> {
@@ -348,16 +299,7 @@ export law width_off_a_seat {
     witness: "fn n() -> i64 { 3 }\n"
 }
 
-fn apart_type_words(a: List<string>) -> Voice { apart_read(a[0], a.drop(1)) }
-
-fn unknown_words(a: List<string>) -> Voice {
-    names_no_type(
-        a[0],
-        written_label(
-            if a.length > 1 && a[1] == PATTERN_WORD { WrittenIn.Pattern } else { WrittenIn.Signature },
-        ),
-    )
-}
+fn unknown_words(a: List<string>) -> Voice { names_no_type(a[0], in_signature) }
 
 fn width_words(a: List<string>) -> Voice { width_off_seat(a[0]) }
 

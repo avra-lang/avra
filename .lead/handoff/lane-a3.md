@@ -1,0 +1,10 @@
+# lane-a3 handoff — worktree ../avra-ho, branch `program-a`, last sha 2eebe0fe
+- DONE (trap fix) 5475ead7: TestsKept is a rule `{checks, reaching}` over a body's own test sites, never a flag per position. Cause: cf3e8fab's fold re-asks `placed_names(c, kept)` with the OLD body's position flags. Receipt: cache.av `cache_store` edit after a cold store traps before (also on plain `program` 4113f576), after: warm == cold (`cmp`).
+- DONE witness a23d99fe+bdeb34c8: `sh tools/witness_program_edit.sh build/avra-r2` — no-op==cold, cli literal, query-file literal, test-count edits in cli and @std/time; warm (AVRA_FOLD_CHECK=1) == cold. Green, exit 0 (~30 min with pool waits).
+- DONE hash d5747625: core/scc.av `strong_sets`/`reached_by` (SCC reach bits); program_code_hashes own 5.3 s -> 0.9 s cold, products byte-identical.
+- UNRUN: core/tests/reach_test.av (2eebe0fe) + 38 code_hash tests — lead runs spec files in the gate.
+- OWED FIRST (lead asked 3x): `git branch program-a-keys ab379608 && git checkout program-a-keys && git cherry-pick 5475ead7 a23d99fe`; `AVRA_PROGRAM=1 make try`; `git checkout program-a`; send lead "program-a-keys <sha> ready for the gate". Not started.
+- OWED: sweep of other question keys holding an index/offset/count into another answer (placed_code_kept_in now carries the site rule — acquitted; others unswept); write the law at TestsKept + as an engine law in std-program.
+- OWED: lane D2's `fits` guard (454ef53c, program-d): with 5475ead7 a site rule always fits, so it can fire only on a defect — make it speak a defect voice. Add an add-a-lambda edit to the witness.
+- FOLD_CHECK gap: the trap is in `folded_run`'s re-ask before any answer exists; lead wants the oracle run FIRST under FOLD_CHECK (query_engine.av `checked_fold`) — not done.
+- Recipe: env `LLVM_PREFIX=/opt/homebrew/opt/llvm AVRA_CACHE_DIR=$PWD/build/machine-cache AVRA_MEM_CEILING_MB=9500`; P1=`AVRA_PROGRAM=1 make try`; a compiler must sit in build/ (std root from its own dir); repro script /tmp/lane-a3/rep.sh (snapshot store, apply edit, warm build).

@@ -16,16 +16,6 @@
 //!         let nodes = [n! for m in moved for n in [edges_of_node_in(m.question)] if n != null]
 //!         …
 //!     }
-//!
-//! `@memo` OR A QUERY: a `@memo` answer is a value held for the process, never encoded, hashed or
-//! kept, and it is no question of the engine's own: each asker makes its reads again, so a reader of
-//! it stands or moves exactly as what the memo read does, and a later engine of the process takes a
-//! held answer only where every one of those reads holds there. Write `@memo` for an answer with no
-//! stable encoding (a meta `Type`, code) that is cheap to work out again from reads that are cut
-//! questions themselves. Write a query where the answer has a saved shape and often comes out the
-//! same when what it read moved: its own answer then cuts the change off before its readers, one
-//! level above where a memo's askers would, and a later process reads it back instead of working
-//! it out.
 use @std.meta.{
     Code,
     Declared,
@@ -51,7 +41,6 @@ use query_engine.{
     FreshAnswer,
     HeldAnswer,
     HeldQuestion,
-    KeptPart,
     MovedRead,
     QueryDefinition,
     QueryEngine,
@@ -69,9 +58,7 @@ use query_engine.{
 }
 use value_shapes.{ValueShape}
 use interned.{HIGH_LANE, LOW_LANE, KeyLane}
-use answer_record.{Question, content_hash}
-use read_memo.{AskedMemo, asked_memo}
-use pass.{Pass, pass_code, pass_named, pass_words}
+use answer_record.{Question}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{
     FOLDED,
@@ -109,96 +96,35 @@ export type ListedQuery = { definition: fn() -> QueryDefinition }
 /// The definitions of what a `collect` listed.
 export fn definitions_of(listed: List<ListedQuery>) -> List<QueryDefinition> { [(q.definition)() for q in listed] }
 
-/// `@query(pass)`: remembered across processes. Every query annotation names the pass its work
-/// belongs to by its word (`@query("typing")`, `pass.av`), which its definition carries, so a run's
-/// work is read pass by pass; a word no pass wears is refused.
-export fn query(f: Fn, pass: string) -> Declared { remembered(f, false, [], false, false, pass) }
+/// `@query`: remembered across processes.
+export fn query(f: Fn) -> Declared { remembered(f, false, [], false, false) }
 
 /// `@input`: reads the outside world, so it runs once in every process, and its readers stand
 /// when it comes out the same.
-export fn input(f: Fn, pass: string) -> Declared { remembered(f, true, [], false, false, pass) }
-
-/// `@memo`: a question answered once in a process and held as a VALUE, never as bytes, so its
-/// answer needs no saved shape. It is no question of the engine's own: its working-out's reads are
-/// made again by every asker, so a reader of it depends on what it read, exactly as had it worked
-/// the answer out itself, and nothing of it is kept for a later process. A later engine of the same
-/// process takes a held answer only where every read it made holds there, so an edit that reaches
-/// those reads works it out again. Its arguments are what it's asked, so each needs a saved shape.
-///
-/// Use `@memo` over `@query` for an answer with no stable encoding (a meta `Type`, code), cheap to
-/// rebuild from reads that are cut questions themselves: it costs no encoding, no hash and no store
-/// row, and its askers stand or move as its reads do, one level below where a query's answer would
-/// cut. Use `@query` where the answer has a saved shape and a change that reaches what it read
-/// often leaves the answer the same, so its readers stand.
-export fn memo(f: Fn) -> Declared {
-    let problems = memo_problems(f)
-    if !problems.is_empty() { return nothing_made(problems) }
-    Declared {
-        made: [
-            Directive { twin: "", name: f.name, at: f.at, wraps: true, source: memo_wrapper(f) },
-            declares(arguments_door(f), f.at, arguments_writer(f)),
-            declares(memo_door(f), f.at, memo_table(f)),
-        ],
-    }
-}
-
-/// A memo is asked by its arguments, so its first seat is the engine and every other has a saved
-/// shape; its answer may be anything.
-fn memo_problems(f: Fn) -> List<Diagnostic> {
-    if f.params.first()?.ty != "QueryEngine" { return [no_engine_seat(f)] }
-    [no_bytes_in_seat(f, p) for p in argument_seats(f) if saved_shape(p.kind) == null]
-}
-
-fn memo_door(f: Fn) -> string { "${f.name}_memo" }
-
-/// `<name>_memo()`: the process's answers to the memo, one table for every engine.
-fn memo_table(f: Fn) -> Decls {
-    quote {
-        once fn ${memo_door(f)}() -> AskedMemo<${f.answer}> { asked_memo() }
-    }
-}
-
-/// The function callers call: the answer to these arguments from the memo, else worked out by the
-/// written body there.
-fn memo_wrapper(f: Fn) -> Decls {
-    let arguments = [name(p.name) for p in f.params]
-    quote {
-        fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
-            ${memo_door(f)}().answer(${engine_of(f)}, content_hash(${arguments_door(f)}(..${arguments})), () -> ${wrapped(f)}(..${arguments}))
-        }
-    }
-}
+export fn input(f: Fn) -> Declared { remembered(f, true, [], false, false) }
 
 /// `@cut_query`: a query that cuts a change off — a projection near the inputs, worked out as the
 /// frontier opens wherever a change reaches it, and past which a change reaches nothing where it
 /// comes out the same. It answers a file's address, or what one names, so asking it then is
 /// asking what the build would.
-export fn cut_query(f: Fn, pass: string) -> Declared { remembered(f, false, [], false, true, pass) }
+export fn cut_query(f: Fn) -> Declared { remembered(f, false, [], false, true) }
 
 /// `@cut_parted_query`: a parted query that cuts a change off, as `@cut_query` does.
-export fn cut_parted_query(f: Fn, pass: string) -> Declared { remembered(f, false, part_door(f), false, true, pass) }
+export fn cut_parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, true) }
 
 /// `@parted_query`: a query answering `AnswerParts`, which also answers one part at a time through
 /// `<name>_part(engine, …, part_name)`. A reader of one part stands when other parts change.
-export fn parted_query(f: Fn, pass: string) -> Declared { remembered(f, false, part_door(f), false, false, pass) }
+export fn parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, false) }
 
 /// `@folded_query(step)`: a query whose answer is folded forward from its last one by `step`.
-export fn folded_query(f: Fn, step: Fn, pass: string) -> Declared {
+export fn folded_query(f: Fn, step: Fn) -> Declared {
     let problems = step_problems(f, step)
     if !problems.is_empty() { return nothing_made(problems) }
-    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true, false, pass)
+    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true, false)
 }
 
-fn remembered(
-    f: Fn,
-    is_input: bool,
-    also_made: List<Directive>,
-    folds: bool,
-    cuts: bool,
-    pass: string,
-) -> Declared {
-    let named = pass_named(pass)
-    let problems = problems_of(f).concat(if named == null { [no_such_pass(f, pass)] } else { [] })
+fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool, cuts: bool) -> Declared {
+    let problems = problems_of(f)
     if !problems.is_empty() { return nothing_made(problems) }
     let made = [
         Directive { twin: "", name: f.name, at: f.at, wraps: true, source: asking_wrapper(f) },
@@ -211,7 +137,7 @@ fn remembered(
                 declares(compute_door(f), f.at, computing_door(f)),
                 declares(encoded_door(f), f.at, encoding_door(f)),
                 declares(answer_read_door(f), f.at, answer_reader(f)),
-                declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts, named!)),
+                declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts)),
                 declares(known_door(f), f.at, known_answer_door(f)),
                 declares(question_door(f), f.at, asked_question_door(f)),
             ],
@@ -256,17 +182,14 @@ fn argument_keys(f: Fn) -> List<Code>? {
 }
 
 /// How one argument of `shape`, read as `value`, is spelled in a question's key; absent for a shape
-/// no key spells. A named type is spelled as the shape it names, read through its `.of`: a name is
-/// free at runtime, so a question over an `ItemId` is the question over its number, and is labelled
-/// as one.
+/// no key spells.
 fn argument_key(shape: ValueShape, value: Code) -> Code? {
     match shape {
         .Text -> quote { held_text(${value}) },
         .Int -> quote { held_int(${value}) },
         .Bool -> quote { held_bool(${value}) },
         .Declared(type_name, _) -> if type_name == FILE_TYPE { quote { held_file(${value}) } } else { null },
-        .Renamed(_, over) -> argument_key(over, quote { ${value}.of }),
-        .Offset or .Float or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> null,
+        .Offset or .Float or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> null,
     }
 }
 
@@ -515,14 +438,12 @@ fn asked_in_source(f: Fn, p: Param, reads: List<Code>, skipped: int, seat: int) 
     }
 }
 
-/// How the next key of `shape` reads back, for a shape a key spells: a named type as the shape it
-/// names, crossing back into the name.
+/// How the next key of `shape` reads back, for a shape a key spells.
 fn key_read(shape: ValueShape) -> Code {
     match shape {
         .Text -> quote { keys.text() },
         .Int -> quote { keys.int() },
         .Bool -> quote { keys.truth() },
-        .Renamed(type_name, over) -> quote { ${type_name}(${key_read(over)}) },
         rest -> quote { keys.file() },
     }
 }
@@ -540,8 +461,7 @@ fn fold_kept(f: Fn) -> Stmts {
     quote { if answers_held() { ${fresh_door(f)}().set([FreshAnswer { arguments: arguments, value: answer }]) } }
 }
 
-fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool, pass: Pass) -> Decls {
-    let passed = pass_code(pass)
+fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool) -> Decls {
     let folding = if folds { quote { Folding.By(${name(fold_door(f))}) } } else { quote { Folding.Full } }
     quote {
         @query_definition
@@ -553,7 +473,6 @@ fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool, pass: Pass) -> 
                 compute: ${name(compute_door(f))},
                 folding: ${folding},
                 cuts: ${as_code(bool_node(cuts))},
-                pass: ${passed},
             }
         }
     }
@@ -603,34 +522,15 @@ fn in_place_door(f: Fn) -> List<Directive> {
     }
 }
 
-/// `<name>_part(engine, …, part_name)`: one part of the answer, and `<name>_part_kept` the part with
-/// its hash, for a reader that keeps what it decodes of a part by it; asked as the question its arguments
-/// are held under, and found in the answer itself where this process made or read it whole, as its
-/// wrapper holds answers; only an answer from the store is read part by part from its bytes.
+/// `<name>_part(engine, …, part_name)`: one part of the answer.
 fn part_door(f: Fn) -> List<Directive> {
     let door = "${f.name}_part"
-    let kept = "${f.name}_part_kept"
-    let found = quote {
-        export fn ${kept}(..${seats_of(f).concat([seat("part_name", "string")])}) -> KeptPart? {
-            let held = ${asked_of(f)}
-            let answer = ${engine_of(f)}.held_answer_now(held)
-            let had = ${held_door(f)}().get(answer)
-            if had != null { return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, had!.value) }
-            let fresh = ${fresh_door(f)}().get().first()
-            if fresh != null && fresh!.arguments == held.question.arguments {
-                ${fresh_door(f)}().set([])
-                ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
-                return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, fresh!.value)
-            }
-            ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, null)
-        }
-    }
     let source = quote {
         export fn ${door}(..${seats_of(f).concat([seat("part_name", "string")])}) -> Bytes? {
-            ${kept}(..${[name(p.name) for p in f.params]}, ${name("part_name")})?.value
+            ${engine_of(f)}.part_of_answer_to(${question_of(f)}, ${name("part_name")})
         }
     }
-    [declares(kept, f.at, found), declares(door, f.at, source)]
+    [declares(door, f.at, source)]
 }
 
 fn engine_of(f: Fn) -> Code { name(f.params[0].name) }
@@ -679,10 +579,6 @@ fn nullable_fold(f: Fn) -> Diagnostic {
     refuse(
         "`${f.name}` answers a `${f.answer}`, and a fold's step answers none where it doesn't fold, so the answer it folds can't itself be absent",
     )
-}
-
-fn no_such_pass(f: Fn, word: string) -> Diagnostic {
-    refuse("`${f.name}` names `${word}` as its pass, which is none of ${pass_words()}")
 }
 
 fn no_engine_seat(f: Fn) -> Diagnostic {

@@ -12,22 +12,19 @@ impl StmtLowers for MutLet {
         let ty? = cx.binding_type(self.ty, self.value, s) else { return cx.missed("an untyped `mut`") }
         if cx.store.is_state_stmt(s) {
             return cx
-                .bind(self.name.text(), Bound.Shared(cx.celled(v, ty, cx.laid_out(cell_of(ty))), ty))
+                .bind(self.name.of, Bound.Shared(cx.celled(v, ty, cx.laid_out(cell_of(ty))), ty))
         }
         let cell = cx.seeded_cell(cx.laid_out(ty), v)
         cx.seed_kept(cell, cx.read_from_place(self.value))
-        cx.bind(self.name.text(), Bound.Slot(cell, ty))
+        cx.bind(self.name.of, Bound.Slot(cell, ty))
         cx.owns_cell(cell, ty)
     }
 }
 
 impl StmtLowers for Assign {
-    /// The value first, then the write where its target names; a target that is a `state` field seeded
-    /// at need is kept first, so a value that reads it reads the cell the write lands in.
+    /// The value first, then the write where its target names.
     fn stmt_lowered(mut cx: Lowering, s: StmtId) {
-        let kept = cx.kept_target(self.target)
         let v = cx.lower(self.value)
-        if kept != null { return cx.slot_written(kept!, cx.const_int(0), v, true) }
         cx.written_to(self.target, v)
     }
 }

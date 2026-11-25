@@ -7,7 +7,6 @@
 //! takes type parameters or spreads another's, `in closure`, or two members its order ties. Read
 //! off the declaration's syntax and, for its columns, the members the program layer gathers.
 use core.{
-    new_node_store,
     CollectKind,
     ExprId,
     some_list,
@@ -61,14 +60,9 @@ type CollectShape = { stmt: StmtId, name: string, kind: CollectKind, scope: Coll
 /// Every gathering the written item `at` of `file` declares, in the store it's read from.
 type CollectShapes = { store: SyntaxArena, all: List<CollectShape> }
 
-fn collect_shapes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> CollectShapes {
-    if !item_held(engine, file, at) { return CollectShapes { store: new_node_store(), all: [] } }
-    collect_shapes_viewed(item_view(engine, file, at))
-}
-
-/// `collect_shapes` through the view its law's judging holds, looking no item up again.
-fn collect_shapes_viewed(view: ItemView) -> CollectShapes {
-    let item = view.item
+fn collect_shapes(engine: QueryEngine, file: SourceFileAddress, at: int) -> CollectShapes {
+    if !item_held(engine, file, at) { return CollectShapes { store: read_item(engine, file, 0).store, all: [] } }
+    let item = read_item(engine, file, at)
     CollectShapes {
         store: item.store,
         all: [g! for s in item.stmts for g in [collect_shape_at(item.store, s)] if g != null],
@@ -107,22 +101,10 @@ fn collect_enum_shape_at(store: SyntaxArena, s: StmtId) -> CollectShape? {
 fn shape_found(
     engine: QueryEngine,
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     pick: fn(QueryEngine, SourceFileAddress, CollectShape) -> List<List<string>>,
 ) -> List<Found> {
-    if !item_held(engine, file, at) { return [] }
-    shape_found_viewed(item_view(engine, file, at), pick)
-}
-
-/// `shape_found` through the view its law's judging holds, looking no item up again.
-fn shape_found_viewed(
-    view: ItemView,
-    pick: fn(QueryEngine, SourceFileAddress, CollectShape) -> List<List<string>>,
-) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
-    let g = collect_shapes_viewed(view)
+    let g = collect_shapes(engine, file, at)
     [Found { at: g.store.stmt_span(x.stmt), args: a } for x in g.all for a in pick(engine, file, x)]
 }
 
@@ -350,69 +332,37 @@ fn literal_key(l: Literal) -> string {
     match l { .Int(n) -> "i${n}", .Float(b) -> "f${b}", .Bool(b) -> "b${b}", .Text(t) -> "t${t}" }
 }
 
-fn kinds_unknown_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, kinds_unknown)
-}
+fn kinds_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, kinds_unknown) }
 
-fn scopes_unknown_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, scopes_unknown)
-}
+fn scopes_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, scopes_unknown) }
 
-fn orders_missing_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, orders_missing)
-}
+fn orders_missing_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, orders_missing) }
 
-fn keys_unknown_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, keys_unknown)
-}
+fn keys_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_unknown) }
 
-fn not_lists_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, not_lists)
-}
+fn not_lists_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, not_lists) }
 
-fn mistyped_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, projections_mistyped)
-}
+fn mistyped_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_mistyped) }
 
-fn fieldless_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, projections_fieldless)
-}
+fn fieldless_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_fieldless) }
 
-fn misfilled_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, projections_misfilled)
-}
+fn misfilled_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_misfilled) }
 
-fn paths_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, paths_unknown)
-}
+fn paths_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, paths_unknown) }
 
-fn uncomparable_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, keys_uncomparable)
-}
+fn uncomparable_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_uncomparable) }
 
-fn mixed_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, keys_mixed)
-}
+fn mixed_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_mixed) }
 
-fn dense_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, dense_faults)
-}
+fn dense_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, dense_faults) }
 
-fn variants_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, variants_twice)
-}
+fn variants_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, variants_twice) }
 
-fn members_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, members_unfit)
-}
+fn members_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, members_unfit) }
 
-fn closure_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, enums_in_closure)
-}
+fn closure_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_in_closure) }
 
-fn ties_found(view: ItemView) -> List<Found> {
-    shape_found_viewed(view, enums_tied)
-}
+fn ties_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_tied) }
 
 /// Every value the written item `view` shows declares that a collection it reads gathers, by the
 /// component it instantiates or a mark it wears; handed the value and the collection.
@@ -466,7 +416,7 @@ export law collect_self_read {
 /// a gathering's kind is an annotation or a component the file sees
 export law collect_kind_unknown {
     kind: "collect.kind"
-    reads_view: kinds_unknown_found
+    reads: kinds_unknown_found
     voice: kind_words
     witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n"
 }
@@ -474,7 +424,7 @@ export law collect_kind_unknown {
 /// a gathering's scope is self, package or closure
 export law collect_scope_unknown {
     kind: "collect.scope"
-    reads_view: scopes_unknown_found
+    reads: scopes_unknown_found
     voice: scope_words
     witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.name\n"
 }
@@ -482,7 +432,7 @@ export law collect_scope_unknown {
 /// a gathering declares its order
 export law collect_order_missing {
     kind: "collect.order"
-    reads_view: orders_missing_found
+    reads: orders_missing_found
     voice: order_words
     witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name }\n"
 }
@@ -490,7 +440,7 @@ export law collect_order_missing {
 /// a `by` key names what the kind's declarations answer
 export law collect_order_key_unknown {
     kind: "collect.order_key"
-    reads_view: keys_unknown_found
+    reads: keys_unknown_found
     voice: order_key_words
     witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope\n"
 }
@@ -498,7 +448,7 @@ export law collect_order_key_unknown {
 /// a `collect` declares a list
 export law collect_not_a_list {
     kind: "collect.not_a_list"
-    reads_view: not_lists_found
+    reads: not_lists_found
     voice: not_a_list_words
     witness: "type Entry = { name: string }\n\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n"
 }
@@ -506,7 +456,7 @@ export law collect_not_a_list {
 /// a `collect` projects into its list's element
 export law collect_projection_mistyped {
     kind: "collect.proj_type"
-    reads_view: mistyped_found
+    reads: mistyped_found
     voice: proj_type_words
     witness: "type Entry = { name: string }\n\ntype Other = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n"
 }
@@ -514,7 +464,7 @@ export law collect_projection_mistyped {
 /// a `collect` projects into a record
 export law collect_projection_fieldless {
     kind: "collect.not_a_record"
-    reads_view: fieldless_found
+    reads: fieldless_found
     voice: not_a_record_words
     witness: "collect xs: List<int> = @tag in self as int { name: it.name } by it.name\n"
 }
@@ -522,7 +472,7 @@ export law collect_projection_fieldless {
 /// a projection fills every field once
 export law collect_projection_misfilled {
     kind: "collect.fields"
-    reads_view: misfilled_found
+    reads: misfilled_found
     voice: fields_words
     witness: "type Entry = { name: string, module: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n"
 }
@@ -530,7 +480,7 @@ export law collect_projection_misfilled {
 /// a projection reads what its kind answers
 export law collect_path_unknown {
     kind: "collect.path"
-    reads_view: paths_found
+    reads: paths_found
     voice: path_words
     witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n"
 }
@@ -538,7 +488,7 @@ export law collect_path_unknown {
 /// a `by` key yields a value a comparison reads
 export law collect_order_uncomparable {
     kind: "collect.order_uncomparable"
-    reads_view: uncomparable_found
+    reads: uncomparable_found
     voice: uncomparable_words
     witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n"
 }
@@ -546,7 +496,7 @@ export law collect_order_uncomparable {
 /// a `by` column is one kind
 export law collect_order_mixed {
     kind: "collect.order_mixed"
-    reads_view: mixed_found
+    reads: mixed_found
     voice: mixed_words
     witness: "use @std.meta.{Named}\n\ntrait Mark {\n    fn label() -> string\n}\n\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\n\nimpl Mark for string {\n    fn label() -> string { self }\n}\n\nfn mark(what: Named, label: dyn Mark) -> void {}\n\n@mark(\"a\")\nfn alpha() {}\n\n@mark(1)\nfn beta() {}\n\ntype Entry = { name: string }\n\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n"
 }
@@ -554,7 +504,7 @@ export law collect_order_mixed {
 /// a `dense` order is one int key, gap-free from 0
 export law collect_dense {
     kind: "collect.dense"
-    reads_view: dense_found
+    reads: dense_found
     voice: dense_words
     witness: "use @std.meta.{Named}\n\nfn numbered(what: Named, ordinal: int) -> void {}\n\n@numbered(0)\nfn a() {}\n\n@numbered(2)\nfn b() {}\n\ntype Entry = { name: string }\n\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name } by it.mark.args[0] dense\n"
 }
@@ -562,7 +512,7 @@ export law collect_dense {
 /// a `collect enum` gathers each variant name once
 export law collect_enum_variant_twice {
     kind: "collect_enum.variant"
-    reads_view: variants_found
+    reads: variants_found
     voice: variant_words
     witness: "use @std.meta.{Named}\n\nfn tag(what: Named) -> void {}\n\n@tag\nfn run() {}\n\ncollect enum Command = @tag in self by it.name\n"
 }
@@ -570,7 +520,7 @@ export law collect_enum_variant_twice {
 /// a gathered variant carries fixed types, the fields its record writes
 export law collect_enum_member_unfit {
     kind: "collect_enum.member"
-    reads_view: members_found
+    reads: members_found
     voice: member_words
     witness: "use @std.meta.{Named}\n\nfn numbered(what: Named, ordinal: int) -> void {}\n\n@numbered(0)\ntype Wrap<T> = { held: T }\n\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
 }
@@ -578,7 +528,7 @@ export law collect_enum_member_unfit {
 /// an enum's variants are one set for every reader
 export law collect_enum_in_closure {
     kind: "collect_enum.scope"
-    reads_view: closure_found
+    reads: closure_found
     voice: closure_words
     witness: "use @std.meta.{Named}\n\nfn tag(what: Named) -> void {}\n\n@tag\nfn a() {}\n\ncollect enum S = @tag in closure by it.name\n"
 }
@@ -586,7 +536,7 @@ export law collect_enum_in_closure {
 /// an enum's order holds its variants apart
 export law collect_enum_tied {
     kind: "collect_enum.tie"
-    reads_view: ties_found
+    reads: ties_found
     voice: tie_words
     witness: "use @std.meta.{Named}\n\nfn numbered(what: Named, ordinal: int) -> void {}\n\n@numbered(0)\ntype Dot = {}\n\n@numbered(0)\ntype Line = { to: int }\n\ncollect enum Shape = @numbered in self by it.mark.args[0]\n"
 }

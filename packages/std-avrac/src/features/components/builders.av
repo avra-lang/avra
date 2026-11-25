@@ -5,7 +5,6 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{
-    scoped,
     FnSeat,
     ComponentWord,
     Record,
@@ -43,13 +42,10 @@ fn component_decl_written(s: dyn Slots) -> Result<Built, string> {
     if s.present_of("third")? { return .Err(three_dots()) }
     let members = s.params_of("members")?
     let written = s.params_of("head")?
-    if written.first()?.default != null { return .Err(first_defaulted(written[0].name.text())) }
-    let placed = written.find(it.state && it.default != null)
-    if placed != null { return .Err(state_defaulted(placed!.name.text())) }
     let head = if members.any(it.state) { [propped_param(p) for p in written] } else { written }
     let decl = Stmt
         .ComponentDecl(
-            scoped(s.text_of("name")?),
+            Scoped(s.text_of("name")?),
             s.params_of("tparams")?,
             head,
             members,
@@ -105,7 +101,7 @@ fn event_written(s: dyn Slots) -> Result<Built, string> {
         Built
             .Seat(
                 Param {
-                    name: scoped(s.text_of("name")?),
+                    name: Scoped(s.text_of("name")?),
                     ty: TypeRef {
                         name: "fn",
                         applied: [],
@@ -178,7 +174,7 @@ fn opened(s: dyn Slots) -> Result<ComponentWord, string> {
 fn headed(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
     let store = s.arena()
     let at = s.at_of("name")?
-    let name = store.alloc_expr(Expr.Ident(scoped(s.text_of("name")?)), at)
+    let name = store.alloc_expr(Expr.Ident(Scoped(s.text_of("name")?)), at)
     let inst = s
         .made_expr(
             Expr
@@ -193,7 +189,7 @@ fn headed(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
 /// the printer spells back as it was written.
 fn bound(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
     let store = s.arena()
-    let name = scoped(s.text_of("name")?)
+    let name = Scoped(s.text_of("name")?)
     let value = s
         .made_expr(Expr.Component(word.word, s.types_of("targs")?, [], s.expr_opt_of("body")?, name, null))?
     let stmt = store.alloc_stmt(Stmt.Let(name, null, value), s.built_at())
@@ -224,28 +220,8 @@ fn keyed_binder(word: string) -> string {
     "a keyed `${word}`'s body binds its element — write `name -> …`"
 }
 
-fn first_defaulted(seat: string) -> string {
-    "a component's first head seat, `${seat}`, is what every instance writes before its block, so it takes no default"
-}
-
-fn state_defaulted(seat: string) -> string {
-    "the head seat `${seat}` is `state`: every instance hands it a place of its own, so it takes no default"
-}
-
-fn first_head(word: string, first: string) -> string {
-    "`${word}` writes its first head seat, `${first}`, before its block: `${word} <${first}> { … }`"
-}
-
-fn later_head_missing(word: string, seat: string) -> string {
-    "`${word}` takes `${seat}` by name in its block, after its head value — write `${seat}: …`"
-}
-
-fn head_set_twice(word: string, seat: string) -> string {
-    "`${seat}` is `${word}`'s head value here, written before the block — a setting sets it twice"
-}
-
-fn later_set_twice(word: string, seat: string) -> string {
-    "`${word}`'s block sets its head seat `${seat}` twice"
+fn head_count(word: string, n: int) -> string {
+    "`${word}` declares ${n} head fields, and its instance writes one value"
 }
 
 /// A TEMPLATE's instance writing type arguments: a template copies its

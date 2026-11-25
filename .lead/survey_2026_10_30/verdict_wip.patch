@@ -1,0 +1,340 @@
+diff --git a/packages/std-avrac/src/compiler/build.av b/packages/std-avrac/src/compiler/build.av
+index b8605e1a..fbec5508 100644
+--- a/packages/std-avrac/src/compiler/build.av
++++ b/packages/std-avrac/src/compiler/build.av
+@@ -599,76 +599,6 @@ impl Workspace {
+     /// An embedded file's line of the key.
+     fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
+ 
+-    /// THE INPUT MANIFEST: what the last derivation of a program read — its closure, each
+-    /// covered directory's listing, and every input, embed and object with its line of the
+-    /// key — kept as ONE record beside the key it produced. An unchanged run confirms the
+-    /// record by recomputing those lines and reads the key off it, instead of rebuilding the
+-    /// input set (the closure walk, the embeds of every record, the reached objects).
+-    fn manifest_key(under: Keyed) -> string {
+-        node_key(Stored.Fp, ["manifest", self.root, under.named, joined(under.beside, "\t")])
+-    }
+-
+-    fn keep_manifest(store: Store, under: Keyed, key: string) {
+-        let inputs = self.source_inputs(under.named).concat(under.beside)
+-        let covered = self.closure(under.named)
+-        let entries = [ManifestEntry.Covered(c) for c in covered]
+-            .concat(
+-                [ManifestEntry.Listing(c.split("\t")[0], self.listing_word(c.split("\t")[0])) for c in covered],
+-            )
+-            .concat([ManifestEntry.Input(f, self.input_line(f)) for f in inputs])
+-            .concat([ManifestEntry.Embed(f, self.embed_line(f)) for f in self.embeds(inputs)])
+-            .concat(
+-                [ManifestEntry.Object(o, self.object_line(o)) for o in self.reached_objects(under.named)],
+-            )
+-        let _ = store
+-            .keep(
+-                Stored.Fp,
+-                self.manifest_key(under),
+-                joined([key].concat([e.spelled() for e in entries]), "\n"),
+-                [],
+-            )
+-    }
+-
+-    /// The key of a run: the manifest's, when every line it holds still stands; else folded.
+-    fn confirmed_key(store: Store, under: Keyed) -> string {
+-        let reading = self.clock()
+-        let row = store.get(Stored.Fp, self.manifest_key(under))
+-        self.timed("manifest read", reading)
+-        if row != null {
+-            let parsing = self.clock()
+-            let lines = row!.split("\n")
+-            let entries = [read_entry(l) for l in lines.slice(1, lines.length)]
+-            self.timed("manifest parse", parsing)
+-            if !entries.any(it == null) && self.manifest_stands(under, [e! for e in entries]) { return lines[0] }
+-        }
+-        self.program_key(under.named, under.beside)
+-    }
+-
+-    fn manifest_stands(under: Keyed, entries: List<ManifestEntry>) -> bool {
+-        let closing = self.clock()
+-        let same = joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n")
+-        self.timed("closure", closing)
+-        same && entries.all((e) -> self.entry_timed(e))
+-    }
+-
+-    /// One entry confirmed, its time kept under what kind of input it is.
+-    fn entry_timed(e: ManifestEntry) -> bool {
+-        let confirming = self.clock()
+-        let stands = self.entry_stands(e)
+-        self.timed(e.kind_word(), confirming)
+-        stands
+-    }
+-
+-    fn entry_stands(e: ManifestEntry) -> bool {
+-        match e {
+-            .Covered(_) -> true,
+-            .Listing(dir, word) -> self.listing_word(dir) == word,
+-            .Input(path, line) -> self.input_line(path) == line,
+-            .Embed(path, line) -> self.embed_line(path) == line,
+-            .Object(path, line) -> self.object_line(path) == line,
+-        }
+-    }
+-
+     /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
+     /// reads of it: a dependency's tests are no input, so they are never walked.
+     fn listing_word(dir: string) -> string {
+@@ -725,8 +655,11 @@ impl Workspace {
+     /// analysed, where nothing has admitted a package yet — `closure` is
+     /// what already survives that (its own remembered half), `packages()`
+     /// here would answer empty every first ask.
+-    fn reached_objects(named: string) -> List<string> {
+-        let roots = [at[1] for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
++    fn reached_objects(named: string) -> List<string> { self.objects_of(self.closure(named)) }
++
++    /// `reached_objects` over a closure given: `src<TAB>root` lines.
++    fn objects_of(closure: List<string>) -> List<string> {
++        let roots = [at[1] for at in [line.split("\t") for line in closure] if at.length > 1]
+         distinct(flatten([self.manifest_objects(root) for root in roots]))
+     }
+ 
+@@ -1197,67 +1130,6 @@ fn wasm_unsupported(names: List<string>) -> string {
+     "avra: a wasm module has no body for ${names.join(", ")} — a fiber, a core and a package's C are not available on this target"
+ }
+ 
+-/// One line of an input manifest.
+-enum ManifestEntry {
+-    Covered(line: string)
+-    Listing(dir: string, word: string)
+-    Input(path: string, line: string)
+-    Embed(path: string, line: string)
+-    Object(path: string, line: string)
+-}
+-
+-impl ManifestEntry {
+-    /// The entry as a manifest spells it: a tag, then its fields, tab-apart.
+-    fn spelled() -> string {
+-        match self {
+-            .Covered(line) -> "C\t${line}",
+-            .Listing(dir, word) -> "L\t${dir}\t${word}",
+-            .Input(path, line) -> "I\t${path}\t${line}",
+-            .Embed(path, line) -> "E\t${path}\t${line}",
+-            .Object(path, line) -> "O\t${path}\t${line}",
+-        }
+-    }
+-
+-    /// What kind of input the entry confirms, as a phase's name.
+-    fn kind_word() -> string {
+-        match self {
+-            .Covered(_) -> "covered",
+-            .Listing(_, _) -> "listings",
+-            .Input(_, _) -> "inputs",
+-            .Embed(_, _) -> "embeds",
+-            .Object(_, _) -> "objects",
+-        }
+-    }
+-
+-    /// The closure line this entry stands for, none for any other.
+-    fn covered() -> List<string> {
+-        match self {
+-            .Covered(line) -> [line],
+-            .Listing(_, _) or .Input(_, _) or .Embed(_, _) or .Object(_, _) -> [],
+-        }
+-    }
+-}
+-
+-/// An entry read back; none for a line that is no entry.
+-fn read_entry(line: string) -> ManifestEntry? {
+-    let at = line.index_of("\t")
+-    if at < 1 { return null }
+-    let tag = line.substring(0, at)
+-    let rest = line.substring(at + 1, line.length)
+-    if tag == "C" { return ManifestEntry.Covered(rest) }
+-    let cut = rest.index_of("\t")
+-    if cut < 0 { return null }
+-    let first = rest.substring(0, cut)
+-    let second = rest.substring(cut + 1, rest.length)
+-    when {
+-        tag == "L" -> ManifestEntry.Listing(first, second)
+-        tag == "I" -> ManifestEntry.Input(first, second)
+-        tag == "E" -> ManifestEntry.Embed(first, second)
+-        tag == "O" -> ManifestEntry.Object(first, second)
+-        _ -> null
+-    }
+-}
+-
+ /// Whether `wasm-opt` ran clean over `words`.
+ fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
+     // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
+diff --git a/packages/std-avrac/src/compiler/cache_walk.av b/packages/std-avrac/src/compiler/cache_walk.av
+index 5d01c91f..6edf0984 100644
+--- a/packages/std-avrac/src/compiler/cache_walk.av
++++ b/packages/std-avrac/src/compiler/cache_walk.av
+@@ -83,7 +83,7 @@ fn keyed_by(f: Family) -> KeyedBy {
+         .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .Writes or .WriteSummary or .CancelSummary or .CancelBits or .ReadFound or .Consumed -> KeyedBy.Decl,
+         .Manifest -> KeyedBy.Package,
+         .References or .Failures or .ReadReach -> KeyedBy.Program,
+-        .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
++        .Lowered or .LiftLowered or .Lifted or .Settled or .Verdict -> KeyedBy.Unit,
+         .Named -> KeyedBy.Name,
+         .Input or .BlockScan or .ComponentScan or .ComponentNames -> KeyedBy.Input,
+     }
+diff --git a/packages/std-avrac/src/compiler/derive.av b/packages/std-avrac/src/compiler/derive.av
+index cdebaca3..72a56908 100644
+--- a/packages/std-avrac/src/compiler/derive.av
++++ b/packages/std-avrac/src/compiler/derive.av
+@@ -361,12 +361,13 @@ impl Workspace {
+         self.timed("open", opening)
+         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
+         let judging = self.clock()
+-        let key0 = self.confirmed_key(store, under)
++        let key = self.verdict_key(under)
++        let standing = store.get_valid(Stored.Unit, key, (name) -> self.verdict_now(name)) != null
+         self.timed("judge", judging)
+         let loading = self.clock()
+-        let kept: string? = self.db.warn(store, key0)
+-        let found: string? = self.db.findings(store, key0)
+-        let licensed: string? = self.db.licenses(store, key0)
++        let kept: string? = if standing { self.db.warn(store, key) } else { null }
++        let found: string? = if standing { self.db.findings(store, key) } else { null }
++        let licensed: string? = if standing { self.db.licenses(store, key) } else { null }
+         self.timed("load", loading)
+         // A missing row is UNKNOWN, never EMPTY: no hit.
+         if kept != null && found != null && licensed != null {
+@@ -382,15 +383,13 @@ impl Workspace {
+             }
+         }
+         let d = self.derived(entry, Want.Diagnostics)?
+-        // a check derives the same answer for every target: the target rides
+-        // the key only when a binary or an object is what is kept
+-        let key = d.program.ws.kept_key(under)
+-        d.program.ws.keep_manifest(store, under, key)
+         let licenses = stale_license_lines(d.program)
+         let found = flatten([s.findings for s in d.said])
+         self.db.insert_warn(store, key, d.warnings)
+         self.db.insert_licenses(store, key, licenses)
+         self.db.insert_findings(store, key, findings_text(found))
++        let _ = d.program.ws.verdict_answer(under)
++        d.program.ws.keep_check_verdict(store, under)
+         work_sized(
+             d.program.ws.decls.file_count(),
+             d.program.ws.decls.module_count(),
+diff --git a/packages/std-avrac/src/compiler/families/families.av b/packages/std-avrac/src/compiler/families/families.av
+index f4c11d82..9337542e 100644
+--- a/packages/std-avrac/src/compiler/families/families.av
++++ b/packages/std-avrac/src/compiler/families/families.av
+@@ -201,4 +201,9 @@ type ReadFound = {}
+ @family("DeclId", "int")
+ type Consumed = {}
+ 
++/// The check verdict: a program and a want, and the digest of everything the
++/// verdict read — a root, keyed by the one program this workspace checks.
++@family("unit", "int")
++type Verdict = {}
++
+ export collect enum Family = @family in self by it.name
+diff --git a/packages/std-avrac/src/compiler/leaves.av b/packages/std-avrac/src/compiler/leaves.av
+index 5d186ccc..19316929 100644
+--- a/packages/std-avrac/src/compiler/leaves.av
++++ b/packages/std-avrac/src/compiler/leaves.av
+@@ -220,6 +220,30 @@ impl Workspace {
+         }
+     }
+ 
++    /// The check verdict: one answer per program and want, its digest a fold of
++    /// everything it read.
++    fn named_verdict() -> AnswerRef {
++        let ws = self
++        let ordinal = Family.Verdict.ordinal
++        AnswerRef {
++            name: "Verdict",
++            family: () -> ordinal,
++            spelled: (arg: int) -> ws.spelled_verdict(arg),
++            arg: (spelled: string) -> ws.verdict_arg(spelled),
++            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
++        }
++    }
++
++    /// What a verdict's name says: the program checked, and the want.
++    fn spelled_verdict(arg: int) -> string? {
++        if arg != 0 { return null }
++        "check:${self.entry_of() ?? ""}\tDiagnostics"
++    }
++
++    fn verdict_arg(spelled: string) -> int? {
++        if spelled == "check:${self.entry_of() ?? ""}\tDiagnostics" { 0 } else { null }
++    }
++
+     /// The one answer of a whole-program family, spelled by the family's name.
+     fn named_once(name: string, fam: Family) -> AnswerRef {
+         let ws = self
+@@ -282,6 +306,7 @@ impl Workspace {
+         rdb.answer_known(self.named_names())
+         rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
+         rdb.answer_known(self.named_once("References", Family.References))
++        rdb.answer_known(self.named_verdict())
+         rdb.answer_known(self.named_by_bucket())
+     }
+ 
+diff --git a/packages/std-avrac/src/compiler/modules.av b/packages/std-avrac/src/compiler/modules.av
+index 051bfdf4..77de34ae 100644
+--- a/packages/std-avrac/src/compiler/modules.av
++++ b/packages/std-avrac/src/compiler/modules.av
+@@ -307,8 +307,11 @@ impl Workspace {
+     /// reaches for the last group, so nothing else would put them in
+     /// the key, and a code-generator change must invalidate every
+     /// module it could have emitted.
+-    fn source_inputs(named: string) -> List<string> {
+-        let covered = [line.split("\t") for line in self.closure(named)]
++    fn source_inputs(named: string) -> List<string> { self.sources_of(self.closure(named)) }
++
++    /// `source_inputs` over a closure given: `src<TAB>root` lines.
++    fn sources_of(closure: List<string>) -> List<string> {
++        let covered = [line.split("\t") for line in closure]
+         let tree = self.toolchain_root()
+         let engine: List<string> = if tree == "" {
+             []
+diff --git a/packages/std-avrac/src/compiler/tests/family_reflect_test.av b/packages/std-avrac/src/compiler/tests/family_reflect_test.av
+index a30c6fa2..5303c203 100644
+--- a/packages/std-avrac/src/compiler/tests/family_reflect_test.av
++++ b/packages/std-avrac/src/compiler/tests/family_reflect_test.av
+@@ -6,10 +6,10 @@ use compiler.families.{Family}
+ spec "family declarations reflect as a collected enum" {
+     given "the declared families" {
+         then "are minted as variants in name order" {
+-            [f.name for f in Family.all()].join(",") == "Admitted,Analysis,BlockScan,CancelBits,CancelSummary,ComponentNames,ComponentScan,ConstTyped,Consumed,DeclReads,Expanded,Failures,Folded,HeldSig,Input,Items,LiftLowered,Lifted,Lowered,Manifest,Marks,MethodDiags,Methods,Named,Names,Namespace,Parsed,Placed,Plain,Raised,ReadFound,ReadReach,References,Resolved,Settled,Sig,Source,Syntax,Typed,Visible,WriteSummary,Writes"
++            [f.name for f in Family.all()].join(",") == "Admitted,Analysis,BlockScan,CancelBits,CancelSummary,ComponentNames,ComponentScan,ConstTyped,Consumed,DeclReads,Expanded,Failures,Folded,HeldSig,Input,Items,LiftLowered,Lifted,Lowered,Manifest,Marks,MethodDiags,Methods,Named,Names,Namespace,Parsed,Placed,Plain,Raised,ReadFound,ReadReach,References,Resolved,Settled,Sig,Source,Syntax,Typed,Verdict,Visible,WriteSummary,Writes"
+         }
+         then "each answers the word it was declared with" {
+-            Family.all().length == 42 &&
++            Family.all().length == 43 &&
+                 Family.Source.name == "Source" &&
+                 Family.Input.name == "Input" &&
+                 Family.CancelSummary.name == "CancelSummary"
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index 4d00b770..470d3a17 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -887,6 +887,12 @@ fn cancel_summary_verified(ws: Workspace, arg: int) -> int {
+     ws.db.changed_at(key(Family.CancelSummary, arg))
+ }
+ 
++/// The check verdict is the driver's answer, kept as a saved row with what it read:
++/// the family names it, and nothing recomputes it through the store.
++fn verdict_verified(ws: Workspace, arg: int) -> int {
++    ws.db.changed_at(key(Family.Verdict, arg))
++}
++
+ /// The per-family dispatch: the ONE fn value the kernel holds, never a
+ /// list of per-family fns. Each arm is a DIRECT call to a named
+ /// verifier, so a CallPtr fold reaches only this dispatcher — changing
+@@ -936,6 +942,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
+         .ComponentScan -> component_scan_verified(ws, arg),
+         .ComponentNames -> component_names_verified(ws, arg),
+         .CancelSummary -> cancel_summary_verified(ws, arg),
++        .Verdict -> verdict_verified(ws, arg),
+     }
+ }
+ 
+@@ -2645,5 +2652,6 @@ export fn family_code_hash(f: Family) -> string {
+         .ComponentScan -> code_hash(component_scan_verified) ?? "",
+         .ComponentNames -> code_hash(component_names_verified) ?? "",
+         .CancelSummary -> code_hash(cancel_summary_verified) ?? "",
++        .Verdict -> code_hash(verdict_verified) ?? "",
+     }
+ }

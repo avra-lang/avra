@@ -4,7 +4,6 @@ use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
-    scoped,
     NodeNotes,
     node_notes,
     CostRemark,
@@ -182,7 +181,7 @@ export fn lowered_generic(
 
 /// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic, each
 /// `const` seat `settled` names settled to its value: the unit every call settling them alike runs.
-@query("lower")
+@query
 export fn lowered_settled(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -202,7 +201,7 @@ fn answered_fn(engine: QueryEngine, file: SourceFileAddress, name: string, signe
 }
 
 /// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic.
-@query("lower")
+@query
 fn lowered_under(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -272,7 +271,6 @@ fn signed_lowered(
     settled: List<SettledSeat> = [],
     framed: List<string> = [],
     notes: NodeNotes? = null,
-    built_once: bool = false,
 ) -> LoweredFn {
     let body = elaborated(engine, file, signed)
     let fills = bound_fills(parameters ?? [])
@@ -301,8 +299,7 @@ fn signed_lowered(
         file,
         name,
         settled_unit_name(name, parameters, settled),
-        signed.item.store.expr_span(signed.body),
-        signed.item.at,
+        body_written_at(engine, file, signed),
     ), names: NamesRead { reads: body.reads }, roots: [body.body] }
     cx.unbroken = wears_meta(engine, file, signed.item.store, signed.stmt, UNBROKEN)
     if signed.receiver != null { cx.seated_written(RECEIVER, signed.receiver!.filled(fills), signed.receiver_written) }
@@ -320,7 +317,7 @@ fn signed_lowered(
     }
     cx.scope_enter()
     let r = when {
-        built_once || signed.item.store.is_once(signed.stmt) -> cx
+        signed.item.store.is_once(signed.stmt) -> cx
             .once_answered(declared_symbol(file, name), body.body, signature.answer)
         signed.case -> case_lowered(cx, body.body)
         _ -> cx.lower(body.body)
@@ -416,7 +413,7 @@ fn unconsumed_noted(
 /// THE COST REMARKS of the fn `file` declares as `name`: each site of its body, and its lambdas',
 /// where a representation technique it is a candidate for declined, and why — the body lowered again
 /// with notes, as a law asks, which a build never does.
-@query("lower")
+@query
 export fn cost_remarks(engine: QueryEngine, file: SourceFileAddress, name: string) -> CostRemarks {
     let signed? = signed_body(engine, file, name) else { return CostRemarks { remarks: [] } }
     if !signed.signature.type_params.is_empty() { return CostRemarks { remarks: [] } }
@@ -454,9 +451,20 @@ fn bound_fills(parameters: List<ParameterLayout>) -> Map<string, SignedType> {
     found
 }
 
+/// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
+/// of the program as it lowers, the lambdas it lifts, the data it lays out and the types it tags
+/// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
+/// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
+/// in it.
+/// Where the body `signed` writes stands in `file`; absent for one no source spans.
+fn body_written_at(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> Span? {
+    let written? = signed.item.store.expr_span(signed.body) else { return null }
+    span_in_file(engine, file, signed.item, written)
+}
+
 /// `span`, counted from the start of the item `frame` of `file`, counted from the file's start; as it
 /// is where `frame` is absent, a span of a store read at its file's places.
-fn in_file(engine: QueryEngine, file: SourceFileAddress, frame: ItemId?, span: Span) -> Span {
+fn in_file(engine: QueryEngine, file: SourceFileAddress, frame: int?, span: Span) -> Span {
     let at? = frame else { return span }
     let placed = file_placed(engine, file, at, FindingAt { lo: span.lo, hi: span.hi })
     Span { lo: placed.lo, hi: placed.hi }
@@ -470,7 +478,7 @@ fn written_site(
     file: SourceFileAddress,
     store: SyntaxArena,
     e: ExprId,
-    frame: ItemId?,
+    frame: int?,
 ) -> string? {
     if store.spanned_elsewhere(e) { return null }
     let written? = store.expr_span(e) else { return null }
@@ -480,11 +488,6 @@ fn written_site(
     "${file.package_name}/${path}:${new_source_file(file.path_in_package, text).linecol(at.lo).line}"
 }
 
-/// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
-/// of the program as it lowers, the lambdas it lifts, the data it lays out and the types it tags
-/// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
-/// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
-/// in it.
 fn lowered_program(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -494,7 +497,7 @@ fn lowered_program(
     parameters: List<ParameterLayout>?,
     writer: SourceFileAddress? = null,
     from: int = 0,
-    frame: ItemId? = null,
+    frame: int? = null,
     framed: List<string> = [],
     notes: NodeNotes? = null,
 ) -> LoweredProgram {
@@ -537,7 +540,6 @@ fn lowered_program(
         data: data,
         literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, unit, e, ty, frame),
         traits: (ty: SignedType) -> trait_members(engine, ty),
-        placed: (ty: SignedType) -> trait_placed(engine, ty),
         type_symbol: (ty: SignedType) -> type_symbol(ty),
         tagged: tagged,
         wrappers: wrappers,
@@ -633,18 +635,16 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
 }
 
 /// The `Frame` an unwind out of the unit `unit` pushes: its label the name its body is declared by,
-/// its place the body's span in `file`, counted from the start of the item `item` where one holds it,
-/// laid out as the binary's data, the place first. Absent for a body no source spans.
-fn unwind_frame(file: SourceFileAddress, label: string, unit: string, at: Span?, item: ItemId?) -> Static? {
+/// its place the body's span in `file`, laid out as the binary's data, the place first. Absent for a
+/// body no source spans.
+fn unwind_frame(file: SourceFileAddress, label: string, unit: string, at: Span?) -> Static? {
     let span? = at else { return null }
     let site = StaticBox
         .Slots([Slot.Text(spelled_file(file)), Slot.Int(span.lo), Slot.Int(span.hi)])
     Static {
         name: "frame\$${declared_symbol(file, unit)}",
         boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])],
-        home: template_home(file),
         debug: true,
-        at_item: if item == null { null } else { item!.of },
     }
 }
 
@@ -837,7 +837,7 @@ fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string) -
 
 /// The unit of the `collect` `file` declares as `name` gathering `in closure`, as the program of the
 /// package `program` reads it: its list over that program's closure. Absent as `lowered_collect` is.
-@query("lower")
+@query
 export fn lowered_gathered(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -906,7 +906,7 @@ fn unlowered_reached(symbol: string, why: string) -> string { "a body not lowere
 /// The unit of the static `all` the enum `file` declares as `name` has where its variants carry
 /// nothing: no seats, each variant in the order declared, listed and answered. Absent for any other
 /// type, or name.
-@query("lower")
+@query
 export fn lowered_every_variant(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -1048,16 +1048,14 @@ fn unit_callee(m: DeclaredName) -> CalledFn {
 }
 
 /// The unit the const `file` declares as `name` builds its value by where it's read
-/// (`built_where_read`): no seats, its value answered — a component's instance once a run, kept in
-/// the unit's slot for every read after, as a module `state`'s box is. Absent for any other
-/// declaration.
+/// (`built_where_read`): no seats, its value answered. Absent for any other declaration.
 fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
     let d? = file_declares_named(engine, file, name)
         .names
         .find(it.name == name && it.kind == ItemKind.Const) else { return null }
     if !built_where_read(engine, d) { return null }
     match const_body(engine, d) {
-        .Ok(body) -> signed_lowered(engine, file, body, name, null, [], [], null, built_instance(engine, d)),
+        .Ok(body) -> signed_lowered(engine, file, body, name, null),
         .Err(_) -> null,
     }
 }
@@ -1098,7 +1096,7 @@ const ROOT_KIND_WORD: string = "root_kind"
 const NODE_KINDS_WORD: string = "node_kinds"
 
 /// The fn the toolchain's module `module` (`@std.meta`) declares as `name`, as a call reaches it.
-@query("lower")
+@query
 fn toolchain_callee(engine: QueryEngine, module: string, name: string) -> CalledFn? {
     let m = module_path(module.split("."))
     let package? = m.package() else { return null }
@@ -1113,8 +1111,8 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? { callee_at(engi
 
 /// The fn the item `at` of `file` declares as `name`, as a call reaches it: read from its item once,
 /// so a call of it elsewhere reads this answer and never its item.
-@query("lower")
-fn callee_at(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> CalledFn? {
+@query
+fn callee_at(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> CalledFn? {
     let item = read_item(engine, file, at)
     let host = item
         .stmts
@@ -1231,6 +1229,7 @@ fn method_callee(
     reader: string,
 ) -> CalledFn? {
     if subject.nullable() || subject.dynamic { return null }
+    if !subject.args.is_empty() && statics { return null }
     let declared? = declared_at(subject) ?? owned_at(subject) else { return null }
     if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return trait_static_callee(engine, declared, name) }
     let impls = impls_given(engine, declared.file, declared.name, name, statics, reader)
@@ -1309,7 +1308,7 @@ fn trait_static_callee(engine: QueryEngine, declared: DeclaredAt, name: string) 
 
 /// The unit of the static fn `name` the trait `file` declares as `owner` writes in its own body;
 /// absent where it writes none with a body.
-@query("lower")
+@query
 export fn lowered_trait_static(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -1367,21 +1366,6 @@ fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
     } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
 }
 
-/// Whether the trait a `dyn` of `ty` names wears `@std/meta`'s `placed`.
-fn trait_placed(engine: QueryEngine, ty: SignedType) -> bool {
-    let at? = declared_at(ty) else { return false }
-    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return false }
-    item
-        .stmts
-        .any(
-            (s) -> item.store.trait_parts(s)?.name == at.name &&
-                wears_meta(engine, at.file, item.store, s, PLACED),
-        )
-}
-
-/// The `@std/meta` mark a trait whose boxes are drawn under the frame they were placed under wears.
-const PLACED: string = "placed"
-
 /// The symbol the type `ty` names is known by: a declared type's, or a word the language owns under
 /// the language's own name; absent for any other.
 fn type_symbol(ty: SignedType) -> string? {
@@ -1407,8 +1391,7 @@ fn default_callee(engine: QueryEngine, ty: SignedType, field: string) -> CalledF
     let item? = record_item(engine, at.file, at.name) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
         .find(it.name == at.name) else { return null }
-    let wanted = scoped(field)
-    let written? = parts.fields.find(it.name == wanted) else {
+    let written? = parts.fields.find(it.name.of == field) else {
         return spread_default(engine, at.file, parts, field) ?? carried_default(
             engine,
             at.file,
@@ -1449,7 +1432,7 @@ fn carried_default(engine: QueryEngine, file: SourceFileAddress, field: string) 
 /// The default the record `file` declares as `owner` writes for its field `field`, lowered as a fn of
 /// nothing answering the field's type; under `under`, the layouts the record's type arguments have,
 /// for a field whose type names its type parameters. Absent where it writes none.
-@query("lower")
+@query
 export fn lowered_field_default(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -1467,10 +1450,9 @@ export fn lowered_field_default(
 fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: string, field: string) -> SignedBody? {
     let item? = record_item(engine, file, owner) else { return null }
     let stmt? = item.stmts.find((s) -> fields_written(item.store, s)?.name == owner) else { return null }
-    let wanted = scoped(field)
     let value? = fields_written(item.store, stmt)!
         .fields
-        .find(it.name == wanted && it.default != null)?.default else { return null }
+        .find(it.name.of == field && it.default != null)?.default else { return null }
     let seat? = (record_signature(engine, file, owner)?.fields ?? []).find(it.name == field) else { return null }
     let ty? = seat.ty else { return null }
     SignedBody {
@@ -1485,7 +1467,7 @@ fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: strin
 
 /// The default the fn `file` declares as `owner` writes for its seat `seat`, lowered as a fn of nothing
 /// answering the seat's type. Absent where it writes none.
-@query("lower")
+@query
 export fn lowered_seat_default(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -1512,8 +1494,7 @@ export fn seat_default_lowered(
 /// The default the fn `signed` writes for its seat `seat`, as a body of no seats answering the seat's
 /// type and reading no receiver. Absent where it writes none.
 fn seat_default_body(signed: SignedBody, seat: string) -> SignedBody? {
-    let wanted = scoped(seat)
-    let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name == wanted)?.default else { return null }
+    let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name.of == seat)?.default else { return null }
     let ty? = signed.signature.params.find(it.name == seat)?.ty else { return null }
     signed with { signature: value_signature(ty), body: value, receiver: null, seat: Seating.SeatDefault(seat) }
 }

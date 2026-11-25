@@ -1,0 +1,390 @@
+diff --git a/packages/std-program/src/disk_store.av b/packages/std-program/src/disk_store.av
+index f5715e42..64ca3a31 100644
+--- a/packages/std-program/src/disk_store.av
++++ b/packages/std-program/src/disk_store.av
+@@ -152,18 +152,37 @@ fn mapped_pack(path: string) -> MappedPack? {
+     let now = stamp(path)
+     let held = packs_mapped().get().get(path)
+     if held != null && now != null && held!.stamp == now! { return held!.pack }
+-    // LICENSED input.store_io: the store's own files, never an input of what is answered
+-    let mapping? = avra_mmap_open(path) else { return null }
+-    // LICENSED input.store_io: the store's own files, never an input of what is answered
+-    let pack? = pack_in(path, SavedSource.Mapped(mapping), avra_mmap_len(mapping)) else {
+-        // LICENSED input.store_io: the store's own files, never an input of what is answered
+-        avra_mmap_close(mapping)
++    let saved? = mapped_saved(path) else { return null }
++    let pack? = pack_in(path, saved.source, saved.to) else {
++        unmapped(saved)
+         return null
+     }
+     if now != null { packs_mapped().put(path, StampedPack { stamp: now!, pack: pack }) }
+     pack
+ }
+ 
++/// A STORE'S FILE MAPPED: whole, read-only, as saved bytes where they lie. A pack is
++/// mapped so, and so is the file a core of this build hands its answers in: read in place, never
++/// copied, and readable after the file is gone. Absent where it can't be mapped.
++export fn mapped_saved(path: string) -> SavedBytes? {
++    // LICENSED input.store_io: the store's own files, never an input of what is answered
++    let mapping? = avra_mmap_open(path) else { return null }
++    // LICENSED input.store_io: the store's own files, never an input of what is answered
++    SavedBytes { source: SavedSource.Mapped(mapping), from: 0, to: avra_mmap_len(mapping) }
++}
++
++/// A mapping let go, where nothing of it is held.
++fn unmapped(saved: SavedBytes) {
++    let mapping? = mapping_of(saved.source) else { return }
++    // LICENSED input.store_io: the store's own files, never an input of what is answered
++    avra_mmap_close(mapping)
++}
++
++/// The mapping saved bytes lie in, absent for bytes in memory.
++fn mapping_of(source: SavedSource) -> ptr? {
++    match source { .Mapped(mapping) -> mapping, .InMemory(_) -> null }
++}
++
+ /// A pack this process mapped, and the stamp its path wore then.
+ type StampedPack = { stamp: int, pack: MappedPack }
+ 
+diff --git a/packages/std-program/src/query_engine.av b/packages/std-program/src/query_engine.av
+index cd01889b..77c58451 100644
+--- a/packages/std-program/src/query_engine.av
++++ b/packages/std-program/src/query_engine.av
+@@ -735,6 +735,16 @@ impl QueryEngine {
+     /// it was read under the places this process reads under, and its path wears that stamp now.
+     fn stamp_holds(question: ContentHash, answer: ContentHash) -> bool {
+         let kept? = self.kept_stamps().get(question) else { return false }
++        self.stamp_holds_by(kept, answer)
++    }
++
++    /// THE ONE TEST OF A STAMP: whether the input `kept` names still answers `answer` by it, read under
++    /// the places this process reads under, its path wearing that stamp now (a path changed within the
++    /// stamp window wears none, so it never holds). Where it holds, this process reads the input by it.
++    /// The store's stamps across runs are held to it, and so are a core's stamps when its answers are
++    /// taken.
++    fn stamp_holds_by(kept: InputStamp, answer: ContentHash) -> bool {
++        let question = kept.question
+         if !kept.answer.same_as(answer) || kept.places != places_held() { return false }
+         // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+         if stamp(kept.path) != kept.stamp { return false }
+@@ -757,13 +767,19 @@ impl QueryEngine {
+     /// Hands the store every input this process read under one stamp or found held by one, beside
+     /// the answer it settled; nothing when that is what the store holds.
+     fn stamps_kept_now() {
+-        let now = [s with { answer: a! } for s in self.stamps_seen.values() for a in [self.settled_held(s.question)?.answer()] if a != null]
++        let now = self.stamps_answered()
+         let kept = self.kept_stamps()
+         if now.length == kept.values().length &&
+             now.all((s) -> kept.get(s.question)?.same_as(s) ?? false) { return }
+         self.store.keep_input_stamps(now)
+     }
+ 
++    /// Every input this process read under one stamp or found held by one, beside the answer it
++    /// settled: what it hands its store, and what a core of a build hands the process that takes it.
++    fn stamps_answered() -> List<InputStamp> {
++        [s with { answer: a! } for s in self.stamps_seen.values() for a in [self.settled_held(s.question)?.answer()] if a != null]
++    }
++
+     /// Times every ask from here on, by its query; an engine already timing keeps its clock.
+     fn time_queries() {
+         if self.times.get() == null { self.times.set(if query_times_asked() { process_times() } else { query_times() }) }
+@@ -1175,9 +1191,16 @@ impl QueryEngine {
+     /// THE ANSWERS ANOTHER PROCESS OF THIS BUILD LEARNED, LENT: proved as `took_learned` proves
+     /// them, over the `inputs` it settled and the answers that `stood` in its frontier, then held
+     /// where they lie, none read until it is asked for. Absent where they were lent, else why not.
+-    fn took_lent(inputs: List<HeldEntry>, stood: List<HeldEntry>, lent: LentAnswers, proved: bool) -> string? {
+-        let why = self.took_learned(inputs, stood, proved)
++    fn took_lent(
++        inputs: List<HeldEntry>,
++        stood: List<HeldEntry>,
++        lent: LentAnswers,
++        proved: bool,
++        stamped: fn(HeldEntry) -> bool,
++    ) -> string? {
++        let why = self.took_learned(inputs, stood, proved, stamped)
+         if why != null { return why }
++        self.kept_times()?.opened("taken: lent indexed", TimedSide.Outside)
+         self
+             .lent_places
+             .set(
+@@ -1187,6 +1210,7 @@ impl QueryEngine {
+                     .with_table(self.lent.get().length, lent.source, lent.high_words),
+             )
+         self.lent.push(lent)
++        self.kept_times()?.closed()
+         null
+     }
+ 
+@@ -1210,21 +1234,34 @@ impl QueryEngine {
+     /// of its reads walked. Absent where they were taken, else why not: none is taken where one
+     /// differs. `proved` false takes them unproven, for a witness that the proof is what catches an
+     /// input that moved.
+-    fn took_learned(entries: List<HeldEntry>, stood: List<HeldEntry>, proved: bool) -> string? {
++    fn took_learned(
++        entries: List<HeldEntry>,
++        stood: List<HeldEntry>,
++        proved: bool,
++        stamped: fn(HeldEntry) -> bool,
++    ) -> string? {
+         if proved {
++            self.kept_times()?.opened("taken: inputs proved", TimedSide.Outside)
+             for e in entries {
+                 if !e.input { continue }
++                // an input the other process read under a stamp its path still wears is the one read here
++                if stamped(e) { continue }
+                 let here? = self.settled_now(e.question) else { return "an input it read is not one this process can read" }
+                 if !here.answer().same_as(e.answer) { return "an input it read moved" }
+             }
++            self.kept_times()?.closed()
++            self.kept_times()?.opened("taken: stood proved", TimedSide.Outside)
+             for e in stood {
+                 let here? = self.settled_now(e.question) else { return "an answer that stood in its frontier is not one this process knows" }
+                 if !here.answer().same_as(e.answer) { return "an answer that stood in its frontier answers otherwise here" }
+             }
++            self.kept_times()?.closed()
+         }
++        self.kept_times()?.opened("taken: settled", TimedSide.Outside)
+         for e in entries {
+             if self.settled_held(e.question) == null { self.settled_answers.put(e.question, SettledAnswer.Learned(e with { root: false })) }
+         }
++        self.kept_times()?.closed()
+         null
+     }
+ 
+diff --git a/packages/std-program/src/worked_ahead.av b/packages/std-program/src/worked_ahead.av
+index 1f570561..30bc7dbb 100644
+--- a/packages/std-program/src/worked_ahead.av
++++ b/packages/std-program/src/worked_ahead.av
+@@ -6,6 +6,7 @@
+ use layered_store.{LayeredStore, program_store_at}
+ use disk_store.{
+     key_shares,
++    mapped_saved,
+     save_finished,
+     save_held,
+     save_left,
+@@ -21,7 +22,6 @@ use @std.io.{
+     env,
+     list_dir,
+     make_dirs,
+-    read_bytes,
+     read_text,
+     remove,
+     this_process,
+@@ -34,8 +34,10 @@ use frontier.{HeldEntry}
+ use saved_derive.{Saved}
+ use @std.time.{now_ms}
+ use query_engine.{LentAnswers, QueryDefinition, QueryEngine, query_engine, waits_said}
+-use saved_layout.{SavedList, SavedSlots, SavedSource, saved_bytes_in_memory}
++use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
+ use query_times.{FamilyTime, TimedSide, process_times_kept, query_times_asked}
++use input_stamps.{InputStamp}
++use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+ 
+ extern fn avra_cores_online() -> int
+ extern fn avra_cores_group(count: int) -> int
+@@ -392,6 +394,7 @@ fn within_and_gone<T, R>(
+             engine.learned_entries_since(mark),
+             engine.stood_answers_since(mark),
+             engine.kept_times()?.since(timed_before) ?? [],
++            engine.stamps_answered(),
+         )
+             .saved_bytes(),
+     )
+@@ -407,17 +410,13 @@ fn wave_taken(engine: QueryEngine, dir: string, prefix: string) -> string {
+     // LICENSED input.store_io: the store's own files, never an input of what is answered
+     for name in list_dir(dir) catch [] {
+         if name.contains(".") || !name.starts_with(prefix) { continue }
+-        // LICENSED input.store_io: the store's own files, never an input of what is answered
+-        let bytes = match read_bytes("${dir}/${name}") {
+-            .Ok(b) -> b,
+-            .Err(_) -> {
+-                said.push("core ${dir}/${name}: unread, worked out here")
+-                continue
+-            },
++        let saved? = mapped_saved("${dir}/${name}") else {
++            said.push("core ${dir}/${name}: unread, worked out here")
++            continue
+         }
+         let _ = remove("${dir}/${name}")
+-        times_taken(bytes)
+-        let held? = core_held(bytes) else {
++        times_taken(saved)
++        let held? = core_held(saved) else {
+             said.push("core ${dir}/${name}: unread, worked out here")
+             continue
+         }
+@@ -474,6 +473,7 @@ fn answered_and_gone<T, R>(
+             engine.learned_entries(),
+             engine.stood_answers(),
+             engine.kept_times()?.since(timed_before) ?? [],
++            engine.stamps_answered(),
+         )
+             .saved_bytes(),
+     )
+@@ -620,10 +620,18 @@ type CoreLearned = {
+     /// Where the core's asks spent their time, where it timed them: the asking process sums them
+     /// into its own clock, so one run says one family table.
+     times: List<FamilyTime> = [],
++    /// The stamp each input it read wore, beside the answer it settled: an input whose path wears
++    /// it still is proved by it where the core's answers are taken, read again nowhere.
++    stamps: List<InputStamp> = [],
+ }
+ 
+ /// What a core learned and what stood in it, and where its time went, as it publishes them.
+-fn core_learned(learned: List<HeldEntry>, stood: List<HeldEntry>, times: List<FamilyTime>) -> CoreLearned {
++fn core_learned(
++    learned: List<HeldEntry>,
++    stood: List<HeldEntry>,
++    times: List<FamilyTime>,
++    stamps: List<InputStamp>,
++) -> CoreLearned {
+     let sorted = sorted_by_hash(learned, (e: HeldEntry) -> e.question)
+     CoreLearned {
+         high_words: [e.question.high_word for e in sorted],
+@@ -631,6 +639,7 @@ fn core_learned(learned: List<HeldEntry>, stood: List<HeldEntry>, times: List<Fa
+         inputs: [row_of(e) for e in sorted if e.input],
+         stood: [StoodRow { question: e.question, answer: e.answer } for e in stood],
+         times: times,
++        stamps: stamps,
+     }
+ }
+ 
+@@ -648,11 +657,11 @@ fn entry_of(r: LearnedRow) -> HeldEntry {
+ 
+ /// What a core published as `bytes`, as the asking process holds it: its inputs and what stood in
+ /// it, read out, and every answer it learned, left where it lies.
+-type CoreHeld = { inputs: List<HeldEntry>, stood: List<HeldEntry>, lent: LentAnswers }
++type CoreHeld = { inputs: List<HeldEntry>, stood: List<HeldEntry>, lent: LentAnswers, stamps: HashKeyedTable<InputStamp> }
+ 
+-/// What the core that published `bytes` learned; absent where they don't hold it whole.
+-fn core_held(bytes: Bytes) -> CoreHeld? {
+-    let saved = saved_bytes_in_memory(bytes)
++/// What the core that published `saved` learned, read where it lies; absent where it doesn't hold
++/// it whole.
++fn core_held(saved: SavedBytes) -> CoreHeld? {
+     let source = saved.source
+     let root = saved.root()
+     let high_words? = CoreLearned.high_words_within(source, root, saved.to) else { return null }
+@@ -660,6 +669,15 @@ fn core_held(bytes: Bytes) -> CoreHeld? {
+     let inputs? = CoreLearned.inputs_within(source, root, saved.to) else { return null }
+     let stood? = CoreLearned.stood_within(source, root, saved.to) else { return null }
+     if high_words.length != rows.length { return null }
++    let stamps: HashKeyedTable<InputStamp> = hash_keyed_table()
++    let stamped = CoreLearned.stamps_within(source, root, saved.to)
++    if stamped != null {
++        for at in 0..stamped!.length {
++            let r? = stamped!.record_within_at(source, at, saved.to) else { continue }
++            let s = InputStamp.read_from(source, r)
++            stamps.put(s.question, s)
++        }
++    }
+     CoreHeld {
+         inputs: [entry_of(LearnedRow.read_from(source, r!)) for at in 0..inputs.length for r in [inputs.record_within_at(source, at, saved.to)] if r != null],
+         stood: [HeldEntry {
+@@ -675,6 +693,7 @@ fn core_held(bytes: Bytes) -> CoreHeld? {
+             low_word_at: (at: int) -> row_low_word(source, rows, at, saved.to),
+             entry_at: (at: int) -> row_entry(source, rows, at, saved.to),
+         },
++        stamps: stamps,
+     }
+ }
+ 
+@@ -684,15 +703,33 @@ const WORTH_LENDING: int = 20000
+ 
+ /// What a core learned taken by `engine`, lent where it learned enough; why not, absent where taken.
+ fn core_taken(engine: QueryEngine, held: CoreHeld) -> string? {
+-    if held.lent.high_words.length >= WORTH_LENDING { return engine.took_lent(held.inputs, held.stood, held.lent, unproven() == null) }
++    let stamped = (e: HeldEntry) -> stamp_proved(engine, held, e)
++    if held.lent.high_words.length >= WORTH_LENDING { return engine.took_lent(held.inputs, held.stood, held.lent, unproven() == null, stamped) }
++    prof_open("taken: rows read")
++    let rows_read = [e! for at in 0..held.lent.high_words.length for e in [(held.lent.entry_at)(at)] if e != null]
++    prof_close()
+     engine
+         .took_learned(
+-            [e! for at in 0..held.lent.high_words.length for e in [(held.lent.entry_at)(at)] if e != null],
++            rows_read,
+             held.stood,
+             unproven() == null,
++            stamped,
+         )
+ }
+ 
++/// Whether the input `e` a core read is proved by the stamp it read it under: the store's own test
++/// of a stamp (`stamp_holds_by`), or, for the witness that the stamp is what proves it, trusted
++/// whatever its path wears (`AVRA_AHEAD_STAMPS_TRUSTED`).
++fn stamp_proved(engine: QueryEngine, held: CoreHeld, e: HeldEntry) -> bool {
++    let stamp? = held.stamps.get(e.question) else { return false }
++    stamps_trusted() != null || engine.stamp_holds_by(stamp, e.answer)
++}
++
++/// `AVRA_AHEAD_STAMPS_TRUSTED`: a core's stamps taken as holding unasked, for a witness that the stamp
++/// test is what catches an input edited after its core read it.
++// LICENSED input.debug_flag: a debug flag is the process's own, not an input
++once fn stamps_trusted() -> string? { env("AVRA_AHEAD_STAMPS_TRUSTED") }
++
+ /// The low word of the question of the row at `at`, absent where the row doesn't lie whole.
+ fn row_low_word(source: SavedSource, rows: SavedList, at: int, end: int) -> int? {
+     let row? = rows.record_within_at(source, at, end) else { return null }
+@@ -742,23 +779,27 @@ fn learned_taken(engine: QueryEngine, dir: string) -> string {
+     // LICENSED input.store_io: the store's own files, never an input of what is answered
+     for name in list_dir(dir) catch [] {
+         if name.contains(".") { continue }
+-        // LICENSED input.store_io: the store's own files, never an input of what is answered
+-        let bytes = match read_bytes("${dir}/${name}") {
+-            .Ok(b) -> b,
+-            .Err(_) -> {
+-                unread.push(name)
+-                continue
+-            },
++        prof_open("taken: read")
++        let mapped = mapped_saved("${dir}/${name}")
++        prof_close()
++        let saved? = mapped else {
++            unread.push(name)
++            continue
+         }
+         let _ = remove("${dir}/${name}")
+-        times_taken(bytes)
+-        let held? = core_held(bytes) else {
++        times_taken(saved)
++        prof_open("taken: decoded")
++        let decoded = core_held(saved)
++        prof_close()
++        let held? = decoded else {
+             unread.push(name)
+             continue
+         }
+         read.push(CoreRead { dir: dir, name: name, held: held })
+     }
++    prof_open("taken: taken")
+     let refused = [r! for core in read.get() for r in [core_refused(engine, core)] if r != null]
++    prof_close()
+     let said = ["core ${dir}/${name}: unread, worked out here" for name in unread].concat(refused)
+     "${read.get().length - refused.length} cores' answers taken${["; ${s}" for s in said].join("")}"
+ }
+@@ -774,12 +815,22 @@ type CoreRead = { dir: string, name: string, held: CoreHeld }
+ 
+ /// A core's family rows, summed into the process's clock where it was asked for its times; read
+ /// only then, so a process not asked reads none.
+-fn times_taken(bytes: Bytes) {
++fn times_taken(saved: SavedBytes) {
+     if !query_times_asked() { return }
+     let clock? = process_times_kept() else { return }
+-    clock.added(CoreLearned.from_saved_bytes(bytes).times)
++    // the rows alone, read in place: a core's file holds every answer it learned besides
++    let times? = CoreLearned.times_within(saved.source, saved.root(), saved.to) else { return }
++    clock
++        .added(
++            [FamilyTime.read_from(saved.source, r!) for at in 0..times.length for r in [times.record_within_at(saved.source, at, saved.to)] if r != null],
++        )
+ }
+ 
++/// MEASUREMENT ONLY: a sub-phase of the process clock.
++fn prof_open(name: string) { process_times_kept()?.opened(name, TimedSide.Outside) }
++
++fn prof_close() { process_times_kept()?.closed() }
++
+ /// The cores' files this process has read.
+ once fn cores_read() -> Cell<List<CoreRead>> {
+     let read: Cell<List<CoreRead>> = Cell.new([])

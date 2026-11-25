@@ -1,9 +1,9 @@
-//! WHERE A NAME WEARS A BLOCK WORD: a declaration or a binder of a file — a fn's or a type's name,
-//! a seat, a record's field, a binding, a loop's index, an arm's or a lambda's — named by a word
-//! that opens a block there, a sublanguage it imports or a component another module declares. `w {`
-//! reads as the block, so the word is the file's alone. A read is no binder; a template's binders
-//! are judged where it was written, and left out here.
-use core.{At, ExprId, NodeKind, Span, StmtId, SyntaxArena, some_list}
+//! WHERE A NAME WEARS A BLOCK WORD: a declaration or a binder of a file — a fn's or a type's name, a
+//! seat, a binding, a loop's index, an arm's or a lambda's — named by a word that opens a block there,
+//! a sublanguage it imports or a component another module declares. `w {` reads as the block, so the
+//! word is the file's alone. A read is no binder; a template's binders are judged where it was written,
+//! and left out here.
+use core.{At, ExprId, NodeKind, Span, StmtId, SyntaxArena}
 use compiler.laws.{Found, law}
 use compiler.resolve.{block_word_worn}
 use diagnostics.{Voice}
@@ -33,8 +33,8 @@ fn binders_at(store: SyntaxArena, at: At) -> List<Binder> {
     }
 }
 
-/// A statement's declared name — a fn's, a type's — its fn's seats, its record's fields, its
-/// component's head and holder seats, its binding and its loop's index, each once, where it stands.
+/// A statement's declared name — a fn's, a type's — its fn's seats, its binding and its loop's index,
+/// each where it stands.
 fn stmt_binders(store: SyntaxArena, s: StmtId) -> List<Binder> {
     let place = store.stmt_span(s)
     let named = [
@@ -43,17 +43,14 @@ fn stmt_binders(store: SyntaxArena, s: StmtId) -> List<Binder> {
         store.let_name(s),
         store.loop_index(s),
     ]
-    let seats = (store.fn_parts(s)?.params ?? [])
-        .concat(store.struct_parts(s)?.fields ?? [])
-        .concat([p for c in some_list(store.component_parts(s)) for p in c.head.concat(c.holders)])
-    let words = [n! for n in named if n != null].concat([p.name.text() for p in seats])
-    [Binder { word: w, at: place } for i, w in words if words.index_of(w) == i]
+    [Binder { word: n!, at: place } for n in named if n != null]
+        .concat([Binder { word: p.name.of, at: place } for p in store.fn_parts(s)?.params ?? []])
 }
 
 /// A lambda's seats, where the lambda stands; each binder of a `match` arm's patterns, where the arm's
 /// value stands.
 fn expr_binders(store: SyntaxArena, e: ExprId) -> List<Binder> {
-    [Binder { word: p.name.text(), at: store.expr_span(e) } for p in store.lambda_parts(e)?.params ?? []]
+    [Binder { word: p.name.of, at: store.expr_span(e) } for p in store.lambda_parts(e)?.params ?? []]
         .concat(
             [Binder { word: b.name, at: store.expr_span(a.value) } for a in store.match_arms(e) ?? [] for p in a.pats for b in store.pattern_binds(p)],
         )

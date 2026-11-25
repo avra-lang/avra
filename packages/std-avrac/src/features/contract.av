@@ -38,7 +38,6 @@ use core.{
     DeclId,
     found_at,
     Binding,
-    Scoped,
     SyntaxArena,
     Span,
     Provided,
@@ -71,16 +70,11 @@ export type ResolveCx = {
     dispatch: Dispatch,
     keywords: List<string>,
     // the file's `let` definitions and their names (the typo
-    // candidates); every open binding, the program scope's first and
-    // then each open overlay's in order, its key as two columns (each
-    // name, and the file that wrote it); and where each open overlay's
-    // bindings start
+    // candidates), the program scope's bindings, the open overlays
     all_defs: List<Def>,
     def_names: List<string>,
-    bind_names: List<Scoped>,
-    bind_origins: List<int>,
-    binds: List<Binding>,
-    overlays: List<int>,
+    visible: Map<string, Binding>,
+    overlays: List<Map<string, Binding>>,
     // the open lambda frames; the open fn bodies' floors; one entry
     // per open impl or trait body (inside, `self` names the receiver
     // seat and the written params start at seat 1); the open fn
@@ -95,12 +89,8 @@ export type ResolveCx = {
     scoped: SideTable<bool>,
     // THE WALK'S STATE: the open fn body's seat names, and whether
     // the statement in hand stands inside a block
-    scope_names: List<Scoped>,
-    scope_origins: List<int>,
+    scope: List<string>,
     in_block: bool,
-    /// Whether the walk is inside a named instance's value: a declaration's, which reads
-    /// declarations, so a run-time binding of the top level read there is refused as an instance's.
-    in_instance: bool = false,
     // the type parameters the open declarations name, and each read of
     // one no static call has seated yet
     tnames: List<string>,
@@ -129,18 +119,7 @@ impl Elsewhere {
 }
 
 /// One `let` definition of the program, in order.
-export type Def = { name: Scoped, stmt: StmtId }
-
-/// A binder's KEY in the scope tables: its name, and the file that wrote a template's text, or
-/// `OWN_WRITING` for the file's own. A template's `tmp` and a hole's `tmp` are two keys, which is the
-/// whole of hygiene. Two keys compare as two ints.
-export type ScopeKey = { name: Scoped, origin: int }
-
-/// The origin a key of the file's own writing wears.
-export const OWN_WRITING: int = 0 - 1
-
-/// Where a key is bound inside the open overlays: the overlay, and the binding.
-export type OverlayHit = { overlay: int, binding: Binding }
+export type Def = { name: string, stmt: StmtId }
 
 /// A binder an arm opens, with the file that WROTE its text — a
 /// generated pattern's name and its arm's value may come from
@@ -150,7 +129,7 @@ export type Bound = { name: string, origin: FileId? }
 /// One OPEN lambda during the walk: its params, and the overlay
 /// depth at entry — an overlay at or above the floor is
 /// lambda-local; below it lies the outer world, reached by capture.
-export type LFrame = { lam: ExprId, param_names: List<Scoped>, param_origins: List<int>, floor: int }
+export type LFrame = { lam: ExprId, params: List<string>, floor: int }
 
 /// A fn's typed signature, as the type pass computed it.
 @derive(Fingerprint)

@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, StmtId, Type, TypeId, DeclId, closest, edit_distance, same_type, counted}
+use core.{ExprId, StmtId, Type, TypeId, DeclId, same_type, counted}
 use features.{
     TypeCx,
     FnSig,
@@ -15,7 +15,7 @@ use features.{
     tparams_refused,
     method_row,
 }
-use diagnostics.{Guess, Voice, guess_fix, refusal, said_as}
+use diagnostics.{Voice, refusal, said_as}
 use features.maps.{map_unknowable}
 use @std.errors.{Loc}
 
@@ -498,79 +498,34 @@ fn form_refusal(mut cx: TypeCx, e: ExprId, target: string, name: string) -> Type
 
 fn no_methods_here(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     let n = cx.name_at(subject)
-    let sh: Type = cx.view.types.seen_shape(cx.type_at(subject))
-    let methods = [r.name for r in cx.view.lang.methods if r.takes(sh)]
-    let properties = [r.name for r in cx.view.lang.properties if r.takes(sh)]
     cx
         .spoken(
             cx
                 .nearest(
-                    said_as(
-                        "type.method",
-                        cx.loc_of(subject),
-                        methodless(n, name, methods, properties),
-                    ),
+                    said_as("type.method", cx.loc_of(subject), methodless(n, name)),
                     subject,
                     name,
-                    properties.concat(methods),
+                    cx.answers_to(cx.type_at(subject)),
                 ),
         )
 }
 
-/// A method call of `name` on a value of `found`, a type no method of that name is given to, beside
-/// the methods and the properties it has: a property called is named as one, the member nearest
-/// by name is offered where one is near, else the methods it has, and a type with no method is said
-/// to have none.
-export fn methodless(
-    found: string,
-    name: string,
-    methods: List<string> = [],
-    properties: List<string> = [],
-) -> Voice {
-    if properties.contains(name) {
-        return Voice {
-            message: "`.${name}(…)` calls `${name}`, a property of `${found}`, not a method",
-            label: this_is(found),
-            help: "read it uncalled: `.${name}`",
-        }
-    }
-    if methods.is_empty() {
-        return Voice {
-            message: "`.${name}(…)` calls a method, and `${found}` has none",
-            label: this_is(found),
-            help: "methods live on lists, maps, and declared types with an `impl`",
-        }
-    }
-    let v = Voice {
-        message: "`${found}` has no method `${name}`",
+/// A method call of `name` on a value of `found`, a type no method of that name is given to.
+export fn methodless(found: string, name: string) -> Voice {
+    Voice {
+        message: "`.${name}(…)` calls a method, and `${found}` has none",
         label: this_is(found),
-        help: "`${found}` has ${offered(methods)}",
+        help: "methods live on lists, maps, and declared types with an `impl`",
     }
-    let n? = closest(name, properties.concat(methods)) else { return v }
-    if name.length <= 4 && n.distance > 1 { return v }
-    v with { help: "did you mean `${n.name}`?", guess: Guess { written: name, meant: n.name, distance: n.distance } }
 }
 
-/// The methods a type has, as a voice names them: each once, at most ten, then how many more.
-fn offered(names: List<string>) -> string {
-    let each = [n for j, n in names if names.index_of(n) == j]
-    let listed = ["`${n}`" for n in each.take(10)].join(", ")
-    if each.length > 10 { "${listed} and ${each.length - 10} more" } else { listed }
-}
-
-/// A method call naming a method the declared type `target` doesn't have, beside the `methods` it
-/// has: the one nearest by name where one is near, else the impl to declare it in.
-export fn no_method_on(target: string, name: string, methods: List<string> = []) -> Voice {
-    let v = Voice {
+/// A method call naming a method the declared type `target` doesn't have.
+export fn no_method_on(target: string, name: string) -> Voice {
+    Voice {
         message: "`${target}` has no method `${name}`",
         label: "called here",
         help: "declare it — `impl ${target} { fn ${name}(…) -> … }`",
     }
-    let n? = closest(name, methods) else { return v }
-    // a short name one letter off is a typo; two off is a different word
-    if name.length <= 4 && n.distance > 1 { return v }
-    let near = [m for j, m in methods if methods.index_of(m) == j && edit_distance(name, m) == n.distance]
-    v with { help: "did you mean `${n.name}`?", guess: Guess { written: name, meant: n.name, distance: n.distance, tied: near.length > 1 } }
 }
 
 /// The names a declared type's impls give it.
@@ -579,13 +534,16 @@ fn members_of(cx: TypeCx, decl: DeclId) -> List<string> {
 }
 
 fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string, near: List<string>) -> TypeId {
-    let v = no_method_on(target, name, near)
-    let d = said_as("type.method", cx.loc_of(e), v)
-    let subject = cx.receiver_of(e)
-    let at: Loc? = if subject == null { null } else { cx.name_after(subject!, name) }
-    let g? = v.guess else { return cx.spoken(d) }
-    let named? = at else { return cx.spoken(d) }
-    cx.spoken(d with { suggestions: [guess_fix(g, named)] })
+    cx
+        .spoken(
+            cx
+                .nearest(
+                    said_as("type.method", cx.loc_of(e), no_method_on(target, name)),
+                    cx.receiver_of(e),
+                    name,
+                    near,
+                ),
+        )
 }
 
 /// A dot-call named by a KEYWORD is a grammar form that did not match

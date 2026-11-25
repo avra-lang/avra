@@ -11,19 +11,7 @@ use @std.program.query_engine.{QueryEngine}
 /// engine's message and its help, as the driver projects them — the lexer's, the grammar's, a
 /// block's and a builder's alike.
 fn parse_refused(view: ItemView) -> List<Found> {
-    [import_remedied(view.engine, view.file, view.at, refused_found(r)) for r in view.item.store.refusals()]
-}
-
-/// A refusal near a component word `file` doesn't import, which a module of a package in reach
-/// exports, names the `use` that brings it in place of the parse's own help: the word it stands
-/// on, or the one just before it. An imported word's refusal is its own.
-fn import_remedied(engine: QueryEngine, file: SourceFileAddress, at: ItemId, f: Found) -> Found {
-    let place? = f.at else { return f }
-    let imported = [w.word for w in word_shapes(engine, file).components]
-    let words = [w for w in names_near(item_under(engine, file, at).text, place.lo) if !w.is_empty() && !avra().keywords.contains(w) && !imported.contains(w)]
-    let home? = [c! for w in words for c in [component_import(engine, file, w)] if c != null]
-        .first() else { return f }
-    f with { args: [f.args[0], import_it(home)] }
+    [refused_found(r) for r in view.item.store.refusals()]
 }
 
 /// A parse's refusal as its law reads it.

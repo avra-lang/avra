@@ -64,10 +64,9 @@ the body exists, answer:
 
 1. Is any loop a MAP/FILTER/FLAT-MAP? Comprehension (`?` works in
    element and iterable; predicates hoist into named fns).
-2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`:
-   in std-avrac, core's FREE fn `flatten(xs)`; in any other package,
-   the prelude's List verb `xs.flatten()`, never a private copy;
-   never push-ceremony.
+2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`
+   (core's FREE fn — `flatten(xs)`, never `xs.flatten()`), never
+   push-ceremony.
 3. Is a projection being spelled twice? The second spelling names a
    verb (`cx.int_at`, `expr_fps`) or uses the existing one.
 4. Does absence read straight? (`?? `, `?.`, if-null early return —
@@ -1088,16 +1087,6 @@ registry is the idiom engine's spec, written by dogfooding.
   When a computation is keyed AND its artifact is NAMED, derive both
   from ONE value (`settled_symbol`); two spellings of the identity a
   cache depends on is a wrong answer waiting for a second caller.
-- A CHECK THAT ASKS CAN WRITE: deciding whether a stale reader holds
-  must never re-work its answer. Asking a question settles it, and
-  what this process settles the store keeps. The part-aware meet
-  asked what a reader no longer standing had read, to tell whether
-  that read still held; the answer came back worked out and was
-  written standing where no root reaches it (a method seat's
-  `lowered_method_seat_default` across a rename), and the walk from
-  the cut, which goes down only, never saw it return. A decision about what a change
-  reaches reads what is held; a reader that stands no more is met
-  without asking.
 - Every diagnostic names a registered kind — its own identity,
   unique by construction — carries help or a structured fix where
   expressible, and has a golden rendering test.

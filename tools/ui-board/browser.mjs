@@ -40,15 +40,10 @@ async function engineBrowser() {
   return launched;
 }
 // A page at `at`, in the engine asked for.
-// `scheme` ("light" or "dark") is the colour scheme the browser says its reader asks for.
 async function opened(at, options = {}) {
-  const { scheme = null, ...rest } = options;
-  if (engine !== "webkit") {
-    const asked = scheme === null ? {} : { "layout.css.prefers-color-scheme.content-override": scheme === "dark" ? 0 : 1 };
-    return openPage(firefoxBinary(), at, { ...rest, prefs: { ...(rest.prefs ?? {}), ...asked } });
-  }
+  if (engine !== "webkit") return openPage(firefoxBinary(), at, options);
   const { browser, loaded } = await engineBrowser();
-  return openWebkit(browser, at, { device: process.env.UI_BROWSER_DEVICE ?? null, playwright: loaded, scheme });
+  return openWebkit(browser, at, { device: process.env.UI_BROWSER_DEVICE ?? null, playwright: loaded });
 }
 // THE BOARD'S TASKS ARE THE SERVER'S: its claims begin from a server holding the four tasks the board
 // is shown with, made through the server's own doors, and each is known by the key the server gave it.
@@ -169,34 +164,12 @@ await press(named("Done", 1));
 claim("Done shows the done tasks", (await keys()).join() === [k1, k2, k4].join(), await keys());
 await press(named("All"));
 claim("All shows every task", (await keys()).join() === [k1, k2, k4, k5].join(), await keys());
-// ── a box the program foresees ──────────────────────────────────
-// A task's box is `shown: task.done`, and `mark` sends its write with `foresee`: the row the server
-// will make, done, is drawn the moment the box is ticked. With the page's requests held, the tick is
-// heard and asked of the server, and the box shows the foreseen row, ticked. A server that refuses
-// the write drops the overlay, and the box is drawn back unticked; one that answers keeps it ticked.
-// A held request is its arguments and the answer it waits for: a refused write is answered 500
-// here, and every read the page makes meanwhile goes on to the server.
-const hold = `(() => { window.__held = []; window.__fetch = window.fetch; window.fetch = (...a) => new Promise((go) => window.__held.push({ a, go })); return 1; })()`;
-const writing = `((h) => ((h.a[1] && h.a[1].method) || (h.a[0] && h.a[0].method) || "GET").toUpperCase() !== "GET")`;
-await read(hold);
-await press(named("ShipX it"));
-claim("a ticked box the server has not answered shows the foreseen row, ticked", await until(`window.__held.some(${writing})`) && await until(`${named("ShipX it")}.checked === true`), [await read(`window.__held.length`), await read(`${named("ShipX it")}.checked`)]);
-await read(`(() => { window.fetch = window.__fetch; window.__held.splice(0).forEach((h) => h.go(${writing}(h) ? new Response("refused", { status: 500 }) : window.__fetch(...h.a))); return 1; })()`);
-claim("a write the server refuses drops the overlay, and the box is drawn back unticked", await until(`${named("ShipX it")}.checked === false`) && !(await rows()).at(-1).done, [await read(`${named("ShipX it")}.checked`), await rows()]);
-await read(hold);
-await press(named("ShipX it"));
-await until(`window.__held.some(${writing})`);
-await read(`(() => { window.__answered = false; window.fetch = window.__fetch; window.__held.splice(0).forEach((h) => h.go(window.__fetch(...h.a).then((r) => { if (${writing}(h)) window.__answered = true; return r; }))); return 1; })()`);
-claim("and the server's answer keeps it ticked", await until(`window.__answered`) && await read(`new Promise((done) => setTimeout(() => done(1), 300))`) && await read(`${named("ShipX it")}.checked`) === true, [await read(`window.__answered`), await read(`${named("ShipX it")}.checked`)]);
-// The task goes back open, as the claims below it count on.
-await press(named("ShipX it"));
-claim("unticked again once the server has answered, as the rest of the tour counts on", await until(`${named("ShipX it")}.checked === false`) && !(await rows()).at(-1).done, await rows());
 
 // ── the theme ───────────────────────────────────────────────────
 const light = await sheet();
-await press(named("Dark"));
+await press(named("Dark mode"));
 await shot("dark");
-claim("Dark swaps the sheet and the page wears it", await sheet() !== light && await styled("document.body", "backgroundColor") === "rgb(10, 10, 10)");
+claim("the dark mode swaps the sheet and the page wears it", await sheet() !== light && await styled("document.body", "backgroundColor") === "rgb(10, 10, 10)");
 claim("the browser's own controls wear the dark scheme", await styled("document.documentElement", "colorScheme") === "dark");
 claim("the chosen filter is told from the others in the dark mode too", await fill(named("All")) !== await fill(named("Active")), await fill(named("All")));
 claim("every button's words stand out from its fill", (await faint()).length === 0, await faint());
@@ -218,28 +191,27 @@ await type(KEY.escape);
 claim("Escape sends it away", await read(`${dialog}.open`) === false);
 await press(named("About"));
 claim("the program heard that: About opens it again", await read(`${dialog}.open`) && await read(`${dialog}.matches(":modal")`));
-await press(named("Light"));
+await press(named("Light mode"));
 const stillOpen = await read(`${dialog}.open`);
-claim("a press outside it sends it away, and reaches nothing behind it", stillOpen === false && await read(`${named("Light")} !== undefined`), { open: stillOpen, closedby: await read(`${dialog}.getAttribute("closedby")`) });
+claim("a press outside it sends it away, and reaches nothing behind it", stillOpen === false && await read(`${named("Light mode")} !== undefined`), { open: stillOpen, closedby: await read(`${dialog}.getAttribute("closedby")`) });
 await press(named("About"));
 claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
-await press(named("Light"));
+await press(named("Light mode"));
 
 await outsidePresses({ ...page, escape: () => type(KEY.escape), quiet: () => agreed(page) }, "", claim, named);
 
 // ── the keyboard ────────────────────────────────────────────────
-await read(`${named("Dark")}.focus(), 1`);
+await read(`${named("Dark mode")}.focus(), 1`);
 const order = [];
 for (let i = 0; i < 7; i++) { await type(KEY.tab); order.push(await focused()); }
 claim("Tab reaches each control in reading order", order.join() === "All,Active,Done,Clear done,Newest first,New task,Add", order);
 await shot("focus");
-await read(`${named("Dark")}.focus(), 1`);
+await read(`${named("Dark mode")}.focus(), 1`);
 await type(" ");
-claim("Space presses the focused button, and the focus stays on it", await focused() === "Dark" && await styled("document.body", "backgroundColor") === "rgb(10, 10, 10)", [await focused(), await styled("document.body", "backgroundColor")]);
-await read(`${named("Light")}.focus(), 1`);
+claim("Space presses the focused button, and the focus stays on it", await focused() === "Light mode", await focused());
 await type(KEY.enter);
-claim("Enter presses it too", await focused() === "Light" && await styled("document.body", "backgroundColor") === "rgb(255, 255, 255)", [await focused(), await styled("document.body", "backgroundColor")]);
+claim("Enter presses it too", await focused() === "Dark mode");
 
 // ── what the page keeps ─────────────────────────────────────────
 // A handler is run from script (`click()`), so the focus stays where the
@@ -288,9 +260,7 @@ if (source) {
 
   fs.writeFileSync(source, `${written}\nfn broken( {\n`);
   const failure = `document.getElementById("avra-dev-failure")`;
-  // A half-typed declaration leaves its file one item, so the build that refuses it reads the whole
-  // file again: as long as a cold build. What is claimed is that the failure is shown, not how soon.
-  claim("a build that fails is shown over the page, naming the file", await until(`${failure} && !${failure}.hidden && ${failure}.textContent.includes(${JSON.stringify(path.basename(source))})`, page, 600));
+  claim("a build that fails is shown over the page, naming the file", await until(`${failure} && !${failure}.hidden && ${failure}.textContent.includes(${JSON.stringify(path.basename(source))})`));
   await shot("failed");
   await press(named("Wire the event channel"));
   await agreed();
@@ -414,95 +384,18 @@ if (hydrated) {
   await fetch(hydrated + "__release");
   const answered = await (async () => { for (let i = 0; i < 100; i++) { const now = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`); if (now.join() !== held.join()) return now; await pause(50); } return held; })();
   claim("the server's list then lands as the board's: the done tasks stand under the server's keys", answered.length === 2 && answered.every((key) => /^[0-9]+$/.test(key)), answered);
-  await adopted.press(`document.querySelector('[aria-label="Light"]')`);
-  claim("and the page answers a press through the adopted elements", await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(255, 255, 255)", await asked(`getComputedStyle(document.body).backgroundColor`));
+  await adopted.press(`document.querySelector('[aria-label="Light mode"]')`);
+  claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Dark mode"]') !== null`));
   claim("nothing reached the console while the server's page was adopted", adopted.complaints().length === 0, adopted.complaints());
   await adopted.close();
 }
 if (tampered) {
   const torn = await opened(tampered);
   await standing(torn);
-  claim("a page the module did not draw is drawn again whole", await torn.read(`document.querySelectorAll('#app [aria-label]').length >= 5 && document.querySelector('[aria-label="Dark"]') !== null`));
-  await torn.press(`document.querySelector('[aria-label="Dark"]')`);
-  claim("and it answers a press", await torn.read(`getComputedStyle(document.body).backgroundColor`) === "rgb(10, 10, 10)", await torn.read(`getComputedStyle(document.body).backgroundColor`));
+  claim("a page the module did not draw is drawn again whole", await torn.read(`document.querySelectorAll('#app [aria-label]').length >= 5 && document.querySelector('[aria-label="Light mode"]') !== null`));
+  await torn.press(`document.querySelector('[aria-label="Light mode"]')`);
+  claim("and it answers a press", await torn.read(`document.querySelector('[aria-label="Dark mode"]') !== null`));
   await torn.close();
-}
-// THE RETURN KEY ADDS, as Add does: what was typed reaches the field's place before its submit is
-// heard, so the whole text is sent; a draft of nothing or only spaces adds nothing; and an Enter
-// that confirms a word being composed submits nothing. On a page of its own, and what it adds is
-// taken away again, so the server stands as the claims after it found it.
-{
-  const keyed = await opened(url);
-  await standing(keyed);
-  const field = named("New task");
-  const listed = async () => (await (await fetch(url + "tasks")).json());
-  const before = (await listed()).length;
-  const words = () => keyed.read(`[...document.querySelectorAll("li label")].map((l) => l.textContent)`);
-  claim("the field that adds on its return key says so on a phone's keyboard: its key reads Done", await keyed.read(`${field}.getAttribute("enterkeyhint")`) === "done", await keyed.read(`${field}.getAttribute("enterkeyhint")`));
-  await keyed.press(field);
-  await keyed.type(..."Sent by the return key");
-  await keyed.type(KEY.enter);
-  claim("Enter in the field adds the whole of what was typed, as Add does", await until(`[...document.querySelectorAll("li label")].some((l) => l.textContent === "Sent by the return key")`, keyed, 50), await words());
-  claim("and clears the field", await keyed.read(`${field}.value`) === "", await keyed.read(`${field}.value`));
-  claim("and the server holds the task", (await listed()).some((t) => t.title === "Sent by the return key"));
-  await keyed.type(" ", " ", " ");
-  await keyed.type(KEY.enter);
-  await pause(300);
-  claim("a draft of only spaces adds nothing on Enter, and stays as typed", (await listed()).length === before + 1 && await keyed.read(`${field}.value`) === "   ", [(await listed()).length, await keyed.read(`${field}.value`)]);
-  await keyed.read(`(() => { const f = ${field}; f.value = "mid-word"; f.dispatchEvent(new InputEvent("input", { bubbles: true, data: "mid-word" })); return true; })()`);
-  await keyed.read(`(${field}.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true })), true)`);
-  await pause(300);
-  claim("an Enter that confirms a word being composed submits nothing", (await listed()).length === before + 1 && await keyed.read(`${field}.value`) === "mid-word", [(await listed()).length, await keyed.read(`${field}.value`)]);
-  claim("nothing reached the console while the return key was used", keyed.complaints().length === 0, keyed.complaints());
-  for (const t of await listed()) if (t.title === "Sent by the return key") await fetch(url + "tasks/" + t.id, { method: "DELETE" });
-  await keyed.close();
-}
-
-// THE SCHEME, in a browser asking for light and in one asking for dark: Auto draws what the reader
-// asks for, Light and Dark draw theirs whatever is asked. Each choice is claimed by the colour the
-// page draws, never by what its controls say, and each scheme on a page of its own.
-{
-  const surfaces = { light: "rgb(255, 255, 255)", dark: "rgb(10, 10, 10)" };
-  const tab = (label) => `document.querySelector('[aria-label="${label}"]')`;
-  for (const scheme of ["light", "dark"]) {
-    const asked = await opened(url, { scheme });
-    await standing(asked);
-    const drawn = () => asked.read(`getComputedStyle(document.body).backgroundColor`);
-    const draws = (want) => until(`getComputedStyle(document.body).backgroundColor === "${want}"`, asked, 50);
-    claim(`a page first drawn in a browser asking for ${scheme} wears the ${scheme} surface: Auto is the reader's own`, await draws(surfaces[scheme]), await drawn());
-    for (const [choice, wears] of [["Dark", "dark"], ["Light", "light"], ["Auto", scheme]]) {
-      await asked.press(tab(choice));
-      claim(`${choice}, in a browser asking for ${scheme}, draws the ${wears} surface`, await draws(surfaces[wears]), await drawn());
-    }
-    const fills = await asked.read(`["Auto", "Light", "Dark"].map((l) => getComputedStyle(document.querySelector('[aria-label="' + l + '"]')).backgroundColor)`);
-    claim(`the chosen scheme's tab is told from the others by its fill, asking for ${scheme}`, fills[0] !== fills[1] && fills[1] === fills[2], fills);
-    claim(`nothing reached the console while the scheme was chosen, asking for ${scheme}`, asked.complaints().length === 0, asked.complaints());
-    await asked.close();
-  }
-}
-
-// THE PAGE'S OWN FAILURES, as a user meets them, on a page of their own so no claim above sees
-// them: a masked error (the browser's "Script error.", no error and no file: an extension's or an
-// in-app browser's script) is not the page's and draws nothing; a throw inside a handler is the
-// page's, told first in plain words and, on the page `avra dev` serves, in its own words after.
-{
-  const shell = await opened(url);
-  await standing(shell);
-  const alerts = `[...document.querySelectorAll('[role="alert"]')].map((a) => [a.firstElementChild ? a.firstElementChild.textContent : "", a.textContent])`;
-  const before = (await shell.read(alerts)).length;
-  await shell.read(`(dispatchEvent(new ErrorEvent("error", { message: "Script error." })), true)`);
-  await pause(200);
-  claim("a masked error (\"Script error.\", no error, no file) draws nothing over the app", (await shell.read(alerts)).length === before, await shell.read(alerts));
-  await shell.read(`(() => { const b = document.createElement("button"); b.addEventListener("click", () => { throw new Error("thrown inside a handler"); }); document.body.append(b); b.click(); b.remove(); return true; })()`);
-  const told = await (async () => { for (let i = 0; i < 40; i++) { const now = await shell.read(alerts); if (now.length > before) return now; await pause(50); } return await shell.read(alerts); })();
-  const plain = told.filter(([first]) => first === "This page stopped working.");
-  claim("a throw inside a handler is told first in plain words: the page stopped working", plain.length === 1, told);
-  if (await shell.read(`document.querySelector('meta[name="avra-module"]') !== null`)) {
-    claim("and on dev's page its own words follow the plain line", plain.length === 1 && plain[0][1].includes("thrown inside a handler"), told);
-  } else {
-    claim("and a built page shows no engine text, and offers a reload", plain.length === 1 && !plain[0][1].includes("thrown inside a handler") && await shell.read(`[...document.querySelectorAll('[role="alert"] button')].some((b) => b.textContent === "Reload")`), told);
-  }
-  await shell.close();
 }
 console.log(failed === 0 ? `ui-browser: every claim holds in ${engine}` : `ui-browser: ${failed} claim(s) FAILED in ${engine}`);
 await launched?.browser.close();

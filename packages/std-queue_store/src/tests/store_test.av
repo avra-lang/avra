@@ -6,7 +6,7 @@ use @std.sqlite.{Db, sql}
 use @std.sqlite.c.{sqlite3_stmt_status}
 use @std.sqlite.error.{SqlError}
 use @std.text.{from_codepoint, repeat}
-use @std.time.{Time, ms, secs}
+use @std.time.{Time, ms}
 use fault.{homed}
 use queue_store.{Store, Wire, bury_in, store_home_with, wire_of}
 use rows.{take_next}
@@ -294,7 +294,7 @@ fn send_runs_five_programs() -> Result<bool, HomeError> {
     spent(q.db, 6, "") - ran == 500 && spent(q.db, 6, "BEGIN") - began == 100
 }
 
-fn take_and_ack_run_nine_programs() -> Result<bool, HomeError> {
+fn take_and_ack_run_eight_programs() -> Result<bool, HomeError> {
     let q = waiting(200, Order.fifo)?
     let warm? = q.take()? else { return false }
     let _ = q.ack(warm)?
@@ -303,7 +303,7 @@ fn take_and_ack_run_nine_programs() -> Result<bool, HomeError> {
         let d? = q.take()? else { return false }
         let _ = q.ack(d)?
     }
-    spent(q.db, 6, "") - ran == 900
+    spent(q.db, 6, "") - ran == 800
 }
 
 fn a_batch_is_one_transaction() -> Result<bool, HomeError> {
@@ -314,7 +314,7 @@ fn a_batch_is_one_transaction() -> Result<bool, HomeError> {
     let _ = q.send_all(parcels(100))?
     let held = q.taken(100)?
     let _ = q.ack_all(held)?
-    held.length == 100 && spent(q.db, 6, "") - ran == 907 && spent(q.db, 6, "BEGIN") - began == 3
+    held.length == 100 && spent(q.db, 6, "") - ran == 906 && spent(q.db, 6, "BEGIN") - began == 3
 }
 
 fn statements_are_compiled_once() -> Result<bool, HomeError> {
@@ -348,62 +348,6 @@ fn take_steps(n: int, held: int, order: Order) -> Result<int, HomeError> {
     let before = spent(q.db, 4, "UPDATE \"FlowItem\" SET \"reader\"")
     let _ = q.take()?
     spent(q.db, 4, "UPDATE \"FlowItem\" SET \"reader\"") - before
-}
-
-/// The steps `drop_oldest` takes to give up the oldest waiting item of a
-/// full queue past `n` released rows that back off, and whether the one
-/// given up was that item, no backing-off row among the gone.
-fn dropping_steps(n: int) -> Result<int, HomeError> {
-    let db = homed(Db.memory())?
-    let wide = ints(
-        db,
-        "jobs",
-        terms(60000, Order.by_key) with { capacity: 100000, overflow: Overflow.drop_oldest },
-    )?
-    let _ = wide.send_all(parcels(n))?
-    for d in wide.taken(n)? { let _ = wide.release(d, secs(60))? }
-    let full = ints(
-        db,
-        "jobs",
-        terms(60000, Order.by_key) with { capacity: 2, overflow: Overflow.drop_oldest },
-    )?
-    let _ = full.send(1, key("a"))?
-    let _ = full.send(2, key("b"))?
-    let before = spent(db, 4, drop_text)
-    let _ = full.send(3, key("c"))?
-    let gone = rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"key\" = 'a'")? == 0 &&
-        rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"epoch\" > 0")? == n
-    if !gone { return 0 - 1 }
-    spent(db, 4, drop_text) - before
-}
-
-/// A row sent `after:` under terms that allow it, older than the line,
-/// is the oldest waiting item once the terms give up the oldest.
-fn delayed_row_is_given_up_first() -> Result<bool, HomeError> {
-    let db = homed(Db.memory())?
-    let wide = ints(
-        db,
-        "jobs",
-        terms(60000, Order.by_key) with { capacity: 100000, overflow: Overflow.fail },
-    )?
-    let _ = wide.send_after(1, key("a"), secs(60))?
-    let _ = wide.send(2, key("b"))?
-    let full = ints(
-        db,
-        "jobs",
-        terms(60000, Order.by_key) with { capacity: 2, overflow: Overflow.drop_oldest },
-    )?
-    let _ = full.send(3, key("c"))?
-    rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"key\" = 'a'")? == 0 &&
-        rows(db, "SELECT count(*) FROM \"FlowItem\"")? == 2
-}
-
-/// The start of `drop_oldest`'s statement.
-const drop_text: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = (SELECT min"
-
-fn dropping_walks_no_backing_off_row() -> Result<bool, HomeError> {
-    let few = dropping_steps(10)?
-    few > 0 && dropping_steps(2000)? == few
 }
 
 fn send_cost_is_the_same_at_any_depth() -> Result<bool, HomeError> {
@@ -443,11 +387,8 @@ fn take_plan() -> Result<string, HomeError> {
 fn take_sorts_nothing() -> Result<bool, HomeError> {
     let plan = take_plan()?
     !plan.contains("TEMP B-TREE") &&
-        plan.contains("USING INDEX FlowItem_index(queue) present(in_line) (queue=?)") &&
-        plan
-            .contains(
-                "USING INDEX FlowItem_index(queue,leased_until) present(leased_until) (queue=? AND leased_until<?)",
-            ) &&
+        plan.contains("FlowItem_free") &&
+        plan.contains("FlowItem_leased") &&
         plan.contains("FlowItem_taken")
 }
 
@@ -838,10 +779,10 @@ spec "std/queue_store" {
         then "a send into a queue with room runs five programs: begin, the row and its two triggers, commit" {
             send_runs_five_programs() catch false
         }
-        then "a take and an ack run nine programs: six and three" {
-            take_and_ack_run_nine_programs() catch false
+        then "a take and an ack run eight programs: five and three" {
+            take_and_ack_run_eight_programs() catch false
         }
-        then "a hundred sent, taken and acked at once run 907 programs in three transactions" {
+        then "a hundred sent, taken and acked at once run 906 programs in three transactions" {
             a_batch_is_one_transaction() catch false
         }
         then "twenty rounds of every verb keep no new statement and compile none again" {
@@ -849,12 +790,6 @@ spec "std/queue_store" {
         }
         then "a send takes the same steps into a queue of 5000 as into one of 10" {
             send_cost_is_the_same_at_any_depth() catch false
-        }
-        then "drop_oldest gives up a delayed row older than the line, sent before its terms gave up the oldest" {
-            delayed_row_is_given_up_first() catch false
-        }
-        then "drop_oldest gives up its oldest waiting item in the same steps past 2000 backing-off rows as past 10" {
-            dropping_walks_no_backing_off_row() catch false
         }
         then "a take takes the same steps past 2000 held rows as past 10" {
             take_passes_no_held_row() catch false

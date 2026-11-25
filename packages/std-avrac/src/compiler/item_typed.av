@@ -1,14 +1,9 @@
 //! WHAT A FN'S BODY IS TYPED AS: every node checked by its feature's rule, under the fn's signature,
 //! each name it reads asked of the names layer and that declaration's signature alone. The answer is
 //! a column of types beside the item's tape, by each node's place in the item read back.
-use features.{NodeVariant, meta_moved_from}
-use features.annotations.{meta_foreign}
-use diagnostics.{Diag, said_as}
 use core.{
     MethodParts,
     flatten,
-    FieldSeat,
-    OwnType,
     At,
     TypeMemos,
     ConstSeed,
@@ -128,36 +123,10 @@ fn unread_kept(cx: Checking) -> List<UnreadAt> {
 }
 
 /// The body of the fn `file` declares as `name`, typed; absent when it declares none with a body.
-@query("typing")
+@query
 export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> TypedBody? {
     let signed? = signed_body(engine, file, name) else { return null }
     typed_under(engine, file, signed)
-}
-
-/// The bodies the trait `file` declares as `owner` writes for its own members, typed once a trait:
-/// a static's with no `Self`, a method's as the first type of its package that leaves it to the
-/// trait answers it. Each stands beside its statement, so a body no impl takes is judged where it's
-/// written all the same.
-@query("typing")
-export fn typed_trait_bodies(engine: QueryEngine, file: SourceFileAddress, owner: string) -> TraitBodiesTyped {
-    let signed = trait_bodies(engine, TraitAt { file: file, name: owner })
-    TraitBodiesTyped {
-        stmts: [b.stmt.index for b in signed],
-        bodies: [typed_under(engine, file, b) for b in signed],
-    }
-}
-
-/// What `typed_trait_bodies` answers: each body's statement, by index, and the body typed.
-@derive(Saved)
-export type TraitBodiesTyped = { stmts: List<int>, bodies: List<TypedBody> }
-
-/// The bodies each trait the written item `item` of `file` declares writes for its own members,
-/// typed, each beside its statement: read off the item in hand, so an item declaring no trait asks
-/// nothing.
-export fn item_trait_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem) -> List<
-    StatedBody,
-> {
-    [StatedBody { stmt: StmtId { index: t.stmts[j] }, typed: b } for s in item.stmts for p in [item.store.trait_parts(s)] if p != null for t in [typed_trait_bodies(engine, file, p!.name)] for j, b in t.bodies]
 }
 
 /// `signed`'s body in `file`, typed under its signature, with the bounds its type parameters carry.
@@ -338,18 +307,6 @@ fn sealed_home(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> 
     if at.file.package_name == file.package_name { local } else { [at.file.package_name.replace("/", ".")].concat(home).join(".") }
 }
 
-/// Whether `ty`, a type the program declares, wears `@unbranched`.
-fn unbranched_type(engine: QueryEngine, ty: SignedType) -> bool {
-    let at? = declared_at(ty with { nulls: 0 }) else { return false }
-    let d? = file_declares_named(engine, at.file, at.name)
-        .names
-        .find(it.name == at.name && it.kind != ItemKind.Fn) else { return false }
-    wears_mark(engine, d, UNBRANCHED_MARK)
-}
-
-/// The mark a type wears whose value is read and never chosen by.
-const UNBRANCHED_MARK: string = "unbranched"
-
 /// The mark a type wears that only its declaring module builds or rewrites it under.
 const SEALED_MARK: string = "sealed"
 
@@ -405,7 +362,6 @@ fn program_answered(
         named_next: (ty: SignedType) -> named_next_over(engine, ty),
         owner: (ty: SignedType) -> marked_owner(engine, ty),
         sealed_home: (ty: SignedType) -> sealed_home(engine, file, ty),
-        unbranched: (ty: SignedType) -> unbranched_type(engine, ty),
         declared_here: (ty: SignedType) -> declared_in(ty, file),
         enum_of: (ty: SignedType) -> kept_answer(
             memos,
@@ -496,7 +452,7 @@ fn named_from(signing: Signing, home: string?, name: string) -> SignedType {
 
 /// The type the const `file` declares as `name` written with no type has: its value's, checked as
 /// any body is. Absent when it declares no such const, or its value's type isn't known.
-@query("typing")
+@query
 export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let item? = declaring_item(engine, file, name, ItemKind.Const) else { return null }
     let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
@@ -506,7 +462,7 @@ export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: s
         program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
         null,
     )
-    cx.check_seated(value, null, Seating.Binding(name))
+    cx.check(value, Expected.Free)
 }
 
 /// The type a top-level value's name has from `file`: a fn's, as a fn type, its answer with the error
@@ -648,7 +604,7 @@ fn const_reach(
 /// its root, the seats it binds, and what tells it from every other.
 type RunBody = {
     file: SourceFileAddress,
-    at: ItemId,
+    at: int,
     item: ReadItem,
     root: ExprId,
     seats: List<string>,
@@ -659,7 +615,7 @@ type RunBody = {
 
 /// The written item of `file` declaring `name` as a `kind`, what generators make where nothing is
 /// written; absent where none does.
-fn declared_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ItemId? {
+fn declared_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> int? {
     let written = file_declares_named(engine, file, name).names.filter(it.name == name)
     let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
     made.find(it.kind == kind)?.item
@@ -702,7 +658,7 @@ fn fn_body(engine: QueryEngine, f: DeclaredName) -> RunBody? {
         at: f.item,
         item: item,
         root: parts.body,
-        seats: [p.name.text() for p in parts.params],
+        seats: [p.name.of for p in parts.params],
         key: "${f.file.package_name}/${f.file.path_in_package}/${f.name}",
     }
 }
@@ -767,7 +723,7 @@ fn impl_body(engine: QueryEngine, i: ImplAt, d: DeclaredAt, method: string) -> L
         at: i.item,
         item: item,
         root: p!.body,
-        seats: [x.name.text() for x in p!.params],
+        seats: [x.name.of for x in p!.params],
         key: "${i.file.package_name}/${i.file.path_in_package}/${i.item}/${i.nth}/${d.name}.${method}",
     } for s in impl_fns_at(item, i) for p in [item.store.fn_parts(s)] if p != null && p!.name == method]
 }
@@ -788,7 +744,7 @@ fn declared_read(
 
 /// The name the node `k` reads or calls, where it does.
 fn read_name(store: SyntaxArena, k: At) -> string? {
-    match k { .Expr(e) -> store.ident_name(e) ?? store.callee_name(e), rest -> null }
+    match k { .Expr(e) -> store.ident_name(e) ?? store.call_parts(e)?.callee, rest -> null }
 }
 
 /// The signature of the fn `d` names: the one its own item declares, where its file declares
@@ -810,8 +766,8 @@ fn names_extern(engine: QueryEngine, file: SourceFileAddress, name: string) -> b
 
 /// Whether the item `at` of `file` declares `name` as an `extern fn`: one answer per name, which a
 /// new body for any fn leaves standing.
-@cut_query("summary")
-fn declares_extern(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
+@cut_query
+fn declares_extern(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
     let item = read_item(engine, file, at)
     item.stmts.any((s) -> item.store.extern_parts(s)?.name == name)
 }
@@ -852,68 +808,13 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
 
 /// The type the toolchain's module `module` (`@std.grammar`) declares as `name`, absent when it
 /// declares none.
-@query("summary")
+@query
 fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> SignedType? {
     let m = module_path(module.split("."))
     let package? = m.package() else { return null }
     let d? = declarations_of(engine, package, m.local(), false, name)
         .find(space_of(it.kind) == Space.Type) else { return null }
     headed_type(TypeHead.Declared(d.file, d.name))
-}
-
-/// THE META DOOR on the program layer: where the `@std/meta` this engine loads parts from the shapes
-/// this compiler was built against, the first shape that moved — the old path's own question
-/// (`meta_moved_from`), asked of the records and the `Node` the program reads; null where none does.
-@query("typing")
-export fn meta_moved(engine: QueryEngine) -> string? {
-    meta_moved_from(
-        (pkg: string, name: string) -> loaded_fields(engine, pkg, name),
-        loaded_node(engine),
-    )
-}
-
-/// The fields, in order, of the record the toolchain's module `module` declares as `name`; absent
-/// where it declares none.
-fn loaded_fields(engine: QueryEngine, module: string, name: string) -> List<string>? {
-    let ty? = toolchain_declared(engine, module, name) else { return null }
-    let at? = declared_at(ty) else { return null }
-    let record? = record_signature(engine, at.file, at.name) else { return null }
-    flatten([field_slots(engine, f) for f in record.fields])
-}
-
-/// The slots a crossed record's field takes, as the runtime lays them out: a field holding a record
-/// of more than one field, every one a scalar, never absent, rides inline — one slot per field,
-/// named by it (`@std/meta`'s `Spelled.mark`, a `SeatMark`, is `mutable` and `settled`); any other
-/// field is one slot of its own name.
-fn field_slots(engine: QueryEngine, f: FieldSeat) -> List<string> {
-    let ty? = f.ty else { return [f.name] }
-    if ty.nullable() { return [f.name] }
-    let at? = declared_at(ty) else { return [f.name] }
-    let inner? = record_signature(engine, at.file, at.name) else { return [f.name] }
-    if inner.fields.length < 2 || !inner.fields.all(scalar_seat(it)) { return [f.name] }
-    [g.name for g in inner.fields]
-}
-
-/// Whether a field holds a scalar, never absent: an `int`, a `float` or a `bool`.
-fn scalar_seat(f: FieldSeat) -> bool {
-    let ty? = f.ty else { return false }
-    !ty.nullable() && (ty.owns(OwnType.Int) || ty.owns(OwnType.Float) || ty.owns(OwnType.Bool))
-}
-
-/// The variants, in order, of the `Node` the loaded `@std/meta` declares, each by its payload count;
-/// absent where it declares none.
-fn loaded_node(engine: QueryEngine) -> List<NodeVariant>? {
-    let ty? = toolchain_declared(engine, "@std.meta", "Node") else { return null }
-    let at? = declared_at(ty) else { return null }
-    let e? = enum_signature(engine, at.file, at.name) else { return null }
-    [NodeVariant { name: v.name, arity: v.payloads.length } for v in e.variants ?? []]
-}
-
-/// What the meta door says before anything else of a program: the loaded `@std/meta`'s moved shape,
-/// in the old path's words and nowhere in the source — the boundary speaks first, and alone.
-export fn meta_door(engine: QueryEngine) -> List<Diag> {
-    let moved? = meta_moved(engine) else { return [] }
-    [said_as("annotation.meta", null, meta_foreign(moved))]
 }
 
 /// The package that holds the language's compile-time shapes.

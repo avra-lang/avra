@@ -13,7 +13,6 @@ use @std.program.saved_derive.{Saved}
 use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
 use @std.grammar.{Cause}
-use @std.program.names.{Name, name_of, text_of}
 use @std.program.syntax_tape.{TapeReader, TapeWriter}
 use @std.program.value_shapes.{indexes, placed}
 use @std.relation.{relation, arena, codec}
@@ -359,18 +358,18 @@ export fn binop_of(symbol: string) -> BinOp? {
     all_binops.find(op_symbol(it) == symbol)
 }
 
-// THE THREE KINDS OF NAME A NODE CARRIES. What differs is WHAT IT
-// KEYS, and that fact is the payload's TYPE, so the enum states it and
-// a derive can read it. A scope-keying name is an interned Name, so
-// two are one exactly when one int says so; `n.text()` reads its text
-// and `scoped(text)` mints one. The others are their own types over
-// `string`, and `n.of` reads the text back.
+// THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree is
+// text; what differs is WHAT IT KEYS, and that fact used to live only
+// in the walks that read it. It is the payload's TYPE now, so the
+// enum states it and a derive can read it. Free at runtime: each is
+// its own type over `string` and travels as the string it is, and
+// `n.of` reads the text back.
 
 /// A name that KEYS A SCOPE — a binder (`let x`, a parameter, a
 /// pattern's bind, a fn's own name) or a READ of one (`x`, a call's
 /// callee). The resolver walks the scope chain for it, so a
 /// TEMPLATE filling one hands the node to the splice site's scope.
-export type Scoped = Name
+export type Scoped = string
 
 /// A name that keys NO scope — a field, a method, a property, a
 /// variant, a type parameter. It is answered by a shape the
@@ -866,7 +865,7 @@ export enum SeatSpread {
 impl Param {
     /// Whether a call fills it: the receiver's word written bare among a fn's seats, which the naming
     /// law refuses, is no seat.
-    fn seated() -> bool { !(self.name == receiver_name() && self.ty == null) }
+    fn seated() -> bool { !(self.name.of == RECEIVER && self.ty == null) }
 
     /// Whether the seat takes the arguments a call leaves.
     fn is_rest() -> bool {
@@ -990,7 +989,7 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
 @derive(Grammar)
 @derive(Makes)
 @derive(Taped)
-export type CatchArm = { variant: Plain = Plain(""), bind: Scoped = scoped(""), value: ExprId }
+export type CatchArm = { variant: Plain = Plain(""), bind: Scoped = Scoped(""), value: ExprId }
 
 /// One match arm: its alternatives (`a or b`), an optional guard, and
 /// its value. A false guard tries the next arm; a guarded arm covers
@@ -1134,7 +1133,7 @@ fn plain_fps(names: List<Plain>) -> List<int> {
 }
 
 fn scoped_fps(names: List<Scoped>) -> List<int> {
-    [n.of.text_print() for n in names]
+    [fp_str(n.of) for n in names]
 }
 
 /// A bool as a fingerprint part.

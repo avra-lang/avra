@@ -1,0 +1,8 @@
+# hd-verdict handoff (2026-11-02)
+- **hd-marks-cycle @ 82bcc06d** (on hd-writes 02544861 + rungs/ghrun picks): `@cycled_by(f)` engine mark (answers.av `start_cycled`, query.av) + marks_of `@cycled_by(marks_standing)`; witness std-relation tests/cycled_by. hd-families2 APPROVED; nit 2 done; nit 1 (use `mark_word`) after merging hd-families2. Gate 41397462823 cancelled by STOP — UNGATED. GitHub `work run` 41397487478 failed at `make try`: "the grammar does not parse … while parsing `build`" = the runner's builder can't read `-> Node by` (by-rung), not this change; use `--builder` with a by-reading compiler.
+- **hd-owned-wip @ 20099530** (UNBUILT): Parsed/Methods/Expanded/Folded/Resolved/Analysis → @query (families 30→24) + file_said (HELD) + hd-clean 6c1c123f merge + old marking fix (replace with hd-marks-cycle's @cycled_by). Needs hd-families2 doors: `<q>_key`, `<q>_held`, `<q>_dropped`, `<q>_seats_of`, seat-taking `@digested_by`, key-subject labels.
+- **file_said HELD** until: ctx-seat save + hd-decl generic restore; FileFacts codec with token-placed Loc (hd-nodes2 queued); census+timing (comment edit ≤0.15 s, warm body edit no worse) else spoke_again keeps its facts row.
+- **origin/hd-owned @ 71822187**: admission owners (generated `put_owned`) + Marks @query + hd-clean 75727693 — green.
+- Next: merge hd-families2 353d9d86 into hd-owned-wip, `@codec` on CaseCall, swap marking fix for @cycled_by, build, gate.
+- asks/codes → hd-decl's `lowered` answer (agreed); okey_row stays until hd-decl says.
+- Witness for List<record> save sent to hd-nodes2 (scratchpad list_record_answer).

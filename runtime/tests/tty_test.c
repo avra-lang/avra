@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/resource.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -71,10 +70,6 @@ static int master_holds(int master, const char* what) {
 }
 
 int main(void) {
-    // A CRASH HERE IS ON PURPOSE AND WRITES NO CORE: a process of this runtime reserves its address
-    // space up front (~128 GB), and a core of it is that much read through the host's core handler —
-    // minutes a crash where the handler is a pipe — for a verdict the wait status already holds
-    setrlimit(RLIMIT_CORE, &(struct rlimit){ 0, 0 });
     signal(SIGINT, SIG_DFL);   // a background shell starts its jobs ignoring it, and an ignored signal is left so
     int master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) { perror("pty"); return 1; }

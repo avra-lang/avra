@@ -33,21 +33,27 @@ use compiler.backend.{
     in_symbol_order,
     emit_object,
     emit_index,
+    EmitIndex,
     objects_made,
     emit_cores,
     emit_width,
     turns_across,
+    inlines_runtime,
     Owned,
+    emit_closed,
+    home_of,
+    program_bucket,
     not_closed,
     program_closed,
+    unsupported_on_wasm,
+    runs_tasks,
 }
-use compiler.lower.{Body, Lowered}
+use compiler.lower.{Body, Lowered, program_symbol}
 use @std.grammar.{render_grammar}
 use compiler.memory.{sound_checked}
-use compiler.store.{Store, Stored, Keeping, node_key, store_beside, Reading}
-use compiler.store.mapped.{mapped, mapped_close, mapped_digest}
+use compiler.store.{Store, Stored, Keeping, node_key, store_beside, Reading, pack_holding}
 use features.{tree_saved}
-use compiler.host.{Stamp, Read}
+use compiler.host.{no_target, read_manifest, Stamp, Read}
 use compiler.hosts.{BuildHost, hosts_of, host_word}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{Diag, new_source_file}
@@ -102,6 +108,21 @@ impl Error for BuildError {
             .ObjectsMissing(paths) -> info("build.objects_missing", objects_missing(paths)),
         }
     }
+}
+
+/// A build's result: the words that linked it, the binary, the warnings to
+/// speak, whether the kept binary was reused, where a fresh one's time went,
+/// and its package's `.refuses` tests — a suite's alone; a lone file's build
+/// carries none.
+export type BuildOutcome = {
+    binary: string,
+    warnings: string,
+    reused: bool,
+    phases: string = "",
+    refuses: List<RefusesCall> = [],
+    /// The host fns the program defines, each as `package name` — what a
+    /// host may call it by, and whose word each is.
+    host_fns: List<string> = [],
 }
 
 /// THE FEATURES A WASM MODULE BUILT HERE MAY USE: LLVM's baseline for a
@@ -174,6 +195,9 @@ export fn fallback_name(binary: string) -> string {
     if binary.ends_with(".wasm") { "${binary.substring(0, binary.length - 5)}.asyncify.wasm" } else { "${binary}.asyncify" }
 }
 
+/// The key the fallback of a kept binary is kept under.
+fn fallback_key(key: string) -> string { "${key}.asyncify" }
+
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
 /// where it stands for the link, and the source the link orders it by.
 export type Made = { which: Owned, key: string, obj: string, source: string }
@@ -181,10 +205,8 @@ export type Made = { which: Owned, key: string, obj: string, source: string }
 /// clang's `-O<n>` as its number, and `-Oz` as the SIZE level — negative, so
 /// the object's pipeline is `default<Oz>`.
 /// THE LEVEL A BUILD EMITS ITS OBJECTS AT unless told otherwise, the same on both paths: `-O1` for
-/// a binary, `-Oz` for a wasm `target`, whose module ships over a wire.
-export fn default_opt(target: string) -> string {
-    match platform_of(target) { .Wasm -> "-Oz", .Native or .Apple(_) -> "-O1" }
-}
+/// the host, `-Oz` for another `target`, whose module ships over a wire.
+export fn default_opt(target: string) -> string { if target == "" { "-O1" } else { "-Oz" } }
 
 export fn opt_level(opt: string) -> int {
     if opt == "-Oz" { return -1 }
@@ -192,11 +214,81 @@ export fn opt_level(opt: string) -> int {
     0
 }
 
+/// THE PROGRAM'S OWN MODULE: its entry, and the runtime rows the entry names.
+/// WHAT A PROGRAM ADDS TO ITS FILES. `main` is a RECIPE, never a body: a link asked
+/// again of the sources is another workspace, with another registry and other file
+/// ids, and an entry built over the first one's would read this one's by index.
+/// `cases` are the cases it calls, each with the file that holds its body.
+export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<RtSig> = [], cases: List<CaseHome> = [] }
+
+/// A case the entry calls, and the path of the file its body is in.
+export type CaseHome = { call: CaseCall, path: string }
+
 /// What one build links with: the optimisation level, the runtime object,
 /// the linker the host found, the stamp of the driver of each tool it runs —
 /// never what a driver runs in its turn — and the linker that driver is told
 /// to run (`ld`, its own choice when empty).
-export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false, sysroot: string = "" }
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false }
+
+impl Workspace {
+    /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
+    /// every durable key this build folds it into (a module's record, a
+    /// canonical-format row, a lex-level scan) pays the roll's cost once,
+    /// not once per row. `build_cache_root` is the one caller that turns it
+    /// into a directory; every other durable key folds it in directly, so a
+    /// row's key still says which compiler wrote it even if its STORE were
+    /// ever shared across generations.
+    fn compiler_id() -> string {
+        if self.keys.compiler_id.get() == "" { self.keys.compiler_id.set(compiler_print(self)) }
+        self.keys.compiler_id.get()
+    }
+
+    /// LENDS an ALREADY-KNOWN print to a workspace that has not asked
+    /// for its own yet — for a caller about to mint MANY workspaces in
+    /// one run over a binary it already knows cannot move under it
+    /// (fmt.av's tree walk, one Workspace per package): each still
+    /// pays its own hash without this, the exact cost a PROCESS-WIDE
+    /// cache here once tried to avoid and was refused for (a path is
+    /// the same kind of claim a stamp is — compiler_print's own doc).
+    /// A no-op once this workspace has already settled its own.
+    fn seed_compiler_id(id: string) {
+        if self.keys.compiler_id.get() == "" { self.keys.compiler_id.set(id) }
+    }
+
+    /// THE STORE THIS WORKSPACE READS AND KEEPS IN — the one door every derivation
+    /// opens it by, so where its writes land is decided once.
+    fn opened_store() -> Store {
+        self
+            .keys
+            .held_pack
+            .set(pack_holding(self.keys.held_pack.get(), build_cache_root(self), self.compiler_id()))
+        store_beside(
+            build_cache_root(self),
+            self.compiler_id(),
+            self.keys.keeping.get(),
+            self.host.cache,
+        )
+    }
+
+    /// FROM HERE ON, AN INSPECTION: this workspace and every restart of it derive
+    /// as a check does and keep what they learn in this process alone.
+    fn inspecting() { self.keys.keeping.set(Keeping.Aside(map_cell())) }
+}
+
+/// WHERE A TREE'S ARTIFACTS LIVE — one place for the whole checkout, so a
+/// dependency's artifacts serve every package that reaches it, and it dies with
+/// the worktree. ONE STORE FOR EVERY COMPILER (S2): the store's own header
+/// carries the producing compiler's print, and a record from another print is
+/// never read.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its cache's directory out.
+export fn build_cache_root(ws: Workspace) -> string {
+    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(stores_dir(ws)) }
+    ws.keys.store_root.get()
+}
+
+/// Where a tree's cache stands.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, a directory out.
+fn stores_dir(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache") }
 
 /// A SERIAL FOR THIS PROCESS ALONE — `now_ns()`'s own clock cannot be
 /// trusted to tell two calls apart (a wall clock's resolution is not a
@@ -251,6 +343,57 @@ export fn unnamed_print() -> string {
     "unnamed-${now_ns()}-${next_serial()}"
 }
 
+/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest and the mode
+/// it emits under (`codegen_mode`), since one binary writes two kinds of
+/// object. The digest is the Compiler input's: the binary's bytes, hashed
+/// at the door once for the running process. A STAMP-KEYED SHORTCUT STOOD
+/// HERE ONCE, trusting a size/time/inode match to skip the hash — the `compiler_id()` memoization already pays that
+/// hash at most once a workspace, and the shortcut bought a few milliseconds
+/// against a law it could not keep: a rebuilt binary at the SAME path can land
+/// on a stamp the roll already holds (an adversarial host proves it outright,
+/// and the field's own "index N is out of bounds" traps are what a live
+/// two-generation rebuild produces when this exact door lies). A stamp match
+/// is a claim about the bytes, never the bytes; only the digest is. The roll
+/// still lists the stores kept, newest last, so `rolled`'s sweep still knows
+/// what to keep. A PATH IS THE SAME KIND OF CLAIM AS A STAMP: a process-wide
+/// cache keyed on `at` was tried and refused here — the compiler_print_
+/// adversarial_test's own "two DIFFERENT binary contents at the SAME path
+/// still disagree" attacks exactly that shortcut, inside one process, and a
+/// path cache fails it the same way a stamp cache would. A caller that KNOWS
+/// its own binary cannot move across many workspaces in one run (the fmt
+/// command's tree walk) shares one hash by seeding each Workspace's own
+/// `keys.compiler_id` instead — see `seed_compiler_id`, below, and
+/// fmt.av's `fold_groups`, its one caller.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its compiler's print out.
+fn compiler_print(ws: Workspace) -> string {
+    let digest? = ws.running_print() else { return unnamed_print() }
+    let mode = ws.keys.build_mode.get()
+    "${digest}.${language_mark(ws.lang)}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
+}
+
+/// THE LANGUAGE A PRINT NAMES: every feature's rules and soft words, as one digest. One
+/// binary can assemble two languages — a test's feature list, a compiler evaluated from
+/// its source — and what one parsed is never the other's answer.
+export fn language_mark(lang: Language) -> string {
+    digest_of(
+        joined(
+            [joined([f.name, render_grammar(f.gram), joined(f.soft_words, ",")], "\t") for f in lang.features],
+            "\n",
+        ),
+    )
+}
+
+/// The name of the read that stands for the tools as a set: a link made by other tools is
+/// another link, whichever file it read.
+const TOOLS_READ: string = "tools"
+
+/// The tools a link ran, as one read — none when the host cannot tell a tool, which makes
+/// nothing a kept binary can be trusted for.
+fn tools_reading(tools: List<Stamp>) -> Reading? {
+    let tooled? = told(tools) else { return null }
+    Reading { name: TOOLS_READ, digest: digest_of(tooled) }
+}
+
 /// The tools as their inputs' digests, one per line — none for no tools,
 /// and none when the host cannot tell one: a toolchain that names nothing
 /// it can tell makes nothing a kept binary can be trusted for.
@@ -259,16 +402,29 @@ fn told(tools: List<Stamp>) -> string? {
     joined([Read.Tool(s.path, s).input().digest.key for s in tools], "\n")
 }
 
-/// A binary's bytes as one digest — null when it cannot be read back — read through a mapping a window
-/// at a time, so a compiler's own print never holds its binary whole. BLAKE3: the
+/// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
+/// hot leaves inlined, or kept as calls.
+fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
+
+/// WHAT THIS PROCESS PROVES, as a suffix on the compiler's print: the
+/// memory pass's proof adds findings to a check, so a check made with it
+/// is kept apart from one made without.
+fn proof_mode() -> string { if sound_checked() { "+sound" } else { "" } }
+
+/// A binary's bytes as one digest — null when it cannot be read back. BLAKE3: the
 /// content hash that names a kept object and detects a stale one.
 export fn digest_of_binary(at: string) -> string? {
     // LICENSED input.object_digest: the bytes are the key itself; a read that fails answers null and keys nothing
-    let m? = mapped(at) else { return null }
-    let digest = mapped_digest(m)
-    mapped_close(m)
-    digest
+    match read_bytes(at) { .Ok(bytes) -> digest_of_octets(bytes), .Err(_) -> null }
 }
+
+/// THE CHECKOUT: the NEAREST ancestor holding a `.git` — a worktree's own
+/// (`.git` is a file there) or a clone's (a directory), either one the
+/// boundary nothing climbs past. Only when NO ancestor carries a `.git` does
+/// the walk fall back to the HIGHEST `avra.toml`, for a tree with no git
+/// history yet. A lone file has no tree above it and is its own root.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, the checkout it stands in out.
+fn tree_root(ws: Workspace) -> string { tree_root_of(ws.root, (p: string) -> ws.there(p)) }
 
 /// The checkout `root` stands in, asking `there` what stands at it and at each ancestor: the nearest
 /// holding a `.git`, `root` itself first.
@@ -288,6 +444,17 @@ export fn tree_root_of(root: string, there: fn(string) -> bool) -> string {
 /// its sources.
 export type Keyed = { named: string, beside: List<string> }
 
+/// A program built beside its own source: its kept binary when these exact
+/// inputs were built before, else derived, compiled and linked now. A
+/// refusal is never kept.
+// LICENSED compiler.free_state_verb: THE ENTRY POINT — the one standard signature.
+export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<
+    BuildOutcome,
+    BuildError,
+> {
+    ws.linked_program(entry, target_binary(entry, tools.target), tools)
+}
+
 impl Toolchain {
     /// WHAT THIS TOOLCHAIN'S OUTPUT IS FOR, beside the compiler that makes it:
     /// every word that moves an object's bytes or the linked module's. The
@@ -301,10 +468,430 @@ impl Toolchain {
 /// A mode's mark, written only when it holds.
 fn marked(holds: bool, mark: string) -> string { if holds { mark } else { "" } }
 
+impl Workspace {
+    /// WHAT A BUILD IS FOR IS PART OF THE COMPILER'S OWN IDENTITY. A kept row
+    /// is one target's object code and a kept binary one link's answer, so
+    /// each mode reads from a store of its own — cold once, then warm. The
+    /// mode folds into the compiler's print (and so into `compiler_id`, the
+    /// store root and the roll's name for it): ONE mechanism, and no key
+    /// spells the target a second time. A print and a root settled under
+    /// another mode are forgotten, and a restart carries the mode (`anew`).
+    fn built_for(tools: Toolchain) {
+        let mode = tools.mode()
+        if self.keys.build_mode.get() == mode { return }
+        self.keys.build_mode.set(mode)
+        self.keys.compiler_id.set("")
+        self.keys.store_root.set("")
+        self.keys.object_keys.set({})
+    }
+}
+
 /// A build's output path: a wasm module carries `.wasm`, so a native and a
 /// wasm build of one source never stand at one path.
 fn target_binary(entry: string, target: string) -> string {
     if target == "" { binary_name(entry) } else { "${binary_name(entry)}.wasm" }
+}
+
+impl Workspace {
+    /// `build_program`, freed from where its binary lands — a `.refuses` test's
+    /// native leg wants its own binary under `build/`, never beside its source.
+    fn linked_program(entry: string, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
+        self.built_for(tools)
+        let keyed = Keyed { named: entry, beside: [] }
+        let kept = self.kept_linked(keyed, binary, tools)
+        if kept != null { return .Ok(kept!) }
+        let d = diagnosed(self.derived_reading(entry, Want.Binary, []))?
+        let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
+        if main.view.stmts.is_empty() { fail BuildError.Empty }
+        let _ = make_dirs(dir_of(binary))
+        d.linked(runner_module(self.file_name(entry)), keyed, binary, tools)
+    }
+
+    /// The kept binary placed where a fresh one would be. A binary already standing there with
+    /// the kept bytes (`kept`, their digest when it was kept) is left untouched: replacing a file
+    /// costs more than the hit it answers. A kept file is one key's under every compiler, so
+    /// one whose bytes are not the answer's (`kept`) is another answer's and places nothing.
+    fn placed_kept(store: Store, key: string, binary: string, kept: string?) -> bool {
+        let there = digest_of_binary(binary)
+        if there != null && there == kept ?? digest_of_binary(store.path(Stored.Bin, key)) { return true }
+        let staged = self.staged_for(binary)
+        if !store.place(Stored.Bin, key, staged) { return false }
+        if kept != null && digest_of_binary(staged) != kept {
+            let _ = remove(staged)
+            return false
+        }
+        // a stored binary is bytes, and its mode is not in them
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        published(staged, binary)
+    }
+
+    /// Where a binary bound for `target` is staged: in this tree's cache, never beside it.
+    fn staged_for(target: string) -> string { staged_within(joined_path(build_cache_root(self), "staged"), target) }
+
+    /// The fallback a kept binary was built with, placed beside it; none standing
+    /// when the kept build made none.
+    fn fallback_kept(store: Store, key: string, binary: string, tools: Toolchain) {
+        let place = fallback_name(binary)
+        if !tools.fallback || !store.has(Stored.Bin, fallback_key(key)) {
+            let _ = remove(place)
+            return
+        }
+        let staged = self.staged_for(place)
+        if !store.place(Stored.Bin, fallback_key(key), staged) { return }
+        // LICENSED input.staged_output: marks the program just placed executable, never an input of what is built
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        let _ = published(staged, place)
+    }
+
+    /// EVERY PACKAGE A PROGRAM'S KEY COVERS, each as `src<TAB>root`: the admitted
+    /// ones, and the ones the last derivation of this very entry text admitted. `@std/*` is
+    /// admitted only as a `use` reaches for it and the key is asked before anything is read,
+    /// so the closure is REMEMBERED — as each derivation admitted it, never grown. A `use`
+    /// that reaches a package the row has not met is an edit to a file the row covers.
+    fn closure(named: string) -> List<string> {
+        let kept = remembered(self.opened_store(), self.closure_key(named))
+        sorted_texts(
+            distinct(
+                ["${p.src}\t${p.root}" for p in self.packages()]
+                    .concat([line for line in kept if !line.is_empty()]),
+            ),
+        )
+    }
+
+    /// Where a program's closure is remembered: under its entry's text, its paths spelled from
+    /// the tree as every kept row's are, so a checkout anywhere reads its own packages.
+    fn closure_key(named: string) -> string {
+        node_key(Stored.Unit, ["closure", self.root, named, self.text_digest(named)])
+    }
+
+    /// The closure as this derivation admitted it, remembered for the next key.
+    fn keep_closure(named: string) {
+        let now = joined(sorted_texts(["${p.src}\t${p.root}" for p in self.packages()]), "\n")
+        let store = self.opened_store()
+        let key = self.closure_key(named)
+        if store.get(Stored.Unit, key) != now { let _ = store.keep(Stored.Unit, key, now, []) }
+    }
+
+    /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NOT ONE OF ITS
+    /// INPUTS, as each input's record names it: an embedded file is no
+    /// source of the program, so no package's listing names it, and its edit
+    /// must still move the key.
+    fn embeds(inputs: List<string>) -> List<string> {
+        let store = self.opened_store()
+        sorted_texts(
+            distinct(
+                [r.path for path in inputs for r in kept_runs(record_places(self, store, self.module_path_of(path)).get(path)) if !inputs.contains(r.path)],
+            ),
+        )
+    }
+
+    /// What an embedded file says now, read as a const reads it: its
+    /// text's digest — or why it can no longer be read, which is a
+    /// different answer and never a trap.
+    fn embed_said(path: string) -> string {
+        match self.embed_read(path, EmbedKind.Octets) {
+            .Ok(octets) -> "${octets.length}.${digest_of_octets(octets)}",
+            .Err(why) -> "!${why}",
+        }
+    }
+
+    /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
+    /// reads of it: a dependency's tests are no input, so they are never walked.
+    fn listing_word(dir: string) -> string {
+        let files = if dir == self.packages()[0].src { self.all_files(dir) } else { self.all_files_no_tests(dir) }
+        digest_of(tree_saved(joined(files, "\n")))
+    }
+
+    /// Every object every reached package's manifest names — a C-only edit
+    /// moves this list's digests though it moves no `.av` file's. Read over
+    /// `closure(named)`, never `packages()`: this runs BEFORE the program is
+    /// analysed, where nothing has admitted a package yet — `closure` is
+    /// what already survives that (its own remembered half), `packages()`
+    /// here would answer empty every first ask.
+    fn reached_objects(named: string) -> List<string> {
+        let roots = [at[1] for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
+        distinct(flatten([self.manifest_objects(root) for root in roots]))
+    }
+
+    /// A root's own manifest, read fresh and not through `manifest(i)`'s
+    /// ordinal — a closure root has no ordinal before analysis admits it.
+    fn manifest_objects(root: string) -> List<string> {
+        let path = joined_path(root, "avra.toml")
+        if !self.there(path) { return [] }
+        let m = read_manifest(new_source_file(path, self.listed_text(path)))
+        [joined_path(root, o) for o in self.filled_words(m.objects)]
+    }
+
+    /// An object's path paired with its CURRENT bytes' digest, read fresh —
+    /// `digest_of_binary`, never `text_digest`: an object is bytes, not text,
+    /// and nothing here keeps a memo across the one key this answers.
+    fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
+
+    /// A file's text as one digest, through its Text input.
+    fn text_digest(path: string) -> string { text_digest_of(self, path) }
+
+    /// The derivation as a build links it: what ROAMS — an instantiation no file
+    /// owns — owned by no file and weak, in name order, so the program's module has
+    /// the same bytes whatever order the walk met them in.
+    fn homed(lo: Lowered, m: ProgramModule, main: ProgramMain) -> Lowered {
+        let roams = [bd for bd in lo.fns if home_of(bd) == null]
+        mut by_name: Map<string, Body> = {}
+        for bd in roams { by_name.set(bd.name, bd with { file: null, weak: true }) }
+        let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
+        let stand = stay
+            .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
+        // a module nobody read is never minted, so nothing else declares its cases
+        let brought = [self.decls.laid(main.case_stub(c.call, self.file_id(c.path))) for c in m.cases]
+        lo with { entry: self.decls.laid(main.body), types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand) }
+    }
+
+    /// THE BUILD: every object the program links — the read files' and the program's
+    /// module made or placed, the held ones standing in the store — linked in their
+    /// SOURCES' order, and the binary kept under its key.
+    fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
+        let main = m.main(d.lowered.types)
+        mut clock = self.marking()
+        let full = closed(self.homed(d.lowered, m, main))?
+        if tools.target != "" {
+            let missing = unsupported_on_wasm(d.program.reached())
+            if !missing.is_empty() { fail BuildError.UnsupportedOnWasm(missing) }
+        }
+        let programs = self.program_objects(full, tools)?
+        let read = [self.object_of(full, a) for a in d.program.files]
+        self.objects_kept(d, full, read.concat(programs), tools)?
+        clock.mark("emit")
+        clock.mark("place")
+        let absent = self.absent_objects(tools.target)
+        if !absent.is_empty() { fail BuildError.ObjectsMissing(absent) }
+        let staged = self.staged_for(binary)
+        let hosted = [self.decls.decl(h).name for h in self.exported_host_fns([a.view.file for a in d.program.files], hosts_of(tools.target))]
+        let code = avra_spawn_status(
+            tools.linker,
+            link_objects(
+                [d.store.path(Stored.Obj, o.key) for o in by_source(read).concat(programs)],
+                self,
+                tools.runtime,
+                staged,
+                binary,
+                tools.target,
+                tools.reactor,
+                tools.debug,
+                tools.ld,
+                hosted,
+            ),
+        )
+        if code != 0 {
+            fail BuildError
+                .LinkFailed(
+                    code,
+                    if tools.target == "" {
+                        unanswered_externs(
+                            full,
+                            hosted,
+                            armap_text(self.listed_octets(tools.runtime)),
+                        )
+                    } else {
+                        []
+                    },
+                )
+        }
+        clock.mark("link")
+        let shrunk = shipped(staged, tools)
+        let ready = shrunk.path ?? staged
+        let slot = d.store.slot_to_keep(Stored.History, self.linked_key(under.named))
+        let fallback = self.fallback_made(d, full, ready, slot, binary, tools)
+        let said = LinkedSaid {
+            said: self.check_said(d),
+            after: spoken([shrunk.said, fallback.said]),
+            host_fns: self.host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target)),
+        }
+        self.keep_linked(d.store, under, slot, ready, said, tools)
+        clock.mark("keep binary")
+        if !published(ready, binary) { fail BuildError.Unpublished(binary) }
+        self.fallback_published(fallback.path, binary)
+        clock.mark("publish")
+        BuildOutcome {
+            binary: binary,
+            warnings: said.warnings(),
+            reused: false,
+            phases: d.timed(clock.spans),
+            host_fns: said.host_fns,
+        }
+    }
+
+    /// THE FALLBACK, when this build asked for one and the program runs tasks: the
+    /// shipped module asyncified, kept beside the binary's own bytes. Null when
+    /// none is made — a program that never parks has nothing to unwind.
+    fn fallback_made(
+        d: Derived,
+        full: Lowered,
+        shipped_to: string,
+        key: string,
+        binary: string,
+        tools: Toolchain,
+    ) -> Shrunk {
+        if !tools.fallback || tools.wasm_opt == "" || !runs_tasks(full) { return Shrunk { path: null, said: "" } }
+        let made = asyncified(shipped_to, self.staged_for(fallback_name(binary)), tools.wasm_opt)
+        let out? = made.path else { return made }
+        let _ = d.store.keep_file(Stored.Bin, fallback_key(key), out, [key])
+        made
+    }
+
+    /// The fallback onto its place, or what stood there from an earlier build gone.
+    fn fallback_published(staged: string?, binary: string) {
+        let place = fallback_name(binary)
+        let made? = staged else {
+            let _ = remove(place)
+            return
+        }
+        let _ = published(made, place)
+    }
+
+    /// The program's host fns, each as `package name`, in name order.
+    fn host_fn_lines(files: List<FileId>, hosts: List<BuildHost>) -> List<string> {
+        sorted_texts([self.host_fn_line(d) for d in self.exported_host_fns(files, hosts)])
+    }
+
+    /// `package name`, and `(Host)` after it when the fn names its host.
+    fn host_fn_line(d: DeclId) -> string {
+        let x = self.decls.decl(d)
+        host_fn_line(
+            self.packages()[self.holder_of_path(self.decls.file(x.file).path)].key,
+            x.name,
+            self.named_host(d),
+        )
+    }
+
+    /// A read file's object: kept under the file's key, standing beside the store's
+    /// for the link. Its scratch path is named by that same content key, so two
+    /// builds of one tree share a file only when they would write the same bytes.
+    fn object_of(full: Lowered, a: Analysis) -> Made {
+        let path = a.view.source.file
+        let key = self.file_code_key(full, a.view.file)
+        Made {
+            which: Owned.File(a.view.file),
+            key: key,
+            obj: "${build_cache_root(self)}/obj/${key}.o",
+            source: path,
+        }
+    }
+
+    /// THE PROGRAM'S MODULE AS OBJECTS: its buckets, each named by its key beside the read files'
+    /// objects, so a home's edit that moves no instantiation compiles nothing.
+    fn program_objects(full: Lowered, tools: Toolchain) -> Result<List<Made>, BuildError> {
+        if traced() {
+            for b in full.fns {
+                if home_of(b) == null { qtrace("Q\tplaced\t${b.name}\t${program_bucket(b, PROGRAM_BUCKETS)}\n") }
+            }
+        }
+        bucket_objects(full, joined_path(build_cache_root(self), "obj"), tools)
+    }
+
+    /// EVERY OBJECT A BUILD OWES, STANDING AND KEPT. One the store holds is linked where it stands;
+    /// the rest are made ONE way — here, by the compiler that runs, a worker each —
+    /// so a tree's objects are the same bytes however many a build had to make. The
+    /// workers are waited for whatever broke: a module handed over is theirs.
+    fn objects_kept(d: Derived, full: Lowered, objects: List<Made>, tools: Toolchain) -> Result<
+        int,
+        BuildError,
+    > {
+        let owed = [o for o in objects if !d.store.has(Stored.Obj, o.key)]
+        if traced() {
+            qtrace("Q\tobjects\t${owed.length}\t${objects.length}\n")
+        }
+        let broke = handed(full, owed, opt_level(tools.opt), tools.target)
+        let unwritten = objects_made()
+        if broke != null || unwritten != null { fail BuildError.EmitFailed(broke ?? unwritten!) }
+        for o in owed { let _ = d.store.keep_file(Stored.Obj, o.key, o.obj, []) }
+        owed.length
+    }
+}
+
+/// THE PROGRAM'S BUCKETS AS OBJECTS: each module keyed by its own bytes, its object named by that
+/// key in `dir` — written every build, compiled only when they moved, so an edit that moves a few
+/// bodies compiles the few buckets they fall in.
+export fn bucket_objects(full: Lowered, dir: string, tools: Toolchain) -> Result<
+    List<Made>,
+    BuildError,
+> {
+    let _ = make_dirs(dir)
+    let ix = emit_index(full)
+    .Ok([bucket_object(full, ix, dir, i, tools)? for i in occupied_buckets(full)])
+}
+
+/// Bucket `i`'s object, its key its module's bytes. The `.bc` the key is computed from has no key
+/// yet, so its scratch name is call-unique.
+fn bucket_object(full: Lowered, ix: EmitIndex, dir: string, i: int, tools: Toolchain) -> Result<
+    Made,
+    BuildError,
+> {
+    // LICENSED input.scratch_name: a call-unique scratch name, never an input of what is built
+    let bc = "${dir}/${node_key(Stored.Obj, ["bc-scratch", "${i}", "${now_ns()}"])}.bc"
+    let key = bytes_keyed(full, ix, bc, Owned.Bucket(i, PROGRAM_BUCKETS), tools)?
+    if traced() { qtrace("Q\tbucket\t${i}\t${key}\n") }
+    .Ok(
+        Made {
+            which: Owned.Bucket(i, PROGRAM_BUCKETS),
+            key: key,
+            obj: "${dir}/${key}.o",
+            source: "",
+        },
+    )
+}
+
+/// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, read, and let go, and
+/// what compiles them. A module that cannot be read back has no key: an empty read would key every
+/// program alike.
+fn bytes_keyed(full: Lowered, ix: EmitIndex, bc: string, which: Owned, tools: Toolchain) -> Result<
+    string,
+    BuildError,
+> {
+    let broke = emit_closed(full, ix, bc, which, tools.target)
+    if broke != null { fail BuildError.EmitFailed(broke!) }
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
+    let read = read_bytes(bc)
+    let _ = remove(bc)
+    match read {
+        .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime])),
+        .Err(_) -> .Err(BuildError.ModuleUnreadable(bc)),
+    }
+}
+
+/// A program's own module.
+fn runner_module(named: string) -> ProgramModule {
+    ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(named)) }
+}
+
+/// How many modules the program's own bodies are split into: an edit that moves a few
+/// instantiations compiles the few buckets they fall in, on every worker. More buckets cost
+/// every module a scan of the program (cli one-edit emit at 16 / 64 / 256: 1.6-2.0 / 1.8-2.2 / 2.6-3.4 s).
+const PROGRAM_BUCKETS: int = 32
+
+/// The buckets with a body in them, bucket 0 always (it carries the entry).
+fn occupied_buckets(full: Lowered) -> List<int> {
+    let used = distinct(
+        ["${program_bucket(b, PROGRAM_BUCKETS)}" for b in full.fns if home_of(b) == null],
+    )
+    [i for i in 0..PROGRAM_BUCKETS if i == 0 || used.contains("${i}")]
+}
+
+/// THE EXTERNS NOTHING HERE ANSWERS: no runtime row, no package's
+/// library, no host fn of the program, and no symbol the runtime archive
+/// defines — what a failed link most likely lacked. A host's own row is one
+/// of these on every target but that host's.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names nothing in it defines out.
+fn unanswered_externs(l: Lowered, defined: List<string>, archive: string) -> List<string> {
+    let claimed = flatten([p.externs for p in l.libraries if p.library != ""])
+    [row.name for row in l.externs if !rt_sigs().any(it.name == row.name) &&
+        !claimed.contains(row.name) &&
+        !defined.contains(row.name) &&
+        !named_in(archive, row.name)]
 }
 
 /// Whether an archive's index text names `name` as a whole symbol: the index ends
@@ -362,6 +949,19 @@ fn undeclared(brought: List<Body>, stand: List<Body>) -> List<Body> {
 fn closed(full: Lowered) -> Result<Lowered, BuildError> {
     let missing? = program_closed(full) else { return in_symbol_order(full) }
     fail BuildError.NotClosed(missing)
+}
+
+/// A refusal in the derivation's words is the build's own `Diagnosed` refusal.
+fn diagnosed<T>(r: Result<T, string>) -> Result<T, BuildError> {
+    match r { .Ok(v) -> .Ok(v), .Err(report) -> .Err(BuildError.Diagnosed(report)) }
+}
+
+/// Objects in their SOURCES' order: the link's order is never the hold's, so one
+/// tree links to one binary however it was reached.
+fn by_source(objects: List<Made>) -> List<Made> {
+    flatten(
+        [[o for o in objects if o.source == source] for source in sorted_texts([o.source for o in objects])],
+    )
 }
 
 /// EVERY OWED OBJECT WRITTEN, `made(i)` making `owed[i]`, across a process per core where there are
@@ -472,4 +1072,16 @@ export fn wasm_unsupported(names: List<string>) -> string {
 fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
     // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
     avra_spawn_status(tool, words) == 0
+}
+
+/// A file's text as one digest, its octets read through the door: asked again only when the
+/// file's bytes move. A file that stands nowhere has none — a kept read naming it has moved.
+/// LASTING because it reads only `ws.there` and `ws.listed_octets`, both Input reads of `path`
+/// the frame records: the answer is a pure function of them.
+@query
+@lasting
+fn text_digest_of(ws: Workspace, path: string) -> string {
+    if !ws.there(path) { return "" }
+    let octets = ws.listed_octets(path)
+    "${octets.length}.${digest_of_octets(octets)}"
 }

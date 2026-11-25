@@ -37,8 +37,8 @@ impl Checks for WaitArm {
         if unwaited != null { cx.unwaited(self.head, unwaited!) }
         arm_head_judged(cx, e, self, head)
         cx.opened()
-        if !self.index.text().is_empty() { cx.bind(self.index.text(), owned_type("int")) }
-        if !self.bind.text().is_empty() { cx.bind(self.bind.text(), handed_over(head)) }
+        if !self.index.of.is_empty() { cx.bind(self.index.of, owned_type("int")) }
+        if !self.bind.of.is_empty() { cx.bind(self.bind.of, handed_over(head)) }
         if self.guard != null {
             let _ = cx
                 .check_seated(self.guard!, owned_type("bool"), Seating.Condition(Decision.SelectGuard))
@@ -115,10 +115,10 @@ fn arm_head_judged(mut cx: Checking, e: ExprId, arm: WaitArm, head: SignedType?)
 /// The arm `arm` at `e`, waiting on a value of `head`, refused where it binds what its head hands
 /// over not as the head hands it, or waits on a list of tasks inside a loop.
 fn arm_bound(mut cx: Checking, e: ExprId, arm: WaitArm, head: SignedType) {
-    let index = arm.index.text()
-    let bind = arm.bind.text()
+    let index = arm.index.of
+    let bind = arm.bind.of
     let indexed = !index.is_empty()
-    let named = !bind.is_empty() && !arm.bind.spells(DISCARD)
+    let named = !bind.is_empty() && bind != DISCARD
     let how = when {
         reads_ended(cx, arm.head) -> if indexed || named { "ended" } else { "" }
         task_answer(head) != null -> when {
@@ -292,7 +292,7 @@ fn place_key(cx: Checking, e: ExprId) -> string? {
 fn place_path(cx: Checking, e: ExprId) -> List<string> {
     let step? = cx.store.place_step(e) else { return [] }
     match step {
-        .Root(name) -> [name.text()],
+        .Root(name) -> [name.of],
         .Field(subject, name) -> place_path(cx, subject).concat([name.of]),
         .At(subject, _) -> place_path(cx, subject).concat(["[]"]),
         .Unwrap(subject) -> place_path(cx, subject).concat(["!"]),

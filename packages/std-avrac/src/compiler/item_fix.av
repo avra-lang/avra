@@ -19,11 +19,13 @@ fn fix_store(engine: QueryEngine, file: SourceFileAddress) -> SyntaxArena {
 /// Whether every one of `edits` stands where a proof can speak for it: in an item that holds no `use`
 /// line, which changes what a program reads and never its code.
 export fn edits_provable(engine: QueryEngine, file: SourceFileAddress, edits: List<Edit>) -> bool {
-    let ids = item_ids(engine, file)
+    let count = item_count(engine, file)
+    let starts = [item_start(engine, file, at) for at in 0..count]
     edits
         .all(
             (e) -> {
-                let at? = [i for i in ids if item_start(engine, file, i) <= e.loc.lo].last() else { return false }
+                let at = [i for i in 0..count if starts[i] <= e.loc.lo].last() ?? -1
+                if at < 0 { return false }
                 let item = read_item(engine, file, at)
                 !item.stmts.any((s) -> item.store.use_parts(s) != null)
             },
@@ -57,7 +59,7 @@ export fn file_code(engine: QueryEngine, file: SourceFileAddress) -> FileCode? {
             out = out.concat(renamed_bodies(l))
         }
     }
-    for at in item_ids(engine, file) {
+    for at in 0..item_count(engine, file) {
         let item = read_item(engine, file, at)
         for a in impls_at(engine, file, at) {
             for s in impl_fns(item, a) {

@@ -1,7 +1,7 @@
 // The dev client, by its own verb over a stub document and a stream it is
 // handed: when it reloads, and that a failed build is shown and a mended
 // one clears it.
-import { carried, relayed, watch } from "./dev.js";
+import { relayed, watch } from "./dev.js";
 import { stubDocument, stubElement } from "./stub_dom.js";
 
 let passed = 0;
@@ -82,16 +82,6 @@ test("a mended build of another module reloads", broke.reloads === 1);
   test("every line still reaches the console", heard.length === 3);
 }
 
-// Every failure the page's script heard reaches the server: those held before the client ran, then each after.
-{
-  const posted = [];
-  const relay = { held: ["This page could not start. no such export", "a script this page does not own failed (no error, no file): Script error. — Firefox"], post: null };
-  carried({ relay, post: (line) => posted.push(line) });
-  relay.post("This page stopped working. index 9 is out of bounds");
-  test("the failures held before the client ran are posted, in order, then each that comes after", posted.length === 3 && posted[0].startsWith("This page could not start.") && posted[1].includes("Script error.") && posted[2].startsWith("This page stopped working."));
-  test("nothing is held once the client carries the relay", relay.held.length === 0);
-}
-
 // The module that stands is named on the document element, so a reader can wait on a swap.
 {
   const swapping = client(async () => {});
@@ -101,14 +91,6 @@ test("a mended build of another module reloads", broke.reloads === 1);
   const before = named();
   await swapping.events.say("built", "xyz");
   test("a page names its module at start and again once a swap lands", before === "abc" && named() === "xyz");
-}
-
-// A swap is handed the id of the module that now stands: the name it is served by.
-{
-  const asked = [];
-  const swapping = client(async (id) => { asked.push(id); });
-  await swapping.events.say("built", "app.0123.wasm");
-  test("the swap is handed the new module's id", asked.join() === "app.0123.wasm");
 }
 
 console.log(`dev: ${passed}/${passed + failed}`);

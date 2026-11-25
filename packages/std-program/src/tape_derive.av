@@ -22,7 +22,6 @@ use @std.meta.{
 }
 use syntax_tape.{FLAGS_PER_NUMBER, flag_mask}
 use value_shapes.{
-    NAME_TYPE,
     OFFSET_MARK,
     Reading,
     ShapedVariant,
@@ -438,13 +437,9 @@ fn tape_form(shape: ValueShape) -> TapeForm {
         .Celled(_) or .Renamed(_, _) -> wrapped_form(shape.wrapper()!),
         .Entries(key, held) -> entries_form(key, held),
         .Sides(ok, err) -> sides_form(ok, err),
-        .Declared(type_name, _) -> if type_name == NAME_TYPE {
-            name_form()
-        } else {
-            TapeForm {
-                written: (value: Code, _depth: int) -> quote { ${value}.taped(${tree()}, ${tape()}) },
-                read: (_depth: int) -> quote { ${name(type_name)}.untaped(${tree()}, ${tape()}) },
-            }
+        .Declared(type_name, _) -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${value}.taped(${tree()}, ${tape()}) },
+            read: (_depth: int) -> quote { ${name(type_name)}.untaped(${tree()}, ${tape()}) },
         },
         .Placed(from, to) -> TapeForm {
             written: (value: Code, _depth: int) -> quote { let _ = ${tape()}.placed_within(${tree()}.${to}(${value})) },
@@ -454,14 +449,6 @@ fn tape_form(shape: ValueShape) -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${name(node)}.taped_id(${tree()}, ${tape()}, ${value}) },
             read: (_depth: int) -> quote { ${name(node)}.untaped_id(${tree()}, ${tape()}) },
         },
-    }
-}
-
-/// A name lies on a tape as its text, and is read back interned.
-fn name_form() -> TapeForm {
-    TapeForm {
-        written: (value: Code, _depth: int) -> quote { ${tape()}.name(${value}) },
-        read: (_depth: int) -> quote { ${tape()}.name() },
     }
 }
 
