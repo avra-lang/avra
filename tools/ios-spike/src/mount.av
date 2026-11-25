@@ -5,7 +5,7 @@ use @std.ui.native.sources.{opened, served}
 use @std.ui.native.net.{unwired}
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.tree.identity.{Owner, NodeId}
-use @std.ui.tree.node.{Node}
+use @std.ui.tree.node.{Node, Said}
 use @std.ui.tree.seats.{seat_numbered}
 use @std.ui.tree.view.{View}
 use frame.{neutral}
@@ -19,6 +19,21 @@ once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -
 /// The host's echo: the node numbered `id` (one more than the page's) spoke
 /// at seat `seat`. Its handler runs as a turn the program's loop takes.
 extern fn avra_spike_tapped(id: int, seat: int) { let _ = (page().get())(id, seat) }
+
+/// What a control said: the page's echo for a typed or flipped control.
+once fn heard() -> Cell<fn(int, int, Said?) -> bool> { Cell.new((_id: int, _seat: int, _s: Said?) -> false) }
+
+/// The host's echo of a control that spoke: `flag` 0 says `words`, 1 off, 2 on.
+extern fn avra_spike_said(id: int, seat: int, flag: int, words: string) {
+    let s: Said = if flag == 0 { Said.Text(words) } else { Said.Flag(flag == 2) }
+    let _ = (heard().get())(id, seat, s)
+}
+
+/// A control on `node` at `seat` said `s`, left as a turn for the program's loop.
+fn spoke(app: App, at: Live, node: NodeId, seat: int, s: Said?) -> bool {
+    let seated? = seat_numbered(seat) else { return false }
+    app.send(Msg.Turn(() -> at.fire(node, seated, s), "${node.n}"))
+}
 
 /// A tap on `node` at `seat`, left as a turn for the program's loop.
 fn tapped(app: App, at: Live, node: NodeId, seat: int) -> bool {
@@ -47,6 +62,7 @@ export fn mount<V: View>(view: fn() -> V) {
     stood(app)
     let inbox = opened(app, unwired)
     page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
+    heard().set((id: int, seat: int, s: Said?) -> spoke(app, at, NodeId { n: id - 1 }, seat, s))
     app.paint()
     served(app, inbox, idle)
 }

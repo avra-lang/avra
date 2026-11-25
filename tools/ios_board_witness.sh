@@ -25,10 +25,15 @@ trap 'xcrun simctl shutdown "$udid" > /dev/null 2>&1' EXIT
 xcrun simctl install "$udid" "$work/Spike.app" || fail "install failed"
 out=$work/board.out
 : > "$out"
-SIMCTL_CHILD_AVRA_SPIKE_BOARD=1 SIMCTL_CHILD_AVRA_SPIKE_FRAMES=1 \
+env SIMCTL_CHILD_AVRA_SPIKE_BOARD=1 SIMCTL_CHILD_AVRA_SPIKE_FRAMES=1 ${AVRA_BOARD_SCRIPT:+SIMCTL_CHILD_AVRA_SPIKE_BOARD_SCRIPT=1} \
     timeout 30 xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" > "$out" 2>&1 &
-sleep ${AVRA_BOARD_WAIT:-8}
-xcrun simctl io "$udid" screenshot "$work/$shot.png" > /dev/null 2>&1 && echo "ios-board: screenshot: $work/$shot.png"
+# shots at the given seconds after launch (AVRA_BOARD_SHOTS, default "8"), named <shot>[-<n>].png
+n=0; t0=0
+for at in ${AVRA_BOARD_SHOTS:-8}; do
+    sleep $((at - t0)); t0=$at; n=$((n + 1))
+    name=$shot; [ "$n" -gt 1 ] && name=$shot-$n
+    xcrun simctl io "$udid" screenshot "$work/$name.png" > /dev/null 2>&1 && echo "ios-board: screenshot: $work/$name.png"
+done
 xcrun simctl terminate "$udid" "$id" > /dev/null 2>&1
 wait
 echo "ios-board: $(grep -c 'frame:' "$out") frames logged in $out"
