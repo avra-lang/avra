@@ -43,8 +43,7 @@
     [NSLayoutConstraint activateConstraints:@[
         [row.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
         [row.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
-        [row.topAnchor constraintEqualToAnchor:m.topAnchor],
-        [row.bottomAnchor constraintEqualToAnchor:m.bottomAnchor],
+        [row.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
     ]];
     return self;
 }
@@ -128,8 +127,10 @@
     self.table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     self.table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.table.dataSource = self;
-    self.table.rowHeight = UITableViewAutomaticDimension;
-    self.table.estimatedRowHeight = 52;
+    // the same row height Avra's solver gives its row, so both apps show the same rows
+    double rh = NSProcessInfo.processInfo.environment[@"AVRA_TWIN_ROW_H"].doubleValue;
+    self.table.rowHeight = rh > 0 ? rh : UITableViewAutomaticDimension;
+    self.table.estimatedRowHeight = rh > 0 ? rh : 52;
     [self.table registerClass:[TaskCell class] forCellReuseIdentifier:@"task"];
     self.table.tableHeaderView = [self header];
     [self counted];

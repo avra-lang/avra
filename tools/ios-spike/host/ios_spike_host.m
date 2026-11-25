@@ -142,6 +142,10 @@ static double g_pair_s;
 static NSMutableDictionary<NSString*, NSNumber*>* g_row_op_s;
 static NSInteger g_rows_reused;
 static NSInteger g_creates_made;
+static NSInteger g_creates_after_first;
+
+// What the bench reads at its end: the rows built fresh after the first frame, and the row height.
+int64_t spike_creates_after_first(void) { return g_creates_after_first; }
 static NSMutableDictionary<NSString*, NSNumber*>* g_op_s;
 static double g_measure_s;
 static BOOL g_toggling;
@@ -508,7 +512,10 @@ static void framed(SpikeNode* n, CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
         n.view.frame = CGRectMake(16, 24, w, h);
         return;
     }
-    n.view.frame = CGRectMake(x, y, w, h);
+    CGRect box = CGRectMake(x, y, w, h);
+    CGRect f = n.view.frame;
+    if (f.origin.x == x && f.origin.y == y && f.size.width == w && f.size.height == h) return;
+    n.view.frame = box;
     composed(n, w, h);
     if (n.title) {
         CGSize s = [n.title sizeThatFits:CGSizeMake(w, CGFLOAT_MAX)];
@@ -646,7 +653,8 @@ static void painted(void) {
     static BOOL filled;
     if (!filled && g_row_h > 0) {
         filled = YES;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ prefilled(2 * overscan + 10); });
+        said([NSString stringWithFormat:@"row height %.1f pt", g_row_h]);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ prefilled(1000); });
     }
     if (g_row_h <= 0) {
         list_found();
@@ -721,7 +729,7 @@ static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_rows;
 static NSMutableArray<SpikeNode*>* g_pooled_now;
 
 // What the pools keep: a window move's worth, no more; the rest is released.
-static const NSUInteger row_pool_cap = 32;
+static const NSUInteger row_pool_cap = 64;
 static const NSUInteger view_pool_cap = 32;
 
 // Every node of a subtree, in order: the root, then each child's subtree.
@@ -875,6 +883,7 @@ static void apply_records(NSArray<NSArray<NSString*>*>* records) {
             if (![carried containsObject:@(nid)]) {
                 g_nodes[@(nid)] = taken(w[2], nid);
                 g_creates_made++;
+                if (g_first_frame_ms >= 0) g_creates_after_first++;
             }
         } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
             NSString* key = [NSString stringWithFormat:@"%@|%@", w[2], w[3]];

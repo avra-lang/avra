@@ -61,7 +61,7 @@ PY
 mkdir -p "$app"
 if [ "$which" = twin ]; then
     xcrun --sdk iphoneos clang -target arm64-apple-ios17.0 -fobjc-arc -O2 -Wall -Werror \
-        -framework UIKit -framework QuartzCore -Wl,-U,_avra_mem_live -o "$app/twin" \
+        -framework UIKit -framework QuartzCore -Wl,-U,_avra_mem_live -Wl,-U,_spike_creates_after_first -o "$app/twin" \
         "$tree/tools/ios-spike/twin/twin.m" "$tree/tools/ios-spike/host/spike_bench.m" || fail "the twin did not build"
 else
     [ -f "$tree/tools/ios-spike/src/main.iphoneos" ] || fail "build the Avra app for iphoneos first (see the header)"
@@ -103,7 +103,7 @@ echo "ios-device: installed $id"
 
 for i in $(seq 1 "$runs"); do
     env DEVICECTL_CHILD_AVRA_SPIKE_BENCH=1 ${AVRA_SPIKE_SHOTS:+DEVICECTL_CHILD_AVRA_SPIKE_SHOTS=1} ${AVRA_BOARD_MODE:+DEVICECTL_CHILD_AVRA_SPIKE_BOARD=$AVRA_BOARD_MODE} \
-        ${AVRA_SPIKE_ROWS:+DEVICECTL_CHILD_AVRA_SPIKE_ROWS=$AVRA_SPIKE_ROWS} \
+        ${AVRA_SPIKE_ROWS:+DEVICECTL_CHILD_AVRA_SPIKE_ROWS=$AVRA_SPIKE_ROWS} ${AVRA_TWIN_ROW_H:+DEVICECTL_CHILD_AVRA_TWIN_ROW_H=$AVRA_TWIN_ROW_H} \
         timeout ${AVRA_BOARD_FOR:-60} xcrun devicectl device process launch --device "$device" --console \
         --terminate-existing "$id" > "$out/$label-$i.out" 2>&1
     echo "ios-device: $label run $i: $(tr -d '\r' < "$out/$label-$i.out" | grep -c 'bench:') bench lines"

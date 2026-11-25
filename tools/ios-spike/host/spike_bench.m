@@ -7,6 +7,7 @@
 #include <malloc/malloc.h>
 
 extern int64_t avra_mem_live(void) __attribute__((weak_import));
+extern int64_t spike_creates_after_first(void) __attribute__((weak_import));
 
 
 static double bench_now_s(void) { return CACurrentMediaTime(); }
@@ -178,6 +179,7 @@ static void flung(void) {
                 double (^at)(double) = ^double(double q) { return s[MIN(s.count - 1, (NSUInteger)(q * s.count))].doubleValue; };
                 say([NSString stringWithFormat:@"slow scroll frame gaps: p50 %.1f ms, p90 %.1f, p99 %.1f, max %.1f", at(0.5), at(0.9), at(0.99), s.lastObject.doubleValue]);
             }
+            if (spike_creates_after_first) say([NSString stringWithFormat:@"rows built fresh after the first frame: %lld", spike_creates_after_first()]);
             say(@"done");
             exit(0);
         });
