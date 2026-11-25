@@ -69,11 +69,15 @@ PRINTED = (
     (r"alloc: (\d+) boxes, (\d+) list buffers", ("boxes", "list_buffers")),
     (r"rc: (\d+) copies, (\d+) string compares", ("copies", "string_compares")),
     (r"rc: (\d+) opens of an empty literal", ("empty_opens",)),
+    # the runtime's accounted high-water mark: what the run held at once, in its own boxes
+    (r"mem: peak (\d+) MB in all", ("peak_mb",)),
 )
 # The queries a cold check worked out, its inputs aside, from the counts line `check --counts` prints;
 # and the answers a warm run worked out again, from its `worked:` line.
 QUERIES = re.compile(r"^counts: .*\bqueries_computed=(\d+)", re.M)
 WORKED = re.compile(r"^worked: (\d+) answers here", re.M)
+# the answers a run decoded from the store's bytes: what holding fewer values costs in work
+DECODED = re.compile(r"^decoded: (\d+) answers read back", re.M)
 # THE PASS LEDGER's deterministic columns (`--passes --passes-rows`, std-program/src/pass_ledger.av):
 # each pass's asks, its asks per unit and per item an edit moved, in thousandths, then its re-checks
 # (answers checked against a kept record and kept) and re-checks per item moved — a pass whose work
@@ -81,7 +85,7 @@ WORKED = re.compile(r"^worked: (\d+) answers here", re.M)
 # field added here is added to ledger_rows (std-program/src/pass_ledger.av) and the self-test together.
 PASS_ROW = re.compile(r"^pass-row\t([a-z-]+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)$", re.M)
 CENSUS = tuple(c for _, names in PRINTED for c in names)
-COUNTERS = CENSUS + ("queries_computed", "worked")
+COUNTERS = CENSUS + ("queries_computed", "worked", "decoded")
 # A fall this small is the build's own: a file it writes and reads back within the stamp window.
 FALL_PPM = 50
 # a workload's name may hold an underscore, as an edit's kind does (`edit-added_after`)
@@ -96,7 +100,7 @@ def counts_of(text):
         m = re.search("^" + pattern + "$", text, re.M)
         if m:
             got.update(zip(names, (int(g) for g in m.groups())))
-    for counter, line in (("queries_computed", QUERIES), ("worked", WORKED)):
+    for counter, line in (("queries_computed", QUERIES), ("worked", WORKED), ("decoded", DECODED)):
         m = line.search(text)
         if m:
             got[counter] = int(m[1])
@@ -127,7 +131,7 @@ def edited(text, kind, old, new):
 # THE WORK A WARM EDIT DOES, not only the answers it works out again: each edit's run keeps its whole
 # census (`edit-<kind>.census`), and these of its counters are its rows beside `worked` — a warm edit
 # that does more per answer, with no more answers, is no longer under the gate.
-WARM_COUNTERS = ("boxes", "retains", "releases", "list_writes")
+WARM_COUNTERS = ("boxes", "retains", "releases", "list_writes", "peak_mb", "decoded")
 
 
 def measured(run_dir):
@@ -358,14 +362,16 @@ def self_test():
     rows_lib.self_test()
     run = ("rc: 100 retains, 90 releases, 10 reclaims\nrc: 5 empty lists made, 1 grown\n"
            "rc: 1000 list reads, 200 list writes\nalloc: 50 boxes, 7 list buffers\n"
-           "rc: 3 copies, 4 string compares\nrc: 2 opens of an empty literal\nmem: noise\n")
+           "rc: 3 copies, 4 string compares\nrc: 2 opens of an empty literal\nmem: peak 12 MB in all\n"
+           "mem:   list boxes    peak      9 MB, now      0 MB\nmem: noise\n")
     got = counts_of(run)
     assert got == {"retains": 100, "releases": 90, "reclaims": 10, "empty_lists": 5, "empty_grown": 1,
                    "list_reads": 1000, "list_writes": 200, "boxes": 50, "list_buffers": 7,
-                   "copies": 3, "string_compares": 4, "empty_opens": 2}, got
+                   "copies": 3, "string_compares": 4, "empty_opens": 2, "peak_mb": 12}, got
     assert set(got) == set(CENSUS)
     assert counts_of("counts: files_loaded=3 queries_computed=41 store_rows_written=41\n") == {"queries_computed": 41}
     assert counts_of("worked: 69 answers here; item_under 14\n") == {"worked": 69}
+    assert counts_of("decoded: 12 answers read back\n") == {"decoded": 12}
     # a noop's row of 0 fails at the first answer worked again
     assert judge({("edit-noop", "worked"): 1}, {("edit-noop", "worked"): 0})[0]
     # a fall inside the build's own jitter is not named
@@ -385,6 +391,9 @@ def self_test():
     # every row a run measures reads back, an edit's kind with an underscore among them
     every = {("edit-added_after", "worked"): 42, ("ledger-edit-added_after", "pass_tape_asks"): 7}
     assert read_baseline(render(sha, every))[1] == every
+    # a peak one MB over a row of a thousand fails: a held list is caught at the first MB it adds
+    failed, _ = judge({("w", "peak_mb"): 1001}, {("w", "peak_mb"): 1000})
+    assert failed == ["cost: w peak_mb: 1000 -> 1001 (+0.100%, over the 0.05% tolerance)"], failed
     # within the tolerance passes; one box past it fails, naming both numbers
     assert judge({("w", "boxes"): 100_050}, {("w", "boxes"): 100_000}) == ([], [])
     failed, _ = judge({("w", "boxes"): 100_051}, {("w", "boxes"): 100_000})
@@ -406,12 +415,12 @@ def self_test():
     # an edit's census is read for its warm rows; a back-edit's and the settle's are not rows
     import tempfile
     with tempfile.TemporaryDirectory() as d:
-        census = "rc: 7 retains, 6 releases, 1 reclaims\nrc: 1000 list reads, 200 list writes\nalloc: 50 boxes, 4 list buffers\n"
+        census = "rc: 7 retains, 6 releases, 1 reclaims\nrc: 1000 list reads, 200 list writes\nalloc: 50 boxes, 4 list buffers\nmem: peak 30 MB in all\ndecoded: 5 answers read back\n"
         for f, text in (("edit-body.out", "worked: 3 answers here; x 3\n"), ("edit-body.census", census), ("back-body.census", census), ("settle.census", census)):
             open(os.path.join(d, f), "w").write(text)
         got = measured(d)
         assert got == {("edit-body", "worked"): 3, ("edit-body", "boxes"): 50, ("edit-body", "retains"): 7,
-                       ("edit-body", "releases"): 6, ("edit-body", "list_writes"): 200}, got
+                       ("edit-body", "releases"): 6, ("edit-body", "list_writes"): 200, ("edit-body", "peak_mb"): 30, ("edit-body", "decoded"): 5}, got
         assert same_warm(d, d) == 0
     assert unprinted({("check-cli", "queries_computed"): 3})[0] == "cost: check-cli printed no retains"
     # a ledger's run owes no census counter; its pass rows are its rows

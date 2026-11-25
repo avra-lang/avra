@@ -49,13 +49,11 @@ use @std.meta.{
 use query_engine.{
     Folding,
     FreshAnswer,
-    HeldAnswer,
     HeldQuestion,
     KeptPart,
     MovedRead,
     QueryDefinition,
     QueryEngine,
-    answers_held,
     held_bool,
     held_file,
     held_int,
@@ -73,6 +71,7 @@ use answer_record.{Question, content_hash}
 use read_memo.{AskedMemo, asked_memo}
 use pass.{Pass, pass_code, pass_named, pass_words}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use held_clock.{HeldAnswer, HeldFamily, answers_held, held_answer, held_clock, held_value}
 use saved_derive.{
     FOLDED,
     FOLD_LANE,
@@ -318,8 +317,27 @@ fn held_answers(f: Fn) -> List<Directive> {
             fresh
         }
     }
-    [declares(held_door(f), f.at, source), declares(fresh_door(f), f.at, fresh)]
+    let family = quote {
+        once fn ${family_door(f)}() -> Cell<int> {
+            let family: Cell<int> = Cell.new(
+                held_clock().joined(HeldFamily {
+                    forget: (high, low) -> ${held_door(f)}().put_at(high, low, HeldAnswer { values: [], slot: -1 }),
+                    compact: () -> ${held_door(f)}().keep_only((held) -> !held.values.is_empty()),
+                    keys: () -> ${held_door(f)}().values().length,
+                }),
+            )
+            family
+        }
+    }
+    [
+        declares(held_door(f), f.at, source),
+        declares(fresh_door(f), f.at, fresh),
+        declares(family_door(f), f.at, family),
+    ]
 }
+
+/// The number the clock knows `f`'s held values by.
+fn family_door(f: Fn) -> string { "${f.name}_family" }
 
 /// The last answer `f` computed in this process, for the ask that is waiting on it.
 fn fresh_door(f: Fn) -> string { "${f.name}_fresh" }
@@ -350,15 +368,21 @@ fn asking_wrapper(f: Fn) -> Decls {
             let asked = held.question
             let answer = ${engine_of(f)}.hash_of_answer_held(held)
             let kept = ${held_door(f)}().get(answer)
-            if kept != null { return kept!.value }
+            if kept != null {
+                let values = held_value(kept!)
+                if !values.is_empty() { return values[0] }
+            }
             let fresh = ${fresh_door(f)}().get().first()
             if fresh != null && fresh!.arguments == asked.arguments {
                 ${fresh_door(f)}().set([])
-                ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
+                ${held_door(f)}()
+                    .put(answer, held_answer(${family_door(f)}().get(), answer, ${engine_of(f)}.held_weight(answer), fresh!.value))
                 return fresh!.value
             }
-            let value = ${answer_read_door(f)}(${engine_of(f)}.answer_bytes_of(asked, answer))
-            if answers_held() { ${held_door(f)}().put(answer, HeldAnswer { value: value }) }
+            held_clock().decoding()
+            let bytes = ${engine_of(f)}.answer_bytes_of(asked, answer)
+            let value = ${answer_read_door(f)}(bytes)
+            if answers_held() { ${held_door(f)}().put(answer, held_answer(${family_door(f)}().get(), answer, bytes.to - bytes.from, value)) }
             value
         }
     }
@@ -615,11 +639,15 @@ fn part_door(f: Fn) -> List<Directive> {
             let held = ${asked_of(f)}
             let answer = ${engine_of(f)}.held_answer_now(held)
             let had = ${held_door(f)}().get(answer)
-            if had != null { return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, had!.value) }
+            if had != null {
+                let values = held_value(had!)
+                if !values.is_empty() { return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, values[0]) }
+            }
             let fresh = ${fresh_door(f)}().get().first()
             if fresh != null && fresh!.arguments == held.question.arguments {
                 ${fresh_door(f)}().set([])
-                ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
+                ${held_door(f)}()
+                    .put(answer, held_answer(${family_door(f)}().get(), answer, ${engine_of(f)}.held_weight(answer), fresh!.value))
                 return ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, fresh!.value)
             }
             ${engine_of(f)}.part_of_answer_settled(held, answer, ${name("part_name")}, null)

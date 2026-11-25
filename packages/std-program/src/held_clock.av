@@ -1,0 +1,193 @@
+//! WHAT ANSWERS READ BACK AS IS HELD UNDER ONE BUDGET. A query's wrapper holds the value each answer
+//! decodes to, so a second ask decodes nothing; held without bound, every value a run decodes lives
+//! until it ends. One clock over every family's held values keeps them within `HELD_BUDGET`, counted
+//! in each answer's saved bytes: an ask that finds its value sets its mark, the hand clears marks as
+//! it passes and lets go the first value it finds unmarked. A value let go stays in the store's bytes
+//! and is decoded again by the next ask. The clock is the process's, so whatever engines it runs, the
+//! values they hold are never more than one budget.
+use answer_record.{ContentHash}
+use @std.meta.{identity}
+
+/// The saved bytes whose values are held at once; none are held under 0.
+const HELD_BUDGET: int = 67108864
+
+/// A family's held values, as the clock reaches them: `forget` lets go the value held under an
+/// answer's two words, `compact` drops every key whose value was let go, and `keys` counts its keys.
+export type HeldFamily = { forget: fn(int, int), compact: fn(), keys: fn() -> int }
+
+/// The keys a family may hold with no value, past those it holds a value for, before they're dropped.
+const LOOSE_KEYS: int = 1024
+
+/// What the clock holds, slot by slot: the family that holds each value, its answer's words, its
+/// weight in saved bytes and its mark; a free slot's family is -1, and the first `free_count` of
+/// `free` are the free slots.
+@identity
+export type HeldClock = {
+    families: Cell<List<HeldFamily>>,
+    /// Each family's values held, and its keys holding none.
+    live: Cell<List<int>>,
+    dead: Cell<List<int>>,
+    owners: Cell<List<int>>,
+    highs: Cell<List<int>>,
+    lows: Cell<List<int>>,
+    weights: Cell<List<int>>,
+    marks: Cell<List<bool>>,
+    free: Cell<List<int>>,
+    free_count: Cell<int>,
+    hand: Cell<int>,
+    held: Cell<int>,
+    decoded: Cell<int>,
+}
+
+/// The process's clock.
+export once fn held_clock() -> HeldClock {
+    let families: Cell<List<HeldFamily>> = Cell.new([])
+    let live: Cell<List<int>> = Cell.new([])
+    let dead: Cell<List<int>> = Cell.new([])
+    let owners: Cell<List<int>> = Cell.new([])
+    let highs: Cell<List<int>> = Cell.new([])
+    let lows: Cell<List<int>> = Cell.new([])
+    let weights: Cell<List<int>> = Cell.new([])
+    let marks: Cell<List<bool>> = Cell.new([])
+    let free: Cell<List<int>> = Cell.new([])
+    HeldClock {
+        families: families,
+        live: live,
+        dead: dead,
+        owners: owners,
+        highs: highs,
+        lows: lows,
+        weights: weights,
+        marks: marks,
+        free: free,
+        free_count: Cell.new(0),
+        hand: Cell.new(0),
+        held: Cell.new(0),
+        decoded: Cell.new(0),
+    }
+}
+
+/// What an answer's bytes read back as, held by a query's wrapper for every later ask of that answer:
+/// the value while the clock holds it, in `slot`; none once let go.
+export type HeldAnswer<T> = { values: List<T>, slot: int }
+
+/// `value`, held for `answer` by the family numbered `family` where the budget lets it be.
+export fn held_answer<T>(family: int, answer: ContentHash, weight: int, value: T) -> HeldAnswer<T> {
+    let slot = held_clock().admitted(family, answer, weight)
+    if slot < 0 { HeldAnswer { values: [], slot: slot } } else { HeldAnswer { values: [value], slot: slot } }
+}
+
+/// What a held answer's value is, its mark set; none where it was let go.
+export fn held_value<T>(held: HeldAnswer<T>) -> List<T> {
+    if held.slot >= 0 && !held.values.is_empty() { held_clock().touched(held.slot) }
+    held.values
+}
+
+/// How many values this process's asks decoded from the store's bytes, as a run says it.
+export fn decodes_said() -> string {
+    let clock = held_clock()
+    "decoded: ${clock.decodes()} answers read back; ${clock.keys()} keys held, ${clock.held.get()} saved bytes held"
+}
+
+/// Whether answers' values are held at all.
+export fn answers_held() -> bool { HELD_BUDGET > 0 }
+
+impl HeldClock {
+    /// A family's number on the clock, its values let go through `family`.
+    fn joined(family: HeldFamily) -> int {
+        self.families.push(family)
+        self.live.push(0)
+        self.dead.push(0)
+        self.families.get().length - 1
+    }
+
+    /// An ask found its value held in `slot`.
+    fn touched(slot: int) { self.marks.set_at(slot, true) }
+
+    /// An ask decoded its value from the store's bytes.
+    fn decoding() { self.decoded.set(self.decoded.get() + 1) }
+
+    /// How many values asks have decoded from the store's bytes in this process.
+    fn decodes() -> int { self.decoded.get() }
+
+    /// The slot a value of `family` weighing `weight` saved bytes is held in, under `answer`; -1 where
+    /// it is not held: it outweighs the whole budget.
+    fn admitted(family: int, answer: ContentHash, weight: int) -> int {
+        if weight > HELD_BUDGET {
+            self.loosened(family)
+            return -1
+        }
+        while self.held.get() + weight > HELD_BUDGET { self.let_one_go() }
+        let slot = self.free_slot()
+        self.owners.set_at(slot, family)
+        self.highs.set_at(slot, answer.high_word)
+        self.lows.set_at(slot, answer.low_word)
+        self.weights.set_at(slot, weight)
+        self.marks.set_at(slot, true)
+        self.held.set(self.held.get() + weight)
+        self.live.set_at(family, self.live.get()[family] + 1)
+        slot
+    }
+
+    /// A free slot, made where none is.
+    fn free_slot() -> int {
+        let count = self.free_count.get()
+        if count > 0 {
+            self.free_count.set(count - 1)
+            return self.free.get()[count - 1]
+        }
+        self.owners.push(-1)
+        self.highs.push(0)
+        self.lows.push(0)
+        self.weights.push(0)
+        self.marks.push(false)
+        self.owners.get().length - 1
+    }
+
+    /// One more of `family`'s keys holds no value: past `LOOSE_KEYS` more than hold one, every such key
+    /// is dropped.
+    fn loosened(family: int) {
+        let dead = self.dead.get()[family] + 1
+        if dead <= self.live.get()[family] + LOOSE_KEYS {
+            self.dead.set_at(family, dead)
+            return
+        }
+        (self.families.get()[family].compact)()
+        self.dead.set_at(family, 0)
+    }
+
+    /// How many keys every family's table holds.
+    fn keys() -> int { self.families.get().fold(0, (sum, family) -> sum + (family.keys)()) }
+
+    /// `slot` is free.
+    fn freed(slot: int) {
+        let count = self.free_count.get()
+        if count < self.free.get().length { self.free.set_at(count, slot) } else { self.free.push(slot) }
+        self.free_count.set(count + 1)
+    }
+
+    /// The hand moves on until it lets one value go: a marked slot loses its mark, the first unmarked
+    /// one held is let go.
+    fn let_one_go() {
+        let count = self.owners.get().length
+        mut at = self.hand.get()
+        while true {
+            if at >= count { at = 0 }
+            let owner = self.owners.get()[at]
+            if owner >= 0 {
+                if !self.marks.get()[at] {
+                    (self.families.get()[owner].forget)(self.highs.get()[at], self.lows.get()[at])
+                    self.held.set(self.held.get() - self.weights.get()[at])
+                    self.owners.set_at(at, -1)
+                    self.freed(at)
+                    self.live.set_at(owner, self.live.get()[owner] - 1)
+                    self.loosened(owner)
+                    self.hand.set(at + 1)
+                    return
+                }
+                self.marks.set_at(at, false)
+            }
+            at = at + 1
+        }
+    }
+}

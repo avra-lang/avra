@@ -64,6 +64,24 @@ impl HashKeyedTable<T> {
 
     fn is_empty() -> bool { self.high_words.get().is_empty() }
 
+    /// Only the values `keep` answers true for, each under its key, in the order they arrived.
+    fn keep_only(keep: fn(T) -> bool) {
+        let highs = self.high_words.get()
+        let lows = self.low_words.get()
+        let values = self.held_values.get()
+        let kept = [at for at in 0..values.length if keep(values[at])]
+        let kept_highs = [highs[at] for at in kept]
+        let kept_lows = [lows[at] for at in kept]
+        self.held_values.set([values[at] for at in kept])
+        self.high_words.set(kept_highs)
+        self.low_words.set(kept_lows)
+        self
+            .slots
+            .set(
+                if kept.is_empty() { [] } else { slots_holding(kept_highs, kept_lows, slot_count_for(kept.length)) },
+            )
+    }
+
     /// Nothing under any key.
     fn clear() {
         self.high_words.set([])
@@ -129,6 +147,13 @@ impl HashKeyedTable<T> {
 }
 
 fn slot_count_after(count: int) -> int { if count == 0 { FIRST_SLOT_COUNT } else { count * 2 } }
+
+/// The fewest slots that hold `keys` keys at most half full.
+fn slot_count_for(keys: int) -> int {
+    mut count = FIRST_SLOT_COUNT
+    while (keys + 1) * 2 > count { count = count * 2 }
+    count
+}
 
 /// The first free slot from where `low_word` lands.
 fn free_slot(slots: List<int>, high_word: int, low_word: int) -> int {

@@ -400,6 +400,13 @@ impl QueryEngine {
         self.answer_bytes_of(asked, self.hash_of_answer_to(asked))
     }
 
+    /// What an answer weighs where its value is held: its saved bytes' length, or one where the
+    /// store keeps none.
+    fn held_weight(answer: ContentHash) -> int {
+        let bytes? = self.store.answer_bytes(answer) else { return 1 }
+        bytes.to - bytes.from
+    }
+
     /// An answer's bytes. A record may stand with its bytes no longer kept, and then it runs.
     fn answer_bytes_of(asked: Question, answer: ContentHash) -> SavedBytes {
         self.store.answer_bytes(answer) ?? self.store.answer_bytes(self.computed_answer(asked))!
@@ -1630,9 +1637,6 @@ impl KeyReader {
 /// A question's key: its arguments' spellings, in order.
 export fn held_key_of(keys: List<string>) -> string { if keys.length == 1 { keys[0] } else { keys.join("") } }
 
-/// What an answer's bytes read back as, held by a query's wrapper for every later ask of that answer.
-export type HeldAnswer<T> = { value: T }
-
 /// Whether each answer held as computed is checked to read back as it was saved:
 /// `AVRA_HELD_ROUNDTRIP`.
 export fn round_trips_checked() -> bool { round_trip_flag() != null }
@@ -1647,12 +1651,5 @@ fn round_trip_voice(query: string) -> string { "an answer of `${query}` reads ba
 
 /// An answer a query's code just computed, and the arguments it was computed for.
 export type FreshAnswer<T> = { arguments: Bytes, value: T }
-
-/// Whether a query's wrapper holds what each answer reads back as: on, unless `AVRA_HELD_ANSWERS_OFF`
-/// is set, which reads every answer back at every ask — the same answers, decoded again.
-export fn answers_held() -> bool { held_answers_off() == null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
 
 fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }
