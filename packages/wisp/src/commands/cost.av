@@ -1,8 +1,7 @@
 //! `wisp cost [<ratchet>…] [--accept] [--file <path>]` — THE RATCHETS, ONE REGISTRY. A ratchet holds
 //! a measured cost to a committed baseline that may only fall: the run's speed, its counted work,
-//! a binary's footprint, the reads outside the doors. Each is a row: the keeper that judges it (a
-//! Make target, run by `wisp cost <name>`), the file it is held to, and the steps that record a
-//! lower baseline (`--accept`, which names its ratchets — an accept is never a sweep). Exit 0 held
+//! a binary's footprint, the reads outside the doors. Each is a row: the steps that judge it (run
+//! by `wisp cost <name>`), the file it is held to, and the steps that record a lower baseline (`--accept`, which names its ratchets — an accept is never a sweep). Exit 0 held
 //! or recorded, 1 a ratchet refused, 2 usage.
 use @std.cli.{CliResult, Runnable, arg, command, flag, option}
 use @std.process.{EnvPair}
@@ -11,9 +10,9 @@ use @std.process.{EnvPair}
 /// whether the file `--file` names is its last word.
 export type Step = { argv: List<string>, sets: List<EnvPair> = [], file: bool = false }
 
-/// A ratchet: its name, the keeper that judges it, the baseline it is held to, and the steps an
+/// A ratchet: its name, the steps that judge it, the baseline it is held to, and the steps an
 /// accept records a lower one by.
-export type Ratchet = { name: string, keeper: string, baseline: string, accept: List<Step> }
+export type Ratchet = { name: string, judge: List<Step>, baseline: string, accept: List<Step> }
 
 /// The speed ratchet proves itself before it records anything.
 const SPEED_SELF_TEST: Step = Step { argv: ["python3", "tools/speed_ratchet.py", "--self-test"] }
@@ -22,7 +21,7 @@ const SPEED_SELF_TEST: Step = Step { argv: ["python3", "tools/speed_ratchet.py",
 export const RATCHETS: List<Ratchet> = [
     Ratchet {
         name: "cost",
-        keeper: "cost",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "cost"] }],
         baseline: "tools/cost.baseline",
         accept: [
             Step {
@@ -34,13 +33,18 @@ export const RATCHETS: List<Ratchet> = [
     },
     Ratchet {
         name: "speed",
-        keeper: "speed-ratchet",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "speed-ratchet"] }],
         baseline: "tools/speed.budget",
         accept: [SPEED_SELF_TEST, Step { argv: ["python3", "tools/speed_ratchet.py", "--accept"] }],
     },
+    // A PR check's per-job and whole wall time (`sh tools/ci_wall.sh collect`), held in the same
+    // speed.budget and judged in every PR run's `test` job.
     Ratchet {
         name: "wall",
-        keeper: "wall-ratchet",
+        judge: [
+            SPEED_SELF_TEST,
+            Step { argv: ["python3", "tools/speed_ratchet.py", "--wall", "--raw"], file: true },
+        ],
         baseline: "tools/speed.budget",
         accept: [
             SPEED_SELF_TEST,
@@ -52,7 +56,7 @@ export const RATCHETS: List<Ratchet> = [
     },
     Ratchet {
         name: "warm",
-        keeper: "warm-edit",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "warm-edit"] }],
         baseline: "tools/speed.budget",
         accept: [
             SPEED_SELF_TEST,
@@ -64,7 +68,7 @@ export const RATCHETS: List<Ratchet> = [
     },
     Ratchet {
         name: "work",
-        keeper: "warm-edit",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "warm-edit"] }],
         baseline: "tools/work.budget",
         accept: [
             Step { argv: ["python3", "tools/work_ratchet.py", "--self-test"] },
@@ -76,7 +80,7 @@ export const RATCHETS: List<Ratchet> = [
     },
     Ratchet {
         name: "footprint",
-        keeper: "footprint",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "footprint"] }],
         baseline: "tools/footprint.baseline",
         accept: [
             Step { argv: ["make", "-s", "build/libavra_runtime.a"] },
@@ -85,25 +89,25 @@ export const RATCHETS: List<Ratchet> = [
     },
     Ratchet {
         name: "inputs",
-        keeper: "inputs",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "inputs"] }],
         baseline: "tools/inputs.baseline",
         accept: [Step { argv: ["python3", "tools/inputs.py", "--accept"] }],
     },
     Ratchet {
         name: "whole-reads",
-        keeper: "whole-reads",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "whole-reads"] }],
         baseline: "tools/whole_reads.baseline",
         accept: [Step { argv: ["python3", "tools/whole_reads.py", "--accept"] }],
     },
     Ratchet {
         name: "flow-gate",
-        keeper: "flow-gate",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "flow-gate"] }],
         baseline: "tools/flow_bench/gate.baseline",
         accept: [Step { argv: ["sh", "tools/flow_bench/run.sh", "--record"] }],
     },
     Ratchet {
         name: "wasm-size",
-        keeper: "wasm-size-guard",
+        judge: [Step { argv: ["make", "-s", "-o", "avra", "wasm-size-guard"] }],
         baseline: "tools/wasm-size.baseline",
         accept: [Step { argv: ["sh", "tools/wasm-size-guard.sh", "--accept"] }],
     },
@@ -148,10 +152,9 @@ export command cost {
     run: CostCmd {}
 }
 
-/// The ratchet's keeper, run by its Make target.
+/// The ratchet's judging steps in order; the first that refuses stops the rest.
 fn judged(r: Ratchet, file: string) -> bool {
-    let wall = if file == "" { [] } else { ["WALL=${file}"] }
-    streamed(["make", "-s", "-o", "avra", r.keeper].concat(wall), [])
+    r.judge.all((s) -> ran(s, file))
 }
 
 /// Each accept step in order; the first that fails stops the rest.

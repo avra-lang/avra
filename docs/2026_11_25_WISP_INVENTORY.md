@@ -58,6 +58,36 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 - **The `_OFF` / `_CHECK` switches** (`AVRA_HELD_ITEMS_OFF`, `AVRA_FOLD_CHECK`, `AVRA_HELD_QUESTIONS_CHECK`, … 68 rows of `settings.debug`) are the "gated" half of gated==ungated. Each becomes a reading in the oracle, not a variable a human sets.
 
 
+## Deleted as obsolete (running list)
+
+Before an item is ported it is asked: does anything current still need it — a gate slice, a keeper,
+a documented workflow, a lane's live use? If nothing does, it is deleted, not ported. An item whose
+only callers are other dead items is dead. One a human workflow might use is listed under
+*Proposed* for the owner.
+
+| Item | Kind | Why it is dead | Last caller | Slice |
+|---|---|---|---|---|
+| `check`, `run`, `ir`, `emit`, `build-native` | Make targets | wrappers over `./avra <cmd> $(FILE)`; `./avra` is the spelling | none | S1 |
+| `object-gone-attack` | Make target | a second spelling of a recipe line `cache-attacks-b2` already runs | none | S1 |
+| `tools-suite` | Make target | `./avra test tools`; wisp's suite is derived into `suites` | KEEPERS_B | S1 |
+| `tools/program_findings_gate.sh`, `tools/program_findings.py` | tools | holds the program layer to the old path, deleted at `b6dce5f` | each other | S1 |
+| `tools/program_refusals_sweep.sh` | tool | an old-path comparison sweep | none | S1 |
+| `tools/db06_pkgc_witness.sh` | tool | a finished campaign's probe | none | S1 |
+| `tools/hold_sweep.sh` | tool | a hand probe for the hold, which is being deleted | none (a test name quoted it) | S1 |
+| `tools/reformat_lane.sh` | tool | a one-time layout migration, done | none | S1 |
+| `tools/term_width.py` | tool | a one-off terminal probe | none | S1 |
+| `tools/sp` | tool | the old spelling of `tools/work run` | the pipeline doc only | S1 |
+| `AVRA_PROGRAM`, `AVRA_PROGRAM_NET` | env | no reader since `b6dce5f` | 47 sites that set them | S1 |
+| `AVRA_ALIAS_EMIT` | env | no reader | CLAUDE.md's example | S1 |
+| `warm_edit_bench.sh`'s net round | tool step | measured the net, which no longer exists | itself | S1 |
+| `tools/keepers_loop.sh`, the nine `KEEPERS_*` variables | tool, Make | superseded by `wisp keepers` | the keepers targets | S4 |
+| `wall-ratchet`, `WALL` | Make target, variable | CI judges the wall budget with `speed_ratchet.py --wall` directly; `wisp cost wall` is the hand spelling | none | cost |
+
+Ported, not obsolete (their callers are live): the ten `-accept` targets became `wisp cost <r>
+--accept`. The width witness recipe became `wisp oracle width-witness`.
+
+**Proposed** (a human workflow might use it; the owner decides): none yet.
+
 ## Make targets
 
 | Target | Called by | Class | Action | Note |
