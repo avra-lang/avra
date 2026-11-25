@@ -16,6 +16,7 @@ use core.{
     OwnType,
     Param,
     Reg,
+    RowReads,
     SignedType,
     SyntaxArena,
     lift_refusal,
@@ -45,9 +46,9 @@ enum WalkVerb {
 }
 
 /// A verb a list's walk answers to: its name, the walk it is and the stage it is in a walk after it,
-/// each where it's lowered here, and whether it hands its walk on to a walk after it, which runs both
-/// as one.
-type WalkRow = { verb: string, walk: WalkVerb?, stage: StageVerb?, hands_on: bool }
+/// each where it's lowered here, whether it hands its walk on to a walk after it, which runs both
+/// as one, and what it reads of the program's cells.
+type WalkRow = { verb: string, walk: WalkVerb?, stage: StageVerb?, hands_on: bool, reads: RowReads }
 
 /// A stage a walk hands each element through before the walk after it reads it.
 enum StageVerb {
@@ -77,31 +78,35 @@ const WALK_LOOP: string = " walk"
 /// Every verb a list's walk answers to.
 once fn walk_rows() -> List<WalkRow> {
     table<WalkRow> {
-        verb         | walk               | stage               | hands_on
-        "find"       | WalkVerb.Find      | null                | false
-        "find_index" | WalkVerb.FindIndex | null                | false
-        "find_map"   | WalkVerb.FindMap   | null                | false
-        "any"        | WalkVerb.Any       | null                | false
-        "all"        | WalkVerb.All       | null                | false
-        "map"        | WalkVerb.Map       | StageVerb.Map       | true
-        "filter"     | WalkVerb.Filter    | StageVerb.Filter    | true
-        "fold"       | WalkVerb.Fold      | null                | false
-        "count"      | WalkVerb.Count     | null                | false
-        "contains"   | WalkVerb.Contains  | null                | false
-        "index_of"   | WalkVerb.IndexOf   | null                | false
-        "take"       | WalkVerb.Take      | StageVerb.Take      | true
-        "drop"       | WalkVerb.Drop      | StageVerb.Drop      | true
-        "sum"        | WalkVerb.Sum       | null                | false
-        "min"        | WalkVerb.Min       | null                | false
-        "max"        | WalkVerb.Max       | null                | false
-        "filter_map" | null               | StageVerb.FilterMap | true
-        "flat_map"   | null               | StageVerb.FlatMap   | true
-        "flatten"    | null               | StageVerb.Flatten   | true
-        "chars"      | null               | null                | true
-        "take_while" | null               | StageVerb.TakeWhile | true
-        "drop_while" | null               | StageVerb.DropWhile | true
+        verb         | walk               | stage               | hands_on | reads
+        "find"       | WalkVerb.Find      | null                | false    | RowReads.Applies
+        "find_index" | WalkVerb.FindIndex | null                | false    | RowReads.Applies
+        "find_map"   | WalkVerb.FindMap   | null                | false    | RowReads.Applies
+        "any"        | WalkVerb.Any       | null                | false    | RowReads.Applies
+        "all"        | WalkVerb.All       | null                | false    | RowReads.Applies
+        "map"        | WalkVerb.Map       | StageVerb.Map       | true     | RowReads.Applies
+        "filter"     | WalkVerb.Filter    | StageVerb.Filter    | true     | RowReads.Applies
+        "fold"       | WalkVerb.Fold      | null                | false    | RowReads.Applies
+        "count"      | WalkVerb.Count     | null                | false    | RowReads.Applies
+        "contains"   | WalkVerb.Contains  | null                | false    | RowReads.Handed
+        "index_of"   | WalkVerb.IndexOf   | null                | false    | RowReads.Handed
+        "take"       | WalkVerb.Take      | StageVerb.Take      | true     | RowReads.Handed
+        "drop"       | WalkVerb.Drop      | StageVerb.Drop      | true     | RowReads.Handed
+        "sum"        | WalkVerb.Sum       | null                | false    | RowReads.Handed
+        "min"        | WalkVerb.Min       | null                | false    | RowReads.Handed
+        "max"        | WalkVerb.Max       | null                | false    | RowReads.Handed
+        "filter_map" | null               | StageVerb.FilterMap | true     | RowReads.Applies
+        "flat_map"   | null               | StageVerb.FlatMap   | true     | RowReads.Applies
+        "flatten"    | null               | StageVerb.Flatten   | true     | RowReads.Handed
+        "chars"      | null               | null                | true     | RowReads.Handed
+        "take_while" | null               | StageVerb.TakeWhile | true     | RowReads.Applies
+        "drop_while" | null               | StageVerb.DropWhile | true     | RowReads.Applies
     }
 }
+
+/// What the walk verb `name` reads of the program's cells, as its row says; absent for a verb no walk
+/// answers to.
+export fn walk_reads(name: string) -> RowReads? { walk_row(name)?.reads }
 
 /// The row of the verb `name`, absent for a verb no walk answers to.
 fn walk_row(name: string) -> WalkRow? { walk_rows().find(it.verb == name) }

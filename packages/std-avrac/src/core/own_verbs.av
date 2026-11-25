@@ -43,32 +43,39 @@ export enum OwnVerb {
 }
 
 /// A verb on a type the language owns that is a shape of rows: the receiver's type, the verb's name,
-/// and its shape.
-export type OwnShape = { receiver: OwnType, verb: string, shape: OwnVerb }
+/// its shape, and what it reads of the program's cells.
+export type OwnShape = { receiver: OwnType, verb: string, shape: OwnVerb, reads: RowReads }
 
 /// Every verb the language owns that is a shape of rows.
 export once fn own_shapes() -> List<OwnShape> {
     table<OwnShape> {
-        receiver      | verb        | shape
-        OwnType.List  | "first"     | OwnVerb.First
-        OwnType.List  | "last"      | OwnVerb.Last
-        OwnType.List  | "push"      | OwnVerb.Pushed
-        OwnType.List  | "set"       | OwnVerb.SetAt
-        OwnType.List  | "pop"       | OwnVerb.Popped
-        OwnType.List  | "get"       | OwnVerb.GotAt
-        OwnType.List  | "enumerate" | OwnVerb.Enumerated
-        OwnType.Map   | "get"       | OwnVerb.Got
-        OwnType.Map   | "set"       | OwnVerb.Put
-        OwnType.Map   | "remove"    | OwnVerb.Removed
-        OwnType.Cell  | "new"       | OwnVerb.CellNew
-        OwnType.Cell  | "get"       | OwnVerb.CellGet
-        OwnType.Cell  | "set"       | OwnVerb.CellSet
-        OwnType.Cell  | "push"      | OwnVerb.CellPushed
-        OwnType.Cell  | "set_at"    | OwnVerb.CellSetAt
-        OwnType.Cell  | "put"       | OwnVerb.CellPut
-        OwnType.Task  | "await"     | OwnVerb.Awaited
-        OwnType.Tasks | "new"       | OwnVerb.TasksNew
+        receiver      | verb        | shape              | reads
+        OwnType.List  | "first"     | OwnVerb.First      | RowReads.Handed
+        OwnType.List  | "last"      | OwnVerb.Last       | RowReads.Handed
+        OwnType.List  | "push"      | OwnVerb.Pushed     | RowReads.Handed
+        OwnType.List  | "set"       | OwnVerb.SetAt      | RowReads.Handed
+        OwnType.List  | "pop"       | OwnVerb.Popped     | RowReads.Handed
+        OwnType.List  | "get"       | OwnVerb.GotAt      | RowReads.Handed
+        OwnType.List  | "enumerate" | OwnVerb.Enumerated | RowReads.Handed
+        OwnType.Map   | "get"       | OwnVerb.Got        | RowReads.Handed
+        OwnType.Map   | "set"       | OwnVerb.Put        | RowReads.Handed
+        OwnType.Map   | "remove"    | OwnVerb.Removed    | RowReads.Handed
+        OwnType.Cell  | "new"       | OwnVerb.CellNew    | RowReads.Nothing
+        OwnType.Cell  | "get"       | OwnVerb.CellGet    | RowReads.Handed
+        OwnType.Cell  | "set"       | OwnVerb.CellSet    | RowReads.Handed
+        OwnType.Cell  | "push"      | OwnVerb.CellPushed | RowReads.Handed
+        OwnType.Cell  | "set_at"    | OwnVerb.CellSetAt  | RowReads.Handed
+        OwnType.Cell  | "put"       | OwnVerb.CellPut    | RowReads.Handed
+        OwnType.Task  | "await"     | OwnVerb.Awaited    | RowReads.Unknown
+        OwnType.Tasks | "new"       | OwnVerb.TasksNew   | RowReads.Nothing
     }
+}
+
+/// What the verb `verb` on a value of `ty`, or called through it, reads of the program's cells, as
+/// its row says; absent where it's no shape of rows.
+export fn own_shape_reads(ty: SignedType, verb: string) -> RowReads? {
+    let own? = ty.own() else { return null }
+    own_shapes().find(it.receiver == own && it.verb == verb)?.reads
 }
 
 /// The shape the verb `verb` on a value of `ty`, or called through it, is; absent when it's none.
