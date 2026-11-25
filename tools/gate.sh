@@ -310,13 +310,30 @@ slice_build() {
 
 # the std-avrac suite over `$@`, its paths under the package: one row for every path of std-avrac's
 # own, and a row each for a path that is a package of its own nested in it, which `test` proves apart
+# — the share's own paths a row a directory, its files one row, so every directory's seconds stand in
+# the rows a split is dealt by. A `test` over one path that holds no proof refuses it ("names no test"),
+# which the one run over all of them never said: such a row is EMPTY and passes, and a share whose every
+# row is empty fails, as that one run did.
 avrac() {
     cold std-avrac
-    own=""
+    files=""
+    rows_held=0
+    rows_empty=0
     for p in "$@"; do
-        if [ -f "$p/avra.toml" ]; then tested "std-avrac-$(basename "$p")" "$p"; else own="$own $p"; fi
+        if [ -f "$p/avra.toml" ]; then tested "std-avrac-$(basename "$p")" "$p"
+        elif [ -d "$p" ]; then avrac_row "std-avrac@$(echo "${p#packages/std-avrac/src/}" | tr '/' '+')" "$p"
+        else files="$files $p"; fi
     done
-    [ -z "$own" ] || tested std-avrac $own
+    [ -z "$files" ] || avrac_row std-avrac@files $files
+    [ "$rows_held" -gt "$rows_empty" ] || judged std-avrac-held-no-proof 1
+}
+# one share row: `tested`, an empty scope counted as no proof here rather than a failure
+avrac_row() {
+    rows_held=$((rows_held + 1))
+    EMPTY_SCOPE_PASSES=1
+    tested "$@"
+    EMPTY_SCOPE_PASSES=
+    [ ! -f "$out/$1.empty" ] || rows_empty=$((rows_empty + 1))
 }
 # half of std-avrac's src/compiler/tests, the `$1`-th (from 0), dealt in turn
 compiler_tests_half() { find packages/std-avrac/src/compiler/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt "$1" 2; }
@@ -364,6 +381,13 @@ tested() {
     listed "tools/gate/$pkg.traps" >"$out/$name.traps"
     comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
     if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
+    # a scope that holds no proof, where the caller counts that as none here: refused by that voice alone
+    if [ "$ran" != 0 ] && [ -n "${EMPTY_SCOPE_PASSES:-}" ] && [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] &&
+        grep -q 'names no test' "$out/$name.log" && ! grep -qE '^    (✓|✗)' "$out/$name.log"; then
+        : >"$out/$name.empty"
+        judged "$name" 0
+        return
+    fi
     # a run that fails no case and ends none must have exited clean; one that fails only pinned cases
     # or ends at a listed one stopped on them
     if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ]; then judged "$name" "$ran"; return; fi
