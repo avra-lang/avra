@@ -675,12 +675,29 @@ keepers_of() {
     make -s -pn 2>/dev/null | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |
         grep -vxF "$(printf '%s\n' $KEEPERS_RUN_ELSEWHERE)"
 }
-# each keeper named, a row
+# each keeper named, a row; an owed one (tools/gate/keepers.owed) is judged by its line, not its run
 keepers_run() {
-    for k in "$@"; do row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" make -s -o avra "$k"; done
+    for k in "$@"; do
+        owed=$(awk -v k="$k" '$1 == k { print $2; exit }' "$root/tools/gate/keepers.owed")
+        if [ -z "$owed" ]; then
+            row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" make -s -o avra "$k"
+            continue
+        fi
+        # OWED: run as any keeper, its words kept; red is the owner's debt, green means strike the line
+        rows=$((rows + 1))
+        t0=$(date +%s)
+        if sh tools/bounded.sh "$ROW_SECS" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
+            failed=$((failed + 1))
+            failures="$failures keeper-$k"
+            echo "row keeper-$k FAIL $(( $(date +%s) - t0 ))s (passes, and tools/gate/keepers.owed still owes it — strike its line)" >>"$out/rows"
+        else
+            echo "row keeper-$k OWED $(( $(date +%s) - t0 ))s ($owed: $(awk -v k="$k" '$1 == k { $1 = ""; $2 = ""; sub(/^  /, ""); print; exit }' "$root/tools/gate/keepers.owed"))" >>"$out/rows"
+        fi
+    done
 }
 # a keeper list that names nothing fails: a Makefile edit that renamed the list keeps nothing silently
 keepers_list() {
+    judged keepers-owed-lines "$(awk '!/^#/ && NF > 0 && NF < 3' "$root/tools/gate/keepers.owed" | wc -l | tr -d ' ')"
     names=$(keepers_of "$1")
     [ -n "$names" ] || { judged "keepers-$1-named" 1; return; }
     keepers_run $names
