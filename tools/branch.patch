@@ -1,0 +1,1225 @@
+diff --git a/packages/std-avrac/src/compiler/interface.av b/packages/std-avrac/src/compiler/interface.av
+index d095009..c49d86d 100644
+--- a/packages/std-avrac/src/compiler/interface.av
++++ b/packages/std-avrac/src/compiler/interface.av
+@@ -374,7 +374,7 @@ impl Workspace {
+                 row.nested,
+                 root,
+             )
+-        self.decls.held_joins(f, id, row.ordinal, kind! is .Main, row.item)
++        self.decls.held_joins(f, id, kind! is .Main, row.item)
+         self.decls.adopt_facts(id, facts!)
+         id
+     }
+diff --git a/packages/std-avrac/src/compiler/lower/lower.av b/packages/std-avrac/src/compiler/lower/lower.av
+index 9a89b61..045e37e 100644
+--- a/packages/std-avrac/src/compiler/lower/lower.av
++++ b/packages/std-avrac/src/compiler/lower/lower.av
+@@ -169,16 +169,11 @@ export type Lowered = {
+ 
+ impl Decls {
+     /// The program's extern fns by symbol — what every emitter refuses
+-    /// an unknown callee against. A whole-table walk: gathered once per
+-    /// lowering, never per body.
+-    fn extern_names() -> List<string> {
+-        [self.symbol(d.id) for d in self.all_decls() if self.is_extern(d.id)]
+-    }
++    /// an unknown callee against.
++    fn extern_names() -> List<string> { [self.symbol(d.id) for d in self.externs()] }
+ 
+     /// The program's extern fns as registry rows.
+-    fn extern_rows() -> List<RtSig> {
+-        [self.extern_row_of(d) for d in self.all_decls() if self.is_extern(d.id)]
+-    }
++    fn extern_rows() -> List<RtSig> { [self.extern_row_of(d) for d in self.externs()] }
+ 
+     /// An extern's runtime row. The WIDTHS are read back from the
+     /// program — the annotation the seat wrote — because the signature
+diff --git a/packages/std-avrac/src/compiler/program.av b/packages/std-avrac/src/compiler/program.av
+index b0b6849..fd66f4d 100644
+--- a/packages/std-avrac/src/compiler/program.av
++++ b/packages/std-avrac/src/compiler/program.av
+@@ -295,7 +295,7 @@ impl Decls {
+     /// struct wears it (a fn, an enum and a named alias all answer null
+     /// here too; each has its own signature shape, not a struct's).
+     fn struct_type_ref(name: string) -> TypeId? {
+-        let decl? = self.all_decls().find(it.name == name) else { return null }
++        let decl? = self.named_rows(name).first() else { return null }
+         let _sig? = self.sig(decl.id)?.record_sig() else { return null }
+         self.record_type(decl.id)
+     }
+@@ -374,9 +374,7 @@ impl Program {
+     /// once carried — `explain_doc` shares the same door.
+     fn explain_annotation(name: string) -> string? {
+         let decls = self.ws.decls
+-        let decl? = decls
+-            .all_decls()
+-            .find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else {
++        let decl? = decls.named_rows(name).find((d: Decl) -> decls.fn_name(d.id) != null) else {
+             return null
+         }
+         let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
+@@ -489,13 +487,11 @@ impl Program {
+     /// diagnostic. THE LOOKUP IS BY BARE NAME, the same door
+     /// `explain_annotation` already opens this way: two types
+     /// declaring a same-named method answer for whichever one
+-    /// `all_decls()` holds first — a name, not a binding, the same
++    /// the name's bucket holds first — a name, not a binding, the same
+     /// sharp edge `explain @name` already carries.
+     fn explain_writes(fn_name: string) -> string? {
+         let decls = self.ws.decls
+-        let decl? = decls
+-            .all_decls()
+-            .find((d: Decl) -> d.name == fn_name && decls.fn_name(d.id) != null) else {
++        let decl? = decls.named_rows(fn_name).find((d: Decl) -> decls.fn_name(d.id) != null) else {
+             return null
+         }
+         if decls.seat_count(decl.id) == 0 { return null }
+diff --git a/packages/std-avrac/src/compiler/whole.av b/packages/std-avrac/src/compiler/whole.av
+index 636b414..b582692 100644
+--- a/packages/std-avrac/src/compiler/whole.av
++++ b/packages/std-avrac/src/compiler/whole.av
+@@ -258,7 +258,7 @@ impl Workspace {
+ 
+     /// The extern fns a package declares, by name.
+     fn externs_of(package: string) -> List<string> {
+-        [d.name for d in self.decls.decls.get() if self.decls.is_extern(d.id) && self.decls.package_of(d.id) == key_spelled(package)]
++        [d.name for d in self.decls.externs() if self.decls.package_of(d.id) == key_spelled(package)]
+     }
+ 
+     /// The root package's entry file: its `[bin]` path, else
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index c82d1e6..46e1399 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -1901,7 +1901,7 @@ impl Workspace {
+         let of? = self.decls.facts_of(block)?.of else { return null }
+         if of == "" { return null }
+         self.named_minted(of)
+-        let named = [d.id for d in self.decls.all_decls() if d.kind is .Trait && d.name == of]
++        let named = [d.id for d in self.decls.named_rows(of) if d.kind is .Trait]
+         if named.length == 1 { named.first() } else { null }
+     }
+ 
+diff --git a/packages/std-avrac/src/compiler/workspace_analysis.av b/packages/std-avrac/src/compiler/workspace_analysis.av
+index 2ff494e..2b28181 100644
+--- a/packages/std-avrac/src/compiler/workspace_analysis.av
++++ b/packages/std-avrac/src/compiler/workspace_analysis.av
+@@ -105,8 +105,9 @@ impl Workspace {
+     fn touch_method_tables() {
+         mut at = 0
+         while at < self.decls.decl_count() {
+-            let x = self.decls.raw_decl(DeclId { index: at })
++            let held = self.decls.row_at(at)
+             at = at + 1
++            let x? = held else { continue }
+             if is_type_decl(x) { touch(self.methods(x.id)) }
+         }
+     }
+@@ -129,8 +130,9 @@ impl Workspace {
+         // Signing an impl may admit another declaration, so walk the
+         // growing table until every type has had its method query.
+         while at < self.decls.decl_count() {
+-            let x = self.decls.raw_decl(DeclId { index: at })
++            let row = self.decls.row_at(at)
+             at = at + 1
++            let x? = row else { continue }
+             if is_type_decl(x) {
+                 touch(self.methods(x.id))
+                 let held: List<Clash> = self.method_clashes.at(x.id.index) ?? []
+diff --git a/packages/std-avrac/src/features/decl_rows.av b/packages/std-avrac/src/features/decl_rows.av
+index cef3fac..34db296 100644
+--- a/packages/std-avrac/src/features/decl_rows.av
++++ b/packages/std-avrac/src/features/decl_rows.av
+@@ -1,22 +1,28 @@
+ //! `Decl` — the declaration table's relation. Every declaration the compiler
+-//! mints is one row here, inserted once at `mint` and reseated by `set_decl`,
++//! mints is one row here, filed once at `mint` and reseated by `set_decl`,
+ //! read everywhere through `Decls.decl`, never a hand-kept table. The type
+ //! stands alone in its file: the relation derive types this file while the
+ //! files that use `Decl` are still registering.
+ //!
+-//! `id` is `@dense`, so it names a slot in this process alone. `file`, `stmt`,
+-//! `parent`, `root`, `lo` and `hi` are process-local (`@dense` ids, arena
+-//! indexes, offsets) and `@local`, so none enters the stable hash, and so is
+-//! `key`, the process's own interning text. `name`, `word`, `marks` and `key`
+-//! are indexed, each index numbered in field order: a lookup reads a bucket,
+-//! never a hand-kept table.
++//! `id` is `@dense`, so it names a slot in this process alone. `file`,
++//! `stmt`, `parent`, `root`, `lo`, `hi`, `home` and `external` are
++//! process-local (`@dense` ids, arena indexes, offsets, a fact a record
++//! carries elsewhere) and `@local`, so none enters the stable hash, and so
++//! is `key`, the process's own interning text. `name`, `word`, `marks`,
++//! `key`, `home` and `external` are indexed, each index numbered in field
++//! order: a lookup reads a bucket, never a hand-kept table.
++//!
++//! A FILE'S ADMISSION OWNS ITS ROWS: every write of a homed row is stamped
++//! with that file's run, so admitting the file again replaces them in one
++//! step — what the new run did not mint is removed from every bucket, its
++//! id left a tombstone.
+ //!
+ //! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `file`
+ //! stops being `@local` (decision 10(a)) — owner: ERRORS. That tuple, not the
+ //! interning string, is the row's stable name (townhall doc §6, "same-(owner,
+ //! name) siblings only"); no `sibling` column exists yet — it is an ordinal
+ //! among same-(owner, name) declarations, computed, not stored. `Decl` is
+-//! keyless meanwhile: `mint` inserts once and `set_decl` reseats by id.
++//! keyless meanwhile: `mint` files a new id once and `set_decl` reseats by id.
+ use core.{DeclId, FileId, StmtId, ExprId, DeclKind, SideTable}
+ use @std.relation.{relation, side}
+ 
+@@ -44,6 +50,12 @@ export type Decl = {
+     @index marks: List<string>,
+     /// The interning key `mint` files it under — one row per key.
+     @local @index key: string,
++    /// The file whose admission owns the row: its rows, filed here, are
++    /// what a re-admission replaces. A builtin is no file's.
++    @local @index home: FileId?,
++    /// Whether its facts call it an `extern fn`, filed so the externs are
++    /// one bucket.
++    @local @index external: bool,
+ }
+ 
+ /// A node's declaration, in its file's partition at the node's dense id.
+diff --git a/packages/std-avrac/src/features/decls.av b/packages/std-avrac/src/features/decls.av
+index e35bfba..c321fcf 100644
+--- a/packages/std-avrac/src/features/decls.av
++++ b/packages/std-avrac/src/features/decls.av
+@@ -50,9 +50,9 @@ use core.{
+     Annotation,
+     At,
+ }
+-use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
++use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
+ use @std.relation.db.{Db, new_db}
+-use @std.relation.rows.{Rows}
++use @std.relation.rows.{Rows, bool_key}
+ use core.{
+     Fingerprint,
+     Exemplar,
+@@ -102,15 +102,19 @@ export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bo
+ /// A range-owning declaration and the source span it holds.
+ type OwnerSpan = { d: DeclId, lo: int, hi: int }
+ 
+-/// `Decl`'s indexes, numbered in field order after `name`'s: a component
+-/// instance's `word`, every `@name` it wears, and its interning key. `word`
+-/// and `marks` are TWO INDEXES, never one — sharing a bucket would let a
+-/// component named `rule` and an annotation `@rule` answer for each other.
++/// `Decl`'s indexes, numbered in field order: its name, a component
++/// instance's `word`, every `@name` it wears, its interning key, the
++/// file that homes it, and whether it is an `extern fn`. `word` and `marks` are TWO INDEXES, never one —
++/// sharing a bucket would let a component named `rule` and an annotation
++/// `@rule` answer for each other.
++const name_index: int = 0
+ const word_index: int = 1
+ const marks_index: int = 2
+ const key_index: int = 3
++const home_index: int = 4
++const external_index: int = 5
+ 
+-/// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
++/// `sigs`, `children`, `methods` and `impls` are dense by
+ /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
+ /// make the table's reads queries: `ensure` computes a sig on first
+ /// ask, `ensure_methods` fills a type's method table.
+@@ -340,9 +344,9 @@ export type Decls = {
+     scoped: Cell<Map<string, bool>>,
+     /// TWO LAYERS SHARED — see `module_files`.
+     decl_ids: Cell<List<Cell<SideTable<DeclAt>>>>,
+-    /// TWO LAYERS SHARED — see `module_files`.
+-    file_decls: Cell<List<Cell<List<DeclId>>>>,
+-    decls: Cell<List<Decl>>,
++    /// Each file's admission owner in the declaration table's `Db`,
++    /// dense by FileId: every write of a row the file homes is its run's.
++    file_owners: Cell<List<int>>,
+     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
+     /// MINTED and their objects come from the store. Keyed by path.
+     held: Cell<Map<string, bool>>,
+@@ -357,7 +361,7 @@ export type Decls = {
+     /// ONE place a pass reads them, so no pass reaches into a store after admission.
+     faces: Cell<List<DeclFacts?>>,
+     /// A declaration's doc and annotations, addressed by the same dense
+-    /// slot as `decls`/`faces` — a `@side` partition, so a query can reach
++    /// slot as `faces` — a `@side` partition, so a query can reach
+     /// it without a `@dense` id ever crossing its boundary (avra-8sb5.57.9.7).
+     doc_facts: Cell<SideTable<DocFact>>,
+     /// Settlements restored for declarations whose files were never parsed.
+@@ -455,12 +459,6 @@ export type Decls = {
+     methods: Cell<List<Cell<List<DeclId>>>>,
+     /// TWO LAYERS SHARED — see `children`.
+     impls: Cell<List<Cell<List<DeclId>>>>,
+-    // every impl block under the NAME it targets — filled at mint,
+-    // before any target resolves, so a method table finds its impls
+-    // without walking every declaration in the workspace
+-    // OUTER-TABLE GROWTH, SHARED — see `files` above: `note_impl` runs
+-    // inside `mint`, behind the same captured hooks.
+-    impls_by_name: Cell<Map<string, List<DeclId>>>,
+     ensure: Cell<fn(DeclId) -> void>,
+     // the workspace's held-row hook: fills a held declaration's own
+     // record row before a fact it fills (an impl's target among them)
+@@ -584,7 +582,6 @@ export fn new_decls() -> Decls {
+     let no_stores: List<SyntaxArena?> = []
+     let no_generations: List<List<Generation>> = []
+     let no_origins: List<Origins> = []
+-    let no_decls: List<Decl> = []
+     let no_faces: List<DeclFacts?> = []
+     let no_sigs: List<DeclSig?> = []
+     let no_seat_types: List<List<TypeId>?> = []
+@@ -595,14 +592,12 @@ export fn new_decls() -> Decls {
+     let no_seat_marks: List<List<SeatMark>> = []
+     let no_declared_writes: List<bool> = []
+     let no_decl_ids: List<Cell<SideTable<DeclAt>>> = []
+-    let no_file_decls: List<Cell<List<DeclId>>> = []
+     let no_expansion_voices: List<Cell<List<Diag>>> = []
+     let no_children: List<Cell<List<DeclId>>> = []
+     let no_methods: List<Cell<List<DeclId>>> = []
+     let no_impls: List<Cell<List<DeclId>>> = []
+     let no_written_seats: List<Cell<List<bool>>> = []
+     let empty_consumed: List<List<bool>?> = []
+-    let no_impls_by_name: Map<string, List<DeclId>> = {}
+     let db = new_db()
+     let d = Decls {
+         types: new_type_registry(),
+@@ -626,12 +621,11 @@ export fn new_decls() -> Decls {
+         ensure_package: Cell.new(no_store),
+         scoped: map_cell(),
+         decl_ids: Cell.new(no_decl_ids),
+-        file_decls: Cell.new(no_file_decls),
++        file_owners: list_cell(),
+         generations: Cell.new(no_generations),
+         origins: Cell.new(no_origins),
+         expansion_voices: Cell.new(no_expansion_voices),
+         meta_ids: map_cell(),
+-        decls: Cell.new(no_decls),
+         held: map_cell(),
+         held_items: map_cell(),
+         wire_index: map_cell(),
+@@ -651,7 +645,6 @@ export fn new_decls() -> Decls {
+         children: Cell.new(no_children),
+         methods: Cell.new(no_methods),
+         impls: Cell.new(no_impls),
+-        impls_by_name: Cell.new(no_impls_by_name),
+         ensure: Cell.new(no_ensure),
+         ensure_target: Cell.new(no_ensure),
+         ensure_const: Cell.new(no_const_ensure),
+@@ -731,10 +724,7 @@ impl Decls {
+     /// pay for it twice.
+     @bracket("decls")
+     fn decl(d: DeclId) -> Decl {
+-        let x = match self.decl_cells.get()[d.index] {
+-            r? -> r
+-            null -> self.decl_row_rows.get().row(d.index)!
+-        }
++        let x = self.decl_cells.get()[d.index] ?? self.removed(d)
+         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+         self.rows_read(x.file)
+         x
+@@ -744,35 +734,54 @@ impl Decls {
+     /// must not themselves record an edge), and a whole-program pass
+     /// walking the table by index as it grows.
+     @bracket("decls")
+-    fn raw_decl(d: DeclId) -> Decl {
+-        match self.decl_cells.get()[d.index] {
+-            r? -> r
+-            null -> self.decl_row_rows.get().row(d.index)!
+-        }
++    fn raw_decl(d: DeclId) -> Decl { self.decl_cells.get()[d.index] ?? self.removed(d) }
++
++    /// The row an id names, unrecorded — absent where its file's
++    /// re-admission removed it. A walk by index over `decl_count` reads
++    /// through here.
++    @bracket("decls")
++    fn row_at(at: int) -> Decl? { self.decl_cells.get()[at] }
++
++    /// A removed declaration read by id: the compiler's defect, spoken.
++    @bracket("decls")
++    fn removed(d: DeclId) -> Decl {
++        gone_decl(d)
++        self.decl_cells.get()[d.index]!
+     }
+ 
+-    /// How many declarations are minted, read unrecorded as `file_count` is.
++    /// How many declaration ids are minted, a removed one's tombstone
++    /// among them — the bound a walk by index runs to. Read unrecorded
++    /// as `file_count` is.
+     @bracket("decls")
+-    fn decl_count() -> int { self.decl_row_rows.get().count() }
+-
+-    /// Every declaration, unrecorded, as the dense list `set_decl` keeps in
+-    /// step with the relation — a whole-table scan reads it in place, never a
+-    /// copy of the rows.
+-    fn all_decls() -> List<Decl> { self.decls.get() }
+-
+-    /// A declaration's row rewritten in place: the dense list and the
+-    /// relation together, so
+-    /// a reader through either door sees the same fields. The row's
+-    /// `@local` columns (file, stmt, parent, root, lo, hi) carry no stable
+-    /// hash or index, so a write that only moves them takes `put`'s cheap
+-    /// path — same hash, same keys, the stored value replaced in place.
++    fn decl_count() -> int { self.decl_row_rows.get().next_id() }
++
++    /// Every live declaration in id order, unrecorded: the relation's own
++    /// rows, a removed one never among them.
++    fn all_decls() -> List<Decl> { Decl.all(self.decl_rows.get()) }
++
++    /// A declaration's row rewritten in place, its write its file's run's.
++    /// The row's `@local` columns (file, stmt, parent, root, lo, hi)
++    /// carry no stable hash or index, so a write that only moves them
++    /// takes `put`'s cheap path — same hash, same keys, the stored value
++    /// replaced in place.
+     @bracket("decls")
+     fn set_decl(idx: int, d: Decl) {
+-        self.decls.set_at(idx, d)
+-        self
+-            .decl_row_rows
+-            .get()
+-            .put_in(self.decl_rows.get(), Decl.relation_name(), idx, d, d.stable_hash(), d.index_keys())
++        let rs = self.decl_row_rows.get()
++        let db = self.decl_rows.get()
++        let home? = d.home else {
++            rs.put_in(db, Decl.relation_name(), idx, d, d.stable_hash(), d.index_keys())
++            return
++        }
++        rs
++            .put_owned(
++                db,
++                Decl.relation_name(),
++                idx,
++                d,
++                d.stable_hash(),
++                d.index_keys(),
++                self.file_owners.get()[home.index],
++            )
+     }
+ 
+     /// One audited read, told to the hook — which reads the tables itself, so the
+@@ -1083,6 +1092,9 @@ impl Decls {
+     /// vocabulary the compiler shares with the programs it compiles;
+     /// null when the program does not load the package.
+     ///
++    /// THE NAME'S OWN BUCKET IS READ: every declaration of the name,
++    /// a builtin — no file's, so no package's — never answering.
++    ///
+     /// EVERY MODULE OF THE PACKAGE IS SEARCHED, not its first: a
+     /// package a `use` reaches through ONE submodule (`@std/avrac`'s
+     /// `core`, say) admits every OTHER submodule too, so a name in a
+@@ -1111,25 +1123,12 @@ impl Decls {
+         let key = "${pkg}.${name}"
+         let known: DeclId? = self.meta_ids.get().get(key)
+         if known != null { return known }
+-        let modules = Module.all(self.decl_rows.get())
+-        let ms = [r.id for r in modules if self.package_named(r.name) == pkg]
+-        let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
+-        let found: DeclId? = ds
+-            .find(
+-                (d: DeclId) -> {
+-                    let found_decl = self.decl(d)
+-                    found_decl.exported && found_decl.name == name
+-                },
+-            )
++        let found = [x.id for x in self.named_rows(name) if x.home != null && x.exported && self.package_of(x.id) == pkg]
++            .first()
+         if found != null { self.meta_ids.put(key, found!) }
+         found
+     }
+ 
+-    /// One module's own declarations, across its files.
+-    fn module_decls(m: ModuleId) -> List<DeclId> {
+-        flatten([self.file_decls.get()[f.index].get() for f in self.files_of_module(m)])
+-    }
+-
+     /// Whether a declaration IS `@std/meta`'s export of `name` — by
+     /// DECLARATION, never the word it happens to answer to: the
+     /// package and the export name locate the identity without
+@@ -1643,7 +1642,8 @@ impl Decls {
+         // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
+         // the receivers pass never surveys a held body, so wiping them loses the
+         // writer a caller's retain decision reads. The pass clears what it owns.
+-        for j, x in self.all_decls() {
++        for x in self.all_decls() {
++            let j = x.id.index
+             if self.held.get().get(self.file(x.file).path) == null {
+                 self
+                     .written_seats
+@@ -1681,10 +1681,10 @@ impl Decls {
+     /// reason `clear_written` exempts them: a held fn's union rode its
+     /// interface, never this pass.
+     fn clear_inferred() {
+-        for j, x in self.all_decls() {
++        for x in self.all_decls() {
+             if self.held.get().get(self.file(x.file).path) == null {
+-                self.inferred_errs.keep(j, [])
+-                self.inferred_unresolved.keep(j, false)
++                self.inferred_errs.keep(x.id.index, [])
++                self.inferred_unresolved.keep(x.id.index, false)
+             }
+         }
+     }
+@@ -1947,6 +1947,13 @@ impl Decls {
+ 
+     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
+ 
++    /// Every `extern fn`, in id order, off the externs' bucket.
++    @bracket("decls")
++    fn externs() -> List<Decl> {
++        let rs = self.decl_row_rows.get()
++        [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
++    }
++
+     /// THE ONE READING DOOR for a declaration's OWN `///` doc — a held
+     /// file answers through the same fact `capture_facts` recorded at
+     /// admit. A declaration's doc is its own `///` or nothing; a
+@@ -2047,16 +2054,17 @@ impl Decls {
+     /// impl's methods, a record's defaults.
+     fn children_of(d: DeclId) -> List<DeclId> { self.children.get()[d.index].get() }
+ 
+-    /// An impl block filed under the name it targets.
+-    fn note_impl(name: string, id: DeclId) {
+-        mut under = self.impls_by_name.get().get(name) ?? []
+-        under.push(id)
+-        self.impls_by_name.put(name, under)
+-    }
++    /// Every impl block naming a type by this name, in id order — an impl
++    /// files under the name it targets, so a method table finds its impls
++    /// before any target resolves.
++    fn impls_named(name: string) -> List<DeclId> { [x.id for x in self.named_rows(name) if blocks_impl(x.kind)] }
+ 
+-    /// Every impl block naming a type by this name, in mint order.
+-    fn impls_named(name: string) -> List<DeclId> {
+-        self.impls_by_name.get().get(name) ?? []
++    /// Every declaration of a name, in id order, off the name's bucket,
++    /// unrecorded.
++    @bracket("decls")
++    fn named_rows(name: string) -> List<Decl> {
++        let rs = self.decl_row_rows.get()
++        rs.members(rs.bucket_of_text(name_index, name))
+     }
+ 
+     /// A record field's default, when the field declares one.
+@@ -2186,7 +2194,7 @@ impl Decls {
+     /// enums, named types and builtins, each asked through the hook, so
+     /// a held module answers from its interface.
+     fn implementors_of(tr: DeclId) -> List<DeclId> {
+-        [DeclId { index: j } for j, x in self.decls.get() if implements_kind(x.kind) && self.implements(DeclId { index: j }, tr)]
++        [x.id for x in self.all_decls() if implements_kind(x.kind) && self.implements(x.id, tr)]
+     }
+ 
+     /// Whether a type answers a generic trait at these arguments: a
+@@ -2426,3 +2434,19 @@ fn implements_kind(k: DeclKind) -> bool {
+ fn same_types(a: List<TypeId>, b: List<TypeId>) -> bool {
+     a.length == b.length && [j for j, t in a if !same_type(t, b[j])].is_empty()
+ }
++
++/// Whether a declaration of this kind is an impl block.
++fn blocks_impl(k: DeclKind) -> bool {
++    match k {
++        .Impl -> true,
++        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Main or .Case or .Const or .Collect or .CollectEnum or .Builtin -> false,
++    }
++}
++
++// ── voices ──
++
++fn gone_decl(d: DeclId) {
++    wreck(
++        "declaration ${d.index} was read after its file was admitted again without it — a DeclId lives only as long as the admission that mints it",
++    )
++}
+diff --git a/packages/std-avrac/src/features/decls_mint.av b/packages/std-avrac/src/features/decls_mint.av
+index ec56d32..473d017 100644
+--- a/packages/std-avrac/src/features/decls_mint.av
++++ b/packages/std-avrac/src/features/decls_mint.av
+@@ -28,6 +28,7 @@ use core.{
+ }
+ use diagnostics.{Diag}
+ use features.{generated_key, Decl, DeclAt, no_origins}
++use @std.relation.rows.{dense_key}
+ 
+ /// A `File` row read back as the hand shape every other pass still
+ /// wants — the relation and `FileInfo` name `module` differently, and
+@@ -42,8 +43,7 @@ impl Decls {
+             let id = File.insert(self.decl_rows.get(), path: path, module: m, test: test).id
+             self.stores.push(null)
+             self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
+-            let no_decls: List<DeclId> = []
+-            self.file_decls.push(Cell.new(no_decls))
++            self.file_owners.push(self.decl_rows.get().owner_named("file ${id.index}"))
+             self.generations.push([])
+             self.origins.push(no_origins())
+             let no_voices: List<Diag> = []
+@@ -120,13 +120,16 @@ impl Decls {
+ 
+     /// A file admitted with its parse: which statements declare, and
+     /// every declaration minted — the top-level ones, then each
+-    /// trait's and impl's methods under their owner. Answers the
+-    /// top-level ids, in order.
++    /// trait's and impl's methods under their owner. ONE RUN of the
++    /// file's owner: what it held before and did not mint again is
++    /// removed in the same step. Answers the top-level ids, in order.
+     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
++        let before = self.decls_so_far(f)
++        let owner = self.file_owners.get()[f.index]
++        let _ = self.decl_rows.get().opened_run(owner)
+         self.stores.set_at(f.index, store)
+         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
+         mut out: List<DeclId> = []
+-        mut made: List<DeclId> = []
+         mut seen: List<string> = []
+         let path = self.file(f).path
+         for s in stmts {
+@@ -151,7 +154,6 @@ impl Decls {
+                     )
+                 by_stmt.set(s.index, DeclAt { decl: d })
+                 out.push(d)
+-                made.push(d)
+                 self.orphan(d)
+                 let members = store.member_fns(s)
+                 for m in members {
+@@ -166,11 +168,10 @@ impl Decls {
+                             declared_body(store, m),
+                         )
+                     by_stmt.set(m.index, DeclAt { decl: md })
+-                    made.push(md)
+                 }
+                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
+                 let seats: List<Param> = store.fn_parts(s)?.params ?? []
+-                made = made.concat(self.mint_defaults(key, f, s, fields.concat(seats), name, d))
++                let _ = self.mint_defaults(key, f, s, fields.concat(seats), name, d)
+             }
+             // a top-level `const` is a declaration like a fn: module-wide,
+             // order-free, exported only when it says so.
+@@ -182,29 +183,24 @@ impl Decls {
+                     .mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
+                 by_stmt.set(s.index, DeclAt { decl: d })
+                 out.push(d)
+-                made.push(d)
+                 self.orphan(d)
+             }
+             let sp: SpecParts? = store.spec_parts(s)
+             if sp != null {
+                 let suite = sp!
+-                // LICENSED loops.push_loop: the pass's OUTPUT accumulates — every branch of this walk pushes into the same list
+                 for k, c in suite.cases {
+-                    made
+-                        .push(
+-                            self
+-                                .mint(
+-                                    "${path}::case ${s.index}.${k}",
+-                                    f,
+-                                    s,
+-                                    c.name,
+-                                    DeclKind.Case,
+-                                    false,
+-                                    suite.name,
+-                                    null,
+-                                    false,
+-                                    c.body,
+-                                ),
++                    let _ = self
++                        .mint(
++                            "${path}::case ${s.index}.${k}",
++                            f,
++                            s,
++                            c.name,
++                            DeclKind.Case,
++                            false,
++                            suite.name,
++                            null,
++                            false,
++                            c.body,
+                         )
+                 }
+             }
+@@ -216,18 +212,15 @@ impl Decls {
+                 let block_decl = self
+                     .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+                 by_stmt.set(s.index, DeclAt { decl: block_decl })
+-                made.push(block_decl)
+                 self.orphan(block_decl)
+                 for m in block.fns {
+                     let mkey = member_key(key, store, m, block.fns)
+                     let md = self
+                         .mint_method(mkey, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
+                     by_stmt.set(m.index, DeclAt { decl: md })
+-                    made.push(md)
+                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
+                     let mname = self.decl(md).name
+-                    made = made
+-                        .concat(self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md))
++                    let _ = self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md)
+                 }
+             }
+         }
+@@ -244,7 +237,6 @@ impl Decls {
+                 false,
+                 null,
+             )
+-        made.push(main)
+         self.mains.set_at(f.index, main)
+         // A declaration NESTED in a body is refused by its feature, but
+         // typing still walks it: it gets an identity under a key no
+@@ -269,15 +261,25 @@ impl Decls {
+                         null,
+                     )
+                 by_stmt.set(i, DeclAt { decl: nd })
+-                made.push(nd)
+             }
+         }
+         self.decl_ids.set_at(f.index, Cell.new(by_stmt))
+-        self.file_decls.set_at(f.index, Cell.new(made))
++        self.decl_rows.get().closed_run(owner)
++        self.forget([d for d in before if self.row_at(d.index) == null])
+         self.range_bodies(f, store, main)
+         out
+     }
+ 
++    /// Declarations a re-admission removed, let go by every table that
++    /// files them by hand: the sealers they joined and the caches that
++    /// may name them.
++    fn forget(gone: List<DeclId>) {
++        if gone.is_empty() { return }
++        for d in gone { self.unfaced(d) }
++        self.meta_ids.set({})
++        self.wire_index.set({})
++    }
++
+     /// Every declaration's expression range: each expression belongs
+     /// to the INNERMOST declaration whose span holds it; the rest —
+     /// the run-time statements' — belong to Main.
+@@ -315,16 +317,22 @@ impl Decls {
+         }
+     }
+ 
+-    /// This file's declarations, every kind, in the order admitted:
+-    /// each top-level one with its members, then Main, then the
+-    /// nested ones.
++    /// This file's declarations, every kind, in id order — the order a
++    /// first admission mints them: each top-level one with its members,
++    /// then Main, then the nested ones, then what generation added. A
++    /// re-admission keeps a surviving declaration's id and place.
+     fn decls_of_file(f: FileId) -> List<DeclId> {
+         (self.ensure_file.get())(f)
+-        self.file_decls.get()[f.index].get()
++        self.decls_so_far(f)
+     }
+ 
+-    /// The same, as the table stands — the minter's own read.
+-    fn decls_so_far(f: FileId) -> List<DeclId> { self.file_decls.get()[f.index].get() }
++    /// The same, as the table stands — the minter's own read: the ids the
++    /// file homes, off the relation's own index, no row read.
++    @bracket("decls")
++    fn decls_so_far(f: FileId) -> List<DeclId> {
++        let rs = self.decl_row_rows.get()
++        [DeclId { index: i } for i in rs.ids_in(rs.bucket_of(home_index, dense_key(f.index)))]
++    }
+ 
+     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
+ 
+@@ -333,13 +341,9 @@ impl Decls {
+         self.held_items.get().get(self.file(f).path) ?? []
+     }
+ 
+-    /// A held declaration joins its file: the list once, the main's seat, the
+-    /// items. `file_decls`/`mains` are Cells now — a write to THEM lands in
+-    /// the one shared slot; `held_items` (below) is not one of this slice's
+-    /// fields and still needs the receiver mut.
+-    fn held_joins(f: FileId, d: DeclId, ordinal: int, main: bool, item: bool) {
+-        let mine = self.decls_so_far(f)
+-        if mine.length == ordinal || !mine.any(same_decl(it, d)) { self.file_decls.get()[f.index].push(d) }
++    /// A held declaration joins its file: the main's seat, the items — its
++    /// row files under the file on its own.
++    fn held_joins(f: FileId, d: DeclId, main: bool, item: bool) {
+         if main { self.mains.set_at(f.index, d) }
+         if item { self.remember_held_item(f, d) }
+     }
+@@ -411,25 +415,34 @@ impl Decls {
+     /// so a held declaration captured from a partial store and then corrected
+     /// from its record ends in exactly the buckets its record names.
+     fn face(d: DeclId, f: DeclFacts) {
+-        let old = self.faces.get()[d.index]
+-        for name in old?.mut_seats ?? [] {
+-            self.mut_seat_index.put(name, [x for x in self.mut_seat_sealers(name) if x != d])
+-        }
++        self.unfaced(d)
+         for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
+         self.faces.set_at(d.index, f)
+-        self.filed_under(d, f.word, [a.name for a in f.annotations])
++        self.filed_under(d, f.word, [a.name for a in f.annotations], f.external)
+         mut doc_table = self.doc_facts.get()
+         doc_table.grow_to(d.index + 1)
+         doc_table.set(d.index, DocFact { doc: f.doc, annotations: f.annotations })
+         self.doc_facts.set(doc_table)
+     }
+ 
+-    /// A row's `word` and `marks` rewritten when its facts name others —
+-    /// a row whose collect columns already agree is left as it stands.
+-    fn filed_under(d: DeclId, word: string?, marks: List<string>) {
++    /// A declaration's standing facts leave the seal index.
++    fn unfaced(d: DeclId) {
++        for name in self.faces.get()[d.index]?.mut_seats ?? [] {
++            self.mut_seat_index.put(name, [x for x in self.mut_seat_sealers(name) if x != d])
++        }
++    }
++
++    /// A row's fact columns — `word`, `marks`, `external` — rewritten when
++    /// its facts name others; a row whose columns already agree is left as
++    /// it stands.
++    fn filed_under(d: DeclId, word: string?, marks: List<string>, external: bool) {
+         let row = self.raw_decl(d)
+-        if row.word == word && list_eq(row.marks, marks, (x, y) -> x == y) { return }
+-        self.set_decl(d.index, row with { word: word, marks: marks })
++        if row.word == word &&
++            list_eq(row.marks, marks, (x, y) -> x == y) &&
++            row.external == external {
++            return
++        }
++        self.set_decl(d.index, row with { word: word, marks: marks, external: external })
+     }
+ 
+     /// Whether a declaration's body has no receiver — the fact eight sites used to read
+@@ -550,9 +563,10 @@ impl Decls {
+             word: null,
+             marks: [],
+             key: key,
++            home: homed(kind, f),
++            external: false,
+         }
+         if known == null {
+-            self.decls.push(d)
+             self.sigs.push(null)
+             self.seat_types.push(null)
+             self.bound_types.push(null)
+@@ -571,28 +585,14 @@ impl Decls {
+             let no_is: List<DeclId> = []
+             self.impls.push(Cell.new(no_is))
+             self.faces.push(null)
+-            if kind is .Impl { self.note_impl(name, id) }
+-            let _ = Decl
+-                .insert(
+-                    self.decl_rows.get(),
+-                    file: f,
+-                    stmt: s,
+-                    name: name,
+-                    kind: kind,
+-                    exported: exported,
+-                    owner: owner,
+-                    parent: parent,
+-                    nested: nested,
+-                    root: root,
+-                    lo: 0,
+-                    hi: 0,
+-                    word: null,
+-                    marks: [],
+-                    key: key,
+-                )
++            self.set_decl(id.index, d)
+         } else {
+             let prior = self.raw_decl(id)
+-            self.set_decl(id.index, d with { word: prior.word, marks: prior.marks })
++            self
++                .set_decl(
++                    id.index,
++                    d with { word: prior.word, marks: prior.marks, external: prior.external },
++                )
+         }
+         // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
+         // readers asked the store per pass; they ask this row now, and a held file's row
+@@ -820,16 +820,15 @@ impl Decls {
+         [block_decl].concat(methods)
+     }
+ 
+-    /// A generated declaration joins the file's LIST and its statement
+-    /// table, so `items`, the namespace, resolve and lowering read it
+-    /// as written. The statement table is grown to the arena first —
++    /// A generated declaration joins the file's statement table (its row
++    /// files under the file on its own), so `items`, the namespace,
++    /// resolve and lowering read it as written. The statement table is grown to the arena first —
+     /// `decl_of` reads it by statement, and a miss reads past its end.
+     fn record_generated(f: FileId, made: List<DeclId>) {
+         mut by_stmt = self.decl_ids.get()[f.index].get()
+         by_stmt.grow_to(self.store_of(f).stmts.count())
+         for d in [d for d in made if names_its_stmt(self.decl(d).kind)] { by_stmt.set(self.decl(d).stmt.index, DeclAt { decl: d }) }
+         self.decl_ids.get()[f.index].set(by_stmt)
+-        self.file_decls.get()[f.index].set(self.file_decls.get()[f.index].get().concat(made))
+     }
+ 
+     /// A GENERATED declaration — an annotation's traced twin — minted
+@@ -929,8 +928,8 @@ impl Decls {
+     }
+ 
+     /// One statement reindexed to the declaration that now reads it —
+-    /// `record_generated`'s write, without its `file_decls` append
+-    /// (the declaration already stands there).
++    /// `record_generated`'s write, for one statement whose declaration
++    /// already stands.
+     fn reindex_stmt(f: FileId, s: StmtId, d: DeclId) {
+         mut by_stmt = self.decl_ids.get()[f.index].get()
+         by_stmt.grow_to(self.store_of(f).stmts.count())
+@@ -1016,3 +1015,12 @@ fn member_key(owner_key: string, store: SyntaxArena, m: StmtId, siblings: List<S
+     let key = "${owner_key}#${name}"
+     if siblings.any((s) -> s.index < m.index && store.fn_parts(s)?.name == name) { "${key}#${m.index}" } else { key }
+ }
++
++/// The file a declaration of this kind is homed in: its own, or none
++/// for a builtin, which the language declares and no file admits.
++fn homed(kind: DeclKind, f: FileId) -> FileId? {
++    match kind {
++        .Builtin -> null,
++        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> f,
++    }
++}
+diff --git a/packages/std-relation/src/db.av b/packages/std-relation/src/db.av
+index d4607c7..20b277a 100644
+--- a/packages/std-relation/src/db.av
++++ b/packages/std-relation/src/db.av
+@@ -8,7 +8,10 @@
+ //! with the run, and a rerun sweeps what it did not write again — so a
+ //! keyed rerun upserts and a keyless one replaces its whole set. A query
+ //! never reads a relation it writes, and two queries never own one key.
+-use rows.{Rows, rows, Stamp, unowned}
++//! A NAMED OWNER runs the same way with no frame: a writer outside every
++//! query names its rows' owner itself (`put_owned`), and its run's close
++//! sweeps exactly as a query's does.
++use rows.{Rows, named_rows, Stamp, unowned}
+ use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
+ 
+ extern fn avra_trap(message: string)
+@@ -24,7 +27,7 @@ export type Db = {
+     closed: Cell<bool>,
+     hashes: Cell<List<fn() -> int>>,
+     closers: Cell<List<fn() -> void>>,
+-    sweepers: Cell<List<fn(int, int) -> void>>,
++    sweepers: Cell<List<fn(Db, int, int) -> void>>,
+     hooks: Hooks,
+     durable: Durable,
+     quiet: bool,
+@@ -130,7 +133,7 @@ fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
+     next.set(id + 1)
+     let hashes: Cell<List<fn() -> int>> = Cell.new([])
+     let closers: Cell<List<fn() -> void>> = Cell.new([])
+-    let sweepers: Cell<List<fn(int, int) -> void>> = Cell.new([])
++    let sweepers: Cell<List<fn(Db, int, int) -> void>> = Cell.new([])
+     let cells: Cell<Map<string, int>> = Cell.new({})
+     let runs: Cell<List<int>> = Cell.new([0])
+     let running: Cell<List<Frame>> = Cell.new([])
+@@ -158,7 +161,7 @@ fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
+ impl Db {
+     /// A relation reached here for the first time: its set hash and its
+     /// close, each already bound to this Db.
+-    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(int, int) -> void) {
++    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(Db, int, int) -> void) {
+         self.hashes.push(hash)
+         self.closers.push(close)
+         self.sweepers.push(sweep)
+@@ -184,18 +187,27 @@ impl Db {
+     /// A write into `family`, counted — refused when the running query
+     /// read that relation.
+     fn wrote(family: int) {
+-        self.writes.set(self.writes.get() + 1)
++        self.counted()
+         let top? = self.frame() else { return }
+         if top.read.get().contains(family) { self.refuse(self_read()) }
+         if !top.wrote.get().contains(family) { top.wrote.push(family) }
+     }
+ 
++    /// A write counted: what a kept answer settled at moves on.
++    fn counted() { self.writes.set(self.writes.get() + 1) }
++
+     /// Who a write belongs to: the running query's run, or no one.
+     fn stamp() -> Stamp {
+         let top? = self.frame() else { return unowned }
+         Stamp { owner: top.owner, run: top.run }
+     }
+ 
++    /// A write `owner` makes in the run it has open.
++    fn stamp_of(owner: int) -> Stamp { Stamp { owner: owner, run: self.runs.get()[owner] } }
++
++    /// An owner named by the writer, never a query: its dense cell.
++    fn owner_named(key: string) -> int { self.interned("named:${key}") }
++
+     /// The running query's owner cell, when one runs.
+     fn running_owner() -> int? { self.frame()?.owner }
+ 
+@@ -248,10 +260,23 @@ impl Db {
+         known
+     }
+ 
+-    /// A query cell's run opened: the next run of that owner, in a frame.
+-    fn began(owner: int) {
++    /// The next run of `owner` opened, with no frame: answers the run.
++    fn opened_run(owner: int) -> int {
+         let run = self.runs.get()[owner] + 1
+         self.runs.set_at(owner, run)
++        run
++    }
++
++    /// `owner`'s open run closed: every relation sweeps the rows it did
++    /// not write again in that run.
++    fn closed_run(owner: int) {
++        let run = self.runs.get()[owner]
++        for s in self.sweepers.get() { s(self, owner, run) }
++    }
++
++    /// A query cell's run opened: the next run of that owner, in a frame.
++    fn began(owner: int) {
++        let run = self.opened_run(owner)
+         let wrote: List<int> = []
+         let read: List<int> = []
+         self
+@@ -262,10 +287,9 @@ impl Db {
+     /// The running query's run closed: every relation sweeps the rows
+     /// this owner did not write again. Answers whether the run wrote.
+     fn ended(owner: int) -> bool {
+-        let run = self.runs.get()[owner]
+         let open = self.running.get()
+         self.running.set(open.slice(0, open.length - 1))
+-        for s in self.sweepers.get() { s(owner, run) }
++        self.closed_run(owner)
+         let top? = open.last() else { return false }
+         !top.wrote.get().is_empty()
+     }
+@@ -320,13 +344,13 @@ enum Slot<R> {
+ }
+ 
+ /// One relation's rows under every Db, indexed by the Db's id, each
+-/// opened with the relation's own indexes: how many, and a bit per index
+-/// set where it hashes in order.
+-export type Stores<R> = { slots: Cell<List<Slot<R>>>, indexes: int, ordered: int }
++/// opened with the relation's own name and indexes: how many, and a bit
++/// per index set where it hashes in order.
++export type Stores<R> = { slots: Cell<List<Slot<R>>>, name: string, indexes: int, ordered: int }
+ 
+-export fn stores<R>(indexes: int, ordered: int) -> Stores<R> {
++export fn stores<R>(name: string, indexes: int, ordered: int) -> Stores<R> {
+     let none: List<Slot<R>> = []
+-    Stores { slots: Cell.new(none), indexes: indexes, ordered: ordered }
++    Stores { slots: Cell.new(none), name: name, indexes: indexes, ordered: ordered }
+ }
+ 
+ impl Stores<R> {
+@@ -365,7 +389,7 @@ impl Stores<R> {
+             .joined(
+                 () -> open_hash(slots.get()[id]),
+                 () -> slots.set_at(id, Slot.Closed),
+-                (owner: int, run: int) -> swept(slots.get()[id], owner, run),
++                (on: Db, owner: int, run: int) -> swept(slots.get()[id], on, owner, run),
+             )
+         made
+     }
+@@ -375,7 +399,7 @@ impl Stores<R> {
+         self.fresh()
+     }
+ 
+-    fn fresh() -> Rows<R> { rows([(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
++    fn fresh() -> Rows<R> { named_rows(self.name, [(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
+ }
+ 
+ /// A cell's live hash: cell 0 the relation's set, cell `b + 1` bucket
+@@ -388,8 +412,8 @@ fn cell_hash<R>(s: Slot<R>, cell: int) -> int {
+ }
+ 
+ /// A slot's rows swept of what `owner` did not write in `run`.
+-fn swept<R>(s: Slot<R>, owner: int, run: int) {
+-    match s { .Open(held) -> held.sweep(owner, run), .Unreached or .Closed -> no_word() }
++fn swept<R>(s: Slot<R>, db: Db, owner: int, run: int) {
++    match s { .Open(held) -> held.sweep(db, owner, run), .Unreached or .Closed -> no_word() }
+ }
+ 
+ /// A slot's set hash: its rows', none while unreached or closed.
+diff --git a/packages/std-relation/src/relation.av b/packages/std-relation/src/relation.av
+index 3e23cd5..a211236 100644
+--- a/packages/std-relation/src/relation.av
++++ b/packages/std-relation/src/relation.av
+@@ -33,8 +33,8 @@
+ //!
+ //! Rows only arrive outside a `@query`: a keyed insert replaces the row
+ //! its key names, and a keyless one appends, so key a row you will
+-//! update by hand. Nothing removes a row but closing its Db or a
+-//! `@query`'s own rerun.
++//! update by hand. Nothing removes a row but closing its Db or an
++//! owner's rerun — a `@query`'s, or a named owner's (`Db.owner_named`).
+ //!
+ //! Stands ALONE with `@std/meta` and its own package: the file that
+ //! types this derive must not also carry code the annotated file's
+@@ -578,7 +578,7 @@ fn stores_name(t: Type) -> string { "${snake(t.name)}_stores" }
+ fn stores_decl(t: Type) -> Decls {
+     let base = key_indexes(t)
+     let mask = bits([base + j for j, f in named_lookups(t) if index_with(f, "ordered")])
+-    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${base + named_lookups(t).length}, ${mask}) } }
++    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${literal(t.name)}, ${base + named_lookups(t).length}, ${mask}) } }
+ }
+ 
+ /// `rows_in`: this relation's rows under a Db, opened on the first reach.
+diff --git a/packages/std-relation/src/rows.av b/packages/std-relation/src/rows.av
+index 269e600..e13997a 100644
+--- a/packages/std-relation/src/rows.av
++++ b/packages/std-relation/src/rows.av
+@@ -119,10 +119,12 @@ impl ReadMark {
+ type Index = { texts: Cell<Map<string, int>>, slots: Cell<List<int>>, opened: Cell<List<int>>, ordered: bool }
+ 
+ export type Rows<R> = {
++    name: string,
+     rows: Cell<List<R?>>,
+     hashes: Cell<List<int>>,
+     filed: Cell<List<List<List<IndexKey>>>>,
+     stamps: Cell<List<Stamp>>,
++    stamped: Cell<Map<string, Cell<List<int>>>>,
+     last_runs: Cell<Map<string, List<R>>>,
+     set: Cell<int>,
+     live: Cell<int>,
+@@ -134,18 +136,24 @@ export type Rows<R> = {
+ 
+ /// An empty store with an index per flag, numbered in the order the
+ /// relation marks them, each flag saying whether it hashes in order.
+-export fn rows<R>(ordered: List<bool>) -> Rows<R> {
++export fn rows<R>(ordered: List<bool>) -> Rows<R> { named_rows<R>("", ordered) }
++
++/// `rows`, its refusals speaking the relation's name.
++export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
+     let rs: Cell<List<R?>> = Cell.new([])
+     let hashes: Cell<List<int>> = Cell.new([])
+     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
+     let stamps: Cell<List<Stamp>> = Cell.new([])
++    let stamped: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
+     let last_runs: Cell<Map<string, List<R>>> = Cell.new({})
+     let buckets: Cell<List<Bucket>> = Cell.new([])
+     Rows {
++        name: name,
+         rows: rs,
+         hashes: hashes,
+         filed: filed,
+         stamps: stamps,
++        stamped: stamped,
+         last_runs: last_runs,
+         set: Cell.new(0),
+         live: Cell.new(0),
+@@ -203,6 +211,13 @@ impl Rows<R> {
+         [self.rows.get()[id]! for id in self.buckets.get()[bucket].members.get()]
+     }
+ 
++    /// Every live row's id filed in a bucket, in id order — the bucket's
++    /// own list, no row read; none for -1.
++    fn ids_in(bucket: int) -> List<int> {
++        if bucket < 0 { return [] }
++        self.buckets.get()[bucket].members.get()
++    }
++
+     /// The first row's id in a bucket — a key's one row.
+     fn first_id(bucket: int) -> int? {
+         if bucket < 0 { return null }
+@@ -271,28 +286,79 @@ impl Rows<R> {
+     /// cell some reader already read in this revision is refused, so a
+     /// producer ordered after its readers is heard, never stale.
+     fn put_in(db: Db, relation: string, id: int, row: R, hash: int, keys: List<List<IndexKey>>) {
++        self.put_stamped(db, relation, id, row, hash, keys, db.stamp())
++    }
++
++    /// `put_in`, the row owned by `owner`'s run in progress rather than
++    /// the running query's: a writer outside every query that names its
++    /// rows' owner itself.
++    fn put_owned(
++        db: Db,
++        relation: string,
++        id: int,
++        row: R,
++        hash: int,
++        keys: List<List<IndexKey>>,
++        owner: int,
++    ) {
++        self.put_stamped(db, relation, id, row, hash, keys, db.stamp_of(owner))
++    }
++
++    fn put_stamped(
++        db: Db,
++        relation: string,
++        id: int,
++        row: R,
++        hash: int,
++        keys: List<List<IndexKey>>,
++        stamp: Stamp,
++    ) {
+         let now = db.revision()
+         if now >= 0 { self.late_check(db, relation, id, keys, now) }
+-        let stamp = db.stamp()
+-        if self.row(id) != null && self.stamps.get()[id].owner != stamp.owner { db.refuse(two_owners(relation, id)) }
++        let held = self.row(id) != null
++        let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
++        if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
+         db.wrote(self.family.get())
+         self.put(id, row, hash, keys)
+         self.stamps.set_at(id, stamp)
++        if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).push(id) }
++    }
++
++    /// The ids an owner ever stamped, in stamping order — a row since
++    /// removed or restamped is still listed, and the stamp decides.
++    fn stamped_by(owner: int) -> Cell<List<int>> {
++        let key = "${owner}"
++        let known? = self.stamped.get().get(key) else {
++            let none: List<int> = []
++            let made = Cell.new(none)
++            self.stamped.put(key, made)
++            return made
++        }
++        known
+     }
+ 
+-    /// The rows `owner` did not write again in `run`, removed; what it
+-    /// holds now kept as what `prior` reads in its next run.
+-    fn sweep(owner: int, run: int) {
++    /// The rows `owner` did not write again in `run`, removed — a removal
++    /// is a write, under the same late law — and what it holds now kept
++    /// as what `prior` reads in its next run.
++    fn sweep(db: Db, owner: int, run: int) {
++        let mine? = self.stamped.get().get("${owner}") else { return }
+         let marks = self.stamps.get()
+-        for id, s in marks {
+-            if s.owner == owner && s.run < run { self.remove(id) }
++        let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
++        let gone = [id for id in live if marks[id].run < run]
++        if !gone.is_empty() {
++            let now = db.revision()
++            if now >= 0 { self.late_among(db, self.name, self.filed_buckets(gone), now) }
++            db.counted()
++            for id in gone { self.remove(id) }
+         }
+-        self
+-            .last_runs
+-            .put(
+-                "${owner}",
+-                [r! for id, r in self.rows.get() if r != null && self.stamps.get()[id].owner == owner],
+-            )
++        let kept = [id for id in live if marks[id].run >= run]
++        mine.set(kept)
++        self.last_runs.put("${owner}", [self.row(id)! for id in kept])
++    }
++
++    /// Every bucket the rows at `ids` are filed in.
++    fn filed_buckets(ids: List<int>) -> List<int> {
++        [self.bucket_of(i, k) for id in ids for i, ks in self.filed.get()[id] for k in ks]
+     }
+ 
+     /// The running query's rows as its previous run left them, recording
+@@ -309,7 +375,12 @@ impl Rows<R> {
+     /// moves that a reader saw in revision `now`, else the whole relation.
+     fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>, now: int) {
+         let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
+-        let touched = [self.bucket_of(i, k) for i, ks in before.concat(keys) for k in ks]
++        self
++            .late_among(db, relation, [self.bucket_of(i, k) for i, ks in before.concat(keys) for k in ks], now)
++    }
++
++    /// `late_check` over the buckets a write touches.
++    fn late_among(db: Db, relation: string, touched: List<int>, now: int) {
+         let late? = touched.find(it >= 0 && self.buckets.get()[it].read.revision.get() == now) else {
+             let whole = self.read
+             if whole.revision.get() == now { db.refuse(late_write(relation, "the whole relation", db.reader(whole.reader.get()))) }
+@@ -458,7 +529,7 @@ impl Rows<R> {
+ // ── voices ──
+ 
+ fn late_write(relation: string, cell: string, reader: string) -> string {
+-    "a `${relation}` row was filed into ${cell} after ${reader} read it this revision — a producer runs before its readers"
++    "a `${relation}` write moved ${cell} after ${reader} read it this revision — a producer runs before its readers"
+ }
+ 
+ fn two_owners(relation: string, id: int) -> string {
