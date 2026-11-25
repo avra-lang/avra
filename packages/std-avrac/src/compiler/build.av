@@ -340,22 +340,76 @@ fn host_fns_key(key: string) -> string { node_key(Stored.Unit, ["host-fns", key]
 /// another link, whichever file it read.
 const TOOLS_READ: string = "tools"
 
-/// What a link read, as the reads its answer is kept with — none when the host cannot tell
-/// a tool, which makes nothing a kept binary can be trusted for.
-fn linked_reads(files: List<string>, tools: List<Stamp>) -> List<Reading>? {
-    let tooled? = told(tools) else { return null }
-    [Reading { name: TOOLS_READ, digest: digest_of(tooled) }]
-        .concat([Reading { name: f, digest: linked_now(f, tools) ?? "-" } for f in files])
+/// The name of the read that stands for the link's words as the program spells them: a
+/// `-L` or `-l` word, a raw option, an object's path, with every `${VAR}` filled — a
+/// variable that moved a word moves this, and nothing else records what filled it.
+const WORDS_READ: string = "link words"
+
+/// What the C driver reads from its environment that moves what it links: the options it
+/// is overridden with, the sysroot, the directories it searches and the OS it targets.
+/// Each is a read of the link answer, so a link made under another value is another link.
+const DRIVER_ENV: List<string> = [
+    "CCC_OVERRIDE_OPTIONS",
+    "LIBRARY_PATH",
+    "MACOSX_DEPLOYMENT_TARGET",
+    "SDKROOT",
+]
+
+/// The name of one driver variable's read.
+fn env_read(name: string) -> string { "env ${name}" }
+
+impl Workspace {
+    /// What a link read beyond its files, as the reads its answer is kept with: the tools,
+    /// the words, the driver's environment. None when the host cannot tell a tool, which
+    /// makes nothing a kept binary can be trusted for.
+    fn driver_reads(named: string, tools: Toolchain) -> List<Reading>? {
+        let tooled? = told(tools.tools) else { return null }
+        [
+            Reading { name: TOOLS_READ, digest: digest_of(tooled) },
+            Reading {
+                name: WORDS_READ,
+                digest: digest_of(joined(self.closure_link_words(named, tools.target), "\n")),
+            },
+        ]
+            .concat(
+                [Reading { name: env_read(v), digest: Read.Env(v, self.env(v)).input().digest.key } for v in DRIVER_ENV],
+            )
+    }
+
+    /// What a link read, as the reads its answer is kept with: the driver's, then each file
+    /// it linked beside its sources (the runtime archive, the package objects) by its digest.
+    fn linked_reads(named: string, tools: Toolchain) -> List<Reading>? {
+        let driver? = self.driver_reads(named, tools) else { return null }
+        driver
+            .concat(
+                [Reading { name: f, digest: digest_of_binary(f) ?? "-" } for f in self.linked_files(tools.runtime, tools.target)],
+            )
+    }
 }
 
-/// A link read's digest now: the tools', or the bytes of a file — `-` for one gone, which no
-/// digest equals.
-fn linked_now(name: string, tools: List<Stamp>) -> string? {
-    if name == TOOLS_READ {
-        let tooled? = told(tools) else { return null }
-        return digest_of(tooled)
+impl Workspace {
+    /// THE LINK WORDS OF A PROGRAM'S CLOSURE, read from each root's own manifest: the words
+    /// a native link will carry, asked before the program is analysed, where `link_words`
+    /// over `packages()` would answer empty. A wasm link carries no native words.
+    fn closure_link_words(named: string, target: string) -> List<string> {
+        if target != "" { return [] }
+        let roots = [at[1] for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
+        flatten([self.root_link_words(root) for root in distinct(roots)])
     }
-    digest_of_binary(name) ?? "-"
+
+    /// A root's link words from its manifest read fresh, as `manifest_objects` reads it.
+    fn root_link_words(root: string) -> List<string> {
+        let path = joined_path(root, "avra.toml")
+        if !self.there(path) { return [] }
+        self
+            .manifest_link(read_manifest(new_source_file(path, self.listed_text(path))), root, root == self.root)
+    }
+}
+
+/// A link read's digest now: the driver read of that name, else the bytes of a file — `-`
+/// for one gone, which no digest equals.
+fn linked_now(name: string, driver: List<Reading>) -> string {
+    driver.find(it.name == name)?.digest ?? digest_of_binary(name) ?? "-"
 }
 
 /// The tools as their inputs' digests, one per line — none for no tools,
@@ -459,7 +513,7 @@ impl Workspace {
         BuildError,
     > {
         self.built_for(tools)
-        let kept = self.kept_binary(self.program_key(entry, []), binary, tools)
+        let kept = self.kept_binary(entry, self.program_key(entry, []), binary, tools)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(
             self
@@ -484,12 +538,13 @@ impl Workspace {
 
     /// A binary these exact inputs linked before, placed where a fresh one would
     /// be — with the warnings that build spoke.
-    fn kept_binary(key: string, binary: string, tools: Toolchain) -> BuildOutcome? {
+    fn kept_binary(named: string, key: string, binary: string, tools: Toolchain) -> BuildOutcome? {
         let store = self.opened_store()
         let staged = staged_beside(binary)
         let warnings? = store.get(Stored.Warn, key) else { return null }
+        let driver? = self.driver_reads(named, tools) else { return null }
         let host_fns? = store
-            .get_valid(Stored.Unit, host_fns_key(key), (name: string) -> linked_now(name, tools.tools)) else {
+            .get_valid(Stored.Unit, host_fns_key(key), (name: string) -> linked_now(name, driver)) else {
             return null
         }
         if !store.has(Stored.Bin, key) { return null }
@@ -843,7 +898,7 @@ impl Workspace {
         let fallback = self.fallback_made(d, full, ready, key, binary, tools)
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
         let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
-        let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
+        let reads = self.linked_reads(under.named, tools)
         if reads != null {
             let _ = d
                 .store

@@ -606,6 +606,24 @@ steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1)
 mv $R/lk.rt.away $lk_rt
 case "$out" in *"cache hit"*) fails=$((fails+1)); echo "FAIL  lk: the runtime archive was gone and the kept binary was served" ;; esac
 LK "and back again" hit
+# WHAT THE C DRIVER READS FROM ITS ENVIRONMENT, AND THE WORDS A MANIFEST FILLS FROM IT, ARE READS OF THE LINK:
+# another override or sysroot is another link, and a `${VAR}` in a `[link]` row that fills differently is too.
+export CCC_OVERRIDE_OPTIONS='^-w'
+LK "the driver's override options changed" built; LK "and that value again" hit
+unset CCC_OVERRIDE_OPTIONS
+LK "and unset" built; LK "and nothing touched after it" hit
+export SDKROOT=$R/lk.sdk
+LK "the sysroot changed" built; LK "and that sysroot again" hit
+unset SDKROOT
+LK "and no sysroot" built
+printf '[package]\nname = "rt-lk"\nversion = "0.1.0"\n\n[link]\nsearch = ["${LK_DIR}"]\n' > $R/lk/avra.toml
+LK "a link row names a variable" built; LK "and nothing touched" hit
+export LK_DIR=$R/lk.dir1
+LK "the variable fills a word" built; LK "and the same fill" hit
+export LK_DIR=$R/lk.dir2
+LK "the variable fills another word" built; LK "and that fill again" hit
+unset LK_DIR
+LK "and the variable unset" built
 fi
 
 if section dp; then
