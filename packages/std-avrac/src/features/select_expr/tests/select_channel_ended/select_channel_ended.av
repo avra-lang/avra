@@ -1,0 +1,39 @@
+// proves: a source arm takes each item its supply holds and binds it, a
+// lambda in the arm's body reads that binder, the `.ended` arm is taken
+// once the supply ended, and a `select` with nothing ready rests on the
+// supply until another task posts to it — in both engines
+use @std.task.{open_channel, Sink}
+use @std.time.{ms, sleep}
+
+fn later(up: Sink<int>) -> int {
+    sleep(ms(3))
+    let _ = up.post(9)
+    up.close()
+    0
+}
+
+let ch = open_channel<int>(4)
+let _ = ch.sink.post(3)
+let _ = ch.sink.post(4)
+ch.sink.close()
+let seen = [10, 30, 40]
+mut log = ""
+mut going = true
+while going {
+    going = select {
+        x in ch.source -> {
+            let hit = seen.find((s: int) -> s == x * 10)
+            log = "${log}${hit ?? 0} "
+            true
+        }
+        ch.source.ended -> false
+    }
+}
+let quiet_ch = open_channel<int>(1)
+let w = spawn later(quiet_ch.sink)
+let got = select {
+    x in quiet_ch.source -> x
+    quiet_ch.source.ended -> 0 - 1
+}
+let _ = w.await
+"${log}${got}"

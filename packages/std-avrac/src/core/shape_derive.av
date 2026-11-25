@@ -1,0 +1,348 @@
+//! `@derive(Matchable)` — the structural matcher's per-kind arity
+//! fold (`shallow_*`) and child walk (`kids_*`), read off the node
+//! model exactly as `@derive(Identity)` and `@derive(Children)` are:
+//! identity_derive.av is the MODEL, and core/shape.av is the runtime
+//! `At`/`Shape` this generates against (a trait named `Shape` would
+//! collide with that value type, so the derive wears the matcher's
+//! other name).
+//!
+//! `shallow_*` is IDENTITY'S OWN FOLD with every CHILD's fingerprint
+//! spent as a CONSTANT and every List's LENGTH / every optional's
+//! PRESENCE folded in its place — the arity law: a shape pins the
+//! STRUCTURE a hole list compares positionally, never the CONTENT
+//! underneath it. Every payload Identity does not carry a child id
+//! for folds exactly as Identity folds it — an atom, whole.
+//!
+//! `kids_*` answers every node id a variant carries, in payload
+//! order — the walk a pattern recurses through instead of folding.
+//! A payload type neither registry names is refused at the generated
+//! code (`shallow_part`'s catch-all); `kids`'s catch-all can afford
+//! to stay silent because THAT refusal already closes the hole.
+//!
+//! `tag_*` answers a node's own variant, no payload, as its IDENTITY
+//! (the `fp_str` hash `shallow_*` folds in), read back bare: a pass
+//! keys a bucket by this int instead of matching every node's payload
+//! by hand. It is a key, never an index into a list. It is the SAME exhaustive walk over `t.variants`
+//! as `shallow_*`/`kids_*`, so a variant this derive's owner gains
+//! gains a tag the same build, never a hand-kept mirror to fall
+//! behind it.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Declared,
+    Diagnostic,
+    Code,
+    Arms,
+    Kind,
+    payload_of,
+    holds,
+    name,
+    refuse_as_at,
+    beside,
+    Held,
+}
+use @std.program.names.{text_print_of}
+
+/// The compiler's derive for the structural matcher.
+export trait Matchable {
+    static fn derive(t: MetaType) -> Declared {
+        let problems = collisions(t)
+        if !problems.is_empty() { return Declared { made: [refused_shape(t)], problems: problems } }
+        Declared {
+            made: [
+                beside(
+                    t,
+                    quote {
+                impl SyntaxArena {
+                    fn ${shallow_of(t.name)}(node: ${t}) -> int {
+                        match node { ${[shallow_case(t, v) for v in t.variants]} }
+                    }
+                    fn ${kids_of(t.name)}(node: ${t}) -> List<At> {
+                        match node { ${[kids_case(t, v) for v in t.variants]} }
+                    }
+                    fn ${tag_of(t.name)}(node: ${t}) -> int {
+                        match node { ${[tag_case(t, v) for v in t.variants]} }
+                    }
+                    fn ${ids_of(t.name)}() -> List<int> { ${known_ids(t)} }
+                }
+            },
+                ),
+            ],
+            problems: [],
+        }
+    }
+
+    /// `@local` and `@facet` fields are not part of what a node IS; a
+    /// payload's type otherwise says everything this derive folds.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word, "apart"] }
+}
+
+/// One variant's shallow arm — its IDENTITY pins the kind, never its
+/// position: a shape a compiler bakes names the same variant whatever
+/// order a later compiler declares them in.
+fn shallow_case(t: MetaType, v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${shallow_parted(t, v)} } }
+    quote { .${v}(${binders(v)}) -> ${shallow_parted(t, v)} }
+}
+
+fn shallow_parted(t: MetaType, v: MetaVariant) -> Code {
+    parted_at(t.name, variant_id(t, v), [shallow_part(t, v, f) for f in v.fields if reached(f)])
+}
+
+/// A variant's stable identity: its qualified name, folded — what a
+/// baked shape and a running compiler agree on across a reordering.
+fn variant_id(t: MetaType, v: MetaVariant) -> int { fp_str("${t.name}.${v.name}") }
+
+/// Every variant's identity, as the list a running compiler checks a
+/// baked shape against.
+fn known_ids(t: MetaType) -> Code {
+    concatenated([quote { [${int_lit(variant_id(t, v))}] } for v in t.variants])
+}
+
+/// Each variant that folds to an identity an earlier variant already
+/// holds — two variants no shape could tell apart.
+fn collisions(t: MetaType) -> List<Diagnostic> {
+    let ids = [variant_id(t, v) for v in t.variants]
+    [identity_clash(t, t.variants[ids.index_of(id)], t.variants[i]) for i, id in ids if ids.index_of(id) < i]
+}
+
+/// What a refused type is given: the walk, answering nothing anyone
+/// wrote — the build is already refused, so no caller is blamed for a
+/// method that was never made.
+fn refused_shape(t: MetaType) -> Directive {
+    beside(
+        t,
+        quote {
+            impl SyntaxArena {
+                fn ${shallow_of(t.name)}(_node: ${t}) -> int { 0 }
+                fn ${kids_of(t.name)}(_node: ${t}) -> List<At> { [] }
+                fn ${tag_of(t.name)}(_node: ${t}) -> int { 0 }
+                fn ${ids_of(t.name)}() -> List<int> { [] }
+            }
+        },
+    )
+}
+
+// ── voices ──
+
+fn identity_clash(t: MetaType, first: MetaVariant, second: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "shape.identity_clash",
+        second.at,
+        "`${t.name}.${first.name}` and `${t.name}.${second.name}` fold to one identity — rename one",
+        "give one of the two variants another name",
+    )
+}
+
+/// HOW A PAYLOAD'S TYPE FOLDS SHALLOWLY — Identity's registry
+/// (identity_derive.av's `part`) with every id-bearing row spent as
+/// a constant, a length or a presence flag; every other row is
+/// Identity's OWN fold, unchanged. A type absent here is a defect at
+/// the generated code, exactly as Identity's own registry refuses
+/// one.
+fn shallow_part(t: MetaType, v: MetaVariant, f: Field) -> Code {
+    shallow_through(t, f.kind, name(f.name), marked(v, "apart") != null, [])
+}
+
+/// A payload folded through its TYPE: a row when it has one; else, for
+/// a holder that walks its records apart (`@apart`), the record's OWN
+/// identity; else its declaration, shallowly — a record's fields in
+/// order, an enum's variant by its own name — so a payload type needs
+/// no row of its own. An unreadable one is a defect at the generated
+/// code, naming it.
+fn shallow_through(t: MetaType, k: Kind, e: Code, apart: bool, entered: List<string>) -> Code {
+    let row = shallow_row(k.spelled(), e)
+    if row != null { return row! }
+    if apart { return folded(k, e, leaf_folds(identity_leaf)) }
+    match k {
+        .List(inner) -> quote { fp_list([${shallow_through(t, inner, quote { each }, apart, entered)} for each in ${e}]) },
+        .Opt(inner) -> quote {
+            (if ${e} == null { ${mixed(int_lit(0), [])} } else { ${mixed(int_lit(1), [shallow_through(t, inner, quote { ${e}! }, apart, entered)])} })
+        },
+        .Named(n, _) -> declared_shallow(t, n, e, apart, entered),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> quote { a_payload_type_the_shape_derive_has_no_row_for() },
+    }
+}
+
+/// A record's own identity, for a payload its holder walks apart.
+fn identity_leaf(e: Code) -> Code { quote { ${e}.identity(self) } }
+
+fn declared_shallow(t: MetaType, n: string, e: Code, apart: bool, entered: List<string>) -> Code {
+    let unread = quote { a_payload_type_the_shape_derive_has_no_row_for() }
+    if entered.contains(n) { return unread }
+    let held? = payload_of(t, n) else { return unread }
+    let inside = entered.concat([n])
+    match held {
+        .Record(fields) -> parted(
+            n,
+            [shallow_through(t, f.kind, quote { ${e}.${f.name} }, apart, inside) for f in fields if reached(f)],
+        ),
+        .Enum(variants) -> {
+            let arms = [variant_shallow(t, n, v, apart, inside) for v in variants]
+            quote { (match ${e} { ${arms} }) }
+        },
+    }
+}
+
+fn variant_shallow(t: MetaType, owner: string, v: MetaVariant, apart: bool, entered: List<string>) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${parted_at(owner, fp_str("${owner}.${v.name}"), [])} } }
+    let bound = ["${f.name}_held" for f in v.fields if carried(f)]
+    let parts = [shallow_through(t, f.kind, name("${f.name}_held"), apart, entered) for f in v.fields if reached(f)]
+    quote { .${v}(${bound}) -> ${parted_at(owner, fp_str("${owner}.${v.name}"), parts)} }
+}
+
+/// The rows: the payload types folded by name.
+fn shallow_row(ty: string, b: Code) -> Code? {
+    match ty {
+        "ExprId" or "StmtId" or "PatId" -> quote { 0 },
+        "ExprId?" -> quote { flagged(${b} != null) },
+        "List<ExprId>" or "List<StmtId>" or "List<PatId>" -> quote { ${b}.length },
+        "string" -> quote { fp_str(${b}) },
+        "List<string>" -> quote { fp_list(str_fps(${b})) },
+        "int" -> b,
+        "bool" -> quote { flagged(${b}) },
+        "BinOp" -> quote { fp_binop(${b}) },
+        // Generated code reads a name's print through a free fn: a method would resolve against the
+        // impls the generators of its own file are still making. A name's print is its text's fold.
+        "Scoped" -> quote { text_print_of(${b}.of) },
+        "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
+        "Scoped?" -> quote { if ${b} == null { fp_str("") } else { text_print_of(${b}!.of) } },
+        "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
+        "List<Plain>" -> quote { fp_list(plain_fps(${b})) },
+        "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
+        "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
+        "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
+        "BodyView" -> quote { shallow_view(${b}) },
+        "CollectKind" -> quote { collectkind_fp(${b}) },
+        "CollectScope" -> quote { collectscope_fp(${b}) },
+        "Projection" -> quote { projection_fp(${b}) },
+        _ -> null,
+    }
+}
+
+/// One variant's tag arm — the same IDENTITY `shallow_case` folds,
+/// answered bare instead of mixed into a fingerprint.
+fn tag_case(t: MetaType, v: MetaVariant) -> Arms {
+    let lit = int_lit(variant_id(t, v))
+    if v.fields.is_empty() { return quote { .${v} -> ${lit} } }
+    quote { .${v}(${binders(v)}) -> ${lit} }
+}
+
+/// One variant's kids arm.
+fn kids_case(t: MetaType, v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    let singles = [single_at(f) for f in v.fields if reached(f) && reach_shape(t, v, f) != null]
+    let ats = [c! for c in singles if c != null]
+    if !singles.is_empty() && ats.length == singles.length { return quote { .${v}(${binders(v)}) -> [${..ats}] } }
+    quote { .${v}(${binders(v)}) -> ${concatenated(reach_parts(t, v))} }
+}
+
+/// The one `At` a payload holding a single id reaches; absent for any other payload. A node whose
+/// every walked payload is one names its kids in one list, never a list per payload joined.
+fn single_at(f: Field) -> Code? {
+    match f.kind.spelled() {
+        "ExprId" -> quote { At.Expr(${name(f.name)}) },
+        "StmtId" -> quote { At.Stmt(${name(f.name)}) },
+        "PatId" -> quote { At.Pat(${name(f.name)}) },
+        _ -> null,
+    }
+}
+
+/// The id-bearing payloads' reach, in declaration order — an ATOM
+/// contributes NO element (never an empty-list one): a run of holes
+/// is folded rather than spliced, and a `[]` fed to `.concat` cannot
+/// know its own element type.
+fn reach_parts(t: MetaType, v: MetaVariant) -> List<Code> {
+    let held = [reach_shape(t, v, f) for f in v.fields if reached(f)]
+    [r! for r in held if r != null]
+}
+
+/// HOW A PAYLOAD'S TYPE REACHES ITS `At`s — absence for every ATOM,
+/// which `shallow_part` already folded whole.
+fn reach_shape(t: MetaType, v: MetaVariant, f: Field) -> Code? {
+    kids_through(t, f.kind, name(f.name), marked(v, "apart") != null, [])
+}
+
+/// A payload's `At`s through its TYPE: a row when it has one, else —
+/// unless its holder walks it apart — its own declaration, entered only
+/// when it can hold an id.
+fn kids_through(t: MetaType, k: Kind, e: Code, apart: bool, entered: List<string>) -> Code? {
+    let row = kids_row(k.spelled(), e)
+    if row != null { return row }
+    if apart || !holds(t, k, carries_ids) { return null }
+    match k {
+        .List(inner) -> {
+            let each? = kids_through(t, inner, quote { each }, apart, entered) else { return null }
+            quote { flatten([${each} for each in ${e}]) }
+        },
+        .Opt(inner) -> {
+            let each? = kids_through(t, inner, quote { each }, apart, entered) else { return null }
+            quote { flatten([${each} for each in some_list(${e})]) }
+        },
+        .Named(n, _) -> declared_kids(t, n, e, apart, entered),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
+    }
+}
+
+/// The types an `At` walk stops at.
+fn carries_ids(n: string) -> bool { n == "ExprId" || n == "StmtId" || n == "PatId" }
+
+fn declared_kids(t: MetaType, n: string, e: Code, apart: bool, entered: List<string>) -> Code? {
+    if entered.contains(n) { return quote { a_payload_type_the_shape_derive_has_no_row_for() } }
+    let held? = payload_of(t, n) else { return null }
+    let inside = entered.concat([n])
+    match held {
+        .Record(fields) -> {
+            let parts = [r! for r in [kids_through(t, f.kind, quote { ${e}.${f.name} }, apart, inside) for f in fields if reached(f)] if r != null]
+            if parts.is_empty() { return null }
+            concatenated(parts)
+        },
+        .Enum(variants) -> {
+            let arms = [variant_kids(t, v, apart, inside) for v in variants]
+            quote { (match ${e} { ${arms} }) }
+        },
+    }
+}
+
+fn variant_kids(t: MetaType, v: MetaVariant, apart: bool, entered: List<string>) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    let bound = ["${f.name}_held" for f in v.fields if carried(f)]
+    let parts = [r! for r in [kids_through(t, f.kind, name("${f.name}_held"), apart, entered) for f in v.fields if carried(f)] if r != null]
+    if parts.is_empty() { return quote { .${v}(${bound}) -> [] } }
+    quote { .${v}(${bound}) -> ${concatenated(parts)} }
+}
+
+/// The rows: the payload types reached by name.
+fn kids_row(ty: string, b: Code) -> Code? {
+    match ty {
+        "ExprId" -> quote { [At.Expr(${b})] },
+        "ExprId?" -> quote { [At.Expr(each) for each in some_list(${b})] },
+        "List<ExprId>" -> quote { [At.Expr(each) for each in ${b}] },
+        "StmtId" -> quote { [At.Stmt(${b})] },
+        "List<StmtId>" -> quote { [At.Stmt(each) for each in ${b}] },
+        "PatId" -> quote { [At.Pat(${b})] },
+        "List<PatId>" -> quote { [At.Pat(each) for each in ${b}] },
+        "BodyView" -> quote { kids_view(${b}) },
+        _ -> null,
+    }
+}
+
+/// The three arenas this derive knows, lowercased for the method
+/// names it generates.
+fn kind_of(owner: string) -> string {
+    match owner {
+        "Expr" -> "expr",
+        "Stmt" -> "stmt",
+        "Pat" -> "pat",
+        _ -> "a_type_the_shape_derive_does_not_know",
+    }
+}
+
+fn shallow_of(owner: string) -> string { "shallow_${kind_of(owner)}" }
+fn kids_of(owner: string) -> string { "kids_${kind_of(owner)}" }
+fn tag_of(owner: string) -> string { "tag_${kind_of(owner)}" }
+fn ids_of(owner: string) -> string { "ids_${kind_of(owner)}" }

@@ -1,0 +1,124 @@
+//! The lowering of a `collect`: its own unit builds the list, one record per member, each field what
+//! the projection reads off the member.
+use core.{CollectedRow, CollectedValue, FieldSeat, Literal, Lowering, Reg, SignedType, owned_type}
+
+/// A `collect`'s list, of type `ty`: its projection's records, each filled from one member's `values`
+/// in the order the projection writes `fields`, every field written.
+export fn collected_list(
+    mut cx: Lowering,
+    ty: SignedType,
+    fields: List<string>,
+    rows: List<CollectedRow>,
+) -> Reg {
+    let entry? = ty.listed() else { return cx.missed_as(unlisted()) }
+    let seats? = cx.fields_of(entry) else { return cx.missed_as(unlisted()) }
+    if seats.any((s) -> !fields.contains(s.name)) { return cx.missed_as(defaulted_field()) }
+    mut records: List<Reg> = []
+    for r in rows {
+        mut built: Map<string, Reg> = {}
+        let parts = [collected_field(cx, built, seat.ty, r.values[fields.index_of(seat.name)]) for seat in seats]
+        records.push(cx.record_packed(cx.laid_out(entry), parts))
+    }
+    cx.listed(ty, records, [false for _r in rows])
+}
+
+/// One projected field of a member, in a seat of type `seat`: the member as a fn value where the seat
+/// is a fn's, a const member's value or a type member's `Type`, the text its declaration spells, the numbers its written body answers listed, or the
+/// field of that name its own value holds, its unit called once per member and kept in `built`.
+fn collected_field(
+    mut cx: Lowering,
+    mut built: Map<string, Reg>,
+    seat: SignedType?,
+    v: CollectedValue,
+) -> Reg {
+    match v {
+        .Member(callee) -> {
+            let ty? = seat else { return cx.missed_as(untyped_field()) }
+            if !ty.callable() { return cx.missed_as(crossed_field()) }
+            cx.fn_value_as(ty, callee)
+        },
+        .Valued(value) -> {
+            let ty? = seat else { return cx.missed_as(untyped_field()) }
+            cx.const_read(value, ty)
+        },
+        .Spelled(value) -> cx.constant(value),
+        .Numbers(values) -> {
+            let ty? = seat else { return cx.missed_as(untyped_field()) }
+            cx.listed(ty, [cx.const_int(n) for n in values], [false for _n in values])
+        },
+        .Field(instance, of, name) -> {
+            let fields? = cx.fields_of(of) else { return cx.missed_as(unread_field(name)) }
+            let n? = fields.find_index(it.name == name) else { return cx.missed_as(unread_field(name)) }
+            let laid? = cx.seat_layouts(fields) else { return cx.missed_as(unread_field(name)) }
+            let value = built.get(instance.symbol) ?? cx.call_fn(cx.laid_out(of), instance, [])
+            built.set(instance.symbol, value)
+            cx.field_read(value, of, laid, n)
+        },
+        .Marked(name, args) -> marked_field(cx, seat, name, args),
+    }
+}
+
+/// A member's mark in a seat of type `seat`, a record of its `name` and its `args`, each literal of
+/// the type the seat's list holds, every other field absent where it may be and else its default; one
+/// whose seat is any other isn't lowered yet.
+fn marked_field(mut cx: Lowering, seat: SignedType?, name: string, args: List<Literal>) -> Reg {
+    let ty? = seat else { return cx.missed_as(untyped_field()) }
+    let fields? = cx.fields_of(ty) else { return cx.missed_as(unmarked_field()) }
+    let parts = [mark_part(cx, ty, f, name, args) for f in fields]
+    if parts.any(it == null) { return cx.missed_as(unmarked_field()) }
+    cx.record_packed(cx.laid_out(ty), [p! for p in parts])
+}
+
+/// A mark's argument `a` in a list of `elem`: itself where it is one, its spelling where the list
+/// holds text; absent where it is neither.
+fn mark_arg(a: Literal, elem: SignedType) -> Literal? {
+    when {
+        a.type().spelled() == elem.spelled() -> a
+        elem.spelled() == owned_type("string").spelled() -> spelled_literal(a)
+        _ -> null
+    }
+}
+
+/// One field of the mark's record `record`: its `name` as text, its `args` listed, each the literal of
+/// the type the list holds or its spelling where the list holds text; any other field absent where
+/// its type may be, else its declared default. Absent for a literal that is neither.
+fn mark_part(mut cx: Lowering, record: SignedType, f: FieldSeat, name: string, args: List<Literal>) -> Reg? {
+    let ty? = f.ty else { return null }
+    let text = owned_type("string")
+    if f.name == MARK_NAME { return if ty.spelled() == text.spelled() { cx.const_str(name) } else { null } }
+    if f.name != MARK_ARGS { return if ty.nullable() { cx.hollow_of(ty) } else { cx.field_default(record, f) } }
+    let elem? = ty.listed() else { return null }
+    let read = [mark_arg(a, elem) for a in args]
+    if read.any(it == null) { return null }
+    cx.listed(ty, [cx.constant(a!) for a in read], [false for _a in read])
+}
+
+/// A literal as the text it's written as; absent for a float, whose spelling the runtime owns.
+fn spelled_literal(l: Literal) -> Literal? {
+    match l {
+        .Int(n) -> Literal.Text("${n}"),
+        .Bool(b) -> Literal.Text("${b}"),
+        .Text(s) -> Literal.Text(s),
+        .Float(_) -> null,
+    }
+}
+
+/// The field of a mark's record its name fills.
+const MARK_NAME: string = "name"
+
+/// The field of a mark's record its literals fill.
+const MARK_ARGS: string = "args"
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn unlisted() -> string { "a collect whose type is no list of records" }
+
+fn defaulted_field() -> string { "a collect whose projection leaves a field to its default" }
+
+fn untyped_field() -> string { "a collect field of no type" }
+
+fn crossed_field() -> string { "a collect field that crosses a declaration as `@std/meta` sees it" }
+
+fn unmarked_field() -> string { "a collect field reading a mark into a record whose `name` and `args` hold no mark's" }
+
+fn unread_field(name: string) -> string { "a collect field `${name}` its member's value holds no field of a known layout for" }

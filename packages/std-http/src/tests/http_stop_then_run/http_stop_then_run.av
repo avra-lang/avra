@@ -1,0 +1,41 @@
+// proves: `run` on a stopped server answers 0 at once, on one core or many, and a fresh listener takes connections.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError, connect}
+use @std.time.{secs}
+use tests.support.{up}
+
+fn ran(r: Result<int, NetError>) -> string {
+    match r { .Ok(n) -> "ran ${n}", .Err(e) -> "err ${e.errno} ${e.subject}" }
+}
+
+/// Whether a connection to the port is taken.
+fn asked(port: int) -> string {
+    match connect("127.0.0.1", port, secs(2)) {
+        .Ok(c) -> {
+            let _ = c.close()
+            "connected"
+        },
+        .Err(_) -> "refused",
+    }
+}
+
+fn shown() -> Result<string, NetError> {
+    server app {
+        port: 0
+        get "/" { _req -> text(200, "up") }
+    }
+    let stopped = up(app)?
+    let gone = stopped.listener.port
+    stopped.stop()
+    let one = ran(stopped.run(1))
+    let many = ran(stopped.run(3))
+    let closed = asked(gone)
+    let again = up(app)?
+    let serving = asked(again.listener.port)
+    again.stop()
+    .Ok("${one} | ${many} | ${closed} | ${serving}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

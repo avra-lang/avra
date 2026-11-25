@@ -1,0 +1,100 @@
+// The interprocedural read set, asked of the program layer: whether a fn
+// reaches `state` through any call, in any file of its package, through
+// any cycle — a fixpoint over the declarations' call graph.
+use @std.avrac.testing.{held_at, Judged}
+
+/// The package whose files `files` lay beside its manifest, judged at `/w/src/main.av` or, where
+/// it writes none, its first file.
+fn pure_judged(files: Map<string, string>) -> Judged {
+    mut all = files
+    all.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
+    held_at(all, "/w").judged_at(files.keys()[0])
+}
+
+/// Whether the fn `name` the file at `path` declares reaches any state.
+fn reaches_state(j: Judged, path: string, name: string) -> bool { !j.state_reaches_of(path, name).is_empty() }
+
+const PURE_MAIN: string = "/w/src/main.av"
+
+spec "compiler/pure_decl — the read-reach fixpoint is transitive" {
+    given "a fn reading state, a caller of it, and a pure fn" {
+        then "the caller's answer chains to the callee's" {
+            let j = pure_judged(
+                {
+                    PURE_MAIN: "fn h() -> int {\n    state n: int = 0\n    n\n}\nfn g() -> int { h() }\nfn p() -> int { 1 }\n",
+                },
+            )
+            reaches_state(j, PURE_MAIN, "h") &&
+                reaches_state(j, PURE_MAIN, "g") &&
+                !reaches_state(j, PURE_MAIN, "p")
+        }
+    }
+    given "mutual recursion" {
+        then "the fixpoint settles: a cycle with no state read is pure" {
+            let j = pure_judged({PURE_MAIN: "fn a() -> int { b() }\nfn b() -> int { a() }\n"})
+            !reaches_state(j, PURE_MAIN, "a") && !reaches_state(j, PURE_MAIN, "b")
+        }
+        then "a cycle that reaches a state read is impure" {
+            let j = pure_judged(
+                {
+                    PURE_MAIN: "fn a() -> int { b() }\nfn b() -> int { c() }\nfn c() -> int {\n    state n: int = 0\n    a() + n\n}\n",
+                },
+            )
+            reaches_state(j, PURE_MAIN, "a") &&
+                reaches_state(j, PURE_MAIN, "b") &&
+                reaches_state(j, PURE_MAIN, "c")
+        }
+    }
+    given "an `extern` fn has no body here" {
+        then "it MAY read state — never pure" {
+            reaches_state(
+                pure_judged({PURE_MAIN: "extern fn c_read() -> int\nfn f() -> int { c_read() }\n"}),
+                PURE_MAIN,
+                "f",
+            )
+        }
+    }
+    given "a callee in ANOTHER file of the package" {
+        then "a pure callee folds: the caller is pure" {
+            let j = pure_judged(
+                {
+                    "/w/src/a.av": "fn mk(n: int) -> int { n + 1 }\n",
+                    "/w/src/b.av": "fn f() -> int { mk(1) }\n",
+                },
+            )
+            !reaches_state(j, "/w/src/b.av", "f")
+        }
+        then "a state-reading callee folds: the caller reads state" {
+            let j = pure_judged(
+                {
+                    "/w/src/a.av": "fn g() -> int {\n    state n: int = 0\n    n\n}\n",
+                    "/w/src/b.av": "fn f() -> int { g() }\n",
+                },
+            )
+            reaches_state(j, "/w/src/b.av", "f")
+        }
+    }
+}
+
+spec "compiler/pure_decl — a top-level state is a place the read-reach sees" {
+    given "a fn reading a top-level state, and a caller of it" {
+        then "both reach it, so neither is a pure fn" {
+            let j = pure_judged(
+                {
+                    PURE_MAIN: "state n: int = 0\nfn f() -> int { n }\nfn g() -> int { f() }\nfn p() -> int { 1 }\n",
+                },
+            )
+            reaches_state(j, PURE_MAIN, "f") &&
+                reaches_state(j, PURE_MAIN, "g") &&
+                !reaches_state(j, PURE_MAIN, "p")
+        }
+        then "each reaches exactly that one place, as its declaration's key" {
+            let j = pure_judged(
+                {PURE_MAIN: "state n: int = 0\nfn f() -> int { n }\nfn g() -> int { f() }\n"},
+            )
+            let at_f = j.state_reaches_of(PURE_MAIN, "f")
+            let at_g = j.state_reaches_of(PURE_MAIN, "g")
+            at_f.length == 1 && at_g.length == 1 && at_f[0] == at_g[0] && at_f[0].ends_with("\tn")
+        }
+    }
+}

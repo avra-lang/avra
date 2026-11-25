@@ -1,0 +1,363 @@
+//! The typing rules of the literals, names and operators this feature reads.
+use core.{
+    BinOp,
+    Checking,
+    Uncompared,
+    Offered,
+    compares_by_value,
+    offered,
+    unnamed_shape,
+    Checks,
+    ExprId,
+    PRONOUN,
+    SignedType,
+    Expected,
+    ReadAs,
+    Refused,
+    Seating,
+    TypeHead,
+    op_symbol,
+    owned_type,
+}
+use core.expr.{Binary, Bitnot, FloatLit, Ident, Index, IntLit, Neg, Not, Prop}
+
+impl Checks for IntLit {
+    /// An integer literal is an `int`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { owned_type("int") }
+}
+
+impl Checks for FloatLit {
+    /// A real literal is a `float`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { owned_type("float") }
+}
+
+impl Checks for Ident {
+    /// A name is what it's bound to here: a local, a parameter, or what the program names by it; a
+    /// name that names a type and no value is that type, standing as a value. A name nothing binds
+    /// and the program gives no type is noted as unanswered.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let name = self.name.text()
+        let read = cx.read(e, name)
+        if read != null && cx.extern_read(e, name, read!) { return null }
+        if read != null || cx.local(name) != null { return read }
+        let as_type = cx.type_value(name, cx.home_of(e))
+        if as_type != null { return as_type }
+        cx
+            .unbound_read(e, name, if self.name.spells(PRONOUN) { ReadAs.Pronoun } else { ReadAs.Value })
+        null
+    }
+}
+
+impl Checks for Not {
+    /// `!` takes a `bool` and is one; a value of another type is refused in `!`'s words.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let v? = cx.check(self.value, Expected.Free) else { return owned_type("bool") }
+        if plain_owned(unnamed_shape(cx, v)) == "bool" { return owned_type("bool") }
+        cx
+            .refused
+            .push(
+                Refused {
+                    at: self.value,
+                    want: owned_type("bool"),
+                    found: v,
+                    seat: Seating.Negated,
+                },
+            )
+        null
+    }
+}
+
+impl Checks for Binary {
+    /// `==` and `!=` compare; every other operator needs both its sides of the one type the left side
+    /// decides (`&&` and `||` a `bool`; `+` text where the left is text; arithmetic and an ordered
+    /// comparison a `float` where the left is one, else an `int`; `%` and the bitwise operators an
+    /// `int`), or the name over it both wear. A comparison is a `bool`; any other operation is its
+    /// operands' type. A side of another type is refused in the operator's words.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        match self.op {
+            .Eq or .Ne -> compared(cx, e, self.op == BinOp.Ne, self.left, self.right),
+            .And or .Or or .Lt or .Le or .Gt or .Ge or .Add or .Sub or .Mul or .Div or .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> {
+                let both = operands(cx, self.op, self.left, self.right)
+                if both != null { return if answers_truth(self.op) { owned_type("bool") } else { both!.answer() } }
+                // a side refused: what the operation answers whatever it holds, where both sides are known
+                if cx.type_of(self.left) == null || cx.type_of(self.right) == null { return null }
+                if answers_truth(self.op) { owned_type("bool") } else { refused_answer(cx, self.op, self.left) }
+            },
+        }
+    }
+}
+
+/// What an operation whose right side alone was refused answers: the type its left side is and the
+/// operator needs, which the right side's value leaves known; none where the left is unknown, wears
+/// a name, or is refused itself, so what the operation answers depends on the refused value.
+fn refused_answer(cx: Checking, op: BinOp, left: ExprId) -> SignedType? {
+    let lt? = cx.type_of(left) else { return null }
+    if cx.named_over(lt) != null { return null }
+    let own = plain_owned(unnamed_shape(cx, lt))
+    let want = wanted(op, own)
+    if own != want { return null }
+    owned_type(want)
+}
+
+/// Whether `op` answers a `bool` whatever its operands are.
+fn answers_truth(op: BinOp) -> bool {
+    match op {
+        .And or .Or or .Lt or .Le or .Gt or .Ge or .Eq or .Ne -> true,
+        .Add or .Sub or .Mul or .Div or .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> false,
+    }
+}
+
+/// `==` or `!=`: a `bool`, a variant literal taking its enum from the other side. A name of optional
+/// type beside `null` is a presence test, recorded so the `if` it decides can narrow the name. Both
+/// sides compare by value and are one type, seen through the name both wear; a nullable beside what
+/// it carries compares what it carries. Any other comparison is refused in its own words.
+fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right: ExprId) -> SignedType? {
+    let op = if asks_present { BinOp.Ne } else { BinOp.Eq }
+    let leads = cx.store.variant_literal(left) && !cx.store.variant_literal(right)
+    let seen = if leads { cx.check(right, Expected.Free) } else { null }
+    let l = cx.check(left, beside(cx, left, seen))
+    let r = if leads { seen } else { cx.check(right, beside(cx, right, l)) }
+    if cx.store.null_literal(left) && cx.store.null_literal(right) { return compare_refused(cx, left, op, Uncompared.Absent, null) }
+    let asked: ExprId? = when {
+        cx.store.null_literal(right) -> left
+        cx.store.null_literal(left) -> right
+        _ -> null
+    }
+    if asked != null {
+        return presence_compared(
+            cx,
+            e,
+            op,
+            asks_present,
+            asked!,
+            if asked! == left { l } else { r },
+        )
+    }
+    let lt? = l else { return null }
+    let rt? = r else { return null }
+    if worn(cx, left, lt, right, rt) == null && names_clash(cx, left, right, lt, rt) { return null }
+    let ls = unnamed_shape(cx, lt)
+    let rs = unnamed_shape(cx, rt)
+    let carried = carried_compared(ls, rs)
+    if carried != null {
+        if !compares_by_value(cx, carried!) { return compare_refused(cx, left, op, Uncompared.Uncomparable(offered(cx, ls)), lt) }
+        return owned_type("bool")
+    }
+    if !compares_by_value(cx, ls) { return compare_refused(cx, left, op, Uncompared.Uncomparable(offered(cx, ls)), lt) }
+    if !compares_by_value(cx, rs) { return compare_refused(cx, right, op, Uncompared.Uncomparable(offered(cx, rs)), rt) }
+    if ls.spelled() != rs.spelled() {
+        cx
+            .refused
+            .push(
+                Refused {
+                    at: right,
+                    want: lt,
+                    found: rt,
+                    seat: Seating.Compared(op_symbol(op), Uncompared.Mismatched),
+                },
+            )
+        return null
+    }
+    owned_type("bool")
+}
+
+/// `asked`, of type `subject`, beside `null`: a presence test where it may be absent, recorded for
+/// the `if` it decides when it's a name; refused where it's never absent.
+fn presence_compared(
+    mut cx: Checking,
+    e: ExprId,
+    op: BinOp,
+    asks_present: bool,
+    asked: ExprId,
+    subject: SignedType?,
+) -> SignedType? {
+    let ty? = subject else { return null }
+    if !ty.nullable() { return compare_refused(cx, asked, op, Uncompared.Unasked, ty) }
+    let name = cx.store.ident_name(asked)
+    if name != null { cx.presence_asked(e, name!, asks_present) }
+    owned_type("bool")
+}
+
+/// What a nullable beside what it carries, or beside its own nullable, compares: what it carries;
+/// absent for any other two sides.
+fn carried_compared(ls: SignedType, rs: SignedType) -> SignedType? {
+    if !ls.nullable() && !rs.nullable() { return null }
+    let inner = if ls.nullable() { ls.unwrapped() } else { rs.unwrapped() }
+    let other = if ls.nullable() { rs } else { ls }
+    if other.spelled() == inner.spelled() ||
+        ls.nullable() && rs.nullable() && ls.spelled() == rs.spelled() { inner } else { null }
+}
+
+/// The side `side` of `op`, refused as `how` says, of type `found` where it has one.
+fn compare_refused(mut cx: Checking, side: ExprId, op: BinOp, how: Uncompared, found: SignedType?) -> SignedType? {
+    let ty = found ?? owned_type("void")
+    cx
+        .refused
+        .push(Refused { at: side, want: ty, found: ty, seat: Seating.Compared(op_symbol(op), how) })
+    null
+}
+
+/// What an operand of `==` wants: a variant literal, the other side's type; anything else, nothing.
+fn beside(cx: Checking, operand: ExprId, other: SignedType?) -> Expected {
+    if other != null && cx.store.variant_literal(operand) { Expected.Exactly(other!) } else { Expected.Free }
+}
+
+/// What both operands of an operator are: the plain type of the language's own their shape is, and
+/// the name both wear, a literal beside a name taking it.
+type Operands = { own: string, named: SignedType? }
+
+impl Operands {
+    /// The type an operation over them answering a value of the language's own `own` is: the name
+    /// they wear, else `own`.
+    fn answer() -> SignedType { self.named ?? owned_type(self.own) }
+}
+
+/// What both operands of `op` are, each checked against nothing: the type the left side decides, and
+/// the name they wear. Each side of another type is refused; absent then, where the left side has no
+/// type to decide by, or a name stands beside another or its bare shape.
+fn operands(mut cx: Checking, op: BinOp, left: ExprId, right: ExprId) -> Operands? {
+    let l = cx.check(left, Expected.Free)
+    let r = cx.check(right, Expected.Free)
+    let lt? = l else { return null }
+    let want = wanted(op, plain_owned(unnamed_shape(cx, lt)))
+    let rt? = r else {
+        let _ = judged(cx, op, left, lt, want)
+        return null
+    }
+    let named = worn(cx, left, lt, right, rt)
+    if named == null && names_clash(cx, left, right, lt, rt) { return null }
+    let lok = judged(cx, op, left, lt, want)
+    let rok = judged(cx, op, right, rt, want)
+    if lok && rok { Operands { own: want, named: named } } else { null }
+}
+
+/// The type `op` needs of both its sides, by what the left side's shape is.
+fn wanted(op: BinOp, left: string?) -> string {
+    match op {
+        .And or .Or -> "bool",
+        .Add -> if left == "string" || left == "float" { left! } else { "int" },
+        .Sub or .Mul or .Div or .Lt or .Le or .Gt or .Ge -> if left == "float" { "float" } else { "int" },
+        .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr or .Eq or .Ne -> "int",
+    }
+}
+
+/// Whether the side `side` of `op`, of type `ty`, is the `want` it needs; refused in the operator's
+/// words where it isn't.
+fn judged(mut cx: Checking, op: BinOp, side: ExprId, ty: SignedType, want: string) -> bool { judged_in(cx, op, side, ty, want, -1) }
+
+/// `judged`, the operator standing in the meaning of the sugar at `sugar`, -1 where it's none.
+fn judged_in(mut cx: Checking, op: BinOp, side: ExprId, ty: SignedType, want: string, sugar: int) -> bool {
+    if plain_owned(unnamed_shape(cx, ty)) == want { return true }
+    let seat = Seating.Operand(op_symbol(op), sugar)
+    cx.refused.push(Refused { at: side, want: owned_type(want), found: ty, seat: seat })
+    false
+}
+
+/// Whether sides of `lt` and `rt`, which wear no one name, clash by the named law: a name beside
+/// another name, refused at the right side; a name beside its own bare shape, refused at the shape's side. A name
+/// beside any other type clashes with nothing here, and the operator's own law judges it.
+fn names_clash(mut cx: Checking, left: ExprId, right: ExprId, lt: SignedType, rt: SignedType) -> bool {
+    let ln = cx.named_over(lt)
+    let rn = cx.named_over(rt)
+    if ln != null && rn != null {
+        cx.refused.push(Refused { at: right, want: lt, found: rt, seat: Seating.TwoNames })
+        return true
+    }
+    let shape? = ln ?? rn else { return false }
+    let named = if ln != null { lt } else { rt }
+    let other = if ln != null { rt } else { lt }
+    if unnamed_shape(cx, other).spelled() != unnamed_shape(cx, shape).spelled() { return false }
+    let side = if ln != null { right } else { left }
+    cx.refused.push(Refused { at: side, want: named, found: other, seat: Seating.Shaped })
+    true
+}
+
+/// The name operands of `lt` and `rt` both wear: the one name each is, or a literal beside it; absent
+/// where neither wears one, or they don't agree.
+fn worn(cx: Checking, left: ExprId, lt: SignedType, right: ExprId, rt: SignedType) -> SignedType? {
+    let ln = cx.named_over(lt) != null
+    let rn = cx.named_over(rt) != null
+    when {
+        ln && rn -> if lt.spelled() == rt.spelled() { lt } else { null }
+        ln && cx.store.expr(right).literal_form() -> lt
+        rn && cx.store.expr(left).literal_form() -> rt
+        _ -> null
+    }
+}
+
+/// The name of a type the language owns with nothing applied, nothing optional; absent otherwise.
+fn plain_owned(ty: SignedType?) -> string? {
+    let t? = ty else { return null }
+    if t.nullable() || t.dynamic || !t.args.is_empty() { return null }
+    match t.head {
+        .Owned(name) -> name,
+        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
+    }
+}
+
+impl Checks for Prop {
+    /// A field read is the field's type, read off the subject's; or the property the subject's type
+    /// has.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject? = cx.check(self.subject, Expected.Free) else { return null }
+        let described = subject.described()
+        if described != null { return cx.variant_built(e, described!, self.name.of, [], false, expected) }
+        if cx.guarantee_read(e, subject, self.name.of) { return null }
+        cx.member_read(subject, self.name.of)
+    }
+}
+
+/// Whether a value of `subject` is known to be no list, which no index reads.
+fn unindexed(subject: SignedType?) -> bool {
+    let s? = subject else { return false }
+    s.listed() == null && !s.generic() && !s.inferred()
+}
+
+impl Checks for Index {
+    /// `xs[i]` is the list's element, `i` an `int`; an index into what is no list is judged by that
+    /// alone.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.seen(cx.check(self.subject, Expected.Free))
+        let _ = if unindexed(subject) { cx.check(self.index, Expected.Free) } else { cx.check_seated(self.index, owned_type("int"), Seating.Index) }
+        subject?.listed()
+    }
+}
+
+impl Checks for Trailed {
+    /// `subject { … }` is the call its subject makes taking the blocks as its last arguments, checked
+    /// in its place.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let call? = cx.store.called_with(self.subject, self.blocks) else { return cx.children_checked(e) }
+        call.checked(cx, e, expected)
+    }
+}
+
+impl Checks for BlockLambda {
+    /// A block that names no seat and whose body the pronoun rides takes one, `it`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let pronouned = self.seats.is_empty() && cx.store.pronoun_rides(self.body)
+        if cx.offer_refused(e, self.seats, expected) { return null }
+        cx
+            .lambda_checked(if pronouned { [cx.store.pronoun_seat()] } else { self.seats }, self.body, expected)
+    }
+}
+
+impl Checks for Neg {
+    /// `-v` is `v`'s number: what it means, `0 - v`, refusing in `-`'s words a value that is none.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let v? = cx.check(self.value, Expected.Free) else { return null }
+        let word = plain_owned(unnamed_shape(cx, v))
+        if word == "int" || word == "float" { return v }
+        let _ = judged_in(cx, BinOp.Sub, self.value, v, "int", e.index)
+        null
+    }
+}
+
+impl Checks for Bitnot {
+    /// `~v` is an `int`: what it means, `v ^ -1`, refusing in `^`'s words a value that is none.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let v? = cx.check(self.value, Expected.Free) else { return owned_type("int") }
+        let _ = judged_in(cx, BinOp.BitXor, self.value, v, "int", e.index)
+        owned_type("int")
+    }
+}

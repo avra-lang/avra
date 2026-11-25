@@ -1,0 +1,216 @@
+//! The human projection of Lowered IR (P7): brackets as braces, one
+//! instruction per line, registers by mint order. What `avra ir`
+//! prints and the golden tests pin.
+use core.{
+    quoted_text,
+    jump_word,
+    Ins,
+    Reg,
+    Level,
+    joined,
+    flatten,
+    filled,
+    op_symbol,
+    un_symbol,
+    flag_word,
+    Static,
+    StaticBox,
+    Slot,
+    Layout,
+}
+use compiler.lower.{Body, Lowered}
+use compiler.lower.{Body, Lowered}
+
+export fn render_ir(l: Lowered) -> string {
+    listed(
+        l,
+        (b) -> if typed_in(l, b) { "(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}" } else { laid_signature(b) },
+    )
+}
+
+/// Whether the program's registry holds every type `b`'s signature names: a body that carries
+/// layouts alone names none it holds, and is signed by its layouts.
+fn typed_in(l: Lowered, b: Body) -> bool {
+    let held = l.types.shapes.get().length
+    b.params.all(it.index < held) && b.ret.index < held
+}
+
+/// A body's seats and answer by what they are in registers.
+fn laid_signature(b: Body) -> string {
+    "(${joined(["r${j}: ${s.spelled()}" for j, s in b.seats], ", ")}) -> ${(b.answer ?? Layout.Void).spelled()}"
+}
+
+/// A program's IR as text where its bodies carry layouts and no type: each fn's seats and answer
+/// by what they are in registers.
+export fn render_laid(l: Lowered) -> string {
+    listed(l, laid_signature)
+}
+
+/// The listing: each fn under its signature as `signed` writes it, the statics, then the entry.
+fn listed(l: Lowered, signed: fn(Body) -> string) -> string {
+    joined(
+        flatten(
+            [["fn ${b.name}${signed(b)}"].concat(body_lines(b.ins)).concat([""]) for b in l.fns],
+        )
+            .concat(flatten([static_block(s) for s in l.statics]))
+            .concat(body_lines(l.entry.ins)),
+        "\n",
+    )
+}
+
+/// One static as its lines: each box by index, the root last.
+export fn static_block(s: Static) -> List<string> {
+    ["static ${s.name} {"]
+        .concat([line(1, "${j}: ${box_text(b)}") for j, b in s.boxes])
+        .concat(["}", ""])
+}
+
+fn box_text(b: StaticBox) -> string {
+    match b {
+        .Slots(cells) -> "[${joined([slot_text(c) for c in cells], ", ")}]",
+        .Octets(b) -> "octets(${b.length})",
+        .Table(keys, values) -> "{${joined(["${quoted_text(k)}: ${slot_text(values[j])}" for j, k in keys], ", ")}}",
+    }
+}
+
+fn slot_text(c: Slot) -> string {
+    match c {
+        .Int(n) -> "${n}",
+        .Float(bits) -> avra_float_text_bits(bits),
+        .Bool(b) -> if b { "true" } else { "false" },
+        .Text(s) -> quoted_text(s),
+        .Box(at) -> "@${at}",
+        .Null -> "null",
+        .Absent -> "absent",
+        .Code(sym) -> "code(${sym})",
+    }
+}
+
+/// A fn's params as registers with their type names.
+fn param_list(l: Lowered, b: Body) -> string {
+    joined(["r${j}: ${l.types.name_of(pt)}" for j, pt in b.params], ", ")
+}
+
+/// Instructions as lines, one each, a region's and a scope's brackets as braces.
+export fn body_lines(ins: List<Ins>) -> List<string> {
+    mut lines: List<string> = []
+    mut depth = 0
+    // Which region each open bracket is — a switch's arms read as
+    // arms, an if's as else.
+    mut switched: List<bool> = []
+    for i in ins {
+        match i {
+            .ScopeEnter(tier) -> {
+                lines.push(line(depth, "scope ${tier_word(tier)} {"))
+                depth = depth + 1
+            },
+            .Cleanup(id) -> {
+                lines.push(line(depth, "cleanup ${id} {"))
+                depth = depth + 1
+            },
+            .ScopeExit(gives) -> {
+                if gives != null { lines.push(yield_line(depth, gives!)) }
+                depth = depth - 1
+                lines.push(line(depth, "}"))
+            },
+            .IfStart(c) -> {
+                lines.push(line(depth, "if r${c.index} {"))
+                switched.push(false)
+                depth = depth + 1
+            },
+            .SwitchStart(sel, cases) -> {
+                lines.push(line(depth, "switch r${sel.index} over [${int_list(cases)}] {"))
+                // LICENSED compiler.bracket_ritual: a region STACK across arms, not a bracket body
+                switched.push(true)
+                depth = depth + 1
+            },
+            .ArmEnd(gives) -> {
+                lines.push(yield_line(depth, gives))
+                depth = depth - 1
+                let word = if switched.last() ?? false { "arm" } else { "else" }
+                lines.push(line(depth, "} ${word} {"))
+                depth = depth + 1
+            },
+            .RegionEnd(dst, gives) -> {
+                lines.push(yield_line(depth, gives))
+                depth = depth - 1
+                // a region's end with no opener among the lines closes none
+                if !switched.is_empty() { let _ = switched.pop() }
+                lines.push(line(depth, "} -> r${dst.index}"))
+            },
+            .ConstInt(d, v) -> lines.push(line(depth, "r${d.index} = int ${v}")),
+            .ConstFloat(d, bits) -> lines.push(line(depth, "r${d.index} = float ${avra_float_text_bits(bits)}")),
+            .ConstStr(d, s) -> lines.push(line(depth, "r${d.index} = str ${quoted_text(s)}")),
+            .ConstBool(d, v) -> {
+                let word = if v { "true" } else { "false" }
+                lines.push(line(depth, "r${d.index} = bool ${word}"))
+            },
+            .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_symbol(op)} r${b.index}")),
+            .Un(d, op, src) -> lines.push(line(depth, "r${d.index} = ${un_symbol(op)}r${src.index}")),
+            .CallRt(d, callee, args) -> lines.push(call_line(depth, d, callee, args)),
+            .Pack(d, elems) -> lines.push(line(depth, "r${d.index} = pack ${reg_list(elems)}")),
+            .Extract(d, src, at) -> lines.push(line(depth, "r${d.index} = r${src.index}.${at}")),
+            .CallRtVoid(callee, args) -> lines.push(line(depth, "call ${callee}(${reg_list(args)})")),
+            .Call(d, callee, args) -> lines.push(call_line(depth, d, callee, args)),
+            .FnAddr(d, sym) -> lines.push(line(depth, "r${d.index} = addr ${sym}")),
+            .StaticAddr(d, sym) -> lines.push(line(depth, "r${d.index} = static ${sym}")),
+            .OnceRead(d, sym) -> lines.push(line(depth, "r${d.index} = once ${sym}")),
+            .FlagRead(d, flag) -> lines.push(line(depth, "r${d.index} = flag ${flag_word(flag)}")),
+            .OnceCommit(sym, value) -> lines.push(line(depth, "once ${sym} <- r${value.index}")),
+            .CallPtr(d, f, args) -> lines.push(line(depth, "r${d.index} = callptr r${f.index}(${reg_list(args)})")),
+            .Alloca(d) -> lines.push(line(depth, "r${d.index} = slot")),
+            .Load(d, slot) -> lines.push(line(depth, "r${d.index} = load r${slot.index}")),
+            .Store(slot, src) -> lines.push(line(depth, "store r${slot.index} <- r${src.index}")),
+            .LoopStart -> {
+                lines.push(line(depth, "loop {"))
+                depth = depth + 1
+            },
+            .LoopCond(c) -> lines.push(line(depth, "while r${c.index}")),
+            .LoopEnd -> {
+                depth = depth - 1
+                lines.push(line(depth, "}"))
+            },
+            .LoopJump(outward, again) -> lines.push(line(depth, "${jump_word(again)} ${outward}")),
+            .Release(rs) -> {
+                // LICENSED loops.push_loop: the text grows in place, where a concat copies it whole per release
+                for r in rs { lines.push(line(depth, "release r${r.index}")) }
+            },
+            .Retain(r) -> lines.push(line(depth, "retain r${r.index}")),
+            .RetVal(r) -> lines.push(line(depth, "ret r${r.index}")),
+            .FnExit(r) -> lines.push(line(depth, "return r${r.index}")),
+            .Ret(code) -> lines.push(line(depth, "ret ${code}")),
+        }
+    }
+    lines
+}
+
+/// An arm's yield — every region arm ends with one.
+fn yield_line(depth: int, gives: Reg) -> string {
+    line(depth, "yield r${gives.index}")
+}
+
+/// A value-producing call — the runtime's and Avra's read alike.
+fn call_line(depth: int, d: Reg, callee: string, args: List<Reg>) -> string {
+    line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")
+}
+
+fn line(depth: int, text: string) -> string {
+    "${joined(filled(depth, "  "), "")}${text}"
+}
+
+fn tier_word(tier: Level) -> string {
+    match tier {
+        .Application -> "application",
+        .Systems -> "systems",
+        .Bare -> "bare",
+        .Hardware -> "hardware",
+    }
+}
+
+fn int_list(xs: List<int>) -> string {
+    joined(["${x}" for x in xs], ", ")
+}
+
+fn reg_list(args: List<Reg>) -> string {
+    joined(["r${a.index}" for a in args], ", ")
+}

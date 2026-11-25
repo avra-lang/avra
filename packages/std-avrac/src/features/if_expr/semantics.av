@@ -1,0 +1,64 @@
+//! The if-expression's NodeSemantics: dispatch only. The typing rule
+//! lives in check.av; lowering — the MEANING — in lower.av.
+use core.{
+    ExprId,
+    TypeId,
+    Reg,
+    Kids,
+    Heirs,
+    some_list,
+    Minting,
+    minting,
+    SyntaxArena,
+    Span,
+    Expr,
+    Arm,
+    Pat,
+}
+use features.{ResolveCx, TypeCx, LowerCx, MeanCx, Meaning, nothing}
+
+use core.expr.{If}
+
+impl Kids for If {
+    /// The BRANCHES are hidden: each types under the narrow a
+    /// presence-test condition may prove, so the rule walks them.
+    fn kids() -> List<ExprId> { [self.cond] }
+}
+impl Heirs for If {
+    fn heirs() -> List<ExprId> { [self.on_true].concat(some_list(self.on_false)) }
+}
+
+impl Meaning for If {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        if cx.view.store.meant(e) != null { return nothing() }
+        cx.arm_scope([], self.on_true)
+        if self.on_false != null { cx.arm_scope([], self.on_false!) }
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        if cx.view.store.meant(e) != null { return cx.meant_type(e) }
+        if_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        if cx.view.store.meant(e) != null { return cx.meant_reg(e) }
+        if_lower(cx, e)
+    }
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        .Ok(minting(payload_match(cx.store, self.cond, self.on_true, self.on_false, cx.span)))
+    }
+}
+
+/// `if x is .V(p) { A } else { B }` is `match x { .V(p) -> A, _ -> B }` — the
+/// binding law's one meaning, spelled by the machinery that already carries
+/// it (spec 10.4: bind-fresh, scoped to the arm). An elseless one answers
+/// nothing. Empty for an `if` whose condition binds nothing.
+fn payload_match(store: SyntaxArena, cond: ExprId, taken: ExprId, other: ExprId?, span: Span?) -> List<
+    ExprId,
+> {
+    let payload? = store.is_payload(cond) else { return [] }
+    let rest = store.alloc_pat(Pat.Wild, span)
+    let arms = [
+        Arm { pats: [payload.pat], guard: null, value: taken },
+        Arm { pats: [rest], guard: null, value: other ?? store.block_over([], span) },
+    ]
+    [store.alloc_expr(Expr.Match(store.is_subject(cond) ?? cond, arms), span)]
+}

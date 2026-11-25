@@ -1,0 +1,144 @@
+//! WHERE A RE-EXPORT PUTS NOTHING, OR PUTS A NAME TWICE, ON ITS MODULE'S SURFACE: an `export use`
+//! names a declaration some module behind it writes, and a module's surface holds each name once.
+//! Read off the item's `use` lines and the surface its module's files make.
+use core.{Span, some_list}
+use compiler.{cycle_reexported, surface_taken, unreached_reexport}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// An `export use` line of a written item: where it stands, and its line.
+type Reexport = { at: Span?, line: UseLine }
+
+/// Every `use` line the written item `at` of `file` writes, re-exporting or not.
+fn uses_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Reexport> {
+    if !item_held(engine, file, at) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [Reexport {
+        at: item.store.stmt_span(s),
+        line: UseLine {
+            path: u!.path,
+            items: u!.items,
+            aliases: u!.aliases,
+            exported: item.store.is_exported(s),
+        },
+    } for s in item.stmts for u in [item.store.use_parts(s)] if u != null]
+}
+
+/// Every `export use` line the written item `at` of `file` writes: no item read back where its file's
+/// words (`file_words`, read once a file) hold no `export use` at all.
+fn reexports_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Reexport> {
+    if !file_words(engine, file).uses.any(it.exported) { return [] }
+    uses_in(engine, file, at).filter(it.line.exported)
+}
+
+/// Every item a `use` of the written item `at` of `file` reads through a re-export that no
+/// declaration stands behind — its own `export use`, or a module's that re-exports it — beside the
+/// module it names; an `export use` of a name its module declares privately is the export law's.
+fn unreached(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [Found { at: r.at, args: [r.line.path.join("."), item] } for r in uses_in(engine, file, at) for m in some_list(imported_module(engine, file, r.line)) for item in r.line.items if (r.line.exported || reexports_name(engine, m, item)) &&
+        surfaced(engine, m, item, []).is_empty() &&
+        !(r.line.exported &&
+            declarations_of(engine, m.package, m.local, m.as_root, item).any(!it.exported))]
+}
+
+/// Whether `name`, read in `file`, is bound by a `use` line through a re-export no declaration
+/// stands behind: the re-export's law speaks for it, and no read of it is another refusal.
+export fn reexport_unreached_read(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    file_words(engine, file)
+        .uses
+        .any(
+            (u) -> (0..u.items.length)
+                .any((j: int) -> u.bound_as(j) == name && dead_reexport(engine, file, u, u.items[j])),
+        )
+}
+
+/// Whether the `use` line `u` of `file` reads `item` through a re-export with nothing behind it.
+fn dead_reexport(engine: QueryEngine, file: SourceFileAddress, u: UseLine, item: string) -> bool {
+    let m? = imported_module(engine, file, u) else { return false }
+    reexports_name(engine, m, item) && surfaced(engine, m, item, []).is_empty()
+}
+
+/// Every name an `export use` of the written item `at` of `file` re-exports that its module's
+/// surface already holds by an earlier declaration or re-export. A name the module refuses as
+/// declared twice is that refusal's: a re-export meeting it is no second finding.
+fn taken_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    let mine = reexports_in(engine, file, at)
+    if mine.is_empty() { return [] }
+    let home = module_files(engine, file.package_name, module_segments(file), true)
+    let surface = module_surface(engine, home)
+    let twice = [c.lost.name for c in module_kept(engine, file.package_name, module_segments(file), true).clashes if home.any(same_file(it, c.lost.file))]
+    [Found { at: r.at, args: [name] } for r in mine for m in some_list(imported_module(engine, file, r.line)) for j, item in r.line.items for name in [r.line.bound_as(j)] if !twice.contains(name) for d in surfaced(engine, m, item, []).take(1) if held_before(surface, name, d)]
+}
+
+/// Whether the surface holds `name` for an exported declaration other than `d` before it holds it
+/// for `d`; a sibling's private declaration of it is the import law's.
+fn held_before(surface: List<SurfaceName>, name: string, d: DeclaredName) -> bool {
+    let mine? = surface.find_index(it.name == name && it.decl.is(d)) else { return false }
+    surface.take(mine).any(it.name == name && it.decl.exported && !it.decl.is(d))
+}
+
+/// Every item an `export use` of the written item `view` re-exports from another package that
+/// already uses this one, through its own `use` lines: one a declaration of that package stands
+/// behind, the other laws' words said first, as the old path's are.
+fn cycles_closed(view: ItemView) -> List<Found> {
+    let file = view.file
+    let home = file.package_name
+    // ONLY THE TOOLCHAIN'S STD CLOSES ONE: a package another reaches through `use` lines is one its
+    // manifest names, so a cycle through rows is the manifests' door's refusal, said before any law
+    // runs; std packages reach each other with no row, and a std package never uses another's
+    if !home.starts_with(STD) { return [] }
+    [Found { at: r.at, args: [home, m.package] } for r in reexports_held(view) for m in some_list(imported_module(view.engine, file, r.line)) if m.package != home &&
+        m.package.starts_with(STD) &&
+        package_uses_reached(view.engine, m.package).contains(home) for item in r.line.items if !surfaced(view.engine, m, item, []).is_empty()]
+}
+
+/// Every `export use` line the written item `view` writes, read off the item in hand: an item
+/// writing none reads nothing more.
+fn reexports_held(view: ItemView) -> List<Reexport> {
+    let store = view.item.store
+    if !store.refusals().is_empty() { return [] }
+    [Reexport {
+        at: store.stmt_span(s),
+        line: UseLine { path: u!.path, items: u!.items, aliases: u!.aliases, exported: true },
+    } for s in view.item.stmts if store.is_exported(s) for u in [store.use_parts(s)] if u != null]
+}
+
+/// a re-export never closes a package cycle
+export law reexport_acyclic {
+    kind: "resolve.reexport_cycle"
+    reads_view: cycles_closed
+    voice: cycle_words
+    witness: "export use @std.time.{ms}\n0\n"
+    doc: "fires only where two packages reach each other through `use` lines with no manifest edge between them — std packages under a std of their own: its witness is the registry's `reexport_cycle_files` (compiler/dev/witnesses.av), held in compiler/tests/workspace_test; a lone witness package beside the toolchain's own std closes no cycle"
+}
+
+/// a re-export names a declaration that stands behind it
+export law reexport_reached {
+    kind: "resolve.reexport_unreached"
+    reads: unreached
+    voice: unreached_words
+    witness: "use a.{x}\nx\n"
+    witness_files: {"src/a.av": "export use b.{x}\n", "src/b.av": "export use a.{x}\n"}
+}
+
+/// a module's surface holds each name once
+export law reexport_once {
+    kind: "resolve.reexport_twice"
+    reads: taken_twice
+    voice: twice_words
+    witness: "use facade.{f}\nf()\n"
+    witness_files: {
+        "src/util/u.av": "export fn f() -> int { 1 }\n",
+        "src/other/o.av": "export fn f() -> int { 2 }\n",
+        "src/facade/f.av": "export use util.{f}\nexport use other.{f}\n",
+    }
+}
+
+fn unreached_words(a: List<string>) -> Voice { unreached_reexport(a[0], a[1]) }
+
+fn twice_words(a: List<string>) -> Voice { surface_taken(a[0]) }
+
+fn cycle_words(a: List<string>) -> Voice { cycle_reexported(a[0], a[1]) }

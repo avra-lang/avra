@@ -1,0 +1,45 @@
+//! `avra build` — compile a program to a native binary: the cached
+//! module when these inputs have been built before, else the emitted
+//! `.ll` linked with Avra's runtime by clang.
+use @std.cli.{CliResult, Runnable, command, option, flag}
+
+type BuildCmd = {}
+
+impl Runnable for BuildCmd {
+    fn run(args: CliResult) -> int {
+        if args.has_flag("passes_shown") {
+            ledger_asked()
+                .set(if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table })
+        }
+        cached_build(args)
+    }
+}
+
+export command build {
+    description: "Compile a program to a native binary: a dev build, unoptimised and linked in layers, unless --release"
+    flags: [time, passes_shown, passes_rows, release, wasm_reactor, wasm_debug, no_wasm_fallback]
+    options: [target]
+    args: [file]
+    run: BuildCmd {}
+}
+
+export flag release {
+    description: "build the optimised binary (`-O1`, one static binary) instead of the dev build"
+}
+
+export option target {
+    description: "compile for a target triple — `wasm` writes a .wasm"
+}
+
+export flag wasm_reactor {
+    description: "link a wasm module as a reactor: no `main`, the host calls `avra_main` and the program's exported fns"
+    aliases: ["--wasm-reactor"]
+}
+
+export flag no_wasm_fallback {
+    description: "build no asyncified fallback beside a wasm module that runs tasks (it is built by default, for a host that cannot suspend a stack)"
+}
+
+export flag wasm_debug {
+    description: "keep DWARF and the name section in a wasm link (they are stripped by default)"
+}

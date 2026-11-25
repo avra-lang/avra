@@ -1,0 +1,218 @@
+//! `avra fmt <file>` — the file as canonical Avra: SAID by default,
+//! or WRITTEN with `--write`, gated on the LOSSLESS RECEIPT
+//! (compiler/format/receipt.av, `file_write_checked`):
+//! the same significant tokens, remarks and doc groups the input
+//! carried, in order. A rewrite the receipt cannot confirm is
+//! refused, and nothing on disk moves.
+//!
+//! AND IDEMPOTENCE DOES NOT PROVE LOSSLESSNESS — measured, not
+//! argued. `fmt(fmt(x)) == fmt(x)` was GREEN while every plain
+//! comment was being deleted, because the second pass had no
+//! comments left to lose. `--check` is the tree-wide receipt:
+//! `fmt(x) == x` for an already-canonical file, byte-exact.
+//!
+//! IT PARSES AND DOES NOT ANALYZE. Formatting moves no token that
+//! typing decides: a file is read on the program layer for its text
+//! and the words its `use` lines and its module give it, and nothing
+//! of it is typed.
+//!
+//! `--check <dir|files…>` IS ONE PROCESS: every `.av` file under a
+//! given directory (package boundaries found by `avra.toml`, never
+//! crossed into a nested package's OWN root a second time), or the
+//! files named, in ONE run. Whether a package's file stands canonical
+//! is an answer its package's store keeps with what it read — the
+//! file's text and its words' shapes — so a warm re-run parses and
+//! prints only a file that moved, or one whose provider did.
+use @std.cli.{CliResult, Runnable, command, flag, arg}
+use @std.io.{write_text}
+use @std.avrac.compiler.{
+    Canonical,
+    ProgramFile,
+    avra_fact_definitions,
+    file_canonical,
+    file_formatted,
+    file_write_checked,
+}
+use @std.avrac.core.{flatten}
+use @std.path.{joined_path, relative_path}
+use @std.program.address.{SourceFileAddress}
+use @std.program.layered_store.{LayeredStore, program_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+
+type FmtCmd = {}
+
+impl Runnable for FmtCmd {
+    fn run(args: CliResult) -> int {
+        if args.has_flag("check") || args.has_flag("write") { return walked(args, if args.has_flag("write") { Walk.Write } else { Walk.Check }) }
+        let path? = argued_path(args) else { return 2 }
+        let group = loose_groups([path])[0]
+        let read? = reading(group) else { return std_unfound() }
+        let file? = read.files.first() else { return 2 }
+        let outcome = match file_formatted(read.engine, file.file) {
+            .Ok(text) -> {
+                println(text)
+                eprintln(printed_only_note())
+                0
+            },
+            .Err(report) -> {
+                println(report)
+                1
+            },
+        }
+        if timed(args) { eprintln(time_rows_said(read.engine, FMT_ROWS)) }
+        outcome
+    }
+}
+
+// ── --check / --write: one process over a tree ──
+
+/// examined, differing (written, under `--write`), refused, and which
+/// paths differed — folded across every group the walk visits.
+type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }
+
+/// What a walk does with a file that is not canonical: says it, or rewrites it.
+enum Walk { Check, Write }
+
+/// A package's files read on the program layer, or a lone file's: where
+/// they stand, the engine that answers for them, and the store its
+/// answers are kept in.
+type Reading = { files: List<ProgramFile>, engine: QueryEngine, store: LayeredStore }
+
+/// The rows `--time` speaks for a format: the parse and print are the
+/// engine's own work, the keep its store's.
+const FMT_ROWS: List<string> = ["analyze", "keep"]
+
+/// A package root with the files asked of it — its WHOLE package
+/// (`explicit` absent), or only the files named — or a lone file,
+/// its own root.
+type Group = { root: string, explicit: List<string>? }
+
+/// `--check` reports what differs from canonical; `--write` puts the
+/// receipt-checked canonical text on disk. Both walk every file in ONE
+/// process, one engine per package.
+fn walked(args: CliResult, walk: Walk) -> int {
+    let write = walk == Walk.Write
+    let asked = [rooted(p) for p in args.args_of("file")]
+    mut t = Tally { examined: 0, differing: 0, refused: 0, diffs: [] }
+    for g in expanded_groups(asked) {
+        let read? = reading(g) else { return std_unfound() }
+        light_or_leave(t.examined + read.files.length)
+        if timed(args) { read.engine.time_queries() }
+        for h in read.files {
+            let c = if write { written_one(read.engine, h) } else { file_canonical(read.engine, h.file) }
+            t = Tally {
+                examined: t.examined + 1,
+                differing: t.differing + if differs(c) { 1 } else { 0 },
+                refused: t.refused + refusal_of(c).length,
+                diffs: if differs(c) { t.diffs.concat([h.full]) } else { t.diffs },
+            }
+            if !write { for why in refusal_of(c) { eprintln("${h.full}: ${why}") } }
+        }
+        store_kept(read.engine, read.store)
+        if timed(args) { eprintln(time_rows_said(read.engine, FMT_ROWS)) }
+    }
+    for p in t.diffs { println(p) }
+    println(walk_summary(t, write))
+    if t.refused > 0 || !write && t.differing > 0 { 1 } else { 0 }
+}
+
+fn differs(c: Canonical) -> bool { match c { .Differs -> true, .Stands or .Refused(_) -> false } }
+
+/// Why a file was refused, where it was.
+fn refusal_of(c: Canonical) -> List<string> { match c { .Refused(why) -> [why], .Stands or .Differs -> [] } }
+
+fn walk_summary(t: Tally, write: bool) -> string {
+    if write { "fmt --write: ${t.examined} examined, ${t.differing} written, ${t.refused} refused" } else { "fmt --check: ${t.examined} examined, ${t.differing} differing, ${t.refused} refused" }
+}
+
+/// THE FILES OF A GROUP, READ ON THE PROGRAM LAYER: a package's — every
+/// source under its `src/`, or the ones named, each by its place under
+/// the package's root; a lone file as a package of itself, its store
+/// beside it. Absent where no std stands beside this compiler.
+fn reading(g: Group) -> Reading? {
+    let disk? = (if is_a_dir(g.root) { disk_at(g.root, "") } else { lone_disk_at(g.root) }) else { return null }
+    let store = program_store_at(joined_path(disk.root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions(), disk.name)
+    let paths = when {
+        !disk.lone.is_empty() -> ["src/${disk.lone}"]
+        g.explicit == null -> disk.held(engine)
+        _ -> [relative_path(g.root, p) for p in g.explicit!]
+    }
+    Reading {
+        files: [program_file(disk, disk.file_at(p)) for p in paths],
+        engine: engine,
+        store: store,
+    }
+}
+
+fn expanded_groups(asked: List<string>) -> List<Group> {
+    flatten(
+        [[Group { root: r, explicit: null } for r in package_roots_under(p)] for p in asked if is_a_dir(p)],
+    )
+        .concat(loose_groups([p for p in asked if !is_a_dir(p)]))
+}
+
+/// Every `avra.toml`-rooted package under `dir` — `dir` itself when
+/// it stands at one, never descending past it into a package nested
+/// inside a package.
+fn package_roots_under(dir: string) -> List<string> {
+    if exists_at(joined_path(dir, "avra.toml")) { return [dir] }
+    flatten(
+        [package_roots_under(p) for name in names_at(dir) ?? [] for p in [joined_path(dir, name)] if is_a_dir(p)],
+    )
+}
+
+/// The loose files, grouped by the package each belongs to (`file_home`,
+/// the one rule every door reads) — one engine per package, never one
+/// per file — each file that belongs to none a group of its own.
+fn loose_groups(files: List<string>) -> List<Group> {
+    mut roots: List<string> = []
+    mut by_root: Map<string, List<string>> = {}
+    for path in files {
+        let root = sourced_home(path) ?? path
+        if !roots.contains(root) { roots.push(root) }
+        by_root.set(root, (by_root.get(root) ?? []).concat([path]))
+    }
+    [Group { root: r, explicit: if is_a_dir(r) { by_root.get(r) } else { null } } for r in roots]
+}
+
+/// `--write`'s one file: the receipt-checked text put on disk — said as
+/// differing — or standing as it was; or refused, and nothing on disk
+/// moves.
+fn written_one(engine: QueryEngine, h: ProgramFile) -> Canonical {
+    match file_write_checked(engine, h.file) {
+        .Ok(text) -> {
+            let after = "${text}\n"
+            if after == text_at(h.full) ?? "" { return Canonical.Stands }
+            match write_text(h.full, after) {
+                .Ok(_) -> Canonical.Differs,
+                .Err(e) -> refused_said("avra: ${h.full}: ${e.describe().message}"),
+            }
+        },
+        .Err(report) -> refused_said("${h.full}: ${report}"),
+    }
+}
+
+fn refused_said(why: string) -> Canonical {
+    eprintln(why)
+    Canonical.Refused(why)
+}
+
+/// A bare run only SAYS the canonical text, so its stdout reads the same
+/// whether the file changed or not; stderr names the flags that act.
+fn printed_only_note() -> string {
+    "avra fmt: printed the canonical text and wrote nothing — --write updates the file, --check compares it"
+}
+
+export command fmt {
+    description: "Print a file as canonical Avra"
+    flags: [time]
+    flag write { description: "rewrite every file under a directory, or the files given, refusing any whose receipt is not lossless" }
+    flag check { description: "one pass over every file under a directory, or the files given; reports what differs from canonical" }
+    arg file {
+        description: "the source file, or (--check) files/directories to examine"
+        required: true
+        variadic: true
+    }
+    run: FmtCmd {}
+}

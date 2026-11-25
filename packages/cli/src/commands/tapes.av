@@ -1,0 +1,3529 @@
+//! `avra tapes <package>` — every file of a package read off its items' tapes for what it means,
+//! held to the tree the compiler's own parse makes of it: statement for statement, the same tape,
+//! every node where it was; and what its top level sees held to what the workspace's namespace
+//! binds, name for name, wherever the workspace's declaration was written. Says each file that
+//! differs and how many it read.
+use @std.program.pass.{Pass}
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use stage.{judged, refuse_eval_words}
+use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
+use @std.avrac.compiler.{
+    entry_files,
+    default_opt,
+    program_unset_holes,
+    FileWarned,
+    ChildEnd,
+    RefusesCall,
+    AdmittedSaid,
+    GraphHeld,
+    GraphRoot,
+    NOTHING_ADMITTED,
+    package_stands,
+    Finding,
+    LawFinding,
+    ProgramFile,
+    file_law_diags,
+    case_law_diags,
+    file_refusals,
+    in_scope,
+    proofs_said,
+    made_suite,
+    program_externs,
+    writes_specs,
+    file_rule_findings,
+    waits_held,
+    WaitsHeld,
+    needs_held,
+    finding_diag,
+    held_kinds,
+    finding_line,
+    item_ids,
+    every_item_id,
+    file_found,
+    findings_in_file,
+    manifest_voices,
+    manifests_refused,
+    meta_door,
+    manifests_voiced,
+    laws,
+    package_unrun,
+    program_files,
+    program_warned,
+}
+use @std.avrac.compiler.host.{Manifest, read_manifest}
+use @std.avrac.compiler.store.{machine_cache}
+use @std.avrac.diagnostics.{Diag, SourceFile, loc_at, new_source_file, render, rendered_among}
+use @std.avrac.compiler.hosts.{host_fn_owed_diag}
+use @std.avrac.core.{
+    CalledFn,
+    qtrace,
+    traced,
+    Span,
+    counted,
+    DeclId,
+    distinct,
+    EmbedKind,
+    template_home,
+    ExprId,
+    FileId,
+    Ins,
+    LiftedBody,
+    ParameterLayout,
+    Reg,
+    RtFlag,
+    SignedType,
+    Slot,
+    TaskChecks,
+    Static,
+    StaticBox,
+    TypeId,
+    alpha_renamed,
+    canon_not_if,
+    code_hash_symbol,
+    dst_of,
+    digest_of,
+    flatten,
+    fp_str,
+    some_list,
+    instance_symbol,
+    parameters_spelled,
+    region_end,
+    resymbolled,
+    same_ins,
+    same_reg,
+    sorted_texts,
+}
+use @std.avrac.compiler.lower.{Body, LinkedPackage, Lowered, Unit}
+use @std.avrac.compiler.memory.{rc_reasons_said}
+use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of}
+use @std.avrac.compiler.backend.{
+    wasm_missing,
+    calls_waiting,
+    Owned,
+    body_lines,
+    emit_index,
+    emit_object,
+    disk_free_at,
+    file_bytes,
+    file_placed,
+    links_with_ld64,
+    objects_made,
+    program_ended,
+    static_block,
+}
+use @std.avrac.compiler.{
+    avra_fact_definitions,
+    phased,
+    Made,
+    ShapeAt,
+    shape_reached,
+    keyed_objects,
+    bucket_asked,
+    bucket_lowered,
+    seen_bodies,
+    SeenBodies,
+    frames_lowered,
+    program_code_hashes,
+    HashAnswer,
+    unhashed,
+    lowering_moved,
+    program_refused,
+    entry_files,
+    digest_of_binary,
+    unnamed_print,
+    written_across,
+    opt_level,
+    published,
+    staged_beside,
+    staged_within,
+    avra_source_world,
+    declared_symbol,
+    fn_generated,
+    Space,
+    package_read,
+    package_worked,
+    program_placed,
+    program_shaped_beside,
+    program_worked,
+    share_replayed,
+    package_sources,
+    root_sources,
+    LinkRead,
+    program_link_words,
+    program_packages,
+    manifest_library,
+    native_link_head,
+    wasm_link_head,
+    wasm_link_tail,
+    program_calls,
+    shipped,
+    asyncified,
+    fallback_name,
+    Shrunk,
+    externs_reached,
+    BuildError,
+    Toolchain,
+    FindingAt,
+    HostOwedAt,
+    program_host_fn_lines,
+    program_hosts_owed,
+    program_host_symbols,
+    LinkWorld,
+    spelled_file,
+    read_back,
+    file_scope,
+    fn_signature,
+    typed_fn,
+    file_declares,
+    ItemKind,
+    elaborated_fn,
+    generated_at,
+    generated_declares,
+    lowered_fn,
+    lowered_method,
+    lowered_method_under,
+    impls_with,
+    lowered_default,
+    default_giver,
+    default_unit,
+    ImplAt,
+    made_program,
+    reach_surveyed,
+    TaskSurvey,
+    task_survey,
+    BodyKind,
+    ReachedBody,
+    heard_as_case,
+    quarrel,
+    ProgramCall,
+    made_generator,
+    generator_sites,
+    annotation_kind,
+    GeneratorAt,
+    GeneratorKind,
+    GeneratorSite,
+    item_difference,
+    site_generated,
+    generator_run,
+    MadeProgram,
+    Missed,
+    LoweredFn,
+    resolved_in,
+}
+use @std.io.{
+    IoError,
+    env,
+    list_dir,
+    make_dirs,
+    open_beneath,
+    read_bytes,
+    read_text,
+    remove,
+    stamp,
+    this_process,
+    write_bytes,
+    write_text,
+}
+use @std.path.{
+    dir_of,
+    file_name,
+    is_absolute,
+    joined_path,
+    normalized,
+    relative_path,
+    stem_of,
+    under_dir,
+}
+use @std.process.{
+    Command,
+    Env,
+    Exit,
+    Tool,
+    cmd,
+    exit,
+    inherited,
+    minimal,
+    tool as process_tool,
+    tool_at,
+}
+use @std.time.{now_ns, secs}
+use @std.program.defect.{defect}
+use @std.program.address.{SourceFileAddress}
+use @std.program.layered_store.{
+    LayeredStore,
+    MachineLayer,
+    PackagePlace,
+    program_store_at,
+    use_machine_store,
+    use_package_places,
+}
+use @std.program.query_engine.{QueryEngine, key_reader, query_engine}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.answer_record.{Question}
+use @std.program.saved_derive.{Saved}
+use @std.program.worked_ahead.{Apart, answered_apart, cores_online, saved_by_heir}
+use @std.meta.{derive, guarded}
+use @std.program.sorted.{sorted_by}
+use @std.program.held_values.{held_spoken}
+use @std.program.source_facts.{FileOctets, WorldPlaces, package_lies, use_source_world}
+use @std.program.syntax_tape.{SyntaxTape}
+use @std.text.{parse_int, text_before}
+
+type TapesCmd = {}
+
+impl Runnable for TapesCmd {
+    fn run(args: CliResult) -> int {
+        if args.has_flag("kinds") { return held_said() }
+        let argued? = argued_path(args) else { return 1 }
+        if args.has_flag("law_witnesses") { return witnesses_written(argued) }
+        let root = if args.has_flag("program_runs") { package_holding(argued) ?? argued } else { argued }
+        let disk? = disk_at(root, args.option("only") ?? "") else { return std_unfound() }
+        if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
+        let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+        let engine = query_engine(store, avra_fact_definitions(), disk.name)
+        let ledger = if args.has_flag("passes_shown") { if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table } } else { LedgerSaid.Unsaid }
+        // LICENSED input.timing: a phase timing is reported, never an input of what is found
+        if env("AVRA_QUERY_TIMES") == "1" || !(ledger is .Unsaid) { engine.time_queries() }
+        if args.option("share") != "" { return share_said(store, engine, disk, args.option("share")) }
+        let code = held(engine, disk, args, argued)
+        ledger_said(
+            engine,
+            ledger,
+            () -> program_units(engine, program_files(engine, disk.name), 0, 0),
+        )
+        engine.frontier_kept()
+        let _ = store.saved()
+        eprintln("worked: ${engine.worked_count()} answers here; ${worked_by_query(engine)}")
+        times_said(engine)
+        code
+    }
+}
+
+/// The package at `root` as the program layer reads it, reading only `only` where it names a file,
+/// the source world set to it; absent where no std stands beside this compiler.
+fn disk_at(root: string, only: string) -> Disk? { worlded(root, only, "") }
+
+/// Where each package a build reads stands: the toolchain's std packages, served by the machine's
+/// store; each path dependency, a std package pinned by one included, and the package at `root`,
+/// which are the project's own wherever they lie.
+fn package_places(root: string, name: string, std: string, deps: Map<string, string>) -> List<
+    PackagePlace,
+> {
+    let pinned = [PackagePlace { name: key, root: dir, shared: false } for key, dir in deps]
+    let std_places = [PackagePlace {
+        name: "${STD}${dir.substring(4, dir.length)}",
+        root: joined_path(std, dir),
+        shared: true,
+    } for dir in names_at(std) ?? [] if dir.starts_with("std-") && !deps.has("${STD}${dir.substring(4, dir.length)}")]
+    let own = if std_places.any(it.root == root) { [] } else { [PackagePlace { name: name, root: root, shared: false }] }
+    own.concat(pinned).concat(std_places)
+}
+
+/// The machine's store of what every package this binary builds shares, the toolchain's std answers
+/// laid in it: on unless `AVRA_MACHINE_STORE=0` (`AVRA_MACHINE_STORE_DIR` places it), and none
+/// where it can't stand.
+fn machine_layer() -> MachineLayer? {
+    // LICENSED input.debug_flag: whether answers are shared across packages decides where they're kept, never what they are
+    if env("AVRA_MACHINE_STORE") == "0" { return null }
+    let directory? = machine_store_dir() else { return null }
+    let print? = own_print() else { return null }
+    if !machine_store_stands(directory) { return null }
+    std_answers_laid(directory, print)
+    MachineLayer { directory: directory, print: print }
+}
+
+/// Where the machine's store stands: `AVRA_MACHINE_STORE_DIR`, else `tapes` in the machine's cache.
+fn machine_store_dir() -> string? {
+    // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
+    let placed = env("AVRA_MACHINE_STORE_DIR")
+    if placed != null { return placed }
+    let cache? = machine_cache() else { return null }
+    joined_path(cache, "tapes")
+}
+
+/// The lone source file at `path`, standing in no package, as the program layer reads it: a package
+/// of that one file, its sources being it alone; absent where no std stands beside this compiler.
+fn lone_disk_at(path: string) -> Disk? { worlded(dir_of(path), "", file_name(path)) }
+
+/// The package at `root` — or, `lone` naming a file, that file alone — as the program layer reads
+/// it, the source world set to it.
+fn worlded(root: string, only: string, lone: string) -> Disk? {
+    let std? = std_root() else { return null }
+    let home = GraphRoot { name: package_named(root), dir: root }
+    mut deps: Map<string, string> = {}
+    mut admitted = NOTHING_ADMITTED
+    if lone.is_empty() { on_disk().rows_admitted(root, true, [home.name], home, deps, admitted) }
+    let disk = Disk {
+        root: root,
+        name: home.name,
+        std: std,
+        only: only,
+        deps: deps,
+        lone: lone,
+        admitted: admitted,
+    }
+    disk.entered()
+    disk
+}
+
+/// The name the package at `root` is addressed by: its manifest's, else, a directory with none, the
+/// directory's own.
+fn package_named(root: string) -> string { on_disk().package_named(root, file_name(root)) }
+
+/// A file a build reads as data: its octets beneath its package's root, reached through no link.
+fn disk_octets(root: string, path: string) -> FileOctets {
+    match disk_beneath(root, path, EmbedKind.Octets) {
+        .Octets(octets) -> FileOctets.Read(octets),
+        .Text(text) -> FileOctets.Read(text.bytes()),
+        .Missing -> FileOctets.Missing,
+        .Linked -> FileOctets.Linked,
+        .NotText(_) -> FileOctets.Refused("not text"),
+        .Refused(why) -> FileOctets.Refused(why),
+    }
+}
+
+/// `avra build` of the package at `root` on the program layer: its entry and every body it reaches
+/// made and linked beside the entry, the binary's path. A body not lowered yet stands in as a trap
+/// naming itself where it's reached, and the build says which; when `timed`, it says each host fn
+/// it exports as `host fn: <package> <name>`, as the old path's timed build does.
+export fn program_built(
+    root: string,
+    timed: bool = false,
+    tools: Toolchain? = null,
+    release: bool = false,
+) -> Result<string, int> {
+    let bin? = entry_written(root) else {
+        eprintln("avra: ${root} declares no entry point")
+        return .Err(1)
+    }
+    program_built_at(root, bin, timed, tools, release)
+}
+
+/// `avra build` of the source file at `path` on the program layer: the program it runs, built as its
+/// package's — the package it belongs to by the old path's own rule (`file_home`), or, belonging to
+/// none, a package of that one file — and linked beside it.
+export fn program_file_built(
+    path: string,
+    timed: bool = false,
+    tools: Toolchain? = null,
+    release: bool = false,
+) -> Result<string, int> {
+    let at = rooted(path)
+    let home? = sourced_home(at) else {
+        let lone? = lone_disk_at(at) else { return .Err(std_unfound()) }
+        return disk_built(
+            lone,
+            "src/${lone.lone}",
+            joined_path(lone.root, stem_of(lone.lone)),
+            timed,
+            tools,
+            release,
+        )
+    }
+    program_built_at(home, at.substring(home.length + 1, at.length), timed, tools, release)
+}
+
+/// The package the file at `at` belongs to, where that package keeps a `src/`.
+fn sourced_home(at: string) -> string? {
+    let home? = file_home(at) else { return null }
+    if !is_a_dir(joined_path(home, "src")) { return null }
+    home
+}
+
+/// The program whose entry is `bin`, under the package at `root`, built on the program layer: its
+/// entry and every body it reaches made and linked beside the entry, the binary's path.
+fn program_built_at(root: string, bin: string, timed: bool, tools: Toolchain?, release: bool) -> Result<
+    string,
+    int,
+> {
+    let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
+    disk_built(disk, bin, binary_stem(root, bin), timed, tools, release)
+}
+
+/// The program whose entry is `bin` in the package on `disk`, built on the program layer and placed
+/// at `stem` — a module beside it for a wasm toolchain `tools` — its path, or the exit its refusal
+/// spoke; when `timed`, each host fn it exports said, then whether it stood, in the old path's
+/// words; `net`, a refusal said as the program layer's
+/// defect, the net having accepted the program.
+fn disk_built(
+    disk: Disk,
+    bin: string,
+    native_stem: string,
+    timed: bool,
+    tools: Toolchain?,
+    release: bool,
+) -> Result<string, int> {
+    let stem = if tools == null { native_stem } else { "${native_stem}.wasm" }
+    // LICENSED input.asked: the build's mode, carried in its question, so its answer is keyed by it
+    let mode = match build_mode(env("AVRA_PROGRAM_MODE") ?? "", tools?.target ?? "", release) {
+        .Ok(m) -> m,
+        .Err(why) -> {
+            eprintln("avra: ${why}")
+            return .Err(2)
+        },
+    }
+    let root = disk.root
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let asks_timed = env("AVRA_QUERY_TIMES") == "1"
+    let worked = program_worked(
+        joined_path(root, ".avra-cache/tapes"),
+        disk.name,
+        avra_fact_definitions().concat(definitions_of(listed_build_facts)),
+        ahead_count(),
+        asks_timed,
+        (e: QueryEngine) -> vouched_files(e, disk),
+    )
+    let store = worked.store
+    let engine = worked.engine
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if timed || env("AVRA_QUERY_TIMES") == "1" || !(ledger_asked().get() is .Unsaid) { engine.time_queries() }
+    let refused = manifests_door(engine, disk)
+    if refused != null { return .Err(refused!) }
+    let _ = program_placed(worked, disk.file_at(bin), ahead_count(), asks_timed)
+    let asked = binary_asked(engine, disk, bin, stem, mode, tools)
+    let found: Cell<List<SourceFileAddress>?> = Cell.new(null)
+    let _ = program_shaped_beside(
+        worked,
+        asked.entry,
+        ahead_count(),
+        env("AVRA_QUERY_TIMES") == "1",
+        () -> {
+            let refusing = phased(
+                engine,
+                "the refusals",
+                Pass.Laws,
+                () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
+            )
+            found.set(refusing)
+            refusing.is_empty()
+        },
+    )
+    let refusing = found.get() ?? phased(
+        engine,
+        "the refusals",
+        Pass.Laws,
+        () -> program_refused(engine, asked.entry, disk.name, vouched_files(engine, disk)),
+    )
+    if !refusing.is_empty() {
+        let said = refusals_said(engine, disk, refusing, asked.entry)
+        store_left_kept(engine, store)
+        return .Err(said)
+    }
+    let owed = phased(
+        engine,
+        "the host fns",
+        Pass.Link,
+        () -> program_hosts_owed(engine, disk.name).rows,
+    )
+    if !owed.is_empty() {
+        let said = hosts_owed_said(disk, owed)
+        store_left_kept(engine, store)
+        return .Err(said)
+    }
+    if tools != null {
+        let missing = wasm_missing(
+            program_calls(engine, asked.entry).calls,
+            linked_libraries(engine, disk, asked.entry),
+        )
+        if !missing.is_empty() {
+            eprintln(build_report(BuildError.UnsupportedOnWasm(missing)))
+            store_left_kept(engine, store)
+            return .Err(1)
+        }
+    }
+    let warned = phased(engine, "the warnings", Pass.Laws, () -> program_warned(engine, disk.name))
+    let built = phased(engine, "the program built", Pass.Link, () -> standing_binary(engine, asked))
+    let stood = build_stood(engine, asked)
+    let _ = write_text(joined_path(asked.dir, REBUILT), rebuilt_said(engine, asked))
+    let reasons = rc_reasons_said()
+    if reasons != null { eprintln(reasons!) }
+    let refused = binary_refused(disk, built, disk.on_disk(disk.name, bin))
+    if refused != null {
+        store_left_kept(engine, store)
+        times_said(engine)
+        eprintln(refused!)
+        return .Err(1)
+    }
+    // the binary is placed before the store is saved, so the product is ready a save sooner; a
+    // process killed between the two leaves the store as the build before left it, and the next
+    // build asks again what this one learned
+    let placed = phased(
+        engine,
+        "place",
+        Pass.Link,
+        () -> binary_placed(kept_of(built), stem) ?? fallback_placed(kept_of(built), stem),
+    )
+    if place_kill_hook() == "1" { exit(.Code(137)) }
+    store_left_kept(engine, store)
+    times_said(engine)
+    let counted = objects_counted().get()
+    ledger_said(
+        engine,
+        ledger_asked().get(),
+        () -> program_units(engine, program_files(engine, disk.name), counted[0], counted[1]),
+    )
+    if placed != null {
+        eprintln("avra: ${placed!}")
+        return .Err(1)
+    }
+    if !warned.is_empty() { eprintln(warnings_said(disk, warned)) }
+    if timed {
+        for line in program_host_fn_lines(engine, asked.entry, asked.target) { eprintln("host fn: ${line}") }
+        eprintln(hit_line(stood))
+        eprintln(time_rows_said(engine, BUILD_ROWS))
+    }
+    .Ok(stem)
+}
+
+/// Whether this process's build says its pass ledger, and how: what `build --passes` asks.
+export once fn ledger_asked() -> Cell<LedgerSaid> { Cell.new(LedgerSaid.Unsaid) }
+
+/// How many objects this process's build emitted, and how many it linked: the units its ledger reads
+/// codegen and the link by.
+once fn objects_counted() -> Cell<List<int>> { Cell.new([0, 0]) }
+
+/// THE ROWS `--time` SPEAKS, by the names the old path's derivation gave its phases, each the wall time
+/// of the program layer's own phases that do that work (none of them runs inside another):
+///   analyze — what refuses the program and what it warns of: the refusals, the host fns, the warnings
+///   lower   — the program's bodies made: the shape reached, the code hashes, the keys, the buckets
+///             asked
+///   emit    — the objects emitted
+///   link    — the link's words, the link, the binary placed
+///   keep    — the store: the frontier opened and kept, the store saved or compacted
+/// A row whose phases did not run is 0 ms: a check lowers nothing, a build that stood emits nothing.
+type TimeRow = { name: string, phases: List<string> }
+
+const TIME_ROWS: List<TimeRow> = [
+    TimeRow {
+        name: "analyze",
+        phases: ["the refusals", "the host fns", "the warnings", "the citations"],
+    },
+    TimeRow {
+        name: "lower",
+        phases: ["the shape", "the code hashes", "the keys", "the buckets asked"],
+    },
+    TimeRow { name: "emit", phases: ["emit"] },
+    TimeRow { name: "link", phases: ["link words", "link", "place"] },
+    TimeRow {
+        name: "keep",
+        phases: ["the frontier opened", "the frontier kept", "the store saved", "the store compacted"],
+    },
+]
+
+/// The rows a build speaks, and a check's.
+const BUILD_ROWS: List<string> = ["analyze", "lower", "emit", "link", "keep"]
+const CHECK_ROWS: List<string> = ["analyze", "lower", "keep"]
+
+/// The `time:` line of the rows named, read off the phases `engine` timed.
+fn time_rows_said(engine: QueryEngine, rows: List<string>) -> string {
+    let times? = engine.kept_times() else { return "time: no phase timed" }
+    "time: ${["${r.name} ${times.phases_wall_ms(r.phases)}ms" for r in TIME_ROWS if rows.contains(r.name)].join(", ")}"
+}
+
+/// The warnings `warned` holds, rendered as a build says them: file by file in the order of their
+/// paths, each in the order its file says them.
+fn warnings_said(disk: Disk, warned: List<FileWarned>) -> string {
+    let files = sorted_by(
+        [WarnedFile { h: program_file(disk, w.file), findings: w.findings } for w in warned],
+        (a: WarnedFile, b: WarnedFile) -> text_before(a.h.full, b.h.full),
+    )
+    [file_warnings_said(w) for w in files].join("\n\n")
+}
+
+/// The warnings of one file the program reads, beside where it lies.
+type WarnedFile = { h: ProgramFile, findings: List<LawFinding> }
+
+/// The warnings of one file, rendered over its text.
+fn file_warnings_said(w: WarnedFile) -> string {
+    let src = new_source_file(w.h.full, text_at(w.h.full) ?? "")
+    [render(d!, src) for f in w.findings for d in [finding_diag(f, w.h.full)] if d != null]
+        .join("\n\n")
+}
+
+/// The entry of the package at `root`, under it: its `[bin]`, else `src/main.av` where that file is
+/// there; absent for a package that declares none.
+fn entry_written(root: string) -> string? {
+    let bin = manifest_at(root).bin
+    if bin == null && !exists_at(joined_path(root, "src/main.av")) { return null }
+    bin ?? "src/main.av"
+}
+
+/// Where the program at `root` whose entry is `bin` keeps its binary.
+fn binary_stem(root: string, bin: string) -> string {
+    joined_path(root, if bin.ends_with(".av") { bin.substring(0, bin.length - 3) } else { bin })
+}
+
+/// What a build of the package at `root` asks, as `engine` reads it.
+fn binary_asked(
+    engine: QueryEngine,
+    disk: Disk,
+    bin: string,
+    stem: string,
+    mode: BuildMode,
+    tools: Toolchain?,
+) -> BinaryAsked {
+    let t? = tools else { return native_asked(engine, disk, bin, stem, mode) }
+    let words = phased(
+        engine,
+        "link words",
+        Pass.Link,
+        () -> linked_words(engine, disk, false, t.target),
+    )
+    BinaryAsked {
+        entry: disk.file_at(bin),
+        compiler: compiler_identity(),
+        head: wasm_link_head(t.target, t.reactor, t.debug),
+        words: words,
+        linked: linked_digests(words.concat([t.runtime])),
+        dir: joined_path(disk.root, "${BUILD_DIR}-${t.target}"),
+        opt: mode.opt,
+        layered: false,
+        inlined: inlines_runtime(),
+        target: t.target,
+        runtime: t.runtime,
+        linker: t.linker,
+        wasm_opt: t.wasm_opt,
+        fallback: t.fallback && t.wasm_opt != "",
+        tools: tools_marked([t.linker, t.wasm_opt].concat([s.path for s in t.tools])),
+    }
+}
+
+/// THE TOOLS A LINK RUNS, EACH BY ITS IDENTITY: its path and the disk's mark of what stands there
+/// (size, times, inode), in the order given, each once. A kept binary is a function of the tools that
+/// linked it: one replaced in place is another mark, so the binary is linked again. A tool the host
+/// can't mark vouches for nothing: it reads as this process's own, and no binary stands on it.
+fn tools_marked(paths: List<string>) -> List<string> {
+    mut marked: List<string> = []
+    for p in paths {
+        if p == "" || marked.any(it.starts_with("${p}\t")) { continue }
+        // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+        let mark = stamp(p)
+        // LICENSED input.clock: an unmarked tool's word is this process's alone, so no kept binary answers for it
+        marked.push(if mark == null { "${p}\tunmarked ${now_ns()}" } else { "${p}\t${mark!}" })
+    }
+    marked
+}
+
+/// The C compiler a native link runs, where the PATH finds one.
+fn link_compiler() -> string {
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+    match process_tool("clang") { .Ok(cc) -> cc.path, .Err(_) -> "" }
+}
+
+/// Where a build keeps its objects and binaries, under its package: a non-host target's beside it,
+/// named for the target, so a native build and a wasm one never share an object or a binary.
+const BUILD_DIR: string = ".avra-cache/tapes-build"
+
+/// What a native build of the program `bin` on `disk`, placed at `stem`, asks in `mode`. A program
+/// that defines a host fn links whole whatever its mode: a host calls it by the bare symbol in the
+/// binary it loads, and a layered binary holds none of the program's code.
+fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode: BuildMode) -> BinaryAsked {
+    let words = phased(
+        engine,
+        "link words",
+        Pass.Link,
+        () -> linked_words(engine, disk, mode.shared),
+    )
+        .concat(stack_words(mode.opt))
+    let hosted = program_host_symbols(engine, disk.file_at(bin), "")
+    BinaryAsked {
+        entry: disk.file_at(bin),
+        compiler: compiler_identity(),
+        head: native_link_head(names_its_symbols(engine, disk), fast_linker(), hosted, stem),
+        words: words,
+        linked: linked_digests(words),
+        dir: joined_path(disk.root, BUILD_DIR),
+        opt: mode.opt,
+        layered: mode.layered && hosted.is_empty(),
+        inlined: inlines_runtime(),
+        placed: relative_path(joined_path(disk.root, BUILD_DIR), dir_of(stem)),
+        tools: tools_marked([link_compiler(), fast_linker()]),
+    }
+}
+
+/// The words a native binary emitted at `opt` links with for its task stack: at `-O0`, whose frames
+/// keep every value in a slot of their own, the runtime's member holding the deeper stack such frames
+/// need, pulled by its marker (runtime/avra_task_stack_unoptimised.c); none at any other level.
+fn stack_words(opt: string) -> List<string> { if opt == "-O0" { host_kept_words(["avra_task_stack_unoptimised"]) } else { [] } }
+
+/// The linker the link's `clang` is told to run: `ld.lld` beside that `clang`, else on the PATH; the
+/// driver's own choice, empty, where none stands or the host links with ld64.
+fn fast_linker() -> string {
+    if links_with_ld64() { return "" }
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+    let beside = match process_tool("clang") {
+        .Ok(cc) -> joined_path(dir_of(cc.path), "ld.lld"),
+        .Err(_) -> { return "" },
+    }
+    if exists_at(beside) { return beside }
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+    match process_tool("ld.lld") { .Ok(ld) -> ld.path, .Err(_) -> "" }
+}
+
+/// The build `asked` names, as the engine asks it.
+fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
+    program_binary_question(
+        engine,
+        asked.entry,
+        asked.compiler,
+        asked.head,
+        asked.words,
+        asked.linked,
+        dir_in_package(asked),
+        asked.opt,
+        asked.layered,
+        asked.inlined,
+        asked.target,
+        asked.runtime,
+        asked.linker,
+        asked.wasm_opt,
+        asked.fallback,
+        asked.placed,
+        asked.tools,
+    )
+}
+
+/// The engine's frontier and its store kept for the next build to read, by an heir that outlives
+/// this process where one can be forked, so the build answers before its store is saved; kept
+/// here under `AVRA_STORE_KEPT_HERE`, in a process nothing outlives, and where no heir forks.
+fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
+    // LICENSED input.live_process: whether this process is the first, which no heir outlives; no compile answer reads it
+    let first = this_process() == 1
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let quiet = env("AVRA_QUERY_TIMES") != "1"
+    if kept_here() != null ||
+        first ||
+        !saved_by_heir(store, quiet, () -> kept_and_said(engine, store)) {
+        store_kept(engine, store)
+    }
+}
+
+/// The store kept by an heir, and with `AVRA_QUERY_TIMES` where the keeping's time went: why it
+/// kept nothing, absent where it kept all.
+fn kept_and_said(engine: QueryEngine, store: LayeredStore) -> string? {
+    phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
+    let saved = phased(engine, "the store saved", Pass.StoreSave, () -> store.saved())
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if env("AVRA_QUERY_TIMES") == "1" { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
+    unsaved_cause(store, saved)
+}
+
+/// `AVRA_STORE_KEPT_HERE`: a build keeps its store before it answers.
+once fn kept_here() -> string? {
+    // LICENSED input.debug_flag: where the store is saved moves no answer
+    env("AVRA_STORE_KEPT_HERE")
+}
+
+/// The engine's frontier and its store, kept for the next build to read.
+fn store_kept(engine: QueryEngine, store: LayeredStore) {
+    phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
+    let saved = phased(
+        engine,
+        if store.compacts_on_saving() { "the store compacted" } else { "the store saved" },
+        Pass.StoreSave,
+        () -> store.saved(),
+    )
+    let why? = unsaved_said(store, saved) else { return }
+    eprintln("avra: ${why}")
+}
+
+/// Why `store` kept nothing, as `saved` answered, said by the build that saves it; absent where it
+/// kept all.
+export fn unsaved_said(store: LayeredStore, saved: Result<int, IoError>) -> string? {
+    let cause? = unsaved_cause(store, saved) else { return null }
+    "the store at ${store.directories().first() ?? ""} wasn't saved — ${cause}; what this build learned is worked out again"
+}
+
+/// What kept `store` from saving, as `saved` answered: the file it couldn't write and why, and what
+/// the disk holding the store had free; absent where it kept all.
+fn unsaved_cause(store: LayeredStore, saved: Result<int, IoError>) -> string? {
+    let e = match saved { .Ok(_) -> { return null }, .Err(e) -> e }
+    let free = disk_free_at(store.directories().first() ?? "")
+    "${e.describe().message}${if free == null { "" } else { " (${free!} bytes free there)" }}"
+}
+
+/// How many processes a build lowers its declared bodies across: `AVRA_WORK_AHEAD_CORES`, else at
+/// most four of the machine's cores; one under `AVRA_WORK_AHEAD_OFF`.
+fn ahead_count() -> int {
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    if env("AVRA_WORK_AHEAD_OFF") == "1" { return 1 }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let told? = parse_int(env("AVRA_WORK_AHEAD_CORES") ?? "") else { return if cores_online() < MOST_AHEAD { cores_online() } else { MOST_AHEAD } }
+    told
+}
+
+/// The most processes a build lowers ahead across unless told otherwise.
+const MOST_AHEAD: int = 4
+
+/// What a build of a program is asked: its entry, the link's leading words and the words its
+/// packages link with, where its objects and binary are kept, the level its objects are emitted at,
+/// and whether it links in layers.
+type BinaryAsked = {
+    entry: SourceFileAddress,
+    /// The compiler that makes it (`compiler_identity`): a binary, and each object in it, are another
+    /// compiler's only where their bytes are one.
+    compiler: string,
+    head: List<string>,
+    words: List<string>,
+    linked: List<string>,
+    dir: string,
+    opt: string,
+    layered: bool,
+    /// Whether its objects carry the runtime's hot leaves inlined, as this process emits them
+    /// (`inlines_runtime`), or keep them calls.
+    inlined: bool,
+    /// The triple a non-host build is for, its runtime archive, the C compiler that links it, and the
+    /// optimizer it ships through; each empty for a native build.
+    target: string = "",
+    runtime: string = "",
+    linker: string = "",
+    wasm_opt: string = "",
+    /// Whether a module that runs tasks ships an asyncified twin beside it.
+    fallback: bool = false,
+    /// The directory the binary is placed in, from `dir`: where a layered binary finds its layers
+    /// from when it's run there.
+    placed: string = "",
+    /// Each tool the link runs, by its identity (`tools_marked`): a kept binary is a function of the
+    /// tools that linked it, so one that moved is linked again.
+    tools: List<string> = [],
+}
+
+/// HOW THE PROGRAM LAYER MAKES A BINARY: the level its objects are emitted at, as clang spells it;
+/// LLVM as its one shared library where it stands; and the program as two shared objects — the
+/// world, and the overlay of what moved since the world was linked — under a small executable, so
+/// an edit relinks the overlay alone.
+export type BuildMode = { opt: string, shared: bool, layered: bool }
+
+/// The mode a build makes its binary in by default: unoptimised, LLVM shared, linked in layers.
+fn dev_mode() -> BuildMode { BuildMode { opt: "-O0", shared: true, layered: true } }
+
+/// The mode `--release` makes its binary in: `-O1`, one static binary.
+fn release_mode() -> BuildMode { BuildMode { opt: "-O1", shared: false, layered: false } }
+
+/// THE MODE A BUILD MAKES ITS BINARY IN: for the host, `dev` (`-O0`, shared and layered) unless
+/// `release` (`--release`: `-O1`, one static binary); for another `target`, the level both paths
+/// emit it at (`default_opt`) and one static binary. Then `AVRA_PROGRAM_MODE`, as `spelled`, overrides
+/// it: a comma list of a preset — `dev` or `release` — then fields: `opt=-O<n>`,
+/// `llvm=shared|static` and `link=layered|whole`. A word it doesn't know is refused.
+export fn build_mode(spelled: string, target: string, release: bool) -> Result<BuildMode, string> {
+    mut mode = when {
+        target != "" -> BuildMode { opt: default_opt(target), shared: false, layered: false }
+        release -> release_mode()
+        _ -> dev_mode()
+    }
+    for word in [w.trim() for w in spelled.split(",") if !w.trim().is_empty()] {
+        mode = match word {
+            "release" -> release_mode(),
+            "dev" -> dev_mode(),
+            "opt=-O0" or "opt=-O1" or "opt=-O2" or "opt=-O3" or "opt=-Oz" -> mode with { opt: word.substring(4, word.length) },
+            "llvm=shared" -> mode with { shared: true },
+            "llvm=static" -> mode with { shared: false },
+            "link=layered" -> mode with { layered: true },
+            "link=whole" -> mode with { layered: false },
+            _ -> { return .Err(unknown_mode_word(word)) },
+        }
+    }
+    .Ok(mode)
+}
+
+/// The digest of each file a link reads besides the program's own objects: the runtime archive, then
+/// each object and archive `words` name, so a file rebuilt in place is another build.
+fn linked_digests(words: List<string>) -> List<string> {
+    [runtime_library()]
+        .concat([w for w in words if w.ends_with(".o") || w.ends_with(".a")])
+        .map((path) -> "${path} ${digest_of_binary(path) ?? "-"}")
+}
+
+/// A program's build: the binary it links, kept (as `program_binary` answers it, its file in the
+/// build's directory), and each body a trap stood in for; or why the program isn't made, or isn't
+/// linked.
+@derive(Saved)
+enum BuiltBinary {
+    Linked(kept: string, stood: List<Missed>)
+    Unmade(why: string, at: string)
+    Unlinked(why: string)
+}
+
+/// THE BUILD AS ONE ANSWER: the program at `entry` made by the compiler `compiler`, its buckets'
+/// objects emitted at `opt` and its binary kept in `dir` (named from its package) and placed in `placed` from it, linked with
+/// `head` and `words`. A build nothing it reads has moved is this answer standing, so nothing is
+/// walked, emitted or linked; one an edit reaches is worked out again.
+@query("link")
+fn program_binary(
+    engine: QueryEngine,
+    entry: SourceFileAddress,
+    compiler: string,
+    head: List<string>,
+    words: List<string>,
+    linked: List<string>,
+    dir: string,
+    opt: string,
+    layered: bool,
+    inlined: bool,
+    target: string,
+    runtime: string,
+    linker: string,
+    wasm_opt: string,
+    fallback: bool,
+    placed: string,
+    tools: List<string>,
+) -> BuiltBinary {
+    let made = binary_made(
+        engine,
+        BinaryAsked {
+            entry: entry,
+            compiler: compiler,
+            head: head,
+            words: words,
+            linked: linked,
+            dir: package_dir(entry.package_name, dir),
+            opt: opt,
+            layered: layered,
+            inlined: inlined,
+            target: target,
+            runtime: runtime,
+            linker: linker,
+            wasm_opt: wasm_opt,
+            fallback: fallback,
+            placed: placed,
+            tools: tools,
+        },
+    )
+    match made { .Linked(kept, stood) -> BuiltBinary.Linked(file_name(kept), stood), rest -> made }
+}
+
+/// Where `asked` keeps its binary, named from its package, so the build's question names no checkout.
+fn dir_in_package(asked: BinaryAsked) -> string {
+    let root? = package_lies(asked.entry.package_name) else { return asked.dir }
+    if is_absolute(root) != is_absolute(asked.dir) { return asked.dir }
+    relative_path(root, asked.dir)
+}
+
+/// The directory `dir`, named from the package `package`, where it lies.
+fn package_dir(package: string, dir: string) -> string {
+    let root? = package_lies(package) else { return dir }
+    normalized(joined_path(root, dir))
+}
+
+/// The file beside a program's kept binary that says why its last build was worked out again.
+const REBUILT: string = "rebuilt.txt"
+
+/// WHY THE LAST BUILD OF `asked` WAS WORKED OUT AGAIN, edge by edge: each input that changed, then
+/// each answer that read the one before, the build last. A build that stood says so.
+fn rebuilt_said(engine: QueryEngine, asked: BinaryAsked) -> string {
+    let question = binary_question(engine, asked)
+    if build_stood(engine, asked) { return "the build stood: nothing it reads has moved\n" }
+    if !engine.frontier_found() { return "the build was worked out: the store held nothing for this build\n" }
+    let way? = engine.worked_out_because(question.known_as) else { return "the build was worked out: no kept state named what moved\n" }
+    "the build was worked out again, by this way:\n${["  ${question_spoken(q, question, asked)}" for q in way].join("\n")}\n"
+}
+
+/// Whether the build `asked` stood: its own question was answered from the store, never worked out.
+fn build_stood(engine: QueryEngine, asked: BinaryAsked) -> bool {
+    let question = binary_question(engine, asked)
+    engine.computed_queries().all(it != question.query_name)
+}
+
+/// A question as `explain` names it: its query, and the file its first key names; the build's own
+/// question by the entry it was asked of. Saved arguments are never read back here: only the query
+/// that wrote them knows their shape.
+fn question_spoken(q: Question, root: Question, asked: BinaryAsked) -> string {
+    if q.keyed { return keyed_spoken(q) }
+    if q.known_as.same_as(root.known_as) { return "${q.query_name}(${asked.entry.package_name}/${asked.entry.path_in_package})" }
+    q.query_name
+}
+
+/// A question whose arguments are its keys, as `explain` names it: the file its first key names
+/// where it's one.
+fn keyed_spoken(q: Question) -> string {
+    let keys = q.arguments.text() ?? ""
+    if !keys.starts_with("fs") { return q.query_name }
+    let file = key_reader(q.arguments).file()
+    "${q.query_name}(${file.package_name}/${file.path_in_package})"
+}
+
+/// What `explain --why` says of the program layer's last build of the package at `root`.
+export fn last_rebuild_said(root: string) -> string? { text_at(joined_path(root, ".avra-cache/tapes-build/${REBUILT}")) }
+
+/// The program `asked` names made, its objects and binary kept: its shape, then each bucket keyed
+/// by the answers it's made of, the program made again only where an object isn't kept.
+fn binary_made(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
+    let shape = match phased(
+        engine,
+        "the shape",
+        Pass.Lower,
+        () -> shape_reached(engine, asked.entry),
+    ) { .At(s) -> s, .Unmade(why, at) -> { return BuiltBinary.Unmade(why, at) } }
+    let hashes = phased(
+        engine,
+        "the code hashes",
+        Pass.Codegen,
+        () -> program_code_hashes(engine, asked.entry).hashes,
+    )
+    let absent = hashes.find(it.hash == null)
+    if absent != null { return BuiltBinary.Unmade(unhashed(), absent!.target) }
+    let made = phased(
+        engine,
+        "the keys",
+        Pass.Codegen,
+        () -> keyed_objects(
+            engine,
+            asked.entry,
+            shape,
+            hashes,
+            objects_salt(engine, asked),
+            joined_path(asked.dir, "obj"),
+        ),
+    )
+    bucket_kept(engine, asked, shape, hashes, made)
+}
+
+/// What makes a program's objects besides its own answers: the compiler that emits them,
+/// the backend's code, as the build's own code hash, the level they are emitted at, whether the
+/// runtime's hot leaves are inlined, the runtime and archives it links, and the tools its links run
+/// (`tools_marked`). Every key a build's objects make — each object's, its link's, a layered link's —
+/// holds it.
+fn objects_salt(engine: QueryEngine, asked: BinaryAsked) -> List<string> {
+    salted_by(asked, binary_question(engine, asked).code_hash)
+}
+
+/// The salt `asked` makes its objects under, beside the backend's code hash `code_hash`.
+fn salted_by(asked: BinaryAsked, code_hash: string) -> List<string> {
+    [
+        asked.compiler,
+        code_hash,
+        asked.opt,
+        if asked.inlined { "inlined" } else { "calls" },
+        asked.target,
+    ]
+        .concat(asked.linked)
+        .concat(asked.tools)
+}
+
+/// The build `asked` names, as its answer stands where its kept binary still does; else made again
+/// here. A binary not linked is never taken as it stands: what refused may be the machine's, not the
+/// program's.
+fn standing_binary(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
+    let answer = program_binary(
+        engine,
+        asked.entry,
+        asked.compiler,
+        asked.head,
+        asked.words,
+        asked.linked,
+        dir_in_package(asked),
+        asked.opt,
+        asked.layered,
+        asked.inlined,
+        asked.target,
+        asked.runtime,
+        asked.linker,
+        asked.wasm_opt,
+        asked.fallback,
+        asked.placed,
+        asked.tools,
+    )
+    match answer {
+        .Linked(kept, stood) -> {
+            let at = joined_path(asked.dir, kept)
+            if exists_at(at) { BuiltBinary.Linked(at, stood) } else { binary_made(engine, asked) }
+        },
+        .Unmade(_why, _at) -> answer,
+        .Unlinked(_why) -> binary_made(engine, asked),
+    }
+}
+
+/// Why the build `built` of the package on `disk`, its entry at `entry_path`, stops here: the program
+/// isn't made, or isn't linked, or a body a trap stood in for isn't one its tree's baseline accepts.
+/// Absent where the binary may be placed.
+fn binary_refused(disk: Disk, built: BuiltBinary, entry_path: string) -> string? {
+    match built {
+        .Linked(_kept, stood) -> {
+            if !stood.is_empty() { eprintln(stand_ins(stood)) }
+            traps_unaccepted(disk, stood)
+        },
+        .Unmade(why, at) -> not_made_yet(why, at, entry_path),
+        .Unlinked(why) -> "avra: ${why}",
+    }
+}
+
+/// What the laws find in each of `files` of the program whose entry is `entry`, a seat's refusal
+/// among them, said as `check` says it and where the old path says it, on stdout — on stderr for a
+/// suite's `leg`, where the suite reads one — its errors failing the build: 1. A file whose refusal no law
+/// finds is said as such. Where the net accepted the program (`net`), it is said as the program
+/// layer's defect, unless every refusal is a const's settling, which runs past what the net reads:
+/// a trap there is the program's own. Said on stdout, as `check` says them; a suite's leg says them
+/// on stderr (`leg`), where the suite reads a leg's report.
+fn refusals_said(
+    engine: QueryEngine,
+    disk: Disk,
+    files: List<SourceFileAddress>,
+    entry: SourceFileAddress,
+    leg: bool = false,
+) -> int {
+    let held = [program_file(disk, f) for f in files]
+    let entered = program_file(disk, entry)
+    let said = [file_refusals(engine, h, entered) for h in held]
+    for j, ds in said { if ds.is_empty() { eprintln(refusal_unworded(held[j].full)) } }
+    let sources = [new_source_file(h.full, text_at(h.full) ?? "") for h in held]
+    let all = flatten(said)
+    if !all.is_empty() {
+        let report = rendered_among(all, sources)
+        if leg { eprintln(report) } else { println(report) }
+    }
+    1
+}
+
+/// Each host fn of `owed` refused, file by file, in the words its decision speaks; the exit code.
+fn hosts_owed_said(disk: Disk, owed: List<HostOwedAt>) -> int {
+    for r in owed {
+        let h = program_file(disk, r.file)
+        let src = new_source_file(h.full, text_at(h.full) ?? "")
+        let firsts = [program_file(disk, f) for f in some_list(r.first_file)]
+        let first = firsts.first()
+        let at_first = if first == null { null } else { loc_at(first!.full, span_of_at(r.first_at)) }
+        let sources = [src].concat([new_source_file(f.full, text_at(f.full) ?? "") for f in firsts])
+        println(
+            rendered_among(
+                [
+                    host_fn_owed_diag(
+                        loc_at(h.full, span_of_at(r.at)),
+                        r.name,
+                        r.from,
+                        r.owed,
+                        at_first,
+                    ),
+                ],
+                sources,
+            ),
+        )
+    }
+    1
+}
+
+/// A kept place as a span.
+fn span_of_at(at: FindingAt?) -> Span? {
+    let held? = at else { return null }
+    Span { lo: held.lo, hi: held.hi }
+}
+
+fn refusal_unworded(path: string) -> string { "avra: ${path}: a seat refuses a value here, in a body no law reads yet" }
+
+fn refused_why() -> string { "a value its seat refuses" }
+
+/// Where the build `built` kept its binary; only a linked build has one.
+fn kept_of(built: BuiltBinary) -> string { match built { .Linked(kept, _stood) -> kept, rest -> "" } }
+
+collect listed_build_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// Where `engine`'s process spent its time, when it timed its asks: the families with the most time
+/// of their own, then the whole split by side.
+fn times_said(engine: QueryEngine) {
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if env("AVRA_QUERY_TIMES") != "1" { return }
+    let times? = engine.kept_times() else { return }
+    eprintln("time: ${times.spoken(15)}")
+    eprintln("phases: ${times.phases_spoken()}")
+    eprintln("split: ${times.split()}")
+    eprintln("cutoff: ${engine.cutoff_said()}")
+    eprintln(held_spoken())
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if env("AVRA_QUERY_FAMILIES") == "1" { eprintln("families:\n${times.every_family()}") }
+}
+
+/// How many answers `engine` worked out here, by the query that asked each, inputs aside.
+fn worked_by_query(engine: QueryEngine) -> string {
+    mut counts: Map<string, int> = {}
+    for q in engine.computed_queries() { if !engine.input_named(q) { counts.set(q, (counts.get(q) ?? 0) + 1) } }
+    tallied(counts)
+}
+
+/// The receipt `args` names, held over the package on `disk`: its exit code.
+fn held(engine: QueryEngine, disk: Disk, args: CliResult, argued: string) -> int {
+    if args.option("first") != "" { return first_asked(engine, disk, args.option("first")) }
+    if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
+    if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left"), args.has_flag("all_made")) }
+    if args.has_flag("entry_run") { return entry_ran(engine, disk, args.option("args") ?? "") }
+    if args.has_flag("link_words") { return link_words_held(engine, disk) }
+    if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
+    if args.has_flag("findings") { return findings_said(engine, disk) }
+    if args.has_flag("waits") { return waits_said(engine, disk, args.has_flag("left")) }
+    if args.has_flag("needs") { return needs_said(engine, disk) }
+    if args.has_flag("built") {
+        return built_held(
+            engine,
+            disk,
+            parse_int(args.option("budget") ?? "") ?? 0,
+            args.has_flag("left"),
+        )
+    }
+    let files = disk.held(engine)
+    println("tapes: ${files.length} read")
+    0
+}
+
+/// The program layer alone: the package's store, its unknown files worked out across cores, then
+/// the package read whole as one question and what it learned kept. Says how long it took and how
+/// many questions this process answered by running them.
+fn program_timed(directory: string, disk: Disk) -> int {
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let t0 = now_ns()
+    let worked = package_worked(directory, disk.name)
+    let read = package_read(worked.engine, disk.name)
+    worked.engine.frontier_kept()
+    let _ = worked.store.saved()
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let ms = (now_ns() - t0) / 1000000
+    println(
+        "program: ${read.files.length} files, ${read.items} items, ${read.clashes} clashes in ${ms} ms, ${worked.engine.computed_count()} answers made here, ${worked.engine.records_checked_count()} records checked",
+    )
+    0
+}
+
+/// The packages being read on disk: the one named (`root`, addressed by its manifest's `name`), and
+/// the toolchain's under its std root, a package a manifest names by a path at that path; a receipt
+/// holds the named package's files under `only` alone.
+/// A package as the program layer reads it off the disk: where it stands, its name, the toolchain's
+/// std, the files a receipt holds, its path dependencies by name, and, for a lone source file, that
+/// file's name — the package is it alone, read as its `src/`.
+type Disk = {
+    root: string,
+    name: string,
+    std: string,
+    only: string,
+    deps: Map<string, string> = {},
+    lone: string = "",
+    admitted: AdmittedSaid = NOTHING_ADMITTED,
+    /// Files the named package holds that no disk does, by where each would stand: a command's own
+    /// text, read as a source beside the ones written.
+    over: Map<string, string> = {},
+}
+
+impl Disk {
+    /// The named package's source files a receipt holds: each under `only`.
+    fn held(engine: QueryEngine) -> List<string> { package_sources(engine, self.name, "src").filter(it.starts_with(self.only)) }
+
+    /// Where a package's file stands.
+    fn on_disk(package: string, path: string) -> string {
+        if self.lone.is_empty() || package != self.name { return joined_path(self.package_root(package), path) }
+        if path == "src" { return self.root }
+        joined_path(
+            self.root,
+            if path.starts_with("src/") { path.substring(4, path.length) } else { path },
+        )
+    }
+
+    /// The names in a package's directory: a lone file's package holds that file alone.
+    fn listed(package: string, dir: string) -> List<string>? {
+        let over = if package == self.name { [file_name(p) for p, _text in self.over if dir_of(p) == self.on_disk(package, dir)] } else { [] }
+        if !self.lone.is_empty() && package == self.name { return if dir == "src" { distinct([self.lone].concat(over)) } else { [] } }
+        let names? = names_at(self.on_disk(package, dir)) else { return if over.is_empty() { null } else { over } }
+        distinct(names.concat(over))
+    }
+
+    /// What decides where each of its packages lies and what each file there says: its root and name,
+    /// the toolchain's std, each path dependency's directory, and each text laid over a file, by its
+    /// digest — a stamp the file on disk wears never answers for a text laid over it.
+    fn places_print() -> string {
+        [self.root, self.name, self.std, self.lone]
+            .concat(sorted_by(["${k}=${v}" for k, v in self.deps], text_before))
+            .concat(sorted_by(["${p} over ${digest_of(text)}" for p, text in self.over], text_before))
+            .join("\n")
+    }
+
+    /// THE PROCESS READS THROUGH THIS DISK: where each of its packages lies, the machine's store, and
+    /// the source world — every file, directory and embedded file read — set to it. One process may
+    /// hold several disks, a suite each; the one whose engine works next is entered first.
+    fn entered() {
+        use_package_places(package_places(self.root, self.name, self.std, self.deps))
+        use_machine_store(machine_layer())
+        use_source_world(
+            avra_source_world(
+                (f) -> self.text_of(self.on_disk(f.package_name, f.path_in_package)),
+                (d) -> self.listed(d.package_name, d.path_in_package),
+                "avra-tapes",
+                (f) -> disk_octets(self.package_root(f.package_name), f.path_in_package),
+                WorldPlaces {
+                    file: (f) -> self.on_disk(f.package_name, f.path_in_package),
+                    directory: (d) -> self.on_disk(d.package_name, d.path_in_package),
+                    print: self.places_print(),
+                },
+            ),
+        )
+    }
+
+    /// The text of the file at `path`: one the disk holds, or one laid over it.
+    fn text_of(path: string) -> string? { self.over.get(path) ?? text_at(path) }
+
+    /// Where a package stands: a path dependency's directory, a std package's in the toolchain, else
+    /// the root's.
+    fn package_root(package: string) -> string { package_stands(package, self.name, self.root, self.std, self.deps) }
+
+    /// Whether the `@std/meta` the named package loads is the toolchain's own, known by one word,
+    /// where it stands: the copy beside this compiler, whose shapes are the ones it crosses.
+    fn meta_is_toolchains() -> bool { normalized(self.package_root(META)) == normalized(joined_path(self.std, META_STEM)) }
+
+    /// The named package's file at `path`, as the program addresses it.
+    fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: self.name, path_in_package: path } }
+
+    /// A file on disk as the program spells it: its package, then its path.
+    fn spelled(path: string) -> string {
+        for key, dir in self.deps { if path.starts_with("${dir}/") { return "${key}/${path.substring(dir.length + 1, path.length)}" } }
+        if path.starts_with("${self.root}/") { return "${self.name}/${path.substring(self.root.length + 1, path.length)}" }
+        let std_dir = "${self.std}/std-"
+        if !path.starts_with(std_dir) { return path }
+        let rest = path.substring(std_dir.length, path.length)
+        let cut = rest.index_of("/") ?? rest.length
+        "${STD}${rest.substring(0, cut)}${rest.substring(cut, rest.length)}"
+    }
+}
+
+/// The manifest of the package at `dir`; an empty one where it has none.
+fn manifest_at(dir: string) -> Manifest { read_manifest(new_source_file("avra.toml", text_at(joined_path(dir, "avra.toml")) ?? "")) }
+
+/// The manifest at `dir` as its text reads, an empty one where it has none.
+fn manifest_source(dir: string) -> SourceFile { on_disk().manifest_source(dir) }
+
+/// The graph's read of this disk: a file's text, and a path rooted where the process stands.
+fn on_disk() -> GraphHeld { GraphHeld { text_at: text_at, absolute: rooted } }
+
+/// The toolchain's packages, by the prefix their names wear.
+const STD: string = "@std/"
+
+/// The package that holds the language's compile-time shapes, and the directory of the toolchain's std
+/// root it stands in.
+const META: string = "@std/meta"
+
+const META_STEM: string = "std-meta"
+
+// LICENSED input.door_world: what the program layer's input queries read through this world, held by its stamp
+fn text_at(path: string) -> string? { match read_text(path) { .Ok(text) -> text, .Err(_) -> null } }
+
+// LICENSED input.door_world: what the program layer's input queries read through this world, held by its stamp
+fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -> names, .Err(_) -> null } }
+
+export flag program_only {
+    description: "run the program layer alone over every file and say how long it took"
+    aliases: ["--program-only"]
+}
+
+export flag left {
+    description: "with --core or --ran, show where what doesn't agree stands; with --waits, each fn the summaries leave unsaid"
+    aliases: ["--left"]
+}
+
+export flag core {
+    description: "elaborate every fn into the core its sugars mean, and hold each sugar's type to its meaning's"
+    aliases: ["--core"]
+}
+
+export flag generators {
+    description: "make each generator the package's traits write on the program layer, with every body it reaches"
+    aliases: ["--generators"]
+}
+
+export flag program_runs {
+    description: "run each program test under the directory through the program layer's lowering, in the evaluator and natively, and hold its output to its `.expected`"
+    aliases: ["--ran"]
+}
+
+export flag all_made {
+    description: "with --ran, fail when any program test is not made on the program layer yet, as well as when one fails"
+    aliases: ["--all-made"]
+}
+
+export flag entry_run {
+    description: "build the package's program through the program layer natively, a body not lowered yet trapping by name where it's reached, and run it with --args"
+    aliases: ["--run-entry"]
+}
+
+export flag findings {
+    description: "say what every law, then every rule that reads syntax alone, finds in each file the package's program reads, rendered as `check` renders it"
+    aliases: ["--findings"]
+}
+
+export flag waits {
+    description: "hold what the items' summaries say of whether each fn the package's program reads may switch the task out to what the task survey says reading its lowered bodies"
+    aliases: ["--waits"]
+}
+
+export flag needs {
+    description: "ask each law the kinds it needs skip of each item of the files the package's program reads, and say each item where one finds something"
+    aliases: ["--needs"]
+}
+
+export flag law_witnesses {
+    description: "write each law's witness under the directory as a package of its own, named by the law"
+    aliases: ["--law-witnesses"]
+}
+
+export flag kinds {
+    description: "say every kind of finding the program layer holds, one per line, sorted"
+    aliases: ["--held"]
+}
+
+export flag link_words {
+    description: "say the package's link line read off its manifests, one word a line"
+    aliases: ["--link-words"]
+}
+
+export flag built {
+    description: "walk every body the package's program reaches, past each not lowered yet, and tally what isn't made by why"
+    aliases: ["--built"]
+}
+
+export command tapes {
+    description: "Read every file of a package off its item tapes and hold each to the parse"
+    flags: [
+        passes_shown,
+        passes_rows,
+        program_only,
+        left,
+        core,
+        program_runs,
+        all_made,
+        generators,
+        built,
+        entry_run,
+        link_words,
+        findings,
+        waits,
+        needs,
+        law_witnesses,
+        kinds,
+    ]
+    args: [file]
+    option only { description: "hold only the package's files whose path starts with this (`src/compiler/`)" }
+    option budget { description: "with --built, stop the walk after this many seconds and tally what it reached" }
+    option args { description: "with --run-entry, the arguments the program runs with, split on spaces" }
+    option share { description: "lower the share `<core>/<of>` of declared bodies a worked-ahead build hands one process, here, in its order" }
+    option first { description: "ask the lowering of the fn `<path> <name>` before anything else, and say what it answered" }
+    run: TapesCmd {}
+}
+
+/// The lowering of the fn `asked` names, as `<path> <name>`, asked as this process's first question:
+/// 0 when it answers a body, 1 when it answers none or `asked` names no fn.
+fn first_asked(engine: QueryEngine, disk: Disk, asked: string) -> int {
+    let words = asked.split(" ")
+    if words.length != 2 { return unnamed_first(asked) }
+    let lowered? = lowered_fn(engine, disk.file_at(words[0]), words[1]) else {
+        println("first: ${asked} answered no body")
+        return 1
+    }
+    println("first: ${asked} lowered, ${lowered.ins.length} instructions")
+    0
+}
+
+/// The share `asked` names, as `<core>/<of>`, lowered here as that process would: 0, or 1 when it
+/// names none.
+fn share_said(store: LayeredStore, engine: QueryEngine, disk: Disk, asked: string) -> int {
+    let words = asked.split("/")
+    let core? = parse_int(words.first() ?? "") else { return unnamed_share(asked) }
+    let of? = parse_int(words.last() ?? "") else { return unnamed_share(asked) }
+    println("share: ${asked} lowered ${share_replayed(store, engine, disk.name, core, of)}")
+    0
+}
+
+fn unnamed_share(asked: string) -> int {
+    eprintln("avra: `--share` names a share as `<core>/<of>`, not `${asked}`")
+    1
+}
+
+fn unnamed_first(asked: string) -> int {
+    eprintln("avra: `--first` names a fn as `<path> <name>`, not `${asked}`")
+    1
+}
+
+/// What every law finds in the items of every file the package's program reads, each rendered as
+/// `check` renders a diagnostic, in the order of the files' paths then their items: 0, or 1 when a finding names a law this compiler doesn't hold.
+fn findings_said(engine: QueryEngine, disk: Disk) -> int {
+    let files = [program_file(disk, f) for f in program_files(engine, disk.name)]
+    let said = flatten(
+        [file_findings(engine, h) for h in sorted_by(files, (a, b) -> text_before(a.full, b.full))],
+    )
+    if said.any(it == null) { return unheld_law() }
+    if !said.is_empty() { println([s! for s in said].join("\n\n")) }
+    0
+}
+
+/// Each fn of every file the package's program reads whose summaries say otherwise than the task
+/// survey, one per line — with `left`, each they leave unsaid too — then how many were held, how
+/// many the summaries answered, and how many disagree: 0, or 1 where any does.
+fn waits_said(engine: QueryEngine, disk: Disk, left: bool) -> int {
+    let files = sorted_by(
+        program_files(engine, disk.name),
+        (a, b) -> text_before(a.path_in_package, b.path_in_package),
+    )
+    let held = [WaitsAt { file: f, held: h } for f in files for h in waits_held(engine, f)]
+    let answered = [w for w in held if w.held.summary != null]
+    let apart = [w for w in answered if w.held.summary! != w.held.survey]
+    if left {
+        for w in [h for h in held if h.held.summary == null] {
+            println(
+                "unsaid: ${w.file.package_name}:${w.file.path_in_package} ${w.held.name} survey=${w.held.survey}",
+            )
+        }
+    }
+    for w in apart {
+        println(
+            "apart: ${w.file.package_name}:${w.file.path_in_package} ${w.held.name} summary=${w.held.summary!} survey=${w.held.survey}",
+        )
+    }
+    println(
+        "waits: ${held.length} held, ${answered.length} answered by the summaries, ${apart.length} apart",
+    )
+    if apart.is_empty() { 0 } else { 1 }
+}
+
+/// A fn held, and the file declaring it.
+type WaitsAt = { file: SourceFileAddress, held: WaitsHeld }
+
+/// Each item of every file the package's program reads where a law skipped by the kinds it needs
+/// finds something when asked, with those laws, one per line, then how many items were held and how
+/// many such: 0, or 1 where any is.
+fn needs_said(engine: QueryEngine, disk: Disk) -> int {
+    let files = sorted_by(
+        program_files(engine, disk.name),
+        (a, b) -> text_before(a.path_in_package, b.path_in_package),
+    )
+    mut held = 0
+    mut apart = 0
+    for f in files {
+        held = held + item_ids(engine, f).length
+        for n in needs_held(engine, f) {
+            apart = apart + 1
+            println(
+                "apart: ${f.package_name}:${f.path_in_package} item ${n.at.of} ${n.laws.join(" ")}",
+            )
+        }
+    }
+    println("needs: ${held} items held, ${apart} apart")
+    if apart == 0 { 0 } else { 1 }
+}
+
+/// The file `f` and where it stands on `disk`.
+fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {
+    ProgramFile {
+        file: f,
+        full: disk.on_disk(f.package_name, f.path_in_package),
+        program: disk.name,
+    }
+}
+
+/// What every law finds in the file `h`, item by item, then every rule that reads syntax alone, each rendered; absent for one whose law this
+/// compiler doesn't hold.
+fn file_findings(engine: QueryEngine, h: ProgramFile) -> List<string?> {
+    let src = new_source_file(h.full, text_at(h.full) ?? "")
+    [rendered_finding(finding_diag(f, h.full), src) for f in file_found(engine, h.file).findings]
+        .concat([render(d, src) for d in file_rule_findings(engine, h.file, src)])
+}
+
+/// A finding's diagnostic rendered, absent with it.
+fn rendered_finding(d: Diag?, src: SourceFile) -> string? {
+    let held? = d else { return null }
+    render(held, src)
+}
+
+/// Each law's witness written under `dir` as a package of its own, named by the law, for `check` and
+/// `--findings` to be held to each other over: 0, or 1 when one isn't written.
+fn witnesses_written(dir: string) -> int {
+    for l in laws {
+        let home = joined_path(dir, l.name)
+        if !witness_written(home, l.witness, l.witness_files) { return unwritten_witness(home) }
+        println("witness: ${l.name} ${home}")
+    }
+    0
+}
+
+/// Whether the package at `home` was written to hold the program `source`, beside `others` by their
+/// path in it.
+fn witness_written(home: string, source: string, others: Map<string, string>) -> bool {
+    for path, text in others {
+        match make_dirs(dir_of(joined_path(home, path))) {
+            .Ok(_) -> {},
+            .Err(_) -> { return false },
+        }
+        match write_text(joined_path(home, path), text) {
+            .Ok(_) -> {},
+            .Err(_) -> { return false },
+        }
+    }
+    match make_dirs(joined_path(home, "src")) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    match write_text(joined_path(home, "avra.toml"), WITNESS_MANIFEST) {
+        .Ok(_) -> {},
+        .Err(_) -> { return false },
+    }
+    match write_text(joined_path(home, "src/main.av"), source) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// A witness package's manifest: a program, so a build of it is held to what it refuses.
+const WITNESS_MANIFEST: string = "[package]\nname = \"witness\"\nversion = \"0.0.1\"\n\n[bin]\nname = \"witness\"\npath = \"src/main.av\"\n"
+
+/// Every kind the program layer holds, sorted, one per line: 0.
+fn held_said() -> int {
+    println(sorted_texts(held_kinds()).join("\n"))
+    0
+}
+
+fn unheld_law() -> int {
+    eprintln("tapes: a finding names a law this compiler doesn't hold")
+    1
+}
+
+fn unwritten_witness(home: string) -> int {
+    eprintln("tapes: a law's witness couldn't be written at ${home}")
+    1
+}
+
+/// Each generator the package writes, a trait's `derive` and a declaring annotation's fn, made on the
+/// program layer with every body it reaches, one not made counted by why; and each made one run over
+/// every declaration that names it, each site's item spliced and held to the site before it, which
+/// it must differ from.
+/// A site whose generator answers no directive and says nothing made nothing, as it answered.
+/// Answers 1 when a made generator says anything or splices none of what it answered. What its items mean is held by
+/// `--signatures` and `--lowered`.
+fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
+    let sources = package_sources(engine, disk.name, "src")
+    mut written = 0
+    mut annotations = 0
+    mut annotation_sites = 0
+    mut made = 0
+    mut unmade: Map<string, int> = {}
+    mut sites = 0
+    mut directives = 0
+    mut spliced = 0
+    mut answered_none = 0
+    mut failing: List<string> = []
+    mut held: List<SyntaxTape> = []
+    for path in sources {
+        let file = disk.file_at(path)
+        for g in written_generators(engine, file) {
+            let missed: Cell<List<Missed>> = Cell.new([])
+            let m? = made_generator(engine, g, missed) else { continue }
+            written = written + 1
+            annotations = annotations + by_annotation(g.kind)
+            let l = match m {
+                .Made(l) -> l,
+                .Unmade(why, at) -> {
+                    let each = missed.get()
+                    if each.is_empty() { unmade.set(why, (unmade.get(why) ?? 0) + 1) }
+                    if each.is_empty() && shown { println("left: ${why} in ${path} ${g.name}'s generator, at ${at}") }
+                    for x in each {
+                        unmade.set(x.why, (unmade.get(x.why) ?? 0) + 1)
+                        if shown { println("left: ${x.why} in ${g.name}'s generator, at ${x.symbol}") }
+                    }
+                    continue
+                },
+                .Refused(_) -> {
+                    unmade.set(refused_why(), (unmade.get(refused_why()) ?? 0) + 1)
+                    if shown { println("left: ${refused_why()} in ${path} ${g.name}'s generator") }
+                    continue
+                },
+            }
+            made = made + 1
+            println("made: ${path} ${g.name}'s generator, ${l.fns.length} bodies")
+            for over in sources {
+                let at = disk.file_at(over)
+                for site in generator_sites(engine, at) {
+                    if site.generator.name != g.name ||
+                        site.generator.kind != g.kind ||
+                        spelled_file(site.generator.file) != spelled_file(file) { continue }
+                    sites = sites + 1
+                    annotation_sites = annotation_sites + by_annotation(g.kind)
+                    let made_here = directives_made(engine, l, g, at, site)
+                    directives = directives + made_here
+                    let item = site_generated(engine, at, site)
+                    let tape = item.items.first()?.tape
+                    let fails: string? = when {
+                        !item.said.is_empty() -> "it said ${item.said[0]}"
+                        tape == null && made_here > 0 -> "it made nothing of ${made_here} directives"
+                        item.items.length > 1 -> "${item.items.length} items"
+                        _ -> null
+                    }
+                    if fails != null {
+                        failing.push("${over} ${site.name}'s ${g.name}: ${fails!}")
+                        continue
+                    }
+                    if tape == null {
+                        answered_none = answered_none + 1
+                        continue
+                    }
+                    spliced = spliced + 1
+                    held.push(tape!)
+                }
+            }
+        }
+    }
+    for f in failing { println("fails: ${f}") }
+    let witnessed = witnessing(held)
+    println(
+        "generators: ${written} written (${annotations} by annotations), ${made} made on the program layer, run over ${sites} declarations (${annotation_sites} by annotations) making ${directives} directives; not made yet: ${tallied(unmade)}",
+    )
+    println(
+        "generated items: ${spliced} of ${sites} spliced, ${answered_none} answering no directive, ${failing.length} failing; ${witnessed}",
+    )
+    if failing.is_empty() { 0 } else { 1 }
+}
+
+/// One for a generator an annotation names, none for a derive.
+fn by_annotation(k: GeneratorKind) -> int {
+    match k {
+        .Derive -> 0,
+        .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> 1,
+    }
+}
+
+/// How many directives the made generator `l` of `g` makes over the declaration `site` stands on in
+/// `file`; none where it doesn't run.
+fn directives_made(
+    engine: QueryEngine,
+    l: Lowered,
+    g: GeneratorAt,
+    file: SourceFileAddress,
+    site: GeneratorSite,
+) -> int {
+    match generator_run(engine, l, g, file, site.name, site.handed, budgets_of()) {
+        .Ran(made, _) -> made.length,
+        .Stopped(_, _, _) or .Trapped(_) -> 0,
+    }
+}
+
+/// The generators `file` writes: each trait's `derive`, then each declaring annotation's fn.
+fn written_generators(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorAt> {
+    let names = file_declares(engine, file).names
+    [GeneratorAt { file: file, name: d.name, kind: GeneratorKind.Derive } for d in names if d.kind == ItemKind.Trait]
+        .concat(
+            [GeneratorAt { file: file, name: d.name, kind: k! } for d in names if d.kind == ItemKind.Fn && d.exported for k in [annotation_kind(engine, file, d.name)] if k != null],
+        )
+}
+
+/// Every fn of the package elaborated: each sugar a meaning rewrote, and whether the core it means
+/// is typed as its own rule typed it. Answers 1 when any differs.
+fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
+    mut sugars = 0
+    mut alike = 0
+    mut seated = 0
+    mut untyped = 0
+    mut statements = 0
+    mut nodes = 0
+    mut differing: List<string> = []
+    for path in disk.held(engine) {
+        let file = disk.file_at(path)
+        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+            let body? = elaborated_fn(engine, file, own.name) else { continue }
+            let site = "${path} ${own.name}"
+            statements = statements + body.statements.length
+            let roots = [e.index for e in body.sugars]
+            for at, surface in body.surface {
+                let surface? = surface else { continue }
+                let core? = body.core[at] else { continue }
+                if roots.contains(at) { continue }
+                nodes = nodes + 1
+                let seat = body.seat_at(at)
+                if surface.spelled() != core.spelled() && !meets_its_seat(surface, core, seat) {
+                    differing.push(differs(site, "a node ", surface, core, seat))
+                }
+            }
+            for e in body.sugars {
+                sugars = sugars + 1
+                let surface = body.surface[e.index]
+                let core = body.core[e.index]
+                if surface == null || core == null {
+                    untyped = untyped + 1
+                    if shown {
+                        println(
+                            "untyped: ${site}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
+                        )
+                    }
+                }
+                let surface? = surface else { continue }
+                let core? = core else { continue }
+                if surface.spelled() == core.spelled() {
+                    alike = alike + 1
+                    continue
+                }
+                let seat = body.seat_at(e.index)
+                if meets_its_seat(surface, core, seat) {
+                    seated = seated + 1
+                    continue
+                }
+                differing.push(differs(site, "", surface, core, seat))
+            }
+        }
+    }
+    if shown { for d in differing { println("differs: ${d}") } }
+    println(
+        "core: ${sugars} sugars and ${statements} statements meant; sugars ${alike} typed alike, ${seated} answering their seat, ${untyped} untyped on a side; ${nodes} other nodes typed on both sides; ${differing.length} differing",
+    )
+    if differing.is_empty() { 0 } else { 1 }
+}
+
+/// A node of the fn at `site` typed one way on the surface and another in the core.
+fn differs(site: string, what: string, surface: SignedType, core: SignedType, seat: SignedType?) -> string {
+    "${site}: ${what}${surface.spelled()} on the surface, ${core.spelled()} in the core, ${seat?.spelled() ?? "no seat"} wanted"
+}
+
+/// Whether a core answering its seat's want stands for a surface type that fits that seat.
+fn meets_its_seat(surface: SignedType, core: SignedType, seat: SignedType?) -> bool {
+    let wanted? = seat else { return false }
+    core.spelled() == wanted.spelled() && surface.reaches(wanted)
+}
+
+/// The source at `lo` in the package's file `path`, one line of it at most.
+fn snippet(disk: Disk, path: string, lo: int) -> string {
+    let text = text_at(disk.on_disk(disk.name, path)) ?? ""
+    let rest = text.substring(lo, if lo + 60 < text.length { lo + 60 } else { text.length })
+    let line_end = rest.index_of("\n")
+    if line_end < 0 { rest } else { rest.substring(0, line_end) }
+}
+
+/// A tally, most first, as `what count` pairs.
+fn tallied(counts: Map<string, int>) -> string {
+    let most = sorted_by([k for k, _n in counts], (a, b) -> counts.get(a)! > counts.get(b)!)
+    [k + " " + "${counts.get(k)!}" for k in most].join(", ")
+}
+
+/// The package `path` stands in: the nearest directory at or above it holding a manifest.
+fn package_holding(path: string) -> string? {
+    if text_at(joined_path(path, "avra.toml")) != null { return path }
+    let up = dir_of(path)
+    if up == path || up == "" { null } else { package_holding(up) }
+}
+
+/// A program test: the package root it is built as, its source, the output it must print — absent
+/// for one a suite runs as a child, whose own end is its proof — and whether the evaluator runs it.
+type ProgramTest = { root: string, path: string, expected: string?, evaluated: bool, child: RefusesCall? = null }
+
+/// Every program test the package at `root`'s suites run, as `avra test` finds them, that stands
+/// at or under `dir` and whose path under `root` starts with `only`.
+fn program_tests(root: string, dir: string, only: string) -> List<ProgramTest> {
+    [t for r in suite_roots(root) for t in programs_in(r) if (t.path == dir || t.path.starts_with("${dir}/")) &&
+        t.path.substring(root.length + 1, t.path.length).starts_with(only)]
+}
+
+/// The packages a test of the package at `root` proves: itself, then each package nested under its
+/// sources, in the order the directories list them.
+fn suite_roots(root: string) -> List<string> { [root].concat(nested_roots(joined_path(root, "src"))) }
+
+/// The packages nested under the directory `dir`: each directory holding a manifest, never one
+/// inside it.
+fn nested_roots(dir: string) -> List<string> {
+    flatten(
+        [nested_under(joined_path(dir, n)) for n in sorted_texts(names_at(dir) ?? []) if is_a_dir(joined_path(dir, n))],
+    )
+}
+
+fn nested_under(dir: string) -> List<string> { if exists_at(joined_path(dir, "avra.toml")) { [dir] } else { nested_roots(dir) } }
+
+/// The program tests the package at `root` holds as its own, read off its sources and the markers
+/// beside them: each that prints the text beside it (`.expected`, and `.native-only` where it runs
+/// natively alone), then each run as a child that must end as a marker says (`.refuses`, a trap;
+/// `.verdict`, a failed verdict), its voice the marker's text.
+fn programs_in(root: string) -> List<ProgramTest> {
+    let disk? = disk_at(root, "") else { return [] }
+    let engine = query_engine(
+        program_store_at(joined_path(root, ".avra-cache/tapes")),
+        avra_fact_definitions(),
+        disk.name,
+    )
+    let files = sorted_texts([joined_path(root, f) for f in root_sources(engine, disk.name)])
+    let printing = [ProgramTest {
+        root: root,
+        path: p,
+        expected: unended(text_at(marked_beside(p, "expected")) ?? ""),
+        evaluated: !exists_at(marked_beside(p, "native-only")),
+        child: null,
+    } for p in files if exists_at(marked_beside(p, "expected"))]
+    printing
+        .concat(
+            [ProgramTest { root: root, path: p, expected: null, evaluated: false, child: c } for p in files for c in child_calls(p)],
+        )
+}
+
+/// One call per marker beside `path` that says how its child must end.
+fn child_calls(path: string) -> List<RefusesCall> {
+    [RefusesCall {
+        path: path,
+        voice: unended(text_at(marked_beside(path, e.marker())) ?? ""),
+        end: e,
+    } for e in [ChildEnd.Trap, ChildEnd.Verdict] if exists_at(marked_beside(path, e.marker()))]
+}
+
+/// The marker `extension` beside the source `path`.
+fn marked_beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
+
+/// `text` without the one line end that closes it.
+fn unended(text: string) -> string { if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text } }
+
+/// The line at `at`, quoted, or the end where there's none.
+fn line_at(lines: List<string>, at: int) -> string { if at < lines.length { "`${lines[at]}`" } else { "the end" } }
+
+/// What running program tests came to: how many were made, how many printed their `.expected` in
+/// each engine, each failing run, and each test not made yet counted by why.
+type RanTally = {
+    made: int = 0,
+    evaluated: int = 0,
+    native: int = 0,
+    failing: List<string> = [],
+    unmade: Map<string, int> = {},
+    proved: List<string> = [],
+    left: List<string> = [],
+    wrong: List<string> = [],
+    lines: List<string> = [],
+    /// How many programs' evaluator legs ran because no agreement of theirs stood, and in how long.
+    owed: int = 0,
+    owed_ns: int = 0,
+}
+
+/// Each program test the suites run under `dir` whose path starts with the receipt's `only`, as `avra
+/// test` finds them: each that prints made on the program layer as the package it stands in and run
+/// as the suite's case runner runs one, in the evaluator and natively, under a case's schedules and
+/// clock, each schedule's output held to the test's `.expected`; one not made yet counted by why;
+/// each run as a child counted, not run here. Answers 1 when a made test fails, or when `all_made`
+/// asks and one that prints is not made yet.
+fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool, all_made: bool) -> int {
+    let tests = program_tests(disk.root, dir, disk.only)
+    let printing = tests.filter(it.expected != null)
+    let roots = distinct([t.root for t in printing])
+    mut tally = RanTally {}
+    for root in roots {
+        let mine = printing.filter(it.root == root)
+        if root == disk.root {
+            disk.entered()
+            tally = ran_in(
+                engine,
+                disk,
+                (path: string) -> disk.spelled(path),
+                mine,
+                shown,
+                tally,
+                null,
+            )
+            continue
+        }
+        let nested? = disk_at(root, "") else { return std_unfound() }
+        let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+        let inner = query_engine(store, avra_fact_definitions(), nested.name)
+        tally = ran_in(
+            inner,
+            nested,
+            (path: string) -> disk.spelled(path),
+            mine,
+            shown,
+            tally,
+            null,
+        )
+        inner.frontier_kept()
+        let _ = store.saved()
+    }
+    for f in tally.failing { println("fails: ${f}") }
+    if shown {
+        for t in tests { println("found: ${disk.spelled(t.path)}") }
+        for t in tests.filter(it.expected == null) { println("not run here: ${disk.spelled(t.path)} runs as a child") }
+    }
+    println(
+        "ran: ${tests.length} program tests found, ${printing.length} printing, ${tests.length - printing.length} run as a child and not run here; ${tally.made} made on the program layer, ${tally.evaluated} printing their `.expected` in the evaluator, ${tally.native} natively, ${tally.failing.length} runs failing; not made yet: ${tallied(tally.unmade)}",
+    )
+    if tally.failing.is_empty() && (!all_made || tally.made == printing.length) { 0 } else { 1 }
+}
+
+/// The program tests `tests`, all standing in the package on `disk`, made through `engine` and run,
+/// added to `tally`, each named as `spell` names its path.
+fn ran_in(
+    engine: QueryEngine,
+    disk: Disk,
+    spell: fn(string) -> string,
+    tests: List<ProgramTest>,
+    shown: bool,
+    tally: RanTally,
+    agreeing: string?,
+) -> RanTally {
+    let packaged = linking(engine, disk)
+    let libraries = linked_libraries(engine, disk)
+    mut asking = engine
+    mut made = tally.made
+    mut evaluated = tally.evaluated
+    mut native = tally.native
+    mut failing = tally.failing
+    mut unmade = tally.unmade
+    mut proved = tally.proved
+    mut left = tally.left
+    mut wrong = tally.wrong
+    mut lines = tally.lines
+    mut owed = tally.owed
+    mut owed_ns = tally.owed_ns
+    for p in tests {
+        let path = p.path.substring(disk.root.length + 1, p.path.length)
+        let label = spell(p.path)
+        let expected = p.expected ?? ""
+        let kept = joined_path(disk.root, ".avra-cache/tapes-ran/${path.replace("/", "_")}")
+        let got: Cell<MadeProgram?> = Cell.new(null)
+        let maker = asking
+        let trapped = guarded(
+            () -> {
+                if !trap_hook().is_empty() && path.ends_with(trap_hook()) { defect("the making of ${path} trapped, as AVRA_RAN_TRAP asks") }
+                got.set(made_program(maker, disk.file_at(path)))
+                true
+            },
+        )
+        if trapped != null {
+            let said = "the compiler trapped making it: ${trapped ?? ""}"
+            failing.push("${label} (making): ${said}")
+            wrong.push("${label}: ${said}")
+            lines.push("${label}: ${said}")
+            asking = query_engine(
+                program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
+                avra_fact_definitions(),
+                disk.name,
+            )
+            continue
+        }
+        let lowered = match got.get()! {
+            .Made(l) -> l,
+            .Unmade(why, at) -> {
+                unmade.set(why, (unmade.get(why) ?? 0) + 1)
+                left.push("${label}: ${why}, at ${at}")
+                lines.push("${label}: ${why}, at ${at} — not made on the program layer yet")
+                if shown { println("left: ${why} in ${label}, at ${at}") }
+                continue
+            },
+            .Refused(_) -> {
+                unmade.set(refused_why(), (unmade.get(refused_why()) ?? 0) + 1)
+                left.push("${label}: ${refused_why()}")
+                lines.push("${label}: ${refused_why()} — not made on the program layer yet")
+                if shown { println("left: ${refused_why()} in ${label}") }
+                continue
+            },
+        }
+        made = made + 1
+        let proof = "${kept}.proof"
+        let reads = agreement(asking, disk, p, agreeing)
+        let agreed = reads != null && text_at(proof) == reads
+        if p.evaluated && !agreed { owed = owed + 1 }
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
+        let began = now_ns()
+        let heard = if p.evaluated && !agreed {
+            [
+                Ran {
+                    engine: "eval",
+                    differs: evaluated_apart(
+                        lowered with { libraries: libraries },
+                        ProgramCall {
+                            symbol: ENTRY_SYMBOL,
+                            label: label,
+                            expected: expected,
+                            evaluated: true,
+                        },
+                        "${kept}.eval",
+                    ),
+                },
+            ]
+        } else {
+            []
+        }
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
+        owed_ns = owed_ns + now_ns() - began
+        if p.evaluated && agreed { evaluated = evaluated + 1 }
+        agreement_kept(proof, reads, heard)
+        let legs = heard
+            .concat(
+                [
+                    Ran {
+                        engine: "native",
+                        differs: native_differs(heard_as_case(lowered, label, expected), kept, packaged),
+                    },
+                ],
+            )
+        for r in legs {
+            let differs? = r.differs else {
+                if r.engine == "eval" { evaluated = evaluated + 1 } else { native = native + 1 }
+                continue
+            }
+            failing.push("${label} (${r.engine}): ${differs}")
+            wrong.push(differs)
+            lines.push(differs)
+        }
+        if legs.all(it.differs == null) {
+            proved.push(label)
+            lines
+                .push("${label}: ${if p.evaluated { "eval == native" } else { "native" }} == expected")
+        }
+    }
+    RanTally {
+        made: made,
+        evaluated: evaluated,
+        native: native,
+        failing: failing,
+        unmade: unmade,
+        proved: proved,
+        left: left,
+        wrong: wrong,
+        lines: lines,
+        owed: owed,
+        owed_ns: owed_ns,
+    }
+}
+
+/// THE AGREEMENT A PROGRAM TEST'S EVALUATOR LEG IS KEPT BY, as the old runner keeps it: what the
+/// leg read — the program, the text it must print and every file its entry reaches — each by its
+/// text, under the compiler `agreeing` names, which agreed. It stands while every read does, and
+/// nothing else judges it; absent where no agreement is kept.
+fn agreement(engine: QueryEngine, disk: Disk, p: ProgramTest, agreeing: string?) -> string? {
+    let compiler? = agreeing else { return null }
+    let file = disk.file_at(p.path.substring(disk.root.length + 1, p.path.length))
+    let expected = "${p.path.substring(0, p.path.length - 3)}.expected"
+    let reads = distinct(
+        [p.path, expected]
+            .concat([disk.on_disk(f.package_name, f.path_in_package) for f in entry_files(engine, file)]),
+    )
+    digest_of([compiler].concat(["${r}\n${text_at(r) ?? ""}" for r in reads]).join("\n\n"))
+}
+
+/// The agreement `reads` kept at `proof` where the evaluator leg `heard` ran and agreed.
+fn agreement_kept(proof: string, reads: string?, heard: List<Ran>) {
+    let kept? = reads else { return }
+    if heard.is_empty() || heard.any(it.differs != null) { return }
+    let _ = write_text(proof, kept)
+}
+
+/// `avra test` of `paths`, all of one package, on the program layer: every program test the suites
+/// run at or under them, made there and run in both engines, each said as the suite says it, then
+/// how many proved. What the layer can't prove yet — a suite's spec cases, a test run as a child —
+/// refuses the whole run, named, before anything runs.
+export fn program_tested(paths: List<string>, timed: bool = false) -> int {
+    let first = rooted(paths[0])
+    let root = if is_a_dir(first) { package_root(first) ?? first } else { file_home(first) ?? dir_of(first) }
+    let scope = if paths.length == 1 && rooted(paths[0]) == root { [] } else { [p for p in paths] }
+    let tests = [t for t in program_tests(root, root, "") if in_scope(scope, t.path)]
+    let roots = [r for r in suite_roots(root) if r == root || in_scope(scope, r) || scope.any(under_dir(it, r))]
+    mut suites: List<SuiteRead> = []
+    for r in roots {
+        let disk? = disk_at(r, "") else { return std_unfound() }
+        let store = program_store_at(joined_path(r, ".avra-cache/tapes"))
+        let engine = query_engine(store, avra_fact_definitions(), disk.name)
+        let refused = manifests_door(engine, disk)
+        if refused != null { return refused! }
+        let specs = [disk.file_at(f) for f in package_sources(engine, disk.name, "src") if in_scope(scope, joined_path(r, f)) && writes_specs(engine, disk.file_at(f))]
+        suites
+            .push(
+                SuiteRead {
+                    disk: disk,
+                    store: store,
+                    engine: engine,
+                    specs: specs,
+                    tests: tests.filter(it.root == r),
+                },
+            )
+    }
+    if tests.is_empty() && suites.all(it.specs.is_empty()) { return if scope.is_empty() { no_tests_here() } else { names_no_test(paths[0]) } }
+    let children = flatten([[t.child! for t in s.tests if t.child != null] for s in suites])
+    if !children.is_empty() {
+        for s in suites {
+            s.disk.entered()
+            let wrong = children_wrong(
+                s.engine,
+                s.disk,
+                [t.child! for t in s.tests if t.child != null],
+            )
+            if wrong != null {
+                eprintln(wrong!)
+                return 1
+            }
+        }
+        println("${counted(children.length, "refusal")} proved")
+    }
+    let spell = (path: string) -> relative_path(here(), joined_path(dir_of(path), stem_of(path)))
+    mut red = 0
+    for s in suites {
+        let printing = s.tests.filter(it.expected != null)
+        if printing.is_empty() && s.specs.is_empty() { continue }
+        s.disk.entered()
+        let binary = joined_path(s.disk.root, "build/suite")
+        let status = if s.specs.is_empty() {
+            0
+        } else {
+            match suite_ran(s.engine, s.disk, s.specs, binary, timed) {
+                .Ok(status) -> status,
+                .Err(code) -> { return code },
+            }
+        }
+        let stands = suite_stands(s, printing)
+        let tally = ran_in(
+            s.engine,
+            s.disk,
+            spell,
+            printing,
+            false,
+            RanTally {},
+            compiler_identity(),
+        )
+        if !stands { eprintln(proofs_said(tally.owed, printing.length, tally.owed_ns / 1000000)) }
+        s.engine.frontier_kept()
+        let _ = s.store.saved()
+        // LICENSED input.timing: a phase timing is reported, never an input of what is found
+        if env("AVRA_QUERY_TIMES") == "1" {
+            eprintln(
+                "worked: ${s.engine.worked_count()} answers here; ${worked_by_query(s.engine)}",
+            )
+        }
+        for l in tally.lines { println(l) }
+        let green = status == 0 && tally.proved.length == printing.length
+        if green && !printing.is_empty() { println("${counted(tally.proved.length, "program")} proved") }
+        if !green {
+            let code = judged(binary, if status == 0 { 1 } else { status })
+            if !every_suite() { return code }
+            if red == 0 { red = code }
+        }
+    }
+    red
+}
+
+/// WHETHER A SUITE STANDS as the old runner's kept binary does: every file its package reads and
+/// every text its programs must print as they were when it last ran, under this compiler. One that
+/// stands owes no proof and says none; one that doesn't is kept as it stands now.
+fn suite_stands(s: SuiteRead, printing: List<ProgramTest>) -> bool {
+    let at = joined_path(s.disk.root, ".avra-cache/tapes-ran/suite.agreed")
+    let reads = [s.disk.on_disk(f.package_name, f.path_in_package) for f in program_files(s.engine, s.disk.name)]
+        .concat(["${p.path.substring(0, p.path.length - 3)}.expected" for p in printing])
+    let print = digest_of(
+        [compiler_identity()].concat(["${r}\n${text_at(r) ?? ""}" for r in reads]).join("\n\n"),
+    )
+    if text_at(at) == print { return true }
+    let _ = make_dirs(dir_of(at))
+    let _ = write_text(at, print)
+    false
+}
+
+/// The compiler a kept artifact was made by, as it emits: its own binary, by digest (`own_print`), and
+/// the ways its environment has it emit (`emit_modes`) — each another object of the same code. Where
+/// the binary can't be read, a name this process mints once (`unnamed_print`), so nothing it keeps is
+/// another's and nothing another kept is its.
+once fn compiler_identity() -> string { "${own_print() ?? unnamed_print()} emits ${emit_modes()}" }
+
+/// One suite a test run proves: its package as the program layer reads it, the store and engine it
+/// is read through, the files whose specs it holds and its program tests.
+type SuiteRead = { disk: Disk, store: LayeredStore, engine: QueryEngine, specs: List<SourceFileAddress>, tests: List<ProgramTest> }
+
+/// The first of `children` — program tests run as a child, each proved by how it ends — that ends
+/// otherwise than its marker says, in either engine, said; absent when every one holds. Each is made
+/// on the program layer: built and run natively in the minimal environment, then evaluated by this
+/// compiler's own eval leg in a process of its own, each judged as the old runner judges a leg.
+fn children_wrong(engine: QueryEngine, disk: Disk, children: List<RefusesCall>) -> string? {
+    let packaged = linking(engine, disk)
+    let libraries = linked_libraries(engine, disk)
+    for call in children {
+        let path = call.path.substring(disk.root.length + 1, call.path.length)
+        let lowered = match made_program(engine, disk.file_at(path)) {
+            .Made(l) -> l,
+            .Unmade(why, at) -> { return "${call.path}: not made on the program layer yet — ${why}, at ${at}" },
+            .Refused(_) -> { return "${call.path}: ${refused_why()}" },
+        }
+        let stem = joined_path(disk.root, ".avra-cache/tapes-ran/${path.replace("/", "_")}.child")
+        let refused = unbuilt(lowered, stem, packaged)
+        if refused != null { return "${call.path}: native build failed — ${refused!}" }
+        let native = leg_or_host(stem, [], tested_env(), "native", call)
+        if native != null { return "${call.path}: ${native!}" }
+        let self_binary? = own_binary() else { return "avra: could not find this compiler's own binary to run the evaluator leg" }
+        let by_eval = leg_or_host(
+            self_binary,
+            refuse_eval_words(disk.root, call.path),
+            compiler_env(),
+            "eval",
+            call,
+        )
+        if by_eval != null { return "${call.path}: ${by_eval!}" }
+    }
+    null
+}
+
+/// A child-run program test's eval leg on the program layer: the program the file `path` of the
+/// package at `root` runs, made there and evaluated in this process, ending as `avra run` ends it —
+/// `live`, every line printed as it is printed, as `avra run --eval` runs it; one its laws refuse is
+/// refused in their words as a build refuses it, and one not made yet says so: each ends 3, no end
+/// a test asks for.
+export fn program_refuse_evaluated(root: string, path: string, live: bool = false) -> int {
+    let disk? = disk_at(root, "") else { return std_unfound() }
+    disk_evaluated(disk, disk.file_at(path.substring(root.length + 1, path.length)), path, live)
+}
+
+/// `program_refuse_evaluated` of the lone source file at `path`, standing in no package: read as a
+/// package of that one file, its store beside it.
+export fn lone_refuse_evaluated(path: string, live: bool = false) -> int {
+    let disk? = lone_disk_at(path) else { return std_unfound() }
+    disk_evaluated(disk, disk.file_at("src/${disk.lone}"), path, live)
+}
+
+/// What the program `entry` of `disk` runs, written at `path`, made and evaluated in this process.
+fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool) -> int {
+    let engine = query_engine(
+        program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
+        avra_fact_definitions(),
+        disk.name,
+    )
+    let refusing = program_refused(engine, entry, disk.name, vouched_files(engine, disk))
+    if !refusing.is_empty() {
+        let _ = refusals_said(engine, disk, refusing, entry, leg: !live)
+        return 3
+    }
+    let lowered = match made_program(engine, entry) {
+        .Made(l) -> l,
+        .Unmade(why, at) -> {
+            eprintln(not_made_yet(why, at, path))
+            return 3
+        },
+        .Refused(files) -> {
+            let _ = refusals_said(engine, disk, files, entry, leg: !live)
+            return 3
+        },
+    }
+    match program_ended(
+        lowered with { libraries: linked_libraries(engine, disk, entry) },
+        ENTRY_SYMBOL,
+        live,
+    ) {
+        .Ok(end) -> ended_as(end),
+        .Err(words) -> {
+            eprintln("avra: ${words}")
+            3
+        },
+    }
+}
+
+/// The suite of every case `files` write, made on the program layer, built at `binary` and run at
+/// the terminal: the status it left by, or the exit its refusal spoke.
+fn suite_ran(
+    engine: QueryEngine,
+    disk: Disk,
+    files: List<SourceFileAddress>,
+    binary: string,
+    timed: bool,
+) -> Result<int, int> {
+    let packaged = linking(engine, disk)
+    let kept = joined_path(
+        disk.root,
+        "${SUITE_KEPT}/suite-${suite_key(engine, disk, files, packaged)}.bin",
+    )
+    let stood = exists_at(kept)
+    if !stood {
+        let refused = suite_made(engine, disk, files, kept, packaged)
+        if refused != null { return .Err(refused!) }
+    }
+    if timed { eprintln(hit_line(stood)) }
+    let _ = make_dirs(dir_of(binary))
+    if !file_placed(kept, binary) {
+        eprintln("avra: the suite couldn't be placed: ${binary}")
+        return .Err(1)
+    }
+    match run_binary(binary) {
+        .Ok(exit) -> .Ok(match exit { .Clean -> 0, .Code(n) -> n, .Signal(_, _) -> 2 }),
+        .Err(e) -> .Err(refused_by_host(e)),
+    }
+}
+
+/// The suite of every case `files` write, made on the program layer and linked at `kept`, the one
+/// suite binary its directory keeps; absent when it was, else the exit its refusal spoke. A file the
+/// cases reach that a law refuses — a file of cases, or one they use — is refused first, in the law's
+/// words, as a run of them says them: a case is judged before it is made, and a refusal the laws
+/// found is never said as a body the layer can't make yet.
+/// The files the cases `files` write reach, each once: themselves, then what each uses, in the order
+/// the cases are read.
+fn suite_reach(engine: QueryEngine, files: List<SourceFileAddress>) -> List<SourceFileAddress> {
+    let all = [r for f in files for r in [f].concat(entry_files(engine, f))]
+    let spelled = [spelled_file(f) for f in all]
+    [f for j, f in all if spelled.index_of(spelled[j]) == j]
+}
+
+fn suite_made(
+    engine: QueryEngine,
+    disk: Disk,
+    files: List<SourceFileAddress>,
+    kept: string,
+    packaged: Linking,
+) -> int? {
+    let reached = suite_reach(engine, files)
+    let refusing = [f for f in reached if file_law_diags(engine, program_file(disk, f)).any(refuses(it))]
+    if !refusing.is_empty() { return refusals_said(engine, disk, refusing, refusing[0]) }
+    // a case a member law refuses — a method, a field, a type it asks of what has none — is refused in
+    // that law's words, as its file's laws are, never made and said as a body the layer can't make
+    let held = [program_file(disk, f) for f in reached]
+    let cased = flatten([case_law_diags(engine, h) for h in held])
+    if cased.any(refuses(it)) {
+        println(
+            rendered_among(cased, [new_source_file(h.full, text_at(h.full) ?? "") for h in held]),
+        )
+        return 1
+    }
+    let made = match made_suite(
+        engine,
+        files,
+        (f: SourceFileAddress) -> disk.on_disk(f.package_name, f.path_in_package),
+    ) {
+        .Ok(m) -> m,
+        .Err(why) -> {
+            return program_door_refused(
+                "test",
+                "a suite whose cases reach a body not made yet: ${why}",
+            )
+        },
+    }
+    let staged = staged_beside(kept)
+    let refused = unbuilt(made.lowered, staged, packaged)
+    if refused != null {
+        for f in [staged, "${staged}.o"] { let _ = remove(f) }
+        eprintln("avra: the suite did not build: ${refused!}")
+        return 1
+    }
+    if !file_placed(staged, kept) {
+        eprintln("avra: the suite couldn't be kept: ${kept}")
+        return 1
+    }
+    for name in names_at(dir_of(kept)) ?? [] {
+        if joined_path(dir_of(kept), name) != kept { let _ = remove(joined_path(dir_of(kept), name)) }
+    }
+    null
+}
+
+/// Where a package keeps its suite binary, under its root.
+const SUITE_KEPT: string = ".avra-cache/tapes-build/suite"
+
+/// WHAT A SUITE BINARY IS MADE OF, as one key: this compiler, by its own binary's digest; the spec
+/// files it runs; the text of every file the package reads; whether the runtime's hot leaves are
+/// inlined; and every file its link reads, by digest. A suite whose key stands is the binary kept.
+fn suite_key(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, packaged: Linking) -> string {
+    let reads = [disk.on_disk(f.package_name, f.path_in_package) for f in program_files(engine, disk.name)]
+    digest_of(
+        [compiler_identity(), if inlines_runtime() { "inlined" } else { "calls" }]
+            .concat([spelled_file(f) for f in files])
+            .concat(["${r}\n${text_at(r) ?? ""}" for r in reads])
+            .concat(linked_digests(packaged.words))
+            .join("\n\n"),
+    )
+}
+
+/// The test hook that kills a build between placing its binary and saving its store, read once a
+/// process.
+once fn place_kill_hook() -> string {
+    // LICENSED input.debug_flag: a test hook that kills a build after its binary is placed and before its store is saved, so a store a killed build leaves is witnessed
+    env("AVRA_KILL_AFTER_PLACE") ?? ""
+}
+
+/// The test hook naming a program test whose making traps, read once a process.
+once fn trap_hook() -> string {
+    // LICENSED input.debug_flag: a test hook that traps the making of the program test it names, so the guard over each test's making is witnessed
+    env("AVRA_RAN_TRAP") ?? ""
+}
+
+/// How the evaluator's run of the program test `pr` differs from what it expects, run in a process
+/// of its own as a suite runs it, so a test that signals or ends the process that runs it ends only
+/// that one: absent when it printed what it must. `kept` is where that process leaves its answer.
+fn evaluated_apart(lowered: Lowered, pr: ProgramCall, kept: string) -> string? {
+    let _ = make_dirs(dir_of(kept))
+    match answered_apart(() -> quarrel(lowered, pr).first() ?? "", kept, EVALUATED_WITHIN_MS) {
+        .Answered(said) -> if said.is_empty() { null } else { said },
+        .Ended -> ended_apart(pr.label),
+        .Outlasted -> outlasted_apart(pr.label),
+    }
+}
+
+/// How long the evaluator's run of one program test may take before it is ended and fails.
+const EVALUATED_WITHIN_MS: int = 120000
+
+/// The package's program made on the program layer, a body not lowered yet trapping by name, built
+/// natively and run with `argv` split on spaces: what it printed and how it left.
+fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
+    let bin = read_manifest(
+        new_source_file("avra.toml", text_at(joined_path(disk.root, "avra.toml")) ?? ""),
+    )
+        .bin ?? "src/main.av"
+    let lowered = match made_program(engine, disk.file_at(bin), true) {
+        .Made(l) -> l,
+        .Unmade(why, at) -> {
+            println("unmade: ${why}, at ${at}")
+            return 1
+        },
+        .Refused(files) -> { return refusals_said(engine, disk, files, disk.file_at(bin)) },
+    }
+    let stem = joined_path(disk.root, ".avra-cache/tapes-run/${file_name(disk.root)}")
+    let refused = unbuilt(lowered, stem, linking(engine, disk))
+    if refused != null {
+        println("unbuilt: ${refused!}")
+        return 1
+    }
+    let running = cmd(tool_at(stem, stem), [w for w in argv.split(" ") if !w.is_empty()]) with { timeout: secs(60) }
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    match running.outcome() {
+        .Ok(o) -> {
+            println("stdout: ${o.out.stdout}")
+            println("stderr: ${o.out.stderr}")
+            println("exit: ${exit_spelled(o.exit)}")
+            if clean(o.exit) { 0 } else { 1 }
+        },
+        .Err(e) -> {
+            println("didn't run: ${e.describe().message}")
+            1
+        },
+    }
+}
+
+/// The objects and flags the packages a program on `disk` reaches link with, read off their
+/// manifests, the packages in name order: for a non-host `target`, the wasm objects each names.
+fn linked_words(engine: QueryEngine, disk: Disk, shared: bool = false, target: string = "") -> List<
+    string,
+> {
+    program_link_words(
+        engine,
+        disk.name,
+        LinkRead {
+            root_of: (p: string) -> disk.package_root(p),
+            manifest_of: (p: string) -> manifest_at(disk.package_root(p)),
+            // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+            world: LinkWorld { env: (n: string) -> env(n), there: (path: string) -> exists_at(path) },
+        },
+        shared,
+        target,
+    )
+}
+
+/// The packages a program on `disk` reaches, in name order.
+fn reached_packages(engine: QueryEngine, disk: Disk) -> List<string> { program_packages(engine, disk.name) }
+
+/// The libraries the packages a program on `disk` reaches build for the evaluator to open, the
+/// packages in name order; for the program `entry`, each beside the externs that program reaches its
+/// C for.
+fn linked_libraries(engine: QueryEngine, disk: Disk, entry: SourceFileAddress? = null) -> List<
+    LinkedPackage,
+> {
+    [l! for p in reached_packages(engine, disk) for l in [manifest_library(manifest_at(disk.package_root(p)), externs_of(engine, entry, p))] if l != null]
+}
+
+/// The externs the program `entry` reaches the C of the package `package` for; none where no program
+/// is named.
+fn externs_of(engine: QueryEngine, entry: SourceFileAddress?, package: string) -> List<string> {
+    let e? = entry else { return [] }
+    externs_reached(engine, e, package)
+}
+
+/// How a program on `disk` is linked: its packages' objects and flags, and whether every symbol of
+/// the image stands in its dynamic table, as it must where a package it reaches names them.
+type Linking = { words: List<string>, names_symbols: bool }
+
+/// How the program on `disk` is linked, as a binary emitted unoptimised is: a suite and a child-run
+/// program test are.
+fn linking(engine: QueryEngine, disk: Disk) -> Linking {
+    Linking {
+        words: linked_words(engine, disk).concat(stack_words("-O0")),
+        names_symbols: names_its_symbols(engine, disk),
+    }
+}
+
+/// Whether a package the program on `disk` reaches resolves the program's own symbols by name.
+fn names_its_symbols(engine: QueryEngine, disk: Disk) -> bool {
+    reached_packages(engine, disk).any((p) -> manifest_at(disk.package_root(p)).dynamic_symbols)
+}
+
+/// What holding each spliced item to the one spliced before it says: the last two held to each
+/// other, or that there were never two.
+fn witnessing(held: List<SyntaxTape>) -> string {
+    if held.length < 2 { return "no two sites to witness the item comparison by" }
+    let last_two = held.drop(held.length - 2)
+    if item_difference(last_two[1], last_two[0]) == null { "an item held to another site's copy reads alike: the comparison can't fail" } else { "an item held to another site's copy differs, as it must" }
+}
+
+/// The link line the manifests say for the program on `disk`, one word a line.
+fn link_words_held(engine: QueryEngine, disk: Disk) -> int {
+    for w in linked_words(engine, disk) { println(w) }
+    0
+}
+
+/// No std stands where this compiler looks for one: said, and nothing built — exit 2.
+fn std_unfound() -> int {
+    eprintln("avra: no std stands beside this compiler — looked for ${std_roots().join(" and ")}")
+    2
+}
+
+/// An evaluator's run that was still running at its bound, and was ended.
+fn outlasted_apart(label: string) -> string {
+    "${label}: eval FAILED\nits process ran past ${EVALUATED_WITHIN_MS / 1000} s and was ended"
+}
+
+/// An evaluator's run that ended its own process before it answered.
+fn ended_apart(label: string) -> string { "${label}: eval FAILED\nits process ended before it answered" }
+
+/// How a child left, as words.
+fn exit_spelled(e: Exit) -> string {
+    match e { .Clean -> "clean", .Code(n) -> "code ${n}", .Signal(sig, _) -> "signal ${sig}" }
+}
+
+/// One engine's run of a program test: how it differs from what the test expects, absent when it
+/// printed exactly that under every schedule the case runner ran.
+type Ran = { engine: string, differs: string? }
+
+/// The symbol a made program's top level is known by.
+const ENTRY_SYMBOL: string = "main"
+
+/// A program test built natively at `stem` under the case runner, linked with its packages' objects
+/// as `packaged` links it, and run: absent when it printed what it must under every schedule, else what
+/// the runner said or why it didn't run. The binary is gone once it has run: each run links it anew.
+fn native_differs(l: Lowered, stem: string, packaged: Linking) -> string? {
+    let why? = unbuilt(l, stem, packaged) else {
+        let differs = ran_natively(stem)
+        let _ = remove(stem)
+        return differs
+    }
+    "didn't run: ${why}"
+}
+
+/// Why the program didn't build at `stem`, absent when it did: emitted as an object, then linked
+/// as `packaged` links it, with the runtime.
+fn unbuilt(l: Lowered, stem: string, packaged: Linking) -> string? {
+    let object = "${stem}.o"
+    let _ = make_dirs(dir_of(stem))
+    emit_object(l, emit_index(l), object, Owned.Whole, 0, "") ?? objects_made() ?? link_refused(
+        native_link_head(packaged.names_symbols, "", [], stem),
+        [object],
+        stem,
+        packaged.words,
+    )
+}
+
+/// The binary of the program `shape` names, its objects `made`, kept in `asked`'s directory: the one
+/// kept for these objects and link words where it stands, else linked from them, each object not
+/// kept made first from the program made again.
+fn bucket_kept(
+    engine: QueryEngine,
+    asked: BinaryAsked,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    made: List<Made>,
+) -> BuiltBinary {
+    let linking = [o.key for o in made]
+        .concat(asked.head)
+        .concat(asked.words)
+        .concat(asked.linked)
+        .concat(if asked.layered { [LAYERED] } else { [] })
+        .concat(if asked.fallback { [FALLBACK] } else { [] })
+    let kept = joined_path(asked.dir, "${digest_of(linking.join("\n"))}.bin")
+    if exists_at(kept) { return BuiltBinary.Linked(kept, shape.unlowered()) }
+    let owed = [o for o in made if !exists_at(o.obj)]
+    objects_counted().set([owed.length, made.length])
+    if traced() {
+        qtrace("Q\tobjects\t${owed.length}\t${made.length}\n")
+        for o in owed { qtrace("Q\towed\t${owed_said(shape, o)}\n") }
+    }
+    if !owed.is_empty() {
+        let _ = make_dirs(joined_path(asked.dir, "obj"))
+        let seen = seen_bodies(engine, shape)
+        let emitted = timed_phase(
+            engine,
+            "emit",
+            Pass.Codegen,
+            () -> written_across(
+                (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i], seen),
+                owed,
+                bucket_weights(shape, owed),
+                opt_level(asked.opt),
+                asked.target,
+            ),
+        )
+        if emitted != null {
+            if owed.any((o) -> !owed_lowers(engine, asked, shape, hashes, o, seen)) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
+            return BuiltBinary.Unlinked(emitted!)
+        }
+    }
+    let staged = staged_beside(kept)
+    let linked = timed_phase(
+        engine,
+        "link",
+        Pass.Link,
+        () -> when {
+            asked.target != "" -> target_refused(asked, [o.obj for o in made], staged)
+            asked.layered -> layered_refused(asked, made, staged)
+            _ -> link_refused(
+                asked.head,
+                [o.obj for o in made],
+                staged,
+                asked.words,
+                standing_bin(asked.dir),
+            )
+        },
+    )
+    if linked != null { return BuiltBinary.Unlinked(externs_unlinked(engine, asked.entry, linked!)) }
+    let ships = shipped(staged, shipping_tools(asked))
+    if ships.said != "" { eprintln(ships.said) }
+    let ready = ships.path ?? staged
+    let twin = if asked.fallback &&
+        calls_waiting([c.symbol for c in program_calls(engine, asked.entry).calls]) {
+        asyncified(ready, staged_beside(fallback_kept(kept)), asked.wasm_opt)
+    } else {
+        Shrunk { path: null, said: "" }
+    }
+    if twin.said != "" { eprintln(twin.said) }
+    let unkept = kept_published(ready, kept)
+    if unkept != null { return BuiltBinary.Unlinked(unkept!) }
+    objects_bounded(joined_path(asked.dir, "obj"), [o.obj for o in made])
+    let made_twin? = twin.path else { return BuiltBinary.Linked(kept, shape.unlowered()) }
+    if !published(made_twin, fallback_kept(kept)) { return BuiltBinary.Unlinked("the built fallback couldn't be kept: ${fallback_kept(kept)}") }
+    BuiltBinary.Linked(kept, shape.unlowered())
+}
+
+/// The objects kept in `dir` past the ceiling (`objects_ceiling`) let go, oldest first, but those of
+/// `linked`, the build's own: a session of edits keeps a bounded store, and an object let go is
+/// made again where a build owes it.
+fn objects_bounded(dir: string, linked: List<string>) {
+    let limit = objects_ceiling()
+    mut standing: Map<string, bool> = {}
+    for path in linked { standing.set(path, true) }
+    let kept = sorted_by(
+        [o! for name in names_at(dir) ?? [] for o in [object_kept(joined_path(dir, name))] if o != null],
+        (a: ObjectKept, b: ObjectKept) -> a.at < b.at,
+    )
+    mut held = kept.fold(0, (sum, o) -> sum + o.bytes)
+    for o in kept {
+        if held <= limit { break }
+        if standing.has(o.path) { continue }
+        let _ = remove(o.path)
+        held = held - o.bytes
+    }
+}
+
+/// A kept object: where it stands, its bytes, and when it was written.
+type ObjectKept = { path: string, bytes: int, at: int }
+
+/// The object kept at `path`, measured and dated; absent where none stands.
+fn object_kept(path: string) -> ObjectKept? {
+    // LICENSED input.store_io: a kept object, measured and dated for the ceiling
+    let o? = match open_beneath(dir_of(path), file_name(path)) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+    let kept = ObjectKept { path: path, bytes: o.size, at: o.mtime }
+    o.close()
+    kept
+}
+
+/// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
+fn objects_ceiling() -> int {
+    // LICENSED input.debug_flag: the store's own ceiling, never an input of what is built
+    let told = env("AVRA_OBJ_MAX_BYTES")
+    parse_int(told ?? "") ?? OBJECT_BYTES_KEPT
+}
+
+/// The kept objects' ceiling where none is told: two gigabytes.
+const OBJECT_BYTES_KEPT: int = 2147483648
+
+/// The word a build that ships a fallback adds to its binary's key.
+const FALLBACK: string = "fallback"
+
+/// Where the asyncified twin of the binary kept at `kept` is kept: beside it.
+fn fallback_kept(kept: string) -> string { "${kept.substring(0, kept.length - 4)}.asyncify.bin" }
+
+/// The asyncified twin kept beside the binary at `kept` placed beside `stem` as its fallback, or the
+/// fallback an earlier build placed there gone where none is kept; absent when it was, else why not.
+fn fallback_placed(kept: string, stem: string) -> string? {
+    let place = fallback_name(stem)
+    let twin = fallback_kept(kept)
+    if !exists_at(twin) {
+        let _ = remove(place)
+        return null
+    }
+    let staged = staged_within(dir_of(kept), place)
+    if !copied(twin, staged) || !published(staged, place) { return "the kept fallback couldn't be placed: ${place}" }
+    null
+}
+
+/// An owed object as a traced build says it: a chunk and the symbols it is home to, or a file's
+/// frames and the file.
+fn owed_said(shape: ShapeAt, o: Made) -> string {
+    match o.which {
+        .Frames(at) -> "frames\t${spelled_file(shape.files()[at])}",
+        rest -> "${bucket_of(o)}\t${shape.symbols_in(bucket_of(o)).concat(shape.wrappers_in(bucket_of(o))).join(",")}",
+    }
+}
+
+/// The bucket `m` is the object of.
+fn bucket_of(m: Made) -> int {
+    match m.which { .Bucket(i, _of) -> i, rest -> 0 }
+}
+
+/// The bucket the object `o` holds, asked and lowered by the process that emits it, so each
+/// process reads the bodies of its own buckets alone; a bucket whose bodies no longer lower is
+/// one no object is written for, which fails the emit.
+fn bucket_made_whole(
+    engine: QueryEngine,
+    asked: BinaryAsked,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    o: Made,
+    seen: SeenBodies,
+) -> Lowered {
+    match o.which {
+        .Frames(at) -> frames_lowered(engine, shape, at)!,
+        rest -> bucket_lowered(bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen)!),
+    }
+}
+
+/// Whether the object `o` holds is still made of bodies that lower.
+fn owed_lowers(
+    engine: QueryEngine,
+    asked: BinaryAsked,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    o: Made,
+    seen: SeenBodies,
+) -> bool {
+    match o.which {
+        .Frames(at) -> frames_lowered(engine, shape, at) != null,
+        rest -> bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o), seen) != null,
+    }
+}
+
+/// How heavy each of `owed` is to emit, without reading a body: how many of the shape's bodies its
+/// bucket is home to, one for a bucket that is home to none.
+fn bucket_weights(shape: ShapeAt, owed: List<Made>) -> List<int> {
+    mut homed: Map<string, int> = {}
+    for home in shape.homes() { homed.set("${home}", (homed.get("${home}") ?? 0) + 1) }
+    [(homed.get("${bucket_of(o)}") ?? 0) + 1 for o in owed]
+}
+
+/// The binary linked at `staged` kept at `kept`, the only one kept beside it; absent when it was, else
+/// why not.
+fn kept_published(staged: string, kept: string) -> string? {
+    for name in names_at(dir_of(kept)) ?? [] {
+        if name.ends_with(".bin") && joined_path(dir_of(kept), name) != kept { let _ = remove(joined_path(dir_of(kept), name)) }
+    }
+    if published(staged, kept) { null } else { "the built binary couldn't be kept: ${kept}" }
+}
+
+/// The binary kept at `kept` placed at `stem` — linked onto it where the two share a file system,
+/// else copied — executable; absent when it was, else why not. A stem that already holds it is left
+/// as it stands: one whose stamp is the one it wore when it was last found holding it, or one found
+/// holding it now, whose stamp — worn before and after that look — is then noted (`@std/io` `stamp`).
+fn binary_placed(kept: string, stem: string) -> string? {
+    let note = joined_path(dir_of(kept), PLACED)
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
+    let worn = stamp(stem)
+    if worn != null && text_at(note) == placed_note(kept, worn!) { return null }
+    if !holds_binary(stem, kept) && !file_placed(kept, stem) {
+        let staged = staged_within(dir_of(kept), stem)
+        if !copied(kept, staged) { return "the kept binary couldn't be placed: ${stem}" }
+        if !published(staged, stem) { return "the kept binary couldn't be moved into place: ${stem}" }
+    }
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
+    let _ = write_text(note, placed_note(kept, if stamp(stem) == worn { worn ?? 0 } else { 0 }))
+    null
+}
+
+/// The file beside a program's kept binary that notes the stamp its stem wore when it last held it.
+const PLACED: string = "placed.txt"
+
+/// The note that the stem holding `kept` wore `worn`, the binary named beside the note; a stem of no
+/// stamp yet notes none that holds.
+fn placed_note(kept: string, worn: int) -> string { "${file_name(kept)}\n${worn}\n" }
+
+/// Whether the file at `stem` holds the bytes at `kept` and runs.
+fn holds_binary(stem: string, kept: string) -> bool {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    let sh = match process_tool("sh") { .Ok(t) -> t, .Err(_) -> { return false } }
+    ran_clean(cmd(sh, ["-c", "cmp -s \"\$1\" \"\$2\" && test -x \"\$2\"", "sh", kept, stem]))
+}
+
+/// Whether the file `from` is copied to the new path `to`, its mode kept: cloned where the file
+/// system shares blocks, its bytes copied where it doesn't.
+fn copied(from: string, to: string) -> bool {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    let cp = match process_tool("cp") { .Ok(t) -> t, .Err(_) -> { return false } }
+    [["-c", from, to], [from, to]].any((words) -> ran_clean(cmd(cp, words)))
+}
+
+/// Whether `c` ran and exited clean.
+fn ran_clean(c: Command) -> bool {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    match c.outcome() { .Ok(o) -> clean(o.exit), .Err(_) -> false }
+}
+
+/// `run`'s answer, timed as the phase `name` of the pass `pass` where an engine times its asks.
+fn timed_phase<T>(engine: QueryEngine?, name: string, pass: Pass, run: fn() -> T) -> T {
+    let e? = engine else { return run() }
+    phased(e, name, pass, run)
+}
+
+/// The bodies a build of the package on `disk` stood traps in for that its tree's trap baseline
+/// doesn't accept, said with the command that explains the first; absent where none stands outside it,
+/// or no baseline stands at or above the package. A baseline only shrinks: no build writes it.
+fn traps_unaccepted(disk: Disk, stood: List<Missed>) -> string? {
+    let path? = traps_baseline(disk.root) else { return null }
+    let accepted = loaded_baseline(path)
+    let news = [m for m in stood if !accepted.sites.has(finding_line(trap_site(m)))]
+    if news.is_empty() { return null }
+    traps_unaccepted_voice(
+        news,
+        path,
+        disk.on_disk(news[0].file.package_name, news[0].file.path_in_package),
+    )
+}
+
+/// The trap baseline a build of the package at `dir` is held to: the first
+/// `tools/program_traps.baseline` at or above it.
+fn traps_baseline(dir: string) -> string? {
+    let at = joined_path(dir, "tools/program_traps.baseline")
+    if exists_at(at) { return at }
+    let up = dir_of(dir)
+    if up == dir || up == "" { null } else { traps_baseline(up) }
+}
+
+/// A trap as a baseline site: the body, and why it isn't lowered.
+fn trap_site(m: Missed) -> Finding { Finding { rule: "program.trap", file: m.symbol, text: m.why } }
+
+/// Why `objects` didn't link into the binary `stem` after the link's leading words `head`, its
+/// packages' own objects and flags `packaged` beside them, absent when they did.
+fn link_refused(
+    head: List<string>,
+    objects: List<string>,
+    stem: string,
+    packaged: List<string>,
+    before: string = "",
+) -> string? {
+    let inputs = objects.concat(packaged).concat([runtime_library()])
+    clang_refused(head.concat(inputs).concat(["-lm", "-o", stem]), stem, link_bytes(inputs, before))
+}
+
+/// Why `objects` didn't link into the module `stem` for the non-host target the build `asked` names,
+/// by the C compiler its toolchain found; absent when they did.
+fn target_refused(asked: BinaryAsked, objects: List<string>, stem: string) -> string? {
+    let inputs = objects.concat(asked.words).concat([asked.runtime])
+    clang_refused(
+        asked.head.concat(objects).concat(asked.words).concat(wasm_link_tail(asked.runtime, stem)),
+        stem,
+        link_bytes(inputs, ""),
+        asked.linker,
+    )
+}
+
+/// The toolchain a build's shipping reads: its target and its optimizer, nothing else.
+fn shipping_tools(asked: BinaryAsked) -> Toolchain {
+    Toolchain {
+        opt: asked.opt,
+        runtime: asked.runtime,
+        linker: asked.linker,
+        tools: [],
+        target: asked.target,
+        wasm_opt: asked.wasm_opt,
+    }
+}
+
+/// A LINK THAT REFUSED AN EXTERN SAYS THE EXTERN'S CONTRACT: each extern the program at `entry` calls
+/// that the linker `said` names undefined is refused by name — nothing the program links carries it,
+/// and where a package other than the program's own declares it, that package is named. A refusal
+/// naming none of them is the linker's words.
+fn externs_unlinked(engine: QueryEngine, entry: SourceFileAddress, said: string) -> string {
+    let missing = [c for c in program_externs(engine, entry) if names_undefined(said, c.symbol)]
+    if missing.is_empty() { return said }
+    distinct([extern_uncarried(c, entry.package_name) for c in missing]).join("\n")
+}
+
+/// Whether the linker's words `said` name `symbol` undefined, in any linker's spelling: a line of lld's
+/// ending with it, GNU ld's quoting it, or ld64's naming its underscored symbol.
+fn names_undefined(said: string, symbol: string) -> bool {
+    said.split("\n").any(undefined_names(it, symbol))
+}
+
+/// Whether one line of a linker's refusal names `symbol` as the symbol it couldn't answer.
+fn undefined_names(line: string, symbol: string) -> bool {
+    line.contains("ndefined") && (line.ends_with(": ${symbol}") || line.contains("`${symbol}'")) ||
+        line.contains("\"_${symbol}\", referenced from")
+}
+
+/// The refusal of the extern `c`, which nothing the program of package `own` links carries.
+fn extern_uncarried(c: CalledFn, own: string) -> string {
+    let owner = if c.file.package_name == own { "" } else { ", and ${c.file.package_name} declares it but nothing its `[link]` names carries it" }
+    "`${c.symbol}` is extern and nothing this program links carries it${owner} — link a library that defines it, or answer it here with `extern fn ${c.name}(…) { … }`"
+}
+
+/// The word a layered link adds to its binary's key.
+const LAYERED: string = "link=layered"
+
+/// THE PROGRAM LINKED IN LAYERS at `stem`: the world, a shared object of every bucket the standing
+/// world holds unmoved, and the overlay, a shared object of every other bucket, under an executable
+/// that loads the overlay, then the world. THE WORLD NEVER HOLDS A BUCKET THE OVERLAY HOLDS — the
+/// overlay is the world's complement in `made` — so a body the world calls is the one that moved, never
+/// a copy the world kept. A build with no standing world puts every bucket in it. Absent when it
+/// linked, else why not.
+fn layered_refused(asked: BinaryAsked, made: List<Made>, stem: string) -> string? {
+    let layers = joined_path(asked.dir, "layers")
+    let _ = make_dirs(layers)
+    let held = standing_world(layers)
+    let world = if held.is_empty() { made } else { [o for o in made if held.contains(o.key)] }
+    let in_world = [o.key for o in world]
+    let overlay = [o for o in made if !in_world.contains(o.key)]
+    let words = layer_words()
+    let world_before = standing_layer(layers, "world-", words.lib("avra_world"))
+    let world_dir = joined_path(layers, "world-${layer_key(world, asked.words)}")
+    let world_lib = joined_path(world_dir, words.lib("avra_world"))
+    if !exists_at(world_lib) {
+        let _ = make_dirs(world_dir)
+        let refused = shared_refused(
+            asked.head,
+            [o.obj for o in world],
+            world_lib,
+            words.whole(asked.words.concat([runtime_library()])),
+            world_before,
+        )
+        if refused != null { return refused }
+        let _ = write_text(joined_path(world_dir, LAYER_KEYS), [o.key for o in world].join("\n"))
+    }
+    let overlay_dir = joined_path(layers, OVERLAY)
+    let _ = make_dirs(overlay_dir)
+    let overlay_lib = joined_path(overlay_dir, words.lib("avra_overlay"))
+    let overlay_keys = [o.key for o in overlay].join("\n")
+    let overlay_moved = !exists_at(overlay_lib) ||
+        text_at(joined_path(overlay_dir, LAYER_KEYS)) != overlay_keys
+    if overlay_moved {
+        let refused = overlay_refused(asked.head, [o.obj for o in overlay], overlay_lib)
+        if refused != null { return refused }
+        let _ = write_text(joined_path(overlay_dir, LAYER_KEYS), overlay_keys)
+    }
+    let exe = joined_path(world_dir, LAYERED_EXE)
+    if overlay_moved || !exists_at(exe) {
+        let refused = layers_linked(
+            asked.head,
+            [overlay_dir, world_dir],
+            exe,
+            [normalized(joined_path(asked.dir, asked.placed)), asked.dir, world_dir],
+            words.shared_libraries(asked.words),
+        )
+        if refused != null { return refused }
+    }
+    layers_pruned(layers, [overlay_dir, world_dir])
+    if file_placed(exe, stem) { null } else { "the layered binary couldn't be placed: ${stem}" }
+}
+
+/// The overlay's directory in a build's layers: one, whatever it holds, so the executable that loads
+/// it is linked once a world.
+const OVERLAY: string = "overlay"
+
+/// The executable a world's directory holds: the overlay, then the world, loaded. It is linked again
+/// whenever the overlay is, for its link is where a symbol no layer answers is refused.
+const LAYERED_EXE: string = "avra-layered"
+
+/// Why `objects` didn't become the overlay at `out`: on ELF with `ld.lld` standing, linked by it alone
+/// — the world is not read, so what the overlay calls of it is the loader's to bind — else by `clang`;
+/// written beside `out` and placed onto it whole. Absent when it was.
+fn overlay_refused(head: List<string>, objects: List<string>, out: string) -> string? {
+    let staged = "${out}.linking"
+    let ld = if links_with_ld64() || objects.is_empty() { "" } else { fast_linker() }
+    let refused = if ld == "" {
+        shared_refused(head, objects, staged, [], "", file_name(out))
+    } else {
+        run_refused(
+            tool_at("ld.lld", ld),
+            ["-shared", "-Bsymbolic-functions"].concat(objects).concat(["-o", staged]),
+            staged,
+            link_bytes(objects, out),
+        )
+    }
+    if refused != null { return refused }
+    let placed = file_placed(staged, out)
+    let _ = remove(staged)
+    if placed { null } else { "the overlay couldn't be placed: ${out}" }
+}
+
+/// THE LAYERED LINK'S WORDS, BY THE HOST'S LINKER. ELF (lld, GNU ld): a `.so`; a shared object binds
+/// its calls among its own bodies inside it (`-Bsymbolic-functions`); an archive linked whole between
+/// `--whole-archive` and `--no-whole-archive`; the executable refuses a symbol no layer answers
+/// (`--no-allow-shlib-undefined`), every named layer kept (`--no-as-needed`). Mach-O (ld64): a
+/// `.dylib` named `@rpath/<file>`; calls among an image's own bodies bind inside it already (the
+/// two-level namespace); what the world calls of the overlay, and the overlay of the world, is the
+/// loader's to bind (`-undefined dynamic_lookup`, which chained fixups do not carry, so
+/// `-no_fixup_chains`); an archive linked whole by `-force_load`.
+type LayerWords = { ld64: bool }
+
+/// The words of this host's linker.
+fn layer_words() -> LayerWords { LayerWords { ld64: links_with_ld64() } }
+
+impl LayerWords {
+    /// The file a layer named `name` is.
+    fn lib(name: string) -> string { if self.ld64 { "lib${name}.dylib" } else { "lib${name}.so" } }
+
+    /// The words that make a shared object whose file is `file`.
+    fn shared(file: string) -> List<string> {
+        if self.ld64 {
+            [
+                "-dynamiclib",
+                "-Wl,-install_name,@rpath/${file}",
+                "-Wl,-undefined,dynamic_lookup",
+                "-Wl,-no_fixup_chains",
+            ]
+        } else {
+            ["-shared", "-Wl,-Bsymbolic-functions"]
+        }
+    }
+
+    /// `words` with every archive linked whole: a body the overlay gains may call a member of one
+    /// that nothing in the world called, and the world is what answers it.
+    fn whole(words: List<string>) -> List<string> { flatten([self.whole_word(w) for w in words]) }
+
+    /// One word as `whole` links it: an archive linked whole, any other word as it stands.
+    fn whole_word(w: string) -> List<string> {
+        when {
+            !w.ends_with(".a") -> [w]
+            self.ld64 -> ["-Wl,-force_load,${w}"]
+            _ -> ["-Wl,--whole-archive", w, "-Wl,--no-whole-archive"]
+        }
+    }
+
+    /// The shared libraries a world links with, named again where the layers are loaded: `-lm`, and
+    /// every library and search directory of `words`. A linker judges a layer's unanswered symbols
+    /// only when every library the layer needs is named in the link.
+    fn shared_libraries(words: List<string>) -> List<string> {
+        [w for w in words if w.starts_with("-l") || w.starts_with("-L") || w.ends_with(".so") || w.ends_with(".dylib")]
+            .concat(["-lm"])
+    }
+
+    /// Where an executable in `exe_dir` finds the layer in `dir` when it's loaded: named from the
+    /// executable's own directory, so the bytes are the same wherever the tree stands.
+    fn searched(exe_dir: string, dir: string) -> string {
+        "-Wl,-rpath,${if self.ld64 { "@executable_path" } else { "\$ORIGIN" }}/${relative_path(exe_dir, dir)}"
+    }
+
+    /// The words an executable loading layers adds: every named layer kept, and no symbol left that
+    /// none answers — ld64 keeps what it is told and refuses an executable's own unanswered symbols
+    /// already.
+    fn loading() -> List<string> { if self.ld64 { [] } else { ["-Wl,--no-as-needed", "-Wl,--no-allow-shlib-undefined"] } }
+}
+
+/// The file in a layer's directory naming the keys of the buckets it holds, one a line.
+const LAYER_KEYS: string = "keys.txt"
+
+/// The keys of the buckets the standing world holds: none where no world stands.
+fn standing_world(layers: string) -> List<string> {
+    let name? = (names_at(layers) ?? []).find(it.starts_with("world-")) else { return [] }
+    [k for k in (text_at(joined_path(joined_path(layers, name), LAYER_KEYS)) ?? "").split("\n") if !k.is_empty()]
+}
+
+/// The key of a layer of `objects`, linked with `words`.
+fn layer_key(objects: List<Made>, words: List<string>) -> string { digest_of([o.key for o in objects].concat(words).join("\n")) }
+
+/// Why `objects` didn't link into the shared object `out` with `words`, its calls among its own bodies
+/// bound inside it; absent when they did.
+fn shared_refused(
+    head: List<string>,
+    objects: List<string>,
+    out: string,
+    words: List<string>,
+    before: string = "",
+    file: string = "",
+) -> string? {
+    clang_refused(
+        head
+            .concat(layer_words().shared(if file == "" { file_name(out) } else { file }))
+            .concat(objects)
+            .concat(words)
+            .concat(["-lm", "-o", out]),
+        out,
+        link_bytes(objects.concat(words), before),
+    )
+}
+
+/// Why the executable `stem`, loading the shared objects in `dirs` in order, didn't link; absent when it
+/// did. It finds each from every directory in `runs_in` it's run from.
+fn layers_linked(
+    head: List<string>,
+    dirs: List<string>,
+    stem: string,
+    runs_in: List<string>,
+    shared: List<string>,
+) -> string? {
+    let libs = [if file_name(d) == OVERLAY { "-lavra_overlay" } else { "-lavra_world" } for d in dirs]
+    clang_refused(
+        head
+            .concat(["-L${d}" for d in dirs])
+            .concat([layer_words().searched(r, d) for d in dirs for r in runs_in])
+            .concat(layer_words().loading())
+            .concat(libs)
+            .concat(shared)
+            .concat(["-o", stem]),
+        stem,
+        link_bytes([], ""),
+    )
+}
+
+/// Every layer in `layers` but those in `kept` gone.
+fn layers_pruned(layers: string, kept: List<string>) {
+    for name in names_at(layers) ?? [] {
+        let at = joined_path(layers, name)
+        if !kept.contains(at) {
+            for f in names_at(at) ?? [] { let _ = remove(joined_path(at, f)) }
+            let _ = remove(at)
+        }
+    }
+}
+
+/// Why the C compiler `linker` — the host's `clang` where it's empty — run with `words`, writing
+/// `out`, failed; absent when it ran clean. A disk holding fewer than the `needed` bytes it writes is
+/// the reason, said before the link runs and again where a link that ran out of room failed.
+fn clang_refused(words: List<string>, out: string, needed: int, linker: string = "") -> string? {
+    let cc = if linker == "" {
+        // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+        match process_tool("clang") { .Ok(t) -> t, .Err(_) -> { return "no `clang` on the PATH" } }
+    } else {
+        tool_at(linker, linker)
+    }
+    run_refused(cc, words, out, needed)
+}
+
+/// Why the linker `tool` run with `words`, writing `out`, failed; absent when it ran clean. A disk
+/// holding fewer than the `needed` bytes it writes is the reason, said before it runs and again where
+/// it failed.
+fn run_refused(tool: Tool, words: List<string>, out: string, needed: int) -> string? {
+    let short = disk_short(out, needed)
+    if short != null { return short }
+    if link_traced() { eprintln("link: ${tool.path} ${words.join(" ")}") }
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    match (cmd(tool, words) with { env: inherited() }).outcome() {
+        .Ok(o) -> if clean(o.exit) { null } else { disk_short(out, needed) ?? "the link failed: ${o.out.stderr}" },
+        .Err(e) -> "the link didn't run: ${e.describe().message}",
+    }
+}
+
+/// The least a link is taken to write.
+const LEAST_LINKED: int = 1048576
+
+/// The bytes a link of `inputs` writes, as near as is known before it runs: what it wrote last time
+/// at `before`, else the size of every input that is a file — at least `LEAST_LINKED`.
+fn link_bytes(inputs: List<string>, before: string) -> int {
+    let read = [file_bytes(w) for w in inputs].sum()
+    [LEAST_LINKED, read, if before == "" { 0 } else { file_bytes(before) }].max() ?? LEAST_LINKED
+}
+
+/// Why the disk holding `out` can't take the `needed` bytes: absent where it has them, or where it
+/// can't be asked.
+fn disk_short(out: string, needed: int) -> string? {
+    let free? = disk_free_at(dir_of(out)) else { return null }
+    if free >= needed { null } else { disk_full(dir_of(out), needed, free) }
+}
+
+/// The binary standing in `dir` from the last build: none where none stands.
+fn standing_bin(dir: string) -> string {
+    let name? = (names_at(dir) ?? []).find(it.ends_with(".bin")) else { return "" }
+    joined_path(dir, name)
+}
+
+/// The shared object `lib` of the layer named from `prefix` standing in `layers`: none where none stands.
+fn standing_layer(layers: string, prefix: string, lib: string) -> string {
+    let name? = (names_at(layers) ?? []).find(it.starts_with(prefix)) else { return "" }
+    joined_path(joined_path(layers, name), lib)
+}
+
+/// The case runner's binary at `stem` run: absent when it left by a green verdict, else what it said.
+fn ran_natively(stem: string) -> string? {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    match (cmd(tool_at(stem, stem), []) with { timeout: secs(30), env: guarded_env() }).outcome() {
+        .Ok(o) -> match o.exit {
+            .Clean -> null,
+            .Code(n) -> if n == 1 { unended(o.out.stdout) } else { "didn't run: exited ${n}: ${o.out.stderr}" },
+            .Signal(sig, _) -> "didn't run: killed by signal ${sig}",
+        },
+        .Err(e) -> "didn't run: ${e.describe().message}",
+    }
+}
+
+/// The words the runtime's guards read, each passed on to a program test's own run where this
+/// process was given it: a guard asked of the harness is asked of every run it makes.
+const GUARD_WORDS: List<string> = ["AVRA_RC_GUARD", "AVRA_RC_LOG_BUDGET"]
+
+/// A program test's run's environment: the minimal one, with each guard word this process holds.
+fn guarded_env() -> Env {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    mut out = minimal()
+    for w in GUARD_WORDS {
+        // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+        let v? = env(w) else { continue }
+        out = out.with_var(w, v)
+    }
+    out
+}
+
+/// Whether a child ended cleanly.
+fn clean(e: Exit) -> bool { match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false } }
+
+/// The address of the file at `path` on disk, absent for one in no package the disk holds.
+/// A file on disk as the program layer names it in an origin; a path it doesn't address as itself.
+fn origin_spelled(disk: Disk, path: string) -> string {
+    let file? = address_of(disk, path) else { return path }
+    template_home(file)
+}
+
+fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
+    let spelled = disk.spelled(path)
+    let own = "${disk.name}/"
+    if spelled.starts_with(own) { return disk.file_at(spelled.substring(own.length, spelled.length)) }
+    if !spelled.starts_with(STD) { return null }
+    let rest = spelled.substring(STD.length, spelled.length)
+    let cut = rest.index_of("/")
+    if cut < 0 { return null }
+    SourceFileAddress {
+        package_name: STD + rest.substring(0, cut),
+        path_in_package: rest.substring(cut + 1, rest.length),
+    }
+}
+
+/// Every body the package's program reaches from its `[bin]` entry, walked past each one not lowered
+/// yet, stopped after `seconds` where that's past zero: how many of each kind are made, each
+/// reason one isn't ranked by how many it holds with the three bodies most called among them, and
+/// each package's share. With `shown`, every body not made. Answers 1 where any isn't.
+fn built_held(engine: QueryEngine, disk: Disk, seconds: int, shown: bool) -> int {
+    let bin = read_manifest(
+        new_source_file("avra.toml", text_at(joined_path(disk.root, "avra.toml")) ?? ""),
+    )
+        .bin ?? "src/main.av"
+    // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
+    let t0 = now_ns()
+    // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
+    let spent = () -> seconds > 0 && now_ns() - t0 > seconds * 1000000000
+    let survey = reach_surveyed(engine, disk.file_at(bin), spent)
+    let bodies = survey.bodies
+    let unmade = bodies.filter(it.why != null)
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let secs_taken = (now_ns() - t0) / 1000000000
+    println(
+        "built: ${bodies.length} bodies ${bin} reaches, ${bodies.length - unmade.length} made, ${unmade.length} not yet; ${if survey.finished { "the walk reached its end" } else { "the walk stopped short" }} in ${secs_taken} s",
+    )
+    println(
+        "by kind: ${[kind_share(bodies, k) for k in BODY_KINDS if bodies.any(it.kind == k)].join(", ")}",
+    )
+    let reasons = tally_of([b.why! for b in unmade])
+    for why in sorted_by(reasons.keys(), (a, b) -> reasons.get(a)! > reasons.get(b)!) {
+        let most = sorted_by(unmade.filter(it.why ?? "" == why), (a, b) -> a.callers > b.callers)
+            .take(3)
+        println("  ${reasons.get(why)!} ${why}: ${[body_named(b) for b in most].join("; ")}")
+    }
+    let packages = tally_of([b.file.package_name for b in bodies])
+    println(
+        "by package: ${[package_share(bodies, p) for p in sorted_by(packages.keys(), (a, b) -> packages.get(a)! > packages.get(b)!)].join(", ")}",
+    )
+    if shown { for b in unmade { println("left: ${b.why!} in ${body_named(b)}") } }
+    let unrun = package_unrun(engine, disk.name)
+    println("validators not run: ${unrun.length}")
+    for p in unrun { println("  ${p.message} — on `${p.owner}`") }
+    if unmade.is_empty() && unrun.is_empty() { 0 } else { 1 }
+}
+
+/// Every kind of body a program reaches, in the order a receipt names them.
+const BODY_KINDS: List<BodyKind> = [
+    BodyKind.Entry,
+    BodyKind.Fn,
+    BodyKind.Method,
+    BodyKind.Static,
+    BodyKind.GenericUnit,
+    BodyKind.TraitDefault,
+    BodyKind.FieldDefault,
+    BodyKind.SeatDefault,
+    BodyKind.Lambda,
+    BodyKind.Data,
+    BodyKind.Wrapper,
+    BodyKind.Extern,
+]
+
+/// How many of the bodies of kind `k` are made, of how many reached.
+fn kind_share(bodies: List<ReachedBody>, k: BodyKind) -> string {
+    let all = bodies.filter(it.kind == k)
+    "${k.word()} ${all.filter(it.why == null).length} of ${all.length}"
+}
+
+/// How many of the bodies the package `p` declares are made, of how many reached.
+fn package_share(bodies: List<ReachedBody>, p: string) -> string {
+    let all = bodies.filter(it.file.package_name == p)
+    "${p} ${all.filter(it.why == null).length} of ${all.length}"
+}
+
+/// A body as a receipt names it: its symbol, its file, and how many bodies call it.
+fn body_named(b: ReachedBody) -> string { "`${b.symbol}` (${spelled_file(b.file)}, ${b.callers} calls)" }
+
+/// How many times each word stands in `words`.
+fn tally_of(words: List<string>) -> Map<string, int> {
+    mut counts: Map<string, int> = {}
+    for w in words { counts.set(w, (counts.get(w) ?? 0) + 1) }
+    counts
+}
+
+fn not_made_yet(why: string, at: string, file: string) -> string {
+    "avra: the program layer doesn't build this program yet — ${why}, at ${at}\n${explained_by(file)}"
+}
+
+/// The old path's command that says why a file's bodies aren't lowered.
+fn explained_by(file: string) -> string { "run `build/avra check ${file}` to see why" }
+
+fn traps_unaccepted_voice(news: List<Missed>, baseline: string, file: string) -> string {
+    "avra: ${news.length} bodies aren't lowered on the program layer, and ${baseline} doesn't accept them:\n${["  ${finding_line(trap_site(m))}" for m in news].join("\n")}\n${explained_by(file)}"
+}
+
+fn stand_ins(stood: List<Missed>) -> string { "avra: built on the program layer; ${stood.length} bodies not lowered yet trap where they're reached: ${[m.symbol for m in stood].join(", ")}" }
+
+/// A word `AVRA_PROGRAM_MODE` doesn't know.
+fn unknown_mode_word(word: string) -> string {
+    "AVRA_PROGRAM_MODE has no word `${word}` — it takes `release` or `dev`, then `opt=-O0|-O1|-O2|-O3|-Oz`, `llvm=shared|static` and `link=layered|whole`"
+}
+
+/// A link with too little disk to write its output.
+fn disk_full(dir: string, needed: int, free: int) -> string {
+    "the disk holding `${dir}` has ${free} bytes free, and this link writes about ${needed} — free some room and build again"
+}
+
+/// What the manifest `h` says, in the old path's voices.
+fn manifest_diags(h: ProgramFile) -> List<Diag> { manifest_voices(h.full, text_at(h.full) ?? "") }
+
+/// THE MANIFESTS' DOOR, which every command reading the program on `disk` passes first: what each
+/// manifest it stands on says, warnings and refusals, then what its package graph says, as the old
+/// path says them before anything else; the exit where one refuses, and nothing is read past it.
+fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
+    let reached = graph_said(engine, disk)
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+    let from_env = (n: string) -> env(n)
+    let unset = program_unset_holes(
+        engine,
+        disk.name,
+        (p: string) -> manifest_source(disk.package_root(p)),
+        from_env,
+    )
+    let graph = reached with { voices: reached.voices.concat(unset), sources: reached
+        .sources
+        .concat([manifest_source(disk.package_root(p)) for p in reached_packages(engine, disk)]) }
+    let said = [manifest_said(program_file(disk, f)) for f in manifests_voiced(engine, disk.name)]
+        .concat(if graph.voices.is_empty() { [] } else { [rendered_among(graph.voices, graph.sources)] })
+    if !said.is_empty() { println(said.join("\n\n")) }
+    if !manifests_refused(engine, disk.name).is_empty() || !graph.voices.is_empty() { return 1 }
+    // THE META DOOR, past the manifests': a loaded `@std/meta` whose shapes moved is the program's
+    // one refusal, said where the old path says it, on stdout; the toolchain's own copy, known by
+    // where it stands, moves nothing, and no shape of it is laid
+    if disk.meta_is_toolchains() { return null }
+    let moved = meta_door(engine)
+    if moved.is_empty() { return null }
+    println(rendered_among(moved, []))
+    1
+}
+
+/// What the package graph of the program on `disk` says: its rows' admission from the root, then
+/// each std package the program reaches that no row names, entered from the toolchain's own copy as
+/// the old path enters it the first time a `use` asks, its rows admitted against the graph so far.
+fn graph_said(engine: QueryEngine, disk: Disk) -> AdmittedSaid {
+    if !disk.lone.is_empty() { return disk.admitted }
+    let home = GraphRoot { name: disk.name, dir: disk.root }
+    mut dirs = disk.deps
+    mut admitted = disk.admitted
+    for p in reached_packages(engine, disk) {
+        if p == disk.name || dirs.has(p) || !p.starts_with(STD) { continue }
+        let dir = disk.package_root(p)
+        if text_at(joined_path(dir, "avra.toml")) == null { continue }
+        on_disk().package_entered(p, dir, null, [], home, dirs, admitted)
+    }
+    admitted
+}
+
+/// What the manifest `h` says, rendered over its text.
+fn manifest_said(h: ProgramFile) -> string {
+    let src = new_source_file(h.full, text_at(h.full) ?? "")
+    [render(d, src) for d in manifest_diags(h)].join("\n\n")
+}
+
+/// Whether each link says its command line on stderr: `AVRA_LINK_TRACE=1`.
+fn link_traced() -> bool {
+    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+    env("AVRA_LINK_TRACE") == "1"
+}

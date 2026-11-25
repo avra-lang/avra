@@ -1,0 +1,159 @@
+//! Text as a terminal draws it: a grapheme cluster is one drawn thing
+//! (an `é` written with a combining mark, a flag, a family of emoji joined
+//! by ZWJ, a Hangul syllable of jamo) and takes a number of cells.
+//!
+//! Clusters follow Unicode's text segmentation (UAX #29, conjunct
+//! breaks included). A cluster takes the cells of its first code point —
+//! two for East Asian Wide and Fullwidth and for emoji presentation, none
+//! for controls, marks and format characters, one otherwise — and is made
+//! two by U+FE0F after an emoji, one by U+FE0E, and two by a pair of
+//! regional indicators. This is what terminals that segment by cluster
+//! draw; a terminal that adds each code point's width draws a conjunct,
+//! a skin-toned emoji or a Thai vowel wider.
+
+const pictographic = 16
+const consonant = 32
+const linker = 64
+const joiner_extend = 128
+const emoji = 256
+
+/// The variation selectors: U+FE0F asks for emoji style, U+FE0E for text.
+const emoji_style = 65039
+const text_style = 65038
+
+const cr = 1
+const lf = 2
+const control = 3
+const extend = 4
+const zwj = 5
+const regional = 6
+const prepend = 7
+const spacing = 8
+const jamo_l = 9
+const jamo_v = 10
+const jamo_t = 11
+const jamo_lv = 12
+const jamo_lvt = 13
+
+/// What stands before a code point: the regional indicators in a row,
+/// whether an emoji (then extenders, then a joiner) leads in, and how far
+/// a conjunct has come (1 a consonant, 2 a consonant and its linker).
+type Join = { regional: int, pictograph: int, conjunct: int }
+
+/// One cluster: its code points `lo` to `hi` (exclusive) and its cells.
+type Cluster = { lo: int, hi: int, cells: int }
+
+fn break_of(k: int) -> int { k & 15 }
+
+fn width_of(k: int) -> int { (k >> 9) & 3 }
+
+/// The class of a code point: its run's, by search.
+fn class_of(c: int) -> int {
+    mut lo = 0
+    mut hi = run_starts.length - 1
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2
+        if run_starts[mid] <= c { lo = mid } else { hi = mid - 1 }
+    }
+    run_classes[lo]
+}
+
+fn is_hard(b: int) -> bool { b == cr || b == lf || b == control }
+
+/// Whether no cluster break lies between a code point of class `p` and the
+/// next, of class `k`, given what stands before them.
+fn joins(j: Join, p: int, k: int) -> bool {
+    let a = break_of(p)
+    let b = break_of(k)
+    when {
+        a == cr && b == lf -> true
+        is_hard(a) || is_hard(b) -> false
+        a == jamo_l -> b == jamo_l ||
+            b == jamo_v ||
+            b == jamo_lv ||
+            b == jamo_lvt ||
+            joins_after(j, a, b, k)
+        (a == jamo_lv || a == jamo_v) && (b == jamo_v || b == jamo_t) -> true
+        (a == jamo_lvt || a == jamo_t) && b == jamo_t -> true
+        _ -> joins_after(j, a, b, k)
+    }
+}
+
+/// The joins that do not depend on the Hangul rules.
+fn joins_after(j: Join, a: int, b: int, k: int) -> bool {
+    b == extend ||
+        b == zwj ||
+        b == spacing ||
+        a == prepend ||
+        j.conjunct == 2 && k & consonant != 0 ||
+        j.pictograph == 2 && k & pictographic != 0 ||
+        a == regional && b == regional && j.regional % 2 == 1
+}
+
+/// What stands before the code point after one of class `k`.
+fn advanced(j: Join, k: int) -> Join {
+    let b = break_of(k)
+    Join {
+        regional: if b == regional { j.regional + 1 } else { 0 },
+        pictograph: when {
+            k & pictographic != 0 -> 1
+            j.pictograph == 1 && b == extend -> 1
+            j.pictograph == 1 && b == zwj -> 2
+            _ -> 0
+        },
+        conjunct: when {
+            k & consonant != 0 -> 1
+            j.conjunct > 0 && k & linker != 0 -> 2
+            j.conjunct > 0 && k & joiner_extend != 0 -> j.conjunct
+            _ -> 0
+        },
+    }
+}
+
+/// The cells of the cluster `lo` to `hi`: its first code point's, bent by
+/// a variation selector or a regional pair.
+fn cluster_cells(cps: List<int>, ks: List<int>, lo: int, hi: int) -> int {
+    let k = ks[lo]
+    let marks = cps.slice(lo, hi)
+    when {
+        width_of(k) == 0 -> 0
+        k & emoji != 0 && marks.contains(emoji_style) -> 2
+        k & emoji != 0 && marks.contains(text_style) -> 1
+        break_of(k) == regional && hi - lo > 1 -> 2
+        _ -> width_of(k)
+    }
+}
+
+/// The clusters of a run of code points, in order.
+fn clusters(cps: List<int>) -> List<Cluster> {
+    let ks = [class_of(c) for c in cps]
+    mut out: List<Cluster> = []
+    mut j = Join { regional: 0, pictograph: 0, conjunct: 0 }
+    mut lo = 0
+    for i, k in ks {
+        if i > lo && !joins(j, ks[i - 1], k) {
+            out.push(Cluster { lo: lo, hi: i, cells: cluster_cells(cps, ks, lo, i) })
+            lo = i
+        }
+        j = advanced(j, k)
+    }
+    if lo < ks.length { out.push(Cluster { lo: lo, hi: ks.length, cells: cluster_cells(cps, ks, lo, ks.length) }) }
+    out
+}
+
+/// A code point that is a cluster of its own, one cell wide: printable
+/// ASCII and the Latin letters below the combining marks.
+fn plain(c: int) -> bool { c >= 32 && c < 127 || c >= 160 && c < 768 }
+
+/// The grapheme clusters of a text, each as its own text.
+export fn graphemes(s: string) -> List<string> {
+    let cps = codepoints(s)
+    [from_codepoints(cps.slice(c.lo, c.hi)) for c in clusters(cps)]
+}
+
+/// The cells a text takes in a terminal.
+export fn cells(s: string) -> int {
+    let cps = codepoints(s)
+    if cps.all(plain(it)) { return cps.length }
+    [c.cells for c in clusters(cps)].sum()
+}

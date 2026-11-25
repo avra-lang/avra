@@ -1,0 +1,248 @@
+//! proves a queue in a database file is one queue to every process
+//! that opens it: one process sends forty items while two others work
+//! them `in_tx`, and each item is handled exactly once — its handler's
+//! row and its ack one commit. Then a worker is stopped by a signal at
+//! each step of a delivery: after its take, inside its handler, and
+//! after its ack. A take or a handler cut short leaves the item to be
+//! handed out again once its lease is over, the handler's write undone
+//! and its start counted; an ack that committed leaves nothing.
+//!
+//! The processes are this program's own binary again, run with a word
+//! naming the part each plays, over a database file they share: the
+//! witness is a native build's, run as a program of its own (`avra run
+//! tools/queue-witness`), since an evaluated program, and a program
+//! a suite's binary runs, has no binary of its own to start again. It
+//! prints what it saw and exits 1 when that is not what the laws owe.
+use @std.cli.{argv}
+use @std.io.{list_dir, make_dirs, remove}
+use @std.process.{Child, Command, Exit, Ready, cmd, exit, inherited, this_program}
+use @std.queue.{queue, worker, drain, Dead, Delivery, DrainError, HomeError}
+use @std.queue_store.durable.{db, stored}
+use @std.queue_store.fault.{homed}
+use @std.queue_store.letters.{stored_dead}
+use @std.queue_store.queue_store.{open_logged}
+use @std.relation.{codec}
+use @std.sqlite.{sql}
+use @std.time.{ms, now_ms, secs, sleep, stamp}
+
+@codec
+type Job = { n: int }
+
+/// How many items the sender sends.
+const items: int = 40
+
+/// The steps a worker is stopped at.
+const steps: List<string> = ["taken", "writing", "settled"]
+
+/// This program run as the part `words` name, its output read.
+fn part(words: List<string>) -> Command {
+    cmd(this_program(), words) with { env: inherited(), timeout: secs(30), stop_grace: ms(200) }
+}
+
+fn count(text: string) -> Result<int, HomeError> {
+    homed((homed(ctx.db.scalar(sql(text)))?).int())
+}
+
+/// The handler's own write: one row naming the item and its queue.
+fn recorded(q: string, d: Delivery<Job>) -> bool {
+    (ctx.db
+        .run(sql("INSERT INTO \"done\" (\"n\", \"q\") VALUES (?1, ?2)", [.Int(d.item.n), .Text(q)])) catch 0) == 1
+}
+
+fn wrote(q: string, d: Delivery<Job>) -> Result<int, string> {
+    if !recorded(q, d) { fail "not recorded" }
+    d.item.n
+}
+
+// ── The parts ──
+
+/// Send `items` jobs, each under its own name.
+fn sending(path: string) -> Result<string, HomeError> {
+    ctx db = open_logged(path)?
+    queue<Job> jobs {
+        name: "jobs"
+        durable: stored<Job>()
+    }
+    for i in 0..items {
+        let _ = jobs.send(Job { n: i }, id: "job-${i}")?
+        if i % 8 == 0 { sleep(ms(2)) }
+    }
+    "sent"
+}
+
+/// Work `jobs` `in_tx` until every item is recorded, or the deadline.
+fn working(path: string) -> Result<string, HomeError> {
+    ctx db = open_logged(path)?
+    queue<Job> jobs {
+        name: "jobs"
+        durable: stored<Job>()
+    }
+    queue<Dead<Job, string>> letters {
+        name: "jobs/dead"
+        durable: stored_dead<Job>()
+    }
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<Job>) -> wrote("jobs", d)
+        dead: letters
+    }
+    let until = now_ms() + 20000
+    while (count("SELECT count(*) FROM \"done\" WHERE \"q\" = 'jobs'") catch 0) < items &&
+        now_ms() < until {
+        let _ = drain(crew)
+        sleep(ms(5))
+    }
+    "worked"
+}
+
+/// Take from `crash-<step>`, say the step is reached, and wait to be
+/// stopped there.
+fn holding(path: string, step: string) -> Result<string, HomeError> {
+    ctx db = open_logged(path)?
+    let name = "crash-${step}"
+    queue<Job> q {
+        name: name
+        durable: stored<Job>()
+        lease: ms(400)
+    }
+    queue<Dead<Job, string>> letters {
+        name: "${name}/dead"
+        durable: stored_dead<Job>()
+    }
+    worker held {
+        reads: q
+        in_tx: true
+        each: (d: Delivery<Job>) -> halted(name, step, d)
+        dead: letters
+    }
+    if step == "taken" {
+        let _ = q.home().take()?
+        reached(step)
+    }
+    let _ = drain(held)
+    reached(step)
+    "never"
+}
+
+/// The handler of a held worker: its write, and a wait inside the
+/// handler when that is the step.
+fn halted(name: string, step: string, d: Delivery<Job>) -> Result<int, string> {
+    let n = wrote(name, d)?
+    if step == "writing" { reached(step) }
+    n
+}
+
+/// Say the step is reached, and wait to be stopped.
+fn reached(step: string) {
+    println(step)
+    sleep(secs(60))
+}
+
+// ── The witness ──
+
+/// Two workers and a sender over one file: how many items were
+/// handled, how many twice, and how many are left.
+fn shared(path: string) -> Result<string, HomeError> {
+    let parts = [started(part(words), Ready.Started) for words in [["send", path], ["work", path], ["work", path]]]
+    if parts.any(it == null) { return "a part did not start" }
+    let clean = parts.all(seen_out(it!))
+    let handled = count("SELECT count(DISTINCT \"n\") FROM \"done\" WHERE \"q\" = 'jobs'")?
+    let rows = count("SELECT count(*) FROM \"done\" WHERE \"q\" = 'jobs'")?
+    let left = count("SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = 'jobs'")?
+    "parts ended clean ${clean} | handled ${handled} | twice ${rows - handled} | left ${left}"
+}
+
+/// `c` started and ready by `ready`, or absent.
+fn started(c: Command, ready: Ready) -> Child? {
+    match c.start(ready, secs(10)) { .Ok(child) -> child, .Err(_) -> null }
+}
+
+/// Whether `c` ran to a clean exit within its time.
+fn seen_out(c: Child) -> bool {
+    mut child = c
+    match child.wait(secs(30)) {
+        .Ok(o) -> match o.exit { .Clean -> true, .Code(_) or .Signal(_, _) -> false },
+        .Err(_) -> false,
+    }
+}
+
+/// A worker stopped at `step`, then what the item is to the next taker.
+fn stopped_at(path: string, step: string) -> Result<string, HomeError> {
+    let name = "crash-${step}"
+    queue<Job> q {
+        name: name
+        durable: stored<Job>()
+        lease: ms(400)
+    }
+    let _ = q.send(Job { n: 1 })?
+    let c? = started(part(["hold", path, step]), Ready.Line(step)) else { return "${step}: never reached" }
+    mut child = c
+    let _ = child.stop()
+    let until = now_ms() + 3000
+    mut again = q.home().take()?
+    while again == null &&
+        now_ms() < until &&
+        count("SELECT count(*) FROM \"FlowItem\" WHERE \"queue\" = '${name}'")? > 0 {
+        sleep(ms(50))
+        again = q.home().take()?
+    }
+    let rows = count("SELECT count(*) FROM \"done\" WHERE \"q\" = '${name}'")?
+    let d? = again else { return "${step}: none again, rows ${rows}" }
+    let _ = q.home().ack(d)?
+    "${step}: again epoch ${d.epoch} attempt ${d.attempt}, rows ${rows}"
+}
+
+fn witnessed(path: string) -> Result<string, HomeError> {
+    ctx db = open_logged(path)?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER, \"q\" TEXT)")))?
+    queue<Job> jobs {
+        name: "jobs"
+        durable: stored<Job>()
+    }
+    let _ = jobs.home().depth()?
+    let together = shared(path)?
+    let apart = [stopped_at(path, s)? for s in steps]
+    "${together}\n${apart.join("\n")}"
+}
+
+fn told(r: Result<string, HomeError>) -> string {
+    match r {
+        .Ok(t) -> t,
+        .Err(why) -> match why {
+            .Refused(w) -> "refused: ${w}",
+            .Unreachable(_) -> "unreachable",
+            .TooBig(_, _) -> "too big",
+            .Shape(_) -> "shape",
+            .Denied -> "denied",
+        },
+    }
+}
+
+fn played(words: List<string>) -> string {
+    match words {
+        ["send", path] -> told(sending(path)),
+        ["work", path] -> told(working(path)),
+        ["hold", path, step] -> told(holding(path, step)),
+        _ -> {
+            let dir = "/tmp/avra-queue-two/${stamp()}"
+            let _ = make_dirs(dir)
+            let answer = told(witnessed("${dir}/queue.db"))
+            for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+            let _ = remove(dir)
+            let _ = remove("/tmp/avra-queue-two")
+            answer
+        },
+    }
+}
+
+/// What the laws owe the witness, line for line.
+const owed: string = "parts ended clean true | handled 40 | twice 0 | left 0\ntaken: again epoch 2 attempt 0, rows 0\nwriting: again epoch 2 attempt 1, rows 0\nsettled: none again, rows 1"
+
+let seen = played(argv())
+if argv().is_empty() && seen != owed {
+    println(seen)
+    eprintln("the laws owe:\n${owed}")
+    exit(Exit.Code(1))
+}
+seen

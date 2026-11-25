@@ -1,0 +1,25 @@
+//! WHERE AN IMPL SERVES NOTHING: an impl's target names no type the program declares and none the
+//! language owns. Read off the item's impls and what their targets resolve to.
+use compiler.laws.{Found, law}
+use compiler.typing.{serves_nothing}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every impl the written item `view` shows holds whose target names no type, where it stands.
+fn impls_serving_nothing(view: ItemView) -> List<Found> {
+    let lost = [i.target for i in item_impls(view.engine, view.file, view.at) if impl_target(view.engine, view.file, i) == null]
+    if lost.is_empty() { return [] }
+    let item = view.item
+    [Found { at: item.store.stmt_span(s), args: [p!.target] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && lost.contains(p!.target)]
+}
+
+/// an impl serves a declared type
+export law impl_serves_nothing {
+    kind: "type.impl"
+    reads_view: impls_serving_nothing
+    voice: nothing_words
+    witness: "impl Nope {\n    fn f() -> int { 1 }\n}\n"
+}
+
+fn nothing_words(a: List<string>) -> Voice { serves_nothing(a[0]) }

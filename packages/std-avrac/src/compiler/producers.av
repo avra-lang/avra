@@ -1,0 +1,124 @@
+//! A MODULE'S PRODUCERS: what its record files for a bucket reader, and what the load
+//! walk needs to reach its neighbours — read from the record's lines once, kept as one
+//! small row beside the record, and read back in place so a names-only walk decodes no
+//! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
+use core.{distinct, flatten, joined, digest_of, sorted_texts, DeclKind, ModulePath}
+use features.{ExternNote, DeclFacts, implements_kind}
+use compiler.store.{Store, Stored, node_key}
+
+/// One value a file files under: a declaration name, a word or a mark.
+type Filed = { value: string, path: string }
+
+/// What a record says to the load walk and the bucket readers, and nothing else.
+type Producers = {
+    /// "" when the record rebuilds whole, else the one declaration that made it short.
+    fault: string,
+    /// Every file a declaration line names.
+    declared: List<string>,
+    /// Every file the record places.
+    placed: List<string>,
+    /// The `import` and `gathers` lines in the order the record wrote them: the walk the
+    /// load takes to a module's neighbours. `reexports` are the `reexport` lines.
+    walk: List<List<string>>,
+    reexports: List<List<string>>,
+    names: List<Filed>,
+    words: List<Filed>,
+    marks: List<Filed>,
+    externs: List<ExternNote>,
+    links: List<string>,
+    /// Every file declaring a kind that implements a trait for a type.
+    implementors: List<string>,
+    /// Each file a `ref` line names, with the files whose lines name it: value the target, path the source.
+    refs: List<Filed>,
+    /// Each placed file's names, as its module's namespace binds them.
+    narrows: List<FileNames>,
+    /// The files a file's types name and the files its impls sit in: value the file reached, path the file it is reached from.
+    typed: List<Filed>,
+    /// The files the record's non-builtin references name.
+    reach_refs: List<string>,
+    /// The digest of what other modules' keys read of the record apart from its plain free fns: its
+    /// imports, references and each file's unnamed interface.
+    seen: string,
+    /// The digest of its plain free fns' forms, one per name — "whole" when a file's unnamed
+    /// interface is not recorded and `seen` carries the whole interface instead.
+    forms: string,
+    /// The forms behind `forms`, a line per fn; empty for a row read back, kept under `forms_key`.
+    forms_text: string,
+    /// The `file` lines, as the record wrote them: each file's print and what its runs read.
+    files: List<List<string>>,
+}
+
+/// Whether `key` was already claimed in `seen`, claiming it.
+fn claimed(seen: Cell<Map<string, bool>>, key: string) -> bool {
+    if seen.get().has(key) { return true }
+    seen.put(key, true)
+    false
+}
+
+/// What a file's names look like to a reader of its module: the name each of its declarations
+/// binds, a plain free fn's marked with `*`, and whether any declaration was written by an annotation.
+type FileNames = { path: string, generated: bool, head: string, bound: List<string> }
+
+/// A file's names as one head: the digest of those that are not plain free fns, whether it holds
+/// generated code, and the digest of every bound name.
+export fn head_of(bound: List<string>, generated: bool) -> string {
+    joined(
+        [
+            names_digest_of([b for b in bound if !b.starts_with("*")]),
+            if generated { "1" } else { "0" },
+            names_digest_of(bound),
+        ],
+        ".",
+    )
+}
+
+/// A bound name without its plain mark.
+export fn unmarked(b: string) -> string { if b.starts_with("*") { b.substring(1, b.length) } else { b } }
+
+/// A set of names as one digest, in name order.
+export fn names_digest_of(names: List<string>) -> string { digest_of(joined(sorted_texts(names), "\n")) }
+
+/// A module's name environment, as its record's producers file it.
+fn env_of(p: Producers) -> NameEnv {
+    NameEnv {
+        names: filed_map(p.names),
+        words: filed_map(p.words),
+        marks: filed_map(p.marks),
+        externs: p.externs,
+        implementors: distinct(p.implementors),
+    }
+}
+
+/// Filings as each value's files, in filing order.
+fn filed_map(fs: List<Filed>) -> Map<string, List<string>> {
+    mut out: Map<string, List<string>> = {}
+    for f in fs { out.set(f.value, distinct((out.get(f.value) ?? []).concat([f.path]))) }
+    out
+}
+
+/// WHY A RECORD CANNOT BE LOADED: "" when it is whole and names no file the module has
+/// lost, else the reason.
+fn fault_of(p: Producers, here: List<string>) -> string {
+    if p.fault != "" { return p.fault }
+    let stray? = p.declared.find((path) -> !here.contains(path)) else { return "" }
+    "names `${stray}`, which the module no longer has"
+}
+
+// ── THE ROW ─────────────────────────────────────────────────────────
+
+fn faulted(rows: List<List<string>>) -> string {
+    let r? = rows.find(it[0] == "fault") else { return "" }
+    text_of_field(r[1])
+}
+
+// ── WHERE IT STANDS ─────────────────────────────────────────────────
+
+// ── VOICES ──────────────────────────────────────────────────────────
+
+/// Whether a declaration of this kind binds its name in its module.
+fn binds_name(k: DeclKind) -> bool {
+    match k {
+        .Default or .Method or .Impl or .Case -> false,
+        .Fn or .Main or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State -> true,
+    }
+}

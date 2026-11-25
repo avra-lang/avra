@@ -1,0 +1,28 @@
+//! proves: a fn may answer a running `Source`, its receiver owns it, and
+//! the producer is settled where the receiver's block ends — cancelled
+//! then joined, not before. The producer parks on a rendezvous send, so
+//! only a cancel frees it, and its `defer` marks the unwind; `mid` reads
+//! the mark while the block still runs (`0`, a lost count — the callee
+//! emitted no settle) and `after` reads it once the block has ended
+//! (`true`, the receiver settled it).
+use @std.task.{open_channel, Channel, Source}
+
+fn feed(ch: Channel<int>, work: Task<bool>) -> Source<int> {
+    ch.source with { work: work }
+}
+
+let cancelled = Cell.new(false)
+let mid = Cell.new(0)
+let after = Cell.new(false)
+let ch = open_channel<int>(0)
+if true {
+    let work = spawn {
+        defer { cancelled.set(true) }
+        let _ = ch.sink.send(99)
+        true
+    }
+    let f = feed(ch, work)
+    mid.set(f.lost())
+}
+after.set(cancelled.get())
+"${mid.get()} ${after.get()}"

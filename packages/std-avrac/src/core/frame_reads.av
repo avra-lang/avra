@@ -1,0 +1,150 @@
+//! WHAT A LITERAL'S ROLE FIELDS HOLD OF THE STATE A BODY READS. The cells a text the builder says
+//! again reads (`Cells`): each module state its closure reaches, then each `state` field of the
+//! receiver it reads. The cells its frame reads at paint time that no reading answers for
+//! (`Structural`), and whether the page can't place that frame (`Opaque`): a read no cell answers
+//! for, or a text said again that reads the receiver some other way. Which reads count is the
+//! program's read set, asked through `states`; the cells are this body's.
+
+/// A part of a body asked what it reads: the tree, its names as typing resolved them, the roots, and
+/// whether only what's read at paint time that no reading answers for counts, `answered` giving the
+/// heads of an instance a cell of the instance takes.
+export type StatesAsked = {
+    store: SyntaxArena,
+    names: NamesRead,
+    roots: List<ExprId>,
+    structural: bool,
+    answered: fn(ExprId) -> List<ExprId>,
+}
+
+/// The module states a part of a body reads, each as a read reaches its box, and the body's own
+/// `state` statements it reads; `unnamed` where a read reaches what no cell can be named for.
+export type StatesRead = { states: List<KeptState>, unnamed: bool, locals: List<StmtId> = [] }
+
+/// One use of the receiver inside a closure: a field read through it at `subject`, or any other use.
+enum SelfUse {
+    Field(name: string, subject: ExprId)
+    Bare
+}
+
+impl Lowering {
+    /// The cells the closure minted beside the literal `e` reads: each module state it reaches, then
+    /// each `state` of this body it reads, then each `state` field of the receiver it reads; none
+    /// where one read reaches what has no cell here, or no closure was minted.
+    mut fn placed_cells(e: ExprId) -> List<Reg> {
+        let lam? = minted_closure(self.store, e) else { return [] }
+        let body? = self.store.lambda_parts(lam)?.body else { return [] }
+        let read = self.states_read([body], false)
+        let fields? = self.state_fields_read(body) else { return [] }
+        if read.unnamed { return [] }
+        let locals: List<Reg?> = [self.local_state_cell(s) for s in read.locals]
+        let selves: List<Reg?> = [match u { .Field(n, at) -> self.state_cell(at, n), .Bare -> null } for u in fields]
+        if locals.any(it == null) || selves.any(it == null) { return [] }
+        [self.state_box(s.callee, s.held) for s in read.states]
+            .concat([r! for r in locals])
+            .concat([r! for r in selves])
+    }
+
+    /// The Cell the `state` statement `s` of this body binds, as this body reaches it.
+    mut fn local_state_cell(s: StmtId) -> Reg? {
+        let name? = self.store.let_name(s) else { return null }
+        let b? = self.bound(name) else { return null }
+        self.shared_cell(b)
+    }
+
+    /// The cells of the module states this frame reads at paint time that no reading answers for;
+    /// none for a frame the page can't place.
+    mut fn structural_cells() -> List<Reg> {
+        if self.opaque_frame() { return [] }
+        [self.state_box(s.callee, s.held) for s in self.structural_read().states]
+    }
+
+    /// Whether a page can't place this frame: a read at paint time no cell answers for, or a text
+    /// said again that reads the receiver some way no `state` field's cell answers for.
+    fn opaque_frame() -> bool {
+        let roots = self.roots ?? []
+        self.structural_read().unnamed || roots.any((r) -> self.says_unplaced(r))
+    }
+
+    /// What this frame reads at paint time that no reading answers for; unnamed for a frame whose
+    /// code is not one expression.
+    fn structural_read() -> StatesRead {
+        let roots? = self.roots else { return StatesRead { states: [], unnamed: true } }
+        self.states_read(roots, true)
+    }
+
+    /// The module states `roots` read, by the program's read set.
+    fn states_read(roots: List<ExprId>, structural: bool) -> StatesRead {
+        (self.program.states)(
+            StatesAsked {
+                store: self.store,
+                names: self.names,
+                roots: roots,
+                structural: structural,
+                answered: (x) -> self.prop_heads(x),
+            },
+        )
+    }
+
+    /// The heads of an instance a cell of the instance takes: those whose field its record makes a
+    /// `state` field.
+    fn prop_heads(x: ExprId) -> List<ExprId> {
+        let heads? = match self.store.expr(x) {
+            .Component(_, _, heads, _, _, _) -> heads,
+            rest -> null,
+        } else { return [] }
+        let lit? = self.store.expansion_of(x) else { return [] }
+        let ty? = self.type_at(lit) else { return [] }
+        let fields? = self.fields_of(ty) else { return [] }
+        let parts? = self.store.struct_lit_parts(lit) else { return [] }
+        [h for j, h in heads if j < parts.fields.length && fields.any(it.name == parts.fields[j] && it.state)]
+    }
+
+    /// Whether a text said again under `x` reads the receiver some way no `state` field's cell
+    /// answers for.
+    fn says_unplaced(x: ExprId) -> bool {
+        let lit = if self.store.instance_word(x) == null { null } else { self.store.expansion_of(x) }
+        let own = lit != null && self.unplaced_closure(lit!)
+        own || self.store.walked(x).any((k) -> self.says_unplaced(k))
+    }
+
+    /// Whether the closure minted beside `lit` reads the receiver some way no `state` field's cell
+    /// answers for.
+    fn unplaced_closure(lit: ExprId) -> bool {
+        let lam? = minted_closure(self.store, lit) else { return false }
+        let body? = self.store.lambda_parts(lam)?.body else { return false }
+        self.state_fields_read(body) == null
+    }
+
+    /// The `state` fields of the receiver `body` reads, each once, first read first; none where it
+    /// reads no receiver; absent where it uses the receiver any other way.
+    fn state_fields_read(body: ExprId) -> List<SelfUse>? {
+        let uses = self.self_uses(body)
+        let fields: List<SelfUse?> = [match u { .Field(n, s) -> if self.state_field_at(s, n) { u } else { null }, .Bare -> null } for u in uses]
+        if fields.any(it == null) { return null }
+        [f! for j, f in fields if !fields.take(j).any((g) -> field_name(g!) == field_name(f!))]
+    }
+
+    /// Whether the field `name` of what `subject` reads is a `state` field.
+    fn state_field_at(subject: ExprId, name: string) -> bool {
+        let ty? = self.type_at(subject) else { return false }
+        (self.fields_of(ty) ?? []).any(it.name == name && it.state)
+    }
+
+    /// Every use of the receiver under `x`, outermost first.
+    fn self_uses(x: ExprId) -> List<SelfUse> {
+        match self.store.expr(x) {
+            .Prop(sub, name) if self.reads_receiver(sub) -> [SelfUse.Field(name.of, sub)],
+            .Receiver -> if self.reads_receiver(x) { [SelfUse.Bare] } else { [] },
+            rest -> flatten([self.self_uses(k) for k in self.store.reached(x)]),
+        }
+    }
+
+    /// Whether the node `x` reads the receiver.
+    fn reads_receiver(x: ExprId) -> bool {
+        let site? = self.names.at(x)?.binder else { return false }
+        site is .Receiver
+    }
+}
+
+/// The field a use reads, empty for a bare use.
+fn field_name(u: SelfUse) -> string { match u { .Field(n, _) -> n, .Bare -> "" } }

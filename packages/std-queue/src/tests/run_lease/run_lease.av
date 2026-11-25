@@ -1,0 +1,37 @@
+//! proves a handler that outlives its lease is cancelled there and its
+//! item is not acked: the handler's `defer` runs at the lease, the item
+//! is handed out again one epoch on, and only that delivery is acked.
+use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError}
+use @std.time.{ms, now_ms, secs, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+fn stuck_once(seen: Cell<List<string>>, began: int, d: Delivery<int>) -> Result<int, string> {
+    seen.push("start epoch ${d.epoch} attempt ${d.attempt} at ${now_ms() - began}")
+    defer seen.push("left epoch ${d.epoch} at ${now_ms() - began}")
+    if d.epoch == 1 { sleep(secs(60)) }
+    d.item
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+avra_clock_virtual(1)
+state began: int = now_ms()
+state seen: Cell<List<string>> = Cell.new([])
+queue<Dead<int, string>> letters {}
+queue<int> jobs {
+    lease: ms(50)
+    acked: (d: Delivery<int>) -> seen.push("acked epoch ${d.epoch}")
+}
+worker slow {
+    reads: jobs
+    each: (d: Delivery<int>) -> stuck_once(seen, began, d)
+    dead: letters
+}
+let _ = jobs.home().send(7, key("k"))
+let r = spawn run(slow)
+sleep(ms(200))
+slow.stop()
+"${seen.get().join(", ")} | ${said(r.await)} | depth ${jobs.home().depth() catch 0 - 1}"

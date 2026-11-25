@@ -1,0 +1,152 @@
+//! THE PASS LEDGER: a run's work, pass by pass. Each query family's asks are counted under the pass
+//! its definition names (`pass.av`), and each phase timed outside the queries under the pass it is
+//! timed as; each pass's asks are read against its unit — files, items, bodies, objects — so what a
+//! pass does once per unit cold, in proportion to the items an edit moved warm, and not at all where
+//! nothing moved, is a number a reader can hold it to. The asks are what the run computed, the same
+//! in every run of the same tree; the times are the run's own, said and never compared.
+use pass.{Pass, PassUnit, every_pass, pass_unit, pass_word, unit_word}
+use query_engine.{QueryEngine}
+use query_times.{FamilyTime, TimedSide}
+use @std.text.{repeat}
+
+/// What a run worked over, by unit: the program's files, written items and bodies, the objects a
+/// build emitted and those it linked, and the items an edit moved.
+export type PassUnits = { files: int, items: int, bodies: int, objects: int, linked: int = 0, moved: int }
+
+/// One pass's line of a run's ledger: its asks computed, its time of its own in ns (0 where the
+/// run kept no times), and how many of its unit the run worked over; and its re-checks — answers
+/// checked against a kept record and kept, what a warm run verified rather than worked out — with
+/// their time in ns.
+export type PassRow = { pass: Pass?, asks: int, own: int, units: int, rechecks: int = 0, recheck_own: int = 0 }
+
+/// Each pass's line of the run `engine` made, its asks those `computed` names — taken before the
+/// units were counted, which asks queries of its own — then a line for asks of a family no pass
+/// names, where there are any.
+export fn pass_ledger(engine: QueryEngine, computed: List<string>, units: PassUnits) -> List<
+    PassRow,
+> {
+    let kept = engine.kept_times()
+    let times = if kept == null { [] } else { [t for t in kept!.families.get().values() if !(t.side is .Reused)] }
+    mut asks: Map<string, int> = {}
+    for name in computed {
+        let word = passed_word(engine.pass_named(name))
+        asks.set(word, (asks.get(word) ?? 0) + 1)
+    }
+    mut own: Map<string, int> = {}
+    mut recheck_own: Map<string, int> = {}
+    if kept != null {
+        for t in kept!.families.get().values() {
+            if !(t.side is .Reused) { continue }
+            let word = passed_word(t.pass)
+            recheck_own.set(word, (recheck_own.get(word) ?? 0) + t.own)
+        }
+    }
+    for t in times {
+        let word = passed_word(t.pass)
+        own.set(word, (own.get(word) ?? 0) + t.own)
+        // a phase timed outside the queries is no question, so its asks are the times it ran
+        if t.side is .Outside { asks.set(word, (asks.get(word) ?? 0) + t.asks) }
+    }
+    let rows = [PassRow {
+        pass: p,
+        asks: asks.get(pass_word(p)) ?? 0,
+        own: own.get(pass_word(p)) ?? 0,
+        units: units_of(units, pass_unit(p)),
+        rechecks: engine.rechecked_in(p),
+        recheck_own: recheck_own.get(pass_word(p)) ?? 0,
+    } for p in every_pass()]
+    let stray = asks.get(UNATTRIBUTED) ?? 0
+    if stray == 0 && own.get(UNATTRIBUTED) ?? 0 == 0 { return rows }
+    rows.concat([PassRow { pass: null, asks: stray, own: own.get(UNATTRIBUTED) ?? 0, units: 0 }])
+}
+
+/// The word a ledger names a family's pass by; families no pass names fall under `UNATTRIBUTED`.
+fn passed_word(p: Pass?) -> string { if p == null { UNATTRIBUTED } else { pass_word(p!) } }
+
+/// The ledger's line for asks no pass names: a definition written by hand, as an engine's own tests
+/// write them. A program's run has none.
+const UNATTRIBUTED: string = "unattributed"
+
+/// How many of `unit` the run worked over.
+fn units_of(units: PassUnits, unit: PassUnit) -> int {
+    match unit {
+        .File -> units.files,
+        .Item -> units.items,
+        .Body -> units.bodies,
+        .Object -> units.objects,
+        .Linked -> units.linked,
+        .Run -> 1,
+    }
+}
+
+/// Asks per unit, in thousandths, so a ledger compares whole numbers: 0 where no unit was worked
+/// over.
+export fn per_unit_milli(asks: int, units: int) -> int { if units == 0 { 0 } else { asks * 1000 / units } }
+
+/// The ledger as a table: each pass's own time, asks, unit, units, asks per unit and, warm, asks per
+/// item the edit moved — cold, a pass does its work once per unit; warm, in proportion to what moved;
+/// where nothing moved, nothing — then its re-checks, their time, and re-checks per item moved. Times
+/// are in milliseconds, a warm pass's being far under a second.
+export fn ledger_table(rows: List<PassRow>, units: PassUnits) -> string {
+    let head = "passes: ${units.files} files, ${units.items} items, ${units.bodies} bodies, ${units.objects} objects emitted, ${units.linked} linked; ${units.moved} items moved"
+    let lines = [
+        pad("pass", 13) +
+            lpad("self ms", 11) +
+            lpad("asks", 10) +
+            "  " +
+            pad("unit", 8) +
+            lpad("units", 9) +
+            lpad("asks/unit", 11) +
+            lpad("asks/moved", 12) +
+            lpad("rechecks", 10) +
+            lpad("re ms", 11) +
+            lpad("re/moved", 10),
+    ]
+        .concat([row_line(r, units) for r in rows])
+    [head].concat(lines).join("\n")
+}
+
+/// One pass's line of the table.
+fn row_line(r: PassRow, units: PassUnits) -> string {
+    let unit = if r.pass == null { "-" } else { unit_word(pass_unit(r.pass!)) }
+    pad(passed_word(r.pass), 13) +
+        lpad(millis(r.own), 11) +
+        lpad("${r.asks}", 10) +
+        "  " +
+        pad(unit, 8) +
+        lpad("${r.units}", 9) +
+        lpad(milli(per_unit_milli(r.asks, r.units)), 11) +
+        lpad(milli(per_unit_milli(r.asks, units.moved)), 12) +
+        lpad("${r.rechecks}", 10) +
+        lpad(millis(r.recheck_own), 11) +
+        lpad(milli(per_unit_milli(r.rechecks, units.moved)), 10)
+}
+
+/// The ledger's deterministic columns as tab-separated lines a ratchet reads: the pass, its asks, its
+/// asks per unit and per moved item in thousandths, its re-checks, and its re-checks per moved item in
+/// thousandths. Times are never a row.
+export fn ledger_rows(rows: List<PassRow>, units: PassUnits) -> string {
+    ["${passed_word(r.pass)}\t${r.asks}\t${per_unit_milli(r.asks, r.units)}\t${per_unit_milli(r.asks, units.moved)}\t${r.rechecks}\t${per_unit_milli(r.rechecks, units.moved)}" for r in rows]
+        .join("\n")
+}
+
+/// `ns` as milliseconds, to a thousandth.
+fn millis(ns: int) -> string {
+    let micros = ns / 1000
+    let frac = micros % 1000
+    let padded = "${1000 + frac}"
+    "${micros / 1000}.${padded.substring(1, padded.length)}"
+}
+
+/// Thousandths as a decimal, to a hundredth.
+fn milli(m: int) -> string {
+    let hundredths = m / 10
+    let frac = hundredths % 100
+    "${hundredths / 100}.${if frac < 10 { "0" } else { "" }}${frac}"
+}
+
+/// `s` padded on the right to `width`.
+fn pad(s: string, width: int) -> string { s + repeat(" ", if s.length < width { width - s.length } else { 1 }) }
+
+/// `s` padded on the left to `width`.
+fn lpad(s: string, width: int) -> string { repeat(" ", if s.length < width { width - s.length } else { 1 }) + s }

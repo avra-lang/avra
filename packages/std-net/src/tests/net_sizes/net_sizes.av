@@ -1,0 +1,46 @@
+//! A READ OF ZERO TAKES NOTHING OFF THE WIRE. The size is the
+//! caller's arithmetic — `read(want - have)` reaches zero the turn a
+//! frame is complete — and a zero clamped up to one steals the first
+//! byte of the next message with nothing said. A negative size is a
+//! bound and is refused by name.
+use @std.net.{listen, connect, Read, Conn, NetError}
+use @std.time.{secs, ms, Duration, quiet}
+
+fn taken(r: Read) -> string {
+    match r { .Data(b) -> "${b.length}", .Eof -> "eof", .Pending -> "pending" }
+}
+
+fn refused<T>(r: Result<T, NetError>) -> string {
+    match r { .Err(e) -> "${e.verb}/${e.errno}", .Ok(_) -> "took" }
+}
+
+/// The chunk the connection hands over within `budget`, null once the
+/// wait runs out or the peer has finished.
+fn arrived(c: Conn, budget: Duration) -> Result<Bytes?, NetError> {
+    let src = c.reads()
+    select {
+        b in src -> .Ok(b)
+        quiet(budget) -> .Ok(null)
+        src.ended -> .Ok(null)
+    }
+}
+
+fn sizes() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let client = connect("127.0.0.1", l.port, secs(2))?
+    let server = l.accept()?
+    client.try_write("abcdef".bytes(), 0)?
+    let got = arrived(server, secs(2))?
+    let zero = taken(server.try_read(0)?)
+    let negative = refused(server.try_read(0 - 5))
+    let rest = match got {
+        b? -> "${b.length}"
+        null -> "none"
+    }
+    client.close()?
+    server.close()?
+    l.close()?
+    .Ok("${zero} ${negative} ${rest}")
+}
+
+match sizes() { .Ok(line) -> line, .Err(e) -> "failed: ${e.verb} ${e.subject}" }

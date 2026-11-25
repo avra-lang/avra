@@ -1,0 +1,132 @@
+// The first real statement, end to end through the driver: `let x =
+// 1 + y` into the arena, spans engine-attributed, and a broken
+// statement costing one diagnostic while its neighbors parse around
+// the visible hole.
+use @std.avrac.core.{BinOp}
+use @std.avrac.compiler.{assemble, parse_program, Parsed}
+use @std.avrac.features.{BlockWords}
+use @std.avrac.testing.{shown, refused_with, refusals, judged}
+use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.features.stmt_spine.{stmt_spine}
+use @std.avrac.features.let_stmt.{let_stmt}
+use @std.avrac.features.expr_spine.{expr_spine}
+use @std.avrac.features.type_expr.{type_expr}
+use core.{TypeRef}
+
+/// This feature subset: programs of lets only.
+fn parse_prog(source: string) -> Parsed {
+    parse_program(
+        assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]),
+        new_source_file("<source>", source),
+        BlockWords {},
+    )
+}
+
+/// The binding is named `x` and declares `int?`.
+fn declares_opt_int(name: string, t: TypeRef?) -> bool {
+    if t == null { return false }
+    name == "x" && t!.optional && t!.name == "int"
+}
+
+spec "features/let_stmt" {
+    given "let x = 1 + y" {
+        then "one Let lands in the arena with the expression tree under it" {
+            let p = parse_prog("let x = 1 + y")
+            let tree_ok = match p.store.stmt(p.stmts[0]) {
+                .Let(name, _, value) -> name.spells("x") &&
+                    match p.store.expr(value) {
+                        .Binary(op, l, r) -> op == BinOp.Add && p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
+                        _ -> false,
+                    },
+                _ -> false,
+            }
+            p.voices.list.is_empty() && p.stmts.length == 1 && tree_ok
+        }
+        then "the statement's span covers the whole line, engine-attributed" {
+            let p = parse_prog("let x = 1 + y")
+            let s = p.store.stmt_span(p.stmts[0])
+            s?.lo == 0 && s?.hi == 13
+        }
+    }
+    given "several statements" {
+        then "lets accumulate in source order" {
+            let p = parse_prog("let a = 1\nlet b = 2")
+            let a_ok = match p.store.stmt(p.stmts[0]) {
+                .Let(name, _, _) -> name.spells("a"),
+                _ -> false,
+            }
+            let b_ok = match p.store.stmt(p.stmts[1]) {
+                .Let(name, _, _) -> name.spells("b"),
+                _ -> false,
+            }
+            p.voices.list.is_empty() && p.stmts.length == 2 && a_ok && b_ok
+        }
+    }
+    given "the annotation, parsed — `let x: T = v`" {
+        then "the WRITTEN type rides the node, `?` included" {
+            let p = parse_prog("let x: int? = 1")
+            match p.store.stmt(p.stmts[0]) {
+                .Let(name, t, _) -> declares_opt_int(name.text(), t),
+                _ -> false,
+            }
+        }
+        then "an unannotated let carries NO type — absence is its own value" {
+            let p = parse_prog("let x = 1")
+            match p.store.stmt(p.stmts[0]) { .Let(_, t, _) -> t == null, _ -> false }
+        }
+    }
+    given "the declared-binding law" {
+        then "the SPEC'S OWN SENTENCE: `let x: int = null` refuses; `let x: int? = null` is fine" {
+            refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") &&
+                judged("let x: int? = null\nx ?? 7").diagnostics.is_empty()
+        }
+        then "a mismatch names the binding and both sides" {
+            refused_with("let x: int = \"s\"\nx", "`x` declares `int`, this is `string`")
+        }
+        then "an unknown annotation name speaks ONCE — the name law first" {
+            refusals("let x: Foo = 1\nx") == 1
+        }
+        then "the annotation WIDENS the value" {
+            shown("let x: int? = 5\nx ?? 9") == "5"
+        }
+        then "the DECLARED type is what every later read sees" {
+            refused_with("let x: int? = 5\nx + 1", "`+` needs `int` operands, found `int?`")
+        }
+        then "a TYPE used as the value speaks ONCE — the value law, not both" {
+            let a = judged("type User = { age: int }\nlet x: int = User\nx")
+            a.diagnostics.length == 1 && a.report().contains("`User` is a type, not a value")
+        }
+        then "a niche annotation adopts a call's answer" {
+            shown(
+                "fn g(b: bool) -> string? { if b { \"x\" } else { null } }\nlet s: string? = g(true)\ns ?? \"d\"",
+            ) == "x"
+        }
+    }
+    given "a broken statement between good ones" {
+        then "one diagnostic, a visible hole, and whole neighbors" {
+            let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
+            let tail_ok = match p.store.stmt(p.stmts[2]) {
+                .Let(name, _, _) -> name.spells("y"),
+                _ -> false,
+            }
+            p.voices.list.length == 1 &&
+                p.stmts.length == 3 &&
+                p.store.stmt(p.stmts[1]) is .Error &&
+                tail_ok
+        }
+    }
+    given "the discard — `let _ = v`" {
+        then "the value runs and binds nothing" {
+            shown("mut xs = [1]\nlet _ = xs.push(2)\nxs.length") == "2"
+        }
+        then "at a block's tail it is no answer" {
+            shown("fn f() {\n    let _ = 5\n}\nf()\n2") == "2"
+        }
+        then "so a fn declaring an answer refuses to end on it" {
+            refused_with(
+                "fn f() -> int {\n    let _ = 5\n}\nf()",
+                "the body answers `void` but `f` declares `int`",
+            )
+        }
+    }
+}

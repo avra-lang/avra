@@ -1,0 +1,294 @@
+//! THE PLANNER'S LAWS, on the program layer: a comprehension head that scans a relation whole — a
+//! `@plans_all` accessor of a declared type — is a query. Where no filter in its region compares the
+//! row's field to an invariant value a `@plans` or `@looks_up` lookup answers, no filter after it may
+//! hand its row to a call, which would run on every row with nothing narrowing it; and a scan left
+//! whole over a relation its `@census(n)` counts past the floor, compared on a field no index
+//! answers, is warned of. Read over a written item's comprehensions; a row is its head's binder, by
+//! its name.
+use core.{BinOp, CompClause, ExprId, SignedType, Span, SyntaxArena, flatten, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.lists.{relation_scanned, rows_unnarrowed, scan_floor}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.text.{parse_int}
+
+/// The package whose annotations mark a relation's accessors and its census.
+const PLAN_META: string = "@std/meta"
+
+/// A relation a head scans whole: its name, where it is declared, the head's clause, its row's
+/// binder, and each name its own head and the heads after it bind.
+type RelationScan = { relation: string, home: SourceFileAddress, head: int, row: string, unsteady: List<string> }
+
+/// A row's field compared to an invariant value: the field, the value, and the conjunct that compares.
+type RowAsk = { field: string, value: ExprId, at: ExprId }
+
+/// What the planner's laws find in one comprehension: the call handed a row no index narrows, or the
+/// compare a census counts past the floor.
+type PlanFound = { at: Span?, relation: string, field: string, rows: int }
+
+/// Every planner finding in the written item `at` of `file`: of each comprehension its typed nodes hold.
+fn plans_found(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<PlanFound> {
+    if !item_held(engine, file, at) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [f for t in item_typed_nodes(engine, file, at, item) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null for clauses in some_list(comp_clauses(t.store, e)) for scan in relation_scans(engine, t, clauses) for f in some_list(scan_found(engine, t, clauses, scan))]
+}
+
+/// The clauses of the comprehension at `e`; absent for any other node.
+fn comp_clauses(store: SyntaxArena, e: ExprId) -> List<CompClause>? {
+    match store.expr(e) { .Comp(_, clauses) -> clauses, rest -> null }
+}
+
+/// Every head of `clauses` that scans a relation whole, in written order.
+fn relation_scans(engine: QueryEngine, t: TypedNodes, clauses: List<CompClause>) -> List<
+    RelationScan,
+> {
+    [s for h in 0..clauses.length for s in some_list(scan_at(engine, t, clauses, h))]
+}
+
+/// The relation the head at `h` scans whole: its source a call of a `@plans_all` static through the
+/// relation's name.
+fn scan_at(engine: QueryEngine, t: TypedNodes, clauses: List<CompClause>, h: int) -> RelationScan? {
+    let source? = head_source(clauses[h]) else { return null }
+    let called? = match t.store.expr(source) {
+        .MethodCall(subject, name, _) -> StaticCalled { subject: subject, name: name.of },
+        rest -> null,
+    } else { return null }
+    let owner? = match t.store.expr(called.subject) { .Ident(n) -> n.of, rest -> null } else { return null }
+    if resolved(engine, t.file, Space.Value, owner.text()).named() != null { return null }
+    let d? = resolved(engine, t.file, Space.Type, owner.text()).named() else { return null }
+    if !static_marks(engine, d.file, d.name).any(it.name == called.name && it.word == PLANS_ALL) { return null }
+    RelationScan {
+        relation: d.name,
+        home: d.file,
+        head: h,
+        row: head_row(clauses[h]),
+        unsteady: flatten([head_binders(c) for c in clauses.drop(h)]),
+    }
+}
+
+/// A static called through a name.
+type StaticCalled = { subject: ExprId, name: string }
+
+/// A head's walked list, when it walks one rather than counting.
+fn head_source(c: CompClause) -> ExprId? {
+    match c {
+        .Head(_, _, source, hi) -> if hi == null { source } else { null },
+        .Filter(_) -> null,
+    }
+}
+
+/// A head's element binder; empty for a filter.
+fn head_row(c: CompClause) -> string {
+    match c { .Head(_, name, _, _) -> name.text(), .Filter(_) -> "" }
+}
+
+/// Each name a clause binds: a head's element and its index.
+fn head_binders(c: CompClause) -> List<string> {
+    match c {
+        .Head(index, name, _, _) -> [name.text()].concat([i.text() for i in some_list(index)]),
+        .Filter(_) -> [],
+    }
+}
+
+/// The marker a relation's whole-set accessor wears.
+const PLANS_ALL: string = "plans_all"
+
+/// The markers a relation's lookup wears, its field the argument.
+const LOOKUPS: List<string> = ["plans", "looks_up"]
+
+/// The marker a relation's type wears, its census row count the argument.
+const CENSUS: string = "census"
+
+/// A static of a relation wearing one of `@std/meta`'s markers: its name, the marker, and the
+/// marker's one argument as text, empty where it takes none.
+type StaticMark = { name: string, word: string, field: string }
+
+/// Every marker of `@std/meta` the statics of the type `home` declares as `relation` wear.
+fn static_marks(engine: QueryEngine, home: SourceFileAddress, relation: string) -> List<StaticMark> {
+    [StaticMark { name: parts!.name, word: a.name, field: marked_text(item.store, a.args) } for i in impls_of(engine, home, relation) for item in [read_item(engine, i.at.file, i.at.item)] for s in some_list(impl_stmt_at(item, i.at)) for f in item.store.impl_parts(s)!.fns for parts in [item.store.fn_parts(f)] if parts != null for a in item.store.annotations_of(f) if meta_marker(engine, i.at.file, a.name)]
+}
+
+/// Whether `word` names, where `file` reads it, an annotation `@std/meta` declares.
+fn meta_marker(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
+    resolved(engine, file, Space.Value, word).named()?.file?.package_name == PLAN_META
+}
+
+/// A marker's one argument as the text it writes; empty for any other count or form.
+fn marked_text(store: SyntaxArena, args: List<ExprId>) -> string {
+    if args.length != 1 { return "" }
+    let written = store.expr(args[0])
+    let text? = written.text_of() else { return counted_text(written.int_of()) }
+    text
+}
+
+/// A count as the text a marker writes it; empty for none.
+fn counted_text(n: int?) -> string {
+    let count? = n else { return "" }
+    "${count}"
+}
+
+/// The rows the `@census(n)` of the relation `scan` scans counts; absent where it wears none.
+fn census_rows(engine: QueryEngine, scan: RelationScan) -> int? {
+    let item? = record_item(engine, scan.home, scan.relation) else { return null }
+    let s? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == scan.relation) else { return null }
+    let a? = item
+        .store
+        .annotations_of(s)
+        .find((a) -> a.name == CENSUS && meta_marker(engine, scan.home, a.name)) else { return null }
+    parse_int(marked_text(item.store, a.args))
+}
+
+/// What the laws find of one scanned head: nothing where a lookup narrows it; else the first call
+/// handed its row, or — past the census floor — the first compare no index answers.
+fn scan_found(engine: QueryEngine, t: TypedNodes, clauses: List<CompClause>, scan: RelationScan) -> PlanFound? {
+    let marks = static_marks(engine, scan.home, scan.relation)
+    let looked = [m.field for m in marks if LOOKUPS.contains(m.word)]
+    let asks = [a for cond in region_filters(clauses, scan.head) for c in conjuncts(t.store, cond) for a in asks_of(engine, t, c, scan) if !could_be_null(t, a.value)]
+    if asks.any((a) -> looked.contains(a.field)) { return null }
+    let handed = [k for c in clauses.drop(scan.head + 1) for cond in filter_cond(c) for k in t.store.every_expr(cond) if hands_row(t.store, k, scan.row)]
+        .first()
+    if handed != null {
+        return PlanFound {
+            at: t.store.expr_span(handed!),
+            relation: scan.relation,
+            field: "",
+            rows: 0,
+        }
+    }
+    let rows? = census_rows(engine, scan) else { return null }
+    let ask? = asks.first() else { return null }
+    if rows <= scan_floor {
+        null
+    } else {
+        PlanFound {
+            at: t.store.expr_span(ask.at),
+            relation: scan.relation,
+            field: ask.field,
+            rows: rows,
+        }
+    }
+}
+
+/// The filters between the head at `h` and the next: every one reads that head's row.
+fn region_filters(clauses: List<CompClause>, h: int) -> List<ExprId> {
+    let at = [i for i, c in clauses if i > h && head_source(c) != null].first() ?? clauses.length
+    [cond for c in clauses.slice(h + 1, at) for cond in filter_cond(c)]
+}
+
+/// A filter's condition; none for a head.
+fn filter_cond(c: CompClause) -> List<ExprId> {
+    match c { .Filter(cond) -> [cond], .Head(_, _, _, _) -> [] }
+}
+
+/// A filter's conjuncts, `&&` flattened.
+fn conjuncts(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    match store.expr(e) {
+        .Binary(op, l, r) -> if op == BinOp.And { conjuncts(store, l).concat(conjuncts(store, r)) } else { [e] },
+        rest -> [e],
+    }
+}
+
+/// What the conjunct `c` asks of the scanned row: `r.f == v`, `v == r.f`, or `r.f.contains(v)`.
+fn asks_of(engine: QueryEngine, t: TypedNodes, c: ExprId, scan: RelationScan) -> List<RowAsk> {
+    match t.store.expr(c) {
+        .Binary(op, l, r) -> if op == BinOp.Eq { compared(engine, t, c, l, r, scan).concat(compared(engine, t, c, r, l, scan)) } else { [] },
+        .MethodCall(subject, name, args) -> if name.of == CONTAINS && args.length == 1 { compared(engine, t, c, subject, args[0], scan) } else { [] },
+        rest -> [],
+    }
+}
+
+/// The verb a list field is asked whether it holds a value by.
+const CONTAINS: string = "contains"
+
+/// `row` as the scanned row's field and `value` as an invariant, compared at `at`.
+fn compared(
+    engine: QueryEngine,
+    t: TypedNodes,
+    at: ExprId,
+    row: ExprId,
+    value: ExprId,
+    scan: RelationScan,
+) -> List<RowAsk> {
+    let field? = row_field(t.store, row, scan.row) else { return [] }
+    if invariant(engine, t, value, scan) { [RowAsk { field: field, value: value, at: at }] } else { [] }
+}
+
+/// `r.f` over the row binder `row`, its field's name.
+fn row_field(store: SyntaxArena, e: ExprId, row: string) -> string? {
+    match store.expr(e) {
+        .Prop(subject, name) -> if reads_name(store, subject, row) { name.of } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether `e` is a read of the name `name`.
+fn reads_name(store: SyntaxArena, e: ExprId, name: string) -> bool {
+    match store.expr(e) { .Ident(n) -> n.spells(name), rest -> false }
+}
+
+/// A value the lookup may compute once per scan: a literal, a name bound outside the scan that is
+/// no fn, or a field path of those — never a call, and never the scanned head's binders or a later one's.
+fn invariant(engine: QueryEngine, t: TypedNodes, e: ExprId, scan: RelationScan) -> bool {
+    match t.store.valued(e) {
+        .IntLit(_) or .StrLit(_) or .BoolLit(_) -> true,
+        .Ident(n) -> !scan.unsteady.contains(n.text()) && !names_fn(engine, t.file, n.text()),
+        .Prop(subject, _) -> invariant(engine, t, subject, scan),
+        rest -> false,
+    }
+}
+
+/// Whether `name` names, where `file` reads it, a fn — whose value is no constant.
+fn names_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    resolved(engine, file, Space.Value, name).named()?.kind == ItemKind.Fn
+}
+
+/// Whether the value at `e` could be null, which no bucket holds: its type absent, unknown, or nullable.
+fn could_be_null(t: TypedNodes, e: ExprId) -> bool {
+    let ty? = (t.type_at)(e.index) else { return true }
+    ty.nullable() || ty.absence()
+}
+
+/// Whether the node `k` is a call whose subject or arguments mention the row — `r.f.contains(v)`
+/// excepted, the list lookup's own form.
+fn hands_row(store: SyntaxArena, k: ExprId, row: string) -> bool {
+    match store.expr(k) {
+        .Call(_, _, args) -> args.any((a) -> mentions_row(store, a, row)),
+        .MethodCall(subject, name, args) -> !(name.of == CONTAINS && row_field(store, subject, row) != null) &&
+            [subject].concat(args).any((a) -> mentions_row(store, a, row)),
+        rest -> false,
+    }
+}
+
+/// Whether the row appears anywhere in `e`, a lambda's body among it.
+fn mentions_row(store: SyntaxArena, e: ExprId, row: string) -> bool { store.every_expr(e).any((k) -> reads_name(store, k, row)) }
+
+fn residuals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [Found { at: f.at, args: [f.relation] } for f in plans_found(engine, file, at) if f.field.is_empty()]
+}
+
+fn scans(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [Found { at: f.at, args: [f.relation, f.field, "${f.rows}"] } for f in plans_found(engine, file, at) if !f.field.is_empty()]
+}
+
+/// a filter hands a scanned relation's rows to a call only where an index narrows the scan
+export law scan_narrowed_before_a_call {
+    kind: "type.plan_residual"
+    reads: residuals
+    voice: residual_words
+    witness: "use @x.c.{Row, ok}\n[r for r in Row.all(1) if ok(r)].length\n"
+}
+
+/// a relation a census counts past the floor is not scanned whole for a compare an index would answer
+export law scan_past_the_floor_indexed {
+    kind: "type.plan_scan"
+    reads: scans
+    voice: scan_words
+    warns: true
+    witness: "use @x.c.{Row}\n[r for r in Row.all(1) if r.n == 1].length\n"
+}
+
+fn residual_words(a: List<string>) -> Voice { rows_unnarrowed(a[0]) }
+
+fn scan_words(a: List<string>) -> Voice { relation_scanned(a[0], a[1], parse_int(a[2]) ?? 0) }

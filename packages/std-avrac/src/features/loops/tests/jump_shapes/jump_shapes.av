@@ -1,0 +1,86 @@
+// proves: every control transfer lands where its bracket says, taken once and taken again — an
+// `if` inside a loop inside a `match` arm, a `continue` and a `break` out of two nested `if`s, a
+// loop with an empty body, a `match` whose last arm is the rest, a `while` whose condition mints a
+// value each turn, and a `defer` run on an early `return` out of a loop
+enum Shape {
+    Dot
+    Line
+    Box
+}
+
+/// An `if` inside a loop inside a `match` arm, the arm taken on several calls.
+fn inside_arm(s: Shape, n: int) -> int {
+    match s {
+        .Line -> {
+            mut sum = 0
+            for i in 0..n {
+                if i % 2 == 0 { sum = sum + i } else { sum = sum - 1 }
+            }
+            sum
+        },
+        .Box -> n * 10,
+        .Dot -> 0,
+    }
+}
+
+/// A `continue` and a `break` each out of two nested `if`s.
+fn nested_jumps(xs: List<int>) -> int {
+    mut total = 0
+    for x in xs {
+        if x > 0 {
+            if x % 3 == 0 { continue }
+        }
+        if x < 100 {
+            if x == 44 { break }
+        }
+        total = total + x
+    }
+    total
+}
+
+/// A loop whose body is empty: only its condition does anything.
+fn counted(n: int) -> int {
+    mut i = 0
+    while next(i) < n {
+        i = i + 1
+    }
+    for _k in 0..4 {}
+    i
+}
+
+fn next(i: int) -> int { i + 1 }
+
+/// A `match` over ints whose last arm is the rest.
+fn graded(n: int) -> string {
+    match n { 1 -> "one", 2 -> "two", _ -> "many" }
+}
+
+/// A `while` whose condition mints a value — a text — every turn.
+fn minted(n: int) -> int {
+    mut i = 0
+    while "${i}".length < n {
+        i = i * 10 + 1
+    }
+    i
+}
+
+fn said(log: Cell<List<string>>, w: string) { log.push(w) }
+
+/// A `defer` that runs when a `return` leaves from inside a loop.
+fn early(log: Cell<List<string>>, xs: List<int>) -> int {
+    defer said(log, "left")
+    for x in xs {
+        if x > 2 { return x }
+    }
+    -1
+}
+
+let log: Cell<List<string>> = Cell.new([])
+let arms = [
+    inside_arm(Shape.Line, 5),
+    inside_arm(Shape.Box, 3),
+    inside_arm(Shape.Line, 4),
+    inside_arm(Shape.Dot, 9),
+]
+let early_at = [early(log, [1, 5, 2]), early(log, [1, 2])]
+"${arms[0]} ${arms[1]} ${arms[2]} ${arms[3]} ${nested_jumps([1, 3, 4, 6, 44, 7])} ${counted(4)} ${graded(1)}${graded(2)}${graded(7)}${graded(2)} ${minted(4)} ${early_at[0]} ${early_at[1]} ${log.get().join(",")}"

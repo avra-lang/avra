@@ -1,0 +1,30 @@
+//! TEN THOUSAND TASKS ALIVE AND PARKED: each has yielded once — so each
+//! holds a stack — before any is joined. Cold first, then the least of
+//! five. Prints `<key> <total ns> <tasks>`.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{ms, now_ns, sleep}
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+fn pauses(i: int) -> int {
+    sleep(ms(0))
+    i
+}
+
+/// The time to spawn `n` tasks, run each to its yield, and join each.
+fn parked(n: int) -> int {
+    let t0 = now_ns()
+    let all = [spawn pauses(i) for i in 0..n]
+    mut sum = 0
+    for t in all { sum = sum + t.await }
+    now_ns() - t0
+}
+
+fn least(a: int, b: int) -> int { if a < b { a } else { b } }
+
+let n = number("FLOW_N", 10000)
+println("spawn_parked_cold ${parked(n)} ${n}")
+println(
+    "spawn_parked_warm ${least(parked(n), least(least(parked(n), parked(n)), least(parked(n), parked(n))))} ${n}",
+)

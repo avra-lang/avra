@@ -1,0 +1,84 @@
+use models.{models, Shelf, Specimen}
+use @avra.graph.{Graph, Record, RecordMode, Publication, Ref}
+
+fn proof() -> Result<string, string> {
+    mut graph = Graph.memory(models)?
+    defer { let _ = graph.close() }
+    graph.observe("lab:1", "measurements")?
+    graph
+        .publish(
+            Publication {
+                id: "lab-run",
+                producer: "lab-agent",
+                scope: "lab:1",
+                input: "lab:1",
+                input_revision: 1,
+                schema: graph.catalog.fingerprint,
+                expected_revision: graph.revision()?,
+                records: [
+                    Record {
+                        id: "s1",
+                        model: "Shelf",
+                        value: Shelf { label: "A", next: Ref { id: "s1" } }.graph_value(),
+                    },
+                    Record {
+                        id: "x1",
+                        model: "Specimen",
+                        value: Specimen {
+                            name: "Fern",
+                            shelf: Ref { id: "s1" },
+                            score: 80,
+                            tags: ["green", "extra"],
+                            measured: 2.5,
+                            viable: true,
+                            notes: null,
+                            aliases: ["sample"],
+                        }
+                            .graph_value(),
+                    },
+                ],
+            },
+        )?
+    let valid = match Specimen.decode(graph.value("x1")?) {
+        .Ok(s) -> s.score == 80 && s.shelf.id == "s1" && s.tags.length == 1,
+        .Err(_) -> false,
+    }
+    let before = (graph.edges("s1", incoming: true)?).length
+    graph
+        .publish(
+            Publication {
+                id: "partial-run",
+                producer: "partial-agent",
+                scope: "sample-x2",
+                input: "lab:1",
+                input_revision: 1,
+                schema: graph.catalog.fingerprint,
+                expected_revision: graph.revision()?,
+                records: [
+                    Record {
+                        id: "x2",
+                        model: "Specimen",
+                        mode: .Partial,
+                        value: Specimen {
+                            name: "Invalid",
+                            shelf: Ref { id: "s1" },
+                            score: 10,
+                            tags: ["one", "two"],
+                            measured: 1.0,
+                            viable: true,
+                            notes: null,
+                            aliases: [],
+                        }
+                            .graph_value(),
+                    },
+                ],
+            },
+        )?
+    let deferred = match graph.value("x2") {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("a viable specimen needs"),
+    }
+    "${models.length} ${valid} ${before} ${(graph.traverse("x1", depth: 10)?).length} ${deferred}"
+}
+
+proof() catch e -> "failed: ${e}"

@@ -1,0 +1,45 @@
+// proves: `collect enum E: T` and a trait written `@delegates(E)` each implement the trait over
+// the members gathered by name — each call reaches the member record's own impl, arguments carried.
+use @std.meta.{Named, delegates}
+
+fn node(_t: Named) {}
+
+trait Size {
+    fn size() -> int
+    fn scaled(by: int) -> int
+}
+
+@delegates(Shape)
+trait Named2 {
+    fn label(prefix: string) -> string
+}
+
+@node
+type Dot = { at: int }
+
+impl Size for Dot {
+    fn size() -> int { 1 }
+    fn scaled(by: int) -> int { by }
+}
+
+impl Named2 for Dot {
+    fn label(prefix: string) -> string { "${prefix}dot ${self.at}" }
+}
+
+@node
+type Line = { from: int, to: int }
+
+impl Size for Line {
+    fn size() -> int { self.to - self.from }
+    fn scaled(by: int) -> int { (self.to - self.from) * by }
+}
+
+impl Named2 for Line {
+    fn label(prefix: string) -> string { "${prefix}line ${self.from}-${self.to}" }
+}
+
+collect enum Shape: Size = @node in self by it.name
+
+let d = Shape.Dot(4)
+let l = Shape.Line(2, 9)
+"${d.size()} ${l.size()} ${d.scaled(3)} ${l.scaled(3)} ${d.label("a ")} ${l.label("")}"

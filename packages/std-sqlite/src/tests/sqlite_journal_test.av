@@ -1,0 +1,70 @@
+// The journal of a file is the caller's to ask for, never changed under them: a plain open keeps the file as it is,
+// `Wal` and `Rollback` are explicit, and a switch SQLite refuses leaves the file as it was with the open succeeding.
+use @std.io.{make_dirs}
+use @std.sqlite.open.{Db, Journal, OpenConfig}
+use @std.sqlite.sql.{sql}
+use @std.time.{now_ns}
+
+once fn base() -> string {
+    let d = "/tmp/avra-sqlite-journal-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+/// A connection to `name` under the base, with the journal asked for.
+fn opened(name: string, journal: Journal) -> Result<Db, string> {
+    match Db.open_with(OpenConfig.config_at("${base()}/${name}.db") with { journal: journal }) {
+        .Ok(db) -> .Ok(db),
+        .Err(e) -> .Err(e.message),
+    }
+}
+
+/// The journal word of a connection, or why it could not be read.
+fn word(r: Result<Db, string>) -> string {
+    match r {
+        .Ok(db) -> match db.journal() { .Ok(w) -> w, .Err(e) -> e.message },
+        .Err(m) -> "open refused: ${m}",
+    }
+}
+
+/// A file made and left in the journal `first` asked for, then opened again asking `second`.
+fn reopened(name: string, first: Journal, second: Journal) -> string {
+    let made = opened(name, first)
+    let _ = match made { .Ok(db) -> db.close(), .Err(_) -> 0 }
+    word(opened(name, second))
+}
+
+/// A write lock held by one connection while another opens the same rollback-mode file asking `asked`.
+fn opened_while_locked(asked: Journal) -> string {
+    match opened("locked", Journal.Rollback) {
+        .Ok(holder) -> {
+            let _ = holder.run(sql("create table t (v)"))
+            let _ = holder.exec("begin immediate")
+            let seen = word(opened("locked", asked))
+            let _ = holder.exec("rollback")
+            seen
+        },
+        .Err(m) -> m,
+    }
+}
+
+spec "std/sqlite journal" {
+    given "a new file opened plainly" {
+        then "is SQLite's classic journal" { word(opened("plain", .Keep)) == "delete" }
+    }
+    given "a file asked for Wal" {
+        then "is kept in a write-ahead log" { word(opened("wal", .Wal)) == "wal" }
+    }
+    given "an existing rollback file opened plainly" {
+        then "is not converted behind the caller" { reopened("kept_rollback", .Rollback, .Keep) == "delete" }
+    }
+    given "an existing WAL file opened plainly" {
+        then "stays a write-ahead log" { reopened("kept_wal", .Wal, .Keep) == "wal" }
+    }
+    given "an existing WAL file asked for Rollback" {
+        then "is converted back" { reopened("back", .Wal, .Rollback) == "delete" }
+    }
+    given "a switch SQLite refuses because another connection holds a lock" {
+        then "the open succeeds and the file keeps the journal it had" { opened_while_locked(.Wal) == "delete" }
+    }
+}

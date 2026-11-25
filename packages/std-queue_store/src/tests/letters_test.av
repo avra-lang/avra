@@ -1,0 +1,102 @@
+// The dead letter that outlives the process: a letter crosses whole as
+// its own octets, a worker buries into it on the same database, and it
+// is all there after a restart.
+use @std.io.{list_dir, make_dirs, remove}
+use @std.queue.{queue, worker, drain, Dead, Delivery, DrainError, Fate, HomeError}
+use @std.relation.{codec}
+use @std.sqlite.{Db}
+use @std.time.{Time, ms, now_ns, stamp}
+use durable.{db, stored}
+use fault.{homed}
+use letters.{dead_wire, stored_dead, text_wire}
+use tests.support.wires.{int_wire}
+
+@codec
+type Email = { to: string, subject: string }
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> "failed: ${e}", .Unanswered -> "unanswered" }
+}
+
+fn told(d: Dead<int, string>?) -> string {
+    let l? = d else { return "none" }
+    "${l.item} ${why(l.fate)} ${l.path.join(">")}"
+}
+
+fn crossed(d: Dead<int, string>) -> string {
+    let w = dead_wire(int_wire(), text_wire())
+    told((w.decode)((w.encode)(d)))
+}
+
+fn deliver(d: Delivery<Email>) -> Result<string, string> {
+    if !d.item.to.contains("@") { fail "no such address: ${d.item.to}" }
+    "sent"
+}
+
+/// One bounced email drained into a durable letter of the file at
+/// `path`, and the database closed.
+fn buried(path: string) -> Result<int, HomeError> {
+    ctx db = homed(Db.open(path))?
+    queue<Email> emails {
+        name: "emails"
+        durable: stored<Email>()
+        retries: 1
+    }
+    queue<Dead<Email, string>> undeliverable {
+        name: "undeliverable"
+        durable: stored_dead<Email>()
+    }
+    worker sender {
+        reads: emails
+        each: deliver
+        dead: undeliverable
+    }
+    let _ = emails.send(Email { to: "nobody", subject: "bounces" })?
+    let _ = emails.send(Email { to: "ada@example.com", subject: "welcome" })?
+    let _ = drain(sender) catch 0
+    let letters = undeliverable.home().depth()?
+    let _ = ctx.db.close()
+    letters
+}
+
+/// The letter of the same file, reopened and read.
+fn reread(path: string) -> Result<string, HomeError> {
+    ctx db = homed(Db.open(path))?
+    queue<Dead<Email, string>> undeliverable {
+        name: "undeliverable"
+        durable: stored_dead<Email>()
+    }
+    let d? = undeliverable.home().take()? else { return "no letter" }
+    let _ = undeliverable.home().ack(d)?
+    let l = d.item
+    let left = undeliverable.home().depth()?
+    let _ = ctx.db.close()
+    "${l.item.to} ${l.item.subject} ${why(l.fate)} ${l.path.join(">")} | left ${left}"
+}
+
+fn restarted() -> string {
+    let dir = "/tmp/avra-queue-letters/${stamp()}"
+    let _ = make_dirs(dir)
+    let before = buried("${dir}/app.db") catch 0 - 1
+    let after = reread("${dir}/app.db") catch "failed"
+    for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+    let _ = remove(dir)
+    let _ = remove("/tmp/avra-queue-letters")
+    "buried ${before} | ${after}"
+}
+
+spec "std/queue_store a durable dead letter" {
+    given "a letter's wire" {
+        then "a failed letter crosses whole: its item, its error and its path" {
+            crossed(Dead { item: 7, fate: Fate.Failed("no route"), path: ["jobs", "jobs/dead"] }) == "7 failed: no route jobs>jobs/dead"
+        }
+        then "an unanswered letter with no path crosses whole" {
+            crossed(Dead { item: 0, fate: Fate.Unanswered, path: [] }) == "0 unanswered "
+        }
+    }
+    given "a worker whose letter is a durable queue, and the database reopened" {
+        then "the bounced email is in the letter after the restart, its fate and path with it" {
+            restarted() == "buried 1 | nobody bounces failed: no such address: nobody emails>emails/dead | left 0"
+        }
+    }
+}

@@ -1,0 +1,21 @@
+// proves: a field whose type the program implements `TextForm` for is read from its text by the
+// derived decoder, as a library's type is: the derive sees the program's own impl.
+use @std.meta.{derive}
+use @std.text.{TextForm}
+use @std.validate.{Decode, from_json}
+
+type Code = { s: string }
+
+impl TextForm for Code {
+    fn text_form() -> string { self.s }
+    static fn from_text_form(text: string) -> Code? { if text.is_empty() { null } else { Code { s: text } } }
+}
+
+@derive(Decode)
+type E = { at: Code }
+
+fn said(json: string) -> string {
+    match E.from_json(json) { .Ok(e) -> "ok ${e.at.s}", .Err(_) -> "refused" }
+}
+
+"${said("{\"at\": \"x\"}")} ${said("{\"at\": \"\"}")}"

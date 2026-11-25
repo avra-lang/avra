@@ -1,0 +1,574 @@
+//! `avra dev`. First as a developer runs it: the command tells what it was
+//! pointed at, refuses what it cannot serve, and says where it serves.
+//! Then the loop by its own verbs and with no socket: a page is written to
+//! scratch, turned by hand, and each route asked as the server frames a
+//! request — the compiler run as the loop runs it. `avra_ran`,
+//! `avra_bin`, `scratch_dir` and `hang_bound` are the neighbouring tests'
+//! own.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, inherited, exit_text, Ready, Exit, ProcessError}
+use @std.time.{ms, stamp}
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response, Pulled}
+use @std.http.body.{Body}
+use @std.http.route.{compiled, dispatch}
+use @std.http.fetch.{get}
+use commands.{Page, page_of, toolchain_with, host_lookup, build_reads}
+
+/// A page package in scratch: one text, mounted.
+once fn dev_page() -> string {
+    let root = "${scratch_dir()}/dev_page_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"dev_page\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"dev_page\"\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text(
+        "${root}/src/main.av",
+        "use @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nfn view() -> text { text \"one\" }\n\nmount(view)\n",
+    )
+    root
+}
+
+/// What `avra` said on its standard error, and the code it left with — -1
+/// when it left no code.
+type Left = { code: int, said: string }
+
+fn left(args: List<string>) -> Left {
+    match avra_ran(args) {
+        .Ok(o) -> Left {
+            code: match o.exit { .Clean -> 0, .Code(n) -> n, .Signal(_, _) -> -1 },
+            said: o.out.stderr + o.out.stdout,
+        },
+        .Err(_) -> Left { code: -1, said: "" },
+    }
+}
+
+/// Whether this machine can build a page at all: the compiler says so itself.
+/// Whether this machine can build a page at all: the compiler says so
+/// itself, by the code it leaves with when it cannot.
+fn equipped() -> bool { session() != null }
+
+/// What `avra dev` says once it serves `path`, the server stopped after.
+fn served_line(path: string) -> Result<string, ProcessError> {
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", path]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let said = child.out
+    child.stop()
+    said
+}
+
+/// What `avra dev` — with `flags` — says of a page whose source is saved
+/// once it serves: everything up to the second module's build, the
+/// server stopped after. A refusal when no second build is said.
+fn followed(flags: List<string>) -> Result<string, ProcessError> {
+    let root = package_of("dev_follow", page_source("one"))
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0"].concat(flags).concat([root])) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let _ = write_text("${root}/src/main.av", page_source("two"))
+    let _ = child.until_ready(Ready.Line("dev: built module 2"), ms(120000))?
+    let said = child.out + child.err
+    child.stop()
+    said
+}
+
+/// A directory that is no package: one page.
+once fn plain_dir() -> string {
+    let root = "${scratch_dir()}/dev_plain_${stamp()}"
+    let _ = make_dirs(root)
+    let _ = write_text("${root}/index.html", "<h1>home</h1>")
+    root
+}
+
+/// A package with a manifest and `source` as its entry — or no entry at
+/// all when `source` is empty.
+fn package_of(name: string, source: string) -> string {
+    let root = "${scratch_dir()}/${name}_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    if source == "" {
+        let _ = write_text(
+            "${root}/avra.toml",
+            "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"${name}\"\npath = \"src/lib.av\"\n",
+        )
+        let _ = write_text("${root}/src/lib.av", "export fn one() -> int { 1 }\n")
+    } else {
+        let _ = write_text(
+            "${root}/avra.toml",
+            "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"${name}\"\npath = \"src/main.av\"\n",
+        )
+        let _ = write_text("${root}/src/main.av", source)
+    }
+    root
+}
+
+/// `avra dev --host <host>` over a plain directory on any free port,
+/// while it serves: the status a GET through the loopback answers, then
+/// who it says it can be reached by — the kernel's own word for the
+/// address it bound, which the server reads back and says.
+fn reached(host: string) -> Result<string, ProcessError> {
+    let asked = cmd(tool(avra_bin())?, ["dev", "--host", host, "--port", "0", plain_dir()]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line("this machine"), ms(120000))?
+    let said = child.out.split(" at http://${host}:").last() ?? ""
+    let port = said.split("/").first() ?? ""
+    let status = match get("http://127.0.0.1:${port}/") { .Ok(a) -> a.status, .Err(_) -> 0 }
+    child.stop()
+    "${status} ${said.split(" — ").last()?.trim() ?? "nothing said"}"
+}
+
+spec "avra dev — as its help and its flags say" {
+    given "the command's help" {
+        then "a flag of two words is shown as it is typed, and the argument as what it is" {
+            let l = left(["dev", "--help"])
+            l.said.contains("[--no-watch]") &&
+                !l.said.contains("no_watch") &&
+                l.said.contains("<path>") &&
+                l.said.contains("a directory to serve as it stands, or a package")
+        }
+        then "the port and the address it serves at unless told are said" {
+            let l = left(["dev", "--help"])
+            l.said.contains("(default: 8787)") && l.said.contains("(default: 127.0.0.1)")
+        }
+    }
+    given "`--host 0.0.0.0`" {
+        then "it answers through the loopback and is bound to every interface" {
+            match reached("0.0.0.0") {
+                .Ok(said) -> said == "200 every interface of this machine",
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "no `--host`" {
+        then "it answers through the loopback and is bound to it alone" {
+            match reached("127.0.0.1") {
+                .Ok(said) -> said == "200 this machine alone",
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
+/// A running `dev` sent SIGTERM: whether it left cleanly, and whether the
+/// port it held is free to be served on again.
+fn ended_by_signal() -> Result<string, ProcessError> {
+    let root = plain_dir()
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", root]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let port = (child.out.split(" at http://127.0.0.1:").last() ?? "").split("/").first() ?? ""
+    let exit = child.stop()
+    let again = cmd(tool(avra_bin())?, ["dev", "--port", port, root]) with { env: inherited(), timeout: hang_bound() }
+    let released = match again.start(Ready.Line(" at http://127.0.0.1:"), ms(30000)) {
+        .Ok(next) -> {
+            let _ = next.stop()
+            true
+        },
+        .Err(_) -> false,
+    }
+    "${exit_text(exit)} ${released}"
+}
+
+spec "avra dev — stopped the way a service is" {
+    given "a running server sent SIGTERM" {
+        then "it leaves cleanly and its port is free again" {
+            match ended_by_signal() { .Ok(said) -> said == "clean true", .Err(_) -> false }
+        }
+    }
+}
+
+spec "avra dev — what it does follows what it is pointed at" {
+    given "a file" {
+        then "it is refused by what it is, and nothing is served" {
+            let l = left(["dev", "${dev_page()}/src/main.av"])
+            l.code == 2 && l.said.contains("`dev` serves a directory or a package")
+        }
+    }
+    given "a path that is not there" {
+        then "it is refused as every command refuses one" { left(["dev", "${dev_page()}/nowhere"]).said.contains("no such file") }
+    }
+    given "a package with no program" {
+        then "it is called a library, and told what a page is" {
+            let l = left(["dev", package_of("dev_lib", "")])
+            l.code == 2 &&
+                l.said.contains("is a library") &&
+                l.said.contains("use @std.ui.web.{mount}")
+        }
+    }
+    given "a package whose program mounts no page" {
+        then "it is refused by that, and sent to `avra run`" {
+            let l = left(["dev", package_of("dev_prog", "println(\"hi\")\n")])
+            l.code == 2 && l.said.contains("mounts no page") && l.said.contains("`avra run`")
+        }
+    }
+    given "a directory that is no package" {
+        then "it is served as it stands: nothing is built" {
+            match served_line(plain_dir()) {
+                .Ok(said) -> said.contains("dev: ${plain_dir()} at http://127.0.0.1:") && !said.contains("built"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a package whose program mounts a page" {
+        then "it builds the page and says where it serves" {
+            !equipped() ||
+                match served_line(dev_page()) {
+                    .Ok(said) -> said.contains("dev: built ") &&
+                        said.contains("dev: ${dev_page()} at http://127.0.0.1:"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+}
+
+/// A page that says `words`.
+fn page_source(words: string) -> string {
+    "use @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nfn view() -> text { text \"${words}\" }\n\nmount(view)\n"
+}
+
+/// The page of a fresh package whose entry is `source`, nothing built
+/// yet, with the tree's own compiler and glue — none on a machine with no
+/// wasm toolchain, which the compiler has then said.
+fn serving(source: string) -> Page? {
+    let root = package_of("dev_loop", source)
+    let tools = match toolchain_with(host_lookup(), "wasm", true, false, true) {
+        .Ok(t) -> t,
+        .Err(_) -> { return null },
+    }
+    match tool("${tree_root()}/build/avra") {
+        .Ok(compiler) -> page_of(root, tools, compiler, "${tree_root()}/runtime/dom"),
+        .Err(_) -> null,
+    }
+}
+
+fn unbuilt() -> Page? { serving(page_source("x")) }
+
+/// A request framed from its line and one more field, with the Host a 1.1
+/// request owes.
+fn requested(line: string, field: string) -> Request<Unrouted>? {
+    let raw = (line + "\r\nHost: h\r\n" + field + "\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// The server's whole answer to a GET of `target`; status 0 for one the
+/// framer refused.
+fn got(d: Page, target: string) -> Response {
+    let q? = requested("GET ${target} HTTP/1.1", "") else { return Response { status: 0 } }
+    dispatch(compiled(d.routes()), q)
+}
+
+fn body_of(d: Page, target: string) -> string { got(d, target).body.text() ?? "" }
+
+/// What a GET of `target` carrying the one more field `field` is answered.
+fn got_with(d: Page, target: string, field: string) -> Response {
+    let q? = requested("GET ${target} HTTP/1.1", field) else { return Response { status: 0 } }
+    dispatch(compiled(d.routes()), q)
+}
+
+/// The first event a page joining now hears, as its lines.
+fn first_event(d: Page) -> List<string> {
+    let stream? = got(d, "/@dev/events").stream else { return [] }
+    match stream.pull() {
+        .Data(piece) -> (piece.text() ?? "").trim().split("\n"),
+        .End or .Failed -> [],
+    }
+}
+
+/// What an event's lines say under `field`, its lines joined.
+fn field_of(lines: List<string>, field: string) -> string {
+    [l.substring(field.length + 2, l.length) for l in lines if l.starts_with("${field}: ")]
+        .join("\n")
+}
+
+/// The standing build as a page meets it: the number of the module the
+/// page is told to load, then what a failed build said — nothing when it
+/// built.
+fn standing(d: Page) -> List<string> {
+    let heard = first_event(d)
+    [
+        module_shown(d),
+        if field_of(heard, "event") == "failed" { field_of(heard, "data") } else { "" },
+    ]
+}
+
+/// The number the page is told its module has.
+fn module_shown(d: Page) -> string {
+    let page = body_of(d, "/")
+    let from = page.index_of("avra-module\" content=\"")
+    if from < 0 { return "" }
+    page.substring(from + 22, page.length).split("\"")[0]
+}
+
+/// What a standing says its build failed with.
+fn failure_of(standing: List<string>) -> string { standing[1] }
+
+/// What the page's source is rewritten to.
+fn rewritten(d: Page, source: string) { let _ = write_text("${d.root}/src/main.av", source) }
+
+/// WHAT ONE SESSION SAW, each step a word: built, served, edited, broken,
+/// mended — so one build of the page answers every claim below.
+type Session = {
+    first_built: bool,
+    idle_built: bool,
+    page: string,
+    wasm_status: int,
+    wasm_kind: string,
+    wasm_magic: bool,
+    wasm_kept: string,
+    wasm_coded: string,
+    script_kind: string,
+    first_id: string,
+    edited_built: bool,
+    edited_id: string,
+    broken_built: bool,
+    broken: List<string>,
+    broken_wasm_same: bool,
+    mended_id: string,
+    mended_failure: string,
+    numbers: List<string>,
+}
+
+/// Whether `module` opens as a wasm module does.
+fn is_wasm(module: Bytes) -> bool {
+    module.length > 4 &&
+        module.at(0) == 0 &&
+        module.at(1) == 97 &&
+        module.at(2) == 115 &&
+        module.at(3) == 109
+}
+
+once fn session() -> Session? {
+    let d? = serving(page_source("one")) else {
+        eprintln("dev_test: this machine cannot build a page — the loop's cases examined nothing")
+        return null
+    }
+    let first_built = d.turn()
+    let first = standing(d)
+    let idle_built = d.turn()
+    let page = body_of(d, "/")
+    let wasm = got(d, "/${first[0]}")
+    let coded = got_with(d, "/${first[0]}", "Accept-Encoding: gzip, br\r\n")
+    rewritten(d, page_source("two"))
+    let edited_built = d.turn()
+    let edited = standing(d)
+    let good = got(d, "/${edited[0]}").body
+    rewritten(d, page_source("two") + "fn broken( {\n")
+    let broken_built = d.turn()
+    let broken = standing(d)
+    let still = got(d, "/${broken[0]}").body
+    rewritten(d, page_source("two"))
+    let _ = d.turn()
+    let mended = standing(d)
+    Session {
+        first_built: first_built,
+        idle_built: idle_built,
+        page: page,
+        wasm_status: wasm.status,
+        wasm_kind: wasm.header("content-type") ?? "",
+        wasm_magic: is_wasm(wasm.body),
+        wasm_kept: wasm.header("cache-control") ?? "",
+        wasm_coded: "${coded.header("content-encoding") ?? "-"} ${coded.header("vary") ?? "-"} ${coded.body.length < wasm.body.length}",
+        script_kind: got(d, "/dev.js").header("content-type") ?? "",
+        first_id: first[0],
+        edited_built: edited_built,
+        edited_id: edited[0],
+        broken_built: broken_built,
+        broken: broken,
+        broken_wasm_same: still == good,
+        mended_id: mended[0],
+        mended_failure: failure_of(mended),
+        numbers: [first[0], edited[0], broken[0], mended[0]],
+    }
+}
+
+/// A claim about the session, held wherever this machine can build a page:
+/// a machine with no wasm toolchain cannot say, and has said so.
+fn seen(holds: fn(Session) -> bool) -> bool {
+    let s? = session() else { return true }
+    holds(s)
+}
+
+spec "avra dev — the loop, as the command runs it" {
+    given "a page served with no `--interval`" {
+        then "a save is built, on the host's word" {
+            !equipped() ||
+                match followed([]) {
+                    .Ok(said) -> said.contains("dev: built module 2") && !said.contains("will not watch"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "a page served with `--interval`" {
+        then "a save is built, on the clock" {
+            !equipped() ||
+                match followed(["--interval", "50"]) {
+                    .Ok(said) -> said.contains("dev: built module 2"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "the command's help" {
+        then "`--interval` is said to be instead of watching, and has no default" {
+            let l = left(["dev", "--help"])
+            l.said.contains("instead of watching them") && !l.said.contains("(default: 250)")
+        }
+    }
+}
+
+spec "avra dev — the loop, turned by hand" {
+    given "a page nothing has built" {
+        then "the first turn builds it, and its id is the name it is served by, its content's" {
+            seen(
+                (s) -> s.first_built &&
+                    s.first_id.starts_with("app.") &&
+                    s.first_id.ends_with(".wasm") &&
+                    s.first_id.length == 41,
+            )
+        }
+        then "a turn with nothing moved builds nothing" { seen((s) -> !s.idle_built) }
+    }
+    given "a page that built" {
+        then "the page names the module it is about to load and carries the dev client" {
+            seen(
+                (s) -> s.page.contains("<meta name=\"avra-module\" content=\"${s.first_id}\">") &&
+                    s.page.contains("<script type=\"module\" src=\"./dev.js\"></script>"),
+            )
+        }
+        then "the page names every file it fetches, the module as the fetch that compiles it" {
+            seen(
+                (s) -> s.page.contains("data-avra-module=\"./${s.first_id}\"") &&
+                    s
+                        .page
+                        .contains("<link rel=\"preload\" href=\"./${s.first_id}\" as=\"fetch\" crossorigin>") &&
+                    ["bootstrap.js", "wire.gen.js", "windows.js", "wasi.js", "dev.js"]
+                        .all((f) -> s.page.contains("<link rel=\"modulepreload\" href=\"./${f}\">")),
+            )
+        }
+        then "the page is titled by its package and leaves no hole unfilled" {
+            seen((s) -> s.page.contains("<title>dev_loop_") && !s.page.contains("<!--"))
+        }
+        then "the module is served as wasm" {
+            seen((s) -> s.wasm_status == 200 && s.wasm_kind == "application/wasm" && s.wasm_magic)
+        }
+        then "the module, named by its content, is kept for ever" {
+            seen((s) -> s.wasm_kept == "public, max-age=31536000, immutable")
+        }
+        then "a client that reads brotli is sent the module coded, smaller, and told it varies" {
+            seen((s) -> s.wasm_coded == "br accept-encoding true")
+        }
+        then "a script is served as a script" { seen((s) -> s.script_kind.starts_with("text/javascript")) }
+    }
+    given "a source edited" {
+        then "the next turn builds, and the module's id moves" {
+            seen((s) -> s.edited_built && s.edited_id != "" && s.edited_id != s.first_id)
+        }
+    }
+    given "a source that no longer parses" {
+        then "the next turn builds and the standing says what the build said, naming the file" {
+            seen((s) -> s.broken_built && failure_of(s.broken).contains("src/main.av"))
+        }
+        then "the module's id stays the last good one" { seen((s) -> s.broken[0] == s.edited_id) }
+        then "the last good module is still what is served" { seen((s) -> s.broken_wasm_same) }
+    }
+    given "the source mended" {
+        then "the failure is gone and the good module stands" {
+            seen((s) -> s.mended_failure == "" && s.mended_id == s.edited_id)
+        }
+    }
+    given "the module's id" {
+        then "moves only when the module does: built, edited, broken, mended" {
+            seen(
+                (s) -> s.numbers[0] != s.numbers[1] &&
+                    s.numbers[1] == s.numbers[2] &&
+                    s.numbers[2] == s.numbers[3],
+            )
+        }
+    }
+}
+
+spec "avra dev — what a page is answered before any build" {
+    given "a server that has built nothing" {
+        then "the page names no module and none is served" {
+            match unbuilt() {
+                d? -> body_of(d, "/").contains("data-avra-module=\"\"") &&
+                    got(d, "/app.wasm").status == 404
+                null -> true
+            }
+        }
+        then "a page that joins hears the standing at once: built, no module" {
+            match unbuilt() {
+                d? -> field_of(first_event(d), "event") == "built" &&
+                    field_of(first_event(d), "data") == ""
+                null -> true
+            }
+        }
+        then "the channel is an event stream" {
+            match unbuilt() {
+                d? -> got(d, "/@dev/events").header("content-type") == "text/event-stream"
+                null -> true
+            }
+        }
+        then "a path nothing serves is not found" {
+            match unbuilt() {
+                d? -> got(d, "/bootstrap.js.map").status == 404 &&
+                    got(d, "/../avra.toml").status != 200
+                null -> true
+            }
+        }
+        then "the page is never kept" {
+            match unbuilt() {
+                d? -> got(d, "/").header("cache-control") == "no-store"
+                null -> true
+            }
+        }
+        then "a glue script is asked for again each time, and the tag it was sent is a 304" {
+            match unbuilt() {
+                d? -> "${got(d, "/bootstrap.js").status} ${got(d, "/bootstrap.js").header("cache-control") ?? "-"}" == "200 no-cache" &&
+                    got_with(
+                        d,
+                        "/bootstrap.js",
+                        "If-None-Match: ${got(d, "/bootstrap.js").header("etag") ?? "-"}\r\n",
+                    )
+                        .status == 304
+                null -> true
+            }
+        }
+        then "a file the glue holds that no page fetches is not served" {
+            match unbuilt() {
+                d? -> got(d, "/page_test.js").status == 404 && got(d, "/page.html").status == 404
+                null -> true
+            }
+        }
+    }
+}
+
+/// A package whose entry embeds a file beside its sources and imports a module of its own; its root.
+fn embedding_package() -> string {
+    let root = "${tree_root()}/build/scratch/dev_reads_${stamp()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = make_dirs("${root}/data")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"dev_reads\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/data/note.txt", "note")
+    let _ = write_text("${root}/src/lib/a.av", "export fn twice(n: int) -> int { n + n }\n")
+    let _ = write_text(
+        "${root}/src/main.av",
+        "use @std.meta.{embed}\nuse lib.{twice}\n\nconst T: string = embed(\"../data/note.txt\")\nprintln(\"\${T} \${twice(2)}\")\n",
+    )
+    root
+}
+
+spec "avra dev — what a build reads" {
+    given "a package whose entry imports a module and embeds a file" {
+        then "the watch holds its sources, the embedded file and its manifest" {
+            let root = embedding_package()
+            let reads = build_reads(root) catch []
+            reads.contains("${root}/src/main.av") &&
+                reads.contains("${root}/src/lib/a.av") &&
+                reads.contains("${root}/data/note.txt") &&
+                reads.contains("${root}/avra.toml")
+        }
+    }
+}

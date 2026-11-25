@@ -1,0 +1,107 @@
+//! `realize/html/writer.av` — the typed HTML writer. A document is a list
+//! of OPS; `source` serializes them, escaping every value.
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, is_void}
+use env.{Direction}
+
+/// One piece of a document, in drawing order.
+export enum HtmlOp {
+    Open(tag: HtmlTag, attrs: List<HtmlAttr>)
+    Close(tag: HtmlTag)
+    Text(content: string)
+    Marker
+}
+
+/// The five characters that end a text or attribute context, as entities.
+fn entities(s: string) -> string {
+    s
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&#39;")
+}
+
+fn attr_source(a: HtmlAttr) -> string { " ${a.name.word()}=\"${entities(a.value)}\"" }
+
+fn op_source(op: HtmlOp) -> string {
+    match op {
+        .Open(tag, attrs) -> "<${tag.word()}${[attr_source(a) for a in attrs].join("")}>",
+        .Close(tag) -> if is_void(tag) { "" } else { "</${tag.word()}>" },
+        .Text(content) -> entities(content),
+        .Marker -> "<!---->",
+    }
+}
+
+/// A document's ops as HTML source.
+export fn source(ops: List<HtmlOp>) -> string { [op_source(o) for o in ops].join("") }
+
+/// A `<` in a declaration would end the `style` element, so CSS text is
+/// written with the CSS escape for every one; the value is unchanged.
+fn css_safe(css: string) -> string { css.replace("<", "\\3c ") }
+
+/// The `style` element's opening tag: a page under a policy that allows
+/// styles by nonce names it.
+fn style_open(nonce: string?) -> string {
+    match nonce {
+        n? -> "<style nonce=\"${entities(n)}\">"
+        null -> "<style>"
+    }
+}
+
+/// The stylesheet, then the tree in a body.
+export fn document(css: string, nonce: string?, ops: List<HtmlOp>) -> string {
+    "${style_open(nonce)}${css_safe(css)}</style><body>${source(ops)}</body>"
+}
+
+/// What a document's head says: its title, its language and the way its
+/// text runs.
+export type Head = { title: string, locale: string, direction: Direction }
+
+/// The `dir` value a writing direction names. Every direction spelled.
+fn dir_word(d: Direction) -> string {
+    match d { .Ltr -> "ltr", .Rtl -> "rtl" }
+}
+
+/// A complete document: every value the head carries is escaped for the
+/// context it lands in.
+export fn page_source(head: Head, css: string, nonce: string?, ops: List<HtmlOp>) -> string {
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title>${style_open(nonce)}${css_safe(css)}</style></head><body>${source(ops)}</body></html>"
+}
+
+/// What a module needs to take a page over: the print the server folded,
+/// where the module is served and where the host's scripts are, and every
+/// file the page fetches, so the document asks for all of them as it arrives.
+export type Takeover = { print: int, module: string, host: string, state: string = "", fetched: List<string> = [] }
+
+/// The script that starts the module on the mount. It is the same for every
+/// page; what is page-specific rides the mount's attributes, escaped.
+const starter = "const m = document.getElementById(\"app\"); const base = m.dataset.avraHost; const [{ run }, { wasiPreview1 }] = await Promise.all([import(base + \"/bootstrap.js\"), import(base + \"/wasi.js\")]); await run(m.dataset.avraModule, { document, mount: m, style: document.getElementById(\"avra-style\"), wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(\"the program exited \" + code); }) });"
+
+/// A complete document a module ADOPTS: the sheet under the id the host
+/// writes to, the tree inside the mount the print is stamped on, and the
+/// script that runs the module over it.
+export fn takeover_source(head: Head, css: string, ops: List<HtmlOp>, t: Takeover) -> string {
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">${fetched_tags(t.fetched)}<title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div>${state_tag(t.state)}<script type=\"module\">${starter}</script></body></html>"
+}
+
+/// The tags that ask for every file a page fetches while its document is
+/// still arriving: a script as a module, and the module as the very fetch
+/// that compiles it — `crossorigin`, so its mode and credentials are those
+/// `fetch` asks with and the browser answers both with one request.
+export fn fetched_tags(paths: List<string>) -> string { [fetch_tag(p) for p in paths].join("") }
+
+fn fetch_tag(path: string) -> string {
+    if path.ends_with(".wasm") {
+        "<link rel=\"preload\" href=\"${entities(path)}\" as=\"fetch\" crossorigin>"
+    } else {
+        "<link rel=\"modulepreload\" href=\"${entities(path)}\">"
+    }
+}
+
+/// The shipped state, as a data block the module reads before it runs:
+/// none when nothing is shipped. `state` is JSON with `<` already written
+/// `\u003c`, so it cannot end the element.
+fn state_tag(state: string) -> string {
+    if state == "" { return "" }
+    "<script type=\"application/json\" id=\"avra-state\">${state}</script>"
+}
