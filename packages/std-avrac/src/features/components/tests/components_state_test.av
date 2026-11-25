@@ -24,12 +24,25 @@ spec "features/components — a state field" {
                 ),
             ) == "a=2 b=0"
         }
-        then "shares its place with a copy of itself" {
+        then "shares its place with a copy of itself taken before any read: the default, for a component not seeded at need" {
             answered(
                 built(
                     "let a = counter \"a\"\nlet b = a with { label: \"b\", step: 10 }\nb.poke()\na.poke()\n\"\${a.shown()} \${b.shown()}\"",
                 ),
             ) == "a=11 b=11"
+        }
+        then "given a value by a `with`, is refused in the words of its instance's block" {
+            refused_in(
+                built("let a = counter \"a\"\nlet b = a with { n: 5 }\nb.shown()"),
+                "`counter`'s `n` is `state`: it takes a place, and this is a value",
+            )
+        }
+        then "given a place by a `with`, holds that place" {
+            answered(
+                built(
+                    "state p: int = 4\nlet a = counter \"a\"\nlet b = a with { n: p }\nb.poke()\n\"\${b.shown()} \${p}\"",
+                ),
+            ) == "a=5 5"
         }
         then "is written by a handler that captured it" {
             answered(built("let a = counter \"a\"\nlet f = a.bump()\nf()\nf()\na.shown()")) == "a=2"

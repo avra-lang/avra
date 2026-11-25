@@ -181,8 +181,10 @@ export type Made = { which: Owned, key: string, obj: string, source: string }
 /// clang's `-O<n>` as its number, and `-Oz` as the SIZE level — negative, so
 /// the object's pipeline is `default<Oz>`.
 /// THE LEVEL A BUILD EMITS ITS OBJECTS AT unless told otherwise, the same on both paths: `-O1` for
-/// the host, `-Oz` for another `target`, whose module ships over a wire.
-export fn default_opt(target: string) -> string { if target == "" { "-O1" } else { "-Oz" } }
+/// a binary, `-Oz` for a wasm `target`, whose module ships over a wire.
+export fn default_opt(target: string) -> string {
+    match platform_of(target) { .Wasm -> "-Oz", .Native or .Apple(_) -> "-O1" }
+}
 
 export fn opt_level(opt: string) -> int {
     if opt == "-Oz" { return -1 }
@@ -194,7 +196,7 @@ export fn opt_level(opt: string) -> int {
 /// the linker the host found, the stamp of the driver of each tool it runs —
 /// never what a driver runs in its turn — and the linker that driver is told
 /// to run (`ld`, its own choice when empty).
-export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false }
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false, sysroot: string = "" }
 
 /// A SERIAL FOR THIS PROCESS ALONE — `now_ns()`'s own clock cannot be
 /// trusted to tell two calls apart (a wall clock's resolution is not a

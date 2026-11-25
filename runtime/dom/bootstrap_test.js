@@ -26,8 +26,8 @@ const setAttr = (id, name, value) => [OP.set_attr, ...idBytes(id), ...str(name),
 const dropAttr = (id, name) => [OP.drop_attr, ...idBytes(id), ...str(name)];
 const setProp = (id, name, says, value) => [OP.set_prop, ...idBytes(id), ...str(name), ...i32(says), ...str(value)];
 const setText = (id, content) => [OP.set_text, ...idBytes(id), ...str(content)];
-const define = (kind, event, says, reads, prevents) => [OP.define, ...i32(kind), ...i32(says), ...str(event), ...str(reads), ...i32(prevents ? 1 : 0)];
-const listen = (id, kind, event, says, reads, prevents) => [...define(kind, event, says, reads, prevents), OP.listen, ...idBytes(id), ...i32(kind), ...i32(says)];
+const define = (kind, event, says, reads, prevents, key = "") => [OP.define, ...i32(kind), ...i32(says), ...str(event), ...str(reads), ...i32(prevents ? 1 : 0), ...str(key)];
+const listen = (id, kind, event, says, reads, prevents, key = "") => [...define(kind, event, says, reads, prevents, key), OP.listen, ...idBytes(id), ...i32(kind), ...i32(says)];
 const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
 const setVar = (id, property, value) => [OP.set_var, ...idBytes(id), ...str(property), ...str(value)];
 const dropVar = (id, property) => [OP.drop_var, ...idBytes(id), ...str(property)];
@@ -161,6 +161,22 @@ s.apply(frame(remove(3)));
 check("a sibling leaving takes nothing from it", state(s, sin), [true, 2, 4, "forward", "typed", 40]);
 s.apply(frame(remove(1)));
 check("an element that leaves takes its focus with it", s.doc.activeElement, null);
+
+// ── a field's submit: the keydown of its one key fires it, never another key, never mid-composition ──
+{
+  const fs = page();
+  fs.apply(frame(create(0, "input"), place(0, NO_ID, NO_ID), listen(0, 9, "keydown", SAYS.nothing, "", true, "Enter")));
+  const field = fs.mount.childNodes[0];
+  const down = (ev) => {
+    let prevented = false;
+    dispatch(fs.mount, field, "keydown", { preventDefault: () => { prevented = true; }, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, code: "", isComposing: false, keyCode: 0, ...ev });
+    return [prevented, fs.sent.splice(0).map((s) => s[1])];
+  };
+  check("Enter in a field that hears its submit sends it, and stops the page's own answer (a form's)", down({ key: "Enter", keyCode: 13 }), [true, [9]]);
+  check("any other key sends nothing and stops nothing", down({ key: "a", keyCode: 65 }), [false, []]);
+  check("an Enter that confirms a word being composed sends nothing", down({ key: "Enter", isComposing: true }), [false, []]);
+  check("nor one an input method still holds (keyCode 229, as Safari says it)", down({ key: "Enter", keyCode: 229 }), [false, []]);
+}
 
 // ── a shortcut: a key stands hidden, saying its chord, and is pressed by the keydown that meets it ──
 const sc = page();
@@ -689,6 +705,13 @@ check("a module that mounts nothing refuses by the names it lacks", lacking.star
   let refused = "";
   try { await compiled("./gone.wasm", served("no such module", "text/plain", 404)); } catch (e) { refused = e.message; }
   check("a module that is not served says the answer it got", refused, "the module at ./gone.wasm answered 404");
+  const started = served(empty, "application/wasm");
+  const ahead = { "http://page/app.0123.wasm": started("./app.0123.wasm") };
+  asked.length = 0;
+  const once = await compiled("./app.0123.wasm", served(empty, "application/wasm"), ahead, "http://page/");
+  check("the fetch the document started is the one compiled, and no other is asked", [once instanceof WebAssembly.Module, asked.length, Object.keys(ahead).length], [true, 0, 0]);
+  await compiled("./app.0123.wasm", served(empty, "application/wasm"), ahead, "http://page/");
+  check("a module asked again is fetched anew", asked.join(), "./app.0123.wasm");
   WebAssembly.compileStreaming = real;
 }
 

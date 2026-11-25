@@ -173,30 +173,100 @@ impl Lowering {
         self.celled(v, f.ty!, self.laid_out(f.slot_type()!))
     }
 
-    /// Field `n` of the record `v`, whose fields are `fields` laid out as `laid`, as a read sees it: a
-    /// value of layout `l`, the value its cell holds for a `state` field.
-    mut fn seat_read(v: Reg, fields: List<FieldSeat>, laid: List<Layout>, n: int, l: Layout) -> Reg {
+    /// Field `n` of the record `v` of `ty`, whose fields are `fields` laid out as `laid`, as a read
+    /// sees it: a value of layout `l`, the value its cell holds for a `state` field — for one seeded at
+    /// need whose slot holds no cell yet, its seed over `v` as it stands, and nothing kept.
+    mut fn seat_read(
+        v: Reg,
+        ty: SignedType,
+        fields: List<FieldSeat>,
+        laid: List<Layout>,
+        n: int,
+        l: Layout,
+    ) -> Reg {
         if !fields[n].state { return self.boxed_field(v, laid, n, l) }
-        self.proven_read(l, self.boxed_field(v, laid, n, laid[n]), 0)
+        let slot = self.boxed_field(v, laid, n, laid[n])
+        if !fields[n].needed { return self.proven_read(l, slot, 0) }
+        self
+            .region(self.celled_yet(slot, laid[n]), l) { cx -> cx.proven_read(l, slot, 0) } else { cx -> cx.seed_of(v, ty, fields[n]) }
     }
 
     /// Field `n` of the record `v` of `ty`, whose fields are `fields` laid out as `laid`, as a read
     /// sees it: the value its cell holds for a `state` field.
     mut fn field_value(v: Reg, ty: SignedType, fields: List<FieldSeat>, laid: List<Layout>, n: int) -> Reg {
         if !fields[n].state { return self.field_read(v, ty, laid, n) }
-        self.seat_read(v, fields, laid, n, self.laid_out(fields[n].ty!))
+        self.seat_read(v, ty, fields, laid, n, self.laid_out(fields[n].ty!))
     }
 
-    /// The cell the `state` field `name` of the record `subject` holds its value in; absent for a
-    /// field that isn't known or isn't a `state` field. A write through it lands where every copy of
-    /// the record reads it.
+    /// The cell the place `target` writes, kept now, where it is a `state` field seeded at need;
+    /// absent for any other place.
+    mut fn kept_target(target: ExprId) -> Reg? {
+        let step? = self.store.place_step(target) else { return null }
+        match step {
+            .Field(subject, name) -> {
+                let ty? = self.type_at(subject) else { return null }
+                let fields? = self.fields_of(ty) else { return null }
+                if !fields.any(it.name == name.of && it.needed) { return null }
+                self.state_cell(subject, name.of)
+            },
+            .Root(_) or .At(_, _) or .Unwrap(_) -> null,
+        }
+    }
+
+    /// Whether the slot `slot` of layout `l`, a `state` field's, holds its cell yet.
+    mut fn celled_yet(slot: Reg, l: Layout) -> Reg { self.bin(Layout.Truth, BinOp.Ne, slot, self.word_at(l, 0)) }
+
+    /// What the `state` field `f` of the record `v` of `ty` starts from: its default, called on `v` as
+    /// it stands where the default reads the instance.
+    mut fn seed_of(v: Reg, ty: SignedType, f: FieldSeat) -> Reg {
+        if f.made { self.made_default(ty, f, v) } else { self.field_default(ty, f) }
+    }
+
+    /// The cell of field `n` of the boxed record `v` of `ty`, whose fields are `fields` laid out as
+    /// `laid`: the one its slot holds, else — a field seeded at need, not needed until now — a cell
+    /// holding its seed, kept in the slot, so every later read of `v` and each copy of it from now on
+    /// reads that cell, and the seed never runs for `v` again.
+    mut fn kept_cell(v: Reg, ty: SignedType, fields: List<FieldSeat>, laid: List<Layout>, n: int) -> Reg {
+        let slot = self.boxed_field(v, laid, n, laid[n])
+        if !fields[n].needed { return slot }
+        self
+            .region(self.celled_yet(slot, laid[n]), laid[n]) { cx -> slot } else { cx ->
+                let cell = cx.celled(cx.seed_of(v, ty, fields[n]), fields[n].ty!, laid[n])
+                cx.slot_written(v, cx.const_int(slots_before(laid, n)), cell, true)
+                cell
+            }
+    }
+
+    /// The record `v` of `ty`, every `state` field of it seeded at need given its cell now, each after
+    /// the ones its seed reads: `v` itself.
+    mut fn seeded_now(v: Reg, ty: SignedType) -> Reg {
+        let fields? = self.fields_of(ty) else { return v }
+        if !fields.any(it.needed) { return v }
+        let laid? = self.seat_layouts(fields) else { return v }
+        let boxed = match self.laid_out(ty) {
+            .Boxed(_) -> true,
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+        if !boxed { return v }
+        let ranks = [f.rank for f in fields if f.needed]
+        for rank in 0..fields.length + 1 {
+            if ranks.contains(rank) {
+                for n, f in fields { if f.needed && f.rank == rank { let _ = self.kept_cell(v, ty, fields, laid, n) } }
+            }
+        }
+        v
+    }
+
+    /// The cell the `state` field `name` of the record `subject` holds its value in, kept now for one
+    /// seeded at need; absent for a field that isn't known or isn't a `state` field. A write through it
+    /// lands where every copy of the record reads it.
     mut fn state_cell(subject: ExprId, name: string) -> Reg? {
         let ty? = self.type_at(subject) else { return null }
         let fields? = self.fields_of(ty) else { return null }
         let n? = fields.find_index(it.name == name) else { return null }
         if !fields[n].state { return null }
         let laid? = self.seat_layouts(fields) else { return null }
-        self.boxed_field(self.lower(subject), laid, n, laid[n])
+        self.kept_cell(self.lower(subject), ty, fields, laid, n)
     }
 
     /// The Cell the place `a` keeps its value in: a `state` this body binds or a `state` seat it

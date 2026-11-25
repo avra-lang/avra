@@ -154,6 +154,10 @@ use @std.avrac.compiler.{
     manifest_library,
     native_link_head,
     wasm_link_head,
+    apple_link_head,
+    apple_link_tail,
+    platform_of,
+    binary_suffix,
     wasm_link_tail,
     program_calls,
     shipped,
@@ -453,7 +457,7 @@ fn disk_built(
     tools: Toolchain?,
     release: bool,
 ) -> Result<string, int> {
-    let stem = if tools == null { native_stem } else { "${native_stem}.wasm" }
+    let stem = native_stem + binary_suffix(platform_of(tools?.target ?? ""))
     // LICENSED input.asked: the build's mode, carried in its question, so its answer is keyed by it
     let mode = match build_mode(env("AVRA_PROGRAM_MODE") ?? "", tools?.target ?? "", release) {
         .Ok(m) -> m,
@@ -520,7 +524,7 @@ fn disk_built(
         store_left_kept(engine, store)
         return .Err(said)
     }
-    if tools != null {
+    if built_for_wasm(tools) {
         let missing = wasm_missing(
             program_calls(engine, asked.entry).calls,
             linked_libraries(engine, disk, asked.entry),
@@ -672,7 +676,7 @@ fn binary_asked(
     BinaryAsked {
         entry: disk.file_at(bin),
         compiler: compiler_identity(),
-        head: wasm_link_head(t.target, t.reactor, t.debug),
+        head: target_link_head(t, stem),
         words: words,
         linked: linked_digests(words.concat([t.runtime])),
         dir: joined_path(disk.root, "${BUILD_DIR}-${t.target}"),
@@ -686,6 +690,31 @@ fn binary_asked(
         fallback: t.fallback && t.wasm_opt != "",
         tools: tools_marked([t.linker, t.wasm_opt].concat([s.path for s in t.tools])),
     }
+}
+
+/// The words a link for the non-host target `t` names starts with, its binary landing at `stem`.
+fn target_link_head(t: Toolchain, stem: string) -> List<string> {
+    match platform_of(t.target) {
+        .Wasm -> wasm_link_head(t.target, t.reactor, t.debug),
+        .Apple(_) -> apple_link_head(t.target, t.sysroot, stem),
+        .Native -> ["--target=${t.target}"].concat(native_link_head(false, t.ld, [], stem)),
+    }
+}
+
+/// The words a link for the non-host target `target` ends with: its runtime archive `runtime`, what
+/// the platform links beside it, and the binary it writes at `out`.
+fn target_link_tail(target: string, runtime: string, out: string) -> List<string> {
+    match platform_of(target) {
+        .Wasm -> wasm_link_tail(runtime, out),
+        .Apple(_) -> apple_link_tail(runtime, out),
+        .Native -> [runtime, "-lm", "-o", out],
+    }
+}
+
+/// Whether `tools` build a wasm module.
+fn built_for_wasm(tools: Toolchain?) -> bool {
+    let t? = tools else { return false }
+    match platform_of(t.target) { .Wasm -> true, .Native or .Apple(_) -> false }
 }
 
 /// THE TOOLS A LINK RUNS, EACH BY ITS IDENTITY: its path and the disk's mark of what stands there
@@ -2989,7 +3018,11 @@ fn link_refused(
 fn target_refused(asked: BinaryAsked, objects: List<string>, stem: string) -> string? {
     let inputs = objects.concat(asked.words).concat([asked.runtime])
     clang_refused(
-        asked.head.concat(objects).concat(asked.words).concat(wasm_link_tail(asked.runtime, stem)),
+        asked
+            .head
+            .concat(objects)
+            .concat(asked.words)
+            .concat(target_link_tail(asked.target, asked.runtime, stem)),
         stem,
         link_bytes(inputs, ""),
         asked.linker,

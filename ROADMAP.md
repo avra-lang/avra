@@ -3746,6 +3746,27 @@ import the verb), `std-ui`'s `exact.av` index and `cli`'s `fmt.av` grouping.
 
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
+### Interim record — a component's law cannot ask whether a member was written
+
+A component's `check` reads what each member HOLDS, never whether the instance WROTE it, so a
+member with a default cannot be refused for being written where it means nothing: the default and
+a written value equal to it read alike. The wanting site is `field`'s `submit_label`
+(packages/std-ui/src/components/field.av): a return key's word means something only on a field that
+hears `on submit`, and the law that refuses it elsewhere could see a written `.Done` only by making
+the member optional (`SubmitLabel?`, unsaid read as Done). The want: a check asks whether a member
+was given at the instance (`given(self.submit_label)`, or a `@written` mark the derive answers), so
+`submit_label: SubmitLabel = .Done` states its default in the type and still refuses
+`submit_label: .Done` on a field that sends nothing.
+
+### Interim record — a composition takes no type parameter
+
+A component with a body is refused a type parameter's use: `component tab<T>(label: string, state
+chosen: T) { shows: T … }` loses every member it declares (`tab` has no field `label`, `shows`,
+`key`, …). Ticket avra-8sb5.10.209. The wanting site is the board's `tab` and `scheme_tab`
+(tools/ui-board/src/board.av), one choice over `Show` and the same over `Mode`, each a place the
+press writes. The want: `tab<T>` with `state chosen: T` and `shows: T`, so the two are one, and a
+value-and-callback form is never the way around it in the exemplar.
+
 ### Interim record — the config component's asks
 
 Filed here because this session's tasks server holds no `avra-8sb5.10`;

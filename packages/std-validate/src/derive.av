@@ -57,6 +57,7 @@ use @std.meta.{
     Marker as Unrun,
     Named as Marked,
     marks,
+    decl,
     Directive,
     Code,
     Decls,
@@ -98,7 +99,8 @@ use json.{
     json_read_bool,
 }
 use value.{Value, Entry}
-use issue.{Issues, root}
+use issue.{Issues}
+use @std.json.typed.{Path}
 use check.{Checking, filed}
 use shape.{FieldShape, FieldKind}
 
@@ -182,7 +184,7 @@ export fn checker(t: Type) -> Decls {
             fn check() -> Issues {
                 mut c = Checking {}
                 ${[field_check(f) for f in t.fields]}
-                let ${bind().at} = root()
+                let ${bind().at} = Path { up: [] }
                 let seen: Value? = null
                 let ${bind().got}: ${t}? = self
                 ${[judging(a, checking_ruling) for a in rules(t)]}
@@ -218,7 +220,7 @@ fn field_decoder(t: Type, projection: Code) -> Decls {
 fn field_check(f: Field) -> Stmts {
     quote {
         let ${f.name} = {
-            let ${bind().at} = root().field(${literal(f.name)})
+            let ${bind().at} = Path { up: [] }.field(${literal(f.name)})
             let ${bind().got}: ${inner(f.kind).spelled()}? = self.${f.name}
             let seen: Value? = ${shown(f, inner(f.kind))}
             ${[judging(a, checking_ruling) for a in field_rules(f)]}
@@ -744,7 +746,14 @@ fn late(t: Type, f: Field) -> List<Annotation> {
 
 /// A field's rules, in the order they run: every annotation it wears
 /// but `@secret`.
-fn field_rules(f: Field) -> List<Annotation> { [a for a in f.annotations if !is_secret(a)] }
+fn field_rules(f: Field) -> List<Annotation> { [a for a in f.annotations if !is_secret(a) && !marker(a)] }
+
+/// Whether `a`'s fn answers `@std/meta`'s `Marker`: a mark another
+/// derive reads, never a rule this one calls.
+fn marker(a: Annotation) -> bool {
+    let f? = decl(a) else { return false }
+    match f.answers { .Named(n, _) -> n == "Marker", _ -> false }
+}
 
 /// Where a field's rules first read a sibling: the index of the first
 /// rule an argument of which names a field of `t`.
@@ -780,7 +789,7 @@ const word_char: Bytes = admits(
 fn absent(f: Field) -> Code {
     quote {
         {
-            let ${bind().at} = Slot { value: null, at: root(), required: ${required_code(f)}, hidden: ${name(hidden)} }
+            let ${bind().at} = Slot { value: null, at: Path { up: [] }, required: ${required_code(f)}, hidden: ${name(hidden)} }
             ${reader(inner(f.kind))}
         }
     }

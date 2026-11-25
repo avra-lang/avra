@@ -116,6 +116,7 @@ use features.expr_spine.{
     shape_mixed,
     two_named,
     sides_unmatched,
+    chosen_by,
     unnegated,
     unplaced_index,
 }
@@ -3283,7 +3284,10 @@ fn compared_words(r: RefusedSeat) -> List<Found> {
 
 /// Where a comparison of a value that compares by none says to look instead.
 fn compared_help(how: Uncompared) -> string {
-    match how { .Uncomparable(o) -> compare_help(o), .Mismatched or .Unasked or .Absent -> "" }
+    match how {
+        .Uncomparable(o) -> compare_help(o),
+        .Mismatched or .Unasked or .Absent or .Unbranched(_) -> "",
+    }
 }
 
 fn mismatched_found(view: ItemView) -> List<Found> { compared_refused(view, (c) -> c is .Mismatched) }
@@ -3361,6 +3365,21 @@ export law comparison_by_value {
     voice: uncompared_said
     witness: "fn f(xs: List<int>) -> bool { xs == xs }\n"
 }
+
+/// `==`, `!=` or `match` over a value of a type wearing `@unbranched`
+export law branch_on_unbranched {
+    kind: "type.unbranched"
+    reads_view: unbranched_found
+    voice: unbranched_said
+    witness: "use stages.{Stage}\n\nfn f(s: Stage) -> bool { s == \"prod\" }\n"
+    witness_files: {
+        "src/stages/stages.av": "use @std.meta.{unbranched}\n\n@unbranched\nexport type Stage = string\n",
+    }
+}
+
+fn unbranched_found(view: ItemView) -> List<Found> { compared_refused(view, (c) -> c is .Unbranched) }
+
+fn unbranched_said(a: List<string>) -> Voice { chosen_by(a[0], a[1]) }
 
 /// `== null` or `!= null` beside a value that is never absent
 export law comparison_unasked {

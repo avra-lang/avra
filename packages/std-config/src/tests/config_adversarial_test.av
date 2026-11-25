@@ -2,11 +2,13 @@
 // when attacked: a secret through every channel, precedence at its edges, flags spelled every way,
 // provenance under a failing layer, and degenerate files.
 use @std.meta.{derive}
-use @std.io.{write_text, make_dirs, env_or}
+use @std.io.{write_text, write_bytes, make_dirs, env_or}
 use @std.time.{stamp}
 use @std.text.{repeat}
 use @std.validate.{Decode}
-use @std.config.{Configured, Secret, file, env, flags, stage}
+use @std.config.{Configured, Secret, file, env, flags, stage, dir, overlay, variable}
+use @std.config.process.{with_secret_var}
+use @std.process.{cmd, tool_at}
 
 once fn run_base() -> string { "${env_or("TMPDIR", "/tmp")}/avra-config-adversarial/${stamp()}" }
 
@@ -22,6 +24,17 @@ once fn written() -> string {
     let _ = write_text("${d}/one.json", "{\"pool\": 9}")
     let _ = write_text("${d}/big.toml", "name = \"${repeat("é", 100000)}\"\nn = 1\n")
     let _ = write_text("${d}/secret.toml", "password = \"file-pass\"\n")
+    let _ = make_dirs("${d}/mounted")
+    let _ = make_dirs("${d}/int-mounted")
+    let _ = write_text("${d}/int-mounted/n", "")
+    let _ = write_text("${d}/mounted/n", "")
+    let _ = write_text("${d}/mounted/name", "\n")
+    let _ = write_text("${d}/mounted/edge", repeat("x", 1048576))
+    let _ = write_text("${d}/mounted/password", "mounted-pass\n")
+    let _ = make_dirs("${d}/prod-mounted")
+    let _ = write_text("${d}/prod-mounted/name", "from-prod")
+    let _ = make_dirs("${d}/dir-leaf/name")
+    let _ = write_bytes("${d}/mounted-binary", [255, 254, 10].bytes()!)
     d
 }
 
@@ -118,6 +131,116 @@ component Huge {
     file "${written()}/big.toml"
 }
 
+@derive(Decode)
+component Mounted {
+    n: string = "unset"
+    name: string = "x"
+    edge: string = ""
+    password: Secret<string>
+    dir "${written()}/mounted" { required: true }
+    stage prod {
+        dir "${written()}/prod-mounted"
+    }
+}
+
+@derive(Decode)
+component MountedInt {
+    n: int = 0
+    dir "${written()}/int-mounted"
+}
+
+@derive(Decode)
+component FileIsDir {
+    name: string = ""
+    env "F" { only: {"F__NAME_FILE": "${written()}/mounted"} }
+}
+
+@derive(Decode)
+component LeafIsDir {
+    name: string = ""
+    dir "${written()}/dir-leaf"
+}
+
+@derive(Decode)
+component Binary {
+    name: string = ""
+    env "B" { only: {"B__NAME_FILE": "${written()}/mounted-binary"} }
+}
+
+@derive(Decode)
+type Store = { @variable("AVRA_STORE_DIR") root: string = "", limit: int = 1 }
+
+@derive(Decode)
+component Exact {
+    store: Store = Store {}
+    @variable("AVRA_TOKEN") token: Secret<string>
+    @variable("AVRA_KEY") key: string = ""
+    env "X" {
+        only: {
+            "AVRA_STORE_DIR": "/s",
+            "X__STORE__LIMIT": "3",
+            "AVRA_TOKEN_FILE": "${written()}/mounted/password",
+            "AVRA_KEY": "k",
+        }
+    }
+}
+
+@derive(Decode)
+component OverlayStaged {
+    db: Db = Db {}
+    overlay "${written()}/{stage}.toml" { required: true }
+    env "O" { only: {"O_STAGE": "prod"} }
+    flags ["--stage=qa"]
+    stage prod {}
+    stage qa {}
+    stage gone {}
+}
+
+@derive(Decode)
+component Signing {
+    identity: string
+    identity_password: Secret<string>
+    env "SIGN" { only: {"SIGN__IDENTITY": "/keys/release.p12", "SIGN__IDENTITY_PASSWORD": "p12-pass"} }
+}
+
+/// A signing tool as a build hands it the identity: the path as a word, the password hidden.
+fn signed() -> string {
+    match Signing.load() {
+        .Ok(c) -> {
+            let call = with_secret_var(
+                cmd(tool_at("sign", "/usr/bin/sign"), ["--p12", c.value.identity]),
+                "P12_PASSWORD",
+                c.value.identity_password,
+            )
+            "${call.shown_args().join(" ")} ${call.shown_env().filter(it.starts_with("P12_")).join(" ")} ${call.env.get("P12_PASSWORD")!.length}"
+        },
+        .Err(e) -> e.report(),
+    }
+}
+
+fn exact() -> string {
+    match Exact.load() {
+        .Ok(c) -> "${c.value.store.root}|${c.value.store.limit}|${c.value.token.reveal((t: string) -> t)}|${c.value.key}",
+        .Err(e) -> e.report(),
+    }
+}
+
+fn overlaid(named: string?) -> string {
+    let read = if named == null { OverlayStaged.load() } else { OverlayStaged.load_as(named!) }
+    match read { .Ok(c) -> "${c.stage} ${c.value.db.pool}", .Err(e) -> rules_of(e.report()) }
+}
+
+fn mounted(named: string) -> string {
+    match Mounted.load_as(named) {
+        .Ok(c) -> "${c.value.n}|${c.value.name}|${c.value.edge.length}|${c.value.password.reveal((t: string) -> t)}",
+        .Err(e) -> e.report(),
+    }
+}
+
+fn rules_of(report: string) -> string {
+    [w for w in report.split(" ") if w.starts_with("config.")].join(",")
+}
+
 fn revealed(r: Result<Secret<string>, string>) -> string {
     match r { .Ok(s) -> s.reveal((t: string) -> t), .Err(e) -> e }
 }
@@ -210,6 +333,54 @@ spec "std/config adversarial" {
                 .Err(e) -> e.report().replace(run_base(), "<dir>").contains("<dir>/dup.toml"),
             }
         }
+    }
+    given "a mounted directory" {
+        then "an empty file is empty, a newline alone is empty, a file at the bound reads whole" {
+            mounted("") == "||1048576|mounted-pass"
+        }
+        then "a stage's directory lays over the base one" { mounted("prod") == "|from-prod|1048576|mounted-pass" }
+        then "an empty file for an integer spells none" {
+            match MountedInt.load() {
+                .Ok(_) -> false,
+                .Err(e) -> rules_of(e.report()) == "config.spelling",
+            }
+        }
+        then "a leaf that is a directory cannot be read" {
+            match LeafIsDir.load() {
+                .Ok(_) -> false,
+                .Err(e) -> rules_of(e.report()) == "config.file_unread",
+            }
+        }
+    }
+    given "a variable's _FILE" {
+        then "naming a directory cannot be read" {
+            match FileIsDir.load() {
+                .Ok(_) -> false,
+                .Err(e) -> rules_of(e.report()) == "config.file_unread",
+            }
+        }
+        then "naming bytes that are not text cannot be read" {
+            match Binary.load() {
+                .Ok(_) -> false,
+                .Err(e) -> rules_of(e.report()) == "config.file_unread",
+            }
+        }
+        then "a mounted secret's text is shown nowhere a report reaches" {
+            match Mounted.load() {
+                .Ok(c) -> !c.explain().contains("mounted-pass"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "stages and exact names" {
+        then "an exact name reads a dependency's leaf, a secret through its _FILE, and a leaf beside" {
+            exact() == "/s|3|mounted-pass|k"
+        }
+        then "a flag's stage beats the environment's and names the overlay read" { overlaid(null) == "qa 7" }
+        then "a stage named outright wins over both" { overlaid("prod") == "prod 40" }
+        then "a required overlay that is not there is refused" { overlaid("gone") == "config.file_missing" }
+        then "no stage reads no overlay" { overlaid("") == " 10" }
+        then "a signing identity is its path and a hidden password" { signed() == "--p12 /keys/release.p12 P12_PASSWORD=<hidden> 8" }
     }
     given "degenerate values" {
         then "a hundred thousand accented letters read whole" {

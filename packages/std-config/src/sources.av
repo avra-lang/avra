@@ -1,16 +1,19 @@
-//! The built-in sources: a file, the environment, the flags. Each is a
-//! component, so a `config<T>` block lists them as its children, in
-//! precedence order:
+//! The built-in sources: a file, the environment, the flags, and a
+//! directory of one file per leaf. Each is a component, so a config's
+//! body lists them in precedence order:
 //!
-//!     config<App> app {
+//!     @derive(Decode)
+//!     component App {
+//!         password: Secret<string>
 //!         file "app.toml"
+//!         dir "/run/secrets"
 //!         env "SHOP"
 //!         flags argv()
 //!     }
 //!
 //! A leaf the environment or a flag sets is read from its text by the
 //! kind the field holds, so the decode that follows stays strict.
-use @std.io.{exists, read_text, env as variable}
+use @std.io.{exists, read_text, list_dir, env as env_value}
 use @std.text.{parse_int, parse_float, from_codepoint}
 use @std.errors.{Error}
 use @std.validate.{Value, Entry, Issue, Issues, FieldKind, from_json, from_toml, nearest}
@@ -27,36 +30,70 @@ export component file(path: string) {
 }
 
 impl Source for file {
+    fn read(want: Want) -> Result<Layer, Issues> { file_layer(self.path, self.required) }
+}
+
+/// A file named for the stage the program runs under: `{stage}` in
+/// `pattern` stands for its name (`overlay "app.{stage}.toml"`). Under
+/// no stage it holds nothing; under one, it is that stage's file, read
+/// as `file` reads one, each leaf's origin naming the stage. Only a
+/// stage the config declares can name one, so no launch-time value
+/// steers the path.
+export component overlay(pattern: string) {
+    required: bool = false
+}
+
+impl Source for overlay {
     fn read(want: Want) -> Result<Layer, Issues> {
-        if !exists(self.path) {
-            if self.required { fail Issues { all: [missing_file(self.path)] } }
-            return nothing()
-        }
-        let text = match read_text(self.path) {
-            .Ok(t) -> t,
-            .Err(e) -> { fail Issues { all: [unreadable(self.path, e.describe().message)] } },
-        }
-        let parsed = if self.path.ends_with(".json") { from_json(text) } else { from_toml(text) }
-        let v = match parsed {
-            .Ok(v) -> v,
-            .Err(e) -> { fail Issues { all: [in_file(i, self.path) for i in e.all] } },
-        }
-        layer_of(v, From.File, self.path)
+        if !self.pattern.contains(stage_hole) { fail Issues { all: [overlay_unstaged(self.pattern)] } }
+        if want.stage.is_empty() { return nothing() }
+        let layer = file_layer(self.pattern.replace(stage_hole, want.stage), self.required)?
+        layer with { origins: [o with { stage: want.stage } for o in layer.origins] }
     }
+}
+
+/// What a stage's name replaces in an overlay's pattern.
+const stage_hole: string = "{stage}"
+
+/// The TOML or JSON file at `path`, read by its extension; a file not
+/// there holds nothing unless it is `required`.
+fn file_layer(path: string, required: bool) -> Result<Layer, Issues> {
+    if !exists(path) {
+        if required { fail Issues { all: [missing_file(path)] } }
+        return nothing()
+    }
+    let text = match read_text(path) {
+        .Ok(t) -> t,
+        .Err(e) -> { fail Issues { all: [unreadable(path, e.describe().message)] } },
+    }
+    let parsed = if path.ends_with(".json") { from_json(text) } else { from_toml(text) }
+    let v = match parsed {
+        .Ok(v) -> v,
+        .Err(e) -> { fail Issues { all: [in_file(i, path) for i in e.all] } },
+    }
+    layer_of(v, From.File, path)
 }
 
 /// The environment: each leaf field is the variable `<PREFIX>__<PATH>`,
 /// the path's steps upper-cased and joined by `__` — `db.pool` under
 /// `SHOP` is `SHOP__DB__POOL`. `__` never occurs inside a step, so no
-/// two paths name one variable. `only` reads a fixed environment in
-/// place of the process's, as a test does.
+/// two paths name one variable. A leaf may instead be read from the
+/// file `<VARIABLE>_FILE` names, as container platforms hand secrets
+/// over; one trailing newline is not part of the value. Setting both is
+/// an issue, and so is a `_FILE` variable that is also a leaf's own.
+/// `only` reads a fixed environment in place of the process's, as a
+/// test does.
 export component env(prefix: string) {
     only: Map<string, string>? = null
 }
 
 impl Source for env {
     fn read(want: Want) -> Result<Layer, Issues> {
-        said_layer([s! for s in [self.said(l) for l in want.leaves()] if s != null], From.Env)
+        let leaves = want.leaves()
+        let names = [want.variables.find(it.path == l.path)?.name ?? variable_named(self.prefix, l.path) for l in leaves]
+        let clashes = if want.variables.is_empty() { [] } else { [name_clash(leaves[names.index_of(n)].path, leaves[i].path, n) for i, n in names if names.index_of(n) < i] }
+        if !clashes.is_empty() { fail Issues { all: clashes } }
+        heard_layer([self.heard(l, names[i], names) for i, l in leaves], From.Env)
     }
 
     fn at_launch() -> bool { true }
@@ -67,14 +104,104 @@ impl Source for env {
 
 impl env {
     /// The variable `name`'s value, when it is set.
-    fn looked(name: string) -> string? { if self.only == null { variable(name) } else { self.only!.get(name) } }
+    fn looked(name: string) -> string? { if self.only == null { env_value(name) } else { self.only!.get(name) } }
 
-    /// The variable naming `leaf`, when it is set.
-    fn said(leaf: Leaf) -> Said? {
-        let name = variable_named(self.prefix, leaf.path)
-        let text? = self.looked(name) else { return null }
-        Said { leaf: leaf, at: name, text: text }
+    /// What the environment says of `leaf`, read from the variable
+    /// `name`: the variable, or the file its `_FILE` variable names —
+    /// never both — given every leaf's variable `names`, so a `_FILE`
+    /// that is another leaf's own variable is told apart.
+    fn heard(leaf: Leaf, name: string, names: List<string>) -> Heard {
+        let carrier = "${name}_FILE"
+        let direct = self.looked(name)
+        let named? = self.looked(carrier) else {
+            return if direct == null { Heard.Unset } else { Heard.Said(Said { leaf: leaf, at: name, text: direct! }) }
+        }
+        when {
+            names.contains(carrier) -> Heard.Refused(file_twin(leaf.path, carrier))
+            direct != null -> Heard.Refused(env_twice(leaf.path, name, carrier))
+            !exists(named) -> Heard.Refused(carried_away(leaf.path, carrier, named))
+            _ -> held(leaf, named, "${carrier} (${named})")
+        }
     }
+}
+
+/// A directory holding one file per leaf, as a container platform
+/// mounts secrets: the file named by the leaf's dotted path
+/// (`db.password`) holds its value, one trailing newline aside. A name
+/// beginning with `.` is the platform's own and is passed over; any
+/// other name no leaf has is an issue. A directory that is not there is
+/// a layer holding nothing, unless it is `required`.
+export component dir(path: string) {
+    required: bool = false
+}
+
+impl Source for dir {
+    fn read(want: Want) -> Result<Layer, Issues> {
+        if !exists(self.path) {
+            if self.required { fail Issues { all: [missing_dir(self.path)] } }
+            return nothing()
+        }
+        let names = match list_dir(self.path) {
+            .Ok(ns) -> [n for n in ns if !n.starts_with(".")],
+            .Err(e) -> { fail Issues { all: [unreadable(self.path, e.describe().message)] } },
+        }
+        let leaves = want.leaves()
+        let paths = [l.path for l in leaves]
+        let stray = [unknown_file(self.path, n, nearest(n, paths)) for n in names if !paths.contains(n)]
+        if !stray.is_empty() { fail Issues { all: stray } }
+        heard_layer(
+            [held(l, "${self.path}/${l.path}", "${self.path}/${l.path}") for l in leaves if names.contains(l.path)],
+            From.File,
+        )
+    }
+}
+
+/// What one source says of a leaf: nothing, a text, or why it cannot.
+enum Heard {
+    Unset
+    Said(said: Said)
+    Refused(why: Issue)
+}
+
+/// The leaf `leaf` as the file at `path` holds it, its origin `at`.
+fn held(leaf: Leaf, path: string, at: string) -> Heard {
+    match file_text(path) {
+        .Ok(text) -> Heard.Said(Said { leaf: leaf, at: at, text: text }),
+        .Err(why) -> Heard.Refused(why),
+    }
+}
+
+/// The largest value a file holding one leaf may hold, in bytes.
+const largest_leaf: int = 1048576
+
+/// A file holding one leaf's value, its one trailing newline dropped.
+fn file_text(path: string) -> Result<string, Issue> {
+    if !exists(path) { fail missing_file(path) }
+    let text = match read_text(path) {
+        .Ok(t) -> t,
+        .Err(e) -> { fail unreadable(path, e.describe().message) },
+    }
+    if text.length > largest_leaf { fail too_large(path, text.length) }
+    when {
+        text.ends_with("\r\n") -> text.substring(0, text.length - 2)
+        text.ends_with("\n") -> text.substring(0, text.length - 1)
+        _ -> text
+    }
+}
+
+/// The layer `heard` sets, or every issue a leaf answered.
+fn heard_layer(heard: List<Heard>, from: From) -> Result<Layer, Issues> {
+    let refused = [i! for i in [refusal_of(h) for h in heard] if i != null]
+    if !refused.is_empty() { fail Issues { all: refused } }
+    said_layer([s! for s in [said_of(h) for h in heard] if s != null], from)
+}
+
+fn said_of(h: Heard) -> Said? {
+    match h { .Said(s) -> s, .Unset or .Refused(_) -> null }
+}
+
+fn refusal_of(h: Heard) -> Issue? {
+    match h { .Refused(i) -> i, .Unset or .Said(_) -> null }
 }
 
 /// The variable `path` is read from under `prefix`.
@@ -215,6 +342,71 @@ fn wanted(kind: FieldKind) -> string {
 }
 
 // ── voices ──────────────────────────────────────────────────────
+
+fn file_twin(path: string, carrier: string) -> Issue {
+    Issue {
+        path: path_of(path),
+        rule: "config.file_twin",
+        message: "${carrier} sets the field ${path}_file and would name the file holding ${path}: rename one of the fields",
+    }
+}
+
+fn overlay_unstaged(pattern: string) -> Issue {
+    Issue {
+        path: root(),
+        rule: "config.overlay_unstaged",
+        message: "the overlay ${pattern} names no {stage}: a file read under every stage is a `file`",
+    }
+}
+
+fn missing_dir(path: string) -> Issue {
+    Issue {
+        path: root(),
+        rule: "config.file_missing",
+        message: "the required directory ${path} is not there",
+    }
+}
+
+fn carried_away(path: string, carrier: string, file: string) -> Issue {
+    Issue {
+        path: path_of(path),
+        rule: "config.file_missing",
+        message: "${carrier} names ${file}, which is not there",
+    }
+}
+
+fn name_clash(first: string, path: string, name: string) -> Issue {
+    Issue {
+        path: path_of(path),
+        rule: "config.name_clash",
+        message: "is read from ${name}, which ${first} is read from too: one variable sets one leaf",
+    }
+}
+
+fn env_twice(path: string, name: string, carrier: string) -> Issue {
+    Issue {
+        path: path_of(path),
+        rule: "config.env_twice",
+        message: "is set by both ${name} and ${carrier}: one variable says it",
+    }
+}
+
+fn unknown_file(dir: string, name: string, near: string?) -> Issue {
+    Issue {
+        path: root(),
+        rule: "config.unknown_file",
+        message: "${dir}/${name} names no field",
+        fix: if near == null { null } else { Value.Text(near!) },
+    }
+}
+
+fn too_large(path: string, size: int) -> Issue {
+    Issue {
+        path: root(),
+        rule: "config.too_large",
+        message: "${path} holds ${size} bytes, and a file holding one value holds at most ${largest_leaf}",
+    }
+}
 
 fn in_file(i: Issue, path: string) -> Issue { i with { message: "${i.message}, in ${path}" } }
 

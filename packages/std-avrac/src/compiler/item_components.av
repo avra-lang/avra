@@ -4,7 +4,14 @@
 use core.{ComponentParts, ExprId, SignedType, StmtId, SyntaxArena, default_mark, flatten, some_list}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.components.{check_unshaped, default_unmade, format_foreign, formats_of, slot_shadows}
+use features.components.{
+    check_unshaped,
+    default_unmade,
+    format_foreign,
+    formats_of,
+    seeds_ring,
+    slot_shadows,
+}
 use features.{row_unkeyed}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -133,7 +140,62 @@ fn unmade_reads(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena
 > {
     let c? = store.component_parts(s) else { return [] }
     let fields = record_signature(engine, file, c.name)?.fields ?? []
-    [Found { at: store.expr_span(r.at), args: [c.name, m.name.text(), r.field] } for m in c.holders if m.default != null for r in self_reads(store, m.default!) if fields.any(it.name == r.field && (it.placed || it.made))]
+    [Found { at: store.expr_span(r.at), args: [c.name, m.name.text(), r.field] } for m in c.holders if m.default != null && !fields.any(it.name == m.name.text() && it.needed) for r in self_reads(store, m.default!) if fields.any(it.name == r.field && (it.placed || it.made))]
+}
+
+/// a seed at need never starts from a seed that starts from it
+export law seeds_unringed {
+    kind: "type.seed_ring"
+    reads_view: seeds_ringed
+    voice: ring_words
+    witness: "use @std.meta.{seeded_at_need}\n\n@seeded_at_need\ncomponent pair {\n    state x: int = self.y\n    state y: int = self.x\n}\n\nlet p = pair {}\n"
+}
+
+fn ring_words(a: List<string>) -> Voice { seeds_ring(a[0], a.slice(1, a.length)) }
+
+/// Every ring among the seeds at need of the components the written item `view` shows: once a ring,
+/// at the first of its members' reads into it — the component, then the members in the order declared.
+fn seeds_ringed(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    flatten([rings_in(view.engine, view.file, item.store, s) for s in item.stmts])
+}
+
+/// The rings among the seeds at need of the component `s` declares.
+fn rings_in(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> List<
+    Found,
+> {
+    let c? = store.component_parts(s) else { return [] }
+    let fields = record_signature(engine, file, c.name)?.fields ?? []
+    let seeds = [m for m in c.holders if m.default != null && fields.any(it.name == m.name.text() && it.needed)]
+    let names = [m.name.text() for m in seeds]
+    let reads = [[r for r in self_reads(store, m.default!) if names.contains(r.field)] for m in seeds]
+    let edges = [[names.index_of(r.field) for r in rs] for rs in reads]
+    mut found: List<Found> = []
+    mut taken: List<int> = []
+    for j in 0..seeds.length {
+        if taken.contains(j) { continue }
+        let ring = [k for k in 0..seeds.length if seed_reaches(edges, j, k, []) && seed_reaches(edges, k, j, [])]
+        if ring.is_empty() { continue }
+        taken = taken.concat(ring)
+        let into = reads[j].find((r) -> ring.contains(names.index_of(r.field)))!
+        found = found
+            .concat(
+                [
+                    Found {
+                        at: store.expr_span(into.at),
+                        args: [c.name].concat([names[k] for k in ring]),
+                    },
+                ],
+            )
+    }
+    found
+}
+
+/// Whether the seed `from` reads its way to the seed `to` through `edges`, by one read or more.
+fn seed_reaches(edges: List<List<int>>, from: int, to: int, seen: List<int>) -> bool {
+    if seen.contains(from) { return false }
+    edges[from].any((k) -> k == to || seed_reaches(edges, k, to, seen.concat([from])))
 }
 
 /// A read of a field of the instance: where it stands, and the field.
