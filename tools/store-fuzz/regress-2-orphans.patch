@@ -1,0 +1,67 @@
+diff --git a/packages/std-program/src/frontier.av b/packages/std-program/src/frontier.av
+index 766080f18..51cee9cea 100644
+--- a/packages/std-program/src/frontier.av
++++ b/packages/std-program/src/frontier.av
+@@ -1019,21 +1019,13 @@ impl FrontierChange {
+ fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> FrontierChange? {
+     let before = state?.length() ?? 0
+     let moved = held.filter((h) -> moved_from(state, h))
+-    let existing = moved.filter((h) -> place_in(state, h.question) != null)
+-    let closed = fresh_reached(
++    let closed = fresh_closed(
+         state,
+-        existing,
+-        fresh_closed(
+-            state,
+-            sorted_by_hash(
+-                moved.filter((h) -> place_in(state, h.question) == null),
+-                (h) -> h.question,
+-            ),
+-            before,
+-        ),
++        sorted_by_hash(moved.filter((h) -> place_in(state, h.question) == null), (h) -> h.question),
+         before,
+     )
+     let fresh = closed.entries
++    let existing = moved.filter((h) -> place_in(state, h.question) != null)
+     let existing_reads = [placed_reads(state, closed.places, h) for h in existing]
+     let placeable = came_back_rooted(state, [h for at, h in existing if existing_reads[at] != null])
+     let places = [place_in(state, h.question)! for h in placeable]
+@@ -1301,37 +1293,6 @@ fn fresh_closed(state: Frontier?, fresh: List<HeldEntry>, before: int) -> Placed
+     fresh_closed(state, [h for at, h in fresh if reads[at] != null], before)
+ }
+ 
+-/// THE NEW QUESTIONS SOMETHING REACHES, placed: each a root, or read by an answer the change rewrites
+-/// or by another reached, so no answer no root reaches is written as standing — one a process
+-/// settled checking a record that then didn't stand, which nothing read. An answer the change
+-/// rewrites that no root reaches any more is found lost from where its reads were cut, and what it
+-/// read new is lost with it. Over no state, every question is new and the write folds, keeping only
+-/// what the roots reach: nothing is walked here.
+-fn fresh_reached(state: Frontier?, existing: List<HeldEntry>, closed: PlacedFresh, before: int) -> PlacedFresh {
+-    if state == null { return closed }
+-    let count = closed.entries.length
+-    mut kept = [h.root for h in closed.entries]
+-    mut pending = [i for i in 0..count if kept[i]]
+-    for h in existing {
+-        let reads? = placed_reads(state, closed.places, h) else { continue }
+-        for p in reads {
+-            if p < before || kept[p - before] { continue }
+-            kept.set(p - before, true)
+-            pending.push(p - before)
+-        }
+-    }
+-    while !pending.is_empty() {
+-        let i = pending.pop()
+-        for p in closed.reads[i] {
+-            if p < before || kept[p - before] { continue }
+-            kept.set(p - before, true)
+-            pending.push(p - before)
+-        }
+-    }
+-    if kept.all(it) { return closed }
+-    fresh_closed(state, [h for i, h in closed.entries if kept[i]], before)
+-}
+-
+ /// Whether `h` says something `state` doesn't: a question it doesn't hold, one stale there, or
+ /// another answer, another input mark, a root it didn't know, or other reads.
+ fn moved_from(state: Frontier?, h: HeldEntry) -> bool {
