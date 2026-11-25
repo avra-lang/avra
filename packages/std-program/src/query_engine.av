@@ -3,6 +3,7 @@
 //! read, so no read can be forgotten. Asked again in a later process, an answer whose record still stands is reused
 //! without running anything, and a recomputed answer that comes out the same leaves its readers
 //! standing. Nothing here knows what the queries are about.
+use settings.{program_settings}
 use answer_parts.{AnswerParts, part_hash_seen, part_in_parts, part_in_saved_parts}
 use @std.io.{env, exists, stamp}
 use @std.path.{dir_of}
@@ -1096,7 +1097,7 @@ impl QueryEngine {
     /// question standing or no longer keeps its answer, a read can't be asked now, or the step
     /// answers none.
     fn folded_run(asked: Question) -> QueryRun? {
-        if folds_off() != null { return null }
+        if program_settings().debug.fold_off { return null }
         let step = match self.definition_of(asked).folding { .By(s) -> s, .Full -> { return null } }
         let open? = self.frontier_open() else { return null }
         let f = open.frontier
@@ -1138,7 +1139,7 @@ impl QueryEngine {
     /// body's run stands for the fold's then.
     fn checked_fold(asked: Question, folded: QueryRun?) -> QueryRun? {
         let run? = folded else { return null }
-        if folds_checked() == null { return run }
+        if !program_settings().debug.fold_check { return run }
         let full = self.full_run(asked)
         if !content_hash(full.bytes).same_as(content_hash(run.bytes)) { defect(fold_differs(asked)) }
         let forgot = full.reads.values().find((r) -> run.reads.get(r.question) == null)
@@ -1455,12 +1456,6 @@ fn fold_forgot(asked: Question, read: string) -> string {
     "`${asked.query_name}` folded forward without a read of `${read}` its body makes: a fold reads all its body reads"
 }
 
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn folds_off() -> string? { env("AVRA_FOLD_OFF") }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn folds_checked() -> string? { env("AVRA_FOLD_CHECK") }
-
 fn two_queries_named(definition: QueryDefinition) -> string {
     "two queries are named `${definition.query_name}`, so their saved answers would collide"
 }
@@ -1505,7 +1500,7 @@ impl HeldQuestion {
         let found? = self.parts.get() else { return null }
         if !found.answer.same_as(answer) { return null }
         let part? = found.by_name.get_at(high, low) else { return null }
-        if held_questions_checked() != null && part.name != name { defect(part_folded_twice(name, part.name)) }
+        if program_settings().debug.held_questions_check && part.name != name { defect(part_folded_twice(name, part.name)) }
         part
     }
 
@@ -1529,7 +1524,7 @@ impl HeldQuestion {
 /// absent when it holds none, and always under `AVRA_HELD_QUESTIONS_CHECK`, so each ask makes its
 /// question again and `question_kept` compares the two.
 export fn question_at(held: HashKeyedTable<HeldQuestion>, high: int, low: int) -> HeldQuestion? {
-    if held_questions_checked() != null { return null }
+    if program_settings().debug.held_questions_check { return null }
     held.get_at(high, low)
 }
 
@@ -1550,15 +1545,9 @@ fn part_folded_twice(name: string, was: string) -> string { "the parts `${name}`
 
 fn key_folded_twice(query: string) -> string { "two questions of `${query}` fold to one key: a held question's key is folded from every argument, each after a tag of its kind" }
 
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_questions_checked() -> string? { env("AVRA_HELD_QUESTIONS_CHECK") }
-
 /// Whether a query's wrapper holds each question it asked by its arguments' values: on, unless
 /// `AVRA_HELD_QUESTIONS_OFF` is set, which writes and hashes the arguments at every ask.
-export fn questions_held() -> bool { held_questions_off() == null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_questions_off() -> string? { env("AVRA_HELD_QUESTIONS_OFF") }
+export fn questions_held() -> bool { !program_settings().debug.held_questions_off }
 
 /// A text argument as a question's key spells it: its kind, its length, then itself, so no two run
 /// together and none passes for another kind's key.
@@ -1635,10 +1624,7 @@ export type HeldAnswer<T> = { value: T }
 
 /// Whether each answer held as computed is checked to read back as it was saved:
 /// `AVRA_HELD_ROUNDTRIP`.
-export fn round_trips_checked() -> bool { round_trip_flag() != null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn round_trip_flag() -> string? { env("AVRA_HELD_ROUNDTRIP") }
+export fn round_trips_checked() -> bool { program_settings().debug.held_roundtrip }
 
 /// An answer of `query` that read back as something else than it was saved from.
 export fn round_trip_broken(query: string) { defect(round_trip_voice(query)) }
@@ -1656,9 +1642,6 @@ export type FreshAnswer<T> = { arguments: Bytes, value: T }
 
 /// Whether a query's wrapper holds what each answer reads back as: on, unless `AVRA_HELD_ANSWERS_OFF`
 /// is set, which reads every answer back at every ask — the same answers, decoded again.
-export fn answers_held() -> bool { held_answers_off() == null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
+export fn answers_held() -> bool { !program_settings().debug.held_answers_off }
 
 fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }

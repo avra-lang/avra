@@ -1,0 +1,81 @@
+//! `wisp tree settings` — THE COMPILER'S SETTINGS, ONE DECLARATION AND ITS
+//! PROJECTIONS. `tools/src/settings/declared.av` declares every variable
+//! the compiler's Avra reads; `--write` lays each package's plain records
+//! and loader into its `settings.av`, and `Setting` into this package;
+//! `--check` regenerates them and refuses a stale one. With no flag, it
+//! prints each setting, its value and where the value came from. The
+//! runtime's C names (`AVRA_HASH_SEED`, `AVRA_MEM_*`, `AVRA_FIBER_*`) are
+//! not covered: they are read in C, and a header generated from this
+//! declaration names them later. Exit 0 fresh, 1 stale or refused.
+use @std.cli.{CliResult, Runnable, command, flag}
+use @std.io.{read_text, write_text, make_dirs}
+use @std.path.{dir_of}
+use settings.{Projection, projected, loaded}
+
+type SettingsCmd = {}
+
+impl Runnable for SettingsCmd {
+    fn run(args: CliResult) -> int {
+        let made = match projected() {
+            .Ok(ps) -> ps,
+            .Err(why) -> {
+                for w in why { println(w) }
+                return 1
+            },
+        }
+        if args.has_flag("write") { return written(made) }
+        if args.has_flag("check") { return checked(made) }
+        shown()
+    }
+}
+
+export command tree_settings {
+    description: "The compiler's settings: --write lays each package's records from the one declaration, --check refuses a stale one, and alone it prints each setting's value and origin (the Avra readers; the runtime's C names come later)"
+    flag write { description: "write every projection from the declaration" }
+    flag check { description: "refuse a projection the declaration no longer writes" }
+    run: SettingsCmd {}
+}
+
+/// Each projection written: 0, or 1 at the first that cannot be.
+fn written(made: List<Projection>) -> int {
+    for p in made {
+        let _ = make_dirs(dir_of(p.file)) catch ""
+        match write_text(p.file, p.text) {
+            .Ok(_) -> {},
+            .Err(_) -> {
+                println(unwritten(p.file))
+                return 1
+            },
+        }
+    }
+    println("settings: ${made.length} projections written")
+    0
+}
+
+/// Each projection held to its file: 0 when every one is fresh.
+export fn checked(made: List<Projection>) -> int {
+    let stale = [p.file for p in made if (read_text(p.file) catch "") != p.text]
+    for f in stale { println(stale_voice(f)) }
+    println("settings: ${made.length} projections read, ${stale.length} stale")
+    if stale.is_empty() { 0 } else { 1 }
+}
+
+/// The settings this process holds, each with its origin.
+fn shown() -> int {
+    match loaded() {
+        .Ok(c) -> {
+            println(c.explain())
+            0
+        },
+        .Err(u) -> {
+            println(u.report())
+            1
+        },
+    }
+}
+
+fn stale_voice(file: string) -> string {
+    "settings: ${file} is not what the declaration writes — `wisp tree settings --write` lays it again"
+}
+
+fn unwritten(file: string) -> string { "settings: ${file} could not be written" }

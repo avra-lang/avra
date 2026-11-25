@@ -117,6 +117,20 @@ component Degenerate {
 }
 
 @derive(Decode)
+component Switches {
+    on: bool = false
+    off: bool = true
+    named: bool = false
+    env "SW" { only: {"SW__ON": "1", "SW__OFF": "0", "SW__NAMED": "true"} }
+}
+
+@derive(Decode)
+component Unswitched {
+    on: bool = false
+    env "UN" { only: {"UN__ON": "yes"} }
+}
+
+@derive(Decode)
 component Big {
     name: string = ""
     n: int = 0
@@ -388,6 +402,20 @@ spec "std/config adversarial" {
         }
         then "a variable no field names is not refused yet (env_names is asked for)" {
             match Big.load() { .Ok(_) -> false, .Err(e) -> !e.report().contains("NOPE") }
+        }
+    }
+    given "a switch spelled in text" {
+        then "1 and 0 read as true and false, beside true" {
+            match Switches.load() {
+                .Ok(c) -> c.value.on && !c.value.off && c.value.named,
+                .Err(_) -> false,
+            }
+        }
+        then "any other spelling is refused naming the variable and the four it takes" {
+            match Unswitched.load() {
+                .Ok(_) -> false,
+                .Err(e) -> e.report().contains("UN__ON") && e.report().contains("true, false, 1 or 0"),
+            }
         }
     }
 }

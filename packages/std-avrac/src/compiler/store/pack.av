@@ -14,6 +14,7 @@
 //! folded by compaction under the flock: the process that takes the lock seals
 //! what it read into a run and retires the dead segments it folded; a process
 //! that cannot take the lock says it skipped.
+use core.settings.{avrac_settings}
 use @std.io.{
     read_bytes,
     make_dirs,
@@ -61,19 +62,13 @@ const MAX_AGE_KEPT_NS: int = 0
 /// A store's limits, as `avra cache clean` and the automatic seal read them.
 export type StoreLimits = { revisions: int, max_bytes: int, max_age_ns: int }
 
-fn env_int(name: string) -> int? {
-    // LICENSED input.debug_flag: the store's own limits, never an input of what is built
-    let raw? = env(name) else { return null }
-    parse_int(raw)
-}
-
 /// The limits in force: the design's revision window by default, overridden by
 /// `AVRA_STORE_REVISIONS`, `AVRA_STORE_MAX_MB` and `AVRA_STORE_MAX_AGE_S`.
 export fn store_limits() -> StoreLimits {
-    let mb = env_int("AVRA_STORE_MAX_MB") ?? MAX_BYTES_KEPT / 1048576
-    let age = env_int("AVRA_STORE_MAX_AGE_S") ?? 0
+    let mb = avrac_settings().user.store_max_mb ?? MAX_BYTES_KEPT / 1048576
+    let age = avrac_settings().user.store_max_age_s ?? 0
     StoreLimits {
-        revisions: env_int("AVRA_STORE_REVISIONS") ?? REVISIONS_KEPT,
+        revisions: avrac_settings().user.store_revisions ?? REVISIONS_KEPT,
         max_bytes: mb * 1048576,
         max_age_ns: age * 1000000000,
     }
@@ -94,13 +89,7 @@ export type CleanReport = {
 /// Frames in live segments before a writer seals them into a body.
 const SEAL_FRAMES: int = 32
 
-fn hooked_frames() -> int? { parse_int(seal_hook()) }
-
-/// The seal-threshold test hook's word, read once a process.
-once fn seal_hook() -> string {
-    // LICENSED input.debug_flag: a test hook that sets the seal threshold, never an input of what is built
-    env("AVRA_STORE_SEAL_FRAMES") ?? ""
-}
+fn hooked_frames() -> int? { avrac_settings().debug.store_seal_frames }
 
 fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
 
@@ -591,9 +580,7 @@ export fn pack_settle(pack: Pack) {
 
 /// A test hook: hold the lock so a second process's admission fails.
 fn hold_ms() {
-    // LICENSED input.debug_flag: a test hook that holds the store lock, never an input of what is built
-    let raw? = env("AVRA_STORE_HOLD_MS") else { return }
-    let ms = parse_int(raw) ?? 0
+    let ms = avrac_settings().debug.store_hold_ms ?? 0
     if ms < 1 { return }
     // LICENSED input.debug_flag: a test hook that holds the compaction lock
     let _ = avra_spawn_status("sleep", ["${ms / 1000}.${ms % 1000}"])
@@ -705,11 +692,11 @@ fn enforce_limits(pack: Pack) {
 }
 
 /// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
-fn obj_limit() -> int { env_int("AVRA_OBJ_MAX_BYTES") ?? OBJ_BYTES_KEPT }
+fn obj_limit() -> int { avrac_settings().user.obj_max_bytes ?? OBJ_BYTES_KEPT }
 
 /// The kept binaries' ceiling in bytes: `AVRA_BIN_MAX_BYTES`, else an eighth of the shared ceiling
 /// (`AVRA_CAS_MAX_MB`), since every worktree keeps binaries of its own.
-export fn bin_limit() -> int { env_int("AVRA_BIN_MAX_BYTES") ?? cas_limit() / 8 }
+export fn bin_limit() -> int { avrac_settings().user.bin_max_bytes ?? cas_limit() / 8 }
 
 /// One kept binary: where it stands, its edge beside it, its size and its time.
 type KeptFile = { path: string, bytes: int, at: int }
@@ -1067,16 +1054,10 @@ fn append(pack: Pack, body: Bytes) {
 }
 
 /// Whether the test hook that kills a writer between a frame and its marker is set.
-fn killed_at_commit() -> bool { !kill_hook().is_empty() }
+fn killed_at_commit() -> bool { avrac_settings().debug.store_kill != null }
 
 /// The frame, counted from one, between whose octets and marker the hook kills the writer.
-fn kill_frame() -> int { parse_int(kill_hook()) ?? 1 }
-
-/// The kill test hook's word, read once a process.
-once fn kill_hook() -> string {
-    // LICENSED input.debug_flag: a test hook that kills a writer between a frame and its marker
-    env("AVRA_STORE_KILL") ?? ""
-}
+fn kill_frame() -> int { avrac_settings().debug.store_kill ?? 1 }
 
 /// A text row kept: its octets.
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
