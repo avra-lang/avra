@@ -74,7 +74,7 @@ use compiler.lower.code_hash.{
     value_node_of,
     values_node,
 }
-use compiler.memory.{memory, memory_late}
+use compiler.memory.{memory, memory_late, writes_no_cell}
 use compiler.static_symbols.{module_spelled}
 use compiler.backend.{
     Owned,
@@ -1438,7 +1438,15 @@ fn body_facts(engine: QueryEngine, asked: BodyAsked) -> UnitFacts? {
         lift_sites: [[t.site for t in l.tests] for l in f.lifts],
         callees: every_callee_of(f),
         cancels: lowered_cancels(f),
-        declared: [BodySeen { name: "", seats: f.params, answer: f.answer, consumed: f.consumed }]
+        declared: [
+            BodySeen {
+                name: "",
+                seats: f.params,
+                answer: f.answer,
+                consumed: f.consumed,
+                writes_no_cell: writes_no_cell(f.layouts, f.ins),
+            },
+        ]
             .concat([lifted_seen(l) for l in f.lifts]),
         wrappers: f.wrappers,
         refused: f.refused,
@@ -1657,9 +1665,11 @@ export type ReachedUnit = { called: CalledFn, kept: TestsKept, sees: string }
 @derive(Saved)
 type Seen = { bodies: List<BodySeen>, rows: List<string> }
 
-/// A body as another body's module declares it.
+/// A body as another body's module declares it: its seats, its answer, the seats it consumes, and
+/// whether it writes no cell (`writes_no_cell`), which lets a borrow its callers read stand across a
+/// call of it. Each is a fact a caller is lowered against, so each moves the caller's key.
 @derive(Saved)
-export type BodySeen = { name: string, seats: List<Layout>, answer: Layout, consumed: List<bool> = [] }
+export type BodySeen = { name: string, seats: List<Layout>, answer: Layout, consumed: List<bool> = [], writes_no_cell: bool = false }
 
 /// A program's bodies and rows by name, as the bodies naming them see them.
 type ProgramSeen = { bodies: Map<string, BodySeen>, rows: Map<string, string> }
@@ -2378,13 +2388,13 @@ fn names_of(bodies: List<Body>, statics: List<Static>) -> Map<string, bool> {
     out
 }
 
-/// A marks-only stand-in for each body bucket `a` names that consumes a seat and that it doesn't
-/// define, so the memory pass reads what each consumes; it answers no instructions and leaves with
-/// the pass.
+/// A marks-only stand-in for each body bucket `a` names that consumes a seat or writes no cell and
+/// that it doesn't define, so the memory pass reads what each consumes and whether a borrow stands
+/// across a call of it; it answers no instructions and leaves with the pass.
 fn marked_elsewhere(a: BucketAsked) -> List<Body> {
     mut named = names_of(a.own.concat([a.entry]), a.statics)
     for x in a.own { named.remove(x.name) }
-    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: consumed_marks(d.consumed) } for n in sorted_names(named.keys()) for d in some_list(a.declared.get(n)) if !d.consumed.is_empty()]
+    [unit_body(d.name, d.seats, d.answer, [], []) with { weak: true, marks: consumed_marks(d.consumed), writes_no_cell: d.writes_no_cell } for n in sorted_names(named.keys()) for d in some_list(a.declared.get(n)) if !d.consumed.is_empty() || d.writes_no_cell]
 }
 
 /// The seat marks of a body consuming the seats `consumed` says, by place: none where it consumes none.

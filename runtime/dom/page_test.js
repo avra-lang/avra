@@ -24,7 +24,7 @@ const stage = ({ dev = false } = {}) => {
   const element = (tag) => ({ tag, attrs: {}, style: {}, kids: [], textContent: "", setAttribute(k, v) { this.attrs[k] = v; }, append(...k) { this.kids.push(...k); }, addEventListener() {} });
   const document = {
     createElement: (tag) => element(tag),
-    getElementById: () => ({}),
+    getElementById: () => ({ dataset: { avraModule: "./app.wasm" } }),
     querySelector: (q) => (dev && q.includes("avra-module") ? {} : null),
     body: { prepend: (el) => alerts.push(el) },
   };

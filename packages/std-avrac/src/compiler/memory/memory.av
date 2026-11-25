@@ -53,8 +53,10 @@ export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
 /// The memory pass over `late`, bodies made after the program `among` was: each read against the
 /// marks of every body either holds.
 export fn memory_late(among: List<Body>, late: List<Body>) -> List<Body> {
-    let by_name = marks_by_name(among.concat(late))
-    [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name) } for b in late if !(b.weak && b.ins.is_empty())]
+    let all = among.concat(late)
+    let by_name = marks_by_name(all)
+    let still = still_names(all)
+    [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name, still) } for b in late if !(b.weak && b.ins.is_empty())]
 }
 
 export fn memory(l: Lowered) -> Lowered {
@@ -71,9 +73,10 @@ export fn memory(l: Lowered) -> Lowered {
     // emission actually links against; a second, empty-bodied one
     // reaching emission is an unterminated LLVM function, not a body.
     let by_name = marks_by_name(l.fns)
+    let still = still_names(l.fns)
     let named = [b for b in l.fns if !(b.weak && b.ins.is_empty())]
-    let fns = [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name) } for b in named]
-    let entry = l.entry with { ins: body_ins(l.entry.layouts, l.entry.ins, 0, l.entry.marks, by_name) }
+    let fns = [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name, still) } for b in named]
+    let entry = l.entry with { ins: body_ins(l.entry.layouts, l.entry.ins, 0, l.entry.marks, by_name, still) }
     let out = l with { fns: fns, entry: entry }
     if !sound_checked() { return out }
     // L2: an independent proof over this pass's OWN output — never a
@@ -108,6 +111,7 @@ fn body_ins(
     seats: int,
     marks: List<SeatMark>,
     by_name: Map<string, List<SeatMark>>,
+    still: StillNames,
 ) -> List<Ins> {
     let immortal = immortal_regs(layouts.length, ins)
     runs_joined(
@@ -118,6 +122,7 @@ fn body_ins(
                 standing_regs(immortal, ins, seats, marks),
                 consuming_seats(seats, marks),
                 by_name,
+                still,
             ) if !immortal_rc_op(i, immortal)],
         ),
     )
@@ -206,6 +211,7 @@ fn memory_ins(
     standing: List<bool>,
     consuming: List<Reg>,
     by_name: Map<string, List<SeatMark>>,
+    still: StillNames,
 ) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
@@ -216,7 +222,7 @@ fn memory_ins(
     mut handing: List<List<Reg>> = []
     let last = last_reads(layouts.length, ins)
     let defs = def_sites(layouts.length, ins)
-    let next_barrier = barrier_positions(ins)
+    let next_barrier = Barriers { next: barrier_positions(ins), still: still, layouts: layouts }
     let twins = twin_table(defs, next_barrier, layouts, ins)
     let immortal = immortal_regs(layouts.length, ins)
     let life = Lives {
@@ -525,7 +531,7 @@ fn memory_ins(
 fn borrow_outlives(
     twins: List<bool>,
     defs: List<int>,
-    next_barrier: List<int>,
+    next_barrier: Barriers,
     layouts: List<Layout>,
     ins: List<Ins>,
     at: int,
@@ -565,22 +571,27 @@ fn borrow_outlives(
 /// none between `at + 1` and `last`, the loop below would run to `last`
 /// touching neither a bracket nor `slot` and answer false — so that is
 /// the answer, with no instruction visited at all.
+///
+/// A QUIET CALL CHANGES NOTHING (`Barriers.quiet`): its callee writes no cell
+/// and every argument is a scalar, so the borrow read before it stays a borrow
+/// across it. It is asked only of a call the scan would otherwise stop at, so
+/// a body pays for no call a borrow is not read across.
 fn leaves_or_changes(
     defs: List<int>,
-    next_barrier: List<int>,
+    next_barrier: Barriers,
     ins: List<Ins>,
     at: int,
     last: int,
     slot: Reg,
     identity: bool,
 ) -> bool {
-    if next_barrier[at + 1] > last { return false }
+    if next_barrier.next[at + 1] > last { return false }
     mut depth = 0
     mut loops = 0
-    mut k = next_barrier[at + 1]
+    mut k = next_barrier.next[at + 1]
     while k < ins.length && (k <= last || loops > 0) {
         let i = ins[k]
-        if changes_cell(defs, ins, i, slot, identity) { return true }
+        if changes_cell(defs, ins, i, slot, identity) && !next_barrier.quiet(i) { return true }
         if opens(i) {
             depth = depth + 1
             if i is .LoopStart { loops = loops + 1 }
@@ -591,7 +602,7 @@ fn leaves_or_changes(
         } else if depth == 0 && turns(i) {
             return true
         }
-        k = skip_diverging_arm(ins, k, last) ?? next_barrier[k + 1]
+        k = skip_diverging_arm(ins, k, last) ?? next_barrier.next[k + 1]
     }
     false
 }
@@ -696,7 +707,8 @@ fn region_exit(ins: List<Ins>, k: int) -> int {
 /// right for an ordinary allocator and wrong for a thaw).
 ///
 /// A user call changes an IDENTITY `slot` (one on a cell's chain,
-/// `read_outlives`) whatever it is handed.
+/// `read_outlives`) whatever it is handed — all but a QUIET one, which the
+/// scan steps past (`leaves_or_changes`).
 fn changes_cell(defs: List<int>, ins: List<Ins>, i: Ins, slot: Reg, identity: bool) -> bool {
     if i is .Load { return false }
     match i {
@@ -794,6 +806,109 @@ fn turns(i: Ins) -> bool { i is .ArmEnd || i is .LoopCond }
 fn barrier_kind(i: Ins) -> bool {
     opens(i) || closes(i) || turns(i) || calls(i) || !(i is .Load) && reads_some(i)
 }
+
+/// WHETHER `i` IS A CALL NO CELL CHANGES ACROSS: a `.Call` by name of a body that writes no cell
+/// (`writes_no_cell`, asked of `still`), handed only scalars. A counted argument keeps it a barrier:
+/// what the callee does with a box it is handed is not asked here. A `.CallPtr` is never quiet: a fn
+/// value's body is not known.
+fn quiet_call(still: StillNames, layouts: List<Layout>, i: Ins) -> bool {
+    match i {
+        .Call(_, callee, _) -> handed_scalars(layouts, i) && still.has(callee),
+        rest -> false,
+    }
+}
+
+/// Whether `i` is a `.Call` by name handed only scalars, whatever its callee does.
+fn handed_scalars(layouts: List<Layout>, i: Ins) -> bool {
+    match i { .Call(_, _, args) -> !args.any(layouts[it.index].counted()), rest -> false }
+}
+
+/// WHETHER A BODY WRITES NO CELL, read of its own instructions once, asking no callee: it calls no
+/// user fn and no fn value, holds no register that could run code (a closure, a task, a `dyn` box —
+/// so no row it calls is handed one), calls only rows that answer from their arguments (`Pure`),
+/// never switch the task out (`waits`), and write through no seat, and stores only into its own
+/// allocas. A body with no instructions — a stub, a host's, an extern's — is not read, so it answers
+/// false, a call that may write any cell.
+export fn writes_no_cell(layouts: List<Layout>, ins: List<Ins>) -> bool {
+    // the cheap refusals first, naming no row: most bodies call a user fn
+    if ins.is_empty() ||
+        ins.any(it is .Call || it is .CallPtr || it is .FnAddr || it is .OnceCommit) {
+        return false
+    }
+    if layouts.any(may_run(it)) { return false }
+    mut stores = false
+    for i in ins {
+        let still = match i {
+            .CallRt(_, callee, args) or .CallRtVoid(callee, args) -> quiet_row(callee, args.length),
+            rest -> true,
+        }
+        if !still { return false }
+        if i is .Store { stores = true }
+    }
+    if !stores { return true }
+    let defs = def_sites(layouts.length, ins)
+    for i in ins {
+        let shared = match i {
+            .Store(slot, _) -> !(defs[slot.index] >= 0 && ins[defs[slot.index]] is .Alloca),
+            rest -> false,
+        }
+        if shared { return false }
+    }
+    true
+}
+
+/// Whether the row `callee`, handed `seats` arguments, answers from them alone and changes none.
+fn quiet_row(callee: string, seats: int) -> bool {
+    let sig? = rt_sig_of(callee) else { return false }
+    sig.reach is .Pure && !sig.waits && !sig.writes.take(seats).any(it)
+}
+
+/// Whether a value laid `l` could run code: a closure, a task or a `dyn` box, at any depth.
+fn may_run(l: Layout) -> bool {
+    match l {
+        .Boxed(box) -> box is .Closure || box is .Task || box is .Dyn,
+        .Fields(fields) -> fields.any(may_run(it)),
+        .Maybe(value) -> may_run(value),
+        rest -> false,
+    }
+}
+
+/// THE BODIES THAT WRITE NO CELL, by the symbol a `.Call` names: each read of its own instructions,
+/// or, for a stub with none, the bit it carries. A host fn's code is not its instructions, so it never
+/// is one. Two bodies of one symbol are one only where both are. Only a still name is kept: most
+/// bodies call another, so most names are not.
+fn still_by_name(fns: List<Body>) -> Map<string, bool> {
+    mut out: Map<string, bool> = {}
+    for b in fns { if still_body(b) { out.set(b.name, true) } }
+    if out.is_empty() { return out }
+    for b in fns { if out.has(b.name) && !still_body(b) { out.remove(b.name) } }
+    out
+}
+
+/// THE NAMES OF A PASS'S BODIES THAT WRITE NO CELL, read the first time a scan asks of one
+/// (`still_by_name`): a pass whose scans meet no quiet question reads no body for it.
+type StillNames = { fns: List<Body>, known: Cell<Map<string, bool>?> }
+
+/// The still names of the bodies `fns`, none read yet.
+fn still_names(fns: List<Body>) -> StillNames {
+    let known: Cell<Map<string, bool>?> = Cell.new(null)
+    StillNames { fns: fns, known: known }
+}
+
+impl StillNames {
+    /// Whether the body called `name` writes no cell.
+    fn has(name: string) -> bool {
+        let known? = self.known.get() else {
+            let made = still_by_name(self.fns)
+            self.known.set(made)
+            return made.get(name) ?? false
+        }
+        known.get(name) ?? false
+    }
+}
+
+/// Whether the body `b` writes no cell: read of its instructions, or the bit a stub carries.
+fn still_body(b: Body) -> bool { !b.hosted && (b.writes_no_cell || writes_no_cell(b.layouts, b.ins)) }
 
 /// Whether `i` runs a user callee, which may reach any `Cell`.
 fn calls(i: Ins) -> bool {
@@ -1086,14 +1201,28 @@ fn owned_form(twins: List<bool>, layouts: List<Layout>, immortal: List<bool>, at
 /// WHETHER EACH READ TAKES ITS OWNED TWIN, by position, once per body. A
 /// read's answer asks only about the reads AFTER it, so a reverse walk has
 /// every answer it needs in hand.
-fn twin_table(defs: List<int>, next_barrier: List<int>, layouts: List<Layout>, ins: List<Ins>) -> List<
+///
+/// THE DETECTOR OF A BORROW A CALL MAKES OWNED: tallying (`AVRA_RC_REASONS`),
+/// a read that owns is asked again with every call handed only scalars read
+/// as quiet; one that would then stay a borrow owns only because a callee it
+/// calls may write a cell — a candidate for `writes_no_cell` to say more of.
+fn twin_table(defs: List<int>, next_barrier: Barriers, layouts: List<Layout>, ins: List<Ins>) -> List<
     bool,
 > {
     mut out = [false for j in 0..ins.length]
+    let scalar_calls = next_barrier with { every_scalar: true }
     // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
     mut k = ins.length - 1
     while k >= 0 {
-        if takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) { out.set(k, true) }
+        if takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) {
+            out.set(k, true)
+            if tallying() && !takes_twin(out, defs, scalar_calls, layouts, ins, k, ins[k]) {
+                noted(
+                    "candidate: a borrow a scalar call makes owned, its callee may write a cell",
+                    1,
+                )
+            }
+        }
         k = k - 1
     }
     out
@@ -1110,7 +1239,7 @@ fn twin_table(defs: List<int>, next_barrier: List<int>, layouts: List<Layout>, i
 fn takes_twin(
     twins: List<bool>,
     defs: List<int>,
-    next_barrier: List<int>,
+    next_barrier: Barriers,
     layouts: List<Layout>,
     ins: List<Ins>,
     at: int,
@@ -1134,12 +1263,15 @@ fn takes_twin(
 /// A `Cell` IS AN IDENTITY: `set` replaces what it holds and `set_at`,
 /// `push` and `put` write the held list or map in place, whatever any
 /// count says — so no reference along the way keeps a borrow below the
-/// cell standing. A borrow whose chain reaches a cell, read past any user
-/// call, owns: the callee may reach that cell, by a seat or a capture.
+/// cell standing. A borrow whose chain reaches a cell, read past a user
+/// call, owns: the callee may reach that cell, by a seat or a capture — or
+/// by a module `state`, which it reaches handed nothing. The one call it is read
+/// past is a QUIET one (`quiet_call`): a callee that writes no cell, handed
+/// only scalars.
 fn read_outlives(
     twins: List<bool>,
     defs: List<int>,
-    next_barrier: List<int>,
+    next_barrier: Barriers,
     layouts: List<Layout>,
     ins: List<Ins>,
     at: int,
@@ -1231,13 +1363,26 @@ enum Handover {
     Emptied(Reg)
 }
 
+/// WHERE A SCAN MAY STOP: the next barrier at or after each position (`barrier_positions`), and what
+/// says whether a call there is QUIET — the names of the bodies that write no cell (`still_by_name`)
+/// and the registers' layouts. `every_scalar` reads every call handed only scalars as quiet, whatever
+/// its callee: the detector's question (`twin_table`).
+type Barriers = { next: List<int>, still: StillNames, layouts: List<Layout>, every_scalar: bool = false }
+
+impl Barriers {
+    /// Whether `i` is a call no cell changes across, as these barriers read it.
+    fn quiet(i: Ins) -> bool {
+        if self.every_scalar { handed_scalars(self.layouts, i) } else { quiet_call(self.still, self.layouts, i) }
+    }
+}
+
 /// ONE BODY'S LIVES: where each register is defined and last read.
 type Lives = {
     layouts: List<Layout>,
     ins: List<Ins>,
     last: List<int>,
     defs: List<int>,
-    next_barrier: List<int>,
+    next_barrier: Barriers,
     twins: List<bool>,
     viewed: List<bool>,
     death: List<int>,

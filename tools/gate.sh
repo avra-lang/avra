@@ -18,6 +18,9 @@
 #                                       census compiler.
 #   sh tools/gate.sh unpack <file>      seeds this tree from a pack, and holds its stamp to HEAD's: a
 #                                       seeded slice builds no compiler
+#   sh tools/gate.sh census             build/gate/census-<sha8>.tar.gz: the census compiler, built by the
+#                                       seed's compiler of generation 2, with its record. Run once after
+#                                       the seed; a cost slice that holds it builds no census compiler.
 #
 # A test row runs every suite (AVRA_SUITE_ALL=1), so it names every failing case, never only the first.
 #
@@ -49,7 +52,8 @@ sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run ov
 cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
 cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
 cost-laid  make cost, COST_PART=laid: the cli's cold check over the std answers the census compiler makes of the snapshot's std, laid into an empty store
-cost-ledger-cold make cost, COST_PART=ledger-cold: the pass ledger of cold-a's and cold-b's runs, made again uncounted beside them; each pass's asks and asks per unit within 0.05% of its row
+cost-ledger-cold-a make cost, COST_PART=ledger-cold-a: the pass ledger of cold-a's run, made again uncounted beside it; each pass's asks and asks per unit within 0.05% of its row
+cost-ledger-cold-b make cost, COST_PART=ledger-cold-b: the same of cold-b's runs
 cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's cold check and every warm edit, made again uncounted beside cost-warm; asks per moved item
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
@@ -146,7 +150,7 @@ shift
 if [ "$slice" = list ]; then slices; exit 0; fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
 [ "$slice" = seed ] && slice=pack
-[ "$slice" = pack ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
+[ "$slice" = pack ] || [ "$slice" = census ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
 
 sha8=$(git rev-parse --short=8 HEAD)
 # THE WALL BUDGET: the slice runs again inside it, under tools/bounded.sh; past it, the slice is named.
@@ -430,6 +434,10 @@ slice_sound() {
 slice_cost() {
     census_stands || census_made || return 1
     row "cost-$1" env COST_PART="$1" COST_EDITS="${2:-}" COST_COMPILER=build/avra.census make -s -o avra cost
+    st=$?
+    # each workload's seconds and the std answers', as cost.sh says them: what a cost split is dealt by
+    grep -E '^cost: [^ ]+ [0-9]+ s$|^cost: the snapshot.s std answers [0-9]+ s$' "$out/cost-$1.log" | sed 's/^cost: /fact cost /' >>"$out/rows"
+    return $st
 }
 
 # build/avra of generation 2, this tree's compiler built by this tree's compiler — as it stands where it
@@ -601,12 +609,29 @@ if compiler; then
             # THE SEED ENDS AT GENERATION 2: every slice runs this tree's own compiler of its fixed point.
             # The census compiler is the cost slices' alone, built in each of them beside the others,
             # never before every slice starts and never in the pack every slice unpacks
+            # WHETHER GENERATION 2 IS GENERATION 1'S BYTES, said beside the rows: where it is, a slice run on
+            # generation 1 judged the very binary generation 2 is
+            read -r _h _a seed_gen _ < build/.avra-built-from 2> /dev/null || seed_gen=1
+            [ "${seed_gen:-1}" -ge 2 ] || cp build/avra "$out/avra-gen1"
             gen2_made || { echo "GATE $slice $sha8 FAIL rows=$rows failed=$failed $(( $(date +%s) - began ))s"; exit 1; }
+            if [ -f "$out/avra-gen1" ]; then
+                if cmp -s build/avra "$out/avra-gen1"; then same=yes; else same=no; fi
+                echo "fact gen2-is-gen1 $same $(wc -c < "$out/avra-gen1" | tr -d ' ') $(wc -c < build/avra | tr -d ' ')" >>"$out/rows"
+                find "$out/avra-gen1" -delete
+            else
+                echo "fact gen2-is-gen1 - (the seed stood at generation 2)" >>"$out/rows"
+            fi
             # the package libraries as this tree's sources make them: nothing rebuilt where none moved
             row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
             tarball="build/gate/compiler-$sha8.tar.gz"
             packed >"$out/files"
             row pack tar -czf "$tarball" -T "$out/files" && echo "pack: $tarball, $(wc -l <"$out/files" | tr -d ' ') files, $(du -k "$tarball" | cut -f1) KB" >>"$out/rows"
+            ;;
+        census)
+            # THE CENSUS COMPILER IS ONE BUILD A GATE: every cost slice counts with the same binary, so
+            # it is made here once and each cost slice unpacks it, held by census_stands as a built one is
+            census_made || { echo "GATE $slice $sha8 FAIL rows=$rows failed=$failed $(( $(date +%s) - began ))s"; exit 1; }
+            row census-pack tar -czf "build/gate/census-$sha8.tar.gz" build/avra.census build/.avra.census-built-from
             ;;
         build) slice_build ;;
         avrac-a) slice_avrac_a ;;
@@ -636,7 +661,8 @@ if compiler; then
         cost-cold-a) slice_cost cold-a ;;
         cost-cold-b) slice_cost cold-b ;;
         cost-laid) slice_cost laid ;;
-        cost-ledger-cold) slice_cost ledger-cold ;;
+        cost-ledger-cold-a) slice_cost ledger-cold-a ;;
+        cost-ledger-cold-b) slice_cost ledger-cold-b ;;
         cost-ledger-warm) slice_cost ledger-warm ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac

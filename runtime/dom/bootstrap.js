@@ -396,6 +396,19 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   return applyFrame;
 }
 
+// The module `source` names, compiled: a URL in a page, compiled AS IT ARRIVES — the bytes are
+// never held whole first — or the bytes themselves in a test or a node harness. One fetch, asked
+// as the document's preload of it asks (`fetch`'s own mode), so the browser answers both with one
+// request. A body served as something other than wasm cannot stream, and is read whole.
+export async function compiled(source, fetchFn = (...a) => globalThis.fetch(...a)) {
+  if (source instanceof Uint8Array) return WebAssembly.compile(source);
+  const res = await fetchFn(source);
+  if (!res.ok) throw new Error(`the module at ${source} answered ${res.status}`);
+  const kind = res.headers.get("content-type") ?? "";
+  if (typeof WebAssembly.compileStreaming === "function" && kind.split(";")[0].trim() === "application/wasm") return WebAssembly.compileStreaming(res);
+  return WebAssembly.compile(await res.arrayBuffer());
+}
+
 // Load the module and run it in a page. The host supplies `rt` (its own
 // rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
 // answers REFUSES by name — a missing row must never be a silent no-op.
@@ -405,9 +418,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
 // called, so a program that never parks pays nothing and one that does says why.
 export async function instantiate(source, host) {
   const unhosted = new Proxy({}, { get: (_, name) => () => { throw new Error(`this page hosts no tasks: the module called avra_host.${String(name)}`); } });
-  // A URL in a page, the bytes themselves in a test or a node harness.
-  const bytes = source instanceof Uint8Array ? source : await (await fetch(source)).arrayBuffer();
-  const module = await WebAssembly.compile(bytes);
+  const module = await compiled(source);
   const imports = {};
   const unknown = [];
   for (const im of WebAssembly.Module.imports(module)) {

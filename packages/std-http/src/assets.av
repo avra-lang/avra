@@ -9,10 +9,23 @@
 use @std.http_message.message.{Header, Method}
 use route.{Route, Reach}
 use validators.{tag_listed}
+use codings.{coding_weight}
 
-/// One thing to serve: the name it is asked for by, its media type and
-/// its octets.
-export type Hosted = { name: string, media: string, octets: Bytes }
+/// One thing to serve: the name it is asked for by, its media type, its
+/// octets, the same octets in each content coding made of them (a client
+/// that accepts none is sent the octets), whether the name is the
+/// content's, and the tag a fixed name is validated by.
+export type Hosted = {
+    name: string,
+    media: string,
+    octets: Bytes,
+    coded: List<Coded> = [],
+    kept: bool = true,
+    tag: string = "",
+}
+
+/// An asset's octets in one content coding, by its HTTP name (`br`, `gzip`).
+export type Coded = { coding: string, octets: Bytes }
 
 /// The routes answering `held` under `prefix` (`/assets`): a GET and a
 /// HEAD of each name in it.
@@ -41,13 +54,42 @@ fn below(t: Bytes, n: int) -> Bytes {
 fn answer(q: Request<Unrouted>, held: List<Hosted>, rel: Bytes) -> Response {
     let name? = rel.text() else { return status(404) }
     let found? = held.find(it.name == name) else { return status(404) }
-    let tag = "\"${found.name}\""
+    asset_answer(q, found)
+}
+
+/// `h` answered to `q`: in the coding `q` weighs highest of those `h` was
+/// coded in, or as it is. Each coding is its own representation, so its
+/// tag names the coding too.
+export fn asset_answer(q: Request<Unrouted>, h: Hosted) -> Response {
+    let weighed = [coding_weight(q.headers("accept-encoding"), c.coding) for c in h.coded]
+    let chosen = [h.coded[j] for j, w in weighed if w > 0 && weighed.all(it <= w)].first()
+    let tag = tag_of(h, chosen)
     let fields = [
-        header_pair("content-type", found.media),
+        header_pair("content-type", h.media),
         header_pair("etag", tag),
-        header_pair("cache-control", "public, max-age=31536000, immutable"),
+        header_pair(
+            "cache-control",
+            if h.kept { "public, max-age=31536000, immutable" } else { "no-cache" },
+        ),
         header_pair("x-content-type-options", "nosniff"),
     ]
+        .concat(if h.coded.is_empty() { [] } else { [header_pair("vary", "accept-encoding")] })
+        .concat(
+            match chosen {
+                c? -> [header_pair("content-encoding", c.coding)]
+                null -> []
+            },
+        )
     if tag_listed(q.header("if-none-match"), tag) { return Response { status: 304, headers: fields } }
-    Response { headers: fields, body: found.octets }
+    Response { headers: fields, body: chosen?.octets ?? h.octets }
+}
+
+/// The strong tag of `h` in the representation `coding` names: its name
+/// when the name is the content's, else the tag it was given.
+fn tag_of(h: Hosted, coding: Coded?) -> string {
+    let named = if h.kept || h.tag == "" { h.name } else { h.tag }
+    match coding {
+        c? -> "\"${named}.${c.coding}\""
+        null -> "\"${named}\""
+    }
 }

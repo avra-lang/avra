@@ -12,7 +12,6 @@ use @std.http.frame.{Chunker, Decoded, chunker, limits, unchunked}
 use @std.http.http.{Pulled, Stream}
 use @std.net.{Conn}
 use @std.net.{listen, connect}
-use @std.io.{list_dir}
 use @std.path.{joined_path, normalized}
 use @std.process.{Tool, Child, Env, EnvPair, Ready, cmd, tool_at, inherited}
 use @std.text.{ascii_lower, parse_int}
@@ -165,12 +164,12 @@ impl Backend {
         }
     }
 
-    /// The routes the page's address space is shared by with its server. Where
-    /// the glue holds a file the glue answers it, and anything else goes on to
-    /// the server: one route per reading method, so the two never overlap. A
-    /// method the glue never answers is the server's alone.
-    fn routes(glue: List<string>, files: List<Route>) -> List<Route> {
-        [f with { serve: self.glued_or_sent(f, glue) } for f in files]
+    /// The routes the page's address space is shared by with its server. A
+    /// target one of the page's files answers is the page's, and any other
+    /// goes on to the server: one route per reading method, so the two
+    /// never overlap. A method the page never answers is the server's alone.
+    fn routes(files: List<Route>) -> List<Route> {
+        [f with { serve: (q: Request<Unrouted>, t: Bytes) -> f.serve(q, t) ?? self.forward(q) } for f in files]
             .concat(
                 [Route {
                     method: m,
@@ -179,11 +178,6 @@ impl Backend {
                     serve: (q: Request<Unrouted>, _t: Bytes) -> self.forward(q),
                 } for m in methods()],
             )
-    }
-
-    /// The glue's own answer to a file it holds, else the server's.
-    fn glued_or_sent(file: Route, glue: List<string>) -> fn(Request<Unrouted>, Bytes) -> Response? {
-        (q: Request<Unrouted>, t: Bytes) -> if glued(file.method, t, glue) { file.serve(q, t) } else { self.forward(q) }
     }
 }
 
@@ -218,23 +212,8 @@ export fn relayed(port: int, root: string, q: Request<Unrouted>) -> Response {
     }
 }
 
-/// Every method the glue never answers: the server's alone.
+/// Every method the page never answers: the server's alone.
 fn methods() -> List<Method> { [.Post, .Put, .Delete, .Patch, .Options] }
-
-/// Whether the glue answers this request: a GET or a HEAD of a file it holds.
-fn glued(m: Method, t: Bytes, glue: List<string>) -> bool {
-    let read = match m {
-        .Get or .Head -> true,
-        .Post or .Put or .Delete or .Patch or .Options or .Connect or .Trace or .Other -> false,
-    }
-    read && glue.contains((t.text() ?? "").split("?")[0])
-}
-
-/// The paths of the files a glue directory holds, as a page asks for them.
-export fn glue_files(dir: string) -> List<string> {
-    // LICENSED input.live_process: the glue files dev serves, never an input of what is built
-    ["/${f}" for f in list_dir(dir) catch []]
-}
 
 /// Every field `q` carries, in the order sent.
 fn fields_of(q: Request<Unrouted>) -> List<Header> {

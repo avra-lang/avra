@@ -259,6 +259,12 @@ fn got(d: Page, target: string) -> Response {
 
 fn body_of(d: Page, target: string) -> string { got(d, target).body.text() ?? "" }
 
+/// What a GET of `target` carrying the one more field `field` is answered.
+fn got_with(d: Page, target: string, field: string) -> Response {
+    let q? = requested("GET ${target} HTTP/1.1", field) else { return Response { status: 0 } }
+    dispatch(compiled(d.routes()), q)
+}
+
 /// The first event a page joining now hears, as its lines.
 fn first_event(d: Page) -> List<string> {
     let stream? = got(d, "/@dev/events").stream else { return [] }
@@ -308,6 +314,8 @@ type Session = {
     wasm_status: int,
     wasm_kind: string,
     wasm_magic: bool,
+    wasm_kept: string,
+    wasm_coded: string,
     script_kind: string,
     first_id: string,
     edited_built: bool,
@@ -338,15 +346,16 @@ once fn session() -> Session? {
     let first = standing(d)
     let idle_built = d.turn()
     let page = body_of(d, "/")
-    let wasm = got(d, "/app.wasm")
+    let wasm = got(d, "/${first[0]}")
+    let coded = got_with(d, "/${first[0]}", "Accept-Encoding: gzip, br\r\n")
     rewritten(d, page_source("two"))
     let edited_built = d.turn()
     let edited = standing(d)
-    let good = got(d, "/app.wasm").body
+    let good = got(d, "/${edited[0]}").body
     rewritten(d, page_source("two") + "fn broken( {\n")
     let broken_built = d.turn()
     let broken = standing(d)
-    let still = got(d, "/app.wasm").body
+    let still = got(d, "/${broken[0]}").body
     rewritten(d, page_source("two"))
     let _ = d.turn()
     let mended = standing(d)
@@ -357,6 +366,8 @@ once fn session() -> Session? {
         wasm_status: wasm.status,
         wasm_kind: wasm.header("content-type") ?? "",
         wasm_magic: is_wasm(wasm.body),
+        wasm_kept: wasm.header("cache-control") ?? "",
+        wasm_coded: "${coded.header("content-encoding") ?? "-"} ${coded.header("vary") ?? "-"} ${coded.body.length < wasm.body.length}",
         script_kind: got(d, "/dev.js").header("content-type") ?? "",
         first_id: first[0],
         edited_built: edited_built,
@@ -406,7 +417,14 @@ spec "avra dev — the loop, as the command runs it" {
 
 spec "avra dev — the loop, turned by hand" {
     given "a page nothing has built" {
-        then "the first turn builds it" { seen((s) -> s.first_built && s.first_id == "1") }
+        then "the first turn builds it, and its id is the name it is served by, its content's" {
+            seen(
+                (s) -> s.first_built &&
+                    s.first_id.starts_with("app.") &&
+                    s.first_id.ends_with(".wasm") &&
+                    s.first_id.length == 41,
+            )
+        }
         then "a turn with nothing moved builds nothing" { seen((s) -> !s.idle_built) }
     }
     given "a page that built" {
@@ -416,11 +434,27 @@ spec "avra dev — the loop, turned by hand" {
                     s.page.contains("<script type=\"module\" src=\"./dev.js\"></script>"),
             )
         }
+        then "the page names every file it fetches, the module as the fetch that compiles it" {
+            seen(
+                (s) -> s.page.contains("data-avra-module=\"./${s.first_id}\"") &&
+                    s
+                        .page
+                        .contains("<link rel=\"preload\" href=\"./${s.first_id}\" as=\"fetch\" crossorigin>") &&
+                    ["bootstrap.js", "wire.gen.js", "windows.js", "wasi.js", "dev.js"]
+                        .all((f) -> s.page.contains("<link rel=\"modulepreload\" href=\"./${f}\">")),
+            )
+        }
         then "the page is titled by its package and leaves no hole unfilled" {
             seen((s) -> s.page.contains("<title>dev_loop_") && !s.page.contains("<!--"))
         }
         then "the module is served as wasm" {
             seen((s) -> s.wasm_status == 200 && s.wasm_kind == "application/wasm" && s.wasm_magic)
+        }
+        then "the module, named by its content, is kept for ever" {
+            seen((s) -> s.wasm_kept == "public, max-age=31536000, immutable")
+        }
+        then "a client that reads brotli is sent the module coded, smaller, and told it varies" {
+            seen((s) -> s.wasm_coded == "br accept-encoding true")
         }
         then "a script is served as a script" { seen((s) -> s.script_kind.starts_with("text/javascript")) }
     }
@@ -441,24 +475,30 @@ spec "avra dev — the loop, turned by hand" {
             seen((s) -> s.mended_failure == "" && s.mended_id == s.edited_id)
         }
     }
-    given "the module's number" {
+    given "the module's id" {
         then "moves only when the module does: built, edited, broken, mended" {
-            seen((s) -> s.numbers.join(",") == "1,2,2,2")
+            seen(
+                (s) -> s.numbers[0] != s.numbers[1] &&
+                    s.numbers[1] == s.numbers[2] &&
+                    s.numbers[2] == s.numbers[3],
+            )
         }
     }
 }
 
 spec "avra dev — what a page is answered before any build" {
     given "a server that has built nothing" {
-        then "the module is not served" {
+        then "the page names no module and none is served" {
             match unbuilt() {
-                d? -> got(d, "/app.wasm").status == 503
+                d? -> body_of(d, "/").contains("data-avra-module=\"\"") &&
+                    got(d, "/app.wasm").status == 404
                 null -> true
             }
         }
-        then "a page that joins hears the standing at once: built, module 0" {
+        then "a page that joins hears the standing at once: built, no module" {
             match unbuilt() {
-                d? -> first_event(d).join("|") == "event: built|data: 0"
+                d? -> field_of(first_event(d), "event") == "built" &&
+                    field_of(first_event(d), "data") == ""
                 null -> true
             }
         }
@@ -475,15 +515,27 @@ spec "avra dev — what a page is answered before any build" {
                 null -> true
             }
         }
-        then "the page and the module are never kept" {
+        then "the page is never kept" {
             match unbuilt() {
                 d? -> got(d, "/").header("cache-control") == "no-store"
                 null -> true
             }
         }
-        then "a glue script is asked for again each time" {
+        then "a glue script is asked for again each time, and the tag it was sent is a 304" {
             match unbuilt() {
-                d? -> "${got(d, "/bootstrap.js").status} ${got(d, "/bootstrap.js").header("cache-control") ?? "-"}" == "200 max-age=0"
+                d? -> "${got(d, "/bootstrap.js").status} ${got(d, "/bootstrap.js").header("cache-control") ?? "-"}" == "200 no-cache" &&
+                    got_with(
+                        d,
+                        "/bootstrap.js",
+                        "If-None-Match: ${got(d, "/bootstrap.js").header("etag") ?? "-"}\r\n",
+                    )
+                        .status == 304
+                null -> true
+            }
+        }
+        then "a file the glue holds that no page fetches is not served" {
+            match unbuilt() {
+                d? -> got(d, "/page_test.js").status == 404 && got(d, "/page.html").status == 404
                 null -> true
             }
         }

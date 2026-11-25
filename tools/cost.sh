@@ -43,7 +43,7 @@ command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to on
 
 # The cold workloads: a name, the part it is measured in, the machine's store it runs over, the census
 # tables it takes, then the command the census compiler runs in the snapshot. PARTS, each a gate slice
-# of its own (COST_PART=cold-a|cold-b|laid|warm|ledger-cold|ledger-warm; all by default): `warm` is the
+# of its own (COST_PART=cold-a|cold-b|laid|warm|ledger-cold|ledger-cold-a|ledger-cold-b|ledger-warm; all by default): `warm` is the
 # cli's cold check and the warm edits it leaves a store for — COST_EDITS=<k>/<n> deals them, the k-th
 # share of n, the noop in every share — the cold runs are two, and the pass ledger's are two more
 # (`ledgered`, below). A STORE IS NOT THE COMPILER: every run but one has
@@ -165,7 +165,8 @@ counted() {
 }
 
 # THE PASS LEDGER IS MEASURED APART FROM THE COUNTS, which an instrument must not move: no counted run
-# keeps a ledger, and the ledger's parts (`ledger-cold`, the cold runs of `cold-a` and `cold-b`;
+# keeps a ledger, and the ledger's parts (`ledger-cold`, the cold runs of `cold-a` and `cold-b` — or
+# `ledger-cold-a` and `ledger-cold-b`, each one's alone;
 # `ledger-warm`, the cli's cold check and the warm edits) make the same runs again, each its own slice
 # beside the counted ones, over the same snapshot by the same census compiler, uncounted, with
 # `--passes --passes-rows`. ledgered <name> <command…>: one such run, its `pass-row` lines the rows of
@@ -297,8 +298,8 @@ reached() {
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-warm) ;;
-        *) echo "cost: COST_PART names all, cold-a, cold-b, laid, warm, ledger-cold or ledger-warm, never $p"; exit 2 ;; esac
+    case $p in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm) ;;
+        *) echo "cost: COST_PART names all, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b or ledger-warm, never $p"; exit 2 ;; esac
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
@@ -308,7 +309,11 @@ measure() {
     how=$1
     workloads | while read -r name in_part store census command; do
         if [ "$how" = ledgered ]; then
-            case $2:$in_part in all:laid) continue ;; all:* | ledger-cold:cold-a | ledger-cold:cold-b | ledger-warm:warm) ;; *) continue ;; esac
+            case $2:$in_part in
+                all:laid) continue ;;
+                all:* | ledger-cold:cold-a | ledger-cold:cold-b | ledger-cold-a:cold-a | ledger-cold-b:cold-b | ledger-warm:warm) ;;
+                *) continue ;;
+            esac
             lname=ledger-$name
         else
             [ "$2" = all ] || [ "$2" = "$in_part" ] || continue

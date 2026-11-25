@@ -103,5 +103,13 @@ test("a mended build of another module reloads", broke.reloads === 1);
   test("a page names its module at start and again once a swap lands", before === "abc" && named() === "xyz");
 }
 
+// A swap is handed the id of the module that now stands: the name it is served by.
+{
+  const asked = [];
+  const swapping = client(async (id) => { asked.push(id); });
+  await swapping.events.say("built", "app.0123.wasm");
+  test("the swap is handed the new module's id", asked.join() === "app.0123.wasm");
+}
+
 console.log(`dev: ${passed}/${passed + failed}`);
 process.exit(failed === 0 ? 0 : 1);

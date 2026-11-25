@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFeeds, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { compiled, stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFeeds, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -674,6 +674,23 @@ const empty = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
 let lacking = "";
 try { await run(empty, { document: stubDocument(), mount: stubElement("root"), wasi: () => ({}) }); } catch (e) { lacking = e.message; }
 check("a module that mounts nothing refuses by the names it lacks", lacking.startsWith(`the module exports no ${HOST.entry}, ${HOST.event}, ${HOST.seat}`), true);
+
+// ── the module compiled as it arrives ──
+{
+  const asked = [];
+  const served = (body, kind, status = 200) => async (url) => { asked.push(url); return new Response(body, { status, headers: { "content-type": kind } }); };
+  let streamed = 0;
+  const real = WebAssembly.compileStreaming;
+  WebAssembly.compileStreaming = (res) => { streamed++; return real(res); };
+  const module = await compiled("./app.0123.wasm", served(empty, "application/wasm"));
+  check("a module served as wasm is compiled as it streams, from one fetch of the URL it was named by", [module instanceof WebAssembly.Module, streamed, asked.join()], [true, 1, "./app.0123.wasm"]);
+  const read = await compiled("./other.wasm", served(empty, "application/octet-stream"));
+  check("one served as anything else is read whole and compiled", [read instanceof WebAssembly.Module, streamed], [true, 1]);
+  let refused = "";
+  try { await compiled("./gone.wasm", served("no such module", "text/plain", 404)); } catch (e) { refused = e.message; }
+  check("a module that is not served says the answer it got", refused, "the module at ./gone.wasm answered 404");
+  WebAssembly.compileStreaming = real;
+}
 
 console.log(fails === 0 ? `bootstrap: ${passes}/${passes}` : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

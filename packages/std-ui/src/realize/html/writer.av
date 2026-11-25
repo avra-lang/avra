@@ -69,18 +69,33 @@ export fn page_source(head: Head, css: string, nonce: string?, ops: List<HtmlOp>
 }
 
 /// What a module needs to take a page over: the print the server folded,
-/// where the module is served and where the host's scripts are.
-export type Takeover = { print: int, module: string, host: string, state: string = "" }
+/// where the module is served and where the host's scripts are, and every
+/// file the page fetches, so the document asks for all of them as it arrives.
+export type Takeover = { print: int, module: string, host: string, state: string = "", fetched: List<string> = [] }
 
 /// The script that starts the module on the mount. It is the same for every
 /// page; what is page-specific rides the mount's attributes, escaped.
-const starter = "const m = document.getElementById(\"app\"); const base = m.dataset.avraHost; const { run } = await import(base + \"/bootstrap.js\"); const { wasiPreview1 } = await import(base + \"/wasi.js\"); await run(m.dataset.avraModule, { document, mount: m, style: document.getElementById(\"avra-style\"), wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(\"the program exited \" + code); }) });"
+const starter = "const m = document.getElementById(\"app\"); const base = m.dataset.avraHost; const [{ run }, { wasiPreview1 }] = await Promise.all([import(base + \"/bootstrap.js\"), import(base + \"/wasi.js\")]); await run(m.dataset.avraModule, { document, mount: m, style: document.getElementById(\"avra-style\"), wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(\"the program exited \" + code); }) });"
 
 /// A complete document a module ADOPTS: the sheet under the id the host
 /// writes to, the tree inside the mount the print is stamped on, and the
 /// script that runs the module over it.
 export fn takeover_source(head: Head, css: string, ops: List<HtmlOp>, t: Takeover) -> string {
-    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div>${state_tag(t.state)}<script type=\"module\">${starter}</script></body></html>"
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">${fetched_tags(t.fetched)}<title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div>${state_tag(t.state)}<script type=\"module\">${starter}</script></body></html>"
+}
+
+/// The tags that ask for every file a page fetches while its document is
+/// still arriving: a script as a module, and the module as the very fetch
+/// that compiles it — `crossorigin`, so its mode and credentials are those
+/// `fetch` asks with and the browser answers both with one request.
+export fn fetched_tags(paths: List<string>) -> string { [fetch_tag(p) for p in paths].join("") }
+
+fn fetch_tag(path: string) -> string {
+    if path.ends_with(".wasm") {
+        "<link rel=\"preload\" href=\"${entities(path)}\" as=\"fetch\" crossorigin>"
+    } else {
+        "<link rel=\"modulepreload\" href=\"${entities(path)}\">"
+    }
 }
 
 /// The shipped state, as a data block the module reads before it runs:

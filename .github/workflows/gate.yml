@@ -3,8 +3,10 @@
 # trunk's — so the workflow is the pushed commit's own and nothing touches main; the idioms slices
 # take that parent (HEAD~1) as the base their diff starts at.
 #
-#   seed    `sh tools/gate.sh seed`: HEAD's compiler, one generation, packed with its objects
-#   slice   one job a slice: the pack unpacked, the slice run, its words kept where it fails
+#   seed    `sh tools/gate.sh seed`: HEAD's compiler of generation 2, packed with its objects; then
+#           `sh tools/gate.sh census`: the census compiler, built once by it, for every cost slice
+#   slice   one job a slice: the pack unpacked (a cost slice's census compiler beside it), the slice run,
+#           its words kept where it fails
 #   verdict one table: slice, PASS or FAIL, seconds
 name: gate
 
@@ -56,18 +58,25 @@ jobs:
       - name: seed
         timeout-minutes: 70
         run: |
-          sh tools/gate.sh seed && exit 0
-          find build/gate/pack -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
+          sh tools/gate.sh seed && sh tools/gate.sh census && exit 0
+          find build/gate/pack build/gate/census -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
           exit 1
       - name: slices
         id: slices
         run: |
-          echo "list=$(sh tools/gate.sh list | awk '{ print $1 }' | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')" >> "$GITHUB_OUTPUT"
+          # THE COST SLICES ARE QUEUED FIRST: they are the longest chains, and a matrix is queued in its order
+          echo "list=$({ sh tools/gate.sh list | awk '$1 ~ /^cost-/ { print $1 }'; sh tools/gate.sh list | awk '$1 !~ /^cost-/ { print $1 }'; } | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')" >> "$GITHUB_OUTPUT"
           echo "sha8=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: gate-pack
           path: build/gate/compiler-*.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-census
+          path: build/gate/census-*.tar.gz
           retention-days: 3
           if-no-files-found: error
 
@@ -91,6 +100,13 @@ jobs:
         with: { name: gate-pack, path: pack }
       - name: unpack
         run: sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz
+      # A COST SLICE COUNTS WITH THE SEED'S CENSUS COMPILER, held to this tree's source as one built here is
+      - if: startsWith(matrix.slice, 'cost-')
+        uses: actions/download-artifact@v4
+        with: { name: gate-census, path: census }
+      - name: census compiler
+        if: startsWith(matrix.slice, 'cost-')
+        run: tar -xzf census/census-${{ needs.seed.outputs.sha8 }}.tar.gz
       # THE SNAPSHOT'S STD ANSWERS, KEPT ACROSS GATE RUNS for the cost-laid slice (tools/cost.sh `laid`):
       # keyed by the compiler source its census compiler is built from and the snapshot it measures. An
       # older key's answers are restored too; the writer's own key says whether they stand, and writes

@@ -207,6 +207,20 @@ shown_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/shown.out" | hea
 node "$here/ui-board/shown.mjs" "$shown_url" >"$work/shown.node" 2>&1 || { cat "$work/shown.node" "$work/shown.out"; echo "ui-browser: the shown page's claims did not hold"; exit 1; }
 sed 's/^/ui-browser: shown page: /' "$work/shown.node"
 
+# THE FIRST PAINT, HELD BY COUNTERS: the board's page loaded in WebKit as a phone through a slow
+# link (first_paint.mjs) — every file asked for at once, each once, its octets within the recorded
+# budget, the module kept across a reload — and the time it took reported beside them.
+case " $engines " in
+    *" webkit "* | *" webkit-iphone "*)
+        status=0
+        out=$(node "$here/ui-board/first_paint.mjs" "$url" --engine webkit 2>&1) || status=$?
+        [ "$status" -ne 3 ] || skip "$(echo "$out" | tail -1) — WebKit's host libraries are .github/ci/packages-browser.txt"
+        [ "$status" -eq 0 ] || { echo "$out"; echo "ui-browser: the board's first paint failed its counters"; exit 1; }
+        echo "$out" | sed -n 's/^reported/ui-browser: first paint reported/p'
+        echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') first-paint claims, all hold, in webkit"
+        ;;
+esac
+
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do
     status=0
