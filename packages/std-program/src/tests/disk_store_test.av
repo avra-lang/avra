@@ -204,6 +204,11 @@ fn learned_over(directory: string, entries: List<HeldEntry>) {
     let _ = store.saved()
 }
 
+/// A root asking question `n`, answered by `n + 1`, an input where `input` says.
+fn marked_entry(n: int, input: bool) -> HeldEntry {
+    HeldEntry { question: hash_of(n), answer: hash_of(n + 1), reads: [], input: input, root: true }
+}
+
 fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
 
 fn frontier_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.starts_with("frontier-")) }
@@ -477,6 +482,58 @@ spec "disk_store — answers outlive the process" {
             let at? = f.place_of(hash_of(300)) else { return false }
             let reached? = reached_at_rest(f) else { return false }
             f.answer_at(at).same_as(hash_of(302)) && f.root_at(at) && reached[at]
+        }
+    }
+    given "a frontier's inputs, some from its base, one a delta made, one stale" {
+        then "its standing inputs are each input that stands, in place order, the base's read from its list" {
+            let directory = fresh_directory("inputs-listed")
+            let _ = make_dirs(directory) catch ""
+            let first = disk_store_at(directory)
+            first
+                .keep_frontier(
+                    "inputs",
+                    FrontierLearned {
+                        on: null,
+                        entries: [rooted_entry(i, 0) for i in 0..40]
+                            .concat(
+                                [
+                                    marked_entry(100, true),
+                                    marked_entry(200, false),
+                                    marked_entry(300, true),
+                                ],
+                            ),
+                        stale: [],
+                    },
+                )
+            let _ = first.saved()
+            let second = disk_store_at(directory)
+            let on? = second.frontier_of("inputs") else { return false }
+            let stale_input = on.place_of(hash_of(300))!
+            second
+                .keep_frontier(
+                    "inputs",
+                    FrontierLearned {
+                        on: on,
+                        entries: [marked_entry(200, true) with { answer: hash_of(202) }],
+                        stale: [stale_input],
+                    },
+                )
+            let _ = second.saved()
+            let third = disk_store_at(directory)
+            let later = third.frontier_of("inputs")
+            third
+                .keep_frontier(
+                    "inputs",
+                    FrontierLearned { on: later, entries: [marked_entry(400, true)], stale: [] },
+                )
+            let _ = third.saved()
+            let f? = disk_store_at(directory).frontier_of("inputs") else { return false }
+            let want = [at for at in 0..f.length() if f.stands(at) && f.input_at(at)]
+            let got = f.standing_inputs()
+            f.chain.length == 2 &&
+                got.length == 3 &&
+                got.length == want.length &&
+                (0..got.length).all((k) -> got[k] == want[k])
         }
     }
     given "a compaction" {
