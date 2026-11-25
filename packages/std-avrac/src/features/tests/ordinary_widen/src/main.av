@@ -5,19 +5,18 @@
 // (features/rules/check.av's `checked_rule`) — so the lift needs no
 // `rule` at all, only a `fn(Code) -> Fix?` shape.
 use @std.avrac.features.{Code, Fix}
-use @std.avrac.compiler.{analyze_source}
+use @std.avrac.core.{At}
+use @std.avrac.testing.{judged}
+use @std.avrac.testing.held.{RuleItem}
 
 fn widen_add(e: Code) -> Fix? {
-    match e {
-        quote { ${x} + 1 } -> quote { ${x} },
-        _ -> null,
-    }
+    match e { quote { ${x} + 1 } -> quote { ${x} }, _ -> null }
 }
 
-let a = analyze_source("a + 1")
-match a.view.stmts.first() {
-    s? -> match a.view.store.answer_of(s) {
-        e? -> match widen_add(a.code_at(.Expr(e))) {
+let i = judged("a + 1").rule_items("/alone/src/main.av")[0]
+match i.stmts.first() {
+    s? -> match i.file.view.store.answer_of(s) {
+        e? -> match widen_add(Code { of: i.file, at: At.Expr(e) }) {
             r? -> r.rendered() ?? "no text"
             null -> "miss"
         }

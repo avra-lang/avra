@@ -1,40 +1,21 @@
-// avra-8sb5.57.9.1: `ErrorSite`, `raised_by` and `chain` over a small
-// real program — a concrete-typed fn that fails, and a `_`-declared
-// fn that catches it and re-raises.
-use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace, ErrorSite, Raised}
-use compiler.host.{memory_host}
-use @std.relation.engine.{Key}
-use compiler.families.{Family}
-use core.{DeclId, same_decl, same_expr}
+// What a `Result<T, _>` fn raises, asked of the program layer: a
+// concretely typed fn that fails, a `_` fn that catches it and re-raises
+// another's error — at any depth inside the arm — and a mutually
+// recursive pair whose sets close over each other.
+use @std.avrac.testing.{held_at, Judged}
 
-fn sites_workspace(main: string) -> Workspace {
-    test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": main,
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ),
+const RAISE_PATH: string = "/w/src/main.av"
+
+/// The program `main` writes, judged on the layer.
+fn raise_judged(main: string) -> Judged {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", RAISE_PATH: main},
         "/w",
     )
+        .judged_at(RAISE_PATH)
 }
 
-/// `act` run as the `Failures` query — the one writer of the survey's
-/// and the solve's rows.
-fn as_failures(ws: Workspace, act: fn() -> void) {
-    let k = Key { family: Family.Failures.ordinal, arg: 0 }
-    ws.db.kernel.begin(k)
-    act()
-    ws.db.kernel.settle(k, 0)
-}
-
-fn decl_named(ws: Workspace, name: string) -> DeclId {
-    [x.id for x in ws.decls.all_decls() if x.name == name][0]
-}
-
-fn source() -> string {
+fn inferring_source() -> string {
     "fn a() -> Result<int, string> {\n" +
         "    fail \"boom\"\n" +
         "}\n" +
@@ -49,60 +30,7 @@ fn source() -> string {
         "}\n"
 }
 
-spec "compiler/failures — error_sites, raised_by and chain over a catch+re-raise" {
-    then "the program analyzes clean, and every site's owner is a real fn" {
-        let ws = sites_workspace(source())
-        let a = ws.analyze_file("/w/src/main.av")
-        let b = decl_named(ws, "b")
-        let _ = ws.raised_by(b)
-        a.clean() && !ErrorSite.all(ws.decls.rows_db.get()).is_empty()
-    }
-    then "invariant: a site `within` a catch shares that catch's own owner" {
-        let ws = sites_workspace(source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let b = decl_named(ws, "b")
-        let _ = ws.raised_by(b)
-        let sites = ErrorSite.all(ws.decls.rows_db.get())
-        let catches = [s for s in sites if s.how is .Catch]
-        catches
-            .all(
-                (c: ErrorSite) -> ws
-                    .error_sites_within(c.owner, c.at)
-                    .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
-            )
-    }
-    then "invariant: one owner per `at` — no two rows share a site" {
-        let ws = sites_workspace(source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let b = decl_named(ws, "b")
-        let _ = ws.raised_by(b)
-        let sites = ErrorSite.all(ws.decls.rows_db.get())
-        sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
-    }
-    then "raised_by(b) includes the re-raised string error" {
-        let ws = sites_workspace(source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let b = decl_named(ws, "b")
-        !ws.raised_by(b).is_empty()
-    }
-    then "chain from the catch reaches the re-raise, and from there the re-raise has no further caller" {
-        let ws = sites_workspace(source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let b = decl_named(ws, "b")
-        let _ = ws.raised_by(b)
-        let catches = [s for s in ErrorSite.all(ws.decls.rows_db.get()) if s.how is .Catch]
-        let c = catches[0]
-        let tree = ws.chain(c, [])
-        tree.next.length == 1 && tree.next[0].next.length == 0
-    }
-}
-
-// A re-raise nested inside further control flow within the arm — an
-// `if`, a `match` — and a catch whose own arm holds another catch.
-// `within` is source-span containment (`innermost_catch`), never a
-// direct-statement scan, so a site at any depth inside the arm is
-// found the same way a shallow one is.
-fn nested_source() -> string {
+fn nested_inferring() -> string {
     "fn a() -> Result<int, string> {\n" +
         "    fail \"boom\"\n" +
         "}\n" +
@@ -138,237 +66,63 @@ fn nested_source() -> string {
         "}\n"
 }
 
-fn outer_catch_of(ws: Workspace, owner: DeclId) -> ErrorSite {
-    let all: List<ErrorSite> = ErrorSite.all(ws.decls.rows_db.get())
-    [s for s in all if s.how is .Catch && same_decl(s.owner, owner) && s.enclosing == null][0]
-}
-
-spec "compiler/failures — a re-raise nested inside further control flow within the arm" {
-    then "a re-raise inside an `if` inside the arm is found, `within` the catch" {
-        let ws = sites_workspace(nested_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "via_if")
-        let _ = ws.raised_by(f)
-        let c = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(c.owner, c.at)
-        inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
-    }
-    then "a re-raise inside a `match` inside the arm is found, `within` the catch" {
-        let ws = sites_workspace(nested_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "via_match")
-        let _ = ws.raised_by(f)
-        let c = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(c.owner, c.at)
-        inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
-    }
-    then "a catch nested in a catch's arm is `within` the outer catch, and chain descends into it" {
-        let ws = sites_workspace(nested_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "via_nested_catch")
-        let _ = ws.raised_by(f)
-        let outer = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(outer.owner, outer.at)
-        let tree = ws.chain(outer, [])
-        inside.length == 1 &&
-            inside[0].how is .Catch &&
-            tree.next.length == 1 &&
-            tree.next[0].site.how is .Catch &&
-            tree.next[0].next.length == 0
-    }
-    then "every site's `within` (nested or not) still shares that catch's own owner" {
-        let ws = sites_workspace(nested_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let vf = decl_named(ws, "via_if")
-        let vm = decl_named(ws, "via_match")
-        let vn = decl_named(ws, "via_nested_catch")
-        let _ = ws.raised_by(vf)
-        let _ = ws.raised_by(vm)
-        let _ = ws.raised_by(vn)
-        let sites = ErrorSite.all(ws.decls.rows_db.get())
-        let catches = [s for s in sites if s.how is .Catch]
-        catches
-            .all(
-                (c: ErrorSite) -> ws
-                    .error_sites_within(c.owner, c.at)
-                    .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
-            )
-    }
-    then "one owner per `at` still holds across every nested shape" {
-        let ws = sites_workspace(nested_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let vf = decl_named(ws, "via_if")
-        let vm = decl_named(ws, "via_match")
-        let vn = decl_named(ws, "via_nested_catch")
-        let _ = ws.raised_by(vf)
-        let _ = ws.raised_by(vm)
-        let _ = ws.raised_by(vn)
-        let sites = ErrorSite.all(ws.decls.rows_db.get())
-        sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
-    }
-}
-
-// `ExprId` is a PER-FILE arena index — two files parsed from the SAME
-// shape mint the SAME raw indexes, so a catch's `at` in one file can
-// equal another file's `at` by number alone. `error_sites_within`
-// must not be fooled by that: it scopes by `owner` (workspace-global)
-// before ever comparing `at` (IDIOMS, avra-8sb5.57 — this is the
-// adversarial case a naive `@dense` index on `ExprId` would have
-// answered wrong, filing a cross-file collision as one site).
-fn two_file_workspace(a: string, b: string) -> Workspace {
-    test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/one.av": a,
-                "/w/src/two.av": b,
-            },
-            ["/w/avra.toml", "/w/src/one.av", "/w/src/two.av"],
-        ),
-        "/w",
-    )
-}
-
-// Identical shape in both files, so each catch's `at` mints the SAME
-// arena index — the collision `error_sites_within` must see through.
-fn twin_source(fail_name: string, catcher_name: string) -> string {
-    "fn ${fail_name}() -> Result<int, string> {\n" +
-        "    fail \"boom\"\n" +
-        "}\n" +
-        "export fn ${catcher_name}() -> Result<int, _> {\n" +
-        "    let v = ${fail_name}() catch e -> {\n" +
-        "        ${fail_name}()?\n" +
-        "    }\n" +
-        "    v\n" +
-        "}\n"
-}
-
-spec "compiler/failures — two files whose catch sites share one raw ExprId index" {
-    then "each file's chain lists only its own nested site, never the other file's" {
-        let ws = two_file_workspace(twin_source("a", "one"), twin_source("a", "two"))
-        let _ = ws.analyze_file("/w/src/one.av")
-        let _ = ws.analyze_file("/w/src/two.av")
-        let one = decl_named(ws, "one")
-        let two = decl_named(ws, "two")
-        let _ = ws.raised_by(one)
-        let _ = ws.raised_by(two)
-        let sites = ErrorSite.all(ws.decls.rows_db.get())
-        let catch_one = [s for s in sites if s.how is .Catch && same_decl(s.owner, one)][0]
-        let catch_two = [s for s in sites if s.how is .Catch && same_decl(s.owner, two)][0]
-        // the collision this test exists to force: same raw index, different files
-        let collides = same_expr(catch_one.at, catch_two.at)
-        let tree_one = ws.chain(catch_one, [])
-        let tree_two = ws.chain(catch_two, [])
-        collides &&
-            tree_one.next.length == 1 &&
-            same_decl(tree_one.next[0].site.owner, one) &&
-            tree_two.next.length == 1 &&
-            same_decl(tree_two.next[0].site.owner, two)
-    }
-}
-
-// `Raised` is the fixpoint's own relation: one row per inferring fn,
-// written by the solve alone, the last solve's rows swept by the next.
-fn mutual_source() -> string {
+fn mutual_inferring() -> string {
     "enum A {\n    A\n}\nenum B {\n    B\n}\n" +
         "fn f(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail A.A\n    }\n    g(n - 1)?\n}\n" +
         "fn g(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail B.B\n    }\n    f(n - 1)?\n}\n"
 }
 
-spec "compiler/failures — `Raised` rows are the fixpoint's own" {
-    then "one row, for the one inferring fn, holding its re-raised error" {
-        let ws = sites_workspace(source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let b = decl_named(ws, "b")
-        let _ = ws.raised_by(b)
-        let rows = Raised.all(ws.decls.rows_db.get())
-        rows.length == 1 && same_decl(rows[0].owner, b) && rows[0].errors.length == 1
+spec "compiler/failures — what a `_` fn raises over a catch and a re-raise" {
+    then "the program judges clean" { raise_judged(inferring_source()).clean() }
+    then "the `_` fn raises the re-raised error, once" { raise_judged(inferring_source()).raised_of(RAISE_PATH, "b").join(",") == "string" }
+}
+
+spec "compiler/failures — a re-raise nested inside further control flow within the arm" {
+    then "a re-raise inside an `if` inside the arm is raised" {
+        raise_judged(nested_inferring()).raised_of(RAISE_PATH, "via_if").join(",") == "string"
     }
-    then "a concretely typed fn has no row, and reads empty" {
-        let ws = sites_workspace(source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let a = decl_named(ws, "a")
-        ws.raised_by(a).is_empty() && Raised.by_owner(ws.decls.rows_db.get(), a).is_empty()
+    then "a re-raise inside a `match` inside the arm is raised" {
+        raise_judged(nested_inferring()).raised_of(RAISE_PATH, "via_match").join(",") == "string"
     }
-    then "a mutually recursive pair's rows each hold the closed union" {
-        let ws = sites_workspace(mutual_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "f")
-        let g = decl_named(ws, "g")
-        ws.raised_by(f).length == 2 &&
-            ws.raised_by(g).length == 2 &&
-            Raised.all(ws.decls.rows_db.get()).length == 2
-    }
-    then "a second solve replaces the first's rows rather than adding to them" {
-        let ws = sites_workspace(mutual_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "f")
-        let g = decl_named(ws, "g")
-        let _ = ws.failures()
-        as_failures(ws, () -> ws.solve_raised([f, g]))
-        as_failures(ws, () -> ws.solve_raised([f]))
-        let rows = Raised.all(ws.decls.rows_db.get())
-        rows.length == 1 && same_decl(rows[0].owner, f) && rows[0].errors.length == 2
+    then "a catch nested in a catch's arm raises nothing past it, so its `_` is refused" {
+        let j = raise_judged(nested_inferring())
+        j.raised_of(RAISE_PATH, "via_nested_catch").is_empty() &&
+            j.diagnostics.map(it.kind).join(",") == "type.infer_result"
     }
 }
 
-spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.204)" {
-    then "a survey at a later revision replaces the first's rows: a fn it leaves out keeps no site, and none is doubled" {
-        let ws = sites_workspace(mutual_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "f")
-        let g = decl_named(ws, "g")
-        let _ = ws.failures()
-        let both = ErrorSite.all(ws.decls.rows_db.get())
-        // the solve read these rows this revision: a later survey follows an edit
-        ws.db.kernel.bump()
-        as_failures(
-            ws,
-            () -> {
-                let _ = ws.surveyed([f])
+spec "compiler/failures — a mutually recursive pair" {
+    then "each raises the closed union" {
+        let j = raise_judged(mutual_inferring())
+        j.raised_of(RAISE_PATH, "f").length == 2 && j.raised_of(RAISE_PATH, "g").length == 2
+    }
+}
+
+/// A file of one failing fn and one `_` fn that catches it and re-raises it, failing with `err`;
+/// two such files are alike node for node, so their sites share raw indexes.
+fn twin_source(catcher: string, err: string, fail_with: string) -> string {
+    "enum E {\n    E\n}\n" +
+        "fn a() -> Result<int, ${err}> {\n    fail ${fail_with}\n}\n" +
+        "export fn ${catcher}() -> Result<int, _> {\n    let v = a() catch e -> {\n        a()?\n    }\n    v\n}\n"
+}
+
+spec "compiler/failures — what a concretely typed fn and two alike files raise" {
+    then "a concretely typed fn infers nothing: it raises the error it declares" {
+        raise_judged(inferring_source()).raised_of(RAISE_PATH, "a").join(",") == "string"
+    }
+    then "two files alike node for node each raise only their own error" {
+        let j = held_at(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/one.av": twin_source("one", "string", "\"boom\""),
+                "/w/src/two.av": twin_source("two", "E", "E.E"),
+                RAISE_PATH: "use one.{one}\nuse two.{two}\n1\n",
             },
+            "/w",
         )
-        let one = ErrorSite.all(ws.decls.rows_db.get())
-        both.any((s: ErrorSite) -> same_decl(s.owner, g)) &&
-            !one.is_empty() &&
-            one.all((s: ErrorSite) -> same_decl(s.owner, f)) &&
-            one.length == [s for s in both if same_decl(s.owner, f)].length
-    }
-}
-
-spec "compiler/failures — `Raised` holds the last solve's sets until the next is whole" {
-    then "a solve in the revision a settled query read `Raised` is refused whole, and that query's rows stand" {
-        let ws = sites_workspace(mutual_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "f")
-        let _ = ws.failures()
-        let heard: Cell<List<string>> = Cell.new([])
-        let db = ws.decls.rows_db.get()
-        db.heard_by((w: string) -> heard.push(w))
-        let reader = Key { family: ws.db.kernel.family(), arg: 0 }
-        ws.db.kernel.begin(reader)
-        let read = Raised.by_owner(db, f).length
-        ws.db.kernel.settle(reader, 0)
-        as_failures(ws, () -> ws.solve_raised([f]))
-        read == 1 &&
-            Raised.all(db).length == 2 &&
-            heard.get().length == 1 &&
-            heard.get()[0].contains("`Raised` rows are not replaced and stand as they were")
-    }
-}
-
-spec "compiler/failures — the survey's and the solve's rows have one writer" {
-    then "a solve outside the `Failures` query is refused naming both, and the rows stand" {
-        let ws = sites_workspace(mutual_source())
-        let _ = ws.analyze_file("/w/src/main.av")
-        let f = decl_named(ws, "f")
-        let _ = ws.failures()
-        let heard: Cell<List<string>> = Cell.new([])
-        let db = ws.decls.rows_db.get()
-        db.heard_by((w: string) -> heard.push(w))
-        ws.solve_raised([f])
-        Raised.all(db).length == 2 &&
-            heard.get().length == 1 &&
-            heard.get()[0].contains("is their writer and the driver hands rows over too")
+            .judged_at(RAISE_PATH)
+        j.clean() &&
+            j.raised_of("/w/src/one.av", "one").join(",") == "string" &&
+            j.raised_of("/w/src/two.av", "two").join(",") == "E"
     }
 }

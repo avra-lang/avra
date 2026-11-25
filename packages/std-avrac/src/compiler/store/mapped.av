@@ -59,11 +59,19 @@ export fn mapped_at(m: Mapped, at: int, n: int) -> Bytes? {
     avra_mmap_slice(m.h, at, at + n).bytes()
 }
 
-/// The text at `at` for `n`, absent outside the mapping or when the octets
-/// there are not whole UTF-8.
-export fn mapped_text(m: Mapped, at: int, n: int) -> string? {
-    let octets? = mapped_at(m, at, n) else { return null }
-    octets.text()
+/// The BLAKE3 digest of every octet the mapping covers, as 64 hex characters, digested a window at a
+/// time: what a whole file's digest costs the heap is `WINDOW`, whatever the file's size. The same
+/// digest the octets read whole would have.
+export fn mapped_digest(m: Mapped) -> string? {
+    mut h = hasher()
+    mut done = 0
+    while done < m.len {
+        let left = m.len - done
+        let piece? = mapped_at(m, done, if left < WINDOW { left } else { WINDOW }) else { return null }
+        h = h.update(piece)
+        done = done + piece.length
+    }
+    h.digest_hex()
 }
 
 /// The commit marker over `n` octets at `at`: the frame's truncated BLAKE3,

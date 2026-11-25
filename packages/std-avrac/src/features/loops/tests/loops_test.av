@@ -1,7 +1,6 @@
 // Loops, vertically: the condition re-evaluates each turn, the body
 // scopes its bindings, and the IR carries the third bracket family.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{refused_with, shown, ir_of}
+use @std.avrac.testing.{refused_with, shown, ir_of, judged}
 use compiler.backend.{render_ir}
 
 spec "features/loops" {
@@ -42,20 +41,20 @@ spec "features/loops" {
             shown("let i = 5\nmut t = 0\nfor i in 0..i {\n    t = t + i\n}\nt") == "10"
         }
         then "the counter dies with its loop — and says so exactly once" {
-            let a = analyze_source("for i in 0..3 {\n    i\n}\ni")
+            let a = judged("for i in 0..3 {\n    i\n}\ni")
             a.diagnostics.length == 1 && a.report().contains("`i` is not defined")
         }
     }
     given "wrong shapes" {
         then "a non-bool condition points at itself" {
-            let a = analyze_source("while 1 {\n    2\n}\n3")
+            let a = judged("while 1 {\n    2\n}\n3")
             a.diagnostics.length == 1 &&
                 a.report().contains("a `while` condition is a `bool`, found `int`")
         }
-        then "a non-int range bound refuses once, in for's own words" {
-            let a = analyze_source("for i in 0..\"x\" {\n    1\n}\n2")
+        then "a non-int range bound refuses once, in the range's own words" {
+            let a = judged("for i in 0..\"x\" {\n    1\n}\n2")
             a.diagnostics.length == 1 &&
-                a.report().contains("a `for` range ends at an `int`, found `string`")
+                a.report().contains("a range ends at an `int`, found `string`")
         }
     }
     given "the loop in the IR, as `avra ir` prints it" {
@@ -84,41 +83,10 @@ spec "features/loops" {
 ret 0"""
             render_ir(ir_of("mut x = 0\nwhile x < 3 {\n    x = x + 1\n}\nx")) == expected
         }
-        then "a for is mut+while in costume — a count cell stepped as the turn begins, the name's cell per turn" {
-            let expected = """scope application {
-  r0 = int 0
-  r1 = slot
-  store r1 <- r0
-  r2 = int 0
-  r3 = slot
-  store r3 <- r2
-  r4 = slot
-  store r4 <- r2
-  loop {
-    r5 = load r3
-    store r4 <- r5
-    r6 = load r4
-    r7 = int 2
-    r8 = r6 < r7
-    while r8
-    scope application {
-      r9 = load r4
-      r10 = int 1
-      r11 = r9 + r10
-      store r3 <- r11
-      r12 = load r1
-      r13 = load r4
-      r14 = r12 + r13
-      store r1 <- r14
-    }
-  }
-  r15 = load r1
-  r16 = call avra_int_text(r15)
-  call avra_puts(r16)
-  release r16
-}
-ret 0"""
-            render_ir(ir_of("mut t = 0\nfor i in 0..2 {\n    t = t + i\n}\nt")) == expected
+        then "a for reads its end once and counts past each turn as it begins, so a `continue` moves on" {
+            shown(
+                "state asked: int = 0\nfn bound() -> int {\n    asked = asked + 1\n    5\n}\nmut t = 0\nfor i in 0..bound() {\n    if i == 2 { continue }\n    t = t + i\n}\n\"\${t} \${asked}\"",
+            ) == "8 1"
         }
     }
     given "index pairing — `for i, x in xs`" {

@@ -1,0 +1,41 @@
+//! The neutral frame: std-ui's DOM patches as records a native host reads,
+//! one a line — `create <id> <prim>`, `text <id> <words>`, `place <id>
+//! <parent> <after>`, `remove <id>`, `listen <id> <seat>`. An id is one more
+//! than the page's number, so 0 names none. Words carry no line break.
+use @std.ui.realize.dom.patch.{Patch}
+use @std.ui.tree.identity.{NodeId}
+use @std.ui.tree.seats.{row_at}
+
+/// The frame `patches` say, as the host reads it.
+export fn neutral(patches: List<Patch>) -> string {
+    [line for p in patches for line in recorded(p)].join("\n")
+}
+
+/// One patch's records: what a native host draws by, nothing a page alone reads.
+fn recorded(p: Patch) -> List<string> {
+    match p {
+        .Create(id, tag) -> ["create ${wire_id(id)} ${prim_of_tag(tag.word())}"],
+        .CreateText(id, content) -> ["create ${wire_id(id)} text", "text ${wire_id(id)} ${unbroken(content)}"],
+        .Place(id, parent, after) -> ["place ${wire_id(id)} ${wire_id_of(parent)} ${wire_id_of(after)}"],
+        .Remove(id) -> ["remove ${wire_id(id)}"],
+        .SetText(id, content) -> ["text ${wire_id(id)} ${unbroken(content)}"],
+        .Listen(id, to) -> ["listen ${wire_id(id)} ${to.action.seat.number()} ${row_at(to.action.seat).prim.word()}"],
+        .Unlisten(id, seat) -> ["unlisten ${wire_id(id)} ${seat.number()}"],
+        .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> [],
+    }
+}
+
+/// The prim a page's tag stands for, as far as a native host tells them apart.
+fn prim_of_tag(tag: string) -> string {
+    match tag { "button" -> "button", "h1" or "h2" or "h3" -> "heading", _ -> "surface" }
+}
+
+fn wire_id(id: NodeId) -> int { id.n + 1 }
+
+fn wire_id_of(id: NodeId?) -> int {
+    let named? = id else { return 0 }
+    wire_id(named)
+}
+
+/// Words on one line.
+fn unbroken(s: string) -> string { s.replace("\n", " ") }

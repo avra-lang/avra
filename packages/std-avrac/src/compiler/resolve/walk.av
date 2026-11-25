@@ -1,11 +1,48 @@
 //! The resolver's walk: the statement/expression arms of `impl
 //! ResolveCx`. The entry and the frame helpers live in resolve.av.
-use core.{StmtId, ExprId, FileId, Param, closest, some_list, DeclId, Binding, found_at, same_file}
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    LiteralFault,
+    Param,
+    some_list,
+    DeclId,
+    Binding,
+    Scoped,
+    scoped,
+    same_file,
+}
 use core.{binds_type, binds_name}
 use core.{SeatMark}
-use diagnostics.{Diag, error_at, pointed, refusal, unread_behind}
-use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, NameKind, remedy_for, nothing, Bound}
-use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
+use diagnostics.{
+    Diag,
+    Voice,
+    const_fix,
+    guess_fix,
+    guessed,
+    loc_at,
+    refusal,
+    said_as,
+    unread_behind,
+}
+use features.{
+    ResolveCx,
+    SelfSeat,
+    self_word,
+    Cap,
+    Namespace,
+    NameKind,
+    remedy_for,
+    nothing,
+    Bound,
+    owned_as_value,
+    ScopeKey,
+    OverlayHit,
+    OWN_WRITING,
+}
+use features.structs.{literal_fault}
+use @std.errors.{Loc, Frame}
 use compiler.typing.{builtin_type_name}
 
 impl ResolveCx {
@@ -26,18 +63,7 @@ impl ResolveCx {
     fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
         if self.refused_binder(name, at, self.view.origin_of_stmt(s)) { return }
-        if builtin_type_name(self.view.lang.types, name) {
-            self
-                .emit(
-                    refusal(
-                        "resolve.builtin_type",
-                        at,
-                        "`${name}` is a built-in type",
-                        "declared here",
-                        "choose another name — `int`, `string` and `bool` are the language's",
-                    ),
-                )
-        }
+        if builtin_type_name(self.view.lang.types, name) { self.emit(said_as("resolve.builtin_type", at, builtin_named(name))) }
     }
 
     /// The naming law, in one place: keywords and reserved words
@@ -93,22 +119,23 @@ impl ResolveCx {
     fn check_params(fparams: List<Param>, s: StmtId) {
         let at = self.stmt_loc(s)
         for pp in fparams {
-            if self.keywords.contains(pp.name.of) {
-                self.refuse_keyword(pp.name.of, at, remedy_for(self.view.lang, pp.name.of))
+            if self.keywords.contains(pp.name.text()) {
+                self.refuse_keyword(pp.name.text(), at, remedy_for(self.view.lang, pp.name.text()))
             } else {
-                let _ = self.refused_binder(pp.name.of, at, self.view.origin_of_stmt(s))
+                let _ = self.refused_binder(pp.name.text(), at, self.view.origin_of_stmt(s))
             }
         }
     }
 
-    mut fn use_name(e: ExprId, name: string) {
+    mut fn use_name(e: ExprId, named: Scoped) {
         if self.met(e) { return }
+        let name = named.text()
         // The SAME naming law every other site runs: a keyword can
         // never be a name, so "not defined" would send the reader
         // hunting for a definition that could not exist.
         if self.refused_name(name, self.loc_of(e)) { return }
         let origin: FileId? = self.view.origin_of(e)
-        let found: Binding? = self.value_binding(name, origin)
+        let found: Binding? = self.value_binding(named, origin)
         if found != null {
             let b = found!
             self.bind_use(e, b)
@@ -123,44 +150,23 @@ impl ResolveCx {
         }
         let at = self.loc_of(e)
         if name == "it" { return self.unbound_pronoun(at) }
-        if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, at) }
-        if origin != null && self.local_binding(name) != null { return self.emit(read_past_hole(at, name)) }
-        let later: StmtId? = self.later_def(keyed(name, origin))
+        if self.hidden_def(keyed(named, origin)) { return self.runtime_binding(name, at) }
+        if origin != null && self.local_binding(keyed(named, null)) != null { return self.emit(read_past_hole(at, name)) }
+        let later: StmtId? = self.later_def(keyed(named, origin))
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
             // LICENSED compiler.refusal_assembled: the one voice with a SECOND frame — the definition's
             self
                 .emit(
-                    pointed(
-                        error_at(
-                            "resolve.use_before_def",
-                            at,
-                            "`${name}` is used before its definition",
-                        ),
-                        "used here",
-                    ) with { secondary: defined, help: "move the definition above this use" },
+                    said_as("resolve.use_before_def", at, used_before(name)) with { secondary: defined },
                 )
             return
         }
         if self.refused_read(self.names_in(origin), [NameKind.Type, NameKind.Fn], name, at) { return }
         if self.names_a_member(name) { return self.emit(bare_member(at, name)) }
-        self
-            .emit(
-                self
-                    .suggested(
-                        refusal(
-                            "resolve.unresolved",
-                            at,
-                            "`${name}` is not defined",
-                            "not defined anywhere in this program",
-                            "define it above this use — `let ${name} = …` — or import it — `use module.{${name}}`",
-                        ),
-                        e,
-                        name,
-                        self.def_names,
-                    ),
-            )
+        if builtin_type_name(self.view.lang.types, name) { return self.emit(said_as("type.type_value", at, owned_as_value(name))) }
+        self.emit(self.suggested(value_unbound(name), e, name, self.def_names))
     }
 
     /// Whether an undefined name, read where a receiver stands, is a
@@ -170,18 +176,23 @@ impl ResolveCx {
             self
                 .view
                 .stmts
-                .any((s) -> (self.view.store.struct_parts(s)?.fields ?? []).any(it.name.of == name))
+                .any((s) -> (self.view.store.struct_parts(s)?.fields ?? []).any(it.name.spells(name)))
     }
 
     /// THE ONE SCOPE RITUAL: a fresh overlay opens, binds made inside
     /// are visible onward, and it closes with them.
     fn open_overlay() {
-        let fresh: Map<string, Binding> = {}
-        self.overlays.push(fresh)
+        self.overlays.push(self.binds.length)
     }
 
     fn close_overlay() {
-        let _ = self.overlays.pop()
+        let start = self.overlays.pop()
+        // LICENSED loops.push_loop: popping the field in place — a slice would copy what stays
+        while self.binds.length > start {
+            let _ = self.binds.pop()
+            let _ = self.bind_names.pop()
+            let _ = self.bind_origins.pop()
+        }
     }
 
     /// `self` — the receiver of the innermost enclosing method,
@@ -235,7 +246,7 @@ impl ResolveCx {
     }
 
     fn lambda_seat_mut(l: ExprId, i: int) -> bool {
-        let parts? = self.view.store.lambda_parts(l) else { return false }
+        let parts? = self.view.store.closure_parts(l) else { return false }
         parts.params[i].promises.mutable
     }
 
@@ -300,34 +311,18 @@ impl ResolveCx {
             return
         }
         if self.refused_read(names, [NameKind.Type], name, self.loc_of(e)) { return }
-        if names.fn_decl(name) != null {
+        if builtin_type_name(self.view.lang.types, name) {
             return self
                 .emit(
-                    refusal(
-                        "resolve.unresolved",
+                    said_as(
+                        "type.struct_fields",
                         self.loc_of(e),
-                        "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal",
-                        "used here",
-                        "a call taking an empty block writes its parentheses: `${name}() { }`",
+                        literal_fault(LiteralFault.Owned(name)),
                     ),
                 )
         }
-        self
-            .emit(
-                self
-                    .suggested(
-                        refusal(
-                            "resolve.unresolved",
-                            self.loc_of(e),
-                            "no `type ${name}` is declared",
-                            "used here",
-                            "declare it — `type ${name} = { … }` — or import it — `use module.{${name}}`",
-                        ),
-                        e,
-                        name,
-                        names.type_suggestions(),
-                    ),
-            )
+        if names.fn_decl(name) != null { return self.emit(unresolved_at(self.loc_of(e), record_names_fn(name))) }
+        self.emit(self.suggested(record_unbound(name), e, name, names.type_suggestions()))
     }
 
     /// This file's own type namespace, tried only when the read wears
@@ -343,13 +338,14 @@ impl ResolveCx {
     /// never reach into — a param, a `let`, a `for` binder, a lambda
     /// param, a match binder and a capture all shadow a same-named fn
     /// for a call exactly as they do for a plain read.
-    mut fn use_call(e: ExprId, name: string) {
+    mut fn use_call(e: ExprId, named: Scoped) {
         if self.met(e) { return }
+        let name = named.text()
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
         if self.refused_name(name, self.loc_of(e)) { return }
         let origin: FileId? = self.view.origin_of(e)
-        let local: Binding? = self.local_binding(keyed(name, origin))
+        let local: Binding? = self.local_binding(keyed(named, origin))
         if local != null {
             self.bind_use(e, local!)
             return
@@ -376,24 +372,9 @@ impl ResolveCx {
             self.bind_use(e, Binding.Decl(as_type!))
             return
         }
-        if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
+        if self.hidden_def(keyed(named, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
         if self.refused_read(names, [NameKind.Fn, NameKind.Type], name, self.loc_of(e)) { return }
-        self
-            .emit(
-                self
-                    .suggested(
-                        refusal(
-                            "resolve.unresolved",
-                            self.loc_of(e),
-                            "no `fn ${name}` is defined",
-                            "called here",
-                            "define it — `fn ${name}(…) { … }` — or import it — `use module.{${name}}`",
-                        ),
-                        e,
-                        name,
-                        names.fn_suggestions(),
-                    ),
-            )
+        self.emit(self.suggested(call_unbound(name), e, name, names.fn_suggestions()))
     }
 
     /// A read of a name already refused is answered by that refusal: a
@@ -408,8 +389,7 @@ impl ResolveCx {
 
     fn names_in(origin: FileId?) -> Namespace {
         if origin == null { return self.facts.names }
-        let written_in = self.elsewhere.written_in
-        written_in(origin!)
+        (self.elsewhere.written_in)(origin!)
     }
 
     /// A generated declaration of THIS file by name. A read of the
@@ -435,9 +415,10 @@ impl ResolveCx {
     /// params, then the program scope, then a TYPE used as a value
     /// (`Color` in `Color.red`, which typing gives the compile-only
     /// TypeName shape).
-    fn value_binding(name: string, origin: FileId?) -> Binding? {
-        let local: Binding? = self.local_binding(keyed(name, origin))
+    fn value_binding(named: Scoped, origin: FileId?) -> Binding? {
+        let local: Binding? = self.local_binding(keyed(named, origin))
         if local != null { return local }
+        let name = named.text()
         // a type's name, then a NAMED FN as a value — both global,
         // so no capture chains
         let names = self.names_in(origin)
@@ -458,25 +439,29 @@ impl ResolveCx {
     /// the outer world, and every frame between records a CAPTURE
     /// (nesting chains Capture through Capture). Asked with the
     /// name's KEY, so a template's binders and a hole's never meet.
-    fn local_binding(name: string) -> Binding? {
-        let ohit: int? = overlay_index(self.overlays, name)
-        let fhit: int? = frame_param_hit(self.lframes, name)
-        let ohome = if ohit == null { no_frame } else { overlay_home(self.lframes, ohit!) }
+    fn local_binding(key: ScopeKey) -> Binding? {
+        let ohit: OverlayHit? = overlay_hit(self, key)
+        let fhit: int? = frame_param_hit(self.lframes, key)
+        let ohome = if ohit == null { no_frame } else { overlay_home(self.lframes, ohit!.overlay) }
         let fhome = fhit ?? no_frame
         // the deeper home wins; a tie is the overlay's — a `let`
         // after the params shadows them
         if ohit != null && ohome >= fhome {
-            return self.chained(ohome + 1, name, overlay_at(self.overlays, ohit!, name)!)
+            return self.chained_key(ohome + 1, key, ohit!.binding)
         }
         if fhit != null {
             let f = self.lframes[fhit!]
             return self
-                .chained(fhit! + 1, name, Binding.LambdaParam(f.lam, found_at(f.params, name)!))
+                .chained_key(
+                    fhit! + 1,
+                    key,
+                    Binding.LambdaParam(f.lam, key_at(f.param_names, f.param_origins, key)!),
+                )
         }
-        let idx: int? = found_at(self.scope, name)
-        if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
-        let outer? = self.outer_binding(name) else { return null }
-        self.chained(0, name, outer)
+        let idx: int? = key_at(self.scope_names, self.scope_origins, key)
+        if idx != null { return self.chained_key(0, key, Binding.Param(idx! + self.seat_base())) }
+        let outer? = self.outer_binding(key) else { return null }
+        self.chained_key(0, key, outer)
     }
 
     /// Whether a bare name in a pattern is a CONST'S here, by the
@@ -486,10 +471,11 @@ impl ResolveCx {
     /// const never turns a binder: the file's own names, its imports
     /// and the module's exports are what a pattern compares to.
     fn names_const(name: string, origin: FileId?) -> bool {
-        let key = keyed(name, origin)
-        if frame_param_hit(self.lframes, key) != null || found_at(self.scope, key) != null { return false }
-        let ohit: int? = overlay_index(self.overlays, key)
-        if ohit != null { return self.const_def(overlay_at(self.overlays, ohit!, key)) }
+        let key = keyed(scoped(name), origin)
+        if frame_param_hit(self.lframes, key) != null ||
+            key_at(self.scope_names, self.scope_origins, key) != null { return false }
+        let ohit: OverlayHit? = overlay_hit(self, key)
+        if ohit != null { return self.const_def(ohit!.binding) }
         let outer: Binding? = self.outer_binding(key)
         if outer != null { return self.const_def(outer) }
         let names = self.names_in(origin)
@@ -510,19 +496,27 @@ impl ResolveCx {
     /// The top level's binding for a name — unless a fn body is
     /// asking: its floor hides the run-time values around it. (A
     /// `const` is a declaration, found in the namespace after this.)
-    fn outer_binding(name: string) -> Binding? {
-        if self.floors.is_empty() { return self.visible.get(name) }
-        null
+    fn outer_binding(key: ScopeKey) -> Binding? {
+        if !self.floors.is_empty() { return null }
+        let at? = held_at(self, 0, self.overlays.first() ?? self.binds.length, key) else { return null }
+        self.binds[at]
     }
 
     /// A name a body cannot see: the top level's RUN-TIME binding —
     /// declared before the body or after it, all the same. A const
     /// is not one; it is a declaration, and the namespace answered
     /// for it before this is asked.
-    fn hidden_def(name: string) -> bool {
-        if self.floors.is_empty() { return false }
+    fn hidden_def(key: ScopeKey) -> bool {
+        if self.floors.is_empty() || key.origin != OWN_WRITING { return false }
         let store = self.view.store
-        self.all_defs.any((d) -> d.name == name && store.const_value(d.stmt) == null)
+        self.all_defs.any((d) -> d.name == key.name && store.const_value(d.stmt) == null)
+    }
+
+    /// A binding found under `key`, wrapped for every frame from `from_k`
+    /// inward; the key's text is read only when a frame captures it.
+    fn chained_key(from_k: int, key: ScopeKey, b: Binding) -> Binding {
+        if from_k >= self.lframes.length { return b }
+        self.chained(from_k, key_text(key), b)
     }
 
     /// Wrap a binding in Capture links for every frame from
@@ -560,118 +554,44 @@ impl ResolveCx {
         cap.names.length
     }
 
-    fn unbound_pronoun(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.unresolved",
-                    at,
-                    "`it` rides a METHOD call's arguments — nothing binds it here",
-                    "the pronoun",
-                    "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value",
-                ),
-            )
-    }
+    fn unbound_pronoun(at: Loc?) { self.emit(unresolved_at(at, pronoun_unbound())) }
 
+    /// A read at `at` of `name`, a run-time binding of the top level, refused: offering to make it a
+    /// `const` where its value is one (`let_made_const`).
     fn runtime_binding(name: string, at: Loc?) {
+        let store = self.view.store
+        let made = [l! for d in self.all_defs if d.name.spells(name) for l in [loc_at(self.view.source.file, store.let_made_const(d.stmt))] if l != null]
         self
             .emit(
-                refusal(
+                said_as(
                     "resolve.runtime_binding",
                     at,
-                    "`${name}` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it",
-                    "read here",
-                    "pass `${name}` in as a parameter, or make it a fn",
-                ),
+                    if self.in_instance { instance_bound(name) } else { runtime_bound(name) },
+                ) with { suggestions: [const_fix(name, l) for l in made.take(1)] },
             )
     }
 
-    fn refuse_self(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.reserved",
-                    at,
-                    "`Self` is a trait's name for its implementor",
-                    "cannot be a name",
-                    "a declaration of your own takes another name",
-                ),
-            )
-    }
+    fn refuse_self(at: Loc?) { self.emit(unnamed(at, implementor_named())) }
 
-    fn refuse_reserved(name: string, at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.reserved",
-                    at,
-                    "`${name}` is reserved for a future Avra feature",
-                    "cannot be a name",
-                    "pick another name — `${name}` becomes a keyword",
-                ),
-            )
-    }
+    fn refuse_reserved(name: string, at: Loc?) { self.emit(unnamed(at, reserved_named(name))) }
 
-    fn refuse_keyword(name: string, at: Loc?, remedy: string?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.reserved",
-                    at,
-                    "`${name}` is a keyword",
-                    "cannot be a name",
-                    remedy ?? "pick another name",
-                ),
-            )
-    }
+    fn refuse_keyword(name: string, at: Loc?, remedy: string?) { self.emit(unnamed(at, keyword_named(name, remedy))) }
 
-    fn no_receiver(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.receiver",
-                    at,
-                    "`self` names a method's receiver — this is not a method",
-                    "no receiver here",
-                    "move this into `impl <Type> { … }`",
-                ),
-            )
-    }
+    fn no_receiver(at: Loc?) { self.emit(said_as("resolve.receiver", at, receiverless(Receiverless.Fn))) }
 
-    fn default_has_none(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.receiver",
-                    at,
-                    "`self` names a method's receiver — a default is a body of its own, and has none",
-                    "no receiver here",
-                    "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`",
-                ),
-            )
-    }
+    fn default_has_none(at: Loc?) { self.emit(said_as("resolve.receiver", at, receiverless(Receiverless.Default))) }
 
-    fn static_has_none(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.receiver",
-                    at,
-                    "`self` names a method's receiver — a `static fn` has none",
-                    "no receiver here",
-                    "drop `static`, or take what this needs as a parameter",
-                ),
-            )
-    }
+    fn static_has_none(at: Loc?) { self.emit(said_as("resolve.receiver", at, receiverless(Receiverless.Static))) }
 
     fn emit(d: Diag) { self.facts.voices.speak(d) }
 
     /// The first PROGRAM-SCOPE definition of `name` anywhere — a
     /// scoped binder (a loop counter) is not one.
-    fn later_def(name: string) -> StmtId? {
+    fn later_def(key: ScopeKey) -> StmtId? {
+        if key.origin != OWN_WRITING { return null }
         // the table is named because `it` binds to the NEAREST call
-        let scoped = self.scoped
-        self.all_defs.find((d) -> d.name == name && !scoped.get(d.stmt.index))?.stmt
+        let scoped_binders = self.scoped
+        self.all_defs.find((d) -> d.name == key.name && !scoped_binders.get(d.stmt.index))?.stmt
     }
 
     /// A statement's binding, run through the naming law — the one
@@ -684,23 +604,12 @@ impl ResolveCx {
         let name? = self.view.store.loop_index(s) else { return }
         if self.refused_binder(name, self.stmt_loc(s), self.view.origin_of_stmt(s)) { return }
         if name == self.view.store.let_name(s) ?? "" { return self.paired_alike(s, name) }
-        self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
+        self.bind(keyed(scoped(name), self.view.origin_of_stmt(s)), Binding.Index(s))
     }
 
     /// A pairing loop names its index and its element apart — one
     /// name for both would shadow one of them silently.
-    fn paired_alike(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "resolve.paired",
-                    self.stmt_loc(s),
-                    "`${name}` names both the index and the element",
-                    "bound here",
-                    "rename the index — `for index, ${name} in …`",
-                ),
-            )
-    }
+    fn paired_alike(s: StmtId, name: string) { self.emit(said_as("resolve.paired", self.stmt_loc(s), index_as_element(name))) }
 
     fn bind_checked(s: StmtId) {
         let binds: string? = self.view.store.let_name(s)
@@ -709,21 +618,17 @@ impl ResolveCx {
         // a DECLARED statement (a top-level `const`) is the namespace's:
         // order-free and module-wide, it binds nowhere in the sequence
         if self.view.decls.decl_of(self.view.file, s) != null { return }
-        self.bind(keyed(binds!, self.view.origin_of_stmt(s)), Binding.Def(s))
+        self.bind(keyed(self.view.store.let_named(s)!, self.view.origin_of_stmt(s)), Binding.Def(s))
     }
 
-    /// Latest binding wins — Map.set IS shadowing. Inside a block,
-    /// the binding lives in the innermost overlay and dies with it.
-    /// Bound by the name's KEY.
-    mut fn bind(name: string, b: Binding) {
-        if self.overlays.is_empty() {
-            self.visible.set(name, b)
-        } else {
-            let at = self.overlays.length - 1
-            mut top = self.overlays[at]
-            top.set(name, b)
-            self.overlays.set(at, top)
-        }
+    /// Latest binding wins: a scope is read latest first, so a later
+    /// binding of a key shadows the earlier. Inside a block, the binding
+    /// lives in the innermost overlay and dies with it. Bound by the
+    /// name's KEY.
+    mut fn bind(key: ScopeKey, b: Binding) {
+        self.bind_names.push(key.name)
+        self.bind_origins.push(key.origin)
+        self.binds.push(b)
     }
 
     fn loc_of(e: ExprId) -> Loc? { self.view.loc_of(e) }
@@ -732,20 +637,16 @@ impl ResolveCx {
 
     /// A "did you mean" from the given candidates — later and
     /// shadowed names are honest candidates for a typo.
-    fn suggested(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
-        let root? = self.elsewhere.unread_root() else { return self.closest_to(d, e, name, candidates) }
-        unread_behind(d, "this module", root, name)
-    }
-
-    fn closest_to(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
-        let n? = closest(name, candidates) else { return d }
-        let at: Loc? = self.name_at(e, name)
-        let s = Suggestion {
-            confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
-            description: "replace `${name}` with `${n.name}`",
-            edits: [Edit { loc: l, replacement: n.name } for l in some_list(at)],
+    /// The unresolved name `e` reads, `name`, worded by `v`: guessing among `candidates`, or said as
+    /// unread behind a module that could not be read.
+    fn suggested(v: Voice, e: ExprId, name: string, candidates: List<string>) -> Diag {
+        let at = self.loc_of(e)
+        let root? = self.elsewhere.unread_root() else {
+            let said = guessed(v, name, candidates)
+            let fixes = [guess_fix(g!, l) for g in [said.guess] if g != null for l in some_list(self.name_at(e, name))]
+            return unresolved_at(at, said) with { suggestions: fixes }
         }
-        d with { help: "did you mean `${n.name}`?", suggestions: if at == null { [] } else { [s] } }
+        unread_behind(unresolved_at(at, v), "this module", root, name)
     }
 
     /// Where the written name stands: the node's own span opens on it
@@ -761,14 +662,15 @@ impl ResolveCx {
 }
 
 /// A type parameter read anywhere but as a static call's subject.
-fn type_param_value(at: Loc?, name: string) -> Diag {
-    refusal(
-        "type.type_value",
-        at,
-        "`${name}` is a type parameter, which names no value",
-        "used as a value here",
-        "a type parameter is read only as the subject of a static its bound declares — `${name}.member()`",
-    )
+fn type_param_value(at: Loc?, name: string) -> Diag { said_as("type.type_value", at, type_param_as_value(name)) }
+
+/// The type parameter `name` read where a value stands.
+export fn type_param_as_value(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a type parameter, which names no value",
+        label: "used as a value here",
+        help: "a type parameter is read only as the subject of a static its bound declares — `${name}.member()`",
+    }
 }
 
 fn read_past_hole(at: Loc?, name: string) -> Diag {
@@ -781,22 +683,180 @@ fn read_past_hole(at: Loc?, name: string) -> Diag {
     )
 }
 
-fn worn_block_word(at: Loc?, name: string) -> Diag {
-    refusal(
-        "resolve.block_word",
-        at,
-        "`${name}` is a block word here, and nothing else in this file may wear it",
-        "this name",
-        "rename it, or import the word under another name",
-    )
+fn worn_block_word(at: Loc?, name: string) -> Diag { said_as("resolve.block_word", at, block_word_worn(name)) }
+
+/// A binder or declaration of a file named by a word that opens a block there.
+export fn block_word_worn(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a block word here, and nothing else in this file may wear it",
+        label: "this name",
+        help: "rename it, or import the word under another name",
+    }
 }
 
-fn bare_member(at: Loc?, name: string) -> Diag {
-    refusal(
-        "resolve.unresolved",
-        at,
-        "`${name}` is not defined — a member is read through its receiver",
-        "read bare",
-        "write `self.${name}`",
-    )
+fn bare_member(at: Loc?, name: string) -> Diag { unresolved_at(at, member_unbound(name)) }
+
+/// A word that cannot be a name, refused where it stands in its naming law's voice.
+fn unnamed(at: Loc?, v: Voice) -> Diag { said_as("resolve.reserved", at, v) }
+
+/// A keyword written as a name; `remedy` is its word's own, where it has one.
+export fn keyword_named(name: string, remedy: string?) -> Voice {
+    Voice {
+        message: "`${name}` is a keyword",
+        label: "cannot be a name",
+        help: remedy ?? "pick another name",
+    }
+}
+
+/// `Self` written as a name.
+export fn implementor_named() -> Voice {
+    Voice {
+        message: "`Self` is a trait's name for its implementor",
+        label: "cannot be a name",
+        help: "a declaration of your own takes another name",
+    }
+}
+
+/// A reserved word written as a name.
+export fn reserved_named(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is reserved for a future Avra feature",
+        label: "cannot be a name",
+        help: "pick another name — `${name}` becomes a keyword",
+    }
+}
+
+/// Where `self` is read and no receiver stands.
+export enum Receiverless {
+    /// In a fn that is no method.
+    Fn
+    /// In a `static fn`.
+    Static
+    /// In a seat's default.
+    Default
+}
+
+/// `self` read where no method's receiver stands.
+export fn receiverless(where: Receiverless) -> Voice {
+    match where {
+        .Fn -> Voice {
+            message: "`self` names a method's receiver — this is not a method",
+            label: "no receiver here",
+            help: "move this into `impl <Type> { … }`",
+        },
+        .Static -> Voice {
+            message: "`self` names a method's receiver — a `static fn` has none",
+            label: "no receiver here",
+            help: "drop `static`, or take what this needs as a parameter",
+        },
+        .Default -> Voice {
+            message: "`self` names a method's receiver — a default is a body of its own, and has none",
+            label: "no receiver here",
+            help: "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`",
+        },
+    }
+}
+
+/// A name nothing answers, refused where it's read in its law's voice.
+fn unresolved_at(at: Loc?, v: Voice) -> Diag { said_as("resolve.unresolved", at, v) }
+
+/// A value read that nothing binds or declares.
+export fn value_unbound(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is not defined",
+        label: "not defined anywhere in this program",
+        help: "define it above this use — `let ${name} = …` — or import it — `use module.{${name}}`",
+    }
+}
+
+/// A name a statement reads before the statement that defines it.
+export fn used_before(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is used before its definition",
+        label: "used here",
+        help: "move the definition above this use",
+    }
+}
+
+/// A run-time binding of the top level, read where only declarations are seen.
+export fn runtime_bound(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it",
+        label: "read here",
+        help: "pass `${name}` in as a parameter, or make it a fn",
+    }
+}
+
+/// A run-time binding of the top level read in a named instance's value: an instance is a
+/// declaration, built once wherever it's read, so it reads declarations; a value it keeps across the
+/// program is a `state`'s.
+export fn instance_bound(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a run-time binding of the top level — an instance is a declaration and reads declarations, not the values around it",
+        label: "read here",
+        help: "make `${name}` a `state`, or pass it in where the instance's value is read",
+    }
+}
+
+/// A call of a fn nothing declares.
+export fn call_unbound(name: string) -> Voice {
+    Voice {
+        message: "no `fn ${name}` is defined",
+        label: "called here",
+        help: "define it — `fn ${name}(…) { … }` — or import it — `use module.{${name}}`",
+    }
+}
+
+/// A record literal of a type nothing declares.
+export fn record_unbound(name: string) -> Voice {
+    Voice {
+        message: "no `type ${name}` is declared",
+        label: "used here",
+        help: "declare it — `type ${name} = { … }` — or import it — `use module.{${name}}`",
+    }
+}
+
+/// A record literal of a name that declares a fn and no type.
+export fn record_names_fn(name: string) -> Voice {
+    Voice {
+        message: "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal",
+        label: "used here",
+        help: "a call taking an empty block writes its parentheses: `${name}() { }`",
+    }
+}
+
+/// `it` read where no method call's block binds it.
+export fn pronoun_unbound() -> Voice {
+    Voice {
+        message: "`it` rides a METHOD call's arguments — nothing binds it here",
+        label: "the pronoun",
+        help: "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value",
+    }
+}
+
+/// A member of the receiver read bare.
+export fn member_unbound(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is not defined — a member is read through its receiver",
+        label: "read bare",
+        help: "write `self.${name}`",
+    }
+}
+
+/// A pairing loop naming its index and its element both `name`.
+export fn index_as_element(name: string) -> Voice {
+    Voice {
+        message: "`${name}` names both the index and the element",
+        label: "bound here",
+        help: "rename the index — `for index, ${name} in …`",
+    }
+}
+
+/// A type declared under `name`, a type the language owns.
+export fn builtin_named(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a built-in type",
+        label: "declared here",
+        help: "choose another name — `int`, `string` and `bool` are the language's",
+    }
 }

@@ -1,10 +1,9 @@
-//! `file_workspace`'s ROUTING: a file's workspace is never chosen by hope.
+//! `check <file>`'s ROUTING, on the program layer: a file's package is never chosen by hope.
 //! A root with no `src/` is a directory of programs, and a directory of
 //! programs never recurses (`all_files`), so a file it cannot reach is a
 //! LONE file, judged on its own — never silently reported clean.
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
-use commands.{file_workspace}
 
 /// One directory per run, so no earlier run's cache answers for this one.
 once fn checknoop_base() -> string { "/tmp/avra-checknoop-test/${stamp()}" }
@@ -66,17 +65,15 @@ fn stray_file(root: string, text: string) -> string {
 /// Whether checking `path` — routed the same way the CLI routes it —
 /// refuses it, naming the given code.
 fn refused_at(path: string, code: string) -> bool {
-    let ws = file_workspace(path)
-    match ws.checked(path) { .Err(report) -> report.contains(code), .Ok(_) -> false }
+    match layer_checked(path) { .Err(report) -> report.contains(code), .Ok(_) -> false }
 }
 
 /// Whether checking `path` answers clean — examined, and nothing wrong.
 fn checks_clean(path: string) -> bool {
-    let ws = file_workspace(path)
-    match ws.checked(path) { .Ok(c) -> c.warnings.is_empty(), .Err(_) -> false }
+    match layer_checked(path) { .Ok(c) -> c.warnings.is_empty(), .Err(_) -> false }
 }
 
-spec "commands/shared file_workspace" {
+spec "commands/check <file> routing" {
     given "a file nested under a root avra.toml with no src/" {
         then "a garbage file is refused, never reported clean" {
             refused_at(

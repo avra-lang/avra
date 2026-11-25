@@ -1,11 +1,13 @@
 //! The type currency: opaque ids, interned shapes, one registry.
 //! Core because every layer above speaks it — features implement
 //! typing semantics against these, the driver owns the pass.
-use @std.meta.{derive, identity}
+use @std.meta.{derive, identity, dense}
 use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.{codec}
 
 /// Opaque handle into the registry: compared and looked up, never
 /// inspected. Text exists only in the registry's printing projection.
+@dense
 export type TypeId = { index: int }
 
 impl TypeId {
@@ -905,7 +907,7 @@ impl TypeRegistry {
     /// ONE OF THREE NEIGHBOURING QUESTIONS, and they are not one
     /// property with three readers (the perfect-compiler §4
     /// measurement): this asks WHAT A VALUE TRAVELS ON, `is_managed`
-    /// (below) asks WHETHER THE RUNTIME COUNTS IT, `ll_type_of`
+    /// (below) asks WHETHER THE RUNTIME COUNTS IT, `ll_layout`
     /// (llvm.av) asks WHICH MACHINE CLASS IT LANDS IN. They part
     /// company at `Ptr` and `Null` — both ride a pointer and neither
     /// is counted, because neither carries a header — and at `Struct`
@@ -1084,9 +1086,11 @@ export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId
 /// (compiler/lower/lower.av) — every other holder (`Type.Fn`'s own
 /// identity) already folds it through `mark_words`' own string,
 /// never through this derive.
-@derive(Fingerprint)
 @derive(Exemplar)
 @derive(Identity)
+@derive(Fingerprint)
+@codec
+@derive(Taped)
 export type SeatMark = { mutable: bool, settled: bool, state: bool = false, unshared: bool = false, consumed: bool = false }
 
 /// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.

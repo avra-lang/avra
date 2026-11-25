@@ -24,7 +24,7 @@
 //! neither has the "Many"-joining a Statement or Arms hole gets. Two
 //! sibling enums kept in sync by hand is the honest state until that
 //! hole gets support for a run of names.
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive}
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, declares, Field}
 use @std.text.{codepoints, from_codepoints}
 
 /// The compiler's derive for `Db`'s durable row accessors.
@@ -42,11 +42,10 @@ export trait Rows {
 fn accessors(_t: MetaType, v: MetaVariant) -> Directive {
     let key_ty = v.fields[0].ty
     let facts_ty = v.fields[1].ty
-    Directive {
-        twin: "",
-        name: v.name,
-        at: v.at,
-        source: quote {
+    declares(
+        v.name,
+        v.at,
+        quote {
             impl Db {
                 fn ${reader(v)}(store: Store, key: ${key_ty}) -> ${facts_ty}? {
                     let row? = self.get(store, DbKind.${v}, key) else { return null }
@@ -57,7 +56,7 @@ fn accessors(_t: MetaType, v: MetaVariant) -> Directive {
                 }
             }
         },
-    }
+    )
 }
 
 /// A variant's name, lower-cased at its first letter: `Decl` -> `decl`.

@@ -1,0 +1,70 @@
+//! WHERE A GENERIC FN IS READ AS A VALUE: a fn over type parameters wears no single signature, so its
+//! bare name — bound, handed to a seat, anywhere but called — is refused, said where the fn is
+//! declared, once for each read. Read off the names a body's typing resolved to no binding of its
+//! own.
+use core.{ExprId, NameRead, SyntaxArena, flatten}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{generic_no_value}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.text.{parse_int}
+
+/// Every read of a generic fn as a value in the written item `view` shows.
+fn generic_values(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    let own = flatten(
+        [generics_read(view.engine, view.file, item.store, b.reads) for b in item_bodies(view.engine, view.file, view.at, item)],
+    )
+    if !runs_in(view.engine, view.file, view.at) { return own }
+    let read = entry_read(view.engine, view.file)
+    let signed? = entry_signed(read) else { return own }
+    let entry = kept_body(body_checked(view.engine, view.file, signed, false))
+    own
+        .concat(
+            generics_read(
+                view.engine,
+                view.file,
+                read.store,
+                [r for r in entry.reads if item_holding(read, r.at) == view.at],
+            ),
+        )
+}
+
+/// Each of `reads`, standing in `store`, that is a bare name naming a generic fn `file` declares:
+/// one finding a read, at the fn's declaration.
+fn generics_read(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    reads: List<NameRead>,
+) -> List<Found> {
+    [f for r in reads if r.binder == null && r.home == null && store.ident_name(ExprId { index: r.at }) != null for f in generic_declared(engine, file, r.name, r.at)]
+}
+
+/// The generic fn `name` names from `file`, as the finding its read at the node `read` is — each
+/// read its own finding: at its declaration where `file` writes it; none for a name that names no fn over type parameters.
+fn generic_declared(engine: QueryEngine, file: SourceFileAddress, name: string, read: int) -> List<
+    Found,
+> {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return [] }
+    if d.kind != ItemKind.Fn || !item_held(engine, d.file, d.item) { return [] }
+    let sig? = fn_signature(engine, d.file, d.name) else { return [] }
+    if sig.type_params.is_empty() { return [] }
+    let args = [d.name, "${sig.params.length}", "${read}"]
+    if !same_file(d.file, file) { return [Found { at: null, args: args }] }
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
+    [Found { at: item.store.stmt_span(s), args: args, item: d.item }]
+}
+
+/// a generic fn is called, never read as a value
+export law generic_fn_is_no_value {
+    kind: "type.lambda"
+    reads_view: generic_values
+    voice: generic_words
+    witness: "fn ident<T>(x: T) -> T { x }\nfn f() -> int {\n    let g: fn(int) -> int = ident\n    g(1)\n}\n"
+}
+
+fn generic_words(a: List<string>) -> Voice { generic_no_value(a[0], parse_int(a[1]) ?? 0) }

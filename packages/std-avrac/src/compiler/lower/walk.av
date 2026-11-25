@@ -3,9 +3,10 @@
 //! every expression passes through, the dyn lift, the statement
 //! loop, a block's scope with its `defer` frame, and the entry's
 //! printed answer.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed, same_type}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark}
+use @std.errors.{Loc}
+use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, OnceSlot}
 
 /// A block scope left open for its caller to close: `opened` says
 /// whether `lower_block_open` entered a scope at all.
@@ -129,36 +130,28 @@ impl LowerCx {
     }
 
     /// A `once` FN'S BODY, GUARDED: the fn's own SLOT answers when it
-    /// holds this fn's value, and otherwise the body runs and the
-    /// slot keeps it. The slot is addressed by the fn's own
-    /// SYMBOL — unique in a binary by the linker's own law — so no
-    /// key is minted until the cold path actually needs one.
+    /// holds this fn's value, and otherwise the body runs and every
+    /// exit that answers keeps its answer there (`kept`). The slot is
+    /// addressed by the fn's own SYMBOL — unique in a binary by the
+    /// linker's own law — so no key is minted until the cold path
+    /// actually needs one. Under the niche a pointer answer's nullable
+    /// IS the pointer, so the guard is the presence protocol; a
+    /// NULLABLE answer's null is an answer, and an answer that is no
+    /// pointer — a value record, an enum that is its tag — rides a
+    /// one-cell list, so the slot's own null means only "not yet".
     mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
-        if self.view.types.carried(answer) != null || !self.view.types.rides_pointer(answer) { return self.once_boxed(symbol, root, answer) }
-        // the slot answers `T?` — under the niche the nullable IS
-        // the pointer, so the guard is the presence protocol and the
-        // present arm's carry is identity
-        let maybe = self.view.decls.types.type(answer?)
+        let boxed = self.view.types.carried(answer) != null ||
+            !self.view.types.rides_pointer(answer)
+        self.once_slot = OnceSlot { symbol: symbol, answer: answer, boxed: boxed }
+        let maybe = if boxed { self.view.decls.types.type(List<answer>?) } else { self.view.decls.types.type(answer?) }
         let held = self.once_read(self.view.decls.types.shape_of(maybe), symbol)
         self
-            .region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
+            .region_as(self.presence_of(held, maybe), answer) { cx ->
+                let carried = cx.carried_of(held, maybe)
+                if boxed { cx.slot_read(carried, 0, answer) } else { carried }
+            } else { cx ->
                 let made = cx.reg_of(root)
-                cx.once_commit(symbol, made)
-                made
-            }
-    }
-
-    /// A NULLABLE answer's null is an answer, so the slot holds it in a
-    /// one-cell list and the slot's own null means only "not yet". An
-    /// answer that is no pointer — a value record, an enum that is its
-    /// tag — rides the same cell.
-    mut fn once_boxed(symbol: string, root: ExprId, answer: TypeId) -> Reg {
-        let maybe = self.view.decls.types.type(List<answer>?)
-        let held = self.once_read(self.view.decls.types.shape_of(maybe), symbol)
-        self
-            .region_as(self.presence_of(held, maybe), answer) { cx -> cx.slot_read(cx.carried_of(held, maybe), 0, answer) } else { cx ->
-                let made = cx.reg_of(root)
-                cx.once_commit(symbol, cx.one_cell(made, answer))
+                cx.kept(made)
                 made
             }
     }
@@ -199,13 +192,31 @@ impl LowerCx {
         self.push_slot(into, self.reg_of(v))
     }
 
-    /// A kept list's elements, each joining the `collect`'s list — the
-    /// comprehension's own walk. An empty list's joins nothing.
+    /// A spread list's elements, each joining the list `into` — the
+    /// comprehension's own walk, each adopted where `into` holds a
+    /// nullable of it. An empty list's joins nothing.
     mut fn spread(into: Reg, v: ExprId) {
         let elem? = self.view.types.element(self.type_at(v)) else { return }
         let w = self.opened(v, elem)
-        self.push_slot(into, self.turn_elem(w, self.turn_open(w)))
+        self.push_slot(into, self.joined_as(into, elem, self.turn_elem(w, self.turn_open(w))))
         self.loop_end()
+    }
+
+    /// `r`, an element of `from`, as the list `into` holds it: adopted
+    /// where its element is a nullable of `from`, else itself.
+    mut fn joined_as(into: Reg, from: TypeId, r: Reg) -> Reg {
+        let held? = self.view.types.element(self.out.type_of_reg(into)) else { return r }
+        let inner? = self.view.types.carried(held) else { return r }
+        if !same_type(inner, from) { return r }
+        self.adopted(held, false, r)
+    }
+
+    /// Whether a spread of `v` joins a list of `elem` one element at a
+    /// time: the list holds a nullable of what `v` holds.
+    fn spread_adopts(v: ExprId, elem: TypeId) -> bool {
+        let from? = self.view.types.element(self.type_at(v)) else { return false }
+        let inner? = self.view.types.carried(elem) else { return false }
+        same_type(inner, from)
     }
 
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a
@@ -269,15 +280,7 @@ impl LowerCx {
 
     /// The refusal: an answer without a text projection names its
     /// type and the remedy.
-    fn no_projection(tname: string) -> Diag {
-        refusal(
-            "lower.no_projection",
-            self.answer_loc(),
-            "a `${tname}` has no text projection, so it cannot be the program's answer",
-            "this is the answer",
-            "project a field instead — `p.x` prints",
-        )
-    }
+    fn no_projection(tname: string) -> Diag { no_projection_refused(self.answer_loc(), tname) }
 
     /// The runtime printer for a list, by its element shape.
     mut fn list_texted(elem: TypeId, v: Reg) -> Reg {
@@ -466,13 +469,6 @@ impl LowerCx {
         let _ = self.within_loops.pop()
     }
 
-    /// An early exit that ANSWERS `answer`: every open frame's
-    /// entries run, innermost first — an `errdefer` behind the
-    /// answer's tag. Nothing closes — other paths continue.
-    mut fn leaving(answer: Reg?) {
-        self.run_from(0, answer)
-    }
-
     /// The entries of every frame from `floor` in run, innermost
     /// first — an `errdefer` behind `answer`'s tag.
     mut fn run_from(floor: int, answer: Reg?) {
@@ -494,8 +490,8 @@ impl LowerCx {
         self.deferred.any(it.depth >= floor && it.work.calls())
     }
 
-    /// An early exit that FAILS: every open frame's `defer`s AND
-    /// `errdefer`s run, innermost first.
+    /// What a failure runs: every open frame's `defer`s AND
+    /// `errdefer`s, innermost first.
     mut fn failing() {
         for d in reversed(self.deferred) { self.exited(d) }
     }
@@ -552,12 +548,10 @@ impl LowerCx {
             let fty = sig.types[j]
             if !self.view.types.holds_tasks(fty) && !self.view.decls.owns_by_mark(fty) { continue }
             let f = self.field_named(held, ty, name, fty)
-            if self.view.types.owns_one_task(fty) {
-                self.settle_task_field(f, fty)
-            } else if self.view.decls.owns_by_mark(fty) {
-                self.settle_owned_fields(f, fty)
-            } else {
-                self.task_settle_all(f)
+            when {
+                self.view.types.owns_one_task(fty) -> self.settle_task_field(f, fty)
+                self.view.decls.owns_by_mark(fty) -> self.settle_owned_fields(f, fty)
+                _ -> self.task_settle_all(f)
             }
         }
     }
@@ -596,4 +590,15 @@ impl LowerCx {
         let dst = self.out.mint_ty(held!.answer)
         self.out.give(Ins.CallPtr(dst, fp, [box]))
     }
+}
+
+/// The program's answer at `at`, of the type `tname`, which no text projection spells.
+export fn no_projection_refused(at: Loc?, tname: string) -> Diag {
+    refusal(
+        "lower.no_projection",
+        at,
+        "a `${tname}` has no text projection, so it cannot be the program's answer",
+        "this is the answer",
+        "project a field instead — `p.x` prints",
+    )
 }

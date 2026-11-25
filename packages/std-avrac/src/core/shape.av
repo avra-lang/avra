@@ -28,6 +28,23 @@ export enum At {
     Param(owner: StmtId, index: int)
 }
 
+impl At {
+    /// The expression this node is; absent for any other node.
+    fn expr() -> ExprId? {
+        match self { .Expr(id) -> id, rest -> null }
+    }
+
+    /// The statement this node is; absent for any other node.
+    fn stmt() -> StmtId? {
+        match self { .Stmt(id) -> id, rest -> null }
+    }
+
+    /// The pattern this node is; absent for any other node.
+    fn pat() -> PatId? {
+        match self { .Pat(id) -> id, rest -> null }
+    }
+}
+
 /// A scalar field a `Shape.TypedNode` holds OPEN instead of folding
 /// into its own identity, by binder INDEX — `own_name_at`'s catalog
 /// says which kinds carry a NAME this way, `own_type_at`'s which
@@ -139,6 +156,48 @@ impl SyntaxArena {
         }
     }
 
+    /// A node's children AS A LAW WALKS THEM: its kids, and under a `spec`, each case's body — a case's
+    /// body is a body as a fn's is, and what a law finds in one it finds there. A rule's reach is
+    /// `kids_at`'s alone.
+    fn kids_walked(at: At) -> List<At> {
+        match at {
+            .Stmt(id) -> self.kids_at(at).concat([At.Expr(c.body) for c in self.spec_parts(id)?.cases ?? []]),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> self.kids_at(at),
+        }
+    }
+
+    /// `root` and every place under it, each once, in one list: in `.Pre` a place comes before its
+    /// kids, in `.Post` after them; kids in `kids_at` order. A place `stops` holds for is listed,
+    /// but nothing under it is walked. One stack and one list, whatever the depth.
+    fn places_under(root: At, order: WalkOrder, stops: fn(At) -> bool = no_stop) -> List<At> {
+        mut out: List<At> = []
+        mut pending: List<At> = [root]
+        mut entered: List<bool> = [false]
+        while !pending.is_empty() {
+            let at = pending.pop()
+            let was_entered = entered.pop()
+            if was_entered {
+                out.push(at)
+                continue
+            }
+            if order is .Pre {
+                out.push(at)
+            } else {
+                pending.push(at)
+                entered.push(true)
+            }
+            if stops(at) { continue }
+            let kids = self.kids_at(at)
+            mut k = kids.length
+            while k > 0 {
+                k = k - 1
+                pending.push(kids[k])
+                entered.push(false)
+            }
+        }
+        out
+    }
+
     /// A node's own content fingerprint, span-blind — what a
     /// binder's repeated occurrence is checked against.
     fn subtree_fp(at: At) -> int {
@@ -199,7 +258,7 @@ fn param_of(store: SyntaxArena, owner: StmtId, index: int) -> Param {
     match store.stmt(owner) {
         .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> params[index],
         rest -> Param {
-            name: Scoped(""),
+            name: no_name(),
             ty: null,
             default: null,
             promises: plain_mark,
@@ -227,12 +286,16 @@ fn shallow_param(store: SyntaxArena, owner: StmtId, index: int) -> int {
 export fn own_name_at(store: SyntaxArena, at: At) -> string? {
     match at {
         .Stmt(id) -> match store.stmt(id) {
-            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .For(name, _, _, _, _, _) or .ForEach(_, name, _, _) -> name.of,
+            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .ForEach(_, name, _, _) -> name.text(),
             rest -> null,
         },
-        .Pat(id) -> match store.pat(id) { .Bind(name) -> name.of, .Variant(name, _) -> name.of, rest -> null },
+        .Pat(id) -> match store.pat(id) {
+            .Bind(name) -> name.text(),
+            .Variant(name, _) -> name.of,
+            rest -> null,
+        },
         .Expr(id) -> match store.expr(id) {
-            .Call(callee, _, _) -> callee.of,
+            .Call(callee, _, _) -> callee.text(),
             .MethodCall(_, name, _) or .Prop(_, name) -> name.of,
             .Comp(_, clauses) -> comp_own_name(clauses),
             .StructLit(name, _, _) -> name.of,
@@ -245,7 +308,7 @@ export fn own_name_at(store: SyntaxArena, at: At) -> string? {
             rest -> null,
         },
         .Field(owner, index) -> field_name_of(store, owner, index),
-        .Param(owner, index) -> param_of(store, owner, index).name.of,
+        .Param(owner, index) -> param_of(store, owner, index).name.text(),
     }
 }
 
@@ -272,21 +335,21 @@ export fn own_type_at(store: SyntaxArena, at: At) -> TypeRef? {
 /// has one.
 fn first_param_name(params: List<Param>) -> string? {
     let p? = params.first() else { return null }
-    p.name.of
+    p.name.text()
 }
 
 /// `params` with its first entry's name blanked — `first_param_name`'s
 /// read is what this blanks.
 fn blanked_param_name(params: List<Param>) -> List<Param> {
     let p? = params.first() else { return params }
-    [p with { name: Scoped("") }].concat(params.slice(1, params.length))
+    [p with { name: no_name() }].concat(params.slice(1, params.length))
 }
 
 /// A comprehension's own name-bearing field: its FIRST head's binder
 /// — the one every later clause and the element read.
 fn comp_own_name(clauses: List<CompClause>) -> string? {
     let head? = clauses.first() else { return null }
-    match head { .Head(_, name, _, _) -> name.of, .Filter(_) -> null }
+    match head { .Head(_, name, _, _) -> name.text(), .Filter(_) -> null }
 }
 
 /// `clauses` with its first head's name blanked — `comp_own_name`'s
@@ -294,7 +357,7 @@ fn comp_own_name(clauses: List<CompClause>) -> string? {
 fn comp_blanked(clauses: List<CompClause>) -> List<CompClause> {
     let head? = clauses.first() else { return clauses }
     match head {
-        .Head(index, _, source, hi) -> [CompClause.Head(index, Scoped(""), source, hi)].concat(clauses.slice(1, clauses.length)),
+        .Head(index, _, source, hi) -> [CompClause.Head(index, no_name(), source, hi)].concat(clauses.slice(1, clauses.length)),
         .Filter(_) -> clauses,
     }
 }
@@ -318,7 +381,7 @@ export fn typed_node_shallow_at(store: SyntaxArena, at: At, kids: List<Shape>, o
     if !blank_name && !blank_type && !blank_run { return store.shallow_at(at) }
     match at {
         .Expr(id) -> store.shallow_expr(folded_expr(store.expr(id), blank_name, blank_type, blank_run)),
-        .Stmt(id) -> store.shallow_stmt(folded_stmt(store.stmt(id), blank_name, blank_type)),
+        .Stmt(id) -> store.shallow_stmt(folded_stmt(store.stmt(id), blank_name, blank_type, blank_run)),
         .Pat(id) -> store.shallow_pat(folded_pat(store.pat(id), blank_name)),
         .Param(owner, index) -> shallow_param(store, owner, index),
         .Field(owner, index) -> shallow_field(if blank_name { "" } else { field_name_of(store, owner, index) }),
@@ -326,24 +389,32 @@ export fn typed_node_shallow_at(store: SyntaxArena, at: At, kids: List<Shape>, o
 }
 
 /// `own_name_at`'s catalog, the name blanked when `blank_name`, ALSO
-/// blanking the node's own written-type field when `blank_type`.
-fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool) -> Stmt {
+/// blanking the node's own written-type field when `blank_type`, and
+/// its statements when a run stands among them (`blank_run`).
+fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool, blank_run: bool) -> Stmt {
     match s {
         .Let(name, ty, value) -> Stmt
-            .Let(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+            .Let(if blank_name { no_name() } else { name }, if blank_type { null } else { ty }, value),
         .MutLet(name, ty, value) -> Stmt
-            .MutLet(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+            .MutLet(if blank_name { no_name() } else { name }, if blank_type { null } else { ty }, value),
         .ConstDecl(name, ty, value) -> Stmt
-            .ConstDecl(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
-        .For(name, from, to, cond, step, stmts) -> Stmt.For(if blank_name { Scoped("") } else { name }, from, to, cond, step, stmts),
-        .ForEach(index, name, subject, stmts) -> Stmt.ForEach(index, if blank_name { Scoped("") } else { name }, subject, stmts),
+            .ConstDecl(if blank_name { no_name() } else { name }, if blank_type { null } else { ty }, value),
+        .ForEach(index, name, subject, stmts) -> Stmt
+            .ForEach(
+                index,
+                if blank_name { no_name() } else { name },
+                subject,
+                if blank_run { [] } else { stmts },
+            ),
+        .While(cond, stmts) -> Stmt.While(cond, if blank_run { [] } else { stmts }),
+        .LetElse(name, subject, stmts) -> Stmt.LetElse(name, subject, if blank_run { [] } else { stmts }),
         rest -> s,
     }
 }
 
 fn folded_pat(p: Pat, blank_name: bool) -> Pat {
     match p {
-        .Bind(_) -> if blank_name { Pat.Bind(Scoped("")) } else { p },
+        .Bind(_) -> if blank_name { Pat.Bind(no_name()) } else { p },
         .Variant(name, args) -> Pat.Variant(if blank_name { Plain("") } else { name }, args),
         rest -> p,
     }
@@ -357,7 +428,7 @@ fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> 
     match e {
         .Call(callee, pins, args) -> Expr
             .Call(
-                if blank_name { Scoped("") } else { callee },
+                if blank_name { no_name() } else { callee },
                 if blank_type { [] } else { pins },
                 if blank_run { [] } else { args },
             ),
@@ -379,14 +450,7 @@ fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> 
             ),
         .Lambda(params, body) -> Expr.Lambda(if blank_name { blanked_param_name(params) } else { params }, body),
         .ListLit(elems) -> Expr.ListLit(if blank_run { [] } else { elems }),
-        // BOTH fields blanked, never `stmts` alone: a block's LAST
-        // statement is promoted to `value` when it answers one
-        // (`block_of`, features/builder.av), so a trailing
-        // `${..after}` is a run in `value`, not `stmts` — its
-        // PRESENCE there must be blind too, or an empty run compared
-        // against a subject block with no tail disagrees on a flag
-        // neither field's run actually pins.
-        .Block(stmts, value) -> Expr.Block(if blank_run { [] } else { stmts }, if blank_run { null } else { value }),
+        .Block(stmts) -> Expr.Block(if blank_run { [] } else { stmts }),
         rest -> e,
     }
 }
@@ -593,12 +657,20 @@ fn with_hole(acc: List<List<At>?>, hole: int, bound: List<At>) -> List<List<At>?
 /// name the SAME subtree, span-blind — same binder, same code.
 fn bound_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
     let seen: List<At>? = acc[hole]
-    if seen == null { return with_hole(acc, hole, [subject]) }
-    if store.subtree_fp(seen![0]) == store.subtree_fp(subject) &&
-        same_subtree(store, seen![0], subject) {
+    let at = standing(store, subject)
+    if seen == null { return with_hole(acc, hole, [at]) }
+    if store.subtree_fp(seen![0]) == store.subtree_fp(at) && same_subtree(store, seen![0], at) {
         acc
     } else {
         null
+    }
+}
+
+/// An expression statement stands as its expression, every other node as itself.
+fn standing(store: SyntaxArena, subject: At) -> At {
+    match subject {
+        .Stmt(s) -> match store.stmt(s) { .ExprStmt(v) -> At.Expr(v), rest -> subject },
+        .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> subject,
     }
 }
 
@@ -804,3 +876,12 @@ impl SyntaxArena {
             .concat([self.kind_key(3, 0), self.kind_key(4, 0)])
     }
 }
+
+/// Where a walk lists a place: before the places under it, or after them.
+export enum WalkOrder {
+    Pre
+    Post
+}
+
+/// A walk that stops nowhere.
+export fn no_stop(_at: At) -> bool { false }

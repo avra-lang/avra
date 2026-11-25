@@ -1,18 +1,17 @@
 // "The subset today": each entry is a refusal the compiler speaks, pinned
 // by its words and its count. An entry the compiler starts accepting turns
 // its case red; delete the case and the entry together.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{refused_n, refused_with}
+use @std.avrac.testing.{judged, refused_n, refused_with}
 
 /// A source that checks with no error — what a refused form's compiling
 /// sibling proves.
 fn accepted(source: string) -> bool {
-    analyze_source(source).program().check() is .Ok
+    judged(source).checked() is .Ok
 }
 
 /// A source refused with `n` messages, one of them `phrase`.
 fn refused(source: string, phrase: string, n: int) -> bool {
-    refused_n(analyze_source(source).program(), phrase, n)
+    refused_n(judged(source), phrase, n)
 }
 
 spec "compiler/subset — syntax the grammar lacks" {
@@ -31,6 +30,13 @@ spec "compiler/subset — syntax the grammar lacks" {
                 1,
             )
         }
+        then "`if let` with no `else` is refused at the `let`" {
+            refused(
+                "fn f(x: int?) -> int {\n    if let v? = x { return v }\n    0\n}\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
         then "`or` as a boolean is refused" {
             refused(
                 "fn f() -> bool { true or false }\n",
@@ -42,13 +48,6 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "fn f(a: bool, b: bool) -> bool { a and b }\n",
                 "error[parse.expected]: expected BREAK while parsing `stmt`",
-                1,
-            )
-        }
-        then "destructuring `enumerate()` in a comprehension is refused" {
-            refused(
-                "fn f(xs: List<int>) -> List<int> { [i for (i, m) in xs.enumerate()] }\n",
-                "error[type.list_element]: `enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples",
                 1,
             )
         }
@@ -71,6 +70,23 @@ spec "compiler/subset — syntax the grammar lacks" {
             accepted(
                 "type Row = { id: int, name: string }\nlet rows = table<Row> {\n    id | name\n    1  | \"a\"\n    2  | \"b\"\n}\n",
             )
+        }
+        then "a field's mark on its own line inside a type literal is refused at the mark" {
+            refused(
+                "type P = {\n    @local\n    at: int,\n}\n",
+                "error[parse.expected]: expected `}` while parsing `stmt`",
+                1,
+            )
+        }
+        then "an empty body after a head ending in a bare name is refused: `n {}` reads as a record literal" {
+            refused(
+                "fn f(n: int) -> int {\n    for k in 0..n {}\n    n\n}\n",
+                "error[parse.expected]: expected `{` while parsing `stmt`",
+                1,
+            )
+        }
+        then "the same head in parentheses before an empty body is accepted" {
+            accepted("fn f(n: int) -> int {\n    for k in (0..n) {}\n    n\n}\n")
         }
         then "a semicolon between statements is refused at the `;`" {
             refused(
@@ -125,7 +141,7 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "fn f() -> int {\n    let g = (a: int = 1) -> a\n    g(1)\n}\n",
                 "error[parse.expected]: expected `)` to close the group",
-                2,
+                1,
             )
         }
         then "a fn value of a defaulted fn wears every seat" {
@@ -146,7 +162,7 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "fn ident<T>(x: T) -> T { x }\nfn f() -> int {\n    let g: fn(int) -> int = ident<int>\n    g(1)\n}\n",
                 "error[parse.expected]: expected BREAK while parsing `stmt`",
-                2,
+                1,
             )
         }
         then "a bare generic fn as a value is refused in words" {
@@ -187,7 +203,7 @@ spec "compiler/subset — syntax the grammar lacks" {
         then "`List` has `all` and not `every`" {
             refused(
                 "fn f(xs: List<int>) -> bool { xs.every(it > 0) }\nfn g(xs: List<int>) -> bool { xs.all(it > 0) }\n",
-                "error[type.method]: `.every(…)` calls a method, and `List<int>` has none",
+                "error[type.method]: `List<int>` has no method `every`",
                 1,
             )
         }
@@ -251,13 +267,6 @@ spec "compiler/subset — syntax the grammar lacks" {
             )
         }
         then "`export const` compiles" { accepted("export const x: int = 1\n") }
-        then "`Result<void, E>` as an answer is refused" {
-            refused(
-                "fn f() -> Result<void, string> { }\n",
-                "error[type.applied]: a `Result` side cannot hold `void` yet",
-                1,
-            )
-        }
         then "a `mut` seat assigned whole is refused" {
             refused(
                 "fn f(mut a: int) {\n    a = a + 1\n}\n",
@@ -269,6 +278,13 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "const a: int = 1\nconst a: int = 2\n",
                 "error[resolve.duplicate_fn]: `a` is defined more than once",
+                1,
+            )
+        }
+        then "two private fns of one name and different arities are refused as a clash, the later read by no other law" {
+            refused(
+                "fn g() -> int { 1 }\nfn f(a: int, b: int) -> int { a + b + a + b + g() }\nfn f(a: int) -> int { a }\n",
+                "error[resolve.duplicate_fn]: `f` is defined more than once",
                 1,
             )
         }
@@ -355,13 +371,6 @@ spec "compiler/subset — syntax the grammar lacks" {
                 1,
             )
         }
-        then "`m.entries()` in a lone file names the missing prelude" {
-            refused(
-                "fn f(m: Map<string, int>) -> int { m.entries().length }\n",
-                "error[type.map_entry]: a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
-                1,
-            )
-        }
         then "a `mut`-taking fn type accepts a callee that does not write" {
             accepted(
                 "fn a(f: fn(mut int) -> int) -> int { 1 }\nfn w(x: int) -> int { x }\nfn f() -> int { a(w) }\n",
@@ -408,27 +417,6 @@ spec "compiler/subset — syntax the grammar lacks" {
 
 spec "compiler/subset — wants the typer does not carry yet" {
     given "wants the typer does not carry yet" {
-        then "an unpinned generic call in a struct literal field is refused" {
-            refused(
-                "fn mk<N>() -> List<N> { [] }\ntype MC<N> = { xs: List<N> }\nfn f<N>() -> MC<N> { MC { xs: mk() } }\nfn g<N>() -> MC<N> { MC { xs: mk<N>() } }\n",
-                "error[type.mismatch]: `N` is not pinned by the arguments",
-                1,
-            )
-        }
-        then "a lambda in a field seat does not read the seat's answer" {
-            refused(
-                "enum E { Bad }\ntype Cx = { get: fn(int) -> Result<int, E> }\nfn f() -> Cx { Cx { get: (n: int) -> .Ok(n) } }\n",
-                "error[type.variant_lit]: `.Ok` needs a known enum — nothing here says which",
-                1,
-            )
-        }
-        then "a generic method is refused" {
-            refused(
-                "type Box<T> = { v: T }\nimpl Box<T> { fn m<U>(x: U) -> U { x } }\n",
-                "error[type.impl]: `m` is generic — generic methods are recorded, not landed",
-                1,
-            )
-        }
         then "a bound on a free fn's parameter compiles" { accepted("trait Tr { fn m() -> int }\nfn f<T: Tr>(v: T) -> int { v.m() }\n") }
         then "variant arms over a nullable enum are refused" {
             refused(
@@ -488,6 +476,13 @@ spec "compiler/subset — wants the typer does not carry yet" {
                 1,
             )
         }
+        then "`catch null` answers the ok side, so a `Result` read as absence is refused" {
+            refused(
+                "type D = { n: int }\nfn d() -> Result<D, string> { .Ok(D { n: 1 }) }\nfn f() -> int {\n    let x? = d() catch null else { return 0 }\n    x.n\n}\n",
+                "error[type.catch]: a `catch` arm answers the ok side: `D`, this is `null`",
+                1,
+            )
+        }
     }
 }
 
@@ -496,7 +491,7 @@ spec "compiler/subset — methods the runtime lacks" {
         then "`List.reverse()` and `sort()` are refused" {
             refused(
                 "fn f(xs: List<int>) -> List<int> { xs.reverse() }\nfn g(xs: List<int>) -> List<int> { xs.sort() }\n",
-                "error[type.method]: `.reverse(…)` calls a method, and `List<int>` has none",
+                "error[type.method]: `List<int>` has no method `reverse`",
                 2,
             )
         }

@@ -50,6 +50,10 @@ export type Fixpoint<T> = {
     // plain for its identity: set at registration, `with` swaps in
     // a fresh value rather than writing through a path
     turn_cap: int,
+    /// The members an open solve has met, in the order it met them; none while none is open.
+    met: Cell<List<int>>,
+    /// Each member's group as its last solve found it: what a member's next solve starts from.
+    groups: Table<List<int>>,
 }
 
 /// Past this many re-runs of one member, the body is a defect (a
@@ -71,6 +75,8 @@ export fn new_fixpoint<T>(db: Kernel, family: int, bottom: T, join: fn(T, T) -> 
         frame_family: Cell.new(0 - 1),
         values: new_table<T>(),
         turn_cap: default_turn_cap,
+        met: list_cell(),
+        groups: new_table<List<int>>(),
     }
 }
 
@@ -207,10 +213,9 @@ impl Fixpoint {
             let refusal = self.refused_join(compute(members[0]))
             if refusal != null { return .Err(refusal!) }
         }
-        for m in members { let _ = self.step(m, compute)? }
         let reverse: Table<List<int>> = new_table<List<int>>()
-        for m in members { self.index(m, reverse) }
-        mut queue: List<int> = members
+        mut stepped = self.seeded(members, compute, reverse)?
+        mut queue: List<int> = stepped
         let turns: Table<int> = new_table<int>()
         mut steps = members.length
         while !queue.is_empty() {
@@ -226,8 +231,80 @@ impl Fixpoint {
                     if !queue.contains(r) { queue = queue.concat([r]) }
                 }
             }
+            let met = self.seeded(self.unstepped(stepped), compute, reverse)?
+            stepped = stepped.concat(met)
+            queue = queue.concat([n for n in met if !queue.contains(n)])
         }
         .Ok(steps)
+    }
+
+    /// Each member stepped once and its reads indexed, the members a step meets stepped in
+    /// their turn: answers every member stepped, in order.
+    fn seeded(members: List<int>, compute: fn(int) -> T, reverse: Table<List<int>>) -> Result<
+        List<int>,
+        FixpointRefusal,
+    > {
+        mut stepped: List<int> = []
+        mut todo = members
+        while !todo.is_empty() {
+            for m in todo {
+                let _ = self.step(m, compute)?
+                self.index(m, reverse)
+            }
+            stepped = stepped.concat(todo)
+            todo = self.unstepped(stepped)
+        }
+        .Ok(stepped)
+    }
+
+    /// The members the open solve has met that `stepped` does not hold yet.
+    fn unstepped(stepped: List<int>) -> List<int> { [m for m in self.met.get() if !stepped.contains(m)] }
+
+    /// A MEMBER ASKED BY ITS QUERY: the value its cell holds while the cell stands; else its
+    /// group solved first, starting from bottom. Inside an open solve, a member the solve has
+    /// not met joins it and answers what it holds now, and is stepped before the solve ends.
+    fn asked(arg: int, compute: fn(int) -> T) -> Result<T, FixpointRefusal> {
+        if self.open() { return .Ok(self.joined(arg)) }
+        let standing = match self.db.ask(self.query_key(arg)) {
+            .Reuse -> self.values.at(arg),
+            .Cycle or .Compute -> null,
+        }
+        if standing != null { return .Ok(standing!) }
+        let _ = self.solve_from(arg, compute)?
+        .Ok(self.value_at(arg))
+    }
+
+    /// Whether a solve is open.
+    fn open() -> bool { !self.met.get().is_empty() }
+
+    /// A member read inside an open solve: met when its cell does not stand.
+    fn joined(arg: int) -> T {
+        if !self.met.get().contains(arg) && !self.stands(arg) { self.meet(arg) }
+        self.value_at(arg)
+    }
+
+    /// Whether a member's cell stands this revision, or is the one being stepped.
+    fn stands(arg: int) -> bool {
+        match self.db.ask(self.query_key(arg)) { .Compute -> false, .Reuse or .Cycle -> true }
+    }
+
+    /// A member the open solve meets: from bottom.
+    fn meet(arg: int) {
+        self.met.push(arg)
+        self.values.keep(arg, self.bottom)
+    }
+
+    /// THE GROUP `arg` STANDS IN, SOLVED FROM BOTTOM: the group its last solve found, or `arg`
+    /// alone, and every member a member reads that does not stand. A group is solved whole,
+    /// never one member over another's stale value.
+    fn solve_from(arg: int, compute: fn(int) -> T) -> Result<int, FixpointRefusal> {
+        let seeds = self.groups.at(arg) ?? [arg]
+        for m in seeds { self.meet(m) }
+        let solved = self.solve(seeds, compute)
+        let group = self.met.get()
+        for m in group { self.groups.keep(m, group) }
+        self.met.set([])
+        solved
     }
 }
 

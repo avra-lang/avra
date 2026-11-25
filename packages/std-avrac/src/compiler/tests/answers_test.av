@@ -1,86 +1,56 @@
-//! The workspace's `@query` answers kept in the store, each carrying the source texts it
-//! read: a later process (a fresh workspace over the same store) reads the answer back
-//! and runs nothing while those texts stand, runs the query when one of them moved, and
-//! is not disturbed by an edit to a file the query never read.
-use @std.relation.{query}
-use @std.relation.db.{Db as RelDb}
-use @std.time.{now_ns}
-use compiler.{Workspace}
-use @std.avrac.testing.{test_workspace}
-use compiler.answers.{file_text}
-use compiler.host.{memory_host}
-use compiler.store.{Store, store_at}
+//! A SAVED ANSWER is read back by a later process over the same store, and nothing is worked out
+//! while the texts it read stand; the work is done again when one of them moved, and an edit to
+//! a module the program never reads disturbs nothing of it.
+use @std.avrac.testing.held.{Pass, beyond, empty_store, held_at}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
 
-once fn computes() -> Cell<int> { Cell.new(0) }
+const ENTRY: string = "/w/src/main.av"
 
-@query
-fn text_length(db: RelDb, path: string) -> int {
-    let c = computes()
-    c.set(c.get() + 1)
-    file_text(db, path).length
-}
-
-fn files_of(a: string, b: string) -> Map<string, string> {
+fn files_of(main: string, a: string, b: string) -> Map<string, string> {
     {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-        "/w/src/a.av": a,
-        "/w/src/b.av": b,
+        ENTRY: main,
+        "/w/src/x/a.av": "export fn n() -> int { ${a} }\n",
+        "/w/src/y/b.av": "export fn m() -> int { ${b} }\n",
     }
 }
 
-/// A fresh workspace over `files`, its store the one attached.
-fn process(files: Map<string, string>, store: Store) -> Workspace {
-    let ws = test_workspace(memory_host(files, files.keys()), "/w")
-    ws.attach_store(store)
-    ws
+const READS_X: string = "use x.{n}\nn()\n"
+
+/// A main that reads neither module.
+const READS_NOTHING: string = "1\n"
+
+/// What a process over `store` makes of the package.
+fn pass(main: string, a: string, b: string, store: StoreInMemory) -> Pass {
+    held_at(files_of(main, a, b), "/w").passed_over(ENTRY, store)
 }
 
-/// What `text_length` answers about /w/src/a.av in a process over `files`, and how many
-/// times it ran in that process.
-fn asked(files: Map<string, string>, store: Store) -> string {
-    let ws = process(files, store)
-    ws.stage_text("/w/src/a.av")
-    let before = computes().get()
-    let n = text_length(ws.decls.rows_db.get(), "/w/src/a.av")
-    "${n}/${computes().get() - before}"
+/// What the second of two processes over one store works out, the package going from `a`/`b` to
+/// `a2`/`b2`, under `main`.
+fn second(main: string, a: string, b: string, a2: string, b2: string) -> Pass {
+    let s = empty_store()
+    let _ = pass(main, a, b, s)
+    pass(main, a2, b2, s)
 }
 
-fn fresh_store(name: string) -> Store { store_at("/tmp/avra-answers-test/${now_ns()}/${name}") }
-
-spec "compiler/answers — a workspace's @query answers carry the texts they read" {
-    given "a file whose text is unchanged between two processes" {
-        then "the second reads the answer back and runs nothing" {
-            let s = fresh_store("unchanged")
-            asked(files_of("12345", "b"), s) == "5/1" && asked(files_of("12345", "b"), s) == "5/0"
+spec "compiler/answers — a saved answer stands while the texts it read stand" {
+    given "nothing edited between two processes" {
+        then "the second answers alike and works nothing out" {
+            let p = second(READS_X, "5", "6", "5", "6")
+            p.ran == "5" && p.worked.is_empty()
         }
     }
-    given "a file whose text was edited" {
-        then "the query runs again and answers the edited text" {
-            let s = fresh_store("edited")
-            let _ = asked(files_of("12345", "b"), s)
-            asked(files_of("1234567", "b"), s) == "7/1"
+    given "a file the program reads, edited" {
+        then "the work is done again and answers the edited text" {
+            let p = second(READS_X, "5", "6", "7", "6")
+            p.ran == "7" && !p.worked.is_empty()
         }
     }
-    given "another file edited between the processes" {
-        then "the answer still stands" {
-            let s = fresh_store("unrelated")
-            let _ = asked(files_of("12345", "b"), s)
-            asked(files_of("12345", "an edit elsewhere"), s) == "5/0"
+    given "a module the program never reads, edited" {
+        then "the answer stands, and the program's share of the work is nothing" {
+            let p = second(READS_X, "5", "6", "5", "60")
+            p.ran == "5" &&
+                beyond(p.worked, second(READS_NOTHING, "5", "6", "5", "60").worked).is_empty()
         }
     }
-    given "a workspace that never attached a store" {
-        then "nothing is kept: each process runs the query" {
-            asked_detached(files_of("12345", "b")) == "5/1" &&
-                asked_detached(files_of("12345", "b")) == "5/1"
-        }
-    }
-}
-
-/// `asked`, in a process with no store attached.
-fn asked_detached(files: Map<string, string>) -> string {
-    let ws = test_workspace(memory_host(files, files.keys()), "/w")
-    ws.stage_text("/w/src/a.av")
-    let before = computes().get()
-    let n = text_length(ws.decls.rows_db.get(), "/w/src/a.av")
-    "${n}/${computes().get() - before}"
 }

@@ -1,21 +1,17 @@
-use @std.avrac.testing.{test_workspace}
-use compiler.host.{memory_host}
-use core.{At, StmtId}
+// A re-export counts as a public use, asked of what the layer's fact rules read
+// (`ref_judged`, `use_code`: references_test.av's own).
 
+/// The names the `use` line of a package's `main` imports and nothing reads, beside its `lib`.
 fn unused(main: string) -> List<string> {
-    let ws = test_workspace(
-        memory_host(
+    use_code(
+        ref_judged(
             {
                 "/w/src/main.av": main,
                 "/w/src/lib.av": "export fn helper() -> int { 1 }\nexport fn other() -> int { 2 }\n",
             },
-            ["/w/src/main.av", "/w/src/lib.av"],
         ),
-        "/w",
     )
-    let a = ws.program("/w/src/main.av").entry_file()!
-    let u = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .Use)!
-    a.code_at(At.Stmt(u)).unused_imports()
+        .unused_imports()
 }
 
 spec "compiler/references — a re-export is a public use" {

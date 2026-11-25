@@ -18,6 +18,13 @@ fn times(text: string, word: string) -> int { text.split(word).length - 1 }
 
 fn tests(lines: List<string>) -> int { times(ir(lines), "flag unwinding") }
 
+/// How many times `word` stands in the body of the fn `name` of a lone source.
+fn in_fn(lines: List<string>, name: string, word: string) -> int {
+    let parts = ir(lines).split("fn alone/src/main.av.${name}(")
+    if parts.length < 2 { return 0 - 1 }
+    times(parts[1].split("\nfn ")[0], word)
+}
+
 fn napping() -> List<string> {
     ["extern fn avra_fiber_sleep(ms: int)", "fn nap() { avra_fiber_sleep(1) }"]
 }
@@ -29,11 +36,13 @@ spec "compiler/lower — the test after a call" {
     then "calls that reach no cancel point carry no test" {
         tests(["fn one() -> int { 1 }", "fn two() -> int { one() + one() }", "two()"]) == 0
     }
-    then "a compiler unit's call is tested — no `wanted` name to judge it by" {
-        // a module state's cell is built by a unit never named through
-        // `wanted`, so the conservative answer MUST be `may reach`:
-        // an omission here would let a caller read a hollow
-        tests(["state counter: int = 0", "counter"]) >= 1
+    then "a compiler unit's call is tested where the unit may park, and only there" {
+        let parks = napping()
+            .concat(["fn seven() -> int {", "    nap()", "    7", "}", "state counter: int = seven()"])
+        let still = ["state counter: int = 7"]
+        let read = ["fn read() -> int { counter + 1 }", "read()"]
+        in_fn(parks.concat(read), "read", "flag unwinding") >= 1 &&
+            in_fn(still.concat(read), "read", "flag unwinding") == 0
     }
     then "a task's cold exit answers an EMPTY cell, never a null a joiner reads" {
         // the spawn body calls a may-reach fn, so its task lambda carries
@@ -41,7 +50,16 @@ spec "compiler/lower — the test after a call" {
         // not a null the join would read as a value
         let text = ir(
             napping()
-                .concat(["fn work() -> int { nap() 7 }", "let t = spawn { work() }", "t.await"]),
+                .concat(
+                    [
+                        "fn work() -> int {",
+                        "    nap()",
+                        "    7",
+                        "}",
+                        "let t = spawn { work() }",
+                        "t.await",
+                    ],
+                ),
         )
         times(text, "call avra_array_new(") >= 1
     }
@@ -77,9 +95,19 @@ spec "compiler/lower — the test after a call" {
             times(text, "return r") >= 1
     }
     then "the call that runs a `defer` carries no test; the deferred closure's own call is its own" {
-        // nap's row call, the closure's call to nap, and the entry's call to work
+        // relay's call through a value, the closure's call to relay, and the entry's call to work: a
+        // call through a value may reach a cancel point, so each is tested, yet it parks nothing, so
+        // the cleanup is no unbounded wait (a deferred call that parks is refused before it lowers)
         tests(
-            napping().concat(["fn work() -> int {", "    defer { nap() }", "    7", "}", "work()"]),
+            [
+                "fn quiet() { }",
+                "fn relay(f: fn()) { f() }",
+                "fn work(f: fn()) -> int {",
+                "    defer { relay(f) }",
+                "    7",
+                "}",
+                "work(quiet)",
+            ],
         ) == 3
     }
     then "the entry's unwind arm answers C's `int`, and its LLVM verifies" {

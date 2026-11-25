@@ -7,14 +7,21 @@
 //! Ids are opaque: compared or looked up, never inspected. All
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
+use @std.program.saved_derive.{Saved}
 // LICENSED modules.unused_import: `Rewrite` is named by GENERATED code — the
 // `NodeFacts` delegation writes `means`'s answer here
 use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
-use @std.relation.{relation, arena}
+use @std.grammar.{Cause}
+use @std.program.names.{Name, name_of, text_of}
+use @std.program.syntax_tape.{TapeReader, TapeWriter}
+use @std.program.value_shapes.{indexes, placed}
+use @std.relation.{relation, arena, codec}
 
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
+@dense
+@indexes(Expr)
 export type ExprId = { index: int }
 
 impl ExprId {
@@ -30,6 +37,8 @@ export fn same_expr(a: ExprId, b: ExprId) -> bool {
 }
 
 /// Typed index into the statement arena.
+@dense
+@indexes(Stmt)
 export type StmtId = { index: int }
 
 impl StmtId {
@@ -204,21 +213,19 @@ export fn binds_type(kind: DeclKind) -> bool {
 }
 
 /// The declaration kinds a `collect` may gather — grown with the
-/// build order (fn, case next). An unknown word is KEPT, never
-/// refused at the parse: `collect`'s own laws speak the refusal
-/// (features/collects/check.av), with the word in hand to name. A
-/// word that names no imported component is `UnknownKind`; one that
-/// names a component (`model in closure`, `rule in closure`) is
-/// `Component` — the owner's ruling: `collect` is a keyword, so the
-/// kind is bare, never `instance of`. `@name in scope` — a kind
+/// build order (fn, case next). A bare word is `Component` — the
+/// owner's ruling: `collect` is a keyword, so the kind is bare, never
+/// `instance of` (`model in closure`, `rule in closure`); `collect`'s
+/// own laws refuse a word the file names no component by
+/// (features/collects/check.av). `@name in scope` — a kind
 /// slot spelled with its `@` — is `Annotated`: every declaration
 /// wearing that annotation, of any DeclKind, gathered by its
 /// written name alone (a declaration's annotations are a fact of
 /// the declaration, not a word a component index minted).
 @derive(Identity)
+@derive(Taped)
 export enum CollectKind {
     Component(word: string)
-    UnknownKind(word: string)
     Annotated(name: string)
 }
 
@@ -232,6 +239,8 @@ impl CollectKind {
 
 /// Where a `collect` gathers from.
 @derive(Identity)
+@derive(Worded)
+@derive(Taped)
 export enum CollectScope {
     Self
     Package
@@ -244,10 +253,30 @@ export enum CollectScope {
 /// `path` is a NAME run because the grammar may grow multi-segment
 /// paths; today it holds zero or one.
 @derive(Identity)
-export type ProjField = { field: Plain, path: List<Plain> }
+@derive(Grammar)
+@derive(Makes)
+@derive(Taped)
+export type ProjField = { field: Plain, path: List<Plain> = [] }
+
+/// One `by` key as written: its `it.a.b` segments, and the `[i]` it reads
+/// when written.
+@derive(Grammar)
+@derive(Makes)
+export type OrderKey = { segs: List<Plain>, index: string? = null }
+
+impl OrderKey {
+    /// The key as the one text a collect orders by: its segments joined by
+    /// `.`, its `[i]` after them.
+    fn spelled() -> Plain {
+        let path = [s.of for s in self.segs].join(".")
+        let i? = self.index else { return Plain(path) }
+        Plain("${path}[${i}]")
+    }
+}
 
 /// A collect's projection: the type it builds, and each field's fill.
 @derive(Identity)
+@derive(Taped)
 export type Projection = { ty: TypeRef, fields: List<ProjField> }
 
 /// A MODULE's identity — a directory under the root, interned. `@dense`:
@@ -264,8 +293,11 @@ export type ModuleId = { index: int }
 /// nothing with them but a shape. APPEND-ONLY, like every registry
 /// here: the fingerprint table numbers by ordinal-in-spirit and a
 /// renumbering would silently rewrite every memo key.
-@derive(Fingerprint)
 @derive(Identity)
+@derive(Fingerprint)
+@codec
+@derive(Taped)
+@derive(Saved)
 export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor, Shl, Shr }
 
 /// A jump's surface word — THE one projection: `continue` starts the
@@ -327,18 +359,18 @@ export fn binop_of(symbol: string) -> BinOp? {
     all_binops.find(op_symbol(it) == symbol)
 }
 
-// THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree is
-// text; what differs is WHAT IT KEYS, and that fact used to live only
-// in the walks that read it. It is the payload's TYPE now, so the
-// enum states it and a derive can read it. Free at runtime: each is
-// its own type over `string` and travels as the string it is, and
-// `n.of` reads the text back.
+// THE THREE KINDS OF NAME A NODE CARRIES. What differs is WHAT IT
+// KEYS, and that fact is the payload's TYPE, so the enum states it and
+// a derive can read it. A scope-keying name is an interned Name, so
+// two are one exactly when one int says so; `n.text()` reads its text
+// and `scoped(text)` mints one. The others are their own types over
+// `string`, and `n.of` reads the text back.
 
 /// A name that KEYS A SCOPE — a binder (`let x`, a parameter, a
 /// pattern's bind, a fn's own name) or a READ of one (`x`, a call's
 /// callee). The resolver walks the scope chain for it, so a
 /// TEMPLATE filling one hands the node to the splice site's scope.
-export type Scoped = string
+export type Scoped = Name
 
 /// A name that keys NO scope — a field, a method, a property, a
 /// variant, a type parameter. It is answered by a shape the
@@ -365,6 +397,7 @@ export type Nominal = string
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export enum CompClause {
     Head(index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?)
     Filter(cond: ExprId)
@@ -375,6 +408,7 @@ export enum CompClause {
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export enum MapEntry {
     Pair(key: ExprId, value: ExprId)
     Spread(from: ExprId)
@@ -427,6 +461,13 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_Arm())
         .concat(grammar_payloads_Case())
         .concat(grammar_payloads_UseItem())
+        .concat(grammar_payloads_FieldPat())
+        .concat(grammar_payloads_Given())
+        .concat(grammar_payloads_FnSeat())
+        .concat(grammar_payloads_CatchArm())
+        .concat(grammar_payloads_Mark())
+        .concat(grammar_payloads_ProjField())
+        .concat(grammar_payloads_OrderKey())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -465,7 +506,8 @@ export fn stmt_makers() -> List<Maker<Stmt>> {
 @derive(Makes)
 @relation
 @arena
-export collect enum Expr: Identity, Kids, Heirs, NodeFacts, Surfaced = @expr_node in package by it.name
+@derive(TapeRoot)
+export collect enum Expr: Identity, Kids, Heirs, NodeFacts, Surfaced, Checks, Lowers = @expr_node in package by it.name
 
 /// Marks a record as `Expr`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -543,6 +585,7 @@ export type BodyParts = { word: string, parts: List<string>, holes: List<ExprId>
 /// A body's PARSED form and EXPANSION — a FIXED payload set, so the
 /// derives read it by type like any other. `None` is the honest empty
 /// for a body with no parsed form (`text`), never an empty list.
+@derive(Taped)
 export enum BodyView {
     None
     /// A quote's body as written: its placeholders are its own.
@@ -557,12 +600,13 @@ impl BodyView {
         match self { .Expanded(x) -> x, _ -> null }
     }
 }
-/// What a block's grammar refused, in the file's offsets — spoken
-/// with the parse's own words.
-export type BlockVoice = { message: string, lo: int, hi: int, expected: List<string>, in_rule: string }
-/// What a grammar's own refusal said where a branch matched: its
-/// registered kind, its words and its help, at the branch's span.
-export type Refused = { kind: string, message: string, help: string, span: Span? }
+/// What a parse refused, in the file's offsets: what its lexer, its grammar or a block's grammar
+/// said, by why, or a builder's own refusal in its registered kind, words and help.
+@derive(Taped)
+export enum ParseRefusal {
+    Grammar(cause: Cause, message: string, span: Span?, expected: List<string>, in_rule: string)
+    Builder(kind: string, message: string, help: string, span: Span?)
+}
 /// A half-open run of arena indexes.
 export type IndexRange = { lo: int, hi: int }
 
@@ -575,10 +619,10 @@ impl IndexRange {
 
 /// The arenas' counts at one moment — where a run of minted nodes
 /// begins, and where it ends.
-export type ArenaMarks = { exprs: int, stmts: int, pats: int }
+export type ArenaMarks = { exprs: int, stmts: int, pats: int, params: int }
 
 /// What each arena grew by between two moments.
-export type ArenaRuns = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange }
+export type ArenaRuns = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, params: IndexRange }
 
 impl ArenaMarks {
     fn until(after: ArenaMarks) -> ArenaRuns {
@@ -586,18 +630,31 @@ impl ArenaMarks {
             exprs: IndexRange { lo: self.exprs, hi: after.exprs },
             stmts: IndexRange { lo: self.stmts, hi: after.stmts },
             pats: IndexRange { lo: self.pats, hi: after.pats },
+            params: IndexRange { lo: self.params, hi: after.params },
         }
     }
 }
 
-/// Nodes minted into a file from another file's text — a
-/// sublanguage's actions, a component's template — and that file,
-/// their origin. Every arena's run, so a template's binders are
-/// its own as well as its reads. `spanned_home` says their spans are
-/// in the ORIGIN's offsets (a copied template's, so its errors point
-/// home) rather than this file's (a sublanguage's, shifted into the
-/// block).
-export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool, module: string = "" }
+/// Where a node minted into a file from another file's text was written — a sublanguage's
+/// actions, a component's template — or the module whose names it reads (`module`, with no
+/// `path`). `spanned_home` says its span is in the ORIGIN's offsets (a copied template's, so its
+/// errors point home) rather than this file's (a sublanguage's, shifted into the block).
+/// `landed` names the node's seats a hole filled, whose names read where the node lands.
+@derive(Taped)
+export type ForeignOrigin = { path: string, spanned_home: bool, module: string = "", landed: List<LandedSeat> = [] }
+
+impl ForeignOrigin {
+    /// Where the names a node it wrote reads are read: the file, else the module.
+    fn home() -> string { if self.path.is_empty() { self.module } else { self.path } }
+
+    /// Where the name in `seat` reads: where the node lands when a hole filled it, else its home.
+    fn home_at(seat: LandedSeat) -> string? { if self.landed.contains(seat) { null } else { self.home() } }
+}
+
+/// A node's name seat that is no written type, which a hole may fill: the node's own names, as a
+/// fill's or a node a hole named has; an impl's target; and the trait it implements.
+@derive(Taped)
+export enum LandedSeat { Names, Target, Trait }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
@@ -606,6 +663,7 @@ export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool, 
 /// it at compile time. The callee is an ident NODE and the arguments
 /// are expression nodes, so resolution and typing read them as any
 /// expression — no second name law.
+@derive(Taped)
 export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
 
 /// `spliced` marks a type that came through a template's HOLE: it
@@ -615,7 +673,44 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 /// types in their own right, each resolved the usual way.
 @derive(Grammar)
 @derive(Fingerprint)
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, @local span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
+@derive(Makes)
+@derive(Taped)
+export type TypeRef = {
+    name: string,
+    applied: List<TypeRef>,
+    optional: bool,
+    dynamic: bool,
+    arrow: bool,
+    @local span: Span?,
+    seats: List<FnSeat> = [],
+    answer: TypeRef? = null,
+    spliced: bool = false,
+    alternatives: List<TypeRef> = [],
+}
+
+/// What a computed build answers (`-> Owner.Variant by fn`): the node
+/// its fn computed, of whichever kind the rule's place takes.
+export enum Built {
+    Expr(id: ExprId)
+    Stmt(id: StmtId)
+    Pat(id: PatId)
+    Seat(param: Param)
+    Marked(mark: Mark)
+}
+
+/// One seat of a written fn type: the type it takes and what it
+/// promises — `mut` writes through it, `const` settles it at compile time.
+@derive(Identity)
+@derive(Grammar)
+@derive(Fingerprint)
+@derive(Makes)
+@derive(Taped)
+export type FnSeat = { ty: TypeRef, mutable: bool = false, settled: bool = false }
+
+impl FnSeat {
+    /// The promise this seat makes.
+    fn mark() -> SeatMark { SeatMark { mutable: self.mutable, settled: self.settled } }
+}
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -631,7 +726,7 @@ export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynam
 /// differs, so a field added to `TypeRef` reaches every site through
 /// one edit instead of dropping silently at each hand-spelling.
 export fn named_ref(name: string) -> TypeRef {
-    TypeRef { name: name, args: [], optional: false, dynamic: false, arrow: false, span: null }
+    TypeRef { name: name, applied: [], optional: false, dynamic: false, arrow: false, span: null }
 }
 
 /// The answer a fn declares by writing none: `void`.
@@ -642,39 +737,52 @@ export fn plain(t: TypeRef) -> TypeRef {
 }
 
 impl TypeRef {
+    /// What the type is applied to: a fn type's seat types and then its
+    /// answer (`void` when none is written), any other type's arguments.
+    fn type_args() -> List<TypeRef> {
+        if !self.arrow { return self.applied }
+        [s.ty for s in self.seats].concat([self.answered()])
+    }
+
+    /// A fn type's answer: what it writes after its arrow, `void` when it writes none.
+    fn answered() -> TypeRef { self.answer ?? void_ref }
+
+    /// A fn type's seat promises, one per seat.
+    fn seat_marks() -> List<SeatMark> {
+        [s.mark() for s in self.seats]
+    }
+
     /// This type, spelled back — `spelled`, as a method a quote
     /// pattern's bound TYPE hole reads the same way a bound NAME
     /// hole reads its own text.
     fn text() -> string { spelled(self) }
 }
 
-/// A written type, spelled back — what a diagnostic quotes.
-export fn spelled(t: TypeRef) -> string {
-    if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
+/// A written type, spelled back — what a diagnostic quotes: a fn type's answer said, `void` where
+/// it writes none.
+export fn spelled(t: TypeRef) -> string { type_text(t, true) }
+
+/// A written type AS ITS AUTHOR WROTE IT — what the formatter prints: a fn type that writes no
+/// answer writes no arrow.
+export fn written_type(t: TypeRef) -> string { type_text(t, false) }
+
+fn type_text(t: TypeRef, answered: bool) -> string {
+    if !t.alternatives.is_empty() { return joined([type_text(a, answered) for a in t.alternatives], " or ") }
     let base = when {
-        t.arrow -> spelled_arrow(t)
-        t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
-        _ -> "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>"
+        t.arrow -> arrow_text(t, answered)
+        t.applied.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
+        _ -> "${t.name}<${joined([type_text(a, answered) for a in t.applied], ", ")}>"
     }
     if t.optional { return "${base}?" }
     base
 }
 
-/// A fn type's arguments are its seats followed by its answer.
-fn spelled_arrow(t: TypeRef) -> string {
-    let n = t.args.length
-    if n == 0 { return "fn()" }
-    let seats = [mark_prefixed(mark_at(t.marks, j), spelled(a)) for j, a in t.args.slice(0, n - 1)]
-    "fn(${joined(seats, ", ")}) -> ${spelled(t.args[n - 1])}"
-}
-
-/// The pronoun's own seat — what an implicit `it` lambda declares.
-export const pronoun_param: Param = Param {
-    name: "it",
-    ty: null,
-    default: null,
-    promises: plain_mark,
-    id: pronoun_param_id,
+/// A fn type: its seats, each with its promise, then its answer — the one it writes, or with
+/// `answered`, `void` for none.
+fn arrow_text(t: TypeRef, answered: bool) -> string {
+    let seats = [mark_prefixed(s.mark(), type_text(s.ty, answered)) for s in t.seats]
+    let answer = if answered { t.answered() } else { t.answer }
+    "fn(${joined(seats, ", ")})${if answer == null { "" } else { " -> ${type_text(answer!, answered)}" }}"
 }
 
 /// A MARK IS DATA; AN ANNOTATION IS A CALL. `@word` or
@@ -696,6 +804,8 @@ export const pronoun_param: Param = Param {
 // mitigation the doctrine names is paid in full: the unknown SPEAKS
 // (workspace's claim law) rather than falling through.
 @derive(Identity)
+@derive(Grammar)
+@derive(Taped)
 export type Mark = {
     name: string,
     args: List<string>,
@@ -706,15 +816,18 @@ export type Mark = {
 
 /// An argument a mark names: its label and the words of its value.
 @derive(Identity)
+@derive(Taped)
 export type MarkArg = { label: string, value: string }
 
 /// A handler an instance hears an event with: the event it names,
 /// whether the `on` sugar wrote it (a setting that names an event hears
 /// it too, and is printed as it was written), and why the instance's
 /// component cannot hear it, when it cannot.
+@derive(Taped)
 export type OnHandler = { event: string, sugar: bool = true, unheard: Unheard? = null }
 
 /// Why a component cannot hear a handler written for it.
+@derive(Taped)
 export enum Unheard {
     /// It declares no such event — these are the ones it does.
     Undeclared(declared: List<string>)
@@ -734,19 +847,27 @@ export enum Unheard {
 /// `says` makes the seat an EVENT a component declares (`on input(text:
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
+/// `type_default` is a type parameter's written default (`E = never`),
+/// what the parameter is where nothing pins it.
 @derive(Identity)
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, prop: bool = false, spread: SeatSpread? = null }
+@derive(Taped)
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, prop: bool = false, spread: SeatSpread? = null, implicit: bool = false, type_default: TypeRef? = null }
 
 /// What a seat standing for MANY says it is: the call's remaining arguments
 /// (`..rest: List<T>`), or a template hole that fills with whole entries
 /// (`..${xs}`), the hole's index.
 @derive(Identity)
+@derive(Taped)
 export enum SeatSpread {
     Rest
     Hole(index: int)
 }
 
 impl Param {
+    /// Whether a call fills it: the receiver's word written bare among a fn's seats, which the naming
+    /// law refuses, is no seat.
+    fn seated() -> bool { !(self.name == receiver_name() && self.ty == null) }
+
     /// Whether the seat takes the arguments a call leaves.
     fn is_rest() -> bool {
         let held? = self.spread else { return false }
@@ -766,7 +887,7 @@ impl Param {
 /// enum payload writes no name. A rule ending
 /// `-> Record.ParamSyntax` fills this, and the seat's builder reads it.
 @derive(Grammar)
-export type ParamSyntax = { marks: List<Mark> = [], state_field: bool = false, constant: bool = false, mutable: bool = false, state: bool = false, unshared: bool = false, spread: bool = false, name: Scoped?, ty: TypeRef?, default: ExprId?, variadic: bool = false }
+export type ParamSyntax = { marks: List<Mark> = [], state_field: bool = false, constant: bool = false, mutable: bool = false, state: bool = false, unshared: bool = false, spread: bool = false, name: Scoped?, ty: TypeRef?, default: ExprId?, variadic: bool = false, tdefault: TypeRef? = null }
 
 /// What one enum VARIANT writes, as a rule labels it: the marks
 /// before its name, its name, and the payloads it carries. A rule
@@ -780,22 +901,19 @@ export type VariantSyntax = { marks: List<Mark> = [], name: Scoped, payloads: Li
 /// once per construction (never carried unchanged through a
 /// rebuild), so a splice's own copy gets its own slot rather than
 /// sharing the template's.
+@placed("param_at", "param_place")
 export type ParamId = { index: int }
 
-/// Seat identity — two ids name one seat when their indexes agree.
-export fn same_param_id(a: ParamId, b: ParamId) -> bool {
-    // LICENSED structs.index_compared: seat identity — ids compare by index
-    a.index == b.index
-}
-
-/// The compiler-synthesized `it` seat's own id — reserved (never
-/// minted by `alloc_param_id`, whose indexes start at 0), so
-/// `is_pronoun` asks an identity question instead of reading absence
-/// off a field that any real seat could also lack.
-export const pronoun_param_id: ParamId = ParamId { index: -1 }
-
 /// A pattern's identity in the store's pattern table.
+@dense
+@indexes(Pat)
 export type PatId = { index: int }
+
+impl PatId {
+    fn fingerprint() -> int { derived([fp_str("PatId"), self.index]) }
+
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+}
 
 /// Pattern identity — two ids name one pattern when their indexes
 /// agree.
@@ -814,7 +932,8 @@ export fn same_pat(a: PatId, b: PatId) -> bool {
 @derive(Matchable)
 @derive(Exact)
 @derive(Makes)
-export collect enum Pat: Surfaced = @pat_node in package by it.name
+@derive(TapeRoot)
+export collect enum Pat: Surfaced, PatChecks = @pat_node in package by it.name
 
 /// Marks a record as `Pat`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -830,15 +949,18 @@ export fn pat_node(_node: Named) {}
 /// end — which is why the mark reads there as a statement of what the
 /// hole does rather than a change to it.
 @derive(Identity)
+@derive(Taped)
 export type Hole = { name: string, ty: TypeRef?, greedy: bool }
 
 /// A hole and the literal text that follows it.
 @derive(Identity)
+@derive(Taped)
 export type FormatPart = { hole: Hole, piece: string }
 
 /// The format a `grammar` declaration read. Its holes became the
 /// record's fields, and a record cannot say what text it reads —
 /// so the format is kept beside the statement that declared it.
+@derive(Taped)
 export type GrammarSpec = { head: string, parts: List<FormatPart> }
 
 /// One name a pattern binds, and the pattern node it binds under.
@@ -861,29 +983,61 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
     [p.hole.name for p in parts if binds(p.hole)]
 }
 
+/// One `catch` arm: the failure variant it names (a union member's name for
+/// a union catch, `""` for a catch-all or a bare value), the name its
+/// payload binds (`""` binds nothing), and the value it recovers to.
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+@derive(Taped)
+export type CatchArm = { variant: Plain = Plain(""), bind: Scoped = scoped(""), value: ExprId }
+
 /// One match arm: its alternatives (`a or b`), an optional guard, and
 /// its value. A false guard tries the next arm; a guarded arm covers
 /// nothing, so coverage and repeats never count it.
 @derive(Identity)
 @derive(Grammar)
+@derive(Makes)
+@derive(Taped)
 export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
 /// single positional payload, or named fields — and the marks
 /// written before it.
 @derive(Identity)
+@derive(Taped)
 export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? = null, marks: List<Mark> = [] }
 
 /// One imported item: its name, and the name it binds under when it
 /// writes one.
+/// One field a record pattern looks at, and the pattern it takes — a
+/// punned field's is a binder of its own name.
 @derive(Identity)
 @derive(Grammar)
+@derive(Makes)
+@derive(Taped)
+export type FieldPat = { name: Plain, pat: PatId }
+
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+@derive(Taped)
 export type UseItem = { name: string, rename: string? = null }
+
+/// A `given` group as written: its name and its cases — a lone `then`
+/// is a group with no name.
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+@derive(Taped)
+export type Given = { name: string, cases: List<Case> }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
 @derive(Identity)
 @derive(Grammar)
+@derive(Makes)
+@derive(Taped)
 export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.
@@ -923,7 +1077,8 @@ impl UseParts {
 @derive(Makes)
 @relation
 @arena
-export collect enum Stmt: Identity, Surfaced = @stmt_node in package by it.name
+@derive(TapeRoot)
+export collect enum Stmt: Identity, Surfaced, StmtChecks, StmtLowers = @stmt_node in package by it.name
 
 /// Marks a record as `Stmt`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -940,6 +1095,7 @@ export fn stmt_node(_node: Named) {}
 ///
 /// `///` lines are NOT remarks: a doc comment is attached to the
 /// declaration it documents (`docs`) and means something to `explain`.
+@derive(Taped)
 export enum Trivia {
     Comment(text: string)
     /// A RUN OF BLANK LINES IS ONE `Blank`. Presence and absence are
@@ -959,7 +1115,8 @@ export enum Trivia {
 /// an own-line comment and for a Blank, both of which own no code to
 /// trail: the empty-value law forbids reading that from `trivia`
 /// alone, since a `Comment` can be either kind.
-export type Remark = { trivia: Trivia, at: int, same_line: bool = false }
+@derive(Taped)
+export type Remark = { trivia: Trivia, @offset at: int, same_line: bool = false }
 
 /// A string list's fingerprint parts, in order.
 fn str_fps(texts: List<string>) -> List<int> {
@@ -977,7 +1134,7 @@ fn plain_fps(names: List<Plain>) -> List<int> {
 }
 
 fn scoped_fps(names: List<Scoped>) -> List<int> {
-    [fp_str(n.of) for n in names]
+    [n.of.text_print() for n in names]
 }
 
 /// A bool as a fingerprint part.
@@ -1009,11 +1166,7 @@ fn type_fp(t: TypeRef?) -> int { t?.fingerprint() ?? 0 }
 /// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
 /// costs no tag; only the payload-carrying variant folds one.
 fn collectkind_fp(k: CollectKind) -> int {
-    match k {
-        .Component(w) -> fp(136, [fp_str(w)]),
-        .UnknownKind(w) -> fp(132, [fp_str(w)]),
-        .Annotated(w) -> fp(137, [fp_str(w)]),
-    }
+    match k { .Component(w) -> fp(136, [fp_str(w)]), .Annotated(w) -> fp(137, [fp_str(w)]) }
 }
 
 /// A collect's scope, the same shape.
@@ -1099,8 +1252,8 @@ fn exact_type_ref(a: TypeRef?, b: TypeRef?) -> bool {
         wa.dynamic == wb.dynamic &&
         wa.arrow == wb.arrow &&
         wa.spliced == wb.spliced &&
-        exact_seat_marks(wa.marks, wb.marks) &&
-        exact_type_refs(wa.args, wb.args)
+        exact_seat_marks(wa.seat_marks(), wb.seat_marks()) &&
+        exact_type_refs(wa.type_args(), wb.type_args())
 }
 
 fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
@@ -1110,7 +1263,6 @@ fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
 fn exact_collect_kind(a: CollectKind, b: CollectKind) -> bool {
     match a {
         .Component(w1) -> match b { .Component(w2) -> w1 == w2, rest -> false },
-        .UnknownKind(w1) -> match b { .UnknownKind(w2) -> w1 == w2, rest -> false },
         .Annotated(w1) -> match b { .Annotated(w2) -> w1 == w2, rest -> false },
     }
 }

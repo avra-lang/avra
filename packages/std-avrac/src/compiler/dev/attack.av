@@ -18,7 +18,7 @@
 use core.{joined, flatten, quoted_text, distinct}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
 use grammar.{TokenKind, term_kind}
-use compiler.{analyze_source}
+use testing.{judged}
 
 /// The class a case belongs to.
 export enum AttackClass { Degenerate, Malformed, Keyword }
@@ -39,7 +39,7 @@ fn is_mutant(c: AttackClass) -> bool {
 }
 
 fn accepts(src: string) -> bool {
-    analyze_source(src).diagnostics.is_empty()
+    judged(src).diagnostics.is_empty()
 }
 
 /// A source on one baseline line — a newline or tab would break the
@@ -320,6 +320,7 @@ fn sample_of(k: TokenKind) -> string {
         .Env -> "env",
         .Provide -> "provide",
         .On -> "on",
+        .Ctx -> "ctx",
         .Hole -> "\$" + "{x}",
         .HoleBegin -> "\$" + "{",
         .HoleEnd -> "}",
@@ -368,13 +369,13 @@ export fn attack_test_source(feature: string, g: Generated) -> string {
             "// classes from the feature's rule and the model. A SEMANTIC",
             "// attack belongs in the feature's hand-written test.",
             "// cap: ${g.cap} case(s), ${g.dropped} dropped.",
-            "use @std.avrac.compiler.{analyze_source}",
+            "use @std.avrac.testing.{judged}",
             "use @std.avrac.diagnostics.{Diag}",
             "",
             "/// The SHAPE parses — a canonical sample spells `x` where a name",
             "/// belongs, so a TYPE error is expected and a PARSE error is not.",
             "fn parses(src: string) -> bool {",
-            "    !analyze_source(src).diagnostics.any(parse_error)",
+            "    !judged(src).diagnostics.any(parse_error)",
             "}",
             "",
             "fn parse_error(d: Diag) -> bool {",
@@ -385,7 +386,7 @@ export fn attack_test_source(feature: string, g: Generated) -> string {
             "/// deletion can yield a valid program, so this law is tolerance,",
             "/// not refusal; a trap is not a verdict and dies in the call.",
             "fn tolerates(src: string) -> bool {",
-            "    let reached = analyze_source(src).diagnostics.length",
+            "    let reached = judged(src).diagnostics.length",
             "    reached >= 0",
             "}",
             "",

@@ -3,7 +3,7 @@
 // the field as that record's name — `${self.path}.parse(t)` where a
 // value stands, `Req<${self.path}>` where a type does.
 use @std.avrac.testing.{provided, answered, refused_n}
-use @std.avrac.compiler.{Program}
+use @std.avrac.testing.held.{Judged}
 
 /// A toy router: `route` answers one fixed target through a handler
 /// that takes the route's request by name.
@@ -11,7 +11,7 @@ fn router() -> string {
     "use @std.meta.{Format}\nexport type Req<P> = { path: string, params: P }\nexport type Offer<P> = { req: Req<P> }\n\nexport fn answered<P>(pattern: string, read: fn(string) -> P?, target: string, f: fn(Offer<P>) -> string) -> string {\n    let params? = read(target) else { return \"404 \" + pattern }\n    f(Offer { req: Req { path: target, params: params } })\n}\n\nexport component route(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { answered<\${self.path}>(\${self.path}.pattern(), (t: string) -> \${self.path}.parse(t), \"/robots/7/ada\", \${self.body}) }\n    }\n}\n\nexport component row(n: int) {\n    tags: List<string> = []\n}\n"
 }
 
-fn routed(main: string) -> Program {
+fn routed(main: string) -> Judged {
     provided("use @x.c.{route, row}\n" + main, router())
 }
 
@@ -88,7 +88,11 @@ spec "features/components — a pattern head" {
             )
         }
         then "a handler answering the wrong type is refused at its body" {
-            refused_n(routed("route \"/x/{id}\" { o -> o }"), "argument 4 of `answered` wants", 1)
+            refused_n(
+                routed("route \"/x/{id}\" { o -> o }"),
+                "the seat `route` hands it to takes",
+                1,
+            )
         }
     }
 }

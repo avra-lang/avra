@@ -1,7 +1,6 @@
 // Patterns: nested tests, alternatives, holes, literals, named
 // payloads — and the coverage law with its lint.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with, refusals}
+use @std.avrac.testing.{shown, refused_with, refusals, judged}
 
 fn shapes() -> string {
     "enum Shape {\n    Dot\n    Line(int)\n    Rect(w: int, h: int)\n}\n"
@@ -83,15 +82,13 @@ spec "features/enums (patterns)" {
             )
         }
         then "a name bound twice renders whole" {
-            analyze_source(
-                "enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}",
-            )
+            judged("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}")
                 .report()
                 .starts_with("error[type.binds_twice]: this pattern binds `n` twice — a name binds one value")
         }
         then "an unknown variant inside an `or` arm refuses once and nothing else speaks" {
             let src = "enum E {\n    A(n: int)\n    B(n: int)\n}\nmatch E.A(1) {\n    .A(n) or .Zed(n) -> n\n    _ -> 0\n}"
-            refusals(src) == 1 && analyze_source(src).report().contains("`E` has no variant `Zed`")
+            refusals(src) == 1 && judged(src).report().contains("`E` has no variant `Zed`")
         }
         then "`_` covers the remainder, and the first arm wins" {
             shown("${shapes()}match Shape.Dot {\n    .Line(_) -> 1\n    _ -> 2\n}") == "2"
@@ -134,7 +131,7 @@ spec "features/enums (patterns)" {
             ) == 0
         }
         then "two answering arms make a REGISTRY — its hole forgets the next variant, and the program still runs" {
-            let a = analyze_source(
+            let a = judged(
                 "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}",
             )
             a.diagnostics.length == 1 &&
@@ -148,7 +145,7 @@ spec "features/enums (patterns)" {
             ) == 0
         }
         then "a hole after nested arms that already cover a variant does not count it" {
-            let a = analyze_source(
+            let a = judged(
                 "${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Num(_)) -> 1\n    .One(.Word(_)) -> 2\n    _ -> 3\n}",
             )
             a.diagnostics.length == 1 && a.report().contains("the rest: .Empty") && a.ran() == "1"
@@ -157,7 +154,7 @@ spec "features/enums (patterns)" {
             refusals("${shapes()}match Shape.Dot {\n    .Dot or .Line(_) -> 1\n    _ -> 0\n}") == 0
         }
         then "an or-run counts as ONE arm — a second answering arm still makes a registry" {
-            let a = analyze_source(
+            let a = judged(
                 "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A or .B -> 1\n    .C -> 2\n    _ -> 0\n}",
             )
             a.diagnostics.length == 1 && a.report().contains("the rest: .D") && a.ran() == "2"
@@ -168,7 +165,7 @@ spec "features/enums (patterns)" {
             ) == 0
         }
         then "a hole that BINDS is told the exit that is open to it — `rest` binds nothing" {
-            let a = analyze_source(
+            let a = judged(
                 "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B -> 2\n    other -> 9\n}",
             )
             a.diagnostics.length == 1 &&
@@ -195,6 +192,14 @@ spec "features/enums (patterns)" {
                 shapes() +
                     "fn f(s: Shape) -> int {\n    match s {\n        .Rect as r -> 1\n        _ -> 0\n    }\n}\nf(Shape.Dot)",
                 "`.Rect` of `Shape` is written, so it has no record",
+            )
+        }
+    }
+    given "a fraction written as a number pattern" {
+        then "is typing's refusal, in its own words, once" {
+            refused_with(
+                "let x = 2\nmatch x {\n    1.5 -> 1\n    _ -> 0\n}",
+                "`1.5` is no integer — a number pattern matches an `int`",
             )
         }
     }

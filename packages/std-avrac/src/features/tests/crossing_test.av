@@ -2,20 +2,12 @@
 // so every shape that can move is moved here and the door must name
 // it — and a value that crosses cleanly must arrive whole, with its
 // absences absent and its presences present.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{Program}
-use @std.avrac.testing.{
-    vendored_meta_as,
-    vendored_meta_paths,
-    real_meta_source,
-    refused_n,
-    refused_in,
-}
-use compiler.host.{memory_host}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.testing.{vendored_meta_as, real_meta_source, refused_n, refused_in}
 
 /// A program whose annotations come from a PROVIDER package, under
 /// the `@std/meta` source given.
-fn under(main: string, meta: string) -> Program {
+fn under(main: string, meta: string) -> Judged {
     let files = vendored_meta_as(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
@@ -25,24 +17,12 @@ fn under(main: string, meta: string) -> Program {
         },
         meta,
     )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/prov/avra.toml",
-                "/w/vendor/prov/src/prov.av",
-            ]
-                .concat(vendored_meta_paths()),
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
 /// The same program under the real `@std/meta`.
-fn real(main: string) -> Program { under(main, real_meta_source()) }
+fn real(main: string) -> Judged { under(main, real_meta_source()) }
 
 /// A generator, a validator that names NOTHING but its message, one
 /// that names EVERYTHING a `Diagnostic` carries, and one whose
@@ -163,7 +143,7 @@ spec "features/crossing — the meta boundary" {
     }
     given "a program whose derives never ran" {
         then "it is refused, and the refusal is the boundary's" {
-            under(uses_a_derive(), shrunk_record()).check() is .Err
+            under(uses_a_derive(), shrunk_record()).checked() is .Err
         }
     }
     given "a package that GREW — the ordinary way a contract evolves" {
@@ -208,17 +188,14 @@ spec "features/crossing — the meta boundary" {
             !refused_in(real(validated("plainly")), "another `@std/meta`")
         }
         then "a program that loads no `@std/meta` crosses nothing and is refused nothing" {
-            let ws = test_workspace(
-                memory_host(
-                    {
-                        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                        "/w/src/main.av": "1",
-                    },
-                    ["/w/avra.toml", "/w/src/main.av"],
-                ),
+            let ws = held_at(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "1",
+                },
                 "/w",
             )
-            ws.program("/w/src/main.av").check() is .Ok
+            ws.judged_at("/w/src/main.av").checked() is .Ok
         }
     }
     given "a `Diagnostic` crossing back" {
@@ -247,18 +224,18 @@ spec "features/crossing — the meta boundary" {
             let p = real(
                 "use @std.meta.{derive}\nuse @x.prov.{Shape}\n@derive(Shape)\ntype P = { x: int, y: string }\nP { x: 1, y: \"a\" }.shape()",
             )
-            p.check() is .Ok
+            p.checked() is .Ok
         }
         then "a payload-carrying enum's spellings arrive one per payload" {
             let p = real(
                 "use @std.meta.{derive}\nuse @x.prov.{Shape}\n@derive(Shape)\nenum E { A, B(int, string) }\nE.A.shape()",
             )
-            p.check() is .Ok
+            p.checked() is .Ok
         }
     }
     given "a long answer" {
         then "five thousand directives cross and every one of them declares nothing" {
-            real("use @x.prov.{many}\n@many\nfn answer(n: int) -> int { n }\nanswer(1)").check() is .Ok
+            real("use @x.prov.{many}\n@many\nfn answer(n: int) -> int { n }\nanswer(1)").checked() is .Ok
         }
     }
 }

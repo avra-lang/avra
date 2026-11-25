@@ -4,7 +4,9 @@
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{
+    scoped,
     Variant,
+    carries_composed,
     binds_type,
     counted,
     flatten,
@@ -29,7 +31,8 @@ use core.{
     Scoped,
     faceted,
 }
-use diagnostics.{refusal, Diag, unread_behind}
+use diagnostics.{refusal, Diag, Voice, said_as, unread_behind}
+use features.fns.{param_typeless}
 use features.{
     TypeCx,
     slot_help,
@@ -84,21 +87,14 @@ impl TypeCx {
         let parts? = self.view.store.named_parts(s) else { return }
         if !parts.tparams.is_empty() { return self.named_is_generic(s, parts.name) }
         let of = self
-            .slot_law(
-                s,
-                "type.named",
-                "a named type cannot stand over nothing",
-                "`${parts.name}` stands over `${spelled(parts.of)}`",
-                parts.of,
-            )
+            .slot_law(s, "type.named", named_unslotted(parts.name, spelled(parts.of)), parts.of)
         // interned DIRECTLY, never through `declared_type`: that door
         // forces a named declaration, and this IS that declaration
         let named = self.view.types.intern(Type.Struct(self.decl_of(s), parts.name))
         self.declare(s, DeclSig.Named(NamedSig { of: of }))
         if self.view.types.shape_of(of) is .Error { return }
         if self.view.types.names_itself(named, of) { return self.named_is_circular(s, parts.name) }
-        self.view.types.mark_named(named, of)
-        self.view.types.mark_flat(named, [of])
+        self.view.decls.named_over(named, of)
     }
 
     /// An ALIAS's table: the type its name stands for, read under
@@ -182,7 +178,8 @@ impl TypeCx {
         let ty? = f.ty else { return self.error_type }
         let spoken = self.facts.voices
         let at = self.stmt_loc(s)
-        let held = self.payload_verdict(at, "`${f.name}`", ty, self.written_by(m.file, at, ty))
+        let held = self
+            .payload_verdict(at, payload_unslotted("", f.name.text(), spelled(ty)), self.written_by(m.file, at, ty))
         self.facts.voices = spoken
         held
     }
@@ -197,22 +194,19 @@ impl TypeCx {
     /// written without one. An unnamed payload is named by its variant.
     mut fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
         if p.ty == null { return null }
-        let who = if p.name.is_empty() { "`.${variant}`" } else { "`${p.name}`" }
         let at = self.stmt_loc(s)
-        self.payload_verdict(at, who, p.ty!, self.written_type_of(s, p.ty!))
+        self
+            .payload_verdict(
+                at,
+                payload_unslotted(variant, p.name.text(), spelled(p.ty!)),
+                self.written_type_of(s, p.ty!),
+            )
     }
 
-    /// The slot law's verdict on a payload `who` carries, written `ty`
-    /// and read as `named`.
-    fn payload_verdict(at: Loc?, who: string, ty: TypeRef, named: TypeId) -> TypeId {
-        self
-            .held_verdict(
-                at,
-                "type.enum_payload",
-                "an enum payload cannot hold nothing",
-                "${who} carries `${spelled(ty)}`",
-                named,
-            )
+    /// The slot law's verdict on a payload read as `named`, said as
+    /// `voice` says it.
+    fn payload_verdict(at: Loc?, voice: Voice, named: TypeId) -> TypeId {
+        self.held_verdict(at, "type.enum_payload", voice, named)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -233,9 +227,9 @@ impl TypeCx {
         let states = [f.state || f.prop && self.compares_by_value(plain[j]) for j, f in fields]
         let types = [self.slot_of(plain[j], states[j]) for j in 0..fields.length]
         let own = StructSig {
-            names: [f.name.of for f in fields],
+            names: [f.name.text() for f in fields],
             types: types,
-            defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
+            defaults: [self.view.decls.default_named(record, f.name.text()) for f in fields],
             lacking: lacking,
             states: states,
         }
@@ -244,7 +238,7 @@ impl TypeCx {
         for d in duplicate_names("type.duplicate_field", owner, sig.names, self.stmt_loc(s)) {
             self.emit(d)
         }
-        let names = [Scoped(n) for n in sig.names]
+        let names = [scoped(n) for n in sig.names]
         if self.marks_identity(record) { self.identity_law(s, record, names, sig.types) }
         self.lacks_law(s, owner, names, lacking)
         self.declare(s, DeclSig.Record(sig))
@@ -259,8 +253,7 @@ impl TypeCx {
         let composer? = self.view.decls.composer(self.view.file) else { return written }
         let carried? = self.view.decls.carried_by(composer) else { return written }
         let fields? = self.view.decls.sig(carried)?.record_sig() else { return written }
-        // a component that already holds every carried field spread them in itself
-        if fields.names.all((n) -> written.names.contains(n)) { return written }
+        if !carries_composed(written.names, fields.names) { return written }
         joined_tables([written, fields]) with { lacking: written.lacking }
     }
 
@@ -325,7 +318,7 @@ impl TypeCx {
     fn identity_law(s: StmtId, record: DeclId, names: List<Scoped>, types: List<TypeId>) {
         let plain = self.identity_plain_fields(record)
         for j, ty in types {
-            let field = names[j].of
+            let field = names[j].text()
             if !self.identity_field_ok(ty) && !plain.contains(field) {
                 self.non_identity_field(s, field, ty)
             }
@@ -366,7 +359,7 @@ impl TypeCx {
     /// declare — a second reason, or a declared field, contradicts it.
     fn lacks_law(s: StmtId, owner: string, names: List<Scoped>, lacking: List<Lacked>) {
         for j, l in lacking {
-            if names.any(it.of == l.field) { self.lacks_declared(s, owner, l.field) }
+            if names.any(it.spells(l.field)) { self.lacks_declared(s, owner, l.field) }
             if lacking.slice(0, j).any(it.field == l.field) { self.lacks_twice(s, owner, l.field) }
         }
     }
@@ -413,12 +406,10 @@ impl TypeCx {
     fn non_identity_field(s: StmtId, field: string, found: TypeId) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.identity_field",
                     self.stmt_loc(s),
-                    identity_field_law,
-                    "field `${field}` is `${self.view.types.name_of(found)}`",
-                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `@plain_field(\"${field}\")` beside `@identity`",
+                    identity_field_plain(field, self.view.types.name_of(found)),
                 ),
             )
     }
@@ -463,11 +454,10 @@ impl TypeCx {
     /// ends.
     fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        let label = "field `${f.name}` is `${spelled(f.ty!)}`"
-        let held = self
-            .slot_law(s, "type.struct_scalar", "a struct field cannot hold nothing", label, f.ty!)
+        let voice = field_unslotted(f.name.text(), spelled(f.ty!))
+        let held = self.slot_law(s, "type.struct_scalar", voice, f.ty!)
         if self.view.decls.is_owned(self.decl_of(s)) { return held }
-        if self.escapes_with_task(self.stmt_loc(s), label, held) { return self.error_type }
+        if self.escapes_with_task(self.stmt_loc(s), voice.label!, held) { return self.error_type }
         held
     }
 
@@ -488,25 +478,25 @@ impl TypeCx {
     /// one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
-    mut fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        self.slot_verdict(self.stmt_loc(s), kind, message, label, self.written_type_of(s, ty))
+    mut fn slot_law(s: StmtId, kind: string, voice: Voice, ty: TypeRef) -> TypeId {
+        self.slot_verdict(self.stmt_loc(s), kind, voice, self.written_type_of(s, ty))
     }
 
     /// The slot law's verdict on a type already read.
-    fn slot_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
+    fn slot_verdict(at: Loc?, kind: string, voice: Voice, named: TypeId) -> TypeId {
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
         if slot_worthy(sh) { return named }
-        self.emit(refusal(kind, at, message, label, slot_help))
+        self.emit(said_as(kind, at, voice))
         self.error_type
     }
 
     /// The held-slot law's verdict on a type already read: the slot
     /// seats that outlive their block refuse a task, unless the
     /// enclosing record is a MARKED owner (its field law's own door).
-    fn held_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
-        let held = self.slot_verdict(at, kind, message, label, named)
-        if self.escapes_with_task(at, label, held) { return self.error_type }
+    fn held_verdict(at: Loc?, kind: string, voice: Voice, named: TypeId) -> TypeId {
+        let held = self.slot_verdict(at, kind, voice, named)
+        if self.escapes_with_task(at, voice.label!, held) { return self.error_type }
         held
     }
 
@@ -534,12 +524,12 @@ impl TypeCx {
         // A parameter declared twice makes the second unreachable —
         // the body sees the first, silently. The same law a record's
         // fields and an enum's variants obey, through the same scan.
-        let owner: string = self.view.store.fn_parts(s)?.name ?? "this fn"
+        let owner: string = self.view.store.fn_parts(s)?.name ?? self.view.store.extern_parts(s)?.name ?? "this fn"
         let seats = written_seats(self.keywords, fparams)
         for d in duplicate_names(
             "type.duplicate_param",
             owner,
-            [pp.name.of for pp in seats],
+            [pp.name.text() for pp in seats],
             self.stmt_loc(s),
         ) {
             self.emit(d)
@@ -573,7 +563,7 @@ impl TypeCx {
         if result_infers(ret) { return self.inferred_answer(s, ret) }
         let rt = self.annotated(s, ret)
         let _ = self
-            .escapes_with_task(self.stmt_loc(s), "`${owner}` answers `${self.view.types.name_of(rt)}`", rt)
+            .escapes_with_task(self.stmt_loc(s), answer_label(owner, self.view.types.name_of(rt)), rt)
         rt
     }
 
@@ -584,13 +574,13 @@ impl TypeCx {
     /// structural walk cannot resolve, both refuse — `_` never mints
     /// silently from an incomplete answer.
     mut fn inferred_answer(s: StmtId, ret: TypeRef) -> TypeId {
-        let ok = self.written_by(self.view.spanned_of_stmt(s), self.stmt_loc(s), ret.args[0])
+        let ok = self.written_by(self.view.spanned_of_stmt(s), self.stmt_loc(s), ret.applied[0])
         if self.view.types.shape_of(ok) is .Error { return ok }
         let d = self.decl_of(s)
-        let members = self.view.decls.inferred_errors(d)
-        if self.view.decls.inferred_is_unresolved(d) { return self.inferred_site_unresolved(s) }
-        if members.is_empty() { return self.no_inferred_failures(s) }
-        let err = self.view.types.union_of(members)
+        let found = self.view.decls.inferred(d)
+        if found.unresolved { return self.inferred_site_unresolved(s) }
+        if found.errors.is_empty() { return self.no_inferred_failures(s) }
+        let err = self.view.types.union_of(found.errors)
         self.view.types.type(Result<ok, err>)
     }
 
@@ -635,7 +625,7 @@ impl TypeCx {
         for j, pp in seats {
             if pp.promises.mutable || pp.promises.state {
                 self.view.decls.declared_first(ptypes[j])
-                self.view.types.unflatten(ptypes[j])
+                self.view.decls.sealed(ptypes[j])
             }
         }
     }
@@ -652,7 +642,7 @@ impl TypeCx {
             self.bound_not_a_trait(s, spelled(b))
             return []
         }
-        let args = [self.annotated(s, a) for a in b.args]
+        let args = [self.annotated(s, a) for a in b.applied]
         let tr? = self.bound_trait(self.decl_of(s), b.name) else {
             self.bound_not_a_trait(s, spelled(b))
             return []
@@ -665,7 +655,7 @@ impl TypeCx {
 
     fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
-        self.typeless_param(s, pp.name.of)
+        self.typeless_param(s, pp.name.text())
     }
 
     /// A fn's whole SEAT LIST, typed — the receiver's type first when there is
@@ -684,16 +674,7 @@ impl TypeCx {
     }
 
     fn typeless_param(s: StmtId, name: string) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.mismatch",
-                    self.stmt_loc(s),
-                    "parameter `${name}` declares no type",
-                    "declared here",
-                    "write `${name}: <type>`",
-                ),
-            )
+        self.emit(said_as("type.mismatch", self.stmt_loc(s), param_typeless(name)))
         self.error_type
     }
 
@@ -716,135 +697,36 @@ impl TypeCx {
         }
     }
 
-    fn once_takes_arguments(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.once_fn",
-                    self.stmt_loc(s),
-                    "`once fn ${name}` takes arguments — a `once` answer is one value for the whole process",
-                    "declared here",
-                    "drop the parameters, or drop `once`",
-                ),
-            )
-    }
+    fn once_takes_arguments(s: StmtId, name: string) { self.emit(said_as("type.once_fn", self.stmt_loc(s), once_with_arguments(name))) }
 
     fn once_answers_a_copy(s: StmtId, name: string, answer: TypeId) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.once_fn",
                     self.stmt_loc(s),
-                    "`once fn ${name}` answers `${self.view.types.name_of(answer)}`, which the runtime cannot keep",
-                    "declared here",
-                    "a `once` answer is a managed value — a string, list, map, enum, or a record wider than one scalar",
+                    once_answers_unkept(name, self.view.types.name_of(answer)),
                 ),
             )
     }
 
-    fn once_is_a_method(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.once_fn",
-                    self.stmt_loc(s),
-                    "`once fn ${name}` is a method — its answer would depend on a receiver",
-                    "declared here",
-                    "move it to the top level, or drop `once`",
-                ),
-            )
-    }
+    fn once_is_a_method(s: StmtId, name: string) { self.emit(said_as("type.once_fn", self.stmt_loc(s), once_method(name))) }
 
-    fn spread_own(s: StmtId, owner: string) {
-        self
-            .emit(
-                refusal(
-                    "type.spread",
-                    self.stmt_loc(s),
-                    "`${owner}` spreads itself",
-                    "declared here",
-                    "a spread places ANOTHER record's fields — a record cannot hold its own",
-                ),
-            )
-    }
+    fn spread_own(s: StmtId, owner: string) { self.emit(said_as("type.spread", self.stmt_loc(s), spreads_itself(owner))) }
 
-    fn spread_cycle(s: StmtId, of: TypeRef) {
-        self
-            .emit(
-                refusal(
-                    "type.spread",
-                    self.stmt_loc(s),
-                    "`..${spelled(of)}` spreads a record that spreads this one",
-                    "spread here",
-                    "spreads cannot form a cycle — the fields would have no first owner",
-                ),
-            )
-    }
+    fn spread_cycle(s: StmtId, of: TypeRef) { self.emit(said_as("type.spread", self.stmt_loc(s), spreads_back(spelled(of)))) }
 
     fn spread_no_record(s: StmtId, of: TypeRef) {
-        self
-            .emit(
-                refusal(
-                    "type.spread",
-                    self.stmt_loc(s),
-                    "`..${spelled(of)}` spreads no record",
-                    "spread here",
-                    "a spread places a record's fields — `${spelled(of)}` is not a record with fields",
-                ),
-            )
+        self.emit(said_as("type.spread", self.stmt_loc(s), spreads_no_record(spelled(of))))
     }
 
-    fn named_is_generic(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.named",
-                    self.stmt_loc(s),
-                    "`${name}` is a named type with type parameters, which is recorded, not landed",
-                    "declared here",
-                    "a named type stands over ONE written shape — write the shape out, or declare a record",
-                ),
-            )
-    }
+    fn named_is_generic(s: StmtId, name: string) { self.emit(said_as("type.named", self.stmt_loc(s), named_with_params(name))) }
 
-    fn named_is_circular(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.named",
-                    self.stmt_loc(s),
-                    "`${name}` stands over itself",
-                    "declared here",
-                    "a named type stands over a shape it does not name — its names loop back to `${name}`",
-                ),
-            )
-    }
+    fn named_is_circular(s: StmtId, name: string) { self.emit(said_as("type.named", self.stmt_loc(s), named_over_itself(name))) }
 
-    fn stray_mut_fn(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.mut_fn",
-                    self.stmt_loc(s),
-                    "`mut fn` marks a method that writes its receiver — `${name}` has none",
-                    "declared here",
-                    "drop `mut`, or move `${name}` into `impl <Type> { … }`",
-                ),
-            )
-    }
+    fn stray_mut_fn(s: StmtId, name: string) { self.emit(said_as("type.mut_fn", self.stmt_loc(s), mut_without_receiver(name))) }
 
-    fn stray_static_fn(s: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.static_fn",
-                    self.stmt_loc(s),
-                    "`static fn` marks a method with no receiver — `${name}` is already a plain fn",
-                    "declared here",
-                    "drop `static`, or move `${name}` into `impl <Type> { … }` and call it `<Type>.${name}(…)`",
-                ),
-            )
-    }
+    fn stray_static_fn(s: StmtId, name: string) { self.emit(said_as("type.static_fn", self.stmt_loc(s), static_without_receiver(name))) }
 
     /// A type parameter cannot take a name the LANGUAGE owns — the
     /// shadow would be unreadable; declared-type shadowing is the
@@ -873,18 +755,7 @@ impl TypeCx {
             )
     }
 
-    fn owned_name(s: StmtId, n: string) {
-        self
-            .emit(
-                refusal(
-                    "type.tparam",
-                    self.stmt_loc(s),
-                    "a type parameter cannot take `${n}`'s name — the language owns it",
-                    "declared here",
-                    fresh_tparam(),
-                ),
-            )
-    }
+    fn owned_name(s: StmtId, n: string) { self.emit(said_as("type.tparam", self.stmt_loc(s), tparam_owned(n))) }
 
     /// A declaration's type parameters as interned Vars — fns and
     /// type declarations alike; the ordinal IS the identity, so
@@ -962,7 +833,7 @@ impl TypeCx {
         if !t.alternatives.is_empty() { return self.union_written(at, t.alternatives) }
         if t.arrow { return self.fn_written(at, t) }
         if t.dynamic { return self.dyn_type(at, t.name) }
-        if t.args.is_empty() { return self.bare_row(t.name) ?? self.named_type(at, t.name) }
+        if t.applied.is_empty() { return self.bare_row(t.name) ?? self.named_type(at, t.name) }
         self.applied(at, t)
     }
 
@@ -986,20 +857,18 @@ impl TypeCx {
         self.view.types.intern(row.builds(TypeArgs { parts: [] }))
     }
 
-    /// `fn(a, b) -> r` — the args carry the seats, the LAST is the
-    /// return (the builder's pinned contract).
+    /// `fn(a, b) -> r` — each seat's type, then the answer (`void`
+    /// when none is written). The written seats' marks ARE the type's:
+    /// `fn(mut T, U)` says the callee writes through its first seat.
     fn fn_written(at: Loc?, t: TypeRef) -> TypeId {
-        mut seats: List<TypeId> = []
-        mut answer = self.error_type
-        // LICENSED loops.push_loop: the tail is the answer; comprehensions cannot split it off
-        for j, a in t.args {
-            let ty = self.full_type(at, a)
-            if self.view.types.shape_of(ty) is .Error { return ty }
-            if j == t.args.length - 1 { answer = ty } else { seats.push(ty) }
+        let typed = [self.full_type(at, a) for a in t.type_args()]
+        let refused? = typed.find((ty) -> self.view.types.shape_of(ty) is .Error) else {
+            return self
+                .view
+                .types
+                .intern(Type.Fn(typed.slice(0, typed.length - 1), t.seat_marks(), typed.last()!))
         }
-        // the written seats' marks ARE the type's: `fn(mut T, U)`
-        // says the callee writes through its first seat
-        self.view.types.intern(Type.Fn(seats, t.marks, answer))
+        refused
     }
 
     /// `dyn Name` wears a declared trait — the contract is the type.
@@ -1009,45 +878,17 @@ impl TypeCx {
     }
 
     fn unappliable(at: Loc?, name: string) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.applied",
-                    at,
-                    "`${name}` takes no type arguments",
-                    "applied here",
-                    "the applied types today are `List<T>` and `Result<T, E>`",
-                ),
-            )
+        self.emit(said_as("type.applied", at, applied_unappliable(name)))
         self.error_type
     }
 
     fn arity_wrong(at: Loc?, name: string, found: int, takes: int) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.applied",
-                    at,
-                    "`${name}` is applied to ${found} types; it takes ${takes}",
-                    "applied here",
-                    "`${name}` needs exactly ${takes}",
-                ),
-            )
+        self.emit(said_as("type.applied", at, applied_counted(name, found, takes)))
         self.error_type
     }
 
     fn undeclared_contract(at: Loc?, name: string) -> TypeId {
-        self
-            .speak_unread(
-                refusal(
-                    "type.trait",
-                    at,
-                    "`dyn ${name}` names no trait",
-                    "written here",
-                    "declare it — `trait ${name} { … }`",
-                ),
-                name,
-            )
+        self.speak_unread(said_as("type.trait", at, dyn_no_trait(name)), name)
         self.error_type
     }
 
@@ -1065,10 +906,10 @@ impl TypeCx {
             return self.unappliable(at, t.name)
         }
         let arity = takes!
-        if t.args.length != arity { return self.arity_wrong(at, t.name, t.args.length, arity) }
+        if t.applied.length != arity { return self.arity_wrong(at, t.name, t.applied.length, arity) }
         let slots: bool = row?.slots ?? false
         mut parts: List<TypeId> = []
-        for a in t.args {
+        for a in t.applied {
             let ty = self.full_type(at, a)
             if self.view.types.shape_of(ty) is .Error { return ty }
             // A constructor's SLOTS are judged by the slot law like
@@ -1147,8 +988,7 @@ impl TypeCx {
 
     /// The namespace of the file that wrote a node.
     fn written_in(origin: FileId) -> Namespace {
-        let written_in = self.elsewhere.written_in
-        written_in(origin)
+        (self.elsewhere.written_in)(origin)
     }
 
     /// Every declared slot of the instantiation, substituted and
@@ -1213,12 +1053,10 @@ impl TypeCx {
             .emit(
                 self
                     .behind_unread(
-                        refusal(
+                        said_as(
                             "type.unknown",
                             at,
-                            "`${name}` names no type",
-                            written_label(self.written_in),
-                            "a type is a built-in (`int`, `string`, `bool`, `float`) or one you declared",
+                            names_no_type(name, written_label(self.written_in)),
                         ),
                         name,
                     ),
@@ -1230,16 +1068,7 @@ impl TypeCx {
     /// word reaching the general type reader is one written where
     /// no C prototype is being described.
     fn width_off_a_seat(at: Loc?, name: string) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.unknown",
-                    at,
-                    "`${name}` is a machine WIDTH, and widths live on an `extern fn`'s seats — this is not one",
-                    "written here",
-                    "Avra keeps one integer: write `int`. The widths (${width_words}) name what a C prototype declares, directly on an `extern fn`'s parameter or answer — never inside `List<…>`, and never on a value.",
-                ),
-            )
+        self.emit(said_as("type.unknown", at, width_off_seat(name)))
         self.error_type
     }
 
@@ -1248,16 +1077,7 @@ impl TypeCx {
     fn declared_type(at: Loc?, d: DeclId, name: string) -> TypeId {
         let arity = self.view.decls.tparams(d).length
         if arity > 0 {
-            self
-                .emit(
-                    refusal(
-                        "type.applied",
-                        at,
-                        "`${name}` is generic — it takes ${counted(arity, "type argument")}",
-                        "written bare",
-                        "write `${name}<...>`",
-                    ),
-                )
+            self.emit(said_as("type.applied", at, applied_bare(name, arity)))
             return self.error_type
         }
         // AN ENUM'S LAYOUT IS MADE AT ITS DECLARATION — a word, a value
@@ -1291,29 +1111,12 @@ impl TypeCx {
 
     fn alias_takes_values(at: Loc?, name: string, arg: TypeId) -> TypeId {
         self
-            .emit(
-                refusal(
-                    "type.alias",
-                    at,
-                    "`${name}<...>` is given `${self.view.types.name_of(arg)}`, which is no value",
-                    "applied here",
-                    "an alias's type arguments are the types of values",
-                ),
-            )
+            .emit(said_as("type.alias", at, alias_given_no_value(name, self.view.types.name_of(arg))))
         self.error_type
     }
 
     fn alias_names_itself(at: Loc?, name: string) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.alias",
-                    at,
-                    "`${name}` is an alias that names itself",
-                    "named again here",
-                    "an alias is a shorthand for a type that already exists — a type that holds itself is a `type`",
-                ),
-            )
+        self.emit(said_as("type.alias", at, alias_naming_itself(name)))
         self.error_type
     }
 
@@ -1343,7 +1146,16 @@ impl TypeCx {
 const identity_field_law: string = "an identity's tables are shared by every copy — its fields are `Cell`s"
 
 /// The remedy for a type parameter whose name is taken.
-fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }
+/// A type parameter named `n`, a type the language owns.
+export fn tparam_owned(n: string) -> Voice {
+    Voice {
+        message: "a type parameter cannot take `${n}`'s name — the language owns it",
+        label: "declared here",
+        help: fresh_tparam(),
+    }
+}
+
+export fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }
 
 /// An extern's seats, each width word read as the `int` it carries.
 fn widthless_seats(ps: List<Param>) -> List<Param> {
@@ -1389,34 +1201,247 @@ impl TypeCx {
     }
 
     fn bound_not_a_trait(s: StmtId, written: string) {
-        self
-            .speak_unread(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "a bound names a trait, and `${written}` is not one",
-                    "this bound",
-                    "write the trait's name, and its arguments when it takes them",
-                ),
-                written,
-            )
+        self.speak_unread(said_as("type.trait", self.stmt_loc(s), bound_no_trait(written)), written)
     }
 
     fn bound_miscounted(s: StmtId, of: string, takes: int, gave: int) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`${of}` takes ${counted(takes, "type argument")}, and this bound gives ${gave}",
-                    "this bound",
-                    "a bound names its trait at every parameter the trait declares",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), bound_miscounts_trait(of, takes, gave)))
+    }
+}
+
+/// A bound naming the trait `of`, which takes `takes` type arguments, at `gave`.
+export fn bound_miscounts_trait(of: string, takes: int, gave: int) -> Voice {
+    Voice {
+        message: "`${of}` takes ${counted(takes, "type argument")}, and this bound gives ${gave}",
+        label: "this bound",
+        help: "a bound names its trait at every parameter the trait declares",
+    }
+}
+
+/// A `dyn` written over `name`, which names no trait.
+export fn dyn_no_trait(name: string) -> Voice {
+    Voice {
+        message: "`dyn ${name}` names no trait",
+        label: "written here",
+        help: "declare it — `trait ${name} { … }`",
+    }
+}
+
+/// A bound written as `written`, which names no trait.
+export fn bound_no_trait(written: string) -> Voice {
+    Voice {
+        message: "a bound names a trait, and `${written}` is not one",
+        label: "this bound",
+        help: "write the trait's name, and its arguments when it takes them",
     }
 }
 
 /// Where an unknown type name stands, as its refusal's label says it.
-fn written_label(w: WrittenIn) -> string {
-    match w { .Signature -> "in this signature", .Pattern -> "in this type pattern" }
+export fn written_label(w: WrittenIn) -> string {
+    match w { .Signature -> in_signature, .Pattern -> "in this type pattern" }
+}
+
+/// A written type whose name names none, said where `label` points.
+/// A named type `name` standing over `spelled`, which holds no value.
+export fn named_unslotted(name: string, spelled: string) -> Voice {
+    Voice {
+        message: "a named type cannot stand over nothing",
+        label: "`${name}` stands over `${spelled}`",
+        help: slot_help,
+    }
+}
+
+/// The field `field`, of `spelled`, which holds no value.
+export fn field_unslotted(field: string, spelled: string) -> Voice {
+    Voice {
+        message: "a struct field cannot hold nothing",
+        label: field_label(field, spelled),
+        help: slot_help,
+    }
+}
+
+/// A payload of the variant `variant`, named `payload` where it is named, of `spelled`, which holds
+/// no value.
+export fn payload_unslotted(variant: string, payload: string, spelled: string) -> Voice {
+    Voice {
+        message: "an enum payload cannot hold nothing",
+        label: carried_label(variant, payload, spelled),
+        help: slot_help,
+    }
+}
+
+/// Where a field of `spelled` stands: the field.
+export fn field_label(field: string, spelled: string) -> string { "field `${field}` is `${spelled}`" }
+
+/// Where a payload of `spelled` stands: its own name, else its variant's.
+export fn carried_label(variant: string, payload: string, spelled: string) -> string {
+    let who = if payload.is_empty() { "`.${variant}`" } else { "`${payload}`" }
+    "${who} carries `${spelled}`"
+}
+
+/// Where a fn's answer of `spelled` stands: the fn `owner`.
+export fn answer_label(owner: string, spelled: string) -> string { "`${owner}` answers `${spelled}`" }
+
+export fn names_no_type(name: string, label: string) -> Voice {
+    Voice {
+        message: "`${name}` names no type",
+        label: label,
+        help: "a type is a built-in (`int`, `string`, `bool`, `float`) or one you declared",
+    }
+}
+
+/// A machine width written where no `extern fn`'s seat is described.
+export fn width_off_seat(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a machine WIDTH, and widths live on an `extern fn`'s seats — this is not one",
+        label: "written here",
+        help: "Avra keeps one integer: write `int`. The widths (${width_words}) name what a C prototype declares, directly on an `extern fn`'s parameter or answer — never inside `List<…>`, and never on a value.",
+    }
+}
+
+/// A field of an `@identity` type whose type, `found`, a copy's write could fork.
+export fn identity_field_plain(field: string, found: string) -> Voice {
+    Voice {
+        message: identity_field_law,
+        label: "field `${field}` is `${found}`",
+        help: "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `@plain_field(\"${field}\")` beside `@identity`",
+    }
+}
+
+/// Where a type written in a signature is refused.
+export const in_signature: string = "in this signature"
+
+/// A `once fn` `name` written with parameters.
+export fn once_with_arguments(name: string) -> Voice {
+    Voice {
+        message: "`once fn ${name}` takes arguments — a `once` answer is one value for the whole process",
+        label: "declared here",
+        help: "drop the parameters, or drop `once`",
+    }
+}
+
+/// A `once fn` `name` answering `answer`, a value no managed box holds.
+export fn once_answers_unkept(name: string, answer: string) -> Voice {
+    Voice {
+        message: "`once fn ${name}` answers `${answer}`, which the runtime cannot keep",
+        label: "declared here",
+        help: "a `once` answer is a managed value — a string, list, map, enum, or a record wider than one scalar",
+    }
+}
+
+/// A `once fn` `name` declared as a method.
+export fn once_method(name: string) -> Voice {
+    Voice {
+        message: "`once fn ${name}` is a method — its answer would depend on a receiver",
+        label: "declared here",
+        help: "move it to the top level, or drop `once`",
+    }
+}
+
+/// A named type `name` written with type parameters.
+export fn named_with_params(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a named type with type parameters, which is recorded, not landed",
+        label: "declared here",
+        help: "a named type stands over ONE written shape — write the shape out, or declare a record",
+    }
+}
+
+/// An alias whose names loop back to the alias `name`.
+export fn alias_naming_itself(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is an alias that names itself",
+        label: "named again here",
+        help: "an alias is a shorthand for a type that already exists — a type that holds itself is a `type`",
+    }
+}
+
+/// A named type `name` whose shape's names loop back to it.
+export fn named_over_itself(name: string) -> Voice {
+    Voice {
+        message: "`${name}` stands over itself",
+        label: "declared here",
+        help: "a named type stands over a shape it does not name — its names loop back to `${name}`",
+    }
+}
+
+/// A `mut fn` `name` written where no receiver is.
+export fn mut_without_receiver(name: string) -> Voice {
+    Voice {
+        message: "`mut fn` marks a method that writes its receiver — `${name}` has none",
+        label: "declared here",
+        help: "drop `mut`, or move `${name}` into `impl <Type> { … }`",
+    }
+}
+
+/// A `static fn` `name` written outside an impl.
+export fn static_without_receiver(name: string) -> Voice {
+    Voice {
+        message: "`static fn` marks a method with no receiver — `${name}` is already a plain fn",
+        label: "declared here",
+        help: "drop `static`, or move `${name}` into `impl <Type> { … }` and call it `<Type>.${name}(…)`",
+    }
+}
+
+/// The alias `name` applied to `arg`, a type no value has.
+export fn alias_given_no_value(name: string, arg: string) -> Voice {
+    Voice {
+        message: "`${name}<...>` is given `${arg}`, which is no value",
+        label: "applied here",
+        help: "an alias's type arguments are the types of values",
+    }
+}
+
+/// A spread of `of`, as written, which is no record.
+export fn spreads_no_record(of: string) -> Voice {
+    Voice {
+        message: "`..${of}` spreads no record",
+        label: "spread here",
+        help: "a spread places a record's fields — `${of}` is not a record with fields",
+    }
+}
+
+/// A record `owner` that spreads itself.
+export fn spreads_itself(owner: string) -> Voice {
+    Voice {
+        message: "`${owner}` spreads itself",
+        label: "declared here",
+        help: "a spread places ANOTHER record's fields — a record cannot hold its own",
+    }
+}
+
+/// A spread of `of`, a record whose own spreads come back to the one spreading it.
+export fn spreads_back(of: string) -> Voice {
+    Voice {
+        message: "`..${of}` spreads a record that spreads this one",
+        label: "spread here",
+        help: "spreads cannot form a cycle — the fields would have no first owner",
+    }
+}
+
+/// The type `name`, which takes no type arguments, applied to some.
+export fn applied_unappliable(name: string) -> Voice {
+    Voice {
+        message: "`${name}` takes no type arguments",
+        label: "applied here",
+        help: "the applied types today are `List<T>` and `Result<T, E>`",
+    }
+}
+
+/// The type `name`, which takes `takes` type arguments, applied to `found`.
+export fn applied_counted(name: string, found: int, takes: int) -> Voice {
+    Voice {
+        message: "`${name}` is applied to ${found} types; it takes ${takes}",
+        label: "applied here",
+        help: "`${name}` needs exactly ${takes}",
+    }
+}
+
+/// The generic type `name`, which takes `takes` type arguments, written bare.
+export fn applied_bare(name: string, takes: int) -> Voice {
+    Voice {
+        message: "`${name}` is generic — it takes ${counted(takes, "type argument")}",
+        label: "written bare",
+        help: "write `${name}<...>`",
+    }
 }

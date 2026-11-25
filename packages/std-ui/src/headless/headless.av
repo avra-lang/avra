@@ -3,6 +3,7 @@
 //! any screen would: to a control BY ITS WORDS. An event runs the handler
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
+use style.theme.{Theme}
 use app.{
     Heard,
     Act,
@@ -29,10 +30,9 @@ use tree.chord.{parsed}
 use tree.controls.{Control, said_by_control}
 use tree.node.{Said}
 use tree.view.{View}
+use tree.trap.{trapped}
 
 extern fn avra_clock_virtual(on: int)
-
-extern fn avra_trap(message: string)
 
 /// A screen nobody draws. Its sources are kept in `wants` and its clock is
 /// `now`, in milliseconds of the virtual time the body has waited; `queue` is
@@ -54,6 +54,9 @@ export fn headless<V: View>(view: fn() -> V, rows: int = 0) -> Screen {
 }
 
 impl Screen {
+    /// The theme the control or text wearing `words` is drawn in, as the screen carries it down.
+    fn theme_of(words: string) -> Theme? { self.shown.theme_of(words) }
+
     /// The `nth` control named `name`, counted in reading order from
     /// zero — absent when the screen holds no such control.
     fn control(name: string, nth: int) -> Control? {
@@ -126,7 +129,7 @@ impl Screen {
     /// screen the body reads after a call is the same under every schedule.
     /// The loop ends with the body.
     fn running(body: fn() -> void) {
-        if self.shown.app.looping.get() { avra_trap(one_loop()) }
+        if self.shown.app.looping.get() { trapped(one_loop()) }
         avra_clock_virtual(1)
         let before = running()
         stood(self.shown.app)

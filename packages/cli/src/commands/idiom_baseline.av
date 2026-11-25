@@ -7,7 +7,7 @@
 //! (`Checked.findings`), never rendered diagnostic text.
 use @std.io.{write_text}
 use @std.path.{relative_path}
-use @std.avrac.compiler.{Finding, Workspace, finding_line, findings_read}
+use @std.avrac.compiler.{Finding, finding_line, findings_read}
 
 /// The file's own header — rewritten whole on every `--baseline_accept`
 /// write, never carried through `loaded_baseline`'s read (a `#` line is
@@ -68,21 +68,23 @@ impl Baseline {
     /// reached is left UNTOUCHED: one `avra check <pkg>` reaches only
     /// its own package, so judging a file it never examined would drop
     /// another package's accepted debt from this one shared file. A key
-    /// whose file is gone — asked of the check's own workspace — is
+    /// whose file is gone — asked through `there` — is
     /// dropped outright: no future check will ever reach it either.
-    fn pruned(ws: Workspace, reached: Map<string, bool>, fresh: Map<string, bool>) -> List<string> {
-        [k for k in self.sites.keys() if kept_key(ws, self.sites.get(k)!.file, k, reached, fresh)]
+    fn pruned(there: fn(string) -> bool, reached: Map<string, bool>, fresh: Map<string, bool>) -> List<
+        string,
+    > {
+        [k for k in self.sites.keys() if kept_key(there, self.sites.get(k)!.file, k, reached, fresh)]
     }
 }
 
 fn kept_key(
-    ws: Workspace,
+    there: fn(string) -> bool,
     file: string,
     key: string,
     reached: Map<string, bool>,
     fresh: Map<string, bool>,
 ) -> bool {
-    if !ws.there(file) { return false }
+    if !there(file) { return false }
     !reached.has(file) || fresh.has(key)
 }
 

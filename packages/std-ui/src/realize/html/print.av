@@ -6,7 +6,6 @@
 //! numbering the module counts out are the server's.
 use realize.html.element.{Element, Tagged}
 use realize.html.tags.{HtmlAttr}
-use tree.lists.{flatten}
 
 /// The modulus of the fold: a prime under 2^30, so `acc * base + octet`
 /// never leaves an int.
@@ -24,13 +23,13 @@ fn mixed(acc: int, s: string) -> int {
 
 fn element_print(acc: int, e: Element) -> int {
     match e {
-        .Text(run) -> mixed(mixed(acc, "#text"), run.seat + "|" + run.content),
+        .Text(run) -> mixed(mixed(acc, "#text"), run.seat.spelled() + "|" + run.content),
         .Tag(el) -> tagged_print(acc, el),
     }
 }
 
 fn tagged_print(acc: int, el: Tagged) -> int {
-    let named = mixed(mixed(acc, el.tag.word()), el.seat)
+    let named = mixed(mixed(acc, el.tag.word()), el.seat.spelled())
     let attrs = el
         .attrs
         .fold(named, (a: int, at: HtmlAttr) -> mixed(mixed(a, at.name.word()), at.value))
@@ -46,13 +45,13 @@ export fn print_of(run: List<Element>, css: string) -> int {
 /// Each element of a run in document order — the tag's word, or `#text` —
 /// the sequence a host checks the page it holds against.
 export fn kinds_of(run: List<Element>) -> List<string> {
-    flatten([kinds_in(e) for e in run])
+    [kinds_in(e) for e in run].flatten()
 }
 
 fn kinds_in(e: Element) -> List<string> {
     match e {
         .Text(_) -> ["#text"],
-        .Tag(el) -> [el.tag.word()].concat(flatten([kinds_in(k) for k in el.kids])),
+        .Tag(el) -> [el.tag.word()].concat([kinds_in(k) for k in el.kids].flatten()),
     }
 }
 

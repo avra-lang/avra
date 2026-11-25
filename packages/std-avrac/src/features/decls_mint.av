@@ -3,6 +3,7 @@
 //! impl lives in decls.av.
 use @std.meta.{bracket}
 use core.{
+    scoped,
     side_table,
     side_put,
     side_grow,
@@ -27,6 +28,8 @@ use core.{
     Stmt,
     Expr,
     Scoped,
+    expr_window,
+    stmt_window,
 }
 use diagnostics.{Diag}
 use features.{Decl, DeclAt, decl_key_text, no_origins}
@@ -42,16 +45,35 @@ impl Decls {
     fn file_id(path: string, name: string, module: string, test: bool) -> FileId {
         let known? = self.known_file_id(path) else {
             let m = self.module_id(module)
-            let id = File
-                .insert(self.rows_db.get(), path: path, name: name, module: m, test: test)
-                .id
+            let db = self.rows_db.get()
+            let id = FileId { index: self.file_rows.get().next_id() }
+            let owner = db.owner_named("file ${id.index}")
+            File
+                .put_owned(
+                    db,
+                    id.index,
+                    File { id: id, path: path, name: name, module: m, test: test },
+                    owner,
+                )
             self.file_names.push(name)
             self.stores.push(null)
-            self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
-            self.file_owners.push(self.rows_db.get().owner_named("file ${id.index}"))
+            self
+                .decl_ids
+                .push(Cell.new(side_table("decl_ids", stmt_window(0), 0, DeclAt { decl: null })))
+            self.file_owners.push(owner)
             self
                 .expr_owners
-                .push(Cell.new(side_table<DeclAt>("expr_owners", 0, 0, DeclAt { decl: null })))
+                .push(
+                    Cell
+                        .new(
+                            side_table<DeclAt>(
+                                "expr_owners",
+                                expr_window(0),
+                                0,
+                                DeclAt { decl: null },
+                            ),
+                        ),
+                )
             self.generations.push([])
             self.origins.push(no_origins())
             let no_voices: List<Diag> = []
@@ -71,9 +93,23 @@ impl Decls {
         rs.row(id)?.id
     }
 
+    /// The file a name (`File.name`: its package, then its path within it) names, none for one
+    /// this process never met: the lookup a durable spelling reads back through.
+    fn known_file_named(name: string) -> FileId? {
+        let rs = self.file_rows.get()
+        let id? = rs.first_id(rs.bucket_of_text(1, name)) else { return null }
+        rs.row(id)?.id
+    }
+
     /// A module's identity — minted at first mention.
     fn module_id(module: string) -> ModuleId {
-        let known? = self.known_module_id(module) else { return Module.insert(self.rows_db.get(), name: module).id }
+        let known? = self.known_module_id(module) else {
+            let db = self.rows_db.get()
+            let id = ModuleId { index: self.module_rows.get().next_id() }
+            Module
+                .put_owned(db, id.index, Module { id: id, name: module }, db.owner_named("module ${module}"))
+            return id
+        }
         known
     }
 
@@ -99,9 +135,6 @@ impl Decls {
     /// A file's own row, fetched unrecorded as `module_name`'s is.
     fn file(f: FileId) -> FileInfo { file_info(self.file_rows.get().row(f.index)!) }
 
-    /// A file's module, read off its row with no `FileInfo` built.
-    fn module_of_file(f: FileId) -> ModuleId { self.file_rows.get().row(f.index)!.module }
-
     /// Every minted file — the relation's whole set, recorded as read.
     fn all_files() -> List<FileInfo> {
         [file_info(r) for r in File.all(self.rows_db.get())]
@@ -110,9 +143,6 @@ impl Decls {
     /// Every minted file, read unrecorded as `file(f)` is: a driver's walk of the table as it
     /// stands, which no query's answer rests on.
     fn files_standing() -> List<FileInfo> { [self.file(FileId { index: i }) for i in 0..self.file_count()] }
-
-    /// Every minted file's path, read unrecorded as `file(f)` is.
-    fn file_paths() -> List<string> { [self.file(FileId { index: i }).path for i in 0..self.file_count()] }
 
     /// How many files are minted, read unrecorded as `file(f)` is.
     fn file_count() -> int { self.file_rows.get().count() }
@@ -141,21 +171,40 @@ impl Decls {
 
     fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(ensure) }
 
-    fn remember_store(f: FileId, store: SyntaxArena) { self.stores.set_at(f.index, store) }
+    /// A file whose rows came first meets its parse: its statement table grows to the store.
+    fn store_met(f: FileId, store: SyntaxArena) {
+        mut by_stmt = self.decl_ids.get()[f.index].get()
+        by_stmt.grow_to(store.stmts.count())
+        self.decl_ids.set_at(f.index, Cell.new(by_stmt))
+        self.remember_store(f, store)
+    }
 
-    /// A file admitted with its parse: which statements declare, and
-    /// every declaration minted — the top-level ones, then each
-    /// trait's and impl's methods under their owner. The file's rows
-    /// are then exactly the ones minted here: what it held before and
-    /// did not mint again is removed in one step. Answers the top-level
-    /// ids, in order.
-    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
-        let before = self.decls_so_far(f)
+    /// A file's parse given to its declarations: the store stands, and every expression goes
+    /// to the declaration that owns it.
+    fn remember_store(f: FileId, store: SyntaxArena) {
         self.stores.set_at(f.index, store)
-        let _ = self.counted.get().opened(f, "")
-        mut minted: List<int> = []
-        mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
-        mut out: List<DeclId> = []
+        let main? = self.main_of(f) else { return }
+        self.range_bodies(f, store, main)
+    }
+
+    /// A file admitted with its parse: its declarations as `admission` reads them. Answers
+    /// the top-level ids, in order.
+    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> { self.admitted(f, store, self.admission(f, store, stmts)) }
+
+    /// A file admitted with the lines its parse declares: minted, and every expression of its
+    /// store given to the declaration that owns it.
+    fn admitted(f: FileId, store: SyntaxArena, lines: List<ItemLine>) -> List<DeclId> {
+        self.stores.set_at(f.index, store)
+        let ids = self.mint_lines(f, lines, store.stmts.count())
+        self.range_bodies(f, store, self.mains.get()[f.index]!)
+        [ids[j] for j, l in lines if l.item]
+    }
+
+    /// WHAT A FILE'S PARSE DECLARES, in mint order: each top-level declaration, then its
+    /// methods and their defaults, then its own defaults; a `const`; a suite's cases; an
+    /// impl and its methods; the file's Main; then each declaration nested in a body, under
+    /// the innermost owner whose span holds it. Mints nothing.
+    fn admission(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<ItemLine> {
         // A `state` at the top level is a DECLARATION: the mark lands
         // before `declared_kind` reads it, so this statement mints a
         // State row and a body ever sees it in the namespace. A state
@@ -163,105 +212,237 @@ impl Decls {
         for s in stmts {
             if store.is_state_stmt(s) { store.mark_module_state(s) }
         }
+        mut out: List<ItemLine> = []
         for s in stmts {
             let kind: DeclKind? = store.declared_kind(s)
             if kind != null {
-                let k = kind!
                 let name = store.declared_name(s) ?? ""
-                let d = self
-                    .mint(f, s, name, k, store.is_exported(s), "", null, "", store.fn_parts(s)?.body)
-                by_stmt.set(s.index, DeclAt { decl: d })
-                out.push(d)
-                minted.push(d.index)
-                self.orphan(d)
-                let members = store.member_fns(s)
-                for m in members {
-                    let md = self.mint_method(f, store, m, name, d, declared_body(store, m), "")
-                    by_stmt.set(m.index, DeclAt { decl: md })
-                    minted.push(md.index)
-                    let held = self
-                        .mint_defaults(
-                            f,
-                            m,
-                            store.fn_parts(m)?.params ?? [],
-                            "${name}.${self.decl(md).name}",
-                            md,
+                let at = out.length
+                out
+                    .push(
+                        item_line(
+                            store,
+                            s,
+                            name,
+                            kind!,
+                            store.is_exported(s),
                             "",
+                            0 - 1,
+                            store.fn_parts(s)?.body,
+                            true,
+                        ),
+                    )
+                for m in store.member_fns(s) {
+                    let mat = out.length
+                    let mname = store.fn_parts(m)?.name ?? ""
+                    out
+                        .push(
+                            item_line(
+                                store,
+                                m,
+                                mname,
+                                DeclKind.Method,
+                                false,
+                                name,
+                                at,
+                                declared_body(store, m),
+                                false,
+                            ),
                         )
-                    if !held.is_empty() { minted = minted.concat([dd.index for dd in held]) }
+                    out = out
+                        .concat(
+                            default_lines(
+                                store,
+                                m,
+                                store.fn_parts(m)?.params ?? [],
+                                "${name}.${mname}",
+                                mat,
+                            ),
+                        )
                 }
                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
                 let seats: List<Param> = store.fn_parts(s)?.params ?? []
-                let defaults = self.mint_defaults(f, s, fields.concat(seats), name, d, "")
-                if !defaults.is_empty() { minted = minted.concat([dd.index for dd in defaults]) }
+                out = out.concat(default_lines(store, s, fields.concat(seats), name, at))
             }
             // a top-level `const` is a declaration like a fn: module-wide,
             // order-free, exported only when it says so.
             if store.const_value(s) != null {
-                let name = store.let_name(s) ?? ""
-                let d = self
-                    .mint(f, s, name, DeclKind.Const, store.is_exported(s), "", null, "", null)
-                by_stmt.set(s.index, DeclAt { decl: d })
-                out.push(d)
-                minted.push(d.index)
-                self.orphan(d)
+                out
+                    .push(
+                        item_line(
+                            store,
+                            s,
+                            store.let_name(s) ?? "",
+                            DeclKind.Const,
+                            store.is_exported(s),
+                            "",
+                            0 - 1,
+                            null,
+                            true,
+                        ),
+                    )
             }
             let sp: SpecParts? = store.spec_parts(s)
             if sp != null {
-                let suite = sp!
-                for k, c in suite.cases {
-                    let made = self
-                        .mint(f, s, c.name, DeclKind.Case, false, suite.name, null, "", c.body)
-                    minted.push(made.index)
-                }
+                out = out
+                    .concat(
+                        [item_line(
+                            store,
+                            s,
+                            c.name,
+                            DeclKind.Case,
+                            false,
+                            sp!.name,
+                            0 - 1,
+                            c.body,
+                            false,
+                        ) for c in sp!.cases],
+                    )
             }
             let ip: ImplParts? = store.impl_parts(s)
             if ip != null {
                 let block = ip!
-                let block_decl = self
-                    .mint(f, s, block.target, DeclKind.Impl, false, "", null, "", null)
-                by_stmt.set(s.index, DeclAt { decl: block_decl })
-                minted.push(block_decl.index)
-                self.orphan(block_decl)
+                let at = out.length
+                out
+                    .push(
+                        item_line(
+                            store,
+                            s,
+                            block.target,
+                            DeclKind.Impl,
+                            false,
+                            "",
+                            0 - 1,
+                            null,
+                            false,
+                        ),
+                    )
                 for m in block.fns {
-                    let md = self
-                        .mint_method(f, store, m, block.target, block_decl, store.fn_parts(m)?.body, "")
-                    by_stmt.set(m.index, DeclAt { decl: md })
-                    minted.push(md.index)
-                    let seats: List<Param> = store.fn_parts(m)?.params ?? []
-                    let mname = self.decl(md).name
-                    let defaults = self
-                        .mint_defaults(f, m, seats, "${block.target}.${mname}", md, "")
-                    if !defaults.is_empty() { minted = minted.concat([dd.index for dd in defaults]) }
+                    let mat = out.length
+                    let mname = store.fn_parts(m)?.name ?? ""
+                    out
+                        .push(
+                            item_line(
+                                store,
+                                m,
+                                mname,
+                                DeclKind.Method,
+                                false,
+                                block.target,
+                                at,
+                                store.fn_parts(m)?.body,
+                                false,
+                            ),
+                        )
+                    out = out
+                        .concat(
+                            default_lines(
+                                store,
+                                m,
+                                store.fn_parts(m)?.params ?? [],
+                                "${block.target}.${mname}",
+                                mat,
+                            ),
+                        )
                 }
             }
         }
-        let main = self
-            .mint(f, stmts.first() ?? no_stmt, "main", DeclKind.Main, false, "", null, "", null)
-        self.mains.set_at(f.index, main)
-        minted.push(main.index)
+        let main_at = out.length
+        out
+            .push(
+                item_line(
+                    store,
+                    stmts.first() ?? no_stmt,
+                    "main",
+                    DeclKind.Main,
+                    false,
+                    "",
+                    0 - 1,
+                    null,
+                    false,
+                ),
+            )
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity of its own, and joins
         // no namespace.
-        let owners = self.owners_among(f, [DeclId { index: i } for i in minted])
-        // LICENSED compiler.stmt_index_walk: the index keys `by_stmt`
+        let owners = [OwnerSpan { d: DeclId { index: j }, lo: l.facts.span!.lo, hi: l.facts.span!.hi } for j, l in out if self.owns_line(f, l)]
+        let claimed = [l.stmt for l in out if stmt_claimed(l.kind)]
+        // LICENSED compiler.stmt_index_walk: the index keys the nested scan
         for i in 0..store.stmts.count() {
             let s = StmtId { index: i }
             let nested: DeclKind? = store.declared_kind(s)
-            if by_stmt.get(i).decl == null && nested != null {
-                let name = store.declared_name(s) ?? ""
-                let around = self.innermost(owners, store.stmt_span(s)) ?? main
-                let nd = self
-                    .mint(f, s, name, nested!, false, "", null, self.within_text(around), null)
-                by_stmt.set(i, DeclAt { decl: nd })
-                minted.push(nd.index)
+            if nested != null && !claimed.contains(i) {
+                let around = self.innermost(owners, store.stmt_span(s))?.index ?? main_at
+                out
+                    .push(
+                        item_line(
+                            store,
+                            s,
+                            store.declared_name(s) ?? "",
+                            nested!,
+                            false,
+                            "",
+                            0 - 1,
+                            null,
+                            false,
+                        ) with { enclosing: enclosing_text(out, around) },
+                    )
             }
         }
-        self.decl_ids.set_at(f.index, Cell.new(by_stmt))
-        self.file_keeps(f, minted)
-        self.forget([d for d in before if self.row_at(d.index) == null])
-        self.range_bodies(f, store, main)
         out
+    }
+
+    /// Whether a line owns an expression range: no Main, nothing nested, a span of its own
+    /// that is this file's.
+    fn owns_line(f: FileId, l: ItemLine) -> bool {
+        !(l.kind is .Main) &&
+            l.enclosing.is_empty() &&
+            l.facts.span != null &&
+            self.spanned_stmt_of(f, StmtId { index: l.stmt }) == null
+    }
+
+    /// A FILE'S DECLARATIONS MINTED FROM ITS LINES, in their order, then each adopted by the
+    /// parent its line names. The file's rows
+    /// are then exactly these: what it held before and did not mint again is removed in one
+    /// step. Answers each line's id.
+    fn mint_lines(f: FileId, lines: List<ItemLine>, stmts: int) -> List<DeclId> {
+        let before = self.decls_so_far(f)
+        let _ = self.counted.get().opened(f, "")
+        mut ids: List<DeclId> = []
+        mut by_stmt = side_table("decl_ids", stmt_window(0), stmts, DeclAt { decl: null })
+        for l in lines {
+            let root: ExprId? = if l.root < 0 { null } else { ExprId { index: l.root } }
+            let d = self
+                .mint_faced(
+                    f,
+                    StmtId { index: l.stmt },
+                    l.name,
+                    l.kind,
+                    l.exported,
+                    l.owner,
+                    null,
+                    l.enclosing,
+                    root,
+                    l.maker,
+                    l.facts,
+                )
+            ids.push(d)
+            self.orphan(d)
+            if l.kind is .Main { self.mains.set_at(f.index, d) }
+            if stmt_claimed(l.kind) {
+                by_stmt.grow_to(l.stmt + 1)
+                by_stmt.set(l.stmt, DeclAt { decl: d })
+            }
+        }
+        // A PARENT IS A LINK, set once every line stands: a kept file orders a generated
+        // member before its impl.
+        for j, l in lines {
+            if l.parent >= 0 { self.adopt(ids[j], ids[l.parent]) }
+        }
+        self.decl_ids.set_at(f.index, Cell.new(by_stmt))
+        self.file_keeps(f, [d.index for d in ids])
+        self.forget([d for d in before if self.row_at(d.index) == null])
+        ids
     }
 
     /// A FILE WITHDRAWN FROM THE TABLE — a deleted file, or one whose
@@ -289,10 +470,12 @@ impl Decls {
     fn clear_file_seats(f: FileId) {
         self.stores.set_at(f.index, null)
         self.mains.set_at(f.index, null)
-        self.decl_ids.set_at(f.index, Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
+        self
+            .decl_ids
+            .set_at(f.index, Cell.new(side_table("decl_ids", stmt_window(0), 0, DeclAt { decl: null })))
         self
             .expr_owners
-            .set_at(f.index, Cell.new(side_table("expr_owners", 0, 0, DeclAt { decl: null })))
+            .set_at(f.index, Cell.new(side_table("expr_owners", expr_window(0), 0, DeclAt { decl: null })))
         self.note_rows(f, 0)
     }
 
@@ -313,14 +496,25 @@ impl Decls {
     /// to the INNERMOST declaration whose span holds it; the rest —
     /// the run-time statements' — belong to Main.
     fn range_bodies(f: FileId, store: SyntaxArena, main: DeclId) {
-        let owners = self.owner_spans(f)
+        // an owner's statement stands in this store: a generation's rows, made over an
+        // expanded arena, keep the ranges that arena gave them
+        let owners = self
+            .owners_among(
+                f,
+                [d for d in self.decls_of_file(f) if self.raw_decl(d).stmt.index < store.stmts.count()],
+            )
         // -1 until a first expression lands: an ownerless decl's
         // range is the empty 0..0
         mut lo: List<int> = filled(self.decl_count(), 0 - 1)
         mut hi: List<int> = filled(self.decl_count(), 0)
         mut slo: List<int> = filled(self.decl_count(), 0 - 1)
         mut shi: List<int> = filled(self.decl_count(), 0)
-        mut exprs = side_table<DeclAt>("expr_owners", 0, store.exprs.count(), DeclAt { decl: null })
+        mut exprs = side_table<DeclAt>(
+            "expr_owners",
+            expr_window(0),
+            store.exprs.count(),
+            DeclAt { decl: null },
+        )
         // A SYNTHESIZED NODE HAS NO SPAN, AND A RANGE THAT SKIPS IT
         // STOPS SHORT OF IT. A desugaring is minted where it is used,
         // so source order is ownership order: a span-less expression
@@ -389,77 +583,27 @@ impl Decls {
         [DeclId { index: i } for i in rs.ids_in(rs.bucket_of(home_index, dense_key(f.index)))]
     }
 
-    /// The declarations of the files not held, each file's own rows. A pass that
-    /// surveys bodies never surveys a held one, so it reads no row a held file minted.
+    /// How many declarations `f` has so far.
+    @bracket("decls")
+    fn decl_count_of(f: FileId) -> int {
+        let rs = self.decl_row_rows.get()
+        rs.ids_in(rs.bucket_of(home_index, dense_key(f.index))).length
+    }
+
+    /// Every file's declarations, each file's own rows.
     fn unheld_decls() -> List<Decl> {
         flatten([[self.raw_decl(d) for d in self.decls_of_file(f)] for f in self.unheld_files()])
     }
 
-    fn unheld_files() -> List<FileId> {
-        [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
-    }
-
-    /// The four producer doors, read by the bucket readers and answered by the armed
-    /// workspace hook: mint the held modules whose record files a row under this value.
-    fn hold_named(name: string) { (self.ensure_named.get())(name) }
-
-    fn hold_worded(word: string) { (self.ensure_worded.get())(word) }
-
-    fn hold_marked(mark: string) { (self.ensure_marked.get())(mark) }
-
-    fn hold_modules(modules: List<string>) { (self.ensure_modules.get())(modules) }
-
-    /// The externs the records of the files held now declare.
-    fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
-
-    /// The files whose rows came from a record.
-    fn held_files() -> List<FileId> {
-        [FileId { index: i } for i in 0..self.file_count() if self.file_held(FileId { index: i })]
-    }
-
-    /// Whether a file's rows came from a record rather than a parse.
-    fn file_held(f: FileId) -> bool { self.held.get().get(self.file(f).path) != null }
+    fn unheld_files() -> List<FileId> { [FileId { index: i } for i in 0..self.file_count()] }
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
-    /// THE FOUR PRODUCER DOORS: a bucket reader mints the held modules whose record files
-    /// a row under the value it is about to read, through the workspace armed here.
-    fn arm_named(ensure: fn(string) -> void) { self.ensure_named.set(ensure) }
-
-    fn arm_worded(ensure: fn(string) -> void) { self.ensure_worded.set(ensure) }
-
-    fn arm_marked(ensure: fn(string) -> void) { self.ensure_marked.set(ensure) }
-
-    fn arm_externs(
-        index: fn() -> List<ExternNote>,
-        types: fn() -> List<string>,
-        ensure: fn(List<string>) -> void,
-    ) {
-        self.externs_index.set(index)
+    /// THE NAME ENVIRONMENTS, armed: the door a bucket reader mints through, and the
+    /// extern and implementor indexes it reads.
+    fn arm_listed(externs: fn() -> List<ExternNote>, types: fn() -> List<string>) {
+        self.externs_index.set(externs)
         self.types_index.set(types)
-        self.ensure_modules.set(ensure)
-    }
-
-    fn held_items_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
-        self.held_items.get().get(self.file(f).path) ?? []
-    }
-
-    /// A held declaration joins its file: the main's seat, the items — its
-    /// row files under the file on its own.
-    fn held_joins(f: FileId, d: DeclId, main: bool, item: bool) {
-        if main { self.mains.set_at(f.index, d) }
-        if item { self.remember_held_item(f, d) }
-    }
-
-    /// A file's statement table, written whole.
-    fn keep_stmt_decls(f: FileId, by_stmt: SideTable<DeclAt>) { self.decl_ids.get()[f.index].set(by_stmt) }
-
-    fn remember_held_item(f: FileId, d: DeclId) {
-        let path = self.file(f).path
-        mut xs = self.held_items.get().get(path) ?? []
-        xs.push(d)
-        self.held_items.put(path, xs)
     }
 
     /// A declaration whose body owns its expressions: not Main (it
@@ -493,12 +637,8 @@ impl Decls {
     /// reading it would parse the whole held file.
     fn declared_unit(d: DeclId) -> Wanted {
         let x = self.decl(d)
-        let root: ExprId? = if self.held.get().get(self.file(x.file).path) != null {
-            null
-        } else {
-            let store = self.store_of(x.file)
-            if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
-        }
+        let store = self.store_of(x.file)
+        let root: ExprId? = if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
         Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
     }
 
@@ -549,7 +689,7 @@ impl Decls {
     /// A row's facts as its file's parse tells them; none for a file with no store.
     fn captured(f: FileId, d: Decl) -> DeclFacts? {
         let st? = self.admitted_store(f) else { return null }
-        capture_facts(st, d)
+        capture_facts(st, d.stmt, d.kind, d.root)
     }
 
     /// A minted row filed, and its facts landing beside it when it has them.
@@ -643,7 +783,19 @@ impl Decls {
         maker: string,
     ) -> List<DeclId> {
         [self
-            .mint_faced(f, s, p.name.of, DeclKind.Default, false, owner, parent, "", p.default, maker, null) for p in members if p.default != null]
+            .mint_faced(
+                f,
+                s,
+                p.name.text(),
+                DeclKind.Default,
+                false,
+                owner,
+                parent,
+                "",
+                p.default,
+                maker,
+                null,
+            ) for p in members if p.default != null]
     }
 
     /// A parent admitted again lists its members afresh.
@@ -739,7 +891,6 @@ impl Decls {
             self.declared_writes.push(false)
             let no_ws: List<bool> = []
             self.written_seats.push(Cell.new(no_ws))
-            self.consumed.push(null)
             let none: List<DeclId> = []
             self.children.push(Cell.new(none))
             let no_ms: List<DeclId> = []
@@ -1032,11 +1183,12 @@ impl Decls {
         // / exit puts wrap is a later directive; v1 proves the seam.)
         let v = "${name}\$\$v"
         let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
-        let call = store.alloc_expr(Expr.Call(Scoped(original), [], arg_ids), at)
-        let bound = store.alloc_expr(Expr.Ident(Scoped(v)), at)
-        let l2 = store.alloc_stmt(Stmt.Let(Scoped(v), null, call), at)
-        let body = store.alloc_expr(Expr.Block([l2], bound), at)
-        let s = store.alloc_stmt(Stmt.FnDecl(Scoped(name), tparams, params, ret, body), at)
+        let call = store.alloc_expr(Expr.Call(scoped(original), [], arg_ids), at)
+        let bound = store.alloc_expr(Expr.Ident(scoped(v)), at)
+        let l2 = store.alloc_stmt(Stmt.Let(scoped(v), null, call), at)
+        let body = store
+            .alloc_expr(Expr.Block([l2, store.alloc_stmt(Stmt.ExprStmt(bound), at)]), at)
+        let s = store.alloc_stmt(Stmt.FnDecl(scoped(name), tparams, params, ret, body), at)
         let d = self.mint(f, s, name, DeclKind.Fn, false, "", null, "", body)
         // THE GENERATED RANGE: the twin's own nodes, minted last, so
         // its body's exprs sit at the arena's end — lo its first, hi
@@ -1173,6 +1325,86 @@ impl Decls {
 
 /// Whether a declaration of this kind is the one its statement
 /// declares — a default rides its owner's statement.
+/// ONE DECLARATION A FILE ADMITS, as minting needs it: its statement, name and kind,
+/// whether it is exported, its owner's name, its parent (an index into the same lines, or
+/// -1), the key of what it is nested in, its body's root (-1 for none), whether it is a
+/// top-level item, its facts, and what generated it.
+export type ItemLine = {
+    stmt: int,
+    name: string,
+    kind: DeclKind,
+    exported: bool,
+    owner: string,
+    parent: int,
+    enclosing: string,
+    root: int,
+    item: bool,
+    facts: DeclFacts,
+    maker: string,
+}
+
+/// One line of an admission, its facts captured from its parse.
+fn item_line(
+    store: SyntaxArena,
+    s: StmtId,
+    name: string,
+    kind: DeclKind,
+    exported: bool,
+    owner: string,
+    parent: int,
+    root: ExprId?,
+    item: bool,
+) -> ItemLine {
+    ItemLine {
+        stmt: s.index,
+        name: name,
+        kind: kind,
+        exported: exported,
+        owner: owner,
+        parent: parent,
+        enclosing: "",
+        root: root?.index ?? 0 - 1,
+        item: item,
+        facts: capture_facts(store, s, kind, root),
+        maker: "",
+    }
+}
+
+/// What a declaration nested in line `j` names as its encloser: that line's key, its path
+/// left out, its place among the lines before it of one name, kind, owner, maker and
+/// encloser counted as minting counts it.
+fn enclosing_text(lines: List<ItemLine>, j: int) -> string {
+    let l = lines[j]
+    let place = lines.slice(0, j).filter(same_group(it, l)).length
+    decl_key_text("", l.name, l.kind, l.owner, l.maker, l.enclosing, place)
+}
+
+/// Whether two lines share the group a declaration's place is counted in.
+fn same_group(a: ItemLine, b: ItemLine) -> bool {
+    a.name == b.name &&
+        a.kind == b.kind &&
+        a.owner == b.owner &&
+        a.maker == b.maker &&
+        a.enclosing == b.enclosing
+}
+
+/// Each default a record's fields or a fn's seats carry, a line under its owner: named by
+/// the field or seat, its statement the owner's.
+fn default_lines(store: SyntaxArena, s: StmtId, members: List<Param>, owner: string, parent: int) -> List<
+    ItemLine,
+> {
+    [item_line(store, s, p.name.text(), DeclKind.Default, false, owner, parent, p.default, false) for p in members if p.default != null]
+}
+
+/// Whether a declaration of this kind is the one its statement names: a default rides its
+/// owner's statement, a case its suite's, Main the file's first.
+fn stmt_claimed(kind: DeclKind) -> bool {
+    match kind {
+        .Default or .Case or .Main -> false,
+        .Fn or .Method or .Impl or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State or .Const -> true,
+    }
+}
+
 fn names_its_stmt(kind: DeclKind) -> bool {
     match kind {
         .Default -> false,

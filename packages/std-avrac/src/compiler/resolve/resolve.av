@@ -18,13 +18,17 @@ use core.{
     FileId,
     Param,
     flatten,
+    some_list,
     Binding,
-    found_at,
+    Scoped,
+    scoped,
     SyntaxArena,
     Annotation,
     same_expr,
+    expr_window,
+    stmt_window,
 }
-use core.{side_table, Binder}
+use core.{side_table, Binder, example_marks}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
 use features.{
@@ -41,7 +45,9 @@ use features.{
     post_order,
     Elsewhere,
     Bound,
-    example_marks,
+    ScopeKey,
+    OverlayHit,
+    OWN_WRITING,
 }
 
 /// Words the spec reserves for future levels, memory, and
@@ -83,16 +89,19 @@ export fn resolve(
         keywords: keywords,
         all_defs: defs,
         facts: new_name_facts(view.store.exprs.count(), scope),
-        def_names: [d.name for d in defs],
-        visible: {},
+        def_names: [d.name.text() for d in defs],
+        bind_names: [],
+        bind_origins: [],
+        binds: [],
         overlays: [],
         lframes: [],
         floors: [],
         receivers: [],
         marks: [],
-        walked: side_table("walked", 0, view.store.exprs.count(), false),
-        scoped: side_table("scoped", 0, view.store.stmts.count(), false),
-        scope: [],
+        walked: side_table("walked", expr_window(0), view.store.exprs.count(), false),
+        scoped: side_table("scoped", stmt_window(0), view.store.stmts.count(), false),
+        scope_names: [],
+        scope_origins: [],
         in_block: false,
         tnames: [],
         unseated: [],
@@ -136,7 +145,7 @@ impl ResolveCx {
             // A rule's `@fixes`/`@keeps` NAME no declared fn — the callee
             // is never resolved — but its ARGS are read at lowering as
             // ordinary values (components/lower.av's `augmented`,
-            // features/rule.av's `example_marks` names the two words),
+            // core's `example_marks` names the two words),
             // so they walk like any other expression's.
             for a in self.view.store.annotations_of(s) {
                 if example_marks(a.name) { for e in a.args { self.walk(e) } } else { self.walk_annotation(a) }
@@ -239,7 +248,7 @@ impl ResolveCx {
 
     mut fn arm_body(binds: List<Bound>, value: ExprId, guard: ExprId?) {
         for j, b in binds {
-            if !self.refused_binder(b.name, self.loc_of(value), b.origin) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
+            if !self.refused_binder(b.name, self.loc_of(value), b.origin) { self.bind(keyed(scoped(b.name), b.origin), Binding.Pattern(value, j)) }
         }
         if guard != null { self.walk(guard!) }
         self.walk(value)
@@ -265,7 +274,7 @@ impl ResolveCx {
         // a refused param name still BINDS (declare the wreckage) — the
         // body resolves quietly and the one refusal stands alone
         for pp in params {
-            let _ = self.refused_binder(pp.name.of, self.loc_of(lam), self.view.origin_of(lam))
+            let _ = self.refused_binder(pp.name.text(), self.loc_of(lam), self.view.origin_of(lam))
         }
         let origin: FileId? = self.view.origin_of(lam) ?? self.view.origin_of(body)
         // LICENSED compiler.bracket_ritual: this IS the bracket
@@ -274,7 +283,8 @@ impl ResolveCx {
             .push(
                 LFrame {
                     lam: lam,
-                    params: [self.seat_key(pp, origin) for pp in params],
+                    param_names: [pp.name for pp in params],
+                    param_origins: [self.seat_origin(pp, origin) for pp in params],
                     floor: self.overlays.length,
                 },
             )
@@ -332,20 +342,23 @@ impl ResolveCx {
     /// A seat's key: its fn's origin, unless its name came through a
     /// hole — then it binds where the code lands, as a holed pattern's
     /// binder does.
-    fn seat_key(pp: Param, origin: FileId?) -> string {
-        keyed(pp.name.of, if self.view.holed_param(pp.id) { null } else { origin })
+    fn seat_origin(pp: Param, origin: FileId?) -> int {
+        origin_index(if self.view.holed_param(pp.id) { null } else { origin })
     }
 
     mut fn walk_under(ps: List<Param>, body: ExprId) {
         let seats = written_seats(self.keywords, ps)
-        let outer = self.scope
+        let outer_names = self.scope_names
+        let outer_origins = self.scope_origins
         let origin: FileId? = self.view.origin_of(body)
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.floors.push(self.overlays.length)
         self.marks.push([pp.promises for pp in seats])
-        self.scope = [self.seat_key(pp, origin) for pp in seats]
+        self.scope_names = [pp.name for pp in seats]
+        self.scope_origins = [self.seat_origin(pp, origin) for pp in seats]
         self.walk(body)
-        self.scope = outer
+        self.scope_names = outer_names
+        self.scope_origins = outer_origins
         let _ = self.marks.pop()
         let _ = self.floors.pop()
     }
@@ -359,21 +372,38 @@ impl ResolveCx {
 // Capture through Capture; the stack lives on the context, so
 // blocks and arms inside a body need no threading at all.
 
-/// The topmost overlay INDEX holding `name`, or null.
-fn overlay_index(overlays: List<Map<string, Binding>>, name: string) -> int? {
-    // LICENSED loops.index_walk: a REVERSE scan — the nearest scope wins
+/// The innermost open overlay binding `key`, and its binding there: the
+/// latest binding at or past the first overlay's start, which shadows
+/// every earlier one.
+fn overlay_hit(cx: ResolveCx, key: ScopeKey) -> OverlayHit? {
+    let overlays = cx.overlays
+    let first? = overlays.first() else { return null }
+    let at? = held_at(cx, first, cx.binds.length, key) else { return null }
+    // LICENSED loops.index_walk: a REVERSE scan — the overlay opened last that starts at or before the hit
     mut j = overlays.length - 1
-    while j >= 0 {
-        if overlays[j].get(name) != null { return j }
+    while overlays[j] > at { j = j - 1 }
+    OverlayHit { overlay: j, binding: cx.binds[at] }
+}
+
+/// The latest place among the open bindings `from..until` that binds `key`, or absence.
+fn held_at(cx: ResolveCx, from: int, until: int, key: ScopeKey) -> int? {
+    let names = cx.bind_names
+    let origins = cx.bind_origins
+    // LICENSED loops.index_walk: a REVERSE scan — the latest binding wins
+    mut j = until - 1
+    while j >= from {
+        if names[j] == key.name && origins[j] == key.origin { return j }
         j = j - 1
     }
     null
 }
 
-/// The binding an overlay index holds for `name`.
-fn overlay_at(overlays: List<Map<string, Binding>>, at: int, name: string) -> Binding? {
-    let held: Binding? = overlays[at].get(name)
-    held
+/// Where `key` first stands among the keys whose names and origins are `names` and `origins`, or absence.
+fn key_at(names: List<Scoped>, origins: List<int>, key: ScopeKey) -> int? {
+    for j, n in names {
+        if n == key.name && origins[j] == key.origin { return j }
+    }
+    null
 }
 
 /// The home of a name that lives OUTSIDE every lambda frame.
@@ -391,12 +421,12 @@ fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
     no_frame
 }
 
-/// The innermost frame whose PARAMS hold `name`, or null.
-fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
+/// The innermost frame whose PARAMS hold `key`, or null.
+fn frame_param_hit(lframes: List<LFrame>, key: ScopeKey) -> int? {
     // LICENSED loops.index_walk: a REVERSE scan — innermost frame first
     mut k = lframes.length - 1
     while k >= 0 {
-        if found_at(lframes[k].params, name) != null { return k }
+        if key_at(lframes[k].param_names, lframes[k].param_origins, key) != null { return k }
         k = k - 1
     }
     null
@@ -406,17 +436,22 @@ fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
 fn defs_of(store: SyntaxArena, stmts: List<StmtId>) -> List<Def> {
     // LICENSED compiler.repeated_projection: a comprehension's filter and element cannot share a
     // binding — comprehension bindings are on the sugar backlog
-    [Def { name: store.let_name(s)!, stmt: s } for s in stmts if store.let_name(s) != null]
+    [Def { name: n, stmt: s } for s in stmts for n in some_list(store.let_named(s))]
 }
 
 const receiver_key: string = "self"
 
 /// A binder's KEY in the scope tables: the name, marked with the file
-/// that wrote a template's text. `@` is unwritable, so a marked key
-/// collides with no written name — a template's `tmp` and a hole's
-/// `tmp` are two keys, which is the whole of hygiene.
-fn keyed(name: string, origin: FileId?) -> string {
-    if origin == null { return name }
-    "${name}@${origin!.index}"
-}
+/// that wrote a template's text.
+fn keyed(name: Scoped, origin: FileId?) -> ScopeKey { ScopeKey { name: name, origin: origin_index(origin) } }
 
+/// The origin a key wears: the index of the file that wrote it, or `OWN_WRITING`.
+fn origin_index(origin: FileId?) -> int { if origin == null { OWN_WRITING } else { origin!.index } }
+
+/// A key as a capture set names it: the name, marked with the file that
+/// wrote it. `@` is unwritable, so a marked text collides with no
+/// written name.
+fn key_text(key: ScopeKey) -> string {
+    if key.origin == OWN_WRITING { return key.name.text() }
+    "${key.name.text()}@${key.origin}"
+}

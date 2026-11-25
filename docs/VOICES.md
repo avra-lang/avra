@@ -11,25 +11,27 @@ which only shrinks.
 | family | kinds | witnessed | help | fix |
 |---|---|---|---|---|
 | lex | 1 | 1 | 1 | 0 |
-| parse | 5 | 5 | 5 | 0 |
+| parse | 6 | 6 | 6 | 0 |
 | build | 1 | 1 | 0 | 0 |
 | language | 1 | 0 | 0 | 0 |
 | block | 1 | 1 | 1 | 0 |
-| resolve | 33 | 32 | 32 | 2 |
+| resolve | 34 | 33 | 33 | 3 |
 | lower | 9 | 8 | 8 | 0 |
-| type | 136 | 125 | 125 | 6 |
+| type | 143 | 130 | 130 | 7 |
 | flow | 16 | 12 | 12 | 0 |
-| annotation | 17 | 12 | 12 | 0 |
-| manifest | 30 | 28 | 28 | 0 |
+| annotation | 18 | 13 | 13 | 1 |
+| source | 4 | 4 | 4 | 0 |
+| manifest | 32 | 29 | 29 | 0 |
 | collect | 13 | 13 | 13 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
+| ctx | 5 | 0 | 0 | 0 |
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 279 | 253 | 252 | 8 |
+| **all** | 299 | 266 | 265 | 10 |
 
 ## Rules
 
 | rules | documented | with a `@fixes` example |
 |---|---|---|
-| 81 | 81 | 18 |
+| 83 | 83 | 19 |

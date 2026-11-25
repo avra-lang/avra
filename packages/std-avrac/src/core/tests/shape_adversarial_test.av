@@ -2,6 +2,7 @@
 // shapes, binders repeated more than twice, nesting through Pat and
 // through a quote body, and a subject deeper than its pattern.
 use @std.avrac.core.{
+    scoped,
     new_node_store,
     SyntaxArena,
     Expr,
@@ -23,7 +24,7 @@ spec "core/shape adversarial" {
     given "degenerate shapes" {
         then "a bare hole at the root matches any subject" {
             mut s = new_node_store()
-            let h = s.alloc_expr(Expr.Ident("H"))
+            let h = s.alloc_expr(Expr.Ident(scoped("H")))
             let pat = shape_at(s, At.Expr(h), [At.Expr(h)])!
             let subj = s.alloc_expr(Expr.StrLit("anything"))
             let r = matched(s, At.Expr(subj), pat)
@@ -31,7 +32,7 @@ spec "core/shape adversarial" {
         }
         then "[] never matches a hole-bearing [H], and [H] never matches []" {
             mut s = new_node_store()
-            let h = s.alloc_expr(Expr.Ident("H"))
+            let h = s.alloc_expr(Expr.Ident(scoped("H")))
             let one_hole_src = s.alloc_expr(Expr.ListLit([h]))
             let one_hole_pat = shape_at(s, At.Expr(one_hole_src), [At.Expr(h)])!
             let empty_src = s.alloc_expr(Expr.ListLit([]))
@@ -43,7 +44,7 @@ spec "core/shape adversarial" {
         }
         then "a hole under a hole: the outer absorbs its subtree, so the inner placeholder is never reached — refused, not silently dropped" {
             mut s = new_node_store()
-            let inner = s.alloc_expr(Expr.Ident("inner"))
+            let inner = s.alloc_expr(Expr.Ident(scoped("inner")))
             let outer = s.alloc_expr(Expr.Not(inner))
             shape_at(s, At.Expr(outer), [At.Expr(outer), At.Expr(inner)]) == null
         }
@@ -51,7 +52,7 @@ spec "core/shape adversarial" {
     given "repeated binders" {
         then "the same binder three times requires all three occurrences to share one subtree fingerprint" {
             mut s = new_node_store()
-            let h = s.alloc_expr(Expr.Ident("H"))
+            let h = s.alloc_expr(Expr.Ident(scoped("H")))
             let triple_src = s.alloc_expr(Expr.ListLit([h, h, h]))
             let pat = shape_at(s, At.Expr(triple_src), [At.Expr(h)])!
 
@@ -93,8 +94,8 @@ spec "core/shape adversarial" {
         }
         then "a placeholder listed twice, then a fresh one after it, never produces a gap `matched` could trap on" {
             mut s = new_node_store()
-            let h = s.alloc_expr(Expr.Ident("H"))
-            let y = s.alloc_expr(Expr.Ident("Y"))
+            let h = s.alloc_expr(Expr.Ident(scoped("H")))
+            let y = s.alloc_expr(Expr.Ident(scoped("Y")))
             let pat_src = s.alloc_expr(Expr.ListLit([h, y]))
             let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h), At.Expr(h), At.Expr(y)])!
 
@@ -152,7 +153,7 @@ spec "core/shape adversarial" {
         }
         then "a shallow hole pattern matches a subject far deeper than the pattern itself" {
             mut s = new_node_store()
-            let h = s.alloc_expr(Expr.Ident("H"))
+            let h = s.alloc_expr(Expr.Ident(scoped("H")))
             let pat = shape_at(s, At.Expr(h), [At.Expr(h)])!
             let deep = deep_binary(s, 12)
             let r = matched(s, At.Expr(deep), pat)
@@ -168,7 +169,7 @@ spec "core/shape adversarial" {
         }
         then "a repeated H binder is NOT fooled by it: the two colliding literals are DIFFERENT subtrees, and the match REFUSES" {
             mut s = new_node_store()
-            let h = s.alloc_expr(Expr.Ident("H"))
+            let h = s.alloc_expr(Expr.Ident(scoped("H")))
             let pat_src = s.alloc_expr(Expr.ListLit([h, h]))
             let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h)])!
 
@@ -213,7 +214,7 @@ spec "core/shape adversarial" {
     given "a node's kind alone" {
         then "two method calls of different names share a kind, never a shallow fold" {
             mut s = new_node_store()
-            let x = s.alloc_expr(Expr.Ident("x"))
+            let x = s.alloc_expr(Expr.Ident(scoped("x")))
             let a = s.alloc_expr(Expr.MethodCall(x, "push", []))
             let b = s.alloc_expr(Expr.MethodCall(x, "pop", [x]))
             s.kind_at(At.Expr(a)) == s.kind_at(At.Expr(b)) &&
@@ -221,7 +222,7 @@ spec "core/shape adversarial" {
         }
         then "another variant is another kind" {
             mut s = new_node_store()
-            let x = s.alloc_expr(Expr.Ident("x"))
+            let x = s.alloc_expr(Expr.Ident(scoped("x")))
             let call = s.alloc_expr(Expr.MethodCall(x, "push", []))
             s.kind_at(At.Expr(call)) != s.kind_at(At.Expr(x))
         }

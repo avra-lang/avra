@@ -1,54 +1,52 @@
-// A record's SLOTS as the runtime lays them out: a flat record of scalars
-// rides inline in its container, one slot per scalar, however deep; a record
-// that is not flat takes one slot. The crossing's rows, door and writers count
-// these, so a nested all-scalar record cannot shift a reader's index.
-use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
+// A record's SLOTS as the runtime lays them out: a flat record of scalars rides inline in a box that
+// holds it, one slot per scalar; a record that is not flat takes one slot. Flatness does not nest — a
+// record holding a flat record is boxed, though it still lays that flat record inline in its own box.
+// So a nested all-scalar record cannot shift a reader's index. Each count is the program layer's
+// layout (`CheckedProgram.layout`), as the backend, the evaluator and the memory pass read it.
+use @std.avrac.testing.{judged}
+use compiler.{signing_in, program_of, parse_type_ref, avra}
+use core.{Layout}
 
-const shapes: string = "type Inner = { p: bool, q: bool }\ntype Pair = { x: int, y: int }\ntype Mid = { x: int, inner: Inner }\ntype Outer = { a: int, pair: Pair, mid: Mid, s: string }\ntype Nested = { m: List<Inner>, inner: Inner, t: string }\n"
+const shapes: string = "type Inner = { p: bool, q: bool }\ntype Pair = { x: int, y: int }\ntype Mid = { x: int, inner: Inner }\ntype Outer = { a: int, pair: Pair, mid: Mid, s: string }\ntype Nested = { m: List<Inner>, inner: Inner, t: string }\n0\n"
 
-fn slot_workspace() -> Workspace {
-    let ws = test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": shapes,
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ),
-        "/w",
-    )
-    let f = ws.file_id("/w/src/main.av")
-    let _ = ws.items(f)
-    let _ = ws.resolved(f)
-    ws
+/// What a value of the type `text` spells is to the machine, in the shapes' program.
+fn layout_of(text: string) -> Layout? {
+    let j = judged(shapes)
+    let signing = signing_in(j.engine, j.entry, [])
+    let written? = parse_type_ref(avra(), text) else { return null }
+    program_of(j.engine, j.entry, signing).layout(signing.signed(written))
 }
 
-fn slots_of(ws: Workspace, name: string) -> string {
-    let d = [x.id for x in ws.decls.all_decls() if x.name == name][0]
-    (ws.decls.slot_names(d) ?? ["(none)"]).join(",")
+/// The slots each field of a record takes in the box that holds it, in field order.
+fn slots_of(fields: List<string>) -> string { ["${layout_of(f)?.slots() ?? 0}" for f in fields].join(",") }
+
+/// Whether the type `text` spells rides inline: a flat record, carried as its fields.
+fn flat(text: string) -> bool {
+    let l? = layout_of(text) else { return false }
+    l is .Fields
 }
 
 spec "features/crossing — a record's slots" {
     given "a flat record of scalars" {
-        then "rides inline in its container, one slot per scalar" {
-            slots_of(slot_workspace(), "Outer").starts_with("a,x,y,")
+        then "is flat, and rides inline in its container, one slot per scalar" {
+            flat("Pair") && flat("Inner") && slots_of(["int", "Pair"]) == "1,2"
         }
     }
     given "a record that holds a flat record, inside a container" {
-        then "is itself boxed — flatness does not nest — and spells its own slots" {
-            slots_of(slot_workspace(), "Outer") == "a,x,y,mid,s"
+        then "is itself boxed — flatness does not nest — and takes one slot" {
+            !flat("Mid") &&
+                !flat("Outer") &&
+                slots_of(["int", "Pair", "Mid", "string"]) == "1,2,1,1"
         }
     }
     given "a record that holds a flat record and a scalar" {
         then "takes the slots its own fields spell, the flat one inline" {
-            slots_of(slot_workspace(), "Mid") == "x,p,q"
+            slots_of(["int", "Inner"]) == "1,2"
         }
     }
     given "a record beside a list of flat records" {
         then "the list is one slot and a flat field spells its scalars" {
-            slots_of(slot_workspace(), "Nested") == "m,p,q,t"
+            slots_of(["List<Inner>", "Inner", "string"]) == "1,2,1"
         }
     }
 }

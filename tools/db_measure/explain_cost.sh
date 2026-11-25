@@ -3,6 +3,8 @@
 # made of: a check from an empty store and one from a full store. Each line is
 # wall and peak; each form's largest allocation sites follow, named.
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 out=build/explain_measure
 mkdir -p "$out"
 aside="$out/aside.$$"

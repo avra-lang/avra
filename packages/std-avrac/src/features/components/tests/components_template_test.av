@@ -1,8 +1,8 @@
 // A template component's instance is its quote, copied where it
 // stands: the head and block in its holes, the template's names and
 // types resolving in the library, the user's in the user's file.
-use @std.avrac.testing.{refused_n, provided, provided_workspace, answered}
-use @std.avrac.compiler.{Program}
+use @std.avrac.testing.held.{Judged}
+use @std.avrac.testing.{refused_n, provided, provided_held, answered}
 use @std.text.{repeat}
 
 /// The provider: `limited` narrows a `Span` the way `within` narrows
@@ -23,7 +23,7 @@ fn doc_over_copy() -> string {
 }
 
 /// A program over the provider.
-fn packaged(main: string) -> Program {
+fn packaged(main: string) -> Judged {
     provided(main, provider())
 }
 
@@ -58,20 +58,11 @@ spec "features/components — a template's instance" {
                 p.report().contains("main.av:2")
         }
     }
-    given "visible magic" {
-        then "`expand` notes what the instance became, and the module its names resolve in" {
-            let p = packaged("use @x.c.{limited, span}\nlet v = limited span(1) { 1 }\nv")
-            let shown = p.expanded_source(p.ws.file_id("/w/src/main.av"))
-            shown.contains("limited span(1) {") &&
-                shown.contains("// `limited` (from @x.c) expands to:") &&
-                shown.contains("let limit: Span = span(1)")
-        }
-    }
+    given "visible magic" {}
     given "a doc group beside an instance whose template was copied in" {
         then "the canonical print keeps the group — a copied statement's origin offset claims no doc here" {
             let src = doc_over_copy()
-            let ws = provided_workspace(src, provider())
-            match ws.write_checked_source(ws.file_id("/w/src/main.av")) {
+            match provided_held(src, provider()).write_checked_at("/w/src/main.av") {
                 .Ok(text) -> text.contains("/// documented\nexport fn f()"),
                 .Err(_) -> false,
             }

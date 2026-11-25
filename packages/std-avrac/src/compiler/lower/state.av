@@ -3,6 +3,7 @@
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{
+    code_hash_symbol,
     StmtId,
     ExprId,
     FileId,
@@ -26,7 +27,7 @@ use core.{
     flatten,
     some_list,
 }
-use diagnostics.{loc_at, refusal, Diag}
+use diagnostics.{loc_at, refusal, said_as, Diag}
 use features.lists.{listed}
 use features.{
     LowerCx,
@@ -51,6 +52,8 @@ use features.{
     new_meta_heap,
     literal_meta,
     declares_state,
+    unsettled_kind,
+    unsettled_voice,
 }
 use @std.errors.{Loc}
 
@@ -231,10 +234,13 @@ impl LowerCx {
 
     /// A declaration's body under an instantiation, as the symbol a
     /// call or an address names — enqueued on first sight, so the
-    /// program lowers exactly what it reaches.
+    /// program lowers exactly what it reaches. A substitution reaches a
+    /// GENERIC body or a body with settled seats alone: any other declaration is one body
+    /// under any caller's, so it wears its own symbol and stays its file's content.
     fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
+        let own = if self.view.decls.generic(d) || !(sub?.consts ?? []).is_empty() { sub } else { null }
         let sym = self.view.decls.symbol(d)
-        let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
+        let name = if own == null { sym } else { self.view.decls.mangle(sym, own!) }
         self.jobs.callees.set(name, d)
         if self.unseen(name) {
             self
@@ -245,7 +251,7 @@ impl LowerCx {
                         file: self.view.decls.decl(d).file,
                         decl: d,
                         name: name,
-                        sub: sub,
+                        sub: own,
                         seats: seats,
                         root: null,
                     },
@@ -429,8 +435,8 @@ impl LowerCx {
     /// its seat hands it, read by that name.
     fn offered_reg(lam: ExprId, i: int, ty: TypeId) -> Reg {
         let record = self.view.types.arrow_parts(self.concrete(self.facts.type_at(lam)))!.seats[0]
-        let name = self.view.store.lambda_parts(lam)!.params[i].name.of
-        self.field_named(Reg { index: 1 }, record, name, ty)
+        let name = self.view.store.closure_parts(lam)!.params[i].name.of
+        self.field_named(Reg { index: 1 }, record, name.text(), ty)
     }
 
     /// The register an INLINED lambda's Nth param resolves to, when
@@ -447,9 +453,10 @@ impl LowerCx {
     /// frame of its own — a `?`, a `catch` or a block of statements
     /// acts on the CALLER's frame once the body is inlined.
     fn can_inline(f: ExprId, seats: int = 1) -> bool {
-        let parts? = self.view.store.lambda_parts(f) else { return false }
-        if !(self.names.capture(f)?.names ?? []).is_empty() { return false }
-        if self.facts.takes_by_name(f) || parts.params.length != seats { return false }
+        let parts? = self.view.store.closure_parts(f) else { return false }
+        let lam = self.view.store.closure_of(f)
+        if !(self.names.capture(lam)?.names ?? []).is_empty() { return false }
+        if self.facts.takes_by_name(lam) || parts.params.length != seats { return false }
         let body? = self.inline_body(f) else { return false }
         self.inline_safe(body)
     }
@@ -458,9 +465,9 @@ impl LowerCx {
     /// one-expression scope a trailing block parses to. Null for a
     /// body that holds statements.
     fn inline_body(f: ExprId) -> ExprId? {
-        let parts? = self.view.store.lambda_parts(f) else { return null }
+        let parts? = self.view.store.closure_parts(f) else { return null }
         match self.view.store.expr(parts.body) {
-            .Block(_, _) -> self.view.store.lone_value(parts.body),
+            .Block(_) -> self.view.store.lone_value(parts.body),
             rest -> parts.body,
         }
     }
@@ -471,10 +478,10 @@ impl LowerCx {
     fn inline_safe(e: ExprId) -> bool {
         let node = self.view.store.expr(e)
         match node {
-            .Block(stmts, _) -> stmts.is_empty() &&
+            .Block(_) -> self.view.store.lead_of(e).is_empty() &&
                 self.view.store.tail_of(e) != null &&
                 self.inline_safe(self.view.store.tail_of(e)!),
-            .Propagate(_) or .Catch(_, _, _, _) -> false,
+            .Propagate(_) or .Catch(_, _) -> false,
             .Lambda(_, _) -> true,
             rest -> self.view.store.walked(e).all((k: ExprId) -> self.inline_safe(k)),
         }
@@ -485,7 +492,7 @@ impl LowerCx {
     /// and no code pointer is called per element.
     mut fn inlined(lam: ExprId, regs: List<Reg>) -> Reg {
         let body? = self.inline_body(lam) else { return self.lower_defect(lam, "an inline seat without an inlinable lambda") }
-        self.inline_enter(InlineSeat { lam: lam, regs: regs })
+        self.inline_enter(InlineSeat { lam: self.view.store.closure_of(lam), regs: regs })
         let r = self.reg_of(body)
         self.inline_exit()
         r
@@ -507,11 +514,22 @@ impl LowerCx {
     /// that value — a literal as written, else what the evaluator
     /// SETTLED — minted in THIS body. Every other binding reads the
     /// slot it was bound to.
-    /// Whether a capture's source is a `state` binding, and that stmt.
+    /// Whether a capture's source is a `state` binding, and that stmt —
+    /// through every lambda it rides: a nested lambda captures the
+    /// outer one's capture, and the cell is still the binding's own.
     fn state_capture(l: ExprId, j: int) -> StmtId? {
         let cap? = self.names.capture(l) else { return null }
         if j >= cap.sources.length { return null }
-        match cap.sources[j] { .Def(s) if self.view.store.is_state_stmt(s) -> s, rest -> null }
+        self.state_source(cap.sources[j])
+    }
+
+    /// The `state` stmt a capture's source names, directly or through a capture.
+    fn state_source(b: Binding) -> StmtId? {
+        match b {
+            .Def(s) -> if self.view.store.is_state_stmt(s) { s } else { null },
+            .Capture(l, j) -> self.state_capture(l, j),
+            .Decl(_) or .Param(_) or .Receiver or .LambdaParam(_, _) or .Pattern(_, _) or .Index(_) or .TypeParam(_) -> null,
+        }
     }
 
     /// The cell a `state` capture's env slot holds.
@@ -603,7 +621,7 @@ impl LowerCx {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
         let own: DeclId? = self.view.decls.decl_of(self.view.file, s)
-        if own != null && self.view.decls.is_instance(own!) && !self.settles(ty) { return self.instance_value_reg(e, own!) }
+        if own != null && self.view.decls.is_instance(own!) { return self.instance_value_reg(e, own!) }
         let init = value!
         if self.sub == null && self.reads_settled_seat(init) {
             // a TEMPLATE body, not a unit: its `const` seats have no
@@ -623,23 +641,15 @@ impl LowerCx {
     /// Held or read, it is ASKED of the settlement, which answers a held
     /// const off its record and notes the read for any run that made it.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
-        if self.view.decls.is_instance(d) && !self.settles(ty) { return self.instance_value_reg(e, d) }
+        if self.view.decls.is_instance(d) { return self.instance_value_reg(e, d) }
         let x = self.view.decls.decl(d)
         self.settled_value_reg(x.file, x.stmt, ty, [], self.view.decls.symbol(d))
     }
 
-    /// Whether a value of type `ty` is DATA the compiler can lay out
-    /// once, as any const's aggregate is: no fn, `dyn`, `Cell`, task or
-    /// pointer anywhere inside it. An instance answering true here
-    /// settles exactly like a plain const — the call path is owed only
-    /// to one that holds behaviour a static layout cannot represent.
-    fn settles(ty: TypeId) -> bool {
-        self.view.decls.identity_in(ty, []) == null
-    }
-
-    /// A DECLARED VALUE — an exported top-level instance whose type
-    /// holds behaviour (`settles` above said no) — is built once per
-    /// run: its read calls the unit that builds it (`lower_root`'s
+    /// A DECLARED VALUE — a named top-level instance — is built once per
+    /// run, at run time, as a module `state`'s start is, so what its build
+    /// does (a `check`, a state it writes) happens in the run: its read
+    /// calls the unit that builds it (`lower_root`'s
     /// `once` body). The unit is its FILE's, like a fn's body.
     fn instance_value_reg(e: ExprId, d: DeclId) -> Reg {
         let unit = self.view.decls.instance_unit(d)
@@ -661,7 +671,7 @@ impl LowerCx {
     /// else what the evaluator settled.
     fn const_reg(e: ExprId, f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
         let store: SyntaxArena = self.view.decls.store_of(f)
-        let written: Expr = store.expr(store.const_value(s)!)
+        let written: Expr = store.valued(store.const_value(s)!)
         if is_literal(written) { return self.settled_reg(e, written) }
         self.settled_value_reg(f, s, ty, seats, self.view.decls.const_symbol(f, s))
     }
@@ -940,6 +950,7 @@ impl LowerCx {
         let cap? = self.names.capture(lam) else { return null }
         let r: Reg? = match cap.sources[j] {
             .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(lam, s, self.def_ty(s)),
+            .Capture(outer, i) if self.state_capture(outer, i) != null -> self.state_capture_cell(outer, i),
             rest -> self.read_wearing(lam, cap.sources[j], self.capture_ty(lam, j)),
         }
         if r == null { self.out.defect("a capture without a value survived resolve") }
@@ -1023,7 +1034,7 @@ impl LowerCx {
             self
                 .jobs
                 .statics
-                .push(Static { name: name, boxes: boxes, file: self.view.file, debug: debug })
+                .push(Static { name: name, boxes: boxes, home: self.view.source.file, debug: debug })
         }
         self.out.give(Ins.StaticAddr(dst, name))
     }
@@ -1055,38 +1066,9 @@ impl LowerCx {
         // AT THE DECLARATION'S VALUE, not the use that asked — a const
         // that reached here has one
         let at = loc_at(path, store.expr_span(store.const_value(s)!))
-        let d: Diag? = match why {
-            .Reach(label) -> refusal(
-                "const.reach",
-                at,
-                "a const cannot read the world",
-                "`${name}` ${label}",
-                "a const settles at compile time from pure computation alone — read the world at run time, under `let`",
-            ),
-            .Budget(label) -> refusal(
-                "const.budget",
-                at,
-                "a const ran past its budget",
-                "`${name}` ${label}",
-                "raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`",
-            ),
-            .Trap(words) -> refusal(
-                "const.trap",
-                at,
-                "a const trapped while settling",
-                "`${name}` ${words}",
-                "the initializer runs at compile time, so what traps there is refused here",
-            ),
-            .Param(runtime) -> refusal(
-                "const.param",
-                at,
-                "a const cannot read a run-time parameter",
-                "`${name}` reads `${runtime}`",
-                "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`",
-            ),
-            .Spoken or .Recursive -> null,
-        }
-        if d != null { self.out.voices.speak(d!) }
+        let kind? = unsettled_kind(why) else { return }
+        let v? = unsettled_voice(name, why) else { return }
+        self.out.voices.speak(said_as(kind, at, v))
     }
 
     /// A `const` seat's argument the evaluator could not settle — its

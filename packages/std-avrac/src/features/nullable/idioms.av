@@ -1,6 +1,6 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use features.{Code, Fix, rule, said}
+use features.{Syntax, Fix, rule, said, Code, fact_rule}
 use @std.meta.{name}
 
 /// A null test that picks the value or a default is `??`.
@@ -12,14 +12,14 @@ use @std.meta.{name}
 /// is already `Expr.If` — no parentheses needed to force it.
 @fixes("let v = if x == null { 0 } else { x! }", "x ?? 0")
 @keeps("let v = if next() == null { 0 } else { next()! }")
-export rule if_null_ternary { quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} } }
+export fact_rule if_null_ternary { quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} } }
 
 /// `let x = E` guarded by an immediate absence-exit — `let x? = E
 /// else { … }` — with every later `x!` in the block reading `x`
 /// bare. A `mut` never matches: the pattern's own `let` name-seat
 /// sees only a `let`'s binder, a different node kind entirely.
 @fixes("{\n    let held = get()\n    if held == null { return null }\n    take(held!)\n}", "{\n    let held? = get() else { return null }\n    take(held)\n}")
-@keeps("{\n    mut held = get()\n    if held == null { return null }\n    use(held!)\n}")
+@keeps("{\n    mut held = get()\n    if held == null { return null }\n    consume(held!)\n}")
 @keeps("{\n    let held = get()\n    if held == null { return null }\n    take(held)\n}")
 export rule let_else_guard {
     quote {
@@ -34,14 +34,14 @@ export rule let_else_guard {
 
 /// The guard body is one bare early-exit — `return`/`fail` — nothing
 /// this rule's rewrite would need to preserve past the `else`.
-fn absence_exit(guard: List<Code>) -> bool {
+fn absence_exit(guard: List<Syntax>) -> bool {
     guard.length == 1 &&
         (guard[0].text().starts_with("return") || guard[0].text().starts_with("fail"))
 }
 
 /// Whether `name!` appears anywhere in `rest` — the force-unwrap a
 /// `let x? = E else { … }` would make bare.
-fn forces(rest: List<Code>, name: string) -> bool {
+fn forces(rest: List<Syntax>, name: string) -> bool {
     rest.any(it.text().contains(name + "!"))
 }
 
@@ -53,7 +53,13 @@ fn forces(rest: List<Code>, name: string) -> bool {
 /// `quote{}`'s grammar: `head` and `guard` re-spliced verbatim,
 /// `rest` the same except every bare `${x}!` in it reads `${x}` now
 /// that the `let`-else has already unwrapped it.
-fn let_else_guard_fix(head: List<Code>, x: string, e: Code, guard: List<Code>, rest: List<Code>) -> Fix {
+fn let_else_guard_fix(
+    head: List<Syntax>,
+    x: string,
+    e: Syntax,
+    guard: List<Syntax>,
+    rest: List<Syntax>,
+) -> Fix {
     let head_text = joined([c.text() for c in head])
     let guard_text = joined([c.text() for c in guard])
     let rest_text = joined([unforced(r.text(), x) for r in rest])
@@ -137,7 +143,7 @@ fn is_ident_char(c: int) -> bool {
 @says("whether the scan is a `find` or an `index_of` lives in the loop that later sets the flag")
 export rule nullable_flag_local { quote { ${lit} } if lit.is_nullable_flag_mut() -> nullable_flag_found(lit) }
 
-fn nullable_flag_found(lit: Code) -> Fix {
+fn nullable_flag_found(lit: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -164,9 +170,9 @@ fn nullable_flag_found(lit: Code) -> Fix {
 /// declaration itself, an early exit right after it, or the first
 /// read) that this pattern's one bound local cannot make on its own.
 @keeps("fn f() {\n    let held = get()\n    take(held!)\n}")
-@keeps("fn f() {\n    mut held = get()\n    use(held!)\n    use(held!)\n    use(held!)\n}")
+@keeps("fn f() {\n    mut held = get()\n    consume(held!)\n    consume(held!)\n    consume(held!)\n}")
 @says("the fix guards once and reads the bare name after, and where to guard is the author's call")
-export rule repeated_unwrap { quote { ${lit} } if lit.is_repeatedly_forced() -> repeated_unwrap_found(lit) }
+export fact_rule repeated_unwrap { quote { ${lit} } if lit.is_repeatedly_forced() -> repeated_unwrap_found(lit) }
 
 fn repeated_unwrap_found(lit: Code) -> Fix {
     Fix

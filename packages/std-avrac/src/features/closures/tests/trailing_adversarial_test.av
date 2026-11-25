@@ -155,10 +155,15 @@ spec "features/closures/trailing — the red team" {
                 "a `return` answers a fn, and there is none enclosing",
             )
         }
-        then "`fail` inside a block raises to no caller" {
+        then "`fail` inside a block raises to the fn its seat answers for" {
+            shown(
+                "fn res(f: fn() -> Result<int, string>) -> Result<int, string> { f() }\nfn body() -> Result<int, string> { res { fail \"no\" } }\nmatch body() {\n    .Ok(v) -> \"ok\"\n    .Err(e) -> e\n}",
+            ) == "no"
+        }
+        then "`fail` inside a block whose seat answers no Result is refused by its seat" {
             refused_with(
-                "fn res(f: fn() -> Result<int, string>) -> Result<int, string> { f() }\nfn body() -> Result<int, string> { res { fail \"no\" } }\nbody()",
-                "a `fail` raises to a caller, and there is none enclosing",
+                "fn run(f: fn() -> int) -> int { f() }\nfn body() -> int { run { fail \"no\" } }\nbody()",
+                "`fail` raises to the fn this block answers for; this seat answers `int`, not a Result",
             )
         }
         then "a head with a block is refused, and reads as the head's brace" {

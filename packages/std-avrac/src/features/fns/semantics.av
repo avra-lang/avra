@@ -13,20 +13,20 @@ impl Heirs for Named {
 
 impl Meaning for Call {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        cx.use_call(e, self.callee.of)
+        cx.use_call(e, self.callee)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         cx.warn_use(e)
         let sig? = cx.sig_of(e) else {
             return cx
-                .settled_call(e, self.args, valued_call(cx, e, self.callee.of, self.pins, self.args))
+                .settled_call(e, self.args, valued_call(cx, e, self.callee.text(), self.pins, self.args))
         }
         cx
-            .settled_call(e, self.args, dispatched_call(cx, e, self.callee.of, self.pins, self.args, sig))
+            .settled_call(e, self.args, dispatched_call(cx, e, self.callee.text(), self.pins, self.args, sig))
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         let host: string? = cx.extern_callee(e)
-        if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, self.args)) }
+        if host != null { return host_call(cx, e, host!, self.args) }
         let hashed: Reg? = code_hash_reg(cx, e, self.args)
         if hashed != null { return hashed! }
         let guarded: Reg? = guarded_reg(cx, e, self.args)
@@ -40,7 +40,7 @@ impl Meaning for Call {
         if through != null { return valued_call_reg(cx, e, through!, regs) }
         // THE MINT LAW: the defaults' registers first, the answer last
         let seated = seated_left(cx, e, self.args, regs)
-        cx.call_decl_at(e, cx.callee_of(e, self.callee.of), seated)
+        cx.call_decl_at(e, cx.callee_of(e, self.callee.text()), seated)
     }
 }
 impl Meaning for Named {

@@ -36,18 +36,26 @@ evaluator, timing, a debug flag) and takes it out. The file only falls:
     python3 tools/inputs.py --accept   # prunes what a move made gone
 """
 import collections
-import glob
 import os
 import re
 import sys
 
 import licence_families
+import avsrc
 
-SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
+SCOPE = ["packages/std-avrac/src", "packages/cli/src", "packages/std-program/src"]
+# The `@std` packages whose sources the scope reads: their own, never WORLD or INERT.
+OWN = {"avrac", "program"}
 # The door is the FILES that define the input verbs and the disk's
 # answers to them. A read beside one, in the same directory, is outside
 # like any other.
-DOOR = {"packages/std-avrac/src/compiler/host/host.av", "packages/cli/src/commands/disk_host.av"}
+# The program layer's door is @std/program's input queries (`source_facts`): every read a query
+# makes of a file, a directory or the language is one of them.
+DOOR = {
+    "packages/std-avrac/src/compiler/host/host.av",
+    "packages/cli/src/commands/disk_host.av",
+    "packages/std-program/src/source_facts.av",
+}
 BASELINE = "tools/inputs.baseline"
 
 # What a call asks of the world. A kind in COUNTED is a read; the rest
@@ -62,7 +70,9 @@ WORLD = {
         "is_dir": "read", "list_dir": "read", "stamp": "read", "kind_of": "read",
         "open_beneath": "read", "watch": "read", "own_dir": "read", "user_dir": "read", "env": "env", "env_or": "env", "compile_slot": "env",
         "write_text": W, "write_bytes": W, "append_bytes": W, "synced": W,
-        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W,
+        "Draft": T, "drafted": W, "drafts_leaving": E, "drafts_left": E, "abandoned_drafts": "read",
+        "this_process": "pid",
+        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W,
         "println": E, "eprintln": E,
         "one_path": P, "refused": P, "enoent": P, "eacces": P, "enotdir": P,
         "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,
@@ -117,7 +127,7 @@ INERT = {
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
                  "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room",
-                 "avra_str_word_at"},
+                 "avra_str_word_at", "avra_cell_bytes_word", "avra_cell_bytes_run"},
         "world": {},
     },
     "derive": {"rows": set(), "world": {}},
@@ -142,7 +152,7 @@ ROWS = {
     "avra_selfhost_file_exists": "read", "avra_selfhost_read_file": "read",
     "avra_fd_read": "read", "avra_fd_tty_size": "read", "avra_fd_tty_raw": "write", "avra_fd_exit_writes": "write", "avra_sig_raise": "write", "avra_ffi_open": "read", "avra_embed": "read", "avra_embed_octets": "read", "avra_embed_digest": "read",
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
-    "avra_self_dir": "tool", "avra_now_ns": "clock", "avra_file_touch": "write",
+    "avra_self_dir": "tool", "avra_self_path": "tool", "avra_now_ns": "clock", "avra_file_touch": "write",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",
     "avra_box_observe": "effect", "avra_box_unobserve": "effect", "avra_turn_next": "effect", "avra_changes_take": "effect",
     "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
@@ -150,9 +160,13 @@ ROWS = {
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
     "avra_mmap_open": "read", "avra_mmap_len": "read", "avra_mmap_slice": "read",
     "avra_mmap_word_at": "read", "avra_mmap_close": "write",
+    "avra_disk_free_bytes": "read", "avra_file_bytes": "read", "avra_file_placed": "write",
+    "avra_cpu_ns": "clock",
+    "avra_cores_group": "spawn", "avra_cores_fork": "spawn", "avra_cores_heir": "spawn",
 }
 INERT_ROWS = re.compile(
-    r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
+    r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi|sw|lane|shared)_\w+|"
+    r"avra_cores_(claimed|leave|end_fd|heard|killed|finished|stderr_to|heir_gone)|avra_(debug|eputs|puts|"
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
     r"vgate_open|vgate_ended|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel|process_exit|"
     r"sched_seed|sched_settle|sched_run_begins|sched_run_ends|sched_guest_waits|clock_virtual|"
@@ -274,7 +288,7 @@ def unclassified(path, text):
             out.append(f"{path}: `{m.group(0).strip()}` is an import the keeper cannot read — "
                        "name what it takes (`use @std.pkg.{name}`)")
     for pkg in sorted(packages_used(text)):
-        if pkg != "avrac" and pkg not in WORLD and pkg not in INERT:
+        if pkg not in OWN and pkg not in WORLD and pkg not in INERT:
             out.append(f"{path}: `@std.{pkg}` is in neither WORLD nor INERT — say which it is")
     for pkg, name, _ in imports(text):
         if pkg in WORLD and name not in WORLD[pkg]:
@@ -308,21 +322,8 @@ def valued(pkg, name):
 def body_from(text, at):
     """A fn's text from its `fn` to the brace that closes it, by nesting —
     a one-line fn ends on its own line."""
-    depth, i, quoted = 0, at, False
-    while i < len(text):
-        c = text[i]
-        if c == "\\":
-            i += 1
-        elif c == '"':
-            quoted = not quoted
-        elif not quoted and c == "{":
-            depth += 1
-        elif not quoted and c == "}":
-            depth -= 1
-            if depth == 0:
-                return text[at:i + 1]
-        i += 1
-    return text[at:]
+    end = avsrc.braced_end(text, at)
+    return text[at:] if end is None else text[at:end + 1]
 
 
 FREE_FN = re.compile(r"^(?:export\s+)?(?:mut\s+|once\s+)?fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
@@ -392,13 +393,11 @@ def scope_sites(texts):
 
 
 def scope_files():
-    return sorted(f for root in SCOPE for f in glob.glob(root + "/**/*.av", recursive=True)
-                  if "/tests/" not in f)
+    return avsrc.av_files(SCOPE)
 
 
 def package_sources(pkg):
-    return [(f, open(f).read()) for f in sorted(glob.glob(f"packages/std-{pkg}/src/**/*.av", recursive=True))
-            if "/tests/" not in f]
+    return [(f, open(f).read()) for f in avsrc.av_files([f"packages/std-{pkg}/src"])]
 
 
 def baseline():

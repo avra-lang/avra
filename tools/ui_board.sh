@@ -15,6 +15,8 @@ set -eu
 . "$(dirname "$0")/lib/tree.sh"
 target=${UI_BOARD_TARGET:-wasm}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-board.XXXXXX")
+# The copy of the tree it builds in is this run's alone, and goes when the run ends.
+trap 'find "$work" -delete 2>/dev/null || true' EXIT
 
 skip() { echo "ui-board: SKIPPED — $* ; the board did not run on a page"; exit 0; }
 

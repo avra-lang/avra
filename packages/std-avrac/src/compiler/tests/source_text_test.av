@@ -7,7 +7,7 @@ use @std.avrac.compiler.format.{
     render_source_of,
     lossless_defect,
 }
-use @std.avrac.core.{Expr, Stmt, new_node_store}
+use @std.avrac.core.{scoped, Expr, Stmt, new_node_store}
 use @std.avrac.testing.{projected}
 
 fn stable(source: string) -> bool {
@@ -34,6 +34,33 @@ const WITHIN_SECS: string = "use @std.time.{secs}\nlet w = within secs(10) {\n  
 const WITHIN_MS: string = "use @std.time.{ms}\nlet w = within ms(5) {\n    1\n}\nw"
 
 spec "source text" {
+    given "a type parameter's default" {
+        then "a fn's prints as written" {
+            let source = "fn f<T, E = never>(x: T) -> T {\n    x\n}"
+            projected(source) == source
+        }
+        then "a component's prints as written" {
+            let source = "component queue<T, E = never> {\n    capacity: int = 3\n}"
+            projected(source) == source
+        }
+        then "a record's prints as written" {
+            let source = "type Dead<T, E = never> = {\n    item: T,\n    why: E,\n}"
+            projected(source) == source
+        }
+        then "an enum's prints as written" {
+            let source = "enum Settled<T, E = string> {\n    Done(value: T)\n    Failed(why: E)\n}"
+            projected(source) == source
+        }
+        then "an alias's prints as written" {
+            let source = "alias Rows<T = int> = List<T>"
+            projected(source) == source
+        }
+        then "a named type's prints as written" {
+            let source = "type Ids<T = int> = List<T>"
+            projected(source) == source
+        }
+    }
+
     given "a host fn — an `extern fn` with a body" {
         then "it prints as it was written" {
             let source = "extern fn avra_ui_event(who: int, what: int) -> int { who + what }"
@@ -60,6 +87,15 @@ spec "source text" {
         }
         then "beside an import, each keeps its own form" {
             stable("use util.{twice}\n\nexport use util.{heavy}\n")
+        }
+    }
+    given "a head before an empty body" {
+        then "a range ending in a name keeps its parentheses" { stable("fn f(n: int) {\n    for k in (0..n) {}\n}") }
+        then "a list named bare keeps its parentheses" { stable("fn f(xs: List<int>) {\n    for x in (xs) {}\n}") }
+        then "a `while` comparing to a name keeps its parentheses" { stable("fn f(n: int) {\n    mut i = 0\n    while (i < n) {}\n}") }
+        then "an `if` comparing to a name keeps its parentheses" { stable("fn f(n: int) {\n    if (0 < n) {}\n}") }
+        then "a head before a body that holds a statement needs none" {
+            projected("fn f(n: int) {\n    for k in (0..n) {\n        let _ = k\n    }\n}") == "fn f(n: int) {\n    for k in 0..n {\n        let _ = k\n    }\n}"
         }
     }
     given "a within limit is spelled as written" {
@@ -310,7 +346,7 @@ let chained = some?.type(List<string?>)
 """,
             )
         }
-        then "an `else if` chain in a block's tail position stays a chain, not a nested block — the answer's `lone_tail` wrap must not read as one" {
+        then "an `else if` chain in a block's tail position stays a chain, not a nested block" {
             projected(
                 "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}",
             ) == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}"
@@ -320,7 +356,7 @@ let chained = some?.type(List<string?>)
                 "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}",
             ) == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}"
         }
-        then "a WRITTEN `else { if … }`, in a block's tail position, keeps its braces — the chain link's lone_tail wrap and this one are the same shape, told apart only by whether a real brace sits past the nested if's own end" {
+        then "a WRITTEN `else { if … }`, in a block's tail position, keeps its braces" {
             stable(
                 "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else {\n        if b == 2 {\n            2\n        } else {\n            3\n        }\n    }\n}",
             )
@@ -375,7 +411,7 @@ let one_when = when { _ -> 1 }
 
         then "parentheses keep it distinct from a direct declaration call" {
             mut store = new_node_store()
-            let callee = store.alloc_expr(Expr.Ident("f"))
+            let callee = store.alloc_expr(Expr.Ident(scoped("f")))
             let arg = store.alloc_expr(Expr.IntLit(1))
             let call = store.alloc_expr(Expr.CallValue(callee, [arg]))
             render_expression(store, call) == "(f)(1)"

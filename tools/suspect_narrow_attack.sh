@@ -11,8 +11,8 @@
 # the attacks beside it do. NARROW_CEILING (rows) gates the fn-body edit's count once a narrowing lands;
 # without it the count is reported.
 set -u
-cd "$(dirname "$0")/.."
-R=build/suspect-narrow; fails=0; steps=0
+. "$(dirname "$0")/lib/attack.sh"
+R=build/suspect-narrow
 find "$R" .avra-cache -type f -delete 2>/dev/null
 mkdir -p $R/app/src/m $R/app/src/n $R/prov/src
 cat > $R/prov/avra.toml <<'TOML'
@@ -65,14 +65,14 @@ want_of() { # <K> <P> <base> <y> <plus>
 B() { # B <label> <wanted output> [<max suspects>]
     steps=$((steps + 1))
     AVRA_DB_VERIFY=filesaid AVRA_QTRACE=1 ./avra build $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fails=$((fails + 1)); echo "FAIL  $1: status $st: $(grep -v '^Q' $R/err | tail -n 6 | cut -c1-200 | tr '\n' ' ')"; return 1; }
+    [ $st -eq 0 ] || { fail "$1: status $st: $(grep -v '^Q' $R/err | tail -n 6 | cut -c1-200 | tr '\n' ' ')"; return 1; }
     got=$($R/app/src/main 2>&1)
-    [ "$got" = "$2" ] || { fails=$((fails + 1)); echo "FAIL  $1: printed '$got', wanted '$2'"; }
+    [ "$got" = "$2" ] || fail "$1: printed '$got', wanted '$2'"
     missed=$(grep -c '^Q	suspect-missed' $R/err)
-    [ "$missed" = 0 ] || { fails=$((fails + 1)); echo "FAIL  $1: $missed row(s) judged moved that the suspect set did not name: $(grep '^Q	suspect-missed' $R/err | head -n 2 | cut -c1-200 | tr '\n' ' ')"; }
+    [ "$missed" = 0 ] || fail "$1: $missed row(s) judged moved that the suspect set did not name: $(grep '^Q	suspect-missed' $R/err | head -n 2 | cut -c1-200 | tr '\n' ' ')"
     rows=$(grep '^Q	suspects' $R/err | tail -n 1 | cut -f4 | cut -d' ' -f1)
     echo "$1: suspects ${rows:-0} row(s)"
-    if [ -n "${3:-}" ] && [ "${rows:-0}" -gt "$3" ]; then fails=$((fails + 1)); echo "FAIL  $1: $rows suspect rows, over $3"; fi
+    if [ -n "${3:-}" ] && [ "${rows:-0}" -gt "$3" ]; then fail "$1: $rows suspect rows, over $3"; fi
 }
 base 5 7 100 3
 B "cold" "$(want_of 5 7 100 3 1)"
@@ -85,5 +85,4 @@ sed -i.bak 's/+ 1 }/+ 2 }/' $R/prov/src/counted.av; find $R -name '*.bak' -delet
 B "a template body spliced into another package" "$(want_of 5 7 100 3 2)"
 base 5 7 100 3; B "restored again" "$(want_of 5 7 100 3 1)"
 base 5 7 250 3; B "a fn body's literal" "$(want_of 5 7 250 3 1)" ${NARROW_CEILING:-}
-echo "suspect-narrow-attack: $steps edit(s) built warm, $fails failed"
-[ "$fails" -eq 0 ]
+verdict "suspect-narrow-attack" "$steps edit(s) built warm"

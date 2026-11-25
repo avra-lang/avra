@@ -338,11 +338,14 @@ spec "@std.http RFC 9110/9112 conformance" {
                 "HEAD /r HTTP/1.1",
             ) == "200 headed"
         }
-        then "only a HEAD falls back — a POST is never answered by a GET route" {
-            answer_of([fixed(Method.Get, "/r", cf_get)], "POST /r HTTP/1.1") == "404 "
+        then "only a HEAD falls back — a POST a GET route's path takes is a 405 (RFC 9110 §15.5.6)" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "POST /r HTTP/1.1") == "405 "
         }
-        then "and a HEAD with no GET route either is a 404" {
-            answer_of([fixed(Method.Post, "/r", cf_post)], "HEAD /r HTTP/1.1") == "404 "
+        then "and a HEAD with no GET route on a path a POST route takes is a 405 too" {
+            answer_of([fixed(Method.Post, "/r", cf_post)], "HEAD /r HTTP/1.1") == "405 "
+        }
+        then "a method on a path no route takes is a 404" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "POST /other HTTP/1.1") == "404 "
         }
     }
     given "the loop (RFC 9112 §6.1, §6.3, §9.3, §9.6)" {

@@ -6,7 +6,7 @@
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 
-R=build/stale-imports; fails=0
+R=build/stale-imports
 find "$R" -mindepth 1 -delete 2>/dev/null
 for d in warm cold; do
     mkdir -p $R/$d/src

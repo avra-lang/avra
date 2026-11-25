@@ -1,7 +1,7 @@
 //! The select nodes: variants of `Expr` (core/nodes.av), declared
 //! where their meaning is. An arm is a node of its own, so a `select`
 //! holds its arms as one list in written order.
-use core.{expr_node, ExprId, TypeId, Reg, Scoped, NodeFacts, WaitProbe}
+use core.{scoped, expr_node, ExprId, TypeId, Reg, Scoped, NodeFacts, WaitProbe}
 use core.marks.{apart}
 
 use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
@@ -30,16 +30,16 @@ impl Meaning for Select {
 /// read before the head, `value` the body.
 @expr_node
 @apart
-export type WaitArm = { index: Scoped = Scoped(""), bind: Scoped = Scoped(""), head: ExprId, guard: ExprId? = null, value: ExprId }
+export type WaitArm = { index: Scoped = scoped(""), bind: Scoped = scoped(""), head: ExprId, guard: ExprId? = null, value: ExprId }
 
 impl Meaning for WaitArm {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        resolve_arm(cx, e, arm_binds(self.index.of, self.bind.of), self.guard, self.value)
+        resolve_arm(cx, e, arm_binds(self.index.text(), self.bind.text()), self.guard, self.value)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         wait_arm_type(
             cx,
-            ArmSeats { arm: e, index: self.index.of, bind: self.bind.of, head: self.head },
+            ArmSeats { arm: e, index: self.index.text(), bind: self.bind.text(), head: self.head },
             self.guard,
             self.value,
         )

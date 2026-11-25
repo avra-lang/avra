@@ -1,23 +1,20 @@
 // AN INSTANCE'S HEAD KEEPS ITS BRACE. The brace after an instance's
 // head opens the instance's block, so a record literal written as the
 // head stands in parentheses; everywhere else a literal opens bare.
-use @std.avrac.testing.{provided, provided_workspace, answered}
-use @std.avrac.compiler.{Program}
+use @std.avrac.testing.held.{Judged}
+use @std.avrac.testing.{provided, provided_held, answered}
 
 /// The library: a record a head takes, and a component over it.
 fn provider() -> string {
     "export type Span = { n: int }\nexport component tally(span: Span) {\n    extra: int = 0\n    fn total() -> int { self.span.n + self.extra }\n}\n"
 }
 
-fn over(main: string) -> Program { provided("use @x.c.{tally, Span}\n" + main, provider()) }
+fn over(main: string) -> Judged { provided("use @x.c.{tally, Span}\n" + main, provider()) }
 
 /// A file as the formatter prints it.
 fn printed(main: string) -> string {
-    let ws = provided_workspace("use @x.c.{tally, Span}\n" + main, provider())
-    match ws.formatted_source(ws.file_id("/w/src/main.av")) {
-        .Ok(text) -> text,
-        .Err(why) -> "refused: ${why}",
-    }
+    match provided_held("use @x.c.{tally, Span}\n" + main, provider())
+        .formatted_at("/w/src/main.av") { .Ok(text) -> text, .Err(why) -> "refused: ${why}" }
 }
 
 /// The same headless instance before, inside and after a fn whose

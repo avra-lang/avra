@@ -1,7 +1,7 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use core.{StmtId, ExprId, SyntaxArena, some_list}
-use features.{Code, Fix, rule, Decl, Decls, NameFacts}
+use core.{StmtId, ExprId, SyntaxArena}
+use features.{Code, Fix, fact_rule}
 
 /// An `impl Trait for T` method whose body is the trait's own
 /// DEFAULT body for that name, span-blind and with a written no-op
@@ -26,35 +26,16 @@ use features.{Code, Fix, rule, Decl, Decls, NameFacts}
 @keeps("trait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\nimpl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntype Loud = {}")
 @keeps("impl Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 @law("an impl method identical to its trait's default answers the same as the default")
-export rule default_override { quote { ${m} } if overrides_default(m) -> Fix.Delete(some_list(m.declaring())) }
+export fact_rule default_override { quote { ${m} } if overrides_default(m) -> Fix.Delete(m.deleted()) }
 
 /// Whether `m` is a method statement standing in an `impl Trait for
 /// T` block, its trait naming a DEFAULT member of the same name, and
 /// the two bodies match once each side's own written no-ops are
 /// dropped.
 fn overrides_default(m: Code) -> bool {
-    let d? = m.declaring() else { return false }
-    let decls = m.of.view.decls
-    let x = decls.decl(d)
-    if !(x.kind is .Method) { return false }
-    let dflt? = trait_default(decls, m.of.names, x) else { return false }
-    bodies_equivalent(decls.store_of(x.file), x.root, decls.store_of(dflt.file), dflt.root)
-}
-
-/// The trait member `x` overrides, when it does: `x`'s own impl
-/// names a trait, and that trait declares a member of `x`'s name
-/// CARRYING A BODY (`Decls.default_member` — the compiler's own
-/// dispatch fallback for a type that never wrote one). Absent for an
-/// inherent method, a trait's own bodiless member, and a trait whose
-/// name this file's namespace does not resolve.
-fn trait_default(decls: Decls, names: NameFacts, x: Decl) -> Decl? {
-    let parent? = x.parent else { return null }
-    let pd = decls.decl(parent)
-    let ip? = decls.store_of(pd.file).impl_parts(pd.stmt) else { return null }
-    let trait_name? = ip.of else { return null }
-    let tdecl? = decls.impl_trait(parent) ?? decls.trait_named(names, trait_name) else { return null }
-    let dm? = decls.default_member(tdecl, x.name) else { return null }
-    decls.decl(dm)
+    let own? = m.own_body() else { return false }
+    let inherited? = m.overridden_default() else { return false }
+    bodies_equivalent(own.store, own.body, inherited.store, inherited.body)
 }
 
 /// Whether two fn bodies answer the same program: the same statement
@@ -62,9 +43,7 @@ fn trait_default(decls: Decls, names: NameFacts, x: Decl) -> Decl? {
 /// kept statement's fingerprint equal in order (`core.SyntaxArena`'s
 /// own span-blind fold — a copy in a different file still matches),
 /// and the same tail.
-fn bodies_equivalent(os: SyntaxArena, ob: ExprId?, ds: SyntaxArena, db: ExprId?) -> bool {
-    let ome? = ob else { return false }
-    let dme? = db else { return false }
+fn bodies_equivalent(os: SyntaxArena, ome: ExprId, ds: SyntaxArena, dme: ExprId) -> bool {
     let ok? = kept_block(os, ome) else { return false }
     let dk? = kept_block(ds, dme) else { return false }
     ok.stmts.length == dk.stmts.length &&
@@ -81,8 +60,8 @@ type KeptBlock = { stmts: List<StmtId>, tail: ExprId? }
 
 fn kept_block(store: SyntaxArena, e: ExprId) -> KeptBlock? {
     match store.expr(e) {
-        .Block(stmts, _) -> KeptBlock {
-            stmts: [s for s in stmts if !is_nothing_call(store, s)],
+        .Block(_) -> KeptBlock {
+            stmts: [s for s in store.lead_of(e) if !is_nothing_call(store, s)],
             tail: store.tail_of(e),
         },
         rest -> null,
@@ -104,7 +83,7 @@ fn is_nothing_call(store: SyntaxArena, s: StmtId) -> bool {
 
 fn is_nothing_call_expr(store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) {
-        .Call(callee, _, args) -> callee.of == "nothing" && args.is_empty(),
+        .Call(callee, _, args) -> callee.spells("nothing") && args.is_empty(),
         rest -> false,
     }
 }

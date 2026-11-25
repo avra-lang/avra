@@ -1,11 +1,8 @@
 // A sugar keeps its own node and answers for its meaning: `~x` is
 // `Bitnot`, minted with `x ^ -1`, and a refusal that meaning causes
 // says what the sugar means at the sugar the author wrote.
-use @std.avrac.core.{SyntaxArena, ExprId, same_expr}
-use @std.avrac.compiler.{parse_source, analyze_source}
-use @std.avrac.testing.{shown, refused_with, provided, answered}
-use @std.avrac.compiler.{avra}
-use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.core.{SyntaxArena, ExprId, StmtId, same_expr}
+use @std.avrac.testing.{shown, refused_with, provided, answered, judged}
 
 /// A provider whose template holds a sugar over a hole: the splice
 /// copies the sugar, and its meaning must follow the copy.
@@ -18,29 +15,48 @@ fn is_seven(store: SyntaxArena, i: int) -> bool {
     match store.expr(ExprId { index: i }) { .IntLit(v) -> v == 7, rest -> false }
 }
 
+/// The statement of a lone program that runs `~x`: the store it stands in, and its value.
+type Sugared = { store: SyntaxArena, stmt: StmtId, root: ExprId }
+
+/// Where the lone program `source` first runs a `~`, as compiled.
+fn sugared(source: string) -> Sugared? {
+    for item in judged(source).items_at("/alone/src/main.av") {
+        for st in item.stmts {
+            let v? = item.store.stmt_value(st) else { continue }
+            if item.store.expr(v) is .Bitnot { return Sugared { store: item.store, stmt: st, root: v } }
+        }
+    }
+    null
+}
+
+/// Each item of a program instancing `inverted` as compiled: its store, the instance expanded.
+fn template_stores() -> List<SyntaxArena> {
+    [i.store for i in provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
+        .items_at("/w/src/main.av")]
+}
+
 spec "features/expr_spine — a sugar's meaning" {
     given "`~x`" {
         then "it parses to its own node, not to its rewrite" {
-            let p = parse_source("let x = 1\n~x")
-            let root = p.store.stmt_value(p.stmts[1])!
-            p.voices.list.length == 0 && p.store.expr(root) is .Bitnot
+            judged("let x = 1\n~x").clean() && sugared("let x = 1\n~x") != null
         }
         then "it answers what `x ^ -1` answers" {
             shown("let x = 5\n~x") == "-6"
         }
-        then "its minted nodes answer for the sugar" {
-            let p = parse_source("let x = 1\n~x")
-            let root = p.store.stmt_value(p.stmts[1])!
+        then "its minted nodes answer for the sugar, and the `-1` they hold is a sugar of its own" {
+            let p? = sugared("let x = 1\n~x") else { return false }
+            let root = p.root
             let meant = p.store.meant(root)
             meant != null &&
                 p.store.minted_for(meant!)?.index ?? 0 - 1 == root.index &&
                 p.store.minted_for(root) == null &&
-                p.store.sugars().length == 1 &&
-                p.store.sugars().first()?.index ?? 0 - 1 == root.index
+                p.store.sugars().length == 2 &&
+                p.store.sugars().first()?.index ?? 0 - 1 == root.index &&
+                p.store.expr(p.store.sugars()[1]) is .Neg
         }
         then "the statement notes what it means" {
-            let p = parse_source("let x = 1\n~x")
-            p.store.means_in(p.stmts[1]).join("|") == "`~x` means `x ^ -1`"
+            let p? = sugared("let x = 1\n~x") else { return false }
+            p.store.means_in(p.stmt).join("|") == "`~x` means `x ^ -1`"
         }
     }
     given "`~s` over a string" {
@@ -49,18 +65,18 @@ spec "features/expr_spine — a sugar's meaning" {
         }
         then "the whole refusal, rendered" {
             let expected = """error[type.mismatch]: `^` needs `int` operands, found `string`
-  ╭─[app.av:2:2]
+  ╭─[<source>:2:2]
 2 │ ~s
   ·  ┬
   ·  ╰── this is `string`
 ──╯
-  ╭─[app.av:2:1]
+  ╭─[<source>:2:1]
 2 │ ~s
   · ┬
   · ╰── `~s` means `s ^ -1`
 ──╯
 help: give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number"""
-            avra().check(new_source_file("app.av", "let s = \"x\"\n~s")) == expected
+            judged("let s = \"x\"\n~s").report() == expected
         }
         then "and keeps the rewrite's own words" {
             refused_with("let s = \"x\"\n~s", "`^` needs `int` operands, found `string`")
@@ -71,27 +87,21 @@ help: give the operand the type the operator needs — `.length` measures text a
             answered(provided("use @x.c.{inverted}\ninverted 5 { 1 }", inverting())) == "-13"
         }
         then "its operand is copied once, never twice" {
-            let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
-            let store = p.ws.parsed(p.ws.file_id("/w/src/main.av")).store
-            [i for i in 0..store.expr_count() if is_seven(store, i)].length == 1
+            let stores = template_stores()
+            [i for store in stores for i in 0..store.expr_count() if is_seven(store, i)].length == 1
         }
         then "the copy's minted nodes answer for the copy" {
-            let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
-            let store = p.ws.parsed(p.ws.file_id("/w/src/main.av")).store
-            store.sugars().length == 2 &&
-                store
-                    .sugars()
+            let stores = template_stores()
+            [s for store in stores for s in store.sugars() if store.expr(s) is .Bitnot].length == 2 &&
+                stores
                     .all(
-                        (s) -> store.meant(s) != null &&
-                            same_expr(store.minted_for(store.meant(s)!)!, s),
+                        (store) -> store
+                            .sugars()
+                            .all(
+                                (s) -> store.meant(s) != null &&
+                                    same_expr(store.minted_for(store.meant(s)!)!, s),
+                            ),
                     )
-        }
-        then "and the instance's expansion is noted as written" {
-            let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
-            let shown_text = p.expanded_source(p.ws.file_id("/w/src/main.av"))
-            shown_text.contains("~7") &&
-                shown_text.contains("~5") &&
-                shown_text.contains("`~7` means `7 ^ -1`")
         }
     }
 }

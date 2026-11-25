@@ -23,12 +23,12 @@ A new whole verb is added to VERBS here, so the door cannot grow a side entry.
 `Family.all()` (a collect enum, no argument) and the filesystem walk
 `ws.all_files(dir)` (an argument) are not these verbs.
 """
-import glob
 import os
 import re
 import sys
 
 import licence_families
+import avsrc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
@@ -43,11 +43,16 @@ LICENSE = re.compile(r"//\s*LICENSED\s+" + licence_families.id_pattern("whole.")
 
 
 def source_files(root):
-    for scope in SCOPE:
-        for path in sorted(glob.glob(os.path.join(root, scope, "**", "*.av"), recursive=True)):
-            rel = os.path.relpath(path, root)
-            if "/tests/" not in rel:
-                yield rel
+    return avsrc.av_files(SCOPE, root)
+
+
+# A string literal's text: a program a law's witness spells is no call of the compiler's.
+STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def code_of(line):
+    """A line's code: its comment and the text of its string literals dropped."""
+    return STRING.sub('""', line).split("//")[0]
 
 
 def sites(rel, text):
@@ -55,7 +60,7 @@ def sites(rel, text):
     lines = text.splitlines()
     out = []
     for i, line in enumerate(lines):
-        code = line.split("//")[0]
+        code = code_of(line)
         if DEFINITION.search(code) or not VERBS.search(code) or (rel, line.strip()) in DOOR:
             continue
         near = [line] + ([lines[i - 1]] if i > 0 else [])
@@ -71,7 +76,7 @@ def stale_licenses(text):
     for i, line in enumerate(lines):
         if not LICENSE.search(line):
             continue
-        here = [line.split("//")[0], lines[i + 1].split("//")[0] if i + 1 < len(lines) else ""]
+        here = [code_of(line), code_of(lines[i + 1]) if i + 1 < len(lines) else ""]
         if not any(VERBS.search(c) and not DEFINITION.search(c) for c in here):
             gone.append(i + 1)
     return gone
@@ -159,6 +164,8 @@ def self_test():
     assert len(one("[d for d in Decl.all(db)]\n")) == 1
     assert len(one("x.all_in(db)\n")) == 1
     assert one("// self.decls.all_files() in a comment\n") == []
+    assert one('witness: "[r for r in Row.all(1) if ok(r)].length\\n"\n') == []  # a program a witness spells
+    assert len(one('let u = "http://x"; let a = Decl.all(db)\n')) == 1  # a `//` in a string cuts no code
     lic = one("// LICENSED whole.cold: the docs command\nlet a = Decl.all(db)\n")
     assert lic[0][1] and lic[0][2] == "the docs command"
     assert one("let a = Decl.all(db) // LICENSED whole.cold: docs\n")[0][1]

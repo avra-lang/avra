@@ -44,16 +44,19 @@ fn render_seq(s: Seq) -> string {
         parts.push("@recover(sync_to: ${quoted_text(s.recover!.sync_to)})")
     }
     if s.fold != null { parts.push("@fold(${s.fold!})") }
+    if s.aliased { parts.push("@alias") }
     if s.operators != null { parts.push(render_operators(s.operators!)) }
     if s.build != null { parts.push("-> ${render_build(s.build!)}") }
     parts.join(" ")
 }
 
-fn render_build(b: Build) -> string {
+/// A build as the notation writes it.
+export fn render_build(b: Build) -> string {
     match b {
         .Var(name) -> name,
         .Call(name, args) -> "${name}(${args.join(", ")})",
         .Node(owner, variant, fixed, _) -> "${owner}.${variant}${stated_payloads(fixed)}",
+        .Computed(owner, variant, by, _) -> "${owner}.${variant} by ${by}",
     }
 }
 
@@ -74,7 +77,7 @@ fn render_suffix(x: Suffix) -> string {
 }
 
 fn render_assoc(a: Assoc) -> string {
-    match a { .Left -> "left", .Single -> "none", .Unmixed(refusal) -> "unmixed(${refusal})" }
+    match a { .Left -> "left", .Single -> "none" }
 }
 
 fn render_word(w: List<string>) -> string {

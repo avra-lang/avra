@@ -1,22 +1,33 @@
 //! The loop, by its law: one door, and a paint only after what came
 //! through it ran.
-use @std.ui.app.{App, app, plain}
+use @std.ui.app.{App, app}
 use @std.ui.components.{text}
 use @std.ui.tree.node.{Node}
-use @std.ui.style.theme.{Theme, dark_theme}
+use @std.ui.style.theme.{Theme, default_theme, plain, theme}
 
 /// What a target was shown, paint by paint: each tree's words under the
 /// mode it wore.
 type Shown = { paints: Cell<List<string>> = Cell.new([]) }
 
-/// An app whose view says `words` as they stand, shown to `on`.
-fn saying(words: Cell<string>, on: Shown, theme: fn() -> Theme) -> App {
+/// Words drawn in the theme `worn`, set where they are placed.
+component worded {
+    words: string = ""
+    worn: Theme = plain()
+    ctx theme = self.worn
+    text self.words
+}
+
+/// An app whose view says `words` as they stand, in the theme `worn` answers at each paint, shown to
+/// `on`.
+fn saying(words: Cell<string>, on: Shown, worn: fn() -> Theme) -> App {
     app(
-        () -> text words.get(),
-        theme,
-        (root: Node, worn: Theme) -> on.paints.push("${root.words()} ${worn.mode.word()}"),
+        () -> worded { words: words.get(), worn: worn() },
+        (root: Node) -> on.paints.push("${root.words()} ${mode_of(root)}"),
     )
 }
+
+/// The mode the tree `root` was drawn in.
+fn mode_of(root: Node) -> string { (root.theme?.theme ?? plain()).mode.word() }
 
 spec "the loop is one door" {
     given "something that ran" {
@@ -30,7 +41,7 @@ spec "the loop is one door" {
                         true
                     },
                 )
-            ran && on.paints.get().join(",") == "after light"
+            ran && on.paints.get().join(",") == "after system"
         }
     }
     given "something that did not run" {
@@ -46,11 +57,15 @@ spec "the loop is one door" {
             let words: Cell<string> = Cell.new("w")
             let night: Cell<bool> = Cell.new(false)
             let on = Shown {}
-            let made = saying(words, on, () -> if night.get() { dark_theme } else { plain() })
+            let made = saying(
+                words,
+                on,
+                () -> if night.get() { default_theme with { mode: .Dark } } else { plain() },
+            )
             made.paint()
             night.set(true)
             made.paint()
-            on.paints.get().join(",") == "w light,w dark"
+            on.paints.get().join(",") == "w system,w dark"
         }
     }
 }

@@ -7,7 +7,7 @@
 # survivor is refused (a decision must be made), and a baseline entry
 # that now REFUSES is stale. The baseline lists sites, never counts.
 set -eu
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 now=$(mktemp)
 base=$(mktemp)
 diffout=$(mktemp)

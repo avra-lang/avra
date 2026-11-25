@@ -39,7 +39,9 @@ for src in "$fixtures"/*/; do
     pkg=$work/$name
     cp -R "$src" "$pkg"
     err=$work/$name.err
-    if ! "$avra" build "$pkg" >"$work/$name.native.build" 2>"$err"; then
+    # the native leg is the optimised product, as the wasm module is: a dev build's unoptimised
+    # frames are no engine's answer to how deep a task may recurse
+    if ! "$avra" build --release "$pkg" >"$work/$name.native.build" 2>"$err"; then
         say "$name: native build failed"; cat "$err" >&2; fail=1; continue
     fi
     native=$(tail -1 "$work/$name.native.build")
@@ -59,7 +61,7 @@ for src in "$fixtures"/*/; do
         fb="${wasm%.wasm}.asyncify.wasm"
         fs=0
         if [ -f "$fb" ]; then "$node" --no-warnings "$here/wasm-node.mjs" --asyncify "$fb" >"$work/$name.asyncify.out" 2>&1 || fs=$?; else fs=2; echo "(no fallback built)" >"$work/$name.asyncify.out"; fi
-        if "$avra" run "$pkg" >/dev/null 2>&1; then say "$name: the evaluator ran it to the end, and it must refuse"; fail=1; continue; fi
+        if "$avra" run --eval "$pkg" >/dev/null 2>&1; then say "$name: the evaluator ran it to the end, and it must refuse"; fail=1; continue; fi
         if [ "$ns" -eq 2 ] && [ "$ws" -eq 2 ] && [ "$fs" -eq 2 ] && grep -q "$want" "$work/$name.native.out" && grep -q "$want" "$work/$name.wasm.out" && grep -q "$want" "$work/$name.asyncify.out"; then
             say "$name: eval refuses; native, wasm and its fallback end 2 saying \`$want\`"
         else
@@ -69,7 +71,7 @@ for src in "$fixtures"/*/; do
         fi
         continue
     fi
-    "$avra" run "$pkg" >"$work/$name.eval.out" 2>"$work/$name.eval.err" || { say "$name: eval run failed"; cat "$work/$name.eval.err" >&2; fail=1; continue; }
+    "$avra" run --eval "$pkg" >"$work/$name.eval.out" 2>"$work/$name.eval.err" || { say "$name: eval run failed"; cat "$work/$name.eval.err" >&2; fail=1; continue; }
     "$native" >"$work/$name.native.out" 2>&1 || true
     "$node" --no-warnings $jspi "$here/wasm-node.mjs" "$wasm" >"$work/$name.wasm.out" 2>"$work/$name.wasm.err" || true
     if [ -f "$src/expected.txt" ] && ! diff -u "$src/expected.txt" "$work/$name.native.out" >"$work/$name.diff" 2>&1; then

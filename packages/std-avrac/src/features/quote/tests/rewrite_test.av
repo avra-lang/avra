@@ -1,10 +1,9 @@
-// A `Rewrite` is a quote whose holes are arena ids: what a sugar
-// means, written once as the template it expands to.
+// A `Rewrite` is a quote whose holes are nodes of the tree it rewrites:
+// what a sugar means, written once as the template it expands to.
+use @std.avrac.testing.held.{Judged, held_at}
 use @std.avrac.core.{ExprId, PatId}
 use @std.meta.{Rewrite}
-use @std.avrac.compiler.{Program}
-use @std.avrac.testing.{refused_n, vendored_meta, vendored_meta_paths, test_workspace}
-use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.{refused_n, vendored_meta}
 
 /// `~v`, as the rewrite it means.
 fn inverted(v: ExprId) -> Rewrite {
@@ -29,7 +28,7 @@ spec "features/quote — a rewrite" {
 
 /// A program that names `ExprId` the way the compiler's own source
 /// does: from a package called `@std/avrac`.
-fn rewriting(body: string) -> Program {
+fn rewriting(body: string) -> Judged {
     let files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@std/avrac\" = { path = \"vendor/avrac\" }\n",
@@ -44,16 +43,24 @@ fn rewriting(body: string) -> Program {
         "/w/vendor/avrac/avra.toml",
         "/w/vendor/avrac/src/avrac.av",
     ]
-    test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
-        .program("/w/src/main.av")
+    held_at(files, "/w").judged_at("/w/src/main.av")
 }
 
 spec "features/quote — a rewrite's holes" {
-    given "a hole that is no arena id" {
+    given "a hole that holds a number" {
         then "the rewrite refuses it in its own words" {
             refused_n(
                 rewriting("quote { \${v} ^ \${n} }"),
-                "a rewrite's holes are arena ids — `ExprId` or `PatId`, as `\${self.value}` — and this one is `int`",
+                "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `int`",
+                1,
+            )
+        }
+    }
+    given "a hole that holds a list of names" {
+        then "the rewrite refuses it in its own words" {
+            refused_n(
+                rewriting("let names = [\"a\"]\n    quote { f(\${v}, \${..names}) }"),
+                "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `List<string>`",
                 1,
             )
         }

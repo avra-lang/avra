@@ -1,0 +1,73 @@
+// ONE WALK OF A TREE: `places_under` lists a root and every place under it in one list, before
+// their kids or after them, and lists a stopping place without entering it. Held against the
+// recursive definitions it stands for, element for element, over items a parse made.
+use compiler.{parse_source}
+use core.{At, SyntaxArena, WalkOrder, no_stop}
+
+/// A place as text: its kind and its ids.
+fn key(at: At) -> string {
+    match at {
+        .Expr(id) -> "e${id.index}",
+        .Stmt(id) -> "s${id.index}",
+        .Pat(id) -> "p${id.index}",
+        .Field(owner, index) -> "f${owner.index}.${index}",
+        .Param(owner, index) -> "a${owner.index}.${index}",
+    }
+}
+
+fn keys(places: List<At>) -> string { [key(at) for at in places].join(" ") }
+
+/// The recursive walk before kids: the place, then each kid's.
+fn before(store: SyntaxArena, at: At, stops: fn(At) -> bool) -> List<At> {
+    if stops(at) { return [at] }
+    [at].concat(flatten([before(store, k, stops) for k in store.kids_at(at)]))
+}
+
+/// The recursive walk after kids: each kid's, then the place.
+fn after(store: SyntaxArena, at: At, stops: fn(At) -> bool) -> List<At> {
+    if stops(at) { return [at] }
+    flatten([after(store, k, stops) for k in store.kids_at(at)]).concat([at])
+}
+
+fn flatten(xss: List<List<At>>) -> List<At> { [x for xs in xss for x in xs] }
+
+fn at_field(at: At) -> bool { at is .Field }
+
+fn at_lambda(store: SyntaxArena, at: At) -> bool {
+    match at { .Expr(id) -> store.expr(id) is .Lambda, rest -> false }
+}
+
+const SOURCE: string = "type P = { x: int, y: List<int> }\nfn f(a: int, b: List<int>) -> int {\n    let p = P { x: a, y: [a, a + 1] }\n    let g = (n: int) -> n * 2 + p.x\n    match b.first() {\n        null -> g(a),\n        some -> {\n            mut t = 0\n            for v in b { if v > some { t = t + v } }\n            t\n        },\n    }\n}\nlet total = [f(i, [i, i]) for i in 0..3].length\n"
+
+/// Whether every statement the source wrote walks alike both ways, under `order` and `stops`.
+fn alike(order: WalkOrder, stops: fn(SyntaxArena, At) -> bool) -> bool {
+    let p = parse_source(SOURCE)
+    let roots = [At.Stmt(s) for s in p.stmts]
+    let stop = (at: At) -> stops(p.store, at)
+    let walked = [p.store.places_under(root, order, stop) for root in roots]
+    let recursed = [if order is .Pre { before(p.store, root, stop) } else { after(p.store, root, stop) } for root in roots]
+    roots.length == 3 &&
+        walked.any(it.length > 10) &&
+        [keys(w) for w in walked].join("|") == [keys(r) for r in recursed].join("|")
+}
+
+spec "core/places_under — one walk of a tree" {
+    given "a walk that stops nowhere" {
+        then "before kids, it lists what the recursive walk lists, in its order" { alike(.Pre, (_s, _at) -> false) }
+        then "after kids, it lists what the recursive walk lists, in its order" { alike(.Post, (_s, _at) -> false) }
+        then "with no stop given, a walk stops nowhere" {
+            let p = parse_source(SOURCE)
+            let root = At.Stmt(p.stmts[1])
+            keys(p.store.places_under(root, .Pre)) == keys(before(p.store, root, no_stop))
+        }
+    }
+    given "a walk that stops" {
+        then "a field is listed and nothing under it, before kids" { alike(.Pre, (_s, at) -> at_field(at)) }
+        then "a lambda is listed and nothing under it, after kids" { alike(.Post, at_lambda) }
+        then "a root that stops is all its walk lists" {
+            let p = parse_source(SOURCE)
+            let root = At.Stmt(p.stmts[1])
+            keys(p.store.places_under(root, .Post, (_at) -> true)) == key(root)
+        }
+    }
+}

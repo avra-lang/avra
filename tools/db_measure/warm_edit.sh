@@ -12,6 +12,8 @@
 # The file is restored after its scenario. Each timed line: label, wall ms,
 # exit status, the compiler's own `--time` line.
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 A=${AVRA_BIN:-build/avra}
 R=${1:-3}
 here=$(cd "$(dirname "$0")" && pwd)

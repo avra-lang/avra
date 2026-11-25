@@ -196,7 +196,7 @@ export const grammar_of_grammars: Grammar = Grammar {
             ],
         ),
 
-        // build = NAME ( "." NAME )? ( "(" ( arg ("," arg)* ","? )? ")" )?
+        // build = NAME ( "." NAME )? ( "(" ( arg ("," arg)* ","? )? ")" )? ( "by" NAME )?
         // `lp` captures the open paren: absent means `-> e` (a
         // capture reference), present means an argument list.
         // `variant` present means the branch NAMES A NODE
@@ -254,8 +254,9 @@ export const grammar_of_grammars: Grammar = Grammar {
                                 ],
                             ),
                         ) with { rep: Rep.Opt },
+                        item(group([seq([item(lit("by")), cap("by", named("NAME"))])])) with { rep: Rep.Opt },
                     ],
-                    Build.Call("build_build", ["name", "variant", "lp", "args"]),
+                    Build.Call("build_build", ["name", "variant", "lp", "args", "by"]),
                 ),
             ],
         ),
@@ -323,6 +324,7 @@ export const grammar_of_grammars: Grammar = Grammar {
         //       | "@recover" "(" "sync_to" ":" STRING ")"
         //       | "@head" "(" NAME ")" | "@trailer" "(" NAME ")"
         //       | "@fold" "(" NAME ")"
+        //       | "@alias"
         //       | "@operators" "{" tier+ "}"
         rule_def(
             "annot",
@@ -376,6 +378,7 @@ export const grammar_of_grammars: Grammar = Grammar {
                     ],
                     Build.Call("build_fold", ["label"]),
                 ),
+                seq_to([item(lit("@alias"))], Build.Call("build_alias", [])),
                 seq_to(
                     [
                         item(lit("@operators")),
@@ -424,21 +427,12 @@ export const grammar_of_grammars: Grammar = Grammar {
             ],
         ),
 
-        // assoc = "left" | "none" | "unmixed" "(" NAME ")"
+        // assoc = "left" | "none"
         rule_def(
             "assoc",
             [
                 seq_to([item(lit("left"))], Build.Call("build_assoc_left", [])),
                 seq_to([item(lit("none"))], Build.Call("build_assoc_single", [])),
-                seq_to(
-                    [
-                        item(lit("unmixed")),
-                        item(lit("(")),
-                        cap("refusal", named("NAME")),
-                        expecting(lit(")"), "expected ')' to close unmixed"),
-                    ],
-                    Build.Call("build_assoc_unmixed", ["refusal"]),
-                ),
             ],
         ),
 

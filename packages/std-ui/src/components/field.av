@@ -1,19 +1,23 @@
-//! `components/field.av` — a text input; its label is its accessible name.
-use @std.meta.{derive, Cells, Words}
+//! `components/field.av` — a text input; its label is its accessible name. `value` is its place:
+//! given one (`field "Name" { value: draft }`) it shares it, given none it keeps its own, seeded
+//! from `initial`. Typing writes it, then the `input` handler hears what was typed; `shown`, where
+//! given, is what the field shows instead, told each paint and never written.
+use @std.meta.{derive}
 use tree.prim.{prim}
 use tree.view.{View}
 use style.box.{Box}
-use tree.sites.{no_words}
+use tree.sites.{Sighted}
 
 @derive(View)
 @prim(.Field)
 export component field(@attr(.Label) label: string) {
     ..Box
-    words: Words = no_words()
-    reads: Cells = []
-    @attr(.Value) value: string? = null
+    ..Sighted
+    initial: string = ""
+    @attr(.Value) state value: string = self.initial
+    @over(value) shown: string? = null
     @attr(.Placeholder) placeholder: string = ""
     @attr(.Invalid) invalid: bool = false
     @attr(.Masked) masked: bool = false
-    @host(web: .Input) on input(typed: string)
+    @sets(value) on input(typed: string)
 }

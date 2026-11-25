@@ -4,13 +4,11 @@
 // rather than a lone source, since a lone source cannot import
 // `@std/meta` (compiler/dev/witnesses.av's `unbroken_golden`) —
 // `provided` vendors the real package.
-use @std.avrac.testing.{provided}
-use @std.avrac.compiler.{Program}
-use core.{DeclId}
+use @std.avrac.testing.{provided, Judged}
 
 /// The program over C rows a gate's fns call, `@std/meta`'s mark
 /// imported.
-fn unbroken_program(main: string) -> Program {
+fn unbroken_program(main: string) -> Judged {
     provided(
         [
                 "use @std.meta.{unbroken}",
@@ -26,10 +24,6 @@ fn unbroken_program(main: string) -> Program {
 }
 
 fn unbroken_report(main: string) -> string { unbroken_program(main).report() }
-
-fn unbroken_decl(p: Program, name: string) -> DeclId {
-    [x.id for x in p.ws.decls.all_decls() if x.name == name][0]
-}
 
 /// A ring's shape: a `while` over a claim, a step through another
 /// `@unbroken` fn, a vocabulary row, and the park row itself.
@@ -130,11 +124,8 @@ spec "compiler/typing — the unbroken law" {
     }
     given "the cancel fact" {
         then "an `@unbroken` fn's `while` is no cancel point, and the same fn unmarked reaches one" {
-            let marked = unbroken_program(spin_source("@unbroken"))
-            // a one-shot workspace is read while it stands
-            let marked_reaches = marked.ws.reaches_cancel(unbroken_decl(marked, "spin"))
-            let plain = unbroken_program(spin_source(""))
-            !marked_reaches && plain.ws.reaches_cancel(unbroken_decl(plain, "spin"))
+            !may_reach(unbroken_program(spin_source("@unbroken")).cancel_bits("spin")) &&
+                may_reach(unbroken_program(spin_source("")).cancel_bits("spin"))
         }
     }
 }

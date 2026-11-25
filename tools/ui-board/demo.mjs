@@ -101,7 +101,7 @@ const answer = ({ url, init }) => {
   if (init.method === "GET") return table.refuseList ? reply(table.refuseList) : reply(200, table.rows);
   if (table.refusing) return reply(table.refusing);
   if (table.refuseNext > 0 && init.method !== "GET") { table.refuseNext--; return reply(503); }
-  if (init.method === "POST") { const row = { id: table.next++, ...wording(init) }; table.rows.push(row); return reply(200, row); }
+  if (init.method === "POST") { const row = { ...wording(init), id: table.next++ }; table.rows.push(row); return reply(200, row); }
   const row = table.rows.find((r) => r.id === id);
   if (!row) return reply(404);
   if (init.method === "PATCH") { Object.assign(row, wording(init)); return reply(200, row); }
@@ -127,11 +127,11 @@ const remove3 = named("Remove", keyed("3"))[0];
 claim("row 3 holds a Remove that listens", Boolean(remove3));
 fire(remove3);
 await settle();
-claim("pressing it sends one DELETE for /tasks/3 and the row stays until the server answers", asked.length === 1 && asked[0].url === "/tasks/3" && asked[0].init.method === "DELETE" && keyed("3") !== null, `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("pressing it sends one DELETE for /tasks/3 and the row is hidden at once", asked.length === 1 && asked[0].url === "/tasks/3" && asked[0].init.method === "DELETE" && keyed("3") === null, `${asked.map((a) => a.init.method + " " + a.url)}`);
 await drain();
 claim("the server's answer takes the row: 3 is gone and 2 is kept", keyed("3") === null && keyed("2") !== null && table.rows.length === 3);
 claim("the row below is the same element: nothing rebuilt it", keyed("4") === row4);
-claim("the change costs under 200 bytes of frames: Clear done goes dark while it is on its way, the list follows", frames <= 2 && writes < 200, spent());
+claim("the change costs under 200 bytes of frames: the row goes at once, the list follows", frames <= 2 && writes < 200, spent());
 spent();
 
 // The user checks the box; the control says its own state, and the change is a PATCH of the whole task.
@@ -140,7 +140,7 @@ claim("row 2's checkbox listens", Boolean(toggle2));
 toggle2.checked = true;
 fire(toggle2);
 await settle();
-claim("checking it sends one PATCH for /tasks/2 carrying the task as JSON", asked.length === 1 && asked[0].url === "/tasks/2" && asked[0].init.method === "PATCH" && asked[0].init.headers["content-type"] === "application/json" && new TextDecoder().decode(asked[0].init.body) === '{"title":"Wire the event channel","done":true}', `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("checking it sends one PATCH for /tasks/2 carrying the task as JSON", asked.length === 1 && asked[0].url === "/tasks/2" && asked[0].init.method === "PATCH" && asked[0].init.headers["content-type"] === "application/json" && new TextDecoder().decode(asked[0].init.body) === '{"done":true,"title":"Wire the event channel"}', `${asked.map((a) => a.init.method + " " + a.url)}`);
 await drain();
 claim("the server holds it done, and the board shows the server's list in small frames", table.rows.find((r) => r.id === 2).done === true && writes < 400, spent());
 spent();
@@ -159,7 +159,7 @@ fire(field);
 claim("typing writes no value back and sends no frame", valueWrites === 0 && frames === 0, `${valueWrites} write(s), ${spent()}`);
 fire(add);
 await settle();
-claim("Add sends one POST for /tasks carrying the draft as a task", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST" && new TextDecoder().decode(asked[0].init.body) === '{"title":"Ship the rewrite","done":false}', `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("Add sends one POST for /tasks carrying the draft as a task", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST" && new TextDecoder().decode(asked[0].init.body) === '{"done":false,"id":0,"title":"Ship the rewrite"}', `${asked.map((a) => a.init.method + " " + a.url)}`);
 claim("the program clears the field, once", valueWrites === 1 && typed === "", `${valueWrites} write(s), value "${typed}"`);
 claim("the row is not the board's until the server answers", keyed("5") === null);
 await drain();
@@ -178,6 +178,7 @@ spent();
 
 // A BURST OF TICKS goes out in click order, one at a time: the task's first change, and only the last
 // of the rest, each sent when the one before it has been answered, so the server ends as the last click left it.
+// Each answer asks for the list again, and the burst's later layer stands over it until the list catches up.
 const burst = named("Wire the event channel")[0];
 for (const on of [false, true, false, true]) { burst.checked = on; fire(burst); }
 await settle();
@@ -185,9 +186,10 @@ claim("four quick ticks send one PATCH and the rest wait", asked.length === 1 &&
 const sentFirst = asked.shift();
 sentFirst.resolve(answer(sentFirst));
 await settle();
-claim("its answer sends the last tick alone, and asks for no list yet", asked.length === 1 && asked[0].init.method === "PATCH" && wording(asked[0].init).done === true && table.rows.find((r) => r.id === 2).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("its answer sends the last tick alone, and asks for the list again", asked.length === 2 && asked[0].init.method === "PATCH" && wording(asked[0].init).done === true && asked[1].url === "/tasks" && table.rows.find((r) => r.id === 2).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("the box still shows the last click while the list catches up", burst.checked === true);
 await drain();
-claim("the server holds the last click's state, and the list was asked for once the run was over", table.rows.find((r) => r.id === 2).done === true && asked.length === 0);
+claim("the server holds the last click's state, and nothing is left to ask", table.rows.find((r) => r.id === 2).done === true && asked.length === 0);
 spent();
 
 // ── THE WRITES UNDER ATTACK ──
@@ -226,22 +228,22 @@ const offered = () => cleared().attrs["disabled"] === undefined;
   const first = asked.shift();
   first.resolve(answer(first));
   await settle();
-  claim("its answer sends the remove alone", sentTo().join() === "DELETE /tasks/4", sentTo());
+  claim("its answer sends the remove, the one write out", sentTo().filter((s) => !s.startsWith("GET")).join() === "DELETE /tasks/4", sentTo());
   await drain();
   claim("the task is gone from the server and the board, with nothing refused", doneOf(4) === undefined && keyed("4") === null && !footerWords().includes("failed"), footerWords());
   spent();
 }
-// CLEAR DONE JUDGES BY THE SERVER'S LIST, so it is not offered while a change is on its way: a tick pressed just before it would be missed.
+// THE BOARD COUNTS WHAT IT SHOWS, a change on its way included, so Clear done judges a tick pressed just before it.
 {
   const c = named("Write the tour")[0] ?? named("Draft the spec")[0];
-  const before = cleared().attrs["disabled"];
+  const doneShown = () => Number((footerWords().match(/(\d+) done/) || [])[1]);
+  const before = doneShown();
   c.checked = !c.checked;
   fire(c);
   await settle();
-  const during = cleared().attrs["disabled"];
-  claim("Clear done is not offered while a change is on its way", before === undefined && during !== undefined, `${before} then ${during}`);
+  claim("a tick on its way is counted at once", doneShown() === before + (c.checked ? 1 : -1) && asked.length === 1, `${before} then ${doneShown()}`);
   await drain();
-  claim("and it is offered again once the server has answered", cleared().attrs["disabled"] === undefined, `${cleared().attrs["disabled"]}`);
+  claim("and the count stands once the server has answered", doneShown() === before + (c.checked ? 1 : -1) && offered() === (doneShown() > 0), `${doneShown()}`);
   c.checked = !c.checked;
   fire(c);
   await drain();
@@ -303,31 +305,35 @@ const offered = () => cleared().attrs["disabled"] === undefined;
   spent();
 }
 
-// A MODE IS A WHOLE SHEET: the theme's variables move and no element does.
+// A HELD MODE IS ONE WORD: every colour carries its light and its dark value,
+// the page follows the reader's settings until a mode is held, and holding
+// one rewrites the scheme and moves no colour and no element.
 const theme = named("Dark mode")[0];
 const sheet = style.textContent;
 fire(theme);
-claim("the dark mode rewrites the sheet and renames its button", style.textContent !== sheet && named("Light mode").length === 1);
+claim("the dark mode holds the dark scheme and renames its button", sheet.includes("color-scheme:light dark;") && style.textContent === sheet.replace("color-scheme:light dark;", "color-scheme:dark;") && named("Light mode").length === 1);
 
-// EVERY INK READS ON EVERY FILL: the tones each mode's sheet names, as WCAG
-// contrast — the least a reader with ordinary sight needs is 4.5 to 1.
-const tones = (css) => Object.fromEntries([...css.matchAll(/--tone-([a-z-]+):(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+// EVERY WORD READS ON EVERY SURFACE, AND EVERY PAIR ON ITSELF: the colours
+// the sheet names, in each scheme, as WCAG contrast — the least a reader
+// with ordinary sight needs is 4.5 to 1.
+const dials = (css) => Object.fromEntries([...css.split("}")[0].matchAll(/--((?:tone|on|ink)-[a-z-]+):light-dark\((#[0-9A-Fa-f]{6}),(#[0-9A-Fa-f]{6})\)/g)].map((m) => [m[1], [m[2], m[3]]]));
 const light = (hex) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 };
-const faint = (css) => {
-  const named = tones(css);
-  const fills = Object.keys(named).filter((tone) => tone.startsWith("surface"));
-  const inks = Object.keys(named).filter((tone) => !tone.startsWith("surface"));
-  return inks.flatMap((ink) => fills.map((fill) => {
-    const [a, b] = [light(named[ink]), light(named[fill])].sort((x, y) => y - x);
-    return { pair: `${ink} on ${fill}`, ratio: (a + 0.05) / (b + 0.05) };
-  })).filter((seen) => seen.ratio < 4.5).map((seen) => `${seen.pair} ${seen.ratio.toFixed(2)}`);
+const ratio = (x, y) => { const [a, b] = [light(x), light(y)].sort((p, q) => q - p); return (a + 0.05) / (b + 0.05); };
+const words = ["text", "muted", "danger", "success", "warning", "link"];
+const grounds = ["canvas", "surface", "surface-raised", "surface-sunk"];
+const faint = (css, scheme) => {
+  const named = dials(css);
+  const at = (key) => named[key][scheme];
+  const over = words.flatMap((ink) => grounds.map((ground) => [`${ink} on ${ground}`, at(`ink-${ink}`), at(`tone-${ground}`)]));
+  const pairs = Object.keys(named).filter((key) => key.startsWith("on-")).map((key) => [`${key} on its fill`, at(key), at(`tone-${key.slice(3)}`)]);
+  return over.concat(pairs).map(([pair, x, y]) => ({ pair, ratio: ratio(x, y) })).filter((seen) => seen.ratio < 4.5).map((seen) => `${seen.pair} ${seen.ratio.toFixed(2)}`);
 };
-claim("each mode's sheet names its inks and its fills", Object.keys(tones(sheet)).length >= 4 && Object.keys(tones(style.textContent)).length >= 4);
-claim("every ink reads on every fill in the light mode", faint(sheet).length === 0, faint(sheet).join(", "));
-claim("every ink reads on every fill in the dark mode", faint(style.textContent).length === 0, faint(style.textContent).join(", "));
+claim("each colour the sheet names carries its light and its dark value, and the stronger ones wait on the reader's contrast setting", Object.keys(dials(sheet)).length >= 20 && (sheet.split("}")[0].match(/light-dark\(/g) ?? []).length === Object.keys(dials(sheet)).length && sheet.includes("@media (prefers-contrast: more){:root{"));
+claim("every word reads on every surface, and every pair on its fill, in the light scheme", faint(sheet, 0).length === 0, faint(sheet, 0).join(", "));
+claim("every word reads on every surface, and every pair on its fill, in the dark scheme", faint(sheet, 1).length === 0, faint(sheet, 1).join(", "));
 
 // A SOURCE IS THE HOST'S TIMER: a press asks, the page arms a timer, its
 // firing is a turn, and the footer says so.
@@ -361,7 +367,9 @@ spent();
 // in one tick wait for the display's frame, which walks the view once and
 // sends one frame; a frame nothing asked for walks nothing; and an EVENT shows
 // what is pending first, because the user acts on the screen they saw.
-fire(named("Remove", keyed("5"))[0]);
+typed = "Both sources";
+fire(field);
+fire(add);
 fire(remind);
 await settle();
 frame();
@@ -375,7 +383,7 @@ reminderTimer.fn();
 claim("nothing is painted until the frame comes: no frame sent, no walk", frames === 0 && walks() === walked, `${frames} frame(s), ${walks() - walked} walk(s)`);
 frame();
 claim("the frame is one frame and one walk for both sources", frames === 1 && walks() - walked === 1, `${spent()}, ${walks() - walked} walk(s)`);
-claim("what each source did shows in it", keyed("5") === null && footerWords().includes("reminder"), footerWords());
+claim("what each source did shows in it", keyed(String(table.rows.at(-1).id)) !== null && footerWords().includes("reminder"), footerWords());
 frame();
 claim("a frame nothing asked for walks nothing", walks() - walked === 1, `${walks() - walked}`);
 spent();
@@ -386,13 +394,15 @@ walked = walks();
 const mode = named("Light mode")[0] ?? named("Dark mode")[0];
 const [, mode_ear] = ears(mode.__avra_id)[0];
 const dark = () => dispatch(mount, mode, mode_ear.event, { bubbles: false });
-fire(named("Remove", keyed("2"))[0]);
+typed = "Press after";
+fire(field);
+fire(add);
 await settle();
 await answered();
 spent();
 walked = walks();
 dark();
-claim("a press after a pending answer shows the answer first, then its own change", frames === 1 && walks() - walked === 1 && keyed("2") === null, `${frames} frame(s), ${walks() - walked} walk(s)`);
+claim("a press after a pending answer shows the answer first, then its own change", frames === 1 && walks() - walked === 1 && keyed(String(table.rows.at(-1).id)) !== null, `${frames} frame(s), ${walks() - walked} walk(s)`);
 frame();
 claim("and the press's own frame follows at the display's frame", walks() - walked === 2 && named("Dark mode").length + named("Light mode").length === 1, `${walks() - walked}`);
 spent();

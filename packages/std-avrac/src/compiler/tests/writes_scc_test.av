@@ -1,70 +1,95 @@
-// A fn's written seats are settled with its strongly-connected set alone: a cycle takes what
-// a member outside it writes, a cycle with no writer stays unwritten, and asking one fn
-// settles no fn it does not call. `Writes` is family 41 by name; the keys are spelled
-// through `family_ordinal`.
-use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
-use core.{DeclId}
-use @std.relation.engine.{Key}
+// A fn's written seats settle with its strongly-connected set, asked of the program layer: a
+// cycle takes what a member outside it writes, and a cycle with no writer stays unwritten — so
+// its `mut` seats are said never written through.
+use @std.avrac.testing.{held_at, Judged}
+use @std.program.tests.support.store_in_memory.{store_in_memory}
+use compiler.{
+    avra_fact_definitions,
+    item_ids,
+    read_item,
+    SeatOf,
+    seat_evidence,
+    seat_evidence_is_known,
+    written_through,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine, query_engine}
 
-fn writes_key(d: DeclId) -> Key { Key { family: family_ordinal("Writes"), arg: d.index } }
-
-fn writes_workspace(main: string) -> Workspace {
-    let ws = test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": main,
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ),
+/// The program `main` writes, judged on the layer.
+fn writes_judged(main: string) -> Judged {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
         "/w",
     )
-    let _ = ws.items(ws.file_id("/w/src/main.av"))
-    ws
+        .judged_at("/w/src/main.av")
 }
 
-fn writes_decl(ws: Workspace, name: string) -> DeclId {
-    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+/// Whether the fn `name` writes through its `mut` seat: nothing says it never does.
+fn writes_through(j: Judged, name: string) -> bool {
+    !j
+        .diagnostics
+        .any(it.kind == "type.seat_unused" && it.message.contains("`${name}` never writes"))
 }
 
-fn written(ws: Workspace, name: string) -> bool {
-    let d = writes_decl(ws, name)
-    let _ = ws.writes_of(d)
-    ws.decls.seat_written(d, 0)
-}
-
-fn cycle_source(leaf_body: string) -> string {
+fn writes_cycle(leaf_body: string) -> string {
     "type P = { n: int }\nfn leaf(mut p: P) {\n    ${leaf_body}\n}\nfn ping(mut p: P, k: int) {\n    if k > 0 { pong(p, k - 1) } else { leaf(p) }\n}\nfn pong(mut p: P, k: int) {\n    if k > 0 { ping(p, k - 1) }\n}\nfn quiet(p: P) -> int { p.n }\n"
 }
 
 spec "compiler/receivers — a fn's written seats settle with its own set" {
     given "a two-fn cycle whose way out reaches a fn that writes" {
-        then "the fn that writes writes the seat" {
-            written(writes_workspace(cycle_source("p.n = 1")), "leaf")
-        }
-        then "a caller of it writes the seat" {
-            let ws = writes_workspace(cycle_source("p.n = 1"))
-            let _ = written(ws, "leaf")
-            written(ws, "ping")
-        }
+        then "the fn that writes writes the seat" { writes_through(writes_judged(writes_cycle("p.n = 1")), "leaf") }
+        then "a caller of it writes the seat" { writes_through(writes_judged(writes_cycle("p.n = 1")), "ping") }
         then "both members of the cycle write the seat" {
-            let ws = writes_workspace(cycle_source("p.n = 1"))
-            written(ws, "ping") && written(ws, "pong")
+            let j = writes_judged(writes_cycle("p.n = 1"))
+            writes_through(j, "ping") && writes_through(j, "pong")
         }
     }
     given "the same cycle where nothing writes" {
         then "neither member writes it" {
-            let ws = writes_workspace(cycle_source("let _ = p.n"))
-            !written(ws, "ping") && !written(ws, "pong")
+            let j = writes_judged(writes_cycle("let _ = p.n"))
+            !writes_through(j, "ping") && !writes_through(j, "pong")
         }
     }
-    given "a fn that calls nothing" {
-        then "asking it settles none of the fns it does not call" {
-            let ws = writes_workspace(cycle_source("p.n = 1"))
-            let _ = written(ws, "quiet")
-            ws.db.value_hash_of(writes_key(writes_decl(ws, "ping"))) == null
+}
+
+/// The seat `at` of the fn `name` declares in `/w/src/main.av`, as the layer keys it.
+fn seat_of(engine: QueryEngine, file: SourceFileAddress, name: string, at: int) -> SeatOf? {
+    let item? = [i for i in item_ids(engine, file) if read_item(engine, file, i)
+        .stmts
+        .any((s) -> read_item(engine, file, i).store.fn_parts(s)?.name == name)]
+        .first() else { return null }
+    SeatOf { file: file, item: item, fn_name: name, at: at }
+}
+
+/// After asking only whether `asked`'s first seat is written, on a fresh engine: whether the
+/// evidence of each fn of `names` was worked out, `y` where it was and `n` where it wasn't.
+fn worked_after(asked: string, names: List<string>) -> string {
+    let held = held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            "/w/src/main.av": writes_cycle("p.n = 1"),
+        },
+        "/w",
+    )
+    held.entered()
+    let engine = query_engine(store_in_memory(), avra_fact_definitions())
+    let file = held.file_at("/w/src/main.av")
+    let s? = seat_of(engine, file, asked, 0) else { return "" }
+    let _ = written_through(engine, seat_evidence(engine, s))
+    [if seat_of(engine, file, n, 0) != null &&
+        seat_evidence_is_known(engine, seat_of(engine, file, n, 0)!) { "y" } else { "n" } for n in names]
+        .join("")
+}
+
+spec "compiler/receivers — asking one fn's seat reads only the seats it reaches" {
+    given "a fn that hands its seat to no one" {
+        then "asking it works out none of the cycle's seats" {
+            worked_after("leaf", ["leaf", "ping", "pong"]) == "ynn"
+        }
+    }
+    given "a cycle asked from one member" {
+        then "works out the whole set, and the fn it hands the seat to outside it" {
+            worked_after("pong", ["pong", "ping", "leaf"]) == "yyy"
         }
     }
 }

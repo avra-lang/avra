@@ -1,0 +1,86 @@
+//! Slice 1: a label Avra supplies and a button whose press changes a `state`,
+//! drawn by a UIKit host. std-ui's own app, standing and differ (`live`) make
+//! every frame; the host draws the neutral records `frame.av` writes and
+//! echoes a tap back as the node's number and seat.
+use @std.ui.app.{App, Msg, owned_app, stood}
+use @std.ui.components.{text, button}
+use @std.ui.native.sources.{opened, served}
+use @std.ui.native.net.{unwired}
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.tree.identity.{Owner, NodeId}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.seats.{seat_numbered}
+use frame.{neutral}
+use @std.io.{env}
+use @std.time.{ms, sleep}
+
+extern fn avra_spike_attach()
+extern fn avra_spike_frame(records: string)
+extern fn avra_spike_tick(n: int)
+
+component counter(label: string) {
+    state n: int = 0
+    text "${self.label}: ${self.n}"
+    button "${self.label}+" { on press { self.n = self.n + 1 } }
+}
+
+/// What a tap reaches: the page the program paints, once it stands.
+once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -> false) }
+
+/// The host's echo: the node numbered `id` (one more than the page's) spoke
+/// at seat `seat`. Its handler runs as a turn the program's loop takes.
+extern fn avra_spike_tapped(id: int, seat: int) { let _ = (page().get())(id, seat) }
+
+/// A handler the host runs INSIDE its own call, for an answer it needs before
+/// it returns (a text field's delegate): it runs to its end there, and one that
+/// waits is refused by the runtime.
+extern fn avra_spike_sync(waits: int) -> int {
+    if waits == 1 { sleep(ms(1)) }
+    42
+}
+
+/// A task that ticks every 50 ms, told to the host each time.
+fn ticked() -> int {
+    mut n = 0
+    while n < 400 {
+        sleep(ms(50))
+        n = n + 1
+        avra_spike_tick(n)
+    }
+    n
+}
+
+/// A task that spins on the CPU and never waits.
+fn spun() -> int {
+    mut x = 0
+    while x >= 0 { x = (x + 1) % 1000000 }
+    x
+}
+
+/// A tap on `node` at `seat`, left as a turn for the program's loop.
+fn tapped(app: App, at: Live, node: NodeId, seat: int) -> bool {
+    let s? = seat_numbered(seat) else { return false }
+    app.send(Msg.Turn(() -> at.fire(node, s, null), "${node.n}"))
+}
+
+avra_spike_attach()
+let ticker = spawn ticked()
+let spinner = if env("AVRA_SPIKE_SPIN") == "1" { spawn spun() } else { spawn 0 }
+let at = live()
+let on_screen: Cell<List<Owner>> = Cell.new([])
+let app = owned_app(
+    () -> counter "taps",
+    (root: Node) -> {
+        let patches = at.patches_drawn(root, null)
+        on_screen.set(at.owners())
+        if !patches.is_empty() { avra_spike_frame(neutral(patches)) }
+    },
+    on_screen,
+    at.stands,
+)
+stood(app)
+let inbox = opened(app, unwired)
+page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
+app.paint()
+served(app, inbox, () -> {})
+println("served ${ticker.await} ${spinner.await}")

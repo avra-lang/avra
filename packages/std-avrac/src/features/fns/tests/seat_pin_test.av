@@ -1,0 +1,37 @@
+// A type parameter only a fn's answer names, under a seat that is itself a generic fn type: pinned
+// where the seat's filled part names it, and refused, in the words it always was, where only the
+// part the seat leaves open would.
+use @std.avrac.testing.{judged, refused_with}
+
+spec "features/fns seat pin through a generic seat" {
+    given "a seat whose answer its own call leaves open" {
+        then "the inner call is pinned by the seat's filled part" {
+            judged(
+                "type Req<P> = { p: P }\nfn routed<R, T>(read: fn() -> R, f: fn(Req<R>) -> T) -> T { f(Req { p: read() }) }\nfn echoed<P>() -> fn(Req<P>) -> P { (q: Req<P>) -> q.p }\nrouted(() -> 7, echoed()) + 1",
+            )
+                .diagnostics
+                .is_empty()
+        }
+        then "the outer call's bound judges what the inner answers" {
+            refused_with(
+                "trait Answer { fn said() -> string }\ntype Req<P> = { p: P }\nfn route<R, T: Answer>(read: fn() -> R, f: fn(Req<R>) -> T) -> string { f(Req { p: read() }).said() }\nfn echoed<P>() -> fn(Req<P>) -> P { (q: Req<P>) -> q.p }\nroute(() -> 7, echoed())",
+                "`int` does not implement `Answer`",
+            )
+        }
+    }
+    given "an inner parameter only the open part names" {
+        then "is refused, saying how to pin it" {
+            refused_with(
+                "fn parser<T>() -> fn(string) -> T? { (s: string) -> null }\nlet ys = [\"a\"].map(parser())\nys.length",
+                "`T` is not pinned by the arguments",
+            )
+        }
+        then "is pinned where the outer call's own seat wants its answer" {
+            judged(
+                "fn parser<T>() -> fn(string) -> T? { (s: string) -> null }\nlet ys: List<int?> = [\"a\"].map(parser())\nys.length",
+            )
+                .diagnostics
+                .is_empty()
+        }
+    }
+}

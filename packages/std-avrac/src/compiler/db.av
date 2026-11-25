@@ -56,9 +56,8 @@ use core.debug.{qtrace, traced}
 use core.{watched_kernel, digest_of, joined, sorted_texts, flatten, DeclId, TypeId}
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest, Read}
-use diagnostics.{SourceFile}
 use compiler.lower.{Unit}
-use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
+use features.{Namespace, NameFacts, TypeFacts, Settlement}
 use @std.io.{list_dir, is_dir, exists, read_text}
 use @std.path.{joined_path, dir_of}
 use @std.text.{parse_int}
@@ -82,78 +81,52 @@ use @std.relation.engine.{
 /// attempting it, twice) — neither has the "Many"-joining a Statement
 /// or Arms hole gets. Grows exactly when `DbRow` does.
 export enum DbKind {
-    Source
-    Parsed
     Lowered
-    Manifest
     Plain
     Items
-    Namespace
     Visible
     Resolved
-    Typed
-    ConstTyped
     Folded
-    Analysis
     Lifted
     Expanded
     Settled
     Sig
-    Warn
-    Scan
-    Licenses
-    Findings
     Answer
     Input
-    Flag
-    Words
 }
 
 impl DbKind {
     fn tag() -> string {
         match self {
-            .Source -> "Source",
-            .Parsed -> "Parsed",
             .Lowered -> "Lowered",
-            .Manifest -> "Manifest",
             .Plain -> "Plain",
             .Items -> "Items",
-            .Namespace -> "Namespace",
             .Visible -> "Visible",
             .Resolved -> "Resolved",
-            .Typed -> "Typed",
-            .ConstTyped -> "ConstTyped",
             .Folded -> "Folded",
-            .Analysis -> "Analysis",
             .Lifted -> "Lifted",
             .Expanded -> "Expanded",
             .Settled -> "Settled",
             .Sig -> "Sig",
-            .Warn -> "Warn",
-            .Scan -> "Scan",
-            .Licenses -> "Licenses",
-            .Findings -> "Findings",
             .Answer -> "Answer",
             .Input -> "Input",
-            .Flag -> "Flag",
-            .Words -> "Words",
         }
     }
 }
 
 extern fn avra_trap(message: string)
 
-/// EVERY FACT THE COMPILER PRODUCES, one enum. The first sixteen
-/// variants are the ones a `Relation<DbRow>` actually caches — one
+/// EVERY FACT THE COMPILER PRODUCES, one enum. The variants before `Sig`
+/// are the ones a `Relation<DbRow>` actually caches — one
 /// dense slot per registered family, on `Db.families`
 /// (`Workspace.relation`, below), dying with the `Workspace` that
 /// computed them, proven across every access pattern that exists (an
-/// INPUT — `Source`, `Manifest`; a plain derived query — `Parsed`,
-/// `Plain`, `Items`; a RECURSIVE one — `Lowered`, `Namespace`,
+/// INPUT — `Manifest`; a plain derived query — `Parsed`,
+/// `Plain`, `Items`; a RECURSIVE one — `Lowered`,
 /// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis`, `Expanded`,
 /// each re-entering itself or a peer; a manual ask/begin/finish one
-/// folding real work between the two — `ConstTyped`, `Lifted`,
-/// `Settled`). The last (`Sig`, `Warn` and their kin) are `Db`'s own
+/// folding real work between the two — `Lifted`,
+/// `Settled`). The last (`Sig`, `Answer`) are `Db`'s own
 /// durable rows, string-keyed, surviving across processes on disk
 /// (`Stored.Rows`) — `key()` is only ever asked of these three; a
 /// dense variant reaching it is a defect, since nothing ever calls it
@@ -169,7 +142,7 @@ extern fn avra_trap(message: string)
 /// raw kernel verbs directly over a side-effecting whole-program pass,
 /// never a typed value cache.
 ///
-/// `Workspace`'s OTHER caches (`Keys`, `module_names_of`/`files_of`/
+/// `Workspace`'s OTHER caches (`Keys`,
 /// `import_lists`, `externs`, `asks`/`lift_asks`/
 /// `settle_asks`) stay there too, and not because `Db` was once a
 /// process singleton (it no longer is — see `new_db`, below) but
@@ -199,19 +172,12 @@ extern fn avra_trap(message: string)
 /// blocking a working `DbRow` on it.
 @derive(Rows)
 export enum DbRow {
-    Source(SourceFile)
-    Parsed(Parsed)
     Lowered(Unit)
-    Manifest(Manifest)
     Plain(Parsed)
     Items(List<DeclId>)
-    Namespace(ModuleNames)
     Visible(Namespace)
     Resolved(NameFacts)
-    Typed(TypeFacts)
-    ConstTyped(TypeId)
     Folded(TypeFacts)
-    Analysis(Analysis)
     Lifted(LiftResult)
     Expanded(List<DeclId>)
     Settled(Settlement)
@@ -219,64 +185,29 @@ export enum DbRow {
     /// structurally-encoded text; validity is record.av's own
     /// business (a moved-records retry), not this row's.
     Sig(name: string, text: string)
-    /// A program's rendered warnings (`derive.av`'s `checked()`) —
-    /// already-rendered text, kept under the program's own key.
-    Warn(name: string, text: string)
-    /// Whether a file's text can open a block word (voices.av's
-    /// lex-level pre-filter), under that text's own digest — so no
-    /// process lexes the same bytes twice.
-    Scan(name: string, text: string)
-    /// A program's stale `// LICENSED <id>` citations (`compiler/
-    /// licenses.av`), one `file\tline\tid` per line — kept under the
-    /// SAME key as its `Warn` row, so a repeat `avra check` reads both
-    /// without building a second Program to re-scan for them.
-    Licenses(name: string, text: string)
-    /// The program's `Finding` rows (`compiler/findings.av`), one
-    /// `rule\tfile\ttext` per line, under the SAME key as `Warn` — a
-    /// rule finding is a fact about the program `Warn`'s own hit
-    /// already proved unchanged, so a cache hit answers a baseline
-    /// ratchet's question without rebuilding a Program.
-    Findings(name: string, text: string)
     /// A `@query` answer computed while checking a file, its record in
     /// hex, under that file's key parts (answers.av) — a moved part names
     /// another key, so the row holds unconditionally.
     Answer(name: string, text: string)
     /// One read of the world, as the door answered it.
     Input(Read)
-    /// A scan's yes or no.
-    Flag(bool)
-    /// A scan's words.
-    Words(List<string>)
 }
 
 impl DbRow {
     fn kind() -> DbKind {
         match self {
-            .Source(_) -> DbKind.Source,
-            .Parsed(_) -> DbKind.Parsed,
             .Lowered(_) -> DbKind.Lowered,
-            .Manifest(_) -> DbKind.Manifest,
             .Plain(_) -> DbKind.Plain,
             .Items(_) -> DbKind.Items,
-            .Namespace(_) -> DbKind.Namespace,
             .Visible(_) -> DbKind.Visible,
             .Resolved(_) -> DbKind.Resolved,
-            .Typed(_) -> DbKind.Typed,
-            .ConstTyped(_) -> DbKind.ConstTyped,
             .Folded(_) -> DbKind.Folded,
-            .Analysis(_) -> DbKind.Analysis,
             .Lifted(_) -> DbKind.Lifted,
             .Expanded(_) -> DbKind.Expanded,
             .Settled(_) -> DbKind.Settled,
             .Sig(_, _) -> DbKind.Sig,
-            .Warn(_, _) -> DbKind.Warn,
-            .Scan(_, _) -> DbKind.Scan,
-            .Licenses(_, _) -> DbKind.Licenses,
-            .Findings(_, _) -> DbKind.Findings,
             .Answer(_, _) -> DbKind.Answer,
             .Input(_) -> DbKind.Input,
-            .Flag(_) -> DbKind.Flag,
-            .Words(_) -> DbKind.Words,
         }
     }
 
@@ -285,7 +216,7 @@ impl DbRow {
     /// this — it addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Licenses(name, _) or .Findings(name, _) or .Answer(name, _) -> name,
+            .Sig(name, _) or .Answer(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -300,62 +231,12 @@ impl DbRow {
 /// already uses: a wrong variant reaching one is a defect the `Memo`
 /// layer already prevents by construction, so the trap is a belt,
 /// never a guess.
-fn scan_flag(r: DbRow) -> bool {
-    match r {
-        .Flag(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Flag expected")
-            scan_flag(r)
-        },
-    }
-}
-
-fn scan_words(r: DbRow) -> List<string> {
-    match r {
-        .Words(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Words expected")
-            scan_words(r)
-        },
-    }
-}
-
 fn read_of(r: DbRow) -> Read {
     match r {
         .Input(value) -> value,
         rest -> {
             avra_trap("defect: DbRow.Input expected")
             read_of(r)
-        },
-    }
-}
-
-fn source_of(r: DbRow) -> SourceFile {
-    match r {
-        .Source(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Source expected")
-            source_of(r)
-        },
-    }
-}
-
-fn parsed_of(r: DbRow) -> Parsed {
-    match r {
-        .Parsed(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Parsed expected")
-            parsed_of(r)
-        },
-    }
-}
-
-fn manifest_of(r: DbRow) -> Manifest {
-    match r {
-        .Manifest(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Manifest expected")
-            manifest_of(r)
         },
     }
 }
@@ -380,116 +261,6 @@ fn items_of(r: DbRow) -> List<DeclId> {
     }
 }
 
-fn namespace_of(r: DbRow) -> ModuleNames {
-    match r {
-        .Namespace(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Namespace expected")
-            namespace_of(r)
-        },
-    }
-}
-
-fn const_typed_of(r: DbRow) -> TypeId {
-    match r {
-        .ConstTyped(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.ConstTyped expected")
-            const_typed_of(r)
-        },
-    }
-}
-
-fn expanded_of(r: DbRow) -> List<DeclId> {
-    match r {
-        .Expanded(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Expanded expected")
-            expanded_of(r)
-        },
-    }
-}
-
-fn visible_of(r: DbRow) -> Namespace {
-    match r {
-        .Visible(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Visible expected")
-            visible_of(r)
-        },
-    }
-}
-
-fn resolved_of(r: DbRow) -> NameFacts {
-    match r {
-        .Resolved(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Resolved expected")
-            resolved_of(r)
-        },
-    }
-}
-
-fn typed_of(r: DbRow) -> TypeFacts {
-    match r {
-        .Typed(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Typed expected")
-            typed_of(r)
-        },
-    }
-}
-
-fn folded_of(r: DbRow) -> TypeFacts {
-    match r {
-        .Folded(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Folded expected")
-            folded_of(r)
-        },
-    }
-}
-
-fn analysis_of(r: DbRow) -> Analysis {
-    match r {
-        .Analysis(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Analysis expected")
-            analysis_of(r)
-        },
-    }
-}
-
-fn lowered_of(r: DbRow) -> Unit {
-    match r {
-        .Lowered(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Lowered expected")
-            lowered_of(r)
-        },
-    }
-}
-
-fn settled_of(r: DbRow) -> Settlement {
-    match r {
-        .Settled(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Settled expected")
-            settled_of(r)
-        },
-    }
-}
-
-fn lifted_of(r: DbRow) -> LiftResult {
-    match r {
-        .Lifted(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Lifted expected")
-            lifted_of(r)
-        },
-    }
-}
-
 /// One `Workspace`'s rows, in memory, plus the `Kernel` handle every
 /// dense family's `Relation<DbRow>` was built over — held, not merged, so
 /// `Workspace.db` reads as one type while the engine still exports the
@@ -503,7 +274,7 @@ fn lifted_of(r: DbRow) -> LiftResult {
 /// scan (CLAUDE.md's dense-addressing rule). `Db.family` grows it in
 /// lockstep with the Kernel's own verifier list, so a family's ordinal
 /// indexes both; a family with no cached value (`Sig`, `Methods`,
-/// `Receivers`, `References`, `Failures`, `HeldSig` — their answers
+/// `Receivers`, `References`, `Failures` — their answers
 /// live elsewhere, or run through the Kernel's verbs directly) still
 /// gets a slot, just an empty one.
 @identity
@@ -568,14 +339,6 @@ fn turned_round(kernel: Kernel) -> Turned {
 /// alone, deliberately before a `Workspace` is built, so it mints its
 /// own kernel rather than waiting on one.
 export fn fresh_db() -> Db { new_db(watched_kernel()) }
-
-/// A row's name, over the package it belongs to and the compiler that
-/// answered it — two packages never share a row by coincidence of a bare
-/// name colliding, and two compiler generations never share one by
-/// coincidence of a bare package colliding: `avra docs`'s answer is this
-/// compiler's rendering of the source, and a later compiler's rendering
-/// may disagree with no file having moved at all.
-export fn db_qualified(root: string, compiler: string, name: string) -> string { "${root}::${compiler}::${name}" }
 
 fn index_key(kind: DbKind, name: string) -> string { "${kind.tag()}\t${name}" }
 
@@ -762,7 +525,7 @@ export fn current_file_digest(path: string) -> string? {
 /// half is never reached for a dense variant.
 fn encoded(row: DbRow) -> string {
     match row {
-        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Licenses(_, text) or .Findings(_, text) or .Answer(_, text) -> text,
+        .Sig(_, text) or .Answer(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -773,10 +536,6 @@ fn encoded(row: DbRow) -> string {
 fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
     match kind {
         .Sig -> DbRow.Sig(name, text),
-        .Warn -> DbRow.Warn(name, text),
-        .Scan -> DbRow.Scan(name, text),
-        .Licenses -> DbRow.Licenses(name, text),
-        .Findings -> DbRow.Findings(name, text),
         .Answer -> DbRow.Answer(name, text),
         rest -> {
             avra_trap("defect: decoded asked of a non-durable DbKind")

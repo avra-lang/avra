@@ -9,7 +9,7 @@
 //! (NAME, NUMBER, STRING, BREAK, END, EOF, ...); a future SQL grammar
 //! passes its own.
 
-use util.{flatten, some_list}
+use util.{some_list}
 use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Tier, Build}
 use diagnostics.{Diagnostic, defect}
 use first.{first_defects}
@@ -24,7 +24,7 @@ impl Seq {
     /// The labels the branch WRITES: its captures, a fold's seed — not
     /// what a climb offers every build.
     fn written_labels() -> List<string> {
-        flatten([some_list(m.label) for m in self.deep_items()]).concat(some_list(self.seed))
+        [some_list(m.label) for m in self.deep_items()].flatten().concat(some_list(self.seed))
     }
 
     /// The captures an `@operators` branch's builds read besides its operand.
@@ -78,7 +78,7 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
         .Call(_, args) -> [defect(rule_name, "build argument `${a}` is not captured in its branch") for a in args if !labels.contains(a)],
         // A node build's labels are checked against the NODE's
         // payloads, by whoever holds the node model — never here.
-        .Node(_, _, _, _) -> [],
+        .Node(_, _, _, _) or .Computed(_, _, _, _) -> [],
     }
 }
 
@@ -89,7 +89,7 @@ fn alt_defects(
     known_terminals: List<string>,
     value_needed: bool,
 ) -> List<Diagnostic> {
-    flatten([seq_defects(rule_name, s, names, known_terminals, value_needed) for s in a.branches])
+    [seq_defects(rule_name, s, names, known_terminals, value_needed) for s in a.branches].flatten()
 }
 
 /// An `@operators` branch's own shape: one operand item labeled `left`,
@@ -103,7 +103,7 @@ fn operator_defects(rule_name: string, s: Seq, names: List<string>) -> List<Diag
         [defect(rule_name, "an @operators branch has one item, its operand, captured as `left`")]
     }
     let none = if ops.tiers.is_empty() { [defect(rule_name, "@operators holds no tier")] } else { [] }
-    shape.concat(none).concat(flatten([tier_defects(rule_name, l, names) for l in ops.tiers]))
+    shape.concat(none).concat([tier_defects(rule_name, l, names) for l in ops.tiers].flatten())
 }
 
 fn tier_defects(rule_name: string, l: Tier, names: List<string>) -> List<Diagnostic> {
@@ -114,7 +114,7 @@ fn tier_defects(rule_name: string, l: Tier, names: List<string>) -> List<Diagnos
         .concat(blank)
         .concat(unknown)
         .concat(tier_build_defects(rule_name, l.build))
-        .concat(flatten([tier_build_defects(rule_name, x.build) for x in l.suffixes]))
+        .concat([tier_build_defects(rule_name, x.build) for x in l.suffixes].flatten())
 }
 
 fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
@@ -129,7 +129,7 @@ fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
         .Call(_, args) -> [defect(rule_name, "an @operators build reads `left`, `op` and `right`, not `${a}`") for a in args if !["left", "op", "right"].contains(a)],
         // a node build's labels are checked against the NODE's payloads,
         // by whoever holds the node model — never here
-        .Node(_, _, _, _) -> [],
+        .Node(_, _, _, _) or .Computed(_, _, _, _) -> [],
     }
 }
 
@@ -138,12 +138,14 @@ fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
 fn fold_defects(rule_name: string, s: Seq) -> List<Diagnostic> {
     let field? = s.fold else { return [] }
     let seed_ok = s.items.length == 2 && s.items[0].label == field && s.items[0].rep == Rep.One
-    let group_ok = s.items.length == 2 && s.items[1].rep == Rep.Star && is_group(s.items[1].prim)
+    let group_ok = s.items.length == 2 &&
+        (s.items[1].rep == Rep.Star || s.items[1].rep == Rep.Opt) &&
+        is_group(s.items[1].prim)
     if !seed_ok || !group_ok {
         return [
             defect(
                 rule_name,
-                "@fold(${field}) wants a seed captured as `${field}` and then one repeated group — `${field}:operand ( turn | turn )*`",
+                "@fold(${field}) wants a seed captured as `${field}` and then one repeated or optional group — `${field}:operand ( turn | turn )*`",
             ),
         ]
     }
@@ -185,12 +187,18 @@ fn group_turns(p: Prim) -> List<Seq> {
 
 fn is_var(b: Build?) -> bool {
     let held? = b else { return false }
-    match held { .Var(_) -> true, .Call(_, _) or .Node(_, _, _, _) -> false }
+    match held {
+        .Var(_) -> true,
+        .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
+    }
 }
 
 fn is_answer(b: Build?, field: string) -> bool {
     let held? = b else { return false }
-    match held { .Var(name) -> name == field, .Call(_, _) or .Node(_, _, _, _) -> false }
+    match held {
+        .Var(name) -> name == field,
+        .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
+    }
 }
 
 /// One branch's defects: its items', then its build's.
@@ -201,9 +209,8 @@ fn seq_defects(
     known_terminals: List<string>,
     value_needed: bool,
 ) -> List<Diagnostic> {
-    flatten(
-        [prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items],
-    )
+    [prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items]
+        .flatten()
         .concat(build_defects(rule_name, s, value_needed))
         .concat(operator_defects(rule_name, s, names))
         .concat(fold_defects(rule_name, s))
@@ -235,9 +242,8 @@ impl Grammar {
         start_defect
             .concat(duplicate_defects(self.rules))
             .concat(
-                flatten(
-                    [alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules],
-                ),
+                [alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules]
+                    .flatten(),
             )
             .concat(first_defects(self))
     }

@@ -8,7 +8,7 @@
 //! never earns this.
 use core.{ExprId, StmtId, Binding, Span}
 use features.{TypeCx, Decl, nothing}
-use diagnostics.{refusal}
+use diagnostics.{Voice, said_as}
 use @std.errors.{Loc}
 
 impl TypeCx {
@@ -105,21 +105,20 @@ impl TypeCx {
     }
 
     fn reader_subject(subj: ExprId) -> string {
-        match self.view.store.expr(subj) { .Ident(name) -> name.of, rest -> "channel" }
+        match self.view.store.expr(subj) { .Ident(name) -> name.text(), rest -> "channel" }
     }
 
     // ── The voice ──
 
-    mut fn never_ends(at: Loc?, name: string) {
-        self
-            .emit(
-                refusal(
-                    "flow.never_ends",
-                    at,
-                    "`${name}` is read to its end by a task this block spawns, and no `close()` ends it before the block does",
-                    "joined with `${name}` open",
-                    "close the sink first — `${name}.sink.close()` — or write `produce<T>(n) { … }`, which closes where the block ends",
-                ),
-            )
+    mut fn never_ends(at: Loc?, name: string) { self.emit(said_as("flow.never_ends", at, channel_never_ends(name))) }
+}
+
+/// A task a block spawns reading the channel `name` to its end, where nothing closes it before the
+/// block's end joins the task.
+export fn channel_never_ends(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is read to its end by a task this block spawns, and no `close()` ends it before the block does",
+        label: "joined with `${name}` open",
+        help: "close the sink first — `${name}.sink.close()` — or write `produce<T>(n) { … }`, which closes where the block ends",
     }
 }

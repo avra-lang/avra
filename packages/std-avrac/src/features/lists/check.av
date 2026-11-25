@@ -2,9 +2,20 @@
 //! ride a slot (the SAME law every aggregate slot obeys — R0's
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
-use core.{ExprId, StmtId, Type, TypeId, CompClause, flatten, some_list, same_type}
-use features.{TypeCx, this_is, slot_worthy}
-use diagnostics.{refusal, warning, Diag}
+use core.{
+    ExprId,
+    StmtId,
+    Type,
+    TypeId,
+    CompClause,
+    flatten,
+    some_list,
+    same_expr,
+    same_type,
+    Decision,
+}
+use features.{TypeCx, this_is, slot_worthy, slot_answers_nothing, slot_untyped}
+use diagnostics.{refusal, said_as, warning, Diag, Voice}
 use @std.errors.{Loc}
 
 fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
@@ -18,10 +29,10 @@ fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     let head = cx.led_by(elems)
     if cx.errored(head) { return cx.error_type }
     if cx.awaits_seat(e, head) { return cx.error_type }
-    if !slot_worthy(cx.shape_at(head)) { return cx.unslottable(head, "a list element") }
+    if !slot_worthy(cx.shape_at(head)) { return cx.unslottable(head, LIST_ELEMENT) }
     let elem = cx.joined(elems, cx.type_at(head))
     for k in elems {
-        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem) }
+        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem, cx.type_at(k)) }
     }
     cx.type(List<elem>)
 }
@@ -37,7 +48,7 @@ fn spread_literal_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId
     for k in lists {
         if !spreads_list(cx, k) { return cx.error_type }
     }
-    spread_type(cx, e, [k for k in elems if !spreading(cx, k)], lists)
+    spread_type(cx, e, elems, lists)
 }
 
 /// A spread's operand is a list; any other speaks once.
@@ -61,7 +72,7 @@ fn wanted_elem(cx: TypeCx, e: ExprId) -> TypeId? {
 fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> TypeId {
     if !slot_worthy(cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a list element") }
     for k in elems {
-        if !cx.accepts(k, want) { return unwanted_element(cx, k, want) }
+        if !cx.accepts(k, want) { return unwanted_element(cx, k, want, cx.type_at(k)) }
     }
     cx.type(List<want>)
 }
@@ -77,7 +88,7 @@ fn collect_type(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> TypeId {
     for v in values { cx.facts.spread(v, spreads(cx, e, v)) }
     let lists = [v for v in values if cx.facts.spreads_at(v)]
     if lists.is_empty() { return list_type(cx, e, values) }
-    spread_type(cx, e, [v for v in values if !cx.facts.spreads_at(v)], lists)
+    spread_type(cx, e, values, lists)
 }
 
 /// Each kept value that waited for the element is handed it, once the
@@ -100,29 +111,45 @@ fn is_list(cx: TypeCx, t: TypeId) -> bool {
     match cx.view.types.seen_shape(t) { .List(_) or .EmptyList -> true, _ -> false }
 }
 
-/// A collect with lists spread in: the element is the want's, else the
-/// first single value's, else the first list's own; each single answers
-/// to it and each list to the list of it.
-fn spread_type(mut cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>) -> TypeId {
-    let elem? = spread_elem(cx, e, singles, lists) else { return cx.view.types.intern(Type.EmptyList) }
-    let listed = cx.type(List<elem>)
-    for v in lists {
-        if !cx.accepts(v, listed) { return disagreeing(cx, e, v, listed) }
+/// A literal or a collect with lists spread in, `values` its entries in order and `lists` those that
+/// spread: the element is the want's, else the first entry's — a spread entry's own element — and
+/// each single answers to it and each list's element to it.
+fn spread_type(mut cx: TypeCx, e: ExprId, values: List<ExprId>, lists: List<ExprId>) -> TypeId {
+    let want = wanted_elem(cx, e)
+    let spread = (k: ExprId) -> lists.any(same_expr(it, k))
+    let elem? = want ?? flatten([entry_elem(cx, k, spread(k)) for k in values]).first() else {
+        return cx.view.types.intern(Type.EmptyList)
     }
-    for k in singles {
-        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem) }
+    let listed = cx.type(List<elem>)
+    for k in values {
+        if !spread(k) {
+            if !cx.accepts(k, elem) { return entry_refused(cx, e, k, elem, want != null, cx.type_at(k)) }
+        } else {
+            let held? = cx.view.types.element(cx.type_at(k)) else { continue }
+            let fits = if want != null { cx.accepts(k, listed) || carries(cx, elem, held) } else { !cx.types_disagree(held, elem) }
+            if !fits { return entry_refused(cx, e, k, elem, want != null, held) }
+        }
     }
     listed
 }
 
-/// Absent only when every kept value is an empty list and no want names
-/// the element.
-fn spread_elem(cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>) -> TypeId? {
-    let held: TypeId? = wanted_elem(cx, e)
-    if held != null { return held }
-    let single: ExprId? = singles.first()
-    if single != null { return cx.type_at(single!) }
-    flatten([some_list(cx.view.types.element(cx.type_at(v))) for v in lists]).first()
+/// Whether `elem` is a nullable of `held`: a spread's elements it holds are adopted one by one.
+fn carries(cx: TypeCx, elem: TypeId, held: TypeId) -> bool {
+    let inner? = cx.view.types.carried(elem) else { return false }
+    same_type(inner, held)
+}
+
+/// The element an entry brings: a single's own type, a spread list's element; none for a spread of
+/// `[]`.
+fn entry_elem(cx: TypeCx, k: ExprId, spread: bool) -> List<TypeId> {
+    if spread { some_list(cx.view.types.element(cx.type_at(k))) } else { [cx.type_at(k)] }
+}
+
+/// An entry `k` bringing `found` where the list's element is `elem`: in the want's words where a seat
+/// declared it, else in the elements' shared one.
+fn entry_refused(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId, wanted: bool, found: TypeId) -> TypeId {
+    if wanted { return unwanted_element(cx, k, elem, found) }
+    disagreeing(cx, e, k, elem, found)
 }
 
 /// A `collect`'s kept values: its body walked once, and remembered —
@@ -138,9 +165,9 @@ fn collection(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> List<ExprId> {
 
 /// Elements that disagree wait for a want that may hold them all — a
 /// field's `List<dyn T>` — and speak only when none arrives.
-fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId) -> TypeId {
+fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId, found: TypeId) -> TypeId {
     if !cx.starving { return cx.hungry(e) }
-    disagreeing_element(cx, k, elem)
+    disagreeing_element(cx, k, elem, found)
 }
 
 // ── The voices ──
@@ -148,42 +175,46 @@ fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId) -> TypeId {
 fn not_a_list(mut cx: TypeCx, k: ExprId) {
     let n = cx.name_at(k)
     if cx.shape_at(k) is .Opt {
-        return cx
-            .emit(
-                refusal(
-                    "type.spread_nullable",
-                    cx.loc_of(k),
-                    "`..` spreads `${n}`, which may be null",
-                    "spread here",
-                    "unwrap it first — `..(xs ?? [])`",
-                ),
-            )
+        return cx.emit(said_as("type.spread_nullable", cx.loc_of(k), list_spreads_absent(n)))
     }
-    cx
-        .emit(
-            refusal(
-                "type.spread_list",
-                cx.loc_of(k),
-                "`..` in a list spreads a list, found `${n}`",
-                "spread here",
-                "a list literal spreads lists — `[..xs, y]`; write any other value as an element",
-            ),
-        )
+    cx.emit(said_as("type.spread_list", cx.loc_of(k), list_spread_unlisted(n)))
 }
 
-fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
-    let n = cx.name_at(k)
+/// A spread in a list literal of a value of `found`, which may be null.
+export fn list_spreads_absent(found: string) -> Voice {
+    Voice {
+        message: "`..` spreads `${found}`, which may be null",
+        label: "spread here",
+        help: "unwrap it first — `..(xs ?? [])`",
+    }
+}
+
+/// A spread in a list literal of a value of `found`, which is no list.
+export fn list_spread_unlisted(found: string) -> Voice {
+    Voice {
+        message: "`..` in a list spreads a list, found `${found}`",
+        label: "spread here",
+        help: "a list literal spreads lists — `[..xs, y]`; write any other value as an element",
+    }
+}
+
+/// What a list literal's element of `found` says where its first element is `first`.
+export fn elements_share(first: string, found: string) -> string { "a list's elements share one type — the first is `${first}`, this is `${found}`" }
+
+fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId, found: TypeId) -> TypeId {
+    let n = cx.view.types.name_of(found)
     let said = cx
         .seat_mismatch(
             "type.list_element",
             cx.loc_of(k),
             k,
-            "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`",
+            elements_share(cx.view.types.name_of(elem), n),
             elem,
+            n,
         )
     cx
         .spoken(
-            if boxable(cx, elem) && boxable(cx, cx.type_at(k)) { said with { help: share_a_trait() } } else { said },
+            if boxable(cx, elem) && boxable(cx, found) { said with { help: share_a_trait() } } else { said },
         )
 }
 
@@ -193,12 +224,15 @@ fn boxable(cx: TypeCx, t: TypeId) -> bool {
     match cx.view.types.shape_of(t) { .Struct(_, _) or .Enum(_, _) -> true, _ -> false }
 }
 
-fn share_a_trait() -> string {
+export fn share_a_trait() -> string {
     "to hold both, declare the list over a trait they share — `let xs: List<dyn Trait> = …`"
 }
 
-fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
-    let n = cx.name_at(k)
+/// What a list literal's element of `found` says where the list holds `want`.
+export fn list_holds(want: string, found: string) -> string { "this list holds `${want}`, this is `${found}`" }
+
+fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId, found: TypeId) -> TypeId {
+    let n = cx.view.types.name_of(found)
     cx
         .spoken(
             cx
@@ -206,8 +240,9 @@ fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
                     "type.list_element",
                     cx.loc_of(k),
                     k,
-                    "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`",
+                    list_holds(cx.view.types.name_of(want), n),
                     want,
+                    n,
                 ),
         )
 }
@@ -320,7 +355,7 @@ fn type_clauses(mut cx: TypeCx, clauses: List<CompClause>) -> List<TypeId> {
                 // range bound beside it.
                 cx.bind_types(source, tys)
                 if j > 0 { for own in [source].concat(some_list(hi)) { let _ = cx.walk_type(own) } }
-                let added = if hi == null { walked_types(cx, index?.of, source) } else { counted_types(cx, index?.of, source, hi!) }
+                let added = if hi == null { walked_types(cx, index?.text(), source) } else { counted_types(cx, index?.text(), source, hi!) }
                 tys = tys.concat(added)
             },
             .Filter(cond) -> filter_checks(cx, cond, tys),
@@ -340,7 +375,7 @@ fn heard_elem(mut cx: TypeCx, elem: ExprId, ety: TypeId, w: TypeId) -> TypeId {
 /// The list an element of its own type makes — the element rides a
 /// slot.
 fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
-    if !slot_worthy(cx.shape_at(elem)) { return cx.unslottable(elem, "a list element") }
+    if !slot_worthy(cx.shape_at(elem)) { return cx.unslottable(elem, LIST_ELEMENT) }
     cx.type(List<ety>)
 }
 
@@ -348,7 +383,7 @@ fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
 fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
     cx.bind_types(cond, tys)
     let _ = cx.walk_type(cond)
-    cx.require_bool(cond, "a comprehension's filter", "this decides the element")
+    cx.require_bool(cond, Decision.Filter)
 }
 
 /// The binders' types over a list: the element's, under the index's
@@ -374,8 +409,8 @@ fn keyed_types(mut cx: TypeCx, index: string?, source: ExprId, value: TypeId) ->
 /// bounds are ints, and an index has nothing to name — it wears the
 /// refusal's type while the count still types.
 fn counted_types(mut cx: TypeCx, index: string?, lo: ExprId, hi: ExprId) -> List<TypeId> {
-    cx.require_int(lo, "a range's low bound", "this is where counting starts")
-    cx.require_int(hi, "a range's high bound", "this is where counting stops")
+    cx.require_bound(lo, false)
+    cx.require_bound(hi, true)
     let int = cx.type(int)
     if index == null { return [int] }
     [range_has_no_index(cx, lo), int]
@@ -389,65 +424,67 @@ fn binders(cx: TypeCx, index: string?, elem: TypeId) -> List<TypeId> {
 
 fn not_walkable(mut cx: TypeCx, source: ExprId) -> TypeId {
     if cx.seen_at(source) is .Str { return not_walkable_string(cx, source) }
-    let n = cx.name_at(source)
-    cx
-        .spoken(
-            refusal(
-                "type.list",
-                cx.loc_of(source),
-                "a comprehension walks a list, found `${n}`",
-                this_is(n),
-                "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts",
-            ),
-        )
+    cx.spoken(said_as("type.list", cx.loc_of(source), comp_walks_list(cx.name_at(source))))
+}
+
+/// A comprehension walking a value of `found`, which is no list; a `string`, which names no element
+/// without a view, in its own words.
+export fn comp_walks_list(found: string) -> Voice {
+    if found == "string" { return comp_walks_text() }
+    Voice {
+        message: "a comprehension walks a list, found `${found}`",
+        label: "this is `${found}`",
+        help: "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts",
+    }
+}
+
+fn comp_walks_text() -> Voice {
+    Voice {
+        message: "a comprehension walks a list, and a `string` names no element without a view",
+        label: "this is `string`",
+        help: "iterate its octets with `s.bytes()`, or its code points with `s.chars()`",
+    }
 }
 
 /// A `string` has no element of its own — a byte, a code point, a
 /// grapheme — so the comprehension names its view.
-fn not_walkable_string(mut cx: TypeCx, source: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.list",
-                cx.loc_of(source),
-                "a comprehension walks a list, and a `string` names no element without a view",
-                "this is `string`",
-                "iterate its octets with `s.bytes()`, or its code points with `s.chars()`",
-            ),
-        )
+fn not_walkable_string(mut cx: TypeCx, source: ExprId) -> TypeId { cx.spoken(said_as("type.list", cx.loc_of(source), comp_walks_text())) }
+
+fn range_has_no_index(mut cx: TypeCx, lo: ExprId) -> TypeId { cx.spoken(said_as("type.list", cx.loc_of(lo), range_unindexed())) }
+
+/// A comprehension head naming an index over a range, which counts and holds no position apart.
+export fn range_unindexed() -> Voice {
+    Voice {
+        message: "a range has no index — the counter IS the position",
+        label: "counted from here",
+        help: "write `for i in lo..hi`",
+    }
 }
 
-fn range_has_no_index(mut cx: TypeCx, lo: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.list",
-                cx.loc_of(lo),
-                "a range has no index — the counter IS the position",
-                "counted from here",
-                "write `for i in lo..hi`",
-            ),
-        )
-}
+fn unnarrowed(at: Loc?, relation: string) -> Diag { said_as("type.plan_residual", at, rows_unnarrowed(relation)) }
 
-fn unnarrowed(at: Loc?, relation: string) -> Diag {
-    refusal(
-        "type.plan_residual",
-        at,
-        "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
-        "called on every row",
-        "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
-    )
+/// A filter handing the rows of `relation`, scanned whole, to a call no index narrows.
+export fn rows_unnarrowed(relation: string) -> Voice {
+    Voice {
+        message: "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
+        label: "called on every row",
+        help: "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
+    }
 }
 
 fn scanned_whole(at: Loc?, relation: string, field: string, rows: int) -> Diag {
-    warning(
-        "type.plan_scan",
-        at,
-        "this filter scans all of `${relation}`, which a census counts at ${rows} rows, and no index answers `${field}`",
-        "compared on every row",
-        "add `@index ${field}` to `${relation}` — a `@plans(\"${field}\")` lookup — and the scan reads it instead",
-    )
+    let said = relation_scanned(relation, field, rows)
+    warning("type.plan_scan", at, said.message, said.label ?? "", said.help ?? "")
+}
+
+/// A filter scanning all of `relation`, which a census counts at `rows` rows, for a compare of
+/// `field` no index answers.
+export fn relation_scanned(relation: string, field: string, rows: int) -> Voice {
+    Voice {
+        message: "this filter scans all of `${relation}`, which a census counts at ${rows} rows, and no index answers `${field}`",
+        label: "compared on every row",
+        help: "add `@index ${field}` to `${relation}` — a `@plans(\"${field}\")` lookup — and the scan reads it instead",
+    }
 }
 
 fn plan_mismatch(at: Loc?, lookup: string, field: string) -> Diag {
@@ -459,3 +496,12 @@ fn plan_mismatch(at: Loc?, lookup: string, field: string) -> Diag {
         "fix the lookup's seat, or drop the `@plans` mark",
     )
 }
+
+/// How a list's element is named where a slot law speaks of it.
+const LIST_ELEMENT: string = "a list element"
+
+/// A list's first element, of `named`, which gives the list no type.
+export fn list_element_untyped(named: string) -> Voice { slot_untyped(LIST_ELEMENT, named) }
+
+/// A list's first element, which answers no value.
+export fn list_element_void() -> Voice { slot_answers_nothing(LIST_ELEMENT) }

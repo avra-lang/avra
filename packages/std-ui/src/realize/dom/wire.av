@@ -254,35 +254,91 @@ fn definition_key(to: Listening) -> int { to.action.seat.number() * 4 + to.says.
 /// Anything that moves or removes a child breaks that, and the parent is
 /// let go: its later places name the sibling they follow.
 type Kept = {
-    whole: Cell<List<int>> = Cell.new([]),
-    last: Cell<Map<string, int>> = Cell.new({}),
-    under: Cell<Map<string, int>> = Cell.new({}),
+    last: IdTable = IdTable.new(),
+    under: IdTable = IdTable.new(),
 }
 
 impl Kept {
-    fn made(id: NodeId) { self.whole.push(id.n) }
+    /// `id` made in this frame: a run known whole, holding nothing yet.
+    fn made(id: NodeId) { self.last.put(id.n, no_id) }
 
     /// Whether `after` is the last child placed under `parent`, which this
     /// frame made and has not disturbed; an empty run is "the first place".
     fn ends_with(parent: NodeId?, after: int) -> bool {
         let p? = parent else { return false }
-        if !self.whole.get().contains(p.n) { return false }
-        self.last.get().get("${p.n}") ?? no_id == after
+        let last? = self.last.get(p.n) else { return false }
+        last != broken && last == after
     }
 
-    /// `id` placed under `parent`: the end of that run, and no longer a child
-    /// of wherever it stood.
+    /// `id` placed under `parent`: the end of that run where the frame knows
+    /// it whole, and no longer a child of wherever it stood.
     fn placed(id: NodeId, parent: NodeId?) {
         self.left(id)
         let p? = parent else { return }
-        self.last.put("${p.n}", id.n)
-        self.under.put("${id.n}", p.n)
+        let last = self.last.get(p.n)
+        if last != null && last != broken { self.last.put(p.n, id.n) }
+        self.under.put(id.n, p.n)
     }
 
     /// `id` taken off the run it stood in: that run is no longer known whole.
     fn left(id: NodeId) {
-        let from? = self.under.get().get("${id.n}") else { return }
-        self.whole.set([w for w in self.whole.get() if w != from])
+        let from? = self.under.get(id.n) else { return }
+        if self.last.get(from) != null { self.last.put(from, broken) }
+    }
+}
+
+/// What `Kept.last` holds for a run this frame made and then disturbed.
+const broken: int = -2
+
+/// NUMBERS BY NUMBER: a node's number to another number, found by open
+/// addressing — no text made, and a number of any size. The slots grow to
+/// stay at most three quarters full.
+type IdTable = { keys: Cell<List<int>>, values: Cell<List<int>>, count: Cell<int> }
+
+impl IdTable {
+    /// An empty table.
+    static fn new() -> IdTable {
+        IdTable {
+            keys: Cell.new([no_id for _s in 0..8]),
+            values: Cell.new([0 for _s in 0..8]),
+            count: Cell.new(0),
+        }
+    }
+
+    /// What `key` holds; absent where it holds nothing.
+    fn get(key: int) -> int? {
+        let at = self.slot(key)
+        if self.keys.get()[at] == no_id { null } else { self.values.get()[at] }
+    }
+
+    /// `key` holds `value` from now on.
+    fn put(key: int, value: int) {
+        let at = self.slot(key)
+        if self.keys.get()[at] == no_id {
+            self.keys.set_at(at, key)
+            self.count.set(self.count.get() + 1)
+        }
+        self.values.set_at(at, value)
+        if self.count.get() * 4 > self.keys.get().length * 3 { self.grown() }
+    }
+
+    /// The slot `key` stands at, or the free one it would.
+    fn slot(key: int) -> int {
+        let keys = self.keys.get()
+        let mask = keys.length - 1
+        mut at = key * 1000003 & mask
+        while keys[at] != no_id && keys[at] != key { at = at + 1 & mask }
+        at
+    }
+
+    /// The table twice as wide, every key placed again.
+    fn grown() {
+        let keys = self.keys.get()
+        let values = self.values.get()
+        self.keys.set([no_id for _s in 0..keys.length * 2])
+        self.values.set([0 for _s in 0..keys.length * 2])
+        self.count.set(0)
+        for j, k in keys { if k != no_id { self.put(k, values[j]) } }
     }
 }
 

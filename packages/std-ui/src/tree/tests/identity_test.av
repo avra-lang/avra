@@ -4,14 +4,20 @@
 //! one.
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.realize.html.element.{Element}
-use @std.meta.{Site}
-use @std.ui.tree.identity.{Stand, Step, readable, shared, steps}
+use @std.meta.{Key, Site}
+use @std.ui.tree.identity.{Stand, Step, keyed_step, readable, sited_step, shared, steps, text_key}
 use @std.ui.tree.node.{Node}
 use @std.ui.realize.tests.support.{spoken, holding, keyed, leaf, text_node}
 use @std.ui.style.theme.{default_theme}
 
 /// Siblings written at ONE site, keyed as given.
-fn stands(keys: List<string?>) -> List<Stand> { [Stand { key: k, site: Site(7) } for k in keys] }
+fn stands(keys: List<string?>) -> List<Stand> { [Stand { key: keyed_as(k), site: Site(7) } for k in keys] }
+
+/// A written key as the key it is; none where none is written.
+fn keyed_as(k: string?) -> Key? {
+    let t? = k else { return null }
+    text_key(t)
+}
 
 /// Siblings with no key, written at the sites given.
 fn sited(sites: List<int>) -> List<Stand> { [Stand { site: Site(s) } for s in sites] }
@@ -40,8 +46,8 @@ fn row_numbers(page: Live) -> List<int> {
 /// The rows' numbers after a page showing `from` is repainted as `to`.
 fn numbered(from: List<string>, to: List<string>) -> string {
     let page = live()
-    let _ = page.patches(rows(from), default_theme)
-    let _ = page.patches(rows(to), default_theme)
+    let _ = page.patches(rows(from))
+    let _ = page.patches(rows(to))
     ["${n}" for n in row_numbers(page)].join(" ")
 }
 
@@ -94,12 +100,12 @@ spec "std/ui identity — a sibling's step" {
         then "answers no steps" { steps(stands([])).is_empty() }
     }
     given "keys that spell other steps" {
-        then "a key that spells a site is not that site" { Step.Keyed("s1", 0).spelled() != Step.Sited(Site(1), 0, 0).spelled() }
+        then "a key that spells a site is not that site" { keyed_step(text_key("s1"), 0).spelled() != sited_step(Site(1), 0, 0).spelled() }
         then "a key that ends like a turn is not another key's second turn" {
-            Step.Keyed("a~1", 0).spelled() != Step.Keyed("a", 1).spelled()
+            keyed_step(text_key("a~1"), 0).spelled() != keyed_step(text_key("a"), 1).spelled()
         }
-        then "a key that spells a keyed step is not that step" { Step.Keyed("k1:a", 0).spelled() != Step.Keyed("a", 0).spelled() }
-        then "a key that spells a part is not that part" { Step.Keyed("+text", 0).spelled() != Step.Part("text").spelled() }
+        then "a key that spells a keyed step is not that step" { keyed_step(text_key("k1:a"), 0).spelled() != keyed_step(text_key("a"), 0).spelled() }
+        then "a key that spells a part is not that part" { keyed_step(text_key("+text"), 0).spelled() != Step.Part("text").spelled() }
     }
 }
 
@@ -110,9 +116,9 @@ spec "std/ui identity — a number while a node stays" {
     given "a row landing above two" {
         then "takes a new number, and the two keep theirs" {
             let page = live()
-            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let _ = page.patches(rows(["a", "b"]))
             let before = row_numbers(page)
-            let _ = page.patches(rows(["new", "a", "b"]), default_theme)
+            let _ = page.patches(rows(["new", "a", "b"]))
             let after = row_numbers(page)
             after[1] == before[0] && after[2] == before[1] && !before.contains(after[0])
         }
@@ -120,19 +126,19 @@ spec "std/ui identity — a number while a node stays" {
     given "rows in another order" {
         then "carry their numbers with them" {
             let page = live()
-            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let _ = page.patches(rows(["a", "b"]))
             let before = row_numbers(page)
-            let _ = page.patches(rows(["b", "a"]), default_theme)
+            let _ = page.patches(rows(["b", "a"]))
             row_numbers(page)[0] == before[1] && row_numbers(page)[1] == before[0]
         }
     }
     given "a row that left and came back" {
         then "takes a number no element has worn" {
             let page = live()
-            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let _ = page.patches(rows(["a", "b"]))
             let first = [n for e in page.page.get() for n in numbers(e)]
-            let _ = page.patches(rows(["b"]), default_theme)
-            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let _ = page.patches(rows(["b"]))
+            let _ = page.patches(rows(["a", "b"]))
             !first.contains(row_numbers(page)[0])
         }
     }

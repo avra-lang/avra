@@ -1,26 +1,22 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use compiler.{
-    analyze_source,
-    parse_source,
-    Program,
-    Workspace,
-    avra,
-    new_workspace,
-    one_shot_let_go,
-}
-use compiler.host.{Host, memory_host}
+use compiler.{parse_source}
+use testing.held.{Held, Judged, entry_of, held_alone, held_at}
 use testing.std_sources.{StdFile, StdPkg, std_sources}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
 use @std.meta.{embed}
 use compiler.lower.{Lowered}
+use compiler.backend.{render_ir}
 use compiler.format.{render_source}
+
+/// What the program layer says of one source standing in no package.
+export fn judged(source: string) -> Judged { held_alone(source).judged(entry_of("alone")) }
 
 /// A program's printed value, or "<refused>".
 export fn shown(source: string) -> string {
-    analyze_source(source).ran() ?? "<refused>"
+    judged(source).ran() ?? "<refused>"
 }
 
 /// The source projected through the printer's canonical form — "<parse
@@ -35,7 +31,7 @@ export fn projected(source: string) -> string {
 /// How many diagnostics one program earns. The COUNT is half of a
 /// refusal test: a cascade hides behind `contains` alone.
 export fn refusals(source: string) -> int {
-    analyze_source(source).diagnostics.length
+    judged(source).diagnostics.length
 }
 
 /// A program refused EXACTLY ONCE, saying `phrase`. The count is not
@@ -44,44 +40,41 @@ export fn refusals(source: string) -> int {
 /// spelled this by hand, and the ones that wrote `>= 1` instead were
 /// asserting almost nothing.
 export fn refused_with(source: string, phrase: string) -> bool {
-    let a = analyze_source(source)
+    let a = judged(source)
     a.diagnostics.length == 1 && a.report().contains(phrase)
 }
 
-/// A program that analyzes CLEAN and then refuses to RUN, saying
-/// `phrase` — the refusal is lowering's or the evaluator's, never
-/// analysis's. A diagnosed program refusing to run proves nothing
-/// about the run, so the clean premise is half the assertion.
+/// A program that refuses to RUN, saying `phrase`: the evaluator's refusal of a program its build
+/// accepts, or the one thing its build says of what it runs before any program does — a const's
+/// settling — and never a cascade.
 export fn refused_at_run(source: string, phrase: string) -> bool {
-    let a = analyze_source(source)
-    if !a.diagnostics.is_empty() { return false }
+    let a = judged(source)
+    if a.diagnostics.length > 1 { return false }
     match a.run() { .Err(msg) -> msg.contains(phrase), .Ok(_) -> false }
 }
 
-/// EVERYTHING A PROGRAM SAID — its files' diagnostics, the
-/// workspace's voices and its defects. A suite over an in-memory
-/// package asks a `Program`, not a source, and three test modules had
-/// each spelled this walk and the two refusal verbs over it.
-export fn said(p: Program) -> List<Diag> {
-    flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
-}
+/// EVERYTHING A PROGRAM SAID — what its manifests and its package graph say, then each refusal
+/// and warning of its files. A suite over an in-memory package asks a `Judged`, not a source.
+export fn said(p: Judged) -> List<Diag> { p.diagnostics }
 
-/// `refused_with` for a program already built: the words, and the
+/// `refused_with` for a program already judged: the words, and the
 /// COUNT, so no cascade hides behind the phrase the case names.
-export fn refused_n(p: Program, phrase: string, n: int) -> bool {
-    said(p).length == n && p.report().contains(phrase)
+export fn refused_n(p: Judged, phrase: string, n: int) -> bool {
+    p.diagnostics.length == n && p.report().contains(phrase)
 }
 
 /// One mistake, one message — the count a refusal test pins by
 /// default.
-export fn refused_in(p: Program, phrase: string) -> bool {
+export fn refused_in(p: Judged, phrase: string) -> bool {
     refused_n(p, phrase, 1)
 }
 
 /// The program as IR, memory strategy applied.
-export fn ir_of(source: string) -> Lowered {
-    analyze_source(source).lowered()
-}
+export fn ir_of(source: string) -> Lowered { lowered_alone(source) }
+
+/// One source's IR on the program layer, the program never run: a source a spec lowers may be
+/// one that never ends.
+fn lowered_alone(source: string) -> Lowered { held_alone(source).judged(entry_of("alone")).lowered() }
 
 /// A present-maker and an absent-maker over `int?`.
 export const makers: string = "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
@@ -126,7 +119,7 @@ export fn vendored_meta_as(files: Map<string, string>, meta: string) -> Map<stri
     out
         .set("/w/vendor/errors/avra.toml", "[package]\nname = \"@std/errors\"\nversion = \"0.1.0\"\n")
     out.set("/w/vendor/errors/src/errors.av", errors_real)
-    out
+    vendored_prelude(out)
 }
 
 /// The `@std/meta` a fixture starts from.
@@ -148,12 +141,20 @@ export fn vendored_meta_paths() -> List<string> {
 /// whose one file is `provider`, which sees `Code` — the shape every
 /// component test compiles. Each of `modules` is one more module of
 /// the program's own, a file under `src/<name>/`.
-export fn provided(main: string, provider: string, modules: List<Module> = []) -> Program {
-    provided_workspace(main, provider, modules).program("/w/src/main.av")
+export fn provided(main: string, provider: string, modules: List<Module> = []) -> Judged {
+    held_at(provided_files(main, provider, modules), "/w").judged_at("/w/src/main.av")
 }
 
-/// `provided`'s workspace, before a program is asked of it.
-export fn provided_workspace(main: string, provider: string, modules: List<Module> = []) -> Workspace {
+/// The package `provided` judges, held: for an ask of its files that judges nothing.
+export fn provided_held(main: string, provider: string, modules: List<Module> = []) -> Held {
+    held_at(provided_files(main, provider, modules), "/w")
+}
+
+/// The files `provided` holds.
+export fn provided_files(main: string, provider: string, modules: List<Module>) -> Map<
+    string,
+    string,
+> {
     mut files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
@@ -163,19 +164,7 @@ export fn provided_workspace(main: string, provider: string, modules: List<Modul
         },
     )
     for m in modules { files.set(m.path(), m.text) }
-    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"]
-        .concat([m.path() for m in modules])
-    test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
-}
-
-/// A workspace a test makes — ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME,
-/// so the one made before it is let go: read what a workspace answers
-/// before making the next.
-export fn test_workspace(host: Host, root: string) -> Workspace {
-    one_shot_let_go()
-    let ws = new_workspace(host, root, avra())
-    ws.alone()
-    ws
+    files
 }
 
 // ── The prelude, carried in memory ───────────────────────────────────
@@ -247,29 +236,36 @@ fn vendored_beside(files: Map<string, string>, beside: List<StdPkg>) -> Map<stri
 
 /// A program at `/w` that uses the real `@std/db`, with its closure vendored
 /// beside the prelude — the program a model's own law is judged in.
-export fn beside_db(main: string) -> Program {
+export fn beside_db(main: string) -> Judged {
     let files = vendored_db(
         {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
     )
-    test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
-        .program("/w/src/main.av")
+    held_at(files, "/w").judged_at("/w/src/main.av")
+}
+
+/// A program at `/w` that uses the real `@std/task`, with its closure vendored beside the
+/// prelude: a channel or a producer opens through the package's own fns, so it runs.
+export fn beside_task(main: string) -> Judged {
+    let files = vendored_task(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+    )
+    held_at(files, "/w").judged_at("/w/src/main.av")
 }
 
 /// A program at `/w` whose toolchain carries the real `@std/prelude`
 /// and nothing else — what a file in a package sees and a lone source
 /// does not.
-export fn floored(main: string) -> Program {
+export fn floored(main: string) -> Judged {
     let files = vendored_prelude(
         {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
     )
-    test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
-        .program("/w/src/main.av")
+    held_at(files, "/w").judged_at("/w/src/main.av")
 }
 
 /// `floored`, its toolchain carrying one more package, `@std/<name>`,
 /// whose one file is `text` — for a law that reads a toolchain
 /// package's declarations by name.
-export fn floored_beside(main: string, name: string, text: string) -> Program {
+export fn floored_beside(main: string, name: string, text: string) -> Judged {
     let files = vendored_prelude(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
@@ -278,8 +274,7 @@ export fn floored_beside(main: string, name: string, text: string) -> Program {
             "/std/std-${name}/src/${name}.av": text,
         },
     )
-    test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
-        .program("/w/src/main.av")
+    held_at(files, "/w").judged_at("/w/src/main.av")
 }
 
 /// One module of a test program: its name and its one file's text.
@@ -290,6 +285,6 @@ impl Module {
 }
 
 /// What a program answers when run, or the words it stopped with.
-export fn answered(p: Program) -> string {
+export fn answered(p: Judged) -> string {
     match p.run() { .Ok(v) -> v, .Err(why) -> why }
 }

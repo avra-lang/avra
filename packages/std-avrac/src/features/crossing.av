@@ -87,8 +87,8 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Annotation",
-            fields: ["name", "args", "at", "call", "named"],
-            recent: 2,
+            fields: ["name", "args", "at", "call", "named", "key"],
+            recent: 3,
         },
         MetaShape {
             pkg: "@std.meta",
@@ -187,24 +187,57 @@ fn node_readers() -> List<NodeReader> {
     ]
 }
 
+/// A variant of the LOADED `@std/meta`'s `Node`: its name and how many payloads it carries.
+export type NodeVariant = { name: string, arity: int }
+
+/// THE ONE DOOR'S QUESTION, asked by either path of what it loaded: where a crossed record's slots
+/// part from the row the crossing reads (`slots` answers a record's, by its package and name; absent
+/// where the program loads none), else where `node`, the loaded `Node`'s variants, parts from the
+/// readers; null where the loaded package is the one this compiler was built against.
+export fn meta_moved_from(slots: fn(string, string) -> List<string>?, node: List<NodeVariant>?) -> string? {
+    let moved: string? = flatten(
+        [some_list(record_moved(row, slots(row.pkg, row.name))) for row in meta_records()],
+    )
+        .first()
+    if moved != null { return moved }
+    let loaded? = node else { return null }
+    let rows = node_readers()
+    let named: string? = first_difference("Node", [v.name for v in loaded], [r.name for r in rows])
+    named ?? first_arity_moved(loaded, rows)
+}
+
+/// A record's loaded slots, in order, against its row.
+fn record_moved(row: MetaShape, loaded: List<string>?) -> string? {
+    let slots? = loaded else { return null }
+    first_difference(row.name, slots, owed(row, slots.length))
+}
+
+/// The first variant of the loaded `Node` carrying FEWER payloads than the crossing reads — asked
+/// only once the names agree, so the two runs are the same length. A variant that GREW one the
+/// reader ignores is growth, and growth is not a moved shape.
+fn first_arity_moved(loaded: List<NodeVariant>, rows: List<NodeReader>) -> string? {
+    let at? = [j for j, r in rows if loaded[j].arity < r.arity].first() else { return null }
+    "`Node.${rows[at].name}` carries ${loaded[at].arity} payloads where the crossing reads ${rows[at].arity}"
+}
+
 impl Decls {
     /// Why the LOADED `@std/meta` is not the one this compiler was
     /// built against — the first shape that moved, or null when every
     /// row agrees. A package the program does not load crosses
     /// nothing, and is no disagreement.
     fn meta_disagreement() -> string? {
-        let moved: string? = flatten(
-            [some_list(self.record_disagreement(row)) for row in meta_records()],
+        let decls = self
+        meta_moved_from(
+            (pkg: string, name: string) -> decls.record_slots(pkg, name),
+            self.node_variants(),
         )
-            .first()
-        moved ?? self.node_disagreement()
     }
 
-    /// A record's fields, in order, against the row.
-    fn record_disagreement(row: MetaShape) -> string? {
-        let d? = self.package_decl(row.pkg, row.name) else { return null }
-        let slots? = self.slot_names(d) else { return null }
-        first_difference(row.name, slots, owed(row, slots.length))
+    /// The slots of the record `pkg` declares as `name`, as the LOADED package lays them out; absent
+    /// where the program loads none.
+    fn record_slots(pkg: string, name: string) -> List<string>? {
+        let d? = self.package_decl(pkg, name) else { return null }
+        self.slot_names(d)
     }
 
     /// A record's SLOTS, in order, as the runtime lays them out: a field that
@@ -248,15 +281,16 @@ impl Decls {
         self.slot_names(d)?.length ?? row.fields.length
     }
 
-    /// `Node`'s variants, in order and by payload count.
-    fn node_disagreement() -> string? {
+    /// The loaded `Node`'s variants, in order, each by its payload count; absent where none is loaded.
+    fn node_variants() -> List<NodeVariant>? {
         let d? = self.package_decl("@std.meta", "Node") else { return null }
         let sig? = self.variants_of_type(self.self_type_of(d)) else { return null }
-        let rows = node_readers()
-        let named: string? = first_difference("Node", sig.names, [r.name for r in rows])
-        named ?? first_arity_difference(sig.payloads, rows)
+        [NodeVariant { name: n, arity: sig.payloads[j].length } for j, n in sig.names]
     }
 }
+
+/// How many slots the row `name` declares: what a value written for this compiler's own reader holds.
+export fn written_slots(name: string) -> int { meta_records().find(it.name == name)?.fields?.length ?? 0 }
 
 /// The fields a package declaring `loaded` slots owes the row: every
 /// one but the recent ones it predates.
@@ -277,15 +311,6 @@ fn first_difference(name: string, loaded: List<string>, built: List<string>) -> 
     let at? = [j for j, x in built if j >= loaded.length || loaded[j] != x].first() else { return null }
     let found = if at >= loaded.length { "nothing" } else { "`${loaded[at]}`" }
     "`${name}` declares ${found} where the crossing reads `${built[at]}`"
-}
-
-/// The first variant carrying FEWER payloads than the crossing
-/// reads — asked only once the names agree, so the two runs are the
-/// same length. A variant that GREW one the reader ignores is
-/// growth, and growth is not a moved shape.
-fn first_arity_difference(loaded: List<List<TypeId>>, rows: List<NodeReader>) -> string? {
-    let at? = [j for j, r in rows if loaded[j].length < r.arity].first() else { return null }
-    "`Node.${rows[at].name}` carries ${loaded[at].length} payloads where the crossing reads ${rows[at].arity}"
 }
 
 /// THE OUTBOUND DOOR: every RECORD the crossing writes goes through
@@ -440,7 +465,8 @@ fn crossed_loc(heap: MetaHeap, v: MetaVal) -> Loc? {
     if v is .Absent { return null }
     let c = crossed(heap, v)
     if c.slots.length < 3 { return null }
-    Loc { file: c.opt_text(0), lo: c.int_at(1), hi: c.int_at(2) }
+    let file? = c.opt_text(0) else { return Loc { file: null, lo: c.int_at(1), hi: c.int_at(2) } }
+    Loc { file: tree_unsaved(file), lo: c.int_at(1), hi: c.int_at(2) }
 }
 
 fn crossed_int(v: MetaVal) -> int {
@@ -551,7 +577,7 @@ fn meta_of_param(x: MetaParam, mut heap: MetaHeap) -> MetaVal {
     )
 }
 
-fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
+export fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
     written(
         "Field",
         [
@@ -655,6 +681,7 @@ fn meta_of_annotation(x: MetaAnnotation, mut heap: MetaHeap) -> MetaVal {
             meta_of_loc(x.at, heap),
             meta_of_opt_code(x.call, heap),
             heap.node([meta_of_mark_arg(a, heap) for a in x.named]),
+            MetaVal.Text(x.key),
         ],
         heap,
     )
@@ -694,6 +721,7 @@ fn kind_names() -> List<string> {
         "Dyn",
         "Var",
         "Unspelled",
+        "Bytes",
     ]
 }
 
@@ -734,6 +762,7 @@ fn meta_of_kind(k: Kind, mut heap: MetaHeap) -> MetaVal {
         .Dyn(name) -> heap.node([kind_tag("Dyn"), MetaVal.Text(name)]),
         .Var(name) -> heap.node([kind_tag("Var"), MetaVal.Text(name)]),
         .Unspelled(text) -> heap.node([kind_tag("Unspelled"), MetaVal.Text(text)]),
+        .Bytes -> heap.node([kind_tag("Bytes")]),
     }
 }
 
@@ -774,7 +803,8 @@ export fn kind_of(types: TypeRegistry, id: TypeId) -> Kind {
         .Dyn(_, name) -> Kind.Dyn(name),
         .Var(_, _, name) -> Kind.Var(name),
         .Fn(params, marks, ret) -> Kind.Fn(seat_kinds(types, params, marks), kind_of(types, ret)),
-        .TypeName(_, _) or .Bytes or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error or .Range -> Kind.Unspelled(types.name_of(id)),
+        .Bytes -> Kind.Bytes,
+        .TypeName(_, _) or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error or .Range -> Kind.Unspelled(types.name_of(id)),
     }
 }
 
@@ -793,13 +823,19 @@ fn seat_kind(types: TypeRegistry, p: TypeId, m: SeatMark) -> MetaSeatValue {
 /// no shape, and the string beside it is "".
 export fn no_kind() -> Kind { Kind.Unspelled("") }
 
+/// A place's file as generated code spells it: from the process's tree.
+fn saved_file(file: string?) -> string? {
+    let f? = file else { return null }
+    tree_saved(f)
+}
+
 /// A `Loc` as the evaluator holds it — absence for no place.
 fn meta_of_loc(at: Loc?, mut heap: MetaHeap) -> MetaVal {
     if at == null { return MetaVal.Absent }
     let place = at!
     written(
         "Loc",
-        [meta_of_opt_text(place.file), MetaVal.Int(place.lo), MetaVal.Int(place.hi)],
+        [meta_of_opt_text(saved_file(place.file)), MetaVal.Int(place.lo), MetaVal.Int(place.hi)],
         heap,
     )
 }

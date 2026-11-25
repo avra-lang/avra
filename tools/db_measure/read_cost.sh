@@ -38,12 +38,14 @@ probes=$([ "$(uname -s)" = Darwin ] || echo -fstack-clash-protection)
 for c in runtime/*.c runtime/host/*.c; do
     o=$census/obj/$(basename "$c" .c).o
     # shellcheck disable=SC2086
-    cc -c -O2 -fPIC $probes -Iruntime -ffunction-sections -fdata-sections -Wall -Werror -DAVRA_CENSUS -o "$o" "$c"
+    cc -c -O2 -fPIC -fno-omit-frame-pointer $probes -Iruntime -ffunction-sections -fdata-sections -Wall -Werror -DAVRA_CENSUS -o "$o" "$c"
 done
 rm -f "$census/build/libavra_runtime.a"
 ar rcs "$census/build/libavra_runtime.a" "$census"/obj/*.o
 cp build/avra "$census/build/avra"
-AVRA_INLINE_RUNTIME=0 "$census/build/avra" build "$bench" > build/read-cost-build.out 2>&1 || {
+# A MADE BOX IS NAMED BY ITS CALLER'S CALLER, two frames up, which only frame pointers reach: in
+# the census runtime above and in every fn the bench emits.
+AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 "$census/build/avra" build "$bench" > build/read-cost-build.out 2>&1 || {
     tail -n 20 build/read-cost-build.out
     echo "read_cost: the bench did not build"
     exit 1

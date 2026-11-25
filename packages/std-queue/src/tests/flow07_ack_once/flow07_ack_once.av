@@ -1,18 +1,15 @@
 //! proves an acked item is never delivered twice.
-use @std.queue.{queue, key, Dead}
-use @std.task.{unbounded_channel}
+use @std.queue.{queue, key}
 use @std.time.{ms}
 
 type Job = { n: int }
 
-let letters = unbounded_channel<Dead<Job, string>>()
 queue<Job> jobs {
     capacity: 8
     lease: ms(60000)
-    dead: letters.sink
 }
 let _ = jobs.home().send(Job { n: 1 }, key("k"))
-let d = jobs.home().take()
-let first = jobs.home().ack(d!)
-let again = jobs.home().take()
-"${first} ${again == null} ${jobs.home().depth()}"
+let d = jobs.home().take() catch null
+let first = jobs.home().ack(d!) catch false
+let again = jobs.home().take() catch null
+"${first} ${again == null} ${jobs.home().depth() catch 0 - 1}"

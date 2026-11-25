@@ -38,12 +38,14 @@ use @std.meta.{
     Code,
     Arms,
     Kind,
-    Held,
     payload_of,
     holds,
     name,
     refuse_as_at,
+    beside,
+    Held,
 }
+use @std.program.names.{text_print_of}
 
 /// The compiler's derive for the structural matcher.
 export trait Matchable {
@@ -52,11 +54,9 @@ export trait Matchable {
         if !problems.is_empty() { return Declared { made: [refused_shape(t)], problems: problems } }
         Declared {
             made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote {
+                beside(
+                    t,
+                    quote {
                 impl SyntaxArena {
                     fn ${shallow_of(t.name)}(node: ${t}) -> int {
                         match node { ${[shallow_case(t, v) for v in t.variants]} }
@@ -70,7 +70,7 @@ export trait Matchable {
                     fn ${ids_of(t.name)}() -> List<int> { ${known_ids(t)} }
                 }
             },
-                },
+                ),
             ],
             problems: [],
         }
@@ -114,11 +114,9 @@ fn collisions(t: MetaType) -> List<Diagnostic> {
 /// wrote — the build is already refused, so no caller is blamed for a
 /// method that was never made.
 fn refused_shape(t: MetaType) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             impl SyntaxArena {
                 fn ${shallow_of(t.name)}(_node: ${t}) -> int { 0 }
                 fn ${kids_of(t.name)}(_node: ${t}) -> List<At> { [] }
@@ -126,7 +124,7 @@ fn refused_shape(t: MetaType) -> Directive {
                 fn ${ids_of(t.name)}() -> List<int> { [] }
             }
         },
-    }
+    )
 }
 
 // ── voices ──
@@ -159,14 +157,14 @@ fn shallow_part(t: MetaType, v: MetaVariant, f: Field) -> Code {
 fn shallow_through(t: MetaType, k: Kind, e: Code, apart: bool, entered: List<string>) -> Code {
     let row = shallow_row(k.spelled(), e)
     if row != null { return row! }
-    if apart { return folded(k, e, identity_leaf) }
+    if apart { return folded(k, e, leaf_folds(identity_leaf)) }
     match k {
         .List(inner) -> quote { fp_list([${shallow_through(t, inner, quote { each }, apart, entered)} for each in ${e}]) },
         .Opt(inner) -> quote {
             (if ${e} == null { ${mixed(int_lit(0), [])} } else { ${mixed(int_lit(1), [shallow_through(t, inner, quote { ${e}! }, apart, entered)])} })
         },
         .Named(n, _) -> declared_shallow(t, n, e, apart, entered),
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { a_payload_type_the_shape_derive_has_no_row_for() },
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> quote { a_payload_type_the_shape_derive_has_no_row_for() },
     }
 }
 
@@ -208,8 +206,12 @@ fn shallow_row(ty: string, b: Code) -> Code? {
         "int" -> b,
         "bool" -> quote { flagged(${b}) },
         "BinOp" -> quote { fp_binop(${b}) },
-        "Scoped" or "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
-        "Scoped?" or "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
+        // Generated code reads a name's print through a free fn: a method would resolve against the
+        // impls the generators of its own file are still making. A name's print is its text's fold.
+        "Scoped" -> quote { text_print_of(${b}.of) },
+        "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
+        "Scoped?" -> quote { if ${b} == null { fp_str("") } else { text_print_of(${b}!.of) } },
+        "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
         "List<Plain>" -> quote { fp_list(plain_fps(${b})) },
         "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
         "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
@@ -233,7 +235,21 @@ fn tag_case(t: MetaType, v: MetaVariant) -> Arms {
 /// One variant's kids arm.
 fn kids_case(t: MetaType, v: MetaVariant) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> [] } }
+    let singles = [single_at(f) for f in v.fields if reached(f) && reach_shape(t, v, f) != null]
+    let ats = [c! for c in singles if c != null]
+    if !singles.is_empty() && ats.length == singles.length { return quote { .${v}(${binders(v)}) -> [${..ats}] } }
     quote { .${v}(${binders(v)}) -> ${concatenated(reach_parts(t, v))} }
+}
+
+/// The one `At` a payload holding a single id reaches; absent for any other payload. A node whose
+/// every walked payload is one names its kids in one list, never a list per payload joined.
+fn single_at(f: Field) -> Code? {
+    match f.kind.spelled() {
+        "ExprId" -> quote { At.Expr(${name(f.name)}) },
+        "StmtId" -> quote { At.Stmt(${name(f.name)}) },
+        "PatId" -> quote { At.Pat(${name(f.name)}) },
+        _ -> null,
+    }
 }
 
 /// The id-bearing payloads' reach, in declaration order — an ATOM
@@ -268,7 +284,7 @@ fn kids_through(t: MetaType, k: Kind, e: Code, apart: bool, entered: List<string
             quote { flatten([${each} for each in some_list(${e})]) }
         },
         .Named(n, _) -> declared_kids(t, n, e, apart, entered),
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
     }
 }
 

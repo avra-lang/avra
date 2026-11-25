@@ -11,6 +11,12 @@
 #
 # The store is warmed first: a cold first round is the whole program's
 # price, not the phase's, and a budget must read the phase.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
+# The budgets price the optimised build, as `make avra` makes the compiler: a build here is `--release`'s.
+export AVRA_PROGRAM_MODE=release
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"

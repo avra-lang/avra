@@ -6,6 +6,9 @@
 // embedded in a larger file.
 use @std.avrac.compiler.{parse_source}
 use @std.avrac.compiler.format.{render_source_of}
+use @std.avrac.compiler.{write_checked_under}
+use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.features.{BlockWords}
 
 /// The source formatted with its own text in hand — what `avra fmt`
 /// does — equal to itself when the form was already canonical.
@@ -13,6 +16,19 @@ fn kept(source: string) -> bool {
     let p = parse_source(source)
     if !p.voices.list.is_empty() { return false }
     render_source_of(p.store, p.stmts, source) == source
+}
+
+/// The source formatted once, or absent when it doesn't parse.
+fn formatted(source: string) -> string? {
+    let p = parse_source(source)
+    if !p.voices.list.is_empty() { return null }
+    render_source_of(p.store, p.stmts, source)
+}
+
+/// Whether formatting once leaves what a second format keeps, and `body` still on one line.
+fn settled_with(source: string, body: string) -> bool {
+    let first? = formatted(source) else { return false }
+    formatted(first) == first && first.contains(body)
 }
 
 spec "one-line bodies" {
@@ -29,6 +45,32 @@ spec "one-line bodies" {
         then "an explicit block value keeps its braces" { kept("let x = { 7 }") }
         then "a nested explicit block value keeps both pairs of braces" { kept("let x = { { 7 } }") }
         then "an explicit block value in a struct field keeps its braces" { kept("type P = { a: int }\nlet p = P { a: { 5 } }") }
+    }
+    given "a head too wide for its line, before a body written on one line" {
+        then "an if's wrapped condition leaves its body on one line, and a second format changes nothing" {
+            settled_with(
+                "fn f(u: U, c: int) -> int {\n    if some_condition_value_some_condition_value_some_condition_value_some_condition_value_xx > 0 && u.at(c) == 4 { br12 = c }\n    0\n}\n",
+                "{ br12 = c }",
+            )
+        }
+        then "an if-else value's wrapped condition leaves both branches on one line" {
+            settled_with(
+                "fn f(u: U, c: int) -> int {\n    let v = if some_condition_value_some_condition_value_some_condition_value_some_condition_value_xx > 0 && u.at(c) == 4 { 1 } else { 2 }\n    v\n}\n",
+                "{ 1 } else { 2 }",
+            )
+        }
+        then "a fn's wrapped parameters leave its body on one line" {
+            settled_with(
+                "fn long_function_name_here(first_argument: int, second_argument: int, third_argument: int, fourth: int) -> int { first_argument + 1 }\n",
+                "{ first_argument + 1 }",
+            )
+        }
+        then "a for's wrapped subject leaves its body on one line" {
+            settled_with(
+                "fn f(xs: List<int>) -> int {\n    for some_long_binding_name in xs.filter(it > 0).map(it * 2).filter(it < 100000).take(10000).drop(3) { println(\"x\") }\n    0\n}\n",
+                "{ println(\"x\") }",
+            )
+        }
     }
     given "a body written across lines" {
 
@@ -54,5 +96,44 @@ spec "one-line bodies" {
         }
         then "it stays on the line it already trails" { kept("let a = 1 // x\nlet b = 2\nb") }
         then "it stays on a body's closing line" { kept("fn f() -> int {\n    1\n} // done\nf()") }
+    }
+}
+
+/// Whether formatting `source` once reaches the form a second format keeps, and is a rewrite the
+/// write's receipts take: the same tokens, remarks and docs, or — where the printer spells a comma
+/// or a line anew — the same meaning. A print is its own print, and loses nothing.
+fn fixed_and_lossless(source: string) -> bool {
+    let first? = formatted(source) else { return false }
+    let written = match write_checked_under(new_source_file("/w/src/a.av", source), BlockWords {}) {
+        .Ok(_) -> true,
+        .Err(_) -> false,
+    }
+    formatted(first) == first && written
+}
+
+/// What a probe's one line says too much to fit: a fn whose body is one long condition.
+const LONG_CONDITION: string = "fn composes(store: SyntaxArena, c: Declared) -> bool { store.component_body(c.at) != null && !c.parts.fns.any((m) -> store.fn_parts(m)?.name == \"expand\") }\n"
+
+/// A fn whose body is one call too long for the line.
+const LONG_CALL: string = "fn index_of(question: ContentHash) -> int? { place_keyed_by(self.source, self.question_highs, question, (at) -> self.question_lows.number_at(self.source, at)) }\n"
+
+/// An `if` in a fn whose branch is one call too long for the line.
+const LONG_BRANCH: string = "fn g(c: bool) {\n    if !self.of.view.whole { defect(self.of.view.whole, \"a very long message that goes on and on to the end\", self.where_it_stands) }\n}\n"
+
+spec "a one-line body whose one line breaks" {
+    given "a fn whose body is one condition too long for its line" {
+        then "one format reaches the form a second keeps, and loses nothing" { fixed_and_lossless(LONG_CONDITION) }
+        then "it takes the block form, its braces on lines of their own" { (formatted(LONG_CONDITION) ?? "").contains("-> bool {\n    store") }
+    }
+    given "a fn whose body is one call too long for its line" {
+        then "one format reaches the form a second keeps, and loses nothing" { fixed_and_lossless(LONG_CALL) }
+        then "the call's close stands on its own line, the fn's brace below it" { (formatted(LONG_CALL) ?? "").contains("    )\n}") }
+    }
+    given "an if whose branch is one call too long for its line" {
+        then "one format reaches the form a second keeps, and loses nothing" { fixed_and_lossless(LONG_BRANCH) }
+        then "the branch takes the block form" { (formatted(LONG_BRANCH) ?? "").contains("whole {\n        defect(") }
+    }
+    given "a one-line body that fits" {
+        then "it stays on its line, one format its own fixed point" { fixed_and_lossless("fn f() -> int { 1 }\n") && kept("fn f() -> int { 1 }") }
     }
 }

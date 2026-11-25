@@ -5,7 +5,6 @@
 //! page does not own is sent on to it, so the page and what it asks for stand
 //! on one origin.
 use @std.http_message.message.{Header, Method}
-use @std.avrac.compiler.{Workspace, inputs_this_turn}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, Reach}
 use @std.http.fetch.{Payload, fetch, options, Redirects}
@@ -24,7 +23,6 @@ use @std.time.{ms, secs, sleep, now_ms}
 export type Backend = {
     root: string,
     compiler: Tool,
-    lister: Cell<Workspace>,
     port: int,
     child: Cell<Child?>,
     watched: Cell<List<Watched>>,
@@ -34,7 +32,7 @@ export type Backend = {
 /// its manifest names none, and the refusal's words when the one it names
 /// cannot be served.
 export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, string> {
-    let named? = root_workspace(page_root).manifest(0).dev_server else { return .Ok(null) }
+    let named? = manifest_at(page_root).dev_server else { return .Ok(null) }
     let root = normalized(joined_path(page_root, named))
     if !is_a_dir(root) { return .Err(no_server_package(named, root)) }
     let door = match listen("127.0.0.1", 0) {
@@ -49,7 +47,6 @@ export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, stri
         Backend {
             root: root,
             compiler: compiler,
-            lister: Cell.new(root_workspace(root)),
             port: port,
             child: Cell.new(idle),
             watched: Cell.new(none),
@@ -60,7 +57,7 @@ export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, stri
 impl Backend {
     /// Every file the server's build reads, each as it stands now.
     fn looked() -> List<Watched> {
-        match inputs_this_turn(self.lister) {
+        match build_reads(self.root) {
             .Ok(read) -> [Watched { path: p, mark: mark_of(p) } for p in read],
             .Err(why) -> {
                 eprintln("avra: ${why}")

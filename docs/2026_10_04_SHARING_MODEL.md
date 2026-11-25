@@ -151,7 +151,7 @@ fn stepper(state n: int) { n = n + 1 }
 > **Landed (2026-10-05).** `component C { state n: int = 0 }` is a field
 > as a record's is, and a write through a `state` field asks nothing of
 > its root — so a handler's `self.n = …` runs. `@std/ui` keeps the
-> instance by where it stands (`2026_10_05_UI_ARCHITECTURE.md`,
+> instance by where it stands (`2026_11_16_UI.md`,
 > "Compositions and instance state"). A component's HEAD takes no seat
 > mark: `component C(state n: int)` is a parse error at the `(`.
 

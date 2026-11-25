@@ -1,9 +1,10 @@
 //! THE DISK HOST: the workspace's questions answered by this machine's
 //! disk, environment and running binary — the door's body on the CLI's side.
 use @std.avrac.compiler.{digest_of_binary}
+use @std.avrac.compiler.store.{machine_cache}
 use @std.avrac.core.{qtrace, traced, EmbedKind}
 use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
-use @std.path.{dir_of, joined_path, file_name}
+use @std.path.{dir_of, joined_path, file_name, normalized}
 use @std.process.{tool as process_tool, exit, Exit}
 use @std.io.{
     read_text,
@@ -31,7 +32,6 @@ fn disk_host() -> Host {
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
         is_dir: (dir: string) -> is_dir(dir),
-        stamp: (p: string) -> stamped(p),
         reads_ahead: (files: int) -> light_or_leave(files),
         env: process_env,
         print: own_print,
@@ -40,21 +40,8 @@ fn disk_host() -> Host {
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
         compiler: own_binary(),
+        cache: machine_cache(),
     }
-}
-
-/// `--verify`'s own: whether a run may trust a file's stamp instead of reading
-/// its bytes. A doubt about a kept stamp is settled by turning this off, which
-/// reads every input and so compares the bytes to the digest they were kept with.
-once fn stamp_trusted() -> Cell<bool> { Cell.new(true) }
-
-/// Ask this run to read every input, or to trust the stamps again.
-export fn trusting_stamps(carefully: bool) { stamp_trusted().set(carefully) }
-
-/// A file's stamp, and none where the run was asked not to trust one.
-fn stamped(path: string) -> int? {
-    if !stamp_trusted().get() { return null }
-    stamp(path)
 }
 
 /// Whether a directory stands at `path` — the door's listing, asked for
@@ -72,7 +59,7 @@ fn is_a_dir(path: string) -> bool {
 fn disk_beneath(root: string, rel: string, kind: EmbedKind) -> Beneath {
     let o = match open_beneath(root, rel) {
         .Ok(o) -> o,
-        .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
+        .Err(e) -> { return unopened(e, joined_path(root, rel)) },
     }
     defer o.close()
     match o.kind {
@@ -87,13 +74,20 @@ fn disk_beneath(root: string, rel: string, kind: EmbedKind) -> Beneath {
     }
 }
 
-/// Why a path beneath a root did not open.
-fn unopened(e: IoError, stands: bool) -> Beneath {
+/// Why the path `path` beneath a root did not open: a link stands there where something its
+/// directory names, or anything at all, stands behind the failure.
+fn unopened(e: IoError, path: string) -> Beneath {
     match e {
         .NotFound(_) -> Beneath.Missing,
         .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
-        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
+        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if exists(path) || named_in_dir(path) { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
     }
+}
+
+/// Whether the directory `path` stands in names it: a link to nothing is named where nothing
+/// stands.
+fn named_in_dir(path: string) -> bool {
+    match list_dir(dir_of(path)) { .Ok(names) -> names.contains(file_name(path)), .Err(_) -> false }
 }
 
 /// The disk host's refusal of a file it would not give: read again for
@@ -153,20 +147,29 @@ fn light_or_leave(files: int) {
     if files > LIGHT_READS && env("AVRA_LIGHT") != null { exit(Exit.Code(TOO_HEAVY)) }
 }
 
-/// This binary's own path — the compiler a store's rows are the work of.
+/// This binary's own path — the compiler a store's rows are the work of: the file the running image
+/// was started from, its links resolved, never another file named as it was invoked.
 fn own_binary() -> string? {
-    toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
+    let at = avra_self_path()
+    if at.is_empty() { null } else { at }
 }
 
 /// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, settled
 /// once a process — a binary rebuilt under a running process is not the
-/// code that runs. A record beside the binary names that digest for the
+/// code that runs. THE ONE IDENTITY EVERY KEPT ARTIFACT'S KEY HOLDS: an
+/// object, a link, a suite binary, an agreement, a machine store's answers
+/// — whatever a compiler made is another compiler's only where their bytes
+/// are one, whatever in them moved: its sources, its C, its LLVM. A record beside the binary names that digest for the
 /// binary's stamp (size, times, inode): the bytes are read again when the
 /// stamp differs, the path differs, or the host cannot tell (a file written
 /// too recently to trust). The value is the bytes' digest either way.
 once fn own_print() -> string? {
     let at? = own_binary() else { return null }
-    let mark? = stamp(at) else { return digest_of_binary(at) }
+    let mark? = stamp(at) else {
+        let read? = digest_of_binary(at) else { return null }
+        printed_by("bytes", read)
+        return read
+    }
     let head = "${mark}\t${at}\t"
     let kept = read_text(print_record(at)) catch ""
     if kept.starts_with(head) {
@@ -206,9 +209,21 @@ fn write_file(path: string, text: string) -> string? {
 
 /// THE TOOLCHAIN'S STD ROOT, found from the binary's own directory: a
 /// checkout keeps its packages beside `build/`, an install keeps them
-/// under `lib/avra/std/`. Null when neither stands — a bare binary
-/// with no std beside it, which resolves what its manifests declare
-/// and nothing more.
-fn std_root() -> string? {
-    toolchain_files(["../packages", "../lib/avra/std"]).find(is_dir(it))
+/// under `lib/avra/std/`, and a binary a checkout's own package built —
+/// a suite, a tool — stands beneath that checkout's `packages/`. Null
+/// when none stands — a bare binary with no std beside it, which
+/// resolves what its manifests declare and nothing more.
+fn std_root() -> string? { std_roots().find(is_dir(it)) }
+
+/// Where the toolchain's std may stand for this binary: beside a checkout's `build/`, under an
+/// install's `lib/`, then each `packages` directory above it.
+fn std_roots() -> List<string> {
+    toolchain_files(["../packages", "../lib/avra/std"])
+        .concat(packages_above(normalized(avra_self_dir())))
+}
+
+/// Each directory named `packages` at or above `dir`, nearest first.
+fn packages_above(dir: string) -> List<string> {
+    if dir.length <= 1 { return [] }
+    if file_name(dir) == "packages" { [dir] } else { [] }.concat(packages_above(dir_of(dir)))
 }

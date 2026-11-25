@@ -32,7 +32,7 @@ the compiler already holds the facts (P10, P12).
 
 | area | status | detail |
 |---|---|---|
-| Components: a library's block syntax (`server app { … }`) | built | `docs/2026_09_23_COMPONENT_EXPANSION.md`, `avra-8sb5.33` |
+| Components: a library's block syntax (`server app { … }`) | built | `docs/2026_11_16_UI.md`, `avra-8sb5.33` |
 | Derives and projections in the compiler | built | `docs/2026_09_26_ADDING_A_PROJECTION.md` |
 | Errors: one `Error` trait, unions, `catch` | building | `docs/2026_09_25_ERROR_UNIONS_PHASE{1,2}_DESIGN.md`, `avra-8sb5.40` |
 | Fibers and cores: `spawn`, `Task`, one process per core | built | `docs/2026_09_22_FIBERS_DESIGN.md` |
@@ -70,7 +70,7 @@ the compiler already holds the facts (P10, P12).
 
 | area | status | detail |
 |---|---|---|
-| UI on every surface: web, iOS, Android, terminal | designed | `docs/2026_09_29_UI.md`, `docs/2026_09_29_UI_TOUR.md`, `docs/2026_09_29_WEB_UI.md` *(draft)*, `avra-8sb5.59` |
+| UI on every surface: web, iOS, Android, terminal | designed | `docs/2026_11_16_UI.md`, `docs/2026_11_16_UI.md`, `docs/2026_11_16_UI.md` *(draft)*, `avra-8sb5.59` |
 | Forms and actions with no JS; MCP tools from actions | designed | UI doc, `avra-8sb5.59.5`, `.59.7` |
 | CLI: `cli app { command … }` | built | `@std/cli` |
 | Derived admin UI | gap | `avra-8sb5.64.6` |

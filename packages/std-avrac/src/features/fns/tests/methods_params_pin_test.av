@@ -1,8 +1,7 @@
 // The method, extern and lambda parameter lists, pinned: each spelling
 // prints in its canonical form, and each malformed one is refused at the
 // place and in the words it always was.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{projected}
+use @std.avrac.testing.{projected, judged}
 
 spec "features/fns method and lambda params pin" {
     given "the spellings those forms accept print canonically" {
@@ -41,64 +40,58 @@ spec "features/fns method and lambda params pin" {
     }
     given "the malformed ones are refused where and in the words they always were" {
         then "malformed form m4" {
-            analyze_source(
+            judged(
                     "type S = { n: int }\nimpl S {\n    mut fn bump(a: int b: int) -> int { a }\n}",
                 )
                     .report()
                     .contains("expected `=` while parsing `stmt`") &&
-                analyze_source(
+                judged(
                     "type S = { n: int }\nimpl S {\n    mut fn bump(a: int b: int) -> int { a }\n}",
                 )
                     .report()
                     .contains(":3:12]")
         }
         then "malformed form m5" {
-            analyze_source(
-                    "type S = { n: int }\nimpl S {\n    static fn make(,) -> int { 1 }\n}",
-                )
+            judged("type S = { n: int }\nimpl S {\n    static fn make(,) -> int { 1 }\n}")
                     .report()
                     .contains("expected BREAK while parsing `stmt`") &&
-                analyze_source(
-                    "type S = { n: int }\nimpl S {\n    static fn make(,) -> int { 1 }\n}",
-                )
+                judged("type S = { n: int }\nimpl S {\n    static fn make(,) -> int { 1 }\n}")
                     .report()
                     .contains(":3:12]")
         }
         then "malformed form m6" {
-            analyze_source(
+            judged(
                     "type S = { n: int }\nimpl S {\n    static fn make(state a: int) -> int { a }\n}",
                 )
                     .report()
                     .contains("expected BREAK while parsing `stmt`") &&
-                analyze_source(
+                judged(
                     "type S = { n: int }\nimpl S {\n    static fn make(state a: int) -> int { a }\n}",
                 )
                     .report()
                     .contains(":3:12]")
         }
         then "malformed form m9" {
-            analyze_source("extern fn g(a: int b: int) -> int")
+            judged("extern fn g(a: int b: int) -> int")
                     .report()
                     .contains("expected `)` while parsing `stmt`") &&
-                analyze_source("extern fn g(a: int b: int) -> int").report().contains(":1:20]")
+                judged("extern fn g(a: int b: int) -> int").report().contains(":1:20]")
         }
         then "malformed form m10" {
-            analyze_source("extern fn g(a,) -> int")
+            judged("extern fn g(a,) -> int")
                     .report()
                     .contains("expected `)` while parsing `stmt`") &&
-                analyze_source("extern fn g(a,) -> int").report().contains(":1:13]")
+                judged("extern fn g(a,) -> int").report().contains(":1:13]")
         }
         then "malformed form m12" {
-            analyze_source("let k = (a b) -> a")
-                    .report()
-                    .contains("expected `)` to close the group") &&
-                analyze_source("let k = (a b) -> a").report().contains(":1:12]")
+            judged("let k = (a b) -> a").report().contains("expected `)` to close the group") &&
+                judged("let k = (a b) -> a").report().contains(":1:12]")
         }
         then "malformed form m13" {
-            analyze_source("let k = (isolated a) -> a")
+            judged("let k = (isolated a) -> a")
                     .report()
                     .contains("expected `)` to close the group") &&
-                analyze_source("let k = (isolated a) -> a").report().contains(":1:19]")
+                judged("let k = (isolated a) -> a").report().contains(":1:19]")
         }
     }
 }

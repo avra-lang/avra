@@ -35,10 +35,6 @@ fn folded(l: Captured<Token, string>, rights: List<Captured<Token, string>>, ops
     made(acc)
 }
 
-fn mixed_words(first: string, second: string) -> string {
-    "`${first}` and `${second}` in one expression have no agreed order"
-}
-
 fn shift_word(op: string) -> string {
     if op == ">" { ">>" } else { op }
 }
@@ -54,13 +50,6 @@ fn is_words(
     "${text_of(an)}:${text_of(at)}"
 }
 
-fn bitwise_ops(ops: List<Captured<Token, string>>) -> Result<List<string>, string> {
-    let words = [text_of(o) for o in ops]
-    let odd = words.find(it != words[0])
-    if odd != null { return Result.Err(mixed_words(words[0], odd!)) }
-    Result.Ok([shift_word(w) for w in words])
-}
-
 fn build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Result<
     Captured<Token, string>,
     string,
@@ -69,10 +58,7 @@ fn build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Resul
         "fold_binary" -> folded(args[0], parts(args[2]), [text_of(o) for o in parts(args[1])]),
         "fold_coalesce" -> folded(args[0], parts(args[1]), repeated("??", parts(args[1]))),
         "fold_pipe" -> folded(args[0], parts(args[1]), repeated("|>", parts(args[1]))),
-        "fold_bitwise" -> {
-            let ops = bitwise_ops(parts(args[1]))?
-            folded(args[0], parts(args[2]), ops)
-        },
+        "fold_bitwise" -> folded(args[0], parts(args[2]), [shift_word(text_of(o)) for o in parts(args[1])]),
         "fold_cmp" -> {
             if text_of(args[1]) != "_" { return made("(${text_of(args[1])} ${text_of(args[0])} ${text_of(args[2])})") }
             if text_of(args[3]) == "_" && text_of(args[5]) == "_" { return made(text_of(args[0])) }
@@ -81,12 +67,6 @@ fn build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Resul
         "is_test" -> made(is_words(args[0], args[1], args[2], args[3])),
         "pair" -> made("(${text_of(args[1])} ${text_of(args[0])} ${text_of(args[2])})"),
         "bitwise" -> made("(${shift_word(text_of(args[1]))} ${text_of(args[0])} ${text_of(args[2])})"),
-        "mixed" -> {
-            let first = text_of(args[0])
-            let second = text_of(args[1])
-            if first == second { return made("") }
-            Result.Err(mixed_words(first, second))
-        },
         "not_" -> made("(! ${text_of(args[0])})"),
         "neg" -> made("(neg ${text_of(args[0])})"),
         "field" -> {
@@ -135,7 +115,7 @@ fn ladder(order: List<string>) -> Grammar {
 /// The same language as one operator table.
 fn tabled() -> Grammar {
     parse_grammar(
-        "expr = e:climbed -> e\nclimbed = left:unary @operators { left \"||\" left \"&&\" none \"==\" \"!=\" \"<=\" \">=\" \"<\" \">\" suffix \"is\" is_test left \"??\" left \"|>\" unmixed(mixed) \"|\" \"^\" \"&\" \"<<\" (\">\" \">\") -> bitwise(left, op, right) left \"+\" \"-\" left \"*\" \"/\" \"%\" } -> pair(left, op, right)\nis_test = ( \".\" iv:NAME ( \"(\" ( ip:NAME ( \",\" ip:NAME )* \",\"? )? \")\" )? | an:NAME \":\" at:NAME ) -> is_test(iv, ip, an, at)\n${operand_text()}",
+        "expr = e:climbed -> e\nclimbed = left:unary @operators { left \"||\" left \"&&\" none \"==\" \"!=\" \"<=\" \">=\" \"<\" \">\" suffix \"is\" is_test left \"??\" left \"|>\" left \"|\" \"^\" \"&\" \"<<\" (\">\" \">\") -> bitwise(left, op, right) left \"+\" \"-\" left \"*\" \"/\" \"%\" } -> pair(left, op, right)\nis_test = ( \".\" iv:NAME ( \"(\" ( ip:NAME ( \",\" ip:NAME )* \",\"? )? \")\" )? | an:NAME \":\" at:NAME ) -> is_test(iv, ip, an, at)\n${operand_text()}",
     )
         .built!
 }

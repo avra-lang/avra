@@ -1,7 +1,6 @@
 // Components, the vertical: a declaration is a record with
 // defaults, and in its own module a literal fills the rest — every
 // refusal the struct law's.
-use @std.avrac.compiler.{Program}
 use @std.avrac.diagnostics.{is_error}
 use @std.avrac.testing.{
     Module,
@@ -14,6 +13,7 @@ use @std.avrac.testing.{
     refused_n,
     answered,
 }
+use @std.avrac.testing.held.{Judged}
 
 fn config_of() -> string {
     "fn twice(n: int) -> int {\n    n * 2\n}\ncomponent Cfg {\n    name: string\n    depth: int = 3\n    f: fn(int) -> int = twice\n    notes: List<string> = [\"a\"]\n}\n"
@@ -73,7 +73,7 @@ fn panel() -> string {
 }
 
 /// A program that builds one `panel` with `block` and runs `after` over it.
-fn heard(block: string, after: string) -> Program {
+fn heard(block: string, after: string) -> Judged {
     provided(
         "use @x.c.{panel}\nstate n: int = 0\nstate said: string = \"\"\nfn v() -> string {\n    let x = 5\n    let a = panel ${block}\n    ${after}\n    \"\${n} \${said}\"\n}\nv()",
         panel(),
@@ -358,6 +358,23 @@ spec "features/components — what a derive is handed" {
                 ),
                 "name:string done:bool | Base",
             )
+        }
+    }
+    given "a component over a bounded type parameter — what its methods do to the receiver" {
+        then "a method calling the bound's own method reads its receiver" {
+            shown(
+                "trait Named {\n    fn name() -> string\n}\ntype P = { n: string }\nimpl Named for P {\n    fn name() -> string { self.n }\n}\ncomponent tag<T: Named>(head: T) {\n    fn shown() -> string { self.head.name() }\n}\nlet p = P { n: \"a\" }\nlet t = tag p { }\nt.shown()",
+            ) == "a"
+        }
+        then "so does one through a bound with arguments" {
+            shown(
+                "trait Holds<X> {\n    fn held() -> X\n}\ntype P = { n: int }\nimpl Holds<int> for P {\n    fn held() -> int { self.n }\n}\ncomponent tag<T: Holds<int>>(head: T) {\n    fn twice() -> int { self.head.held() * 2 }\n}\nlet p = P { n: 4 }\nlet t = tag p { }\nt.twice()",
+            ) == "8"
+        }
+        then "a handler read out of its event and handed a field reads the receiver" {
+            shown(
+                "component form<T>(head: T) {\n    on submit(value: T)\n    fn fire() -> int {\n        let h? = self.submit else { return 0 }\n        h(self.head)\n        1\n    }\n}\ntype P = { n: string }\nlet got = Cell.new(\"\")\nlet p = P { n: \"ab\" }\nlet f = form p { on submit { v -> got.set(v.n) } }\n\"\${f.fire()} \${got.get()}\"",
+            ) == "1 ab"
         }
     }
 }

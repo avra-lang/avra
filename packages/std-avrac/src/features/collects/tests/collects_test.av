@@ -6,25 +6,14 @@
 //! answers `UnknownKind` for any word at all; these run through
 //! `provided()` instead, the one door that gives a scratch program a
 //! real component to name.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.testing.{
-    refused_in,
-    refused_n,
-    shown,
-    provided,
-    answered,
-    vendored_meta,
-    vendored_meta_paths,
-    Module,
-}
-use @std.avrac.compiler.{Program}
-use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.testing.{refused_in, refused_n, shown, provided, answered, vendored_meta, Module}
 
 fn ui() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\n"
 }
 
-fn built(main: string) -> Program {
+fn built(main: string) -> Judged {
     provided("use @x.c.{widget}\n" + main, ui())
 }
 
@@ -89,7 +78,7 @@ fn ui2() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
 }
 
-fn built2(main: string) -> Program {
+fn built2(main: string) -> Judged {
     provided("use @x.c.{widget, gadget}\n" + main, ui2())
 }
 
@@ -120,8 +109,8 @@ fn cross_package(import_orphan: bool) -> string? {
         "/w/vendor/d/src/d.av",
         "/w/vendor/d/src/orphan/orphan.av",
     ]
-    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
-    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
 /// A DEPENDENCY's own `collect in package`, its one member in a module
@@ -149,8 +138,8 @@ fn package_scope_in_dependency() -> string? {
         "/w/vendor/d/src/d.av",
         "/w/vendor/d/src/orphan/orphan.av",
     ]
-    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
-    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
 /// A PACKAGE STANDING UNDER A DIRECTORY NAMED `tests`: its own files
@@ -171,8 +160,8 @@ fn package_under_tests_dir() -> string? {
         "/w/tests/app/src/parts/parts.av",
         "/w/tests/app/src/far/far.av",
     ]
-    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w/tests/app")
-    match ws.program("/w/tests/app/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+    let ws = held_at(files, "/w/tests/app")
+    match ws.judged_at("/w/tests/app/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
 /// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
@@ -204,8 +193,8 @@ fn annotated_cross_package(import_extra: bool) -> string? {
         "/w/vendor/extra/avra.toml",
         "/w/vendor/extra/src/extra.av",
     ]
-    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
-    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
 /// `annotated_cross_package`'s ORM twin: the same shape — a reached
@@ -235,8 +224,8 @@ fn orm_cross_package(import_extra: bool) -> string? {
         "/w/vendor/extra/avra.toml",
         "/w/vendor/extra/src/extra.av",
     ]
-    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
-    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
 spec "collect's own laws" {
@@ -850,6 +839,33 @@ spec "collect's own laws" {
                     claimer(),
                 ),
             ) == "Dot/flag Line/"
+        }
+    }
+    given "a declaration's own mark, with no collect gathering it" {
+        then "a private type's mark is read by nothing, and refused" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + "@flag\ntype T = {}\n1", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "a private fn's mark is refused alike" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + "@flag\nfn g() -> int { 1 }\ng()", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "an exported declaration's mark stands — a package outside the build may gather it" {
+            answered(provided(numbered_decl() + flag_decl() + "@flag\nexport type T = {}\n1", ui())) == "1"
+        }
+        then "a gathered declaration's marks are its collect's to hold, never its own voice's" {
+            let p = provided(
+                numbered_decl() +
+                    flag_decl() +
+                    "@numbered(0)\n@flag\ntype T = {}\ncollect enum E = @numbered in self by it.mark.args[0] dense\n1",
+                ui(),
+            )
+            refused_in(p, "which gathers this") &&
+                !refused_in(p, "nothing on this declaration reads it")
         }
     }
     given "a gathered payload is held to the slot law" {

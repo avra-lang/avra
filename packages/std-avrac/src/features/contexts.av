@@ -30,7 +30,7 @@ use core.{
     joined,
     flatten,
 }
-use diagnostics.{Diag, Voices, refusal}
+use diagnostics.{Diag, Voice, Voices, refusal, said_as}
 use @std.errors.{Loc, Frame}
 
 /// The mark on a verb handed on uncalled: where the value was written.
@@ -271,7 +271,7 @@ export fn written_seats(keywords: List<string>, params: List<Param>) -> List<Par
 }
 
 fn takes_a_seat(keywords: List<string>, pp: Param) -> bool {
-    pp.ty != null || !keywords.contains(pp.name.of)
+    pp.ty != null || !keywords.contains(pp.name.text())
 }
 
 /// Whether a name reads a `mut` binding.
@@ -403,59 +403,49 @@ export fn type_name_decl(sh: Type) -> DeclId? {
 /// `for` loop's own `int` counter) asks the registry's lookup door
 /// instead; a miss there is the honest absence, not a reason to grow
 /// the registry from a read.
+/// A CONST'S TYPE AS THE FACTS IN HAND KNOW IT: this body's own record, else
+/// the program's answer — the ONE projection a reader of a const shares, so a
+/// reader holding facts answers after the workspace's hooks are let go.
+export fn type_of_const_in(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
+    facts.const_type(s) ?? view.decls.type_of_const(view.file, s)
+}
+
 export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
     // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
     // body's facts hold only its own range — so a const's type is
-    // the program's answer or the HOLE. Falling through would index
-    // the asker's table with another body's expression (-1).
-    if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return view.decls.type_of_const(view.file, s) }
+    // this body's own record, else the program's answer or the HOLE.
+    // Falling through would index the asker's table with another
+    // body's expression (-1).
+    if view.store.const_value(s) != null || view.store.collect_parts(s) != null {
+        return type_of_const_in(facts, view, s)
+    }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared }
-    if view.store.stmt(s) is .For { return view.types.known(Type.Int) }
     let v? = view.store.stmt_value(s) else { return null }
     facts.type_at(v)
 }
 
-/// What a `let`/`mut` binding holds: its declared type, its value's
-/// type, or — for a loop's counter — int. Total: `known_def_type_of`
-/// answers every case but the one that can still need a mint (a
-/// `for` loop's counter, the first time it is asked), which this
-/// alone is trusted to grow the registry for.
+/// What a `let`/`mut` binding holds: its declared type or its value's
+/// type; the error type for a binding nothing typed.
 export fn def_type_of(facts: TypeFacts, view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
-    let known? = known_def_type_of(facts, view, s) else {
-        if view.store.stmt(s) is .For { return view.types.type(int) }
-        return error_type
-    }
-    known
+    known_def_type_of(facts, view, s) ?? error_type
 }
 
 impl Decls {
-    /// A const's type, by the file and statement that declare it: read
-    /// off a literal, else the program's answer through the const-type
-    /// query.
-    fn const_answer(f: FileId, s: StmtId) -> ConstType {
-        // A held declaration has no parsed store. Its type crossed the interface.
-        let kept: TypeId? = self.held_const_type(f, s)
-        if kept != null { return ConstType.Known(kept!) }
-        // A HELD FILE'S CONST HAS NO LITERAL TO READ: its type is filled from its own
-        // record, never an arena the file was never parsed into.
-        if self.held.get().get(self.file(f).path) != null { return self.const_type(f, s) }
-        let literal: TypeId? = settled_type(self.store_of(f), self.types, s)
-        if literal != null { return ConstType.Known(literal!) }
-        self.const_type(f, s)
-    }
+    /// A literal const's type, read off what is written.
+    fn literal_const_type(f: FileId, s: StmtId) -> TypeId? { settled_type(self.store_of(f), self.types, s) }
 
     /// The type a const carries, when it carries one.
     fn type_of_const(f: FileId, s: StmtId) -> TypeId? {
-        match self.const_answer(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
+        match self.const_type(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
     }
 }
 
 /// A literal const's type can be read without asking the workspace.
-/// Computed and nominal types fall through to the ConstTyped family.
+/// Computed and nominal types fall through to the const-type query.
 fn settled_type(store: SyntaxArena, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v? = store.const_value(s) else { return null }
-    let word? = literal_shape(store.expr(v)) else { return spelled_type(types, store.binding_ty(s)) }
+    let word? = literal_shape(store.valued(v)) else { return spelled_type(types, store.binding_ty(s)) }
     let held = types.intern(word)
     if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
     held
@@ -477,21 +467,21 @@ export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
 }
 
 fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
-    if a.args.is_empty() {
+    if a.applied.is_empty() {
         let word: Type? = scalar_named(a.name)
         return if word == null { null } else { types.intern(word!) }
     }
-    let elem? = spelled_type(types, a.args.last()) else { return null }
+    let elem? = spelled_type(types, a.applied.last()) else { return null }
     match a.name {
-        "List" if a.args.length == 1 -> types.type(List<elem>),
-        "Map" if a.args.length == 2 && keyed_by_text(a.args[0]) -> types.type(Map<string, elem>),
+        "List" if a.applied.length == 1 -> types.type(List<elem>),
+        "Map" if a.applied.length == 2 && keyed_by_text(a.applied[0]) -> types.type(Map<string, elem>),
         _ -> null,
     }
 }
 
 /// A map's key spelled `string`, bare.
 fn keyed_by_text(k: TypeRef) -> bool {
-    k.name == "string" && k.args.is_empty() && !k.optional
+    k.name == "string" && k.applied.is_empty() && !k.optional
 }
 
 /// The shape a literal wears.
@@ -642,7 +632,11 @@ impl TypeCx {
     fn starved_at(e: ExprId) -> TypeId? { self.facts.starved_at(e) }
     fn go_hungry(e: ExprId) { self.facts.go_hungry(e) }
     fn absorb_hunger(e: ExprId) { self.facts.absorb_hunger(e) }
-    fn starve(e: ExprId, want: TypeId) -> bool { self.facts.starve(e, want) }
+    fn starve(e: ExprId, want: TypeId) -> bool {
+        let starved = self.facts.starve(e, want)
+        if starved { let _ = self.facts.starve(self.view.store.closure_of(e), want) }
+        starved
+    }
 }
 
 impl LowerCx {
@@ -750,7 +744,7 @@ impl Decls {
     /// the READ can speak: a value that asks for its own type.
     fn declared_const_type(mut voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
         let x = self.decl(d)
-        match self.const_answer(x.file, x.stmt) {
+        match self.const_type(x.file, x.stmt) {
             .Known(t) -> t,
             .Refused -> error_type,
             .Cyclic -> {
@@ -760,24 +754,13 @@ impl Decls {
         }
     }
 
-    fn self_referent(d: DeclId) -> Diag {
-        refusal(
-            "const.cycle",
-            self.loc(d),
-            "a const's value asks for its own type",
-            "`${self.decl(d).name}` reads itself here",
-            "a const settles from what is written and from other consts — not from its own value",
-        )
-    }
+    fn self_referent(d: DeclId) -> Diag { said_as("const.cycle", self.loc(d), const_reads_itself(self.decl(d).name)) }
 
     fn not_a_value(d: DeclId) -> Diag {
-        let names = joined([wrapper_seat(i) for i, _p in self.sig(d)?.fn_sig()?.params ?? []], ", ")
-        refusal(
+        said_as(
             "type.lambda",
             self.loc(d),
-            "a generic fn is not a value — no single signature to wear",
-            "declared here",
-            "wrap it in a lambda — `(${names}) -> ${self.fn_name(d) ?? "f"}(${names})` — whose seat's own type pins the generic's",
+            generic_no_value(self.fn_name(d) ?? "f", (self.sig(d)?.fn_sig()?.params ?? []).length),
         )
     }
 
@@ -816,14 +799,12 @@ impl Decls {
     fn extern_not_a_value(read_at: Loc?, d: DeclId) -> Diag {
         let declared = self.loc(d)
         let primary = read_at ?? declared
-        let label = if read_at != null { "read as a value here" } else { "declared here" }
-        let secondary = if read_at != null { [Frame { label: "declared here", loc: declared }] } else { [] }
-        refusal(
+        let read = extern_unvalued(self.wrapper_hint(d))
+        let secondary = if read_at != null { [Frame { label: DECLARED_HERE, loc: declared }] } else { [] }
+        said_as(
             "type.extern_value",
             primary,
-            "an extern fn is not a value — it names a C symbol, not an Avra fn",
-            label,
-            "wrap it — `${self.wrapper_hint(d)}`",
+            if read_at != null { read } else { read with { label: DECLARED_HERE } },
         ) with { secondary: secondary }
     }
 
@@ -835,15 +816,13 @@ impl Decls {
     /// unrelated "needs a type" one. A signature this door cannot find
     /// (a malformed declaration) falls back to a bare `()`.
     fn wrapper_hint(d: DeclId) -> string {
-        let name = self.fn_name(d) ?? "f"
         let params: List<TypeId> = self.sig(d)?.fn_sig()?.params ?? []
         let marks = self.marks_of(d, params.length)
-        let typed = joined(
-            [wrapper_typed_seat(i, self.types.name_of(p), marks[i].mutable) for i, p in params],
-            ", ",
+        extern_wrapper(
+            self.fn_name(d) ?? "f",
+            [self.types.name_of(p) for p in params],
+            [m.mutable for m in marks],
         )
-        let names = joined([wrapper_seat(i) for i, _p in params], ", ")
-        "(${typed}) -> ${name}(${names})"
     }
 
     /// A declared type's INSTANCE type — what its impl's receiver wears:
@@ -867,6 +846,16 @@ impl Decls {
 }
 
 /// One wrapper seat's name, by position.
+/// The generic fn `name`, of `seats` seats, read as a value: said where it's declared.
+export fn generic_no_value(name: string, seats: int) -> Voice {
+    let names = joined([wrapper_seat(i) for i in 0..seats], ", ")
+    Voice {
+        message: "a generic fn is not a value — no single signature to wear",
+        label: "declared here",
+        help: "wrap it in a lambda — `(${names}) -> ${name}(${names})` — whose seat's own type pins the generic's",
+    }
+}
+
 fn wrapper_seat(i: int) -> string {
     "x${i}"
 }
@@ -895,3 +884,44 @@ export fn same_binding(a: Binding, b: Binding) -> bool {
         .TypeParam(n) -> match b { .TypeParam(m) -> n == m, _ -> false },
     }
 }
+
+/// A const `name` whose value asks for its own type.
+/// A named instance's build, or a module `state`'s start, that reads `name` — itself — on the way: through
+/// a fn it calls, or another build it asks for first, before it has a value to read.
+export fn build_reads_itself(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is read while it is being built",
+        label: "`${name}`'s build reaches back to it",
+        help: "a build reads what is written and other declarations — a fn it calls while building must not read `${name}`; hold the fn as a field instead",
+    }
+}
+
+export fn const_reads_itself(name: string) -> Voice {
+    Voice {
+        message: "a const's value asks for its own type",
+        label: "`${name}` reads itself here",
+        help: "a const settles from what is written and from other consts — not from its own value",
+    }
+}
+
+/// The wrapper an extern `name` of seats typed `types`, `mutable` where marked, is handed on through.
+export fn extern_wrapper(name: string, types: List<string>, mutable: List<bool>) -> string {
+    let typed = joined(
+        [wrapper_typed_seat(i, t, i < mutable.length && mutable[i]) for i, t in types],
+        ", ",
+    )
+    let names = joined([wrapper_seat(i) for i, _t in types], ", ")
+    "(${typed}) -> ${name}(${names})"
+}
+
+/// An extern read as a value, which `wrapper` hands on.
+export fn extern_unvalued(wrapper: string) -> Voice {
+    Voice {
+        message: "an extern fn is not a value — it names a C symbol, not an Avra fn",
+        label: "read as a value here",
+        help: "wrap it — `${wrapper}`",
+    }
+}
+
+/// Where an extern read as a value is declared, as its refusal labels it.
+export const DECLARED_HERE: string = "declared here"

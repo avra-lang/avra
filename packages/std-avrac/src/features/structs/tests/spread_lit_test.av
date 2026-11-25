@@ -1,8 +1,7 @@
 // A record literal's value spread, by attack class. The accepted
 // programs run through `shown`; each refusal pins its voice, and the
 // goldens pin the rendering.
-use @std.avrac.testing.{shown, refused_with, projected}
-use compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, projected, judged}
 
 const POINT: string = "type P = { x: int, y: int }\ntype Q = { x: int, w: int }\nlet a = P { x: 1, y: 2 }\nlet q = Q { x: 1, w: 2 }\n"
 
@@ -81,28 +80,28 @@ spec "features/structs — value spread, adversarial" {
                 "`G` takes type parameters",
             )
         }
-        then "a third dot" { !analyze_source("${POINT}let b = P { ...a, x: 1 }\n1").diagnostics.is_empty() }
-        then "a spread of a spread is no range" { !analyze_source("${POINT}let b = P { ..a..a }\n1").diagnostics.is_empty() }
+        then "a third dot" { !judged("${POINT}let b = P { ...a, x: 1 }\n1").diagnostics.is_empty() }
+        then "a spread of a spread is no range" { !judged("${POINT}let b = P { ..a..a }\n1").diagnostics.is_empty() }
     }
     given "the dead write" {
         then "a field before a spread that carries it warns" {
-            let r = analyze_source("${POINT}let b = P { x: 1, ..a }\nb.x")
+            let r = judged("${POINT}let b = P { x: 1, ..a }\nb.x")
             r.report().contains("field `x` is overwritten by a spread after it") && r.ran() == "1"
         }
         then "the warning does not stop the program" { shown("${POINT}let b = P { x: 1, ..a }\nb.y") == "2" }
         then "a field after the spread is no dead write" {
-            analyze_source("${POINT}let b = P { ..a, x: 1 }\nb.x").diagnostics.is_empty()
+            judged("${POINT}let b = P { ..a, x: 1 }\nb.x").diagnostics.is_empty()
         }
     }
     given "the refusals, rendered" {
         then "a spread missing a field" {
-            analyze_source(
+            judged(
                 "type P = { x: int, y: int }\ntype X = { x: int }\nlet b = P { ..X { x: 1 } }\nb.x",
             )
                 .report() == "error[type.spread_missing]: this `P` leaves field `y` unset\n  ╭─[<source>:3:9]\n3 │ let b = P { ..X { x: 1 } }\n  ·         ┬\n  ·         ╰── this literal\n──╯\nhelp: add `y: …`, or spread a record that has it"
         }
         then "a dead write" {
-            analyze_source("${POINT}let b = P { x: 1, ..a }\nb.x").report() == "warning[type.spread_dead]: field `x` is overwritten by a spread after it\n  ╭─[<source>:5:16]\n5 │ let b = P { x: 1, ..a }\n  ·                ┬\n  ·                ╰── overwritten\n──╯\nhelp: write `x` after the spread to keep it"
+            judged("${POINT}let b = P { x: 1, ..a }\nb.x").report() == "warning[type.spread_dead]: field `x` is overwritten by a spread after it\n  ╭─[<source>:5:16]\n5 │ let b = P { x: 1, ..a }\n  ·                ┬\n  ·                ╰── overwritten\n──╯\nhelp: write `x` after the spread to keep it"
         }
     }
     given "the printer" {

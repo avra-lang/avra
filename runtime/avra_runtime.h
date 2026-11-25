@@ -25,7 +25,7 @@ extern void (*avra_fd_drained_hook)(int64_t fd);
 // WHAT A TASK CARRIES: a few managed values and its id. The running
 // task's stand behind one pointer; `main`'s are the core's own, so a
 // program that never spawns has them and links no scheduler.
-enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_TASK_SLOTS = 4 };
+enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_SLOT_CTX = 2, AVRA_SLOT_HEARD = 3, AVRA_TASK_SLOTS = 4 };
 // `clock_asks`: how often the task has read a frozen clock since it
 // last waited; `clock_holds`: the holds on the world it stands in.
 typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; int64_t clock_asks; int64_t clock_holds; } AvraTaskLocal;
@@ -56,6 +56,23 @@ extern char avra_case_path[128] __attribute__((visibility("hidden")));
 // held released. A slot past the table is a trap.
 void* avra_task_slot(int64_t key);
 void avra_task_slot_set(int64_t key, void* v);
+void* avra_ctx_read(int64_t key);
+void avra_ctx_set(int64_t key, void* cell);
+void avra_ctx_back(void);
+void* avra_ctx_frame(void);
+int64_t avra_ctx_enter(void* frame);
+void avra_ctx_frame_pushed(void* box);
+void* avra_ctx_reframed(void* box, int64_t at, void* frame);
+extern void* avra_ctx_now;
+int64_t avra_ctx_entry(int64_t key);
+void avra_ctx_heard(int64_t key, int64_t kind, void* cell);
+void avra_ctx_listen(void);
+void* avra_ctx_listened(void);
+int64_t avra_ctx_holds(void* heard);
+void avra_ctx_heard_drop(void* heard);
+void avra_ctx_reheard(void* heard);
+void* avra_ctx_heard_of(void** slots);
+extern void* avra_ctx_heard_now;
 // The running task's id; 0 for `main`.
 int64_t avra_task_id(void);
 
@@ -73,6 +90,8 @@ const char* avra_guard_words(void);
 void avra_array_reserve(void* arr, int64_t spare);
 void avra_array_push_owned(void* arr, void* v);
 int64_t avra_mem_live(void);
+// Every mortal byte not held by a `once` cache: what the program still owes.
+int64_t avra_mem_owed(void);
 
 // THE CLOCK, ONE FOR THE PROCESS: every reader asks here. FLOWING it is
 // the monotonic clock plus a skew; FROZEN it is one reading. VIRTUAL, it
@@ -115,6 +134,11 @@ int64_t avra_clock_jumped(int64_t at);
 // waited on the world has waited — its count of clock reads begins
 // again.
 void avra_clock_hold(int64_t by);
+void avra_mem_forked(void);
+// The memory pool's slots this process no longer fills, given back.
+void avra_mem_settle(void);
+void avra_descriptors_forgotten(void);
+void avra_pool_forked(void);
 // What tasks abandoned while holding the world held, let go: only that
 // share, never the holds a live task stands in.
 void avra_clock_holds_let_go(int64_t n);

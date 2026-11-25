@@ -27,7 +27,7 @@ Clean restart of the Avra compiler, built slowly, one reviewed file at a
 time. Front end first: an extensible grammar assembled from
 LanguageFeature components, producing an AST for later passes.
 Toolchain: the compiler builds itself — `./avra` runs `build/avra`,
-and a cold tree bootstraps from `bootstrap/seed.ll` (`make bootstrap`;
+and a cold tree bootstraps from `bootstrap/seed.ll.gz` (`make bootstrap`;
 README.md).
 
 Design sources of truth (in `../forge-crafting-intepreters`):
@@ -36,6 +36,19 @@ Design sources of truth (in `../forge-crafting-intepreters`):
 - `bootstrap/docs/2026_08_19_STANDARDIZATION.md` — front-end shape
 
 Follow the old tree's *documented designs*, never its code habits.
+
+## PERFORMANT BY DEFAULT
+
+P4 applied: idiomatic code IS the fast code. Representation is the
+compiler's job, never the writer's, and the cost of what was written is
+VISIBLE and GATED. docs/ZERO_COST.md is the registry this is held to:
+every technique a row, every row with the DETECTOR that finds its
+candidates (census sites, missed-optimization remarks, shape rules, the
+exact-count gate). Every feature's design names its cost and the rows it
+relies on or adds; every PR passes the exact-count gate; a candidate any
+detector finds is a row or a ticket at discovery, as an idiom is. A
+feature that makes idiomatic code slower is not ready until a row removes
+the cost.
 
 ## Comments
 
@@ -51,9 +64,10 @@ the body exists, answer:
 
 1. Is any loop a MAP/FILTER/FLAT-MAP? Comprehension (`?` works in
    element and iterable; predicates hoist into named fns).
-2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`
-   (core's FREE fn — `flatten(xs)`, never `xs.flatten()`), never
-   push-ceremony.
+2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`:
+   in std-avrac, core's FREE fn `flatten(xs)`; in any other package,
+   the prelude's List verb `xs.flatten()`, never a private copy;
+   never push-ceremony.
 3. Is a projection being spelled twice? The second spelling names a
    verb (`cx.int_at`, `expr_fps`) or uses the existing one.
 4. Does absence read straight? (`?? `, `?.`, if-null early return —
@@ -336,6 +350,30 @@ registry is the idiom engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- A STREAM ENDS BECAUSE ITS PEER IS GONE, NEVER BECAUSE A WRITE
+  FAILED. A client that closed sends FIN, and a write into a
+  half-closed socket SUCCEEDS — so a loop that learns of a departure
+  only from a failed write keeps serving a departed peer, holding the
+  connection, the stream and the count that names it. When the RST
+  happens to land first the write does fail, which is what makes the
+  defect read as a flake: std-crud/src/tests/crud_feed's count answered
+  3, 5 and 0 across schedules while the evaluator always answered 0, and the
+  native leg's own reap could not clear the leftovers in twenty
+  seconds of writes. The same shape hides in any socket loop whose
+  only failure signal is the write: the read side's EOF is the fact,
+  and a loop that cannot see it has to be given one.
+- A LOOP THAT WAITS FOR THE SERVER TO CATCH UP IS BOUNDED BY WHAT IT
+  ASKED, NEVER BY THE SERVER'S COOPERATION. The cache re-asked a view
+  behind a layer on every landing until the reading's stand passed the
+  write's; a server whose stand lagged (a replica, a stale proxy) made
+  that unbounded — a hang at zero latency, a poll forever otherwise.
+  Ask once per layer and let the layer stand over a reading that is
+  still behind. AND A LOOP OVER CALLBACKS CONTAINS EACH ONE: a caller's
+  parse that trapped inside the watcher loop left its view loading and
+  every later view of the entry untold, with the answer's bookkeeping
+  skipped. A callback the loop does not own runs under `contained`, and
+  its trap is that view's own failure. Witnesses:
+  std-ui/src/tests/observed_layer_attacks, observed_trapped_parse.
 - ONE DERIVATION IS ALIVE AT A TIME. A derivation that turns, owes
   its instantiations, or quarrels under a hold is asked AGAIN in a
   fresh workspace, and the one before must be LET GO first or the
@@ -343,8 +381,8 @@ registry is the idiom engine's spec, written by dogfooding.
   5 GB where either alone is 2.2. Three holders keep one alive, and
   each needs its own answer. THE STACK: a caller's binding stands for
   the whole call, so the derivation that is superseded is bound in a
-  HELPER that returns the next attempt and dies (`stood_first`,
-  `heard`, `tried_anew`), never in the fn that asks again. THE HOOKS:
+  HELPER that returns the next attempt and dies (`heard`,
+  `tried_anew`), never in the fn that asks again. THE HOOKS:
   `Workspace.discarded()` ends every one, the registry's declare hook
   among them — it captures the table that holds the registry, and
   EVERY HOOK A `Decls` ARMS is cleared in `let_go`: the four producer
@@ -1050,6 +1088,16 @@ registry is the idiom engine's spec, written by dogfooding.
   When a computation is keyed AND its artifact is NAMED, derive both
   from ONE value (`settled_symbol`); two spellings of the identity a
   cache depends on is a wrong answer waiting for a second caller.
+- A CHECK THAT ASKS CAN WRITE: deciding whether a stale reader holds
+  must never re-work its answer. Asking a question settles it, and
+  what this process settles the store keeps. The part-aware meet
+  asked what a reader no longer standing had read, to tell whether
+  that read still held; the answer came back worked out and was
+  written standing where no root reaches it (a method seat's
+  `lowered_method_seat_default` across a rename), and the walk from
+  the cut, which goes down only, never saw it return. A decision about what a change
+  reaches reads what is held; a reader that stands no more is met
+  without asking.
 - Every diagnostic names a registered kind — its own identity,
   unique by construction — carries help or a structured fix where
   expressible, and has a golden rendering test.
@@ -1644,11 +1692,12 @@ seat (F2000): the compiler's help is the note.
 Syntax the grammar lacks:
 - An import is spelled with DOTS: `use @std.io.{read_text}`; `use @std/io.{…}` is "expected `.`" at the slash (prose says `@std/io`, the `use` line never does).
 - Or-patterns spell `or`, in patterns only; `|` is "expected `}` to close the `match`", and `or`/`and` as booleans are "expected BREAK" — the operators are `&&`, `||`, `!`.
-- `[i for (i, m) in xs.enumerate()]` — "`enumerate` pairs only under a paired `for` head"; write `[f(i, x) for i, x in xs]`.
 - `int??` has no spelling ("expected `)`"/"expected `=`" at the first `?`) though a generic reaches `string??`.
 - A bare `table { … }` reads as a struct literal ("no `type table` is declared"); write `table<Row> { id | name … }` with a pipe header.
 - A record literal as a component instance's head stands in parentheses (`tally (Span { n: 2 }) { extra: 3 }`); bare, the brace opens the block — pinned by features/components/tests/components_head_test.av, not by this section.
 - A semicolon between statements is "unexpected character `;`"; a one-line body is `{ a }`.
+- A field's mark on its own line inside a type literal is "expected `}` while parsing `stmt`"; write it on the field's line (`{ @local at: int }`).
+- `if let v? = e { … }` takes an `else`: without one it is "expected BREAK" at the `let`; a guard is `let v? = e else { … }`, and a present-only test is `if e != null { … }`.
 - A range takes methods (`any`, `find`, `map`, `all`) but has no `.length`.
 - A `once fn` takes no type parameters ("expected `(`"), no arguments, and answers a managed value ("`once fn seed` answers `int`, which the runtime cannot keep").
 - A trailing block in a head (`if f(a) { x -> x } { … }`) is "expected BREAK"; parenthesise the call. `a?.m { … }` and `(f(a)) { … }` take no trailing block either — not pinned.
@@ -1669,7 +1718,6 @@ Syntax the grammar lacks:
 - A match arm whose body is a bare statement (`.Bad(t) -> fail E.Bad(t),`) fails the whole file ("expected `}` to close the `match`"); brace it.
 - `get(i)?.name` and `shell(line)?.run()` lex as `?.` ("`?.` reaches into a nullable, this is `Result<…>`"); write `(get(i)?).name`.
 - `export let` is "`export` marks a fn, type, enum or trait — not this statement"; `export const` lands.
-- `Result<void, E>` is "a `Result` side cannot hold `void` yet"; a writing verb answers what it wrote.
 - A `mut` seat cannot be assigned whole, by design: "a seat is written along a path, never replaced whole" — use a `Cell<T>`, a path write, or answer the new value.
 - Two top-level consts of one name are "defined more than once"; a `let` of that name shadows from its line on, and a fn body reads the const.
 - `fail` inside a `catch` arm's block is "a `catch` arm answers the ok side"; write the statement `match`.
@@ -1681,16 +1729,15 @@ Syntax the grammar lacks:
 
 Wants the typer does not carry yet:
 - A declaring annotation's argument is a literal or a const naming one: `@traced("a" + "b")` is "`traced` generates declarations, so its arguments come from the source alone" — not pinned (needs a package with `@std/meta`).
-- A generic struct literal's field seat unifies instead of planting a want: an unpinned `mk()` there is "`N` is not pinned by the arguments".
-- A lambda in a field or argument seat does not read the seat's answer ("`.Ok` needs a known enum"); a typed `let` does, and a named fn works everywhere.
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
-- A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
+- A bound lands on a free fn's, a component's and a method's own parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
 - `==`, `contains`/`index_of` and a literal pattern compare a scalar, text, a tagged enum, or a one-field record; two fields is "`==` compares by value — …", and an enum carrying a payload is refused too (help: match on it).
 - A named type is opaque at a seat and transparent at a read: a `Rows` seat refuses a computed `List<int>` ("wants `Rows`, found `List<int>`") and takes a literal.
+- `r catch null` answers the ok side, so `let x? = r catch null else { … }` is "a `catch` arm answers the ok side: `D`, this is `null`"; a `Result` read as absence is a `match` (`.Ok(d) -> d, .Err(_) -> null`).
 
 Methods the runtime lacks:
 - `List.reverse()` / `sort()` are "calls a method, and `List<int>` has none"; core's `reversed` is the helper.
@@ -1712,7 +1759,7 @@ doctrine it expands.
 - ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
 
       sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
-      sh tools/work run <cmd>    # run it on this lane's Sprite, streamed, its exit status
+      sh tools/work run <cmd>    # run it on a GitHub runner (--sprite: the lane's Sprite), its exit status
       sh tools/work test         # what this branch touches, on this lane's Sprite
       sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
       sh tools/work status       # PRs and their merge state; each lane and its Sprite
@@ -2087,7 +2134,7 @@ doctrine it expands.
 - THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
   bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
   cli with the STANDING binary and copies the result; it never
-  touches `bootstrap/seed.ll`, which is a COMMITTED artifact naming
+  touches `bootstrap/seed.ll.gz`, which is a COMMITTED artifact naming
   every runtime symbol it needs, the `avra_io_` names among them. So
   deleting a runtime symbol gates clean under `make avra`, twice,
   while the cold path is already broken — `make bootstrap` links the

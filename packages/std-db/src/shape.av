@@ -7,7 +7,11 @@
 //! A shape text is the table's name, then one line per column in column-name
 //! byte order: `name|TYPE|null|key|unique|default|ref|on_delete`, `-` for
 //! an absent fact, so the text is the same for the same model however its
-//! fields are ordered and changes when any column fact does.
+//! fields are ordered and changes when any column fact does. Each index
+//! follows the columns, one line each, its columns in index order: `unique(a,b)`
+//! for a key over several, `index(a)` or `index(a,b)` for a plain one, and a
+//! plain one over only some rows says which after a space: `absent(c)` or
+//! `present(c)`.
 
 /// EVERYTHING THE DATABASE IS TOLD ABOUT ONE COLUMN.
 export type ColumnFacts = {
@@ -21,8 +25,17 @@ export type ColumnFacts = {
     on_delete: string? = null,
 }
 
-/// A table as recorded: its name and its columns.
-export type Shape = { name: string, columns: List<ColumnFacts> }
+/// An INDEX over a table's columns, in index order: a key when no two rows
+/// may hold the same values in them, and over the rows `only` names when it
+/// holds some rather than all.
+export type Index = { columns: List<string>, unique: bool = false, only: Only? = null }
+
+/// The rows a partial index holds: those whose `column` is null when
+/// `absent`, those whose is not otherwise.
+export type Only = { column: string, absent: bool }
+
+/// A table as recorded: its name, its columns, and each index over them.
+export type Shape = { name: string, columns: List<ColumnFacts>, indexes: List<Index> = [] }
 
 /// Every identifier written into SQL text is double-quoted,
 /// unconditionally — a field or type named after a SQL keyword
@@ -43,6 +56,38 @@ export fn create_sql(name: string, columns: List<ColumnFacts>) -> string {
     "CREATE TABLE IF NOT EXISTS ${quoted(name)} (${[column_ddl(c) for c in columns].join(", ")})"
 }
 
+/// The line an index is recorded as; two indexes are one when their lines are.
+export fn index_line(i: Index) -> string {
+    let word = if i.unique { "unique" } else { "index" }
+    "${word}(${i.columns.join(",")})${only_word(i.only)}"
+}
+
+fn only_word(o: Only?) -> string {
+    match o {
+        held? -> " ${if held.absent { "absent" } else { "present" }}(${held.column})"
+        null -> ""
+    }
+}
+
+/// An index's name: its table and its line, which no table or column name can spell.
+fn index_name(on: string, i: Index) -> string { quoted("${on}_${index_line(i)}") }
+
+/// The statement that makes an index of a table.
+export fn index_sql(on: string, i: Index) -> string {
+    let word = if i.unique { "UNIQUE INDEX" } else { "INDEX" }
+    "CREATE ${word} ${index_name(on, i)} ON ${quoted(on)} (${[quoted(c) for c in i.columns].join(", ")})${only_sql(i.only)}"
+}
+
+fn only_sql(o: Only?) -> string {
+    match o {
+        held? -> " WHERE ${quoted(held.column)} IS ${if held.absent { "NULL" } else { "NOT NULL" }}"
+        null -> ""
+    }
+}
+
+/// The statement that ends one.
+export fn unindex_sql(on: string, i: Index) -> string { "DROP INDEX ${index_name(on, i)}" }
+
 export fn shape_line(c: ColumnFacts) -> string {
     let facts = [
         c.name,
@@ -58,17 +103,50 @@ export fn shape_line(c: ColumnFacts) -> string {
 }
 
 /// The text a table is recorded under.
-export fn shape_text(name: string, columns: List<ColumnFacts>) -> string {
-    "${name}\n${ordered([shape_line(c) for c in columns]).join("\n")}"
+export fn shape_text(s: Shape) -> string {
+    [s.name]
+        .concat(ordered([shape_line(c) for c in s.columns]))
+        .concat(ordered([index_line(i) for i in s.indexes]))
+        .join("\n")
 }
 
 /// A shape text read back; absent for text that is no shape.
 export fn shape_read(text: string) -> Shape? {
     let lines = text.split("\n")
     if lines.length < 2 { return null }
-    let read = [column_read(l) for l in lines.slice(1, lines.length)]
-    if read.any(it == null) { return null }
-    Shape { name: lines[0], columns: [c! for c in read] }
+    let facts = lines.slice(1, lines.length)
+    let read = [column_read(l) for l in facts if l.contains("|")]
+    let indexes = [index_read(l) for l in facts if !l.contains("|")]
+    if read.is_empty() || read.any(it == null) || indexes.any(it == null) { return null }
+    Shape { name: lines[0], columns: [c! for c in read], indexes: [i! for i in indexes] }
+}
+
+/// An index line read back; absent for a line that is no index. A key
+/// holds two columns or more, since one column's key is its own fact, and
+/// it holds every row.
+fn index_read(line: string) -> Index? {
+    let parts = line.split(" ")
+    if parts.is_empty() || parts.length > 2 { return null }
+    let unique = parts[0].starts_with("unique(")
+    let columns? = listed(parts[0], if unique { "unique" } else { "index" }) else { return null }
+    let only = if parts.length == 2 { only_read(parts[1]) } else { null }
+    if parts.length == 2 && only == null || unique && (columns.length < 2 || only != null) { return null }
+    Index { columns: columns, unique: unique, only: only }
+}
+
+fn only_read(word: string) -> Only? {
+    let absent = listed(word, "absent")
+    let named? = absent ?? listed(word, "present") else { return null }
+    if named.length != 1 { return null }
+    Only { column: named[0], absent: absent != null }
+}
+
+/// The names `word(a,b,…)` lists; absent when the text is not that, or names an empty one.
+fn listed(text: string, word: string) -> List<string>? {
+    if !text.starts_with("${word}(") || !text.ends_with(")") { return null }
+    let names = text.substring(word.length + 1, text.length - 1).split(",")
+    if names.is_empty() || names.any(it.is_empty()) { return null }
+    names
 }
 
 fn column_read(line: string) -> ColumnFacts? {

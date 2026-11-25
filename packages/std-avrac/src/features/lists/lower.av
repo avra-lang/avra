@@ -11,9 +11,19 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     cx.grown_box(cx.shape_at(e), size, regs)
 }
 
-/// A literal with `..` entries, built by `listed`.
+/// A literal with `..` entries, built by `listed` — one element at a
+/// time where a spread's elements are adopted by the list's nullable
+/// element.
 fn spread_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>, regs: List<Reg>) -> Reg {
-    listed(cx, cx.shape_at(e), regs, [spreads(cx, k) for k in elems])
+    let elem? = cx.view.types.element(cx.type_at(e)) else { return listed(cx, cx.shape_at(e), regs, [spreads(cx, k) for k in elems]) }
+    if !elems.any((k) -> spreads(cx, k) && cx.spread_adopts(k, elem)) {
+        return listed(cx, cx.shape_at(e), regs, [spreads(cx, k) for k in elems])
+    }
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    for j, k in elems {
+        if spreads(cx, k) { cx.spread(dst, k) } else { cx.push_slot(dst, regs[j]) }
+    }
+    dst
 }
 
 /// A list from values in written order, `spreads[j]` saying value `j` is

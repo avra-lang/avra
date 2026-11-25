@@ -5,7 +5,7 @@
 //! ERROR at the line that implements it rather than a keeper's
 //! finding. `avra runtime-header` writes it; `make rt-header` refuses
 //! a header the rows did not make.
-use core.{RtKind, RtSig, rt_sigs, joined, flatten}
+use core.{CellMark, RtKind, RtSig, cell_marks, rt_sigs, joined, flatten}
 
 /// How a row's kind crosses into C: the word the row spells, the C
 /// type an answer must wear, and the value a seat is probed with.
@@ -47,6 +47,7 @@ export fn runtime_header() -> string {
                 [row_address(s) for s in rows],
                 [host_closes],
                 claims,
+                [mark_claim(m) for m in cell_marks()],
                 ["#endif", "", "#endif"],
             ],
         ),
@@ -72,6 +73,11 @@ fn row_address(s: RtSig) -> string {
 export fn row_claim(s: RtSig) -> string {
     let answer = c_kind(s.ret)
     "_Static_assert(${answer_holds(s, answer)},\n    \"${s.name}: its row answers ${answer.word}, so its C body answers ${answer.said()}\");"
+}
+
+/// One cell mark's claim: the bit the compiler names it by is the one runtime/avra_box.h gives it.
+fn mark_claim(m: CellMark) -> string {
+    "_Static_assert(${m.name} == ${m.bit},\n    \"${m.name}: the compiler reads a cell's mark as bit ${m.bit}, so runtime/avra_box.h gives it that bit\");"
 }
 
 /// The test that a row's call wears the row's answer. A named C

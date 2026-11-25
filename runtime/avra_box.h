@@ -30,7 +30,7 @@ enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MA
 #define KIND_SHAPE(k)    (IS_IMMORTAL(k) ? -(k) - 4 : (k))
 
 // A cell's mark bits (AvraArray.marks).
-enum { MARK_OWNED = 1, MARK_ABSENT = 2 };
+enum { MARK_OWNED = 1, MARK_ABSENT = 2, MARK_FRAME = 4 };
 
 // "AVRA" — the bytes that say a header is this runtime's.
 #define AVRA_TAG 0x41565241u
@@ -73,20 +73,27 @@ void avra_box_changed(void* payload);
 #endif
 #define AVRA_FLAGS_AT 5
 #define AVRA_STAMP_AT 6
+// Whether a write to the box is the first of its turn to an observed
+// box — the write that must stamp and log it.
+static inline int avra_box_unlogged(const void* payload) {
+    const uint8_t* at = (const uint8_t*)((const Header*)payload - 1);
+    if (__builtin_expect(at[AVRA_FLAGS_AT] != (AVRA_OBSERVED >> 8), 1)) return 0;
+    uint16_t stamp;
+    __builtin_memcpy(&stamp, at + AVRA_STAMP_AT, sizeof stamp);
+    return stamp != (uint16_t)(avra_turn_word >> 16);
+}
+
 static inline void avra_box_touch(void* payload) {
-    const uint8_t* at = (const uint8_t*)((Header*)payload - 1);
-    if (__builtin_expect(at[AVRA_FLAGS_AT] == (AVRA_OBSERVED >> 8), 0)) {
-        uint16_t stamp;
-        __builtin_memcpy(&stamp, at + AVRA_STAMP_AT, sizeof stamp);
-        if (stamp != (uint16_t)(avra_turn_word >> 16)) avra_box_changed(payload);
-    }
+    if (__builtin_expect(avra_box_unlogged(payload), 0)) avra_box_changed(payload);
 }
 
 // A slot array: `cap` cells at `data`, `len` of them written, and
 // one MARK byte per cell after the cells: `MARK_OWNED` when the cell
 // holds a managed value the reclaim releases, `MARK_ABSENT` when it
 // holds a nullable scalar that is not there — so a nullable int lives
-// in one word and one bit, with no box.
+// in one word and one bit, with no box — and `MARK_FRAME` when the cell
+// is the frame of contexts the box was made or placed under, the one
+// cell a reframe may replace.
 typedef struct {
     int64_t cap;
     int64_t len;
@@ -95,6 +102,17 @@ typedef struct {
     // where it was made — the accounting's return address, else NULL
     void* site;
 } AvraArray;
+
+// A PACKED LIST holds its cells and no marks: `marks` is NULL. Only a
+// list of plain scalars is made packed (an int, a float, a bool, a word
+// enum), so none of its cells is ever owned or absent, and a reader
+// asking a packed list for a mark is answered zero.
+static inline int avra_packed(const AvraArray* a) { return a->marks == 0; }
+
+// Cell `i`'s mark: zero in a packed list.
+static inline uint8_t avra_mark_at(const AvraArray* a, int64_t i) {
+    return a->marks == 0 ? 0 : a->marks[i];
+}
 
 // A string-keyed, insertion-ordered map: keys and values as two
 // arrays, and an open-addressing index over key hashes. An index of

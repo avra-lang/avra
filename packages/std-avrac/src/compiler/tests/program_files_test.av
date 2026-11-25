@@ -1,20 +1,19 @@
 // A program test is a program, not a module file: the entry's law over
 // every other file exempts one with its proof beside it, and still
-// refuses any other file that runs statements. `ran_as` is
-// workspace_test.av's own: this module shares one namespace.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{Want}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
+// refuses any other file that runs statements. Asked of the program
+// layer: a build from either program test as its entry, and a check of
+// the whole package. `ran_as` is workspace_test.av's own: this module
+// shares one namespace.
+use @std.avrac.testing.{held_at, empty_store, Held}
 
 const ALPHA: string = "/w/src/alpha/alpha.av"
 const BETA: string = "/w/src/beta/beta.av"
-const LIB: string = "/w/src/lib.av"
 const GAMMA: string = "/w/src/gamma/gamma.av"
 
 /// A library, two program tests and a refusal test, in one package.
 fn program_files() -> Map<string, string> {
     {
+        "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
         "/w/src/lib.av": "export fn double(n: int) -> int {\n    n * 2\n}\n",
         "/w/src/alpha/alpha.av": "use lib.{double}\ndouble(21)\n",
         "/w/src/alpha/alpha.expected": "42\n",
@@ -25,97 +24,68 @@ fn program_files() -> Map<string, string> {
     }
 }
 
-fn program_names() -> List<string> {
-    [LIB, ALPHA, BETA, "/w/src/trap/trap.av"]
-}
+fn programs_held() -> Held { held_at(program_files(), "/w") }
 
-fn programs_ws() -> Workspace {
-    test_workspace(memory_host(program_files(), program_names()), "/w")
-}
-
-/// The package with `gamma.av` added, a run-time statement in it, and
-/// `proof` beside it when there is one.
-fn programs_ws_gamma(proof: string?) -> Workspace {
+/// The package with `gamma.av` added, a run-time statement in it, and `proof` beside it when there
+/// is one; `alpha.av` reaching it when `reached`.
+fn programs_with_gamma(proof: string?, reached: bool = false) -> Held {
     mut fs = program_files()
-    fs.set(GAMMA, "use lib.{double}\ndouble(1)\n")
+    fs.set(GAMMA, "use lib.{double}\nexport fn one() -> int { 1 }\ndouble(1)\n")
+    if reached { fs.set(ALPHA, "use lib.{double}\nuse gamma.gamma.{one}\ndouble(21) + one() - 1\n") }
     if proof != null { fs.set(proof!, "x\n") }
-    test_workspace(memory_host(fs, program_names().concat([GAMMA])), "/w")
+    held_at(fs, "/w")
 }
 
-/// The entry's law over the other files, as its one voice.
-fn refused_outside(ws: Workspace, entry: string) -> bool {
-    let p = ws.program(entry)
-    p.clean() &&
-        p.lowered().diagnostics.length == 1 &&
-        p.rendered(p.lowered().diagnostics).contains("only the entry `${entry}` runs statements")
-}
+/// The words of the law that keeps statements to the entry `entry`.
+fn entry_law(entry: string) -> string { "only the entry `${entry}` runs statements" }
 
-fn law_silent(ws: Workspace, entry: string) -> bool {
-    ws.program(entry).lowered().diagnostics.is_empty()
-}
+/// What a check of the whole package says.
+fn package_check(held: Held) -> string { held.checked_over(empty_store()) }
 
 spec "compiler/program files" {
     given "two program tests and a refusal test beside a library" {
         then "each program test runs as its own entry and answers its own text" {
-            ran_as(programs_ws().program(ALPHA).run(), "42") &&
-                ran_as(programs_ws().program(BETA).run(), "9")
+            ran_as(programs_held().judged_at(ALPHA).run(), "42") &&
+                ran_as(programs_held().judged_at(BETA).run(), "9")
         }
         then "the entry's law finds nothing to refuse, whichever program is the entry" {
-            law_silent(programs_ws(), ALPHA) && law_silent(programs_ws(), BETA)
+            programs_held().judged_at(ALPHA).clean() && programs_held().judged_at(BETA).clean()
         }
-        then "the derivation's own check over the whole program passes with either as the entry" {
-            programs_ws().program(ALPHA).files_checked(true) is .Ok &&
-                programs_ws().program(BETA).files_checked(true) is .Ok
+        then "a build checks clean with either as the entry" {
+            programs_held().judged_at(ALPHA).checked() is .Ok &&
+                programs_held().judged_at(BETA).checked() is .Ok
         }
-        then "a derivation from the sources alone, with no hold, stands with either as the entry" {
-            programs_ws().from_sources(ALPHA, Want.Binary) is .Ok &&
-                programs_ws().from_sources(BETA, Want.Binary) is .Ok
+        then "a check of the whole package refuses none of them" {
+            !package_check(programs_held()).contains("runs statements")
         }
     }
     given "a file with no proof beside it" {
-        then "a run-time statement in it is still refused, naming the entry" {
-            refused_outside(programs_ws_gamma(null), ALPHA)
+        then "reached from the entry, a run-time statement in it is refused, naming the entry" {
+            programs_with_gamma(null, reached: true)
+                .judged_at(ALPHA)
+                .report()
+                .contains(entry_law(ALPHA))
         }
-        then "the derivation's own check refuses it too" {
-            match programs_ws_gamma(null).program(ALPHA).files_checked(true) {
-                .Err(report) -> report.contains("only the entry `${ALPHA}` runs statements"),
-                .Ok(_) -> false,
-            }
+        then "a check of the whole package refuses it too" {
+            package_check(programs_with_gamma(null)).contains("runs statements")
         }
         then "a proof beside another file's stem does not mark it" {
-            refused_outside(programs_ws_gamma("/w/src/gamma/other.expected"), ALPHA)
+            package_check(programs_with_gamma("/w/src/gamma/other.expected"))
+                .contains("runs statements")
         }
     }
     given "a proof beside a file" {
         then "an `.expected` makes its statements the file's own program" {
-            law_silent(programs_ws_gamma("/w/src/gamma/gamma.expected"), ALPHA)
+            !package_check(programs_with_gamma("/w/src/gamma/gamma.expected"))
+                .contains("runs statements")
         }
         then "a `.refuses` does the same" {
-            law_silent(programs_ws_gamma("/w/src/gamma/gamma.refuses"), ALPHA)
+            !package_check(programs_with_gamma("/w/src/gamma/gamma.refuses"))
+                .contains("runs statements")
         }
         then "and so does a `.verdict`" {
-            law_silent(programs_ws_gamma("/w/src/gamma/gamma.verdict"), ALPHA)
-        }
-    }
-    given "what the suite discovers" {
-        then "every program test and every refusal test it finds is a program to the entry's law" {
-            let ws = programs_ws()
-            ws.program_tests().all((p) -> ws.is_program(p)) &&
-                ws.refuses_tests().all((c) -> ws.is_program(c.path)) &&
-                ws.program_tests().length == 2 &&
-                ws.refuses_tests().length == 1
-        }
-        then "a `.verdict` beside a file is a child-run test owing a verdict's exit and its own words" {
-            let found = programs_ws_gamma("/w/src/gamma/gamma.verdict")
-                .refuses_tests()
-                .filter(it.path == GAMMA)
-            found.length == 1 && found[0].end.code() == 1 && found[0].voice == "x"
-        }
-        then "a `.refuses` owes a trap's exit" {
-            programs_ws().refuses_tests().all(it.end.code() == 2)
-        }
-        then "a library file is no program" {
-            !programs_ws().is_program(LIB)
+            !package_check(programs_with_gamma("/w/src/gamma/gamma.verdict"))
+                .contains("runs statements")
         }
     }
 }

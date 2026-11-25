@@ -1,7 +1,6 @@
 // Mutation, vertically: mut declares, assignment rewrites the slot,
 // immutability refuses with the remedy, and types hold still.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with, halver}
+use @std.avrac.testing.{shown, refused_with, halver, judged}
 
 spec "features/mutation" {
     given "a `state` is a place, asked of its binding" {
@@ -85,18 +84,18 @@ spec "features/mutation" {
     }
     given "wrong shapes" {
         then "assigning a plain let refuses with the remedy" {
-            let a = analyze_source("let x = 1\nx = 2\nx")
+            let a = judged("let x = 1\nx = 2\nx")
             a.diagnostics.length == 1 &&
                 a.report().contains("`x` is not `mut`") &&
                 a.report().contains("declare it `mut x = ...` to mutate it")
         }
         then "assigning a parameter refuses" {
-            let a = analyze_source("fn f(x: int) -> int {\n    x = 2\n    x\n}\nf(1)")
+            let a = judged("fn f(x: int) -> int {\n    x = 2\n    x\n}\nf(1)")
             a.diagnostics.length == 1 &&
                 a.report().contains("`x` is a parameter — parameters are immutable")
         }
         then "assignment keeps the declared type" {
-            let a = analyze_source("mut x = 1\nx = true\nx")
+            let a = judged("mut x = 1\nx = true\nx")
             a.diagnostics.length == 1 &&
                 a.report().contains("assignment changes `x`: `int` to `bool`")
         }
@@ -107,7 +106,7 @@ spec "features/mutation" {
             shown("type P = { x: int }\nmut p = P { x: 1 }\np = P { x: 2 }\np.x") == "2"
         }
         then "assigning an undefined name says so" {
-            let a = analyze_source("ghost = 1\n2")
+            let a = judged("ghost = 1\n2")
             a.diagnostics.length == 1 && a.report().contains("`ghost` is not defined")
         }
     }

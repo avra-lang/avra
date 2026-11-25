@@ -1,9 +1,8 @@
-//! `avra writes <fn>` — the seats pass's (compiler/receivers.av)
+//! `avra writes <fn>` — the receiver survey's (compiler/item_writes.av)
 //! write-flow chain for a fn's seat 0 (a method's receiver, a free fn's
 //! first parameter), printed as fn names in call order.
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
-use commands.{root_program}
 
 /// One directory per run, so no earlier run's cache answers for this one.
 once fn writes_base() -> string { "/tmp/avra-explain-writes-test/${stamp()}" }
@@ -32,13 +31,8 @@ fn pkg_named(name: string) -> string {
     root
 }
 
-/// `explain_writes` writes through its receiver (the seats pass's
-/// `write_chain` reaches `self.ws` on a direct path) — every caller
-/// binds `mut` first, the same door `avra writes` itself opens.
-fn writes_of(root: string, name: string) -> string? {
-    let p = root_program(root)
-    p.explain_writes(name)
-}
+/// The chain `avra writes` prints for `name` in the package at `root`, absent where it has none.
+fn writes_of(root: string, name: string) -> string? { avra_said_in(root, ["writes", name]) }
 
 spec "commands/writes" {
     given "a fn whose body writes seat 0 directly" {
@@ -119,11 +113,11 @@ spec "commands/writes" {
         }
     }
     given "a broken package" {
-        then "refuses before the walk ever runs, never a crash" {
+        then "a fn past the breakage answers nothing, never a crash" {
             let root = pkg_named("broken")
             let src = "type Cx = { n: int }\nimpl Cx {\n    fn mint() { self.n = 1 }\n}\nfn main() -> int { garbage((((  }\n"
             let _ = write_text("${root}/src/main.av", src)
-            !root_program(root).clean()
+            writes_of(root, "main") == null
         }
     }
 }

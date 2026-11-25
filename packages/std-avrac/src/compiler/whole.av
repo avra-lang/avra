@@ -29,6 +29,7 @@ use core.{
 use @std.text.{text_before}
 use compiler.store.{Reading}
 use @std.path.{under_dir, joined_path, normalized, dir_of}
+use features.fns.{embed_unread_words}
 use features.{
     Decls,
     Decl,
@@ -37,697 +38,22 @@ use features.{
     nothing,
     bound_decl_of,
     EmbedFault,
+    embed_spot,
     embed_literal_law,
-    gathers_across_files,
     admits_package,
     AnnotationFact,
     LitArg,
+    Listed,
 }
 use features.collects.{collect_field_text}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
-use compiler.lower.{
-    LinkedPackage,
-    ordered_collect_members,
-    gathering_mark,
-    field_plan,
-    FieldPlan,
-    collect_answer_type,
-}
-use compiler.hosts.{BuildHost, host_named}
-use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
+use compiler.lower.{LinkedPackage, ordered_collect_members, FieldPlan}
+use compiler.hosts.{BuildHost, host_fn_owed, host_fn_owed_diag, host_named}
+use compiler.host.{library_stem, Beneath, Manifest, Read, InputName, embedded_kind}
 use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
-
-impl Workspace {
-
-    // ── The whole program ──
-    /// Every file under the root analyzed, in FileId order — each step
-    /// asked for every file before the next, so the phases time apart.
-    fn analyze_all(built: string?) -> List<Analysis> {
-        let t0 = self.clock()
-        // a held file is not parsed — and asking its items would mint its module for nothing
-        for path in self.entry_files(built) { let _ = self.file_id(path) }
-        self.admit_all()
-        self.timed("parse", t0)
-        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
-        // MINTED from its record, so every consumer sees the interface it had — and its
-        // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
-        // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
-        // wrote down.
-        let t1 = self.clock()
-        let _ = self.each_open_file((f: FileId) -> { let _ = self.resolved(f) })
-        self.timed("resolve", t1)
-        let t2 = self.clock()
-        let _ = self.each_open_file((f: FileId) -> { let _ = self.sig_diagnostics(f) })
-        self.timed("sigs", t2)
-        let t3 = self.clock()
-        let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
-        let out = [self.analysis(f) for f in ids]
-        self.timed("bodies", t3)
-        out
-    }
-
-    /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
-    /// file's own resolve or its own body can admit a file none of this
-    /// phase's earlier turns had ever seen — an expression reaches
-    /// further than a signature does — so the walk re-reads the table's
-    /// length each turn (`admit_all`'s own shape) instead of a fixed
-    /// snapshot, which would silently skip whatever its own action
-    /// discovers. Answers every id acted on, in walk order, for a
-    /// caller that wants the converged set back.
-    fn each_open_file(act: fn(FileId) -> void) -> List<FileId> {
-        mut out: List<FileId> = []
-        mut i = 0
-        while i < self.decls.file_count() {
-            let fi = self.decls.file(file_at(i))
-            if !self.is_held(fi.id) && self.reads_as_source(fi.path) {
-                act(fi.id)
-                out.push(fi.id)
-            }
-            i = i + 1
-        }
-        out
-    }
-
-    /// One file's analysis by path.
-    fn analyze_file(path: string) -> Analysis {
-        self.analysis(self.file_id(path))
-    }
-
-    /// A layout fact moved under typing — the registry's own defect,
-    /// worded at the write site (R11c, avra-8sb5.34.21) — folded into
-    /// the workspace's defect log so `Program.clean()`/`report()` see
-    /// it without lowering ever having to run. `lowered()`'s own
-    /// callers check again, since mono can still mint a fresh
-    /// combination this pass never saw.
-    fn report_layout_defects() {
-        for msg in self.decls.types.drain_stale() { self.defect(msg) }
-    }
-
-    /// The program rooted at `ws.root`, entered at one of its files — its root
-    /// walk trimmed to what `built` reaches when a build of it asks (`entry_files`).
-    fn program(entry: string?, built: string? = null) -> Program {
-        let files = self.analyze_all(built)
-        self.report_layout_defects()
-        let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
-        let seat: Entry? = if at == null { null } else { Entry { at: at! } }
-        Program {
-            ws: self,
-            files: files,
-            entry: seat,
-            phases: self.phases.get(),
-            cache: self.db.stats(),
-            defects: self.defects.get(),
-            voices: self.packages_voiced(),
-            manifests: [self.manifest_source(pkg) for pkg in self.packages() if self.has_manifest(pkg)],
-        }
-    }
-
-    /// Every case of every file, in file and declaration order.
-    fn cases() -> List<TestCase> {
-        flatten(
-            [self.file_cases(fi.id) for fi in self.decls.all_files() if self.reads_as_source(fi.path)],
-        )
-    }
-
-    /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
-    /// question the analysis asks before it does anything at all.
-    fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
-
-    /// THE FILES A RECORD SUPPLIED: whose interface was loaded from the store,
-    /// never parsed. The receipt an on-demand load pays against.
-    fn loaded_files() -> int { self.records.met_files.get().length }
-
-    /// Every file the program knows, held or read.
-    fn program_files() -> int { self.decls.file_count() }
-
-    /// HOLD A FILE: from here it contributes its minted declarations and what the
-    /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
-    /// files holds forty-nine.
-    fn hold_only(path: string) { self.decls.held.put(path, true) }
-
-    /// MEET FILES: each enters the table, so it is read unless it is held.
-    fn met_all(paths: List<string>) { for path in paths { let _ = self.file_id(path) } }
-
-    /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
-    /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
-    /// module's type, so every name must exist before any held shape is filled.
-    fn admit_all() {
-        mut i = 0
-        while i < self.decls.file_count() {
-            let id = file_at(i)
-            // a held file's declarations are minted when something reads them
-            if !self.is_held(id) && self.reads_as_source(self.decls.file(id).path) {
-                let _ = self.items(id)
-                self.admit_used(id)
-            }
-            i = i + 1
-        }
-    }
-
-    /// EVERYTHING A FILE REACHES, minted now: each module its `use` lines
-    /// name and each package a `collect` gathers from — so no file is first
-    /// minted inside a query that already read the relation.
-    fn admit_used(f: FileId) {
-        if self.lone { return }
-        let p = self.parsed(f)
-        let from = self.packages()[self.holder_of_path(p.source.file)]
-        for s in p.stmts {
-            let u = p.store.use_parts(s)
-            if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
-            let scope = p.store.collect_scope(s)
-            if scope != null { self.decls.admit_scope(scope!, f) }
-        }
-    }
-
-    /// A read file's `gathers` lines, one for each `collect` of it that gathers its
-    /// package whole: the package, the file, what it gathers, what it reads of each
-    /// member and the set it gathered — the reach a record keeps for its held walk,
-    /// and what a held file is held to.
-    fn gathers_lines(path: string) -> List<string> {
-        let f = self.file_id(path)
-        let key = self.packages()[self.holder_of_path(path)].key
-        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in self.gatherings(path)]
-    }
-
-    /// A read file's package-wide collects, each as what it gathers.
-    fn gatherings(path: string) -> List<Gathering> {
-        let f = self.file_id(path)
-        let p = self.parsed(f)
-        flatten([some_list(self.package_gathering(f, p.store, s)) for s in p.stmts])
-    }
-
-    /// What a statement gathers, in what order, and what it reads of each member,
-    /// when it is a `collect` that gathers across files. An IMPORT CLOSURE's members are
-    /// held to WHICH they are alone: what a member holds is read through the member's own
-    /// declaration, so no plan folds its text and an edit beside the members moves nothing.
-    fn package_gathering(f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
-        let scope? = store.collect_scope(s) else { return null }
-        if !gathers_across_files(scope) { return null }
-        let parts? = store.collect_parts(s) else {
-            let e? = store.collect_enum_parts(s) else { return null }
-            return Gathering { name: e.name, kind: e.kind, scope: scope, order: e.order, plans: [] }
-        }
-        let rt = collect_answer_type(self.decls, f, s)
-        let entry = self.decls.types.element(rt) ?? rt
-        Gathering {
-            name: parts.name,
-            kind: parts.kind,
-            scope: scope,
-            order: parts.order,
-            plans: if admits_package(scope) { [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields] } else { [] },
-        }
-    }
-
-    /// WHAT A COLLECT GATHERED, as one digest: each member folded whole, in the
-    /// order the collect itself gathers them, so two sets differ exactly when what
-    /// the collect would bake moved.
-    fn gathered_set(g: Gathering, owner: FileId) -> string {
-        let members = ordered_collect_members(self.decls, g.kind, g.scope, g.order, owner)
-        digest_of(fields_wire([self.member_print(g, m) for m in members]))
-    }
-
-    /// A CROSS-FILE COLLECT AS A NAMED READ — `collect:<module>.<name>`, digested by
-    /// the set it gathers: a value that folds a collect is a function of its members,
-    /// which no file's text shows. Absent for a declaration that is no such collect.
-    fn collect_read(d: DeclId) -> Reading? {
-        let x = self.decls.decl(d)
-        if !self.gathers_across(d) { return null }
-        let name = "collect:${self.decls.module_of(d)}.${x.name}"
-        let digest? = self.collect_digest(self.decls.file(x.file).path, x.name) else { return null }
-        Reading { name: name, digest: digest }
-    }
-
-    /// Whether `d` is a collect gathering across files — for a held file, whether its
-    /// record holds one.
-    fn gathers_across(d: DeclId) -> bool {
-        let x = self.decls.decl(d)
-        let path = self.decls.file(x.file).path
-        if self.is_held(x.file) { return self.hold.gathered.get().any(it.collector == path) }
-        let scope? = self.parsed(x.file).store.collect_scope(x.stmt) else { return false }
-        gathers_across_files(scope)
-    }
-
-    /// A `collect:` read's digest now; absent for a name that names no cross-file collect.
-    fn collect_read_now(name: string) -> string? {
-        let parts = name.substring(8, name.length).split(".")
-        let gathers = parts.last() ?? ""
-        let files = self.module_files(module_path(parts.slice(0, parts.length - 1)))
-        let path? = files.find((p) -> self.collect_digest(p, gathers) != null) else { return null }
-        self.collect_digest(path, gathers)
-    }
-
-    /// The set the collect `name` in `path` gathers now — a held file's from its record,
-    /// since a held collector is one whose sets did not move.
-    fn collect_digest(path: string, name: string) -> string? {
-        let f = self.file_id(path)
-        if self.is_held(f) { return self.hold.gathered.get().find(it.collector == path && it.gathering.name == name)?.digest }
-        let g? = self.gatherings(path).find(it.name == name) else { return null }
-        self.gathered_set(g, f)
-    }
-
-    /// One member as its collect sees it: where it is declared, its name, the mark
-    /// that gathered it, its shape, and what each projected field reads of it. An import
-    /// closure's member is only WHICH it is: its shape and fields are read through its own
-    /// declaration, and asking them here would type what no build has asked yet.
-    fn member_print(g: Gathering, m: Decl) -> string {
-        if !admits_package(g.scope) { return digest_of(fields_wire([self.decls.module_of(m.id), m.name])) }
-        digest_of(
-            fields_wire(
-                [
-                    self.decls.module_of(m.id),
-                    m.name,
-                    fields_wire(mark_prints(gathering_mark(self.decls, g.kind, m))),
-                    self.signed_shape(m),
-                    fields_wire([self.plan_print(plan, m) for plan in g.plans]),
-                ],
-            ),
-        )
-    }
-
-    /// What one field's plan reads of a member, as the key folds it: a read off
-    /// the member's written source folds that source's text.
-    fn plan_print(plan: FieldPlan, m: Decl) -> string {
-        match plan {
-            .Crossed -> fields_wire(["crossed", self.member_text(m)]),
-            .Value -> fields_wire(["value", self.decls.symbol(m.id)]),
-            .RootKind -> fields_wire(["root_kind", self.member_text(m)]),
-            .NodeKinds -> fields_wire(["node_kinds", self.member_text(m)]),
-            .Mark -> "mark",
-            .Component(word) -> fields_wire(
-                ["component", word, self.decls.instance_unit(m.id).name, self.member_text(m)],
-            ),
-            .Text(path) -> fields_wire(["text", collect_field_text(self.decls, m, path)]),
-        }
-    }
-
-    /// The text a member is declared in, as one digest.
-    fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
-
-    /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
-    /// held members' records and moved members' fresh declarations, against what
-    /// its record says it gathered.
-    fn gathered_moved(read: List<FileId>) -> List<ReadFile> {
-        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g, read)]
-    }
-
-    /// Whether a held collector's set moved since its record was written.
-    fn gathered_away(g: HeldGather, read: List<FileId>) -> bool {
-        let f = self.file_id(g.collector)
-        self.is_held(f) &&
-            self.gathering_read(g.gathering.kind, read) &&
-            self.gathered_set(g.gathering, f) != g.digest
-    }
-
-    /// Whether a file this attempt does not hold gathers by `kind`, now or when its record was
-    /// written: a set gathered from held files alone stands as its collector's record says.
-    fn gathering_read(kind: CollectKind, read: List<FileId>) -> bool {
-        self.producers_of(kind).any((path) -> !self.held_path(path)) ||
-            read.any((f) -> self.gathers_in(kind, f))
-    }
-
-    /// The files a module record says produce what `kind` gathers by.
-    fn producers_of(kind: CollectKind) -> List<string> {
-        match kind {
-            .Component(w) -> self.hold.worded_by.get().get(w) ?? [],
-            .Annotated(w) -> self.hold.marked_by.get().get(w) ?? [],
-            .UnknownKind(_) -> [],
-        }
-    }
-
-    /// Whether a read file declares something `kind` gathers by.
-    fn gathers_in(kind: CollectKind, f: FileId) -> bool {
-        self.decls.decls_of_file(f).any((d) -> gathered_by(kind, self.decls.decl(d)))
-    }
-
-    /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
-    /// the whole link, so three things are held where each one stands:
-    /// its name is no symbol the platform already defines — that body
-    /// would answer every caller of the name, the runtime's included;
-    /// it answers a bodiless `extern fn` of another package only from
-    /// the program's own package — a dependency does not get to stand
-    /// in for another's host; and a dependency's host fn is the
-    /// program's export only when the program's own sources import that
-    /// dependency — the root says which packages speak for it.
-    fn host_fn_voices(files: List<FileId>) -> List<Diag> {
-        let hosted = self.program_host_fns(files)
-        if hosted.is_empty() { return [] }
-        let asked = self.root_imports()
-        flatten([self.host_fn_owes(d, asked) for d in hosted])
-    }
-
-    /// The host fns of the files a program reads and of the files it holds: a
-    /// held module defines its symbols for the link as a read one does.
-    fn program_host_fns(read: List<FileId>) -> List<DeclId> {
-        [x.id for x in self.decls.host_fns() if self.is_held(x.file) || read.any(same_file(it, x.file))]
-    }
-
-    /// The host fns a build standing beside `hosts` exports: the program's
-    /// own, and a dependency's that names one of them.
-    fn exported_host_fns(read: List<FileId>, hosts: List<BuildHost>) -> List<DeclId> {
-        [d for d in self.program_host_fns(read) if self.speaks_for(d, hosts)]
-    }
-
-    /// Whether the host fn `d` is the build's: its own package's always, a
-    /// dependency's when the host it names is among `hosts`.
-    fn speaks_for(d: DeclId, hosts: List<BuildHost>) -> bool {
-        if self.packages()[self.holder_of_path(self.decls.file(self.decls.decl(d).file).path)]
-            .ordinal == 0 {
-            return true
-        }
-        let host? = self.named_host(d) else { return false }
-        hosts.any(it == host)
-    }
-
-    /// The host `d`'s `@host(…)` names; none when it names none the build knows.
-    fn named_host(d: DeclId) -> BuildHost? { host_named(self.decls.host_written(d) ?? "") }
-
-    /// The packages the program's own sources import from, by key.
-    fn root_imports() -> List<string> {
-        distinct(
-            [m.package()! for path in self.all_files(self.packages()[0].src) for m in self.imported_by(path) if m.package() != null],
-        )
-    }
-
-    fn host_fn_owes(d: DeclId, asked: List<string>) -> List<Diag> {
-        let x = self.decls.decl(d)
-        let from = self.packages()[self.holder_of_path(self.decls.file(x.file).path)]
-        if platform_defines(x.name) || entry_symbols.contains(x.name) { return [host_fn_shadows(self.decls.loc(d), x.name)] }
-        if from.ordinal == 0 { return [] }
-        if self.named_host(d) == null { return [host_fn_unhosted(self.decls.loc(d), x.name, from.key)] }
-        let theirs? = self
-            .decls
-            .externs_named(x.name)
-            .find(
-                (n: Decl) -> !self.decls.is_host_fn(n.id) &&
-                    self.holder_of_path(self.decls.file(n.file).path) != from.ordinal,
-            ) else {
-            return if asked.contains(from.key) { [] } else { [host_fn_unasked(self.decls.loc(d), x.name, from.key)] }
-        }
-        [
-            host_fn_answers_another(
-                self.decls.loc(d),
-                x.name,
-                self.packages()[self.holder_of_path(self.decls.file(theirs.file).path)].key,
-                from.key,
-            ),
-        ]
-    }
-
-    /// The deepest package root that holds `path`.
-    fn root_over(path: string) -> string? {
-        let over = [pkg.root for pkg in self.packages() if under_dir(path, pkg.root)]
-        over.find((root) -> over.all(it.length <= root.length)) ?? self.toolchain_root_over(path)
-    }
-
-    /// The toolchain package directory that holds `path`, entered or not: an
-    /// embedded file is read from its package without the package joining the build.
-    fn toolchain_root_over(path: string) -> string? {
-        let toolchain? = self.host.std_root else { return null }
-        if !under_dir(path, toolchain) { return null }
-        let named? = below(path, toolchain).split("/").first() else { return null }
-        joined_path(toolchain, named)
-    }
-
-    /// The root an `embed` of `@scope/name/…` reads beneath: a dependency's, or a
-    /// toolchain package's straight from the toolchain directory — never entered.
-    fn embed_root(from: Package, key: string) -> string? {
-        if key == from.key || self.depends_on(from, key) { return self.packages().find(it.key == key)?.root }
-        let dir? = self.host.std_dir(key) else { return null }
-        if self.there(joined_path(dir, "avra.toml")) { dir } else { null }
-    }
-
-    /// WHERE AN `embed` LITERAL'S FILE STANDS: beneath a package's root,
-    /// as the path under that root. A plain path is read from `source`'s
-    /// own directory and stays in `source`'s package: an absolute one
-    /// names the machine, and a `..` past the root names what the package
-    /// does not hold. A PATH THAT OPENS WITH `@` NAMES A PACKAGE, always:
-    /// `@scope/name/…` is read from the root of that package when
-    /// `source`'s package depends on it or the toolchain carries it, and
-    /// refuses when neither — reading a file admits no package. A directory
-    /// of this package named so is written `./@scope/…`.
-    fn embed_place(source: string, rel: string, base: EmbedBase) -> Result<EmbedPlace, EmbedFault> {
-        if rel.starts_with("/") { fail EmbedFault.Outside }
-        let from = self.packages()[self.holder_of_path(source)]
-        if !rel.starts_with("@") {
-            let start = match base { .Beside -> dir_of(source), .Root -> from.root }
-            return placed_beneath(from.root, joined_path(start, rel))
-        }
-        let segments = rel.split("/")
-        let key = segments.slice(0, 2).join("/")
-        if segments.length < 3 { fail EmbedFault.Undeclared(key) }
-        let root? = self.embed_root(from, key) else { fail EmbedFault.Undeclared(key) }
-        placed_beneath(root, joined_path(root, segments.slice(2, segments.length).join("/")))
-    }
-
-    /// THE EMBED LAW, judged where the literal stands: the file's path,
-    /// or what is wrong with it. Both kinds read from `base`: beside the source, or the package's root.
-    fn embed_placed(f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
-        string,
-        EmbedFault,
-    > {
-        self.embed_placed_beside(self.decls.file(f).path, rel, kind, base)
-    }
-
-    fn embed_placed_beside(source: string, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
-        string,
-        EmbedFault,
-    > {
-        let place = self.embed_place(source, rel, base)?
-        let path = joined_path(place.root, place.rel)
-        match self.embedded(path, kind) {
-            .Text(_) or .Octets(_) -> path,
-            .Missing -> .Err(EmbedFault.Missing),
-            .Linked -> .Err(EmbedFault.Linked),
-            .NotText(at) -> .Err(EmbedFault.NotText(at)),
-            .Refused(why) -> .Err(EmbedFault.Refused(why)),
-        }
-    }
-
-    /// A settlement's `embed`: the octets of the file a literal named, as
-    /// the kind reads them, or why not. THE SAME LAW AS THE LITERAL'S,
-    /// asked of the path the lowering wrote: inside a package of this
-    /// workspace, through no link — so a path no literal named reads
-    /// nothing.
-    fn embed_read(path: string, kind: EmbedKind) -> Result<Bytes, string> {
-        let root? = self.root_over(path) else { fail embed_literal_law }
-        let place? = beneath_root(root, path) else { fail embed_literal_law }
-        match self.embedded(path, kind) {
-            .Text(text) -> text.bytes(),
-            .Octets(octets) -> octets,
-            .Missing -> .Err("`embed` finds no `${place.rel}`"),
-            .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
-            .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
-            .Refused(why) -> .Err("`embed` could not read its file — ${why}"),
-        }
-    }
-
-    /// What stands at an embedded file, through its cell: AN EMBEDDED FILE
-    /// IS AN INPUT, NEVER A FILE ROW — a query that reads it depends on its
-    /// cell, and no row is minted while a query reads the File relation.
-    fn embedded(path: string, kind: EmbedKind) -> Beneath {
-        match self.input(InputName { kind: embedded_kind(kind), key: path }) {
-            .Embedded(_, _, seen) -> seen,
-            .Text(_, _) or .Octets(_, _) or .Range(_, _, _, _) or .Listing(_, _) or .Exists(_, _) or .Env(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> {
-                avra_trap("defect: an `embedded` input answered another kind of read")
-                Beneath.Missing
-            },
-        }
-    }
-
-    /// The door's read of an embedded file: beneath the package root over
-    /// it, as the key alone names it, through no link.
-    fn embedded_asked(path: string, kind: EmbedKind) -> Read {
-        let root? = self.root_over(path) else { return unrooted(path, kind) }
-        let place? = beneath_root(root, path) else { return unrooted(path, kind) }
-        self.host.embedded(path, place.root, place.rel, kind)
-    }
-
-    /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
-    /// program's own name included). An `embed` of a `.av` file names source
-    /// still; an embedded data file has no module to reach, resolve or analyze.
-    fn reads_as_source(path: string) -> bool { is_source(path, dir_of(path)) }
-
-    fn admit_module(from: Package, m: ModulePath) {
-        if m.malformed() { return }
-        if m.package() != null && !self.reaches(from, m.package()!) { return }
-        // listed, not `module_files`, for the reason `file_id`'s siblings are
-        for path in self.listed_files(m) { let _ = self.file_id(path) }
-    }
-
-    /// ADMIT THE PACKAGE A MODULE NAMES. A held file's `use` lines are never
-    /// resolved, so a package they would have admitted is admitted here instead:
-    /// the import graph is part of the interface, not a side effect of the parse.
-    fn ensure_package(key: string) {
-        let _ = self.std_admitted(key)
-    }
-
-    /// The cases of ONE file, named by the path it MEANS: both sides
-    /// normalized, so `./` and a doubled slash select what the listing
-    /// spelled cleanly.
-    fn cases_at(path: string) -> List<TestCase> {
-        let wanted = normalized(path)
-        [c for c in self.cases() if normalized(c.at.file) == wanted]
-    }
-
-    /// A file's cases, its items minted first: a file enters the table
-    /// at first mention, and a mention alone mints nothing.
-    fn file_cases(f: FileId) -> List<TestCase> {
-        let _ = self.items(f)
-        let src = self.source(f)
-        let store = self.decls.store_of(f)
-        [self.test_case(src, store, self.decl_at(d)) for d in self.decls.decls_of_file(f) if self.is_case(d)]
-    }
-
-    fn is_case(d: DeclId) -> bool {
-        self.decl_at(d).kind is .Case
-    }
-
-    /// The case's group from its spec's own list — its body is the key
-    /// — and its line from the source.
-    fn test_case(src: SourceFile, store: SyntaxArena, x: Decl) -> TestCase {
-        let parts: SpecParts? = store.spec_parts(x.stmt)
-        let written: Case = parts!.cases.find(same_body(it, x.root!))!
-        let lo = self.decls.decl_span(x.id)!.lo
-        TestCase {
-            at: CaseRef {
-                suite: x.owner,
-                group: written.group,
-                name: x.name,
-                file: src.file,
-                line: src.linecol(lo).line,
-            },
-            symbol: self.decls.symbol(x.id),
-        }
-    }
-
-    /// WHAT THE PROGRAM LINKS: every package's `[link]` promise, in
-    /// package order — the objects it names under its own root, the
-    /// directories it searches, the libraries it needs. A package that
-    /// declares `extern fn` says here who keeps the promise.
-    ///
-    /// THE ROWS ARE TYPED AND THE OPTION LETTER IS OURS. A dependency
-    /// names a directory or a library; `-L` and `-l` are written here,
-    /// so no word a package spells can BECOME an option — the linker
-    /// reads what it was told to read. `[link.raw]` carries an option
-    /// verbatim and is heard from the program's own manifest alone.
-    /// Each word is ONE argv element, so nothing in any of them means
-    /// anything to a shell.
-    fn link_words(target: string) -> List<string> {
-        if target != "" {
-            // A non-host link carries the package C that TARGET can build —
-            // the `wasm_objects` a manifest names — and never a native `-L`,
-            // `-l` or `[link.raw]`. A package with none is refused, not linked.
-            flatten([self.package_wasm_objects(pkg) for pkg in self.packages_by_name()])
-        } else {
-            flatten([self.package_link(pkg) for pkg in self.packages_by_name()])
-        }
-    }
-
-    /// THE PACKAGES IN LINK ORDER: by manifest name, so a link line is the program's
-    /// alone, never the order a build admitted its packages in.
-    fn packages_by_name() -> List<Package> {
-        sorted_by(
-            self.packages(),
-            (a: Package, b: Package) -> text_before(
-                self.manifest(a.ordinal).name,
-                self.manifest(b.ordinal).name,
-            ),
-        )
-    }
-
-    /// Whether a package's C resolves the program's own symbols by name
-    /// (`[link] dynamic_symbols`) — the evaluator's host does — so every
-    /// one must stand in the image's dynamic table.
-    fn names_its_symbols() -> bool {
-        self.packages().any((p) -> self.manifest(p.ordinal).dynamic_symbols)
-    }
-
-    fn package_link(pkg: Package) -> List<string> {
-        let m = self.manifest(pkg.ordinal)
-        self
-            .package_objects(pkg, "")
-            .concat(["-L${d}" for d in self.filled_words(m.search)])
-            .concat(["-l${l}" for l in self.filled_words(m.libs)])
-            .concat(if pkg.ordinal == 0 { self.filled_words(m.raw) } else { [] })
-    }
-
-    /// The objects a package's manifest links into every program that
-    /// reaches it.
-    fn package_objects(pkg: Package, target: string) -> List<string> {
-        let named = if target != "" { self.manifest(pkg.ordinal).wasm_objects } else { self.manifest(pkg.ordinal).objects }
-        [joined_path(pkg.root, o) for o in self.filled_words(named)]
-    }
-
-    fn package_wasm_objects(pkg: Package) -> List<string> {
-        [joined_path(pkg.root, o) for o in self.filled_words(self.manifest(pkg.ordinal).wasm_objects)]
-    }
-
-    /// The objects a link for `target` names that are not on disk.
-    fn absent_objects(target: string) -> List<string> {
-        [o for pkg in self.packages_by_name() for o in self.package_objects(pkg, target) if !self.there(o)]
-    }
-
-    /// Every file a link reads besides the program's own objects: the
-    /// runtime archive, and each reached package's objects.
-    fn linked_files(runtime: string, target: string) -> List<string> {
-        [runtime]
-            .concat(flatten([self.package_objects(pkg, target) for pkg in self.packages_by_name()]))
-    }
-
-    /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
-    /// one per package that owns native code, derived from the package's
-    /// manifest NAME and never from a path a manifest wrote: a manifest
-    /// path the toolchain OPENS is a load primitive, which is the
-    /// write-primitive law at the same force.
-    ///
-    /// THE STEM CARRIES NO SUFFIX, so the platform question never enters
-    /// the compiler: the evaluator tries the ones it knows and the
-    /// refusal names the PACKAGE rather than a path only one machine has.
-    /// A disagreement with `tools/libs.py`, which derives the same stem
-    /// on the build side, is LOUD: nothing opens and the refusal names
-    /// the package.
-    fn linked_packages() -> List<LinkedPackage> {
-        [self.linked_of(pkg) for pkg in self.packages() if self.owns_native(pkg)]
-    }
-
-    fn owns_native(pkg: Package) -> bool {
-        !self.manifest(pkg.ordinal).objects.is_empty()
-    }
-
-    fn linked_of(pkg: Package) -> LinkedPackage {
-        let named = self.manifest(pkg.ordinal).name
-        LinkedPackage {
-            name: named,
-            library: "build/lib${library_stem(named)}",
-            externs: self.externs_of(named),
-            wasm: !self.manifest(pkg.ordinal).wasm_objects.is_empty(),
-        }
-    }
-
-    /// The extern fns a package declares, by name.
-    fn externs_of(package: string) -> List<string> {
-        [n.name for n in self.decls.extern_notes() if self.decls.package_named(n.module) == key_spelled(package)]
-    }
-
-    /// The root package's entry file: its `[bin]` path, else
-    /// `src/main.av` when that exists, else absence.
-    fn entry_of() -> string? {
-        let pkg = self.packages()[0]
-        let bin: string? = self.manifest(0).bin
-        let path = joined_path(pkg.root, bin ?? "src/main.av")
-        if bin == null && !self.there(path) { return null }
-        path
-    }
-}
-
-/// A file's own module name: its path with `.av` dropped and `/`
-/// as `.`.
-fn own_module(rel: string) -> string {
-    let stemmed = if rel.ends_with(".av") { rel.substring(0, rel.length - 3) } else { rel }
-    stemmed.replace("/", ".")
-}
+use compiler.store.{Store}
 
 /// A path's tail under a directory — the path itself when it is
 /// not under it.
@@ -742,18 +68,6 @@ fn is_source(name: string, dir: string) -> bool {
     name.ends_with(".av") || dir.is_empty()
 }
 
-fn use_lines(p: Parsed) -> List<UseParts> {
-    mut out: List<UseParts> = []
-    for s in p.stmts {
-        let u: UseParts? = p.store.use_parts(s)
-        if u != null { out.push(u!) }
-    }
-    out
-}
-
-/// What one `use` line brought in, and what it earned.
-type Imported = { imports: List<Import>, diagnostics: List<Diag>, refused: List<string> }
-
 /// The symbols a linked program's own start is found by.
 const entry_symbols: List<string> = [
     "main",
@@ -763,95 +77,15 @@ const entry_symbols: List<string> = [
     "__main_argc_argv",
 ]
 
-/// THE RULE'S CONDITION: "the platform defines it" is asked of the
-/// machine the compiler stands on, so the same name can refuse on one
-/// build machine and pass on another, and a build for another target is
-/// judged by this one's C library.
-fn host_fn_shadows(at: Loc?, name: string) -> Diag {
-    refusal(
-        "lower.host_fn_shadows",
-        at,
-        "`${name}` is a platform symbol — a host fn of that name would answer every caller of it",
-        "defined here",
-        "name the host fn for what its host asks of this program, as `avra_ui_event` is",
-    )
-}
-
-fn host_fn_answers_another(at: Loc?, name: string, theirs: string, from: string) -> Diag {
-    refusal(
-        "lower.host_fn_answers",
-        at,
-        "`${name}` is `${theirs}`'s to name, and `${from}` answers it — only the package that names an extern, or the program's own, answers it",
-        "answered here",
-        "answer it in the program's own package: a test stands there, and so does a host's stand-in",
-    )
-}
-
-fn host_fn_unhosted(at: Loc?, name: string, from: string) -> Diag {
-    refusal(
-        "lower.host_fn_unhosted",
-        at,
-        "the host fn `${name}` of `${from}` names no host, so no build can say whose it is",
-        "declared here",
-        "mark it with `@host(Host.Page)` (`@std/meta`) — the host that calls it by name",
-    )
-}
-
-fn host_fn_unasked(at: Loc?, name: string, from: string) -> Diag {
-    refusal(
-        "lower.host_fn_unasked",
-        at,
-        "the host fn `${name}` of `${from}` would be this program's export, and the program's own sources never import `${from}`",
-        "declared here",
-        "import from `${from}` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it",
-    )
-}
-
-/// A package's root and a path beneath it.
-type EmbedPlace = { root: string, rel: string }
-
-/// `path` as it stands beneath `root`, or that it stands outside it.
-fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> {
-    let place? = beneath_root(root, path) else { fail EmbedFault.Outside }
-    place
-}
-
-/// A gathering mark's arguments as the key folds them; none for no mark.
-fn mark_prints(mark: AnnotationFact?) -> List<string> {
-    let m? = mark else { return [] }
-    [lit_print(a) for a in m.args]
-}
-
-/// A mark's argument as the key folds it: its kind beside its text.
-fn lit_print(a: LitArg) -> string { fields_wire([lit_kind_word(a.kind), a.text]) }
-
-/// An embedded file no package root stands over: the law's refusal.
-fn unrooted(path: string, kind: EmbedKind) -> Read { Read.Embedded(path, kind, Beneath.Refused(embed_literal_law)) }
-
-/// `path` as it stands beneath `root`, or null when it does not.
-fn beneath_root(root: string, path: string) -> EmbedPlace? {
-    let held = normalized(root)
-    let at = normalized(path)
-    if !at.starts_with("${held}/") { return null }
-    EmbedPlace { root: held, rel: at.substring(held.length + 1, at.length) }
-}
+/// Whether a host fn named `name` would define a symbol the link already has: the platform's, or a
+/// linked program's own start. THE RULE'S CONDITION: "the platform defines it" is asked of the
+/// machine the compiler stands on, so the same name can refuse on one build machine and pass on
+/// another, and a build for another target is judged by this one's C library.
+export fn host_fn_shadowing(name: string) -> bool { platform_defines(name) || entry_symbols.contains(name) }
 
 fn segments_of(dotted_text: string) -> List<string> {
     if dotted_text.is_empty() { return [] }
     dotted_text.split(".")
-}
-
-/// A whole program: every file analyzed together, and the entry
-/// among them (none when the program is only checked). It answers
-/// as a lone Analysis does — report, lowered, run — so every engine
-/// takes either.
-export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
-
-/// A warning's kind under its package when it is a word; a kind
-/// that is not one is dropped — the warning speaks kind-less.
-fn worded_kind(package: string, kind: string?) -> string? {
-    if kind == null || !is_kind_word(kind!) { return null }
-    user_kind(package, kind)
 }
 
 /// Each kind once, the first row of a name kept.
@@ -895,77 +129,124 @@ impl Decls {
 /// The entry's seat among the program's files.
 type Entry = { at: int }
 
-/// One test case as the runner sees it: the library's reference —
-/// its three names and its place — and the symbol that runs it.
-export type TestCase = { at: CaseRef, symbol: string }
-
-/// The case in one line — what a listing prints, and what a test
-/// of the listing reads.
-export fn case_words(c: TestCase) -> string {
-    words(c.at)
-}
-
 fn same_body(c: Case, body: ExprId) -> bool {
     // LICENSED structs.index_compared: node identity — ids compare by index
     c.body.index == body.index
 }
 
-impl Workspace {
-    /// A row's words with their `${NAME}` holes filled, dropping any
-    /// that fill to nothing. A hole naming nothing asks for NO WORD:
-    /// an empty one would be an argument the linker still counts, and a
-    /// bare `-L` eats the word after it.
-    fn filled_words(words: List<string>) -> List<string> {
-        [w for w in [self.env_filled(x) for x in words] if !w.is_empty()]
-    }
+/// What a link word reads of the machine it links on: an environment variable, and whether a file
+/// is there.
+export type LinkWorld = { env: fn(string) -> string?, there: fn(string) -> bool }
 
-    /// A link input with its `${NAME}` holes filled from the
-    /// environment, each variable an input: a machine's own paths belong
-    /// to the machine, not to a checked-in manifest. A value is data — the
-    /// holes after it are filled, never the value itself.
-    fn env_filled(flag: string) -> string {
-        let opens = flag.index_of("\${")
-        if opens < 0 { return flag }
-        let closes = closing_brace(flag, opens)
-        if closes < opens { return flag }
-        let head = flag.substring(0, opens)
-        let name = flag.substring(opens + 2, closes)
-        let tail = flag.substring(closes + 1, flag.length)
-        "${head}${self.env(name) ?? self.platform_hole(name) ?? ""}${self.env_filled(tail)}"
+/// A row's words with their `${NAME}` holes filled, dropping any that fill to nothing. A hole naming
+/// nothing asks for NO WORD: an empty one would be an argument the linker still counts, and a bare
+/// `-L` eats the word after it.
+export fn link_filled(words: List<string>, world: LinkWorld) -> List<string> {
+    [w for w in [env_filled(x, world) for x in words] if !w.is_empty()]
+}
+
+/// A link input with its `${NAME}` holes filled from the environment: a machine's own paths belong
+/// to the machine, not to a checked-in manifest. A value is data — the holes after it are filled,
+/// never the value itself.
+fn env_filled(flag: string, world: LinkWorld) -> string {
+    let opens = flag.index_of("\${")
+    if opens < 0 { return flag }
+    let closes = closing_brace(flag, opens)
+    if closes < opens { return flag }
+    let head = flag.substring(0, opens)
+    let name = flag.substring(opens + 2, closes)
+    let tail = flag.substring(closes + 1, flag.length)
+    "${head}${(world.env)(name) ?? platform_hole(name, world) ?? ""}${env_filled(tail, world)}"
+}
+
+/// WHAT A LINK HOLE MEANS ON THIS PLATFORM when the environment names nothing: the C++ runtime a
+/// static LLVM needs, and the directory the system's zstd lives in where the driver's default search
+/// does not reach it. The environment still wins (a machine's own paths belong to the machine); this
+/// is the floor, so a link run from any shell — a Sprite, a test binary, a bare `build/avra` —
+/// carries them without a shim having set them.
+fn platform_hole(name: string, world: LinkWorld) -> string? {
+    match name {
+        "AVRA_CXX_RUNTIME" -> if links_with_ld64() { "c++" } else { "stdc++" },
+        "AVRA_SYS_SEARCH" -> system_library_dir(world),
+        rest -> null,
     }
 }
 
-impl Workspace {
-    /// WHAT A LINK HOLE MEANS ON THIS PLATFORM when the environment names nothing: the C++ runtime a
-    /// static LLVM needs, and the directory the system's zstd lives in where the driver's default
-    /// search does not reach it. The environment still wins (a machine's own paths belong to the
-    /// machine); this is the floor, so a link run from any shell — a Sprite, a test binary, a bare
-    /// `build/avra` — carries them without a shim having set them.
-    fn platform_hole(name: string) -> string? {
-        match name {
-            "AVRA_CXX_RUNTIME" -> if links_with_ld64() { "c++" } else { "stdc++" },
-            "AVRA_SYS_SEARCH" -> self.system_library_dir(),
-            rest -> null,
-        }
+/// The directory holding the system's `libzstd`: Homebrew's on macOS, else the first multiarch or
+/// lib directory that has it. None when none does — the driver's own search then decides.
+fn system_library_dir(world: LinkWorld) -> string? {
+    let candidates = if links_with_ld64() {
+        ["/opt/homebrew/lib", "/usr/local/lib"]
+    } else {
+        ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
     }
+    candidates.find((dir) -> holds_zstd(dir, world))
+}
 
-    /// The directory holding the system's `libzstd`: Homebrew's on macOS, else the first multiarch
-    /// or lib directory that has it, each probe an INPUT through the world's door (a cached build
-    /// re-judges when the library appears or moves). None when none does — the driver's own search
-    /// then decides.
-    fn system_library_dir() -> string? {
-        let candidates = if links_with_ld64() {
-            ["/opt/homebrew/lib", "/usr/local/lib"]
-        } else {
-            ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
-        }
-        candidates.find((dir) -> self.holds_zstd(dir))
-    }
+fn holds_zstd(dir: string, world: LinkWorld) -> bool {
+    ["libzstd.a", "libzstd.so", "libzstd.dylib"]
+        .any((name) -> (world.there)(joined_path(dir, name)))
+}
 
-    fn holds_zstd(dir: string) -> bool {
-        ["libzstd.a", "libzstd.so", "libzstd.dylib"]
-            .any((name) -> self.there(joined_path(dir, name)))
+/// The library a package's manifest `m` builds for the evaluator to open, declaring `externs`; absent
+/// for a package that links no objects.
+export fn manifest_library(m: Manifest, externs: List<string>) -> LinkedPackage? {
+    if m.objects.is_empty() { return null }
+    LinkedPackage {
+        name: m.name,
+        library: "build/lib${library_stem(m.name)}",
+        externs: externs,
+        wasm: !platform_objects(m, object_dir(Platform.Wasm)).is_empty(),
     }
+}
+
+/// The words a package links into every program that reaches it, its manifest `m` read where it
+/// stands at `root`: its objects, its searched directories and libraries, and the root package's raw
+/// words.
+export fn manifest_link_words(
+    m: Manifest,
+    root: string,
+    is_root: bool,
+    world: LinkWorld,
+    shared: bool = false,
+    dir: string = "",
+) -> List<string> {
+    let search = link_filled(m.search, world)
+    let standing = if shared && m.shared != "" { search.find((d) -> shared_beside(d, m.shared, world)) } else { null }
+    [joined_path(root, o) for o in link_filled(platform_objects(m, dir), world)]
+        .concat(["-L${d}" for d in search])
+        .concat(
+            if standing != null { ["-l${m.shared}", "-Wl,-rpath,${standing!}"] } else { ["-l${l}" for l in link_filled(m.libs, world)] },
+        )
+        .concat(if is_root { link_filled(m.raw, world) } else { [] })
+}
+
+/// Whether the directory `dir` holds the shared library `name`, as ELF or Mach-O names it.
+fn shared_beside(dir: string, name: string, world: LinkWorld) -> bool {
+    (world.there)(joined_path(dir, "lib${name}.so")) ||
+        (world.there)(joined_path(dir, "lib${name}.dylib"))
+}
+
+/// The words a wasm link carries of the package `m` at `root`: the objects it carries there, its
+/// holes filled; never a native `-L`, `-l` or `[link.raw]`.
+export fn manifest_wasm_words(m: Manifest, root: string, world: LinkWorld) -> List<string> {
+    [joined_path(root, o) for o in link_filled(platform_objects(m, object_dir(Platform.Wasm)), world)]
+}
+
+/// THE OBJECTS THE PACKAGE `m` CARRIES ON THE PLATFORM WHOSE OBJECT DIRECTORY IS `dir` (the host's
+/// is empty): its `[link.objects_for]` set for that directory where it names one, else `objects`.
+/// An entry names its file once, and the platform says where it is built: `dir` stands between
+/// the entry's directory and its file.
+export fn platform_objects(m: Manifest, dir: string) -> List<string> {
+    let named = m.objects_for.find((p) -> p.dir == dir)
+    [in_platform_dir(o, dir) for o in named?.objects ?? m.objects]
+}
+
+/// The object `entry` names, built for the platform whose object directory is `dir`.
+fn in_platform_dir(entry: string, dir: string) -> string {
+    if dir == "" { return entry }
+    let parts = entry.split("/")
+    parts.take(parts.length - 1).concat([dir, parts.last() ?? entry]).join("/")
 }
 
 /// The variables a word's `${NAME}` holes name, in order.
@@ -988,20 +269,4 @@ fn closing_brace(s: string, from: int) -> int {
     let at = s.substring(from, s.length).index_of("}")
     if at < 0 { return 0 - 1 }
     from + at
-}
-
-fn index_of_file(files: List<Analysis>, path: string) -> int? {
-    for i, a in files {
-        if a.view.source.file == path { return i }
-    }
-    null
-}
-
-/// Whether `kind` gathers `d`: an instance of its component word, or a declaration wearing its mark.
-fn gathered_by(kind: CollectKind, d: Decl) -> bool {
-    match kind {
-        .Component(w) -> d.word == w,
-        .Annotated(w) -> d.marks.contains(w),
-        .UnknownKind(_) -> false,
-    }
 }

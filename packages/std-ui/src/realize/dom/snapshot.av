@@ -5,7 +5,7 @@
 //! is a diff against the page that stands. Listeners are not said: a
 //! closure belongs to the module that made it, and the new module binds its
 //! own.
-use tree.identity.{NodeId}
+use tree.identity.{NodeId, Step}
 use realize.html.element.{Element, Tagged, Worded}
 use realize.html.tags.{HtmlAttr, HtmlAttrName, HtmlTag}
 use realize.dom.buf.{Buf, buf}
@@ -31,8 +31,8 @@ impl Buf {
             .Text(run) -> {
                 self.push_byte(text_mark)
                 self.push_node(run.id)
-                self.push_str(run.seat)
-                self.push_str(run.reads)
+                self.push_str(run.seat.spelled())
+                self.push_str(run.seat.shown())
                 self.push_str(run.content)
             },
             .Tag(el) -> self.push_tagged(el),
@@ -42,8 +42,8 @@ impl Buf {
     fn push_tagged(el: Tagged) {
         self.push_byte(tag_mark)
         self.push_node(el.id)
-        self.push_str(el.seat)
-        self.push_str(el.reads)
+        self.push_str(el.seat.spelled())
+        self.push_str(el.seat.shown())
         self.push_str(el.tag.word())
         self.push_int(el.attrs.length)
         for a in el.attrs {
@@ -136,31 +136,18 @@ impl Cursor {
 
     fn worded() -> Element {
         let id = self.id()
-        let seat = self.text()
-        let reads = self.text()
-        Element.Text(Worded { id: id, seat: seat, reads: reads, content: self.text() })
+        let seat = Step.Read(self.text(), self.text())
+        Element.Text(Worded { id: id, seat: seat, content: self.text() })
     }
 
     fn tagged() -> Element {
         let id = self.id()
-        let seat = self.text()
-        let reads = self.text()
+        let seat = Step.Read(self.text(), self.text())
         let tag = self.tag()
         let attrs = [self.attr() for j in 0..self.count()]
         let rests = [self.attr_name() for j in 0..self.count()]
         let kids = [self.element() for j in 0..self.count()]
-        Element
-            .Tag(
-                Tagged {
-                    id: id,
-                    seat: seat,
-                    reads: reads,
-                    tag: tag,
-                    attrs: attrs,
-                    rests: rests,
-                    kids: kids,
-                },
-            )
+        Element.Tag(Tagged { id: id, seat: seat, tag: tag, attrs: attrs, rests: rests, kids: kids })
     }
 
     fn tag() -> HtmlTag {

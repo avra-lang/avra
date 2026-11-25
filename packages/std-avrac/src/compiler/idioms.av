@@ -8,7 +8,19 @@
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
 use core.{TypeRef, flatten}
-use features.{AnnotationFact, ArmBind, ArmInfo, Code, Fix, Scan, Ty, enclosing_decl, rule, said}
+use features.{
+    ArmBind,
+    ArmInfo,
+    Code,
+    Syntax,
+    Fix,
+    Scan,
+    DeclaredType,
+    RuleType,
+    fact_rule,
+    rule,
+    said,
+}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -44,13 +56,35 @@ export rule helpless_warning {
     quote { warning(${kind}, ${at}, ${msg}, ${label}, null) } -> helpless(kind, "warning"),
 }
 
-fn helpless(kind: Code, shape: string) -> Fix {
+fn helpless(kind: Syntax, shape: string) -> Fix {
     Fix
         .Say(
             said(
                 kind.loc(),
                 "this ${shape} of ${kind.text()} passes no help — state what to do about the law it speaks",
                 "this ${shape}",
+                null,
+            ),
+        )
+}
+
+/// A declaration told apart by its MODULE and its name: a foreign package's type that sits
+/// below `@std/meta` and so carries no mark. Both together are its identity, so a same-named
+/// type of another module is untouched; each site says at its line why no mark is possible.
+@keeps("t.name == n")
+@says("a declaration is named by its module only where its package can carry no mark, and the site says why")
+export rule foreign_declaration_named {
+    // LICENSED compiler.foreign_declaration_named: the pattern's own text names the shape it detects
+    quote { ${t}.module == ${m} && ${t}.name == ${n} } -> declaration_named(t),
+}
+
+fn declaration_named(t: Syntax) -> Fix {
+    Fix
+        .Say(
+            said(
+                t.loc(),
+                "`${t.text()}` is told apart by its module and its name — a mark on the declaration says it, unless its package sits below `@std/meta`",
+                "this comparison",
                 null,
             ),
         )
@@ -75,8 +109,8 @@ fn helpless(kind: Code, shape: string) -> Fix {
 @keeps("out = out2 + piece")
 @keeps("n = n + 1")
 @says("the builder is seeded before and read after the growing assignments, and retyping the place changes its other readers")
-export rule str_grown_quadratically {
-    quote { ${s} = ${s} + ${piece} } if s.type()?.name() == "string" && s.name() == null -> quadratic_growth(s, piece),
+export fact_rule str_grown_quadratically {
+    quote { ${s} = ${s} + ${piece} } if s.type()?.is_text() ?? false && s.name() == null -> quadratic_growth(s, piece),
 }
 
 fn quadratic_growth(s: Code, piece: Code) -> Fix {
@@ -167,12 +201,12 @@ const cell_write_verbs: List<string> = [
 
 /// Whether any of `body`'s statements writes through the name `t`: a call
 /// of an in-place verb ON `t`, or a field write `t.field = …`.
-fn writes_through(body: List<Code>, t: string) -> bool {
-    flatten([nodes_under(s) for s in body]).any((c: Code) -> is_write_call(c, t)) ||
-        body.any((s: Code) -> s.text().starts_with(t + ".") && s.text().contains(" = "))
+fn writes_through(body: List<Syntax>, t: string) -> bool {
+    flatten([nodes_under(s) for s in body]).any((c: Syntax) -> is_write_call(c, t)) ||
+        body.any((s: Syntax) -> s.text().starts_with(t + ".") && s.text().contains(" = "))
 }
 
-fn is_write_call(c: Code, t: string) -> bool {
+fn is_write_call(c: Syntax, t: string) -> bool {
     c.is_method_call() &&
         cell_write_verbs.contains(c.method_name() ?? "") &&
         c.kids().first()?.text() ?? "" == t
@@ -181,18 +215,18 @@ fn is_write_call(c: Code, t: string) -> bool {
 /// Whether `body` detaches the cell first — a `c.set(<with …>)` that
 /// EMPTIES what the cell holds (`side_put`/`side_grow`), which is the
 /// in-place written form, never this smell.
-fn detaches(body: List<Code>, c: Code) -> bool {
-    flatten([nodes_under(s) for s in body]).any((n: Code) -> is_detach(n, c.text()))
+fn detaches(body: List<Syntax>, c: Syntax) -> bool {
+    flatten([nodes_under(s) for s in body]).any((n: Syntax) -> is_detach(n, c.text()))
 }
 
-fn is_detach(n: Code, recv: string) -> bool {
+fn is_detach(n: Syntax, recv: string) -> bool {
     n.is_method_call() &&
         n.method_name() == "set" &&
         n.kids().first()?.text() ?? "" == recv &&
         (n.call_args().first()?.text() ?? "").contains(" with ")
 }
 
-fn cell_get_copy_found(c: Code, t: string) -> Fix {
+fn cell_get_copy_found(c: Syntax, t: string) -> Fix {
     Fix
         .Say(
             said(
@@ -269,7 +303,7 @@ export rule entries_of_defaulted {
     quote { (${e}).entries_of() ?? ${d} } -> protocol_default_papered(e, d, "entries_of"),
 }
 
-fn protocol_default_papered(e: Code, d: Code, verb: string) -> Fix {
+fn protocol_default_papered(e: Syntax, d: Syntax, verb: string) -> Fix {
     Fix
         .Say(
             said(
@@ -323,7 +357,7 @@ export rule voices_uncounted {
     quote { ${p}.voices.list.length >= 1 } -> uncounted(p),
 }
 
-fn uncounted(src: Code) -> Fix {
+fn uncounted(src: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -403,7 +437,7 @@ export rule loop_end_raw {
     quote { ${cx}.emit(Ins.LoopEnd) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopEnd"),
 }
 
-fn raw_region_ins(cx: Code, name: string) -> Fix {
+fn raw_region_ins(cx: Syntax, name: string) -> Fix {
     Fix
         .Say(
             said(
@@ -440,7 +474,7 @@ export rule scope_exit_raw {
     quote { ${cx}.emit(Ins.ScopeExit(${gives})) } if !it.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx),
 }
 
-fn raw_scope_ins(cx: Code) -> Fix {
+fn raw_scope_ins(cx: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -514,7 +548,7 @@ export rule interned_res {
     quote { ${r}.intern(Type.Res(${ok}, ${err})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Res", "Result<T, E>"),
 }
 
-fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
+fn spelled_by_hand(r: Syntax, shape: string, literal: string) -> Fix {
     Fix
         .Say(
             said(
@@ -528,7 +562,7 @@ fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
 
 /// A fact column sized by hand, or an id read through an offset —
 /// `SideTable<V>` states the window, the growth and the
-/// out-of-window defect once: `side_table(name, lo, hi, seed)`,
+/// out-of-window defect once: `side_table(name, expr_window(lo), hi, seed)`,
 /// `get(id)`, `grow_to(n)`.
 ///
 /// NO REWRITE: adopting `SideTable<V>` means replacing the surrounding
@@ -544,7 +578,7 @@ export rule hand_sized_index {
 }
 
 // LICENSED compiler.filled_by_arena_count: the voice quotes the matched text back, which names the shape it detects
-fn hand_sized(e: Code, k: Code) -> Fix {
+fn hand_sized(e: Syntax, k: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -579,7 +613,7 @@ export rule filled_by_arena_count {
 }
 
 // LICENSED compiler.filled_by_arena_count: the voice quotes the matched text back, which names the shape it detects
-fn hand_sized_column(n: Code, seed: Code, t: TypeRef?) -> Fix {
+fn hand_sized_column(n: Syntax, seed: Syntax, t: TypeRef?) -> Fix {
     let head = match t {
         ty? -> "filled<${ty.text()}>"
         null -> "filled"
@@ -614,13 +648,13 @@ fn hand_sized_column(n: Code, seed: Code, t: TypeRef?) -> Fix {
 @says("the body may read the index as a plain int (a map key, an offset), and only the body says which")
 export rule stmt_index_walk { quote { ${lit} } if stmt_index_walked(lit) -> stmt_index_walk_found(lit) }
 
-fn stmt_index_walked(lit: Code) -> bool {
+fn stmt_index_walked(lit: Syntax) -> bool {
     if lit.of.view.source.file.ends_with("core/store.av") { return false }
     let r? = lit.for_range() else { return false }
     r.from.text() == "0" && r.to.text().ends_with(".stmts.count()")
 }
 
-fn stmt_index_walk_found(lit: Code) -> Fix {
+fn stmt_index_walk_found(lit: Syntax) -> Fix {
     let r = lit.for_range()!
     Fix
         .Say(
@@ -648,14 +682,14 @@ fn stmt_index_walk_found(lit: Code) -> Fix {
 @says("the walk may read the index as a plain int, and only the body says which")
 export rule raw_body_scan { quote { ${lit} } if body_scanned(lit) -> body_scan_found(lit) }
 
-fn body_scanned(lit: Code) -> bool {
+fn body_scanned(lit: Syntax) -> bool {
     let file = lit.of.view.source.file
     if file.ends_with("features/decl_rows.av") || file.ends_with("core/nodes.av") { return false }
     let r? = lit.for_range() else { return false }
     ["x", "d", "decl"].any(r.from.text() == "${it}.lo" && r.to.text() == "${it}.hi")
 }
 
-fn body_scan_found(lit: Code) -> Fix {
+fn body_scan_found(lit: Syntax) -> Fix {
     let r = lit.for_range()!
     Fix
         .Say(
@@ -688,8 +722,10 @@ fn body_scan_found(lit: Code) -> Fix {
 /// see, let alone perform.
 @keeps("fn f(a: int, b: int) -> int { a + b }")
 @keeps("fn lower(a: Analysis) -> Lowered { a }")
+@keeps("@query\n@cycled_by(standing)\nfn marks(ws: Workspace, d: int) -> int { d }\nfn standing(ws: Workspace, d: int) -> int { 0 }")
+@keeps("@query\n@scoped_by(arena)\nfn placed(ws: Workspace, d: int) -> int { d }\nfn arena(ws: Workspace, d: int) -> int { 0 }")
 @says("the fix moves the body into the state's `impl` and drops the first argument at every call site")
-export rule free_state_verb { quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit) }
+export fact_rule free_state_verb { quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit) }
 
 /// The states a vocabulary verb's OWN impl belongs to — `open_region`,
 /// `accepts`, `sig` and their like all read or write one of these.
@@ -705,11 +741,17 @@ const state_types: List<string> = [
     "Scope",
 ]
 
+/// The marks that make a free fn a QUERY: the engine asks it by its context, so its first
+/// seat is that context by the engine's law, never a verb astray from its state's impl. A fn a
+/// `@cycled_by` or `@scoped_by` names wears its query's seats by the same law
+/// (`Code.shaped_by_a_query`).
+const query_marks: List<string> = ["query", "over"]
+
 /// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
 /// directly under `features/` or `compiler/` and that param's own
 /// written type is one of `state_types` — absent for every other
 /// shape (not a `fn`, no params, a nested feature file, an unrelated
-/// first type, or a `fn` that is not top-level: a trait's own method
+/// first type, a query, or a `fn` that is not top-level: a trait's own method
 /// SIGNATURE (`fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId`,
 /// features/contract.av's `NodeSemantics`) is a DISPATCH TARGET
 /// `cx` reaches BY NODE KIND, never a vocabulary verb wanting to move
@@ -720,6 +762,7 @@ fn free_state_param(lit: Code) -> Code? {
     let params? = lit.fn_params() else { return null }
     if !is_pass_file(lit.of.view.source.file) { return null }
     if !is_top_level(lit) { return null }
+    if lit.annotations().any((a) -> query_marks.contains(a.name)) || lit.shaped_by_a_query() { return null }
     let p0? = params.first() else { return null }
     if !is_state_type(p0.decl_type()) { return null }
     p0
@@ -813,13 +856,13 @@ export rule raw_rt_call { quote { Ins.CallRt(${dst}, ${name}, ${args}) } if is_r
 @says("the generated method mints the destination, so the rewrite folds in an earlier mint this expression never binds, and moving it can reorder effects")
 export rule raw_rt_call_void { quote { Ins.CallRtVoid(${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name) }
 
-fn is_rt_string(name: Code) -> bool {
+fn is_rt_string(name: Syntax) -> bool {
     if !name.text().starts_with("\"avra_") { return false }
     let f = name.of.view.source.file
     !f.ends_with("compiler/suite_entry.av") && !f.ends_with("compiler/memory/memory.av")
 }
 
-fn raw_rt_call_found(name: Code) -> Fix {
+fn raw_rt_call_found(name: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -832,7 +875,7 @@ fn raw_rt_call_found(name: Code) -> Fix {
 }
 
 /// A `Host` question asked outside the door — `host.read(p)`,
-/// `.exists`, `.list`, `.is_dir`, `.stamp`, `.peek`, `.octets`, or a door verb
+/// `.exists`, `.list`, `.is_dir`, `.peek`, `.octets`, or a door verb
 /// (`.there`, `.listing`, `.spared_text`, `.spared_octets`) asked of the host itself —
 /// records nothing: what it answers is no input, no query that depends
 /// on it is ordered after it, and a workspace that lives across turns
@@ -843,17 +886,15 @@ fn raw_rt_call_found(name: Code) -> Fix {
 @keeps("ws.octets(path)")
 @keeps("ws.spared_octets(path)")
 @says("the cell that records the question depends on the verb that answers it, and a driver that must see the disk is licensed instead")
-export rule host_asked_directly {
+export fact_rule host_asked_directly {
     quote { ${h}.read(${p}) } if asks_a_host(h) -> host_asked_found(h, "read"),
     quote { ${h}.exists(${p}) } if asks_a_host(h) -> host_asked_found(h, "exists"),
     quote { ${h}.list(${p}) } if asks_a_host(h) -> host_asked_found(h, "list"),
     quote { ${h}.is_dir(${p}) } if asks_a_host(h) -> host_asked_found(h, "is_dir"),
-    quote { ${h}.stamp(${p}) } if asks_a_host(h) -> host_asked_found(h, "stamp"),
     quote { ${h}.peek(${p}) } if asks_a_host(h) -> host_asked_found(h, "peek"),
     quote { (${h}.exists)(${p}) } if asks_a_host(h) -> host_asked_found(h, "exists"),
     quote { (${h}.list)(${p}) } if asks_a_host(h) -> host_asked_found(h, "list"),
     quote { (${h}.is_dir)(${p}) } if asks_a_host(h) -> host_asked_found(h, "is_dir"),
-    quote { (${h}.stamp)(${p}) } if asks_a_host(h) -> host_asked_found(h, "stamp"),
     quote { (${h}.peek)(${p}) } if asks_a_host(h) -> host_asked_found(h, "peek"),
     quote { ${h}.there(${p}) } if asks_a_host(h) -> host_asked_found(h, "there"),
     quote { ${h}.listing(${p}) } if asks_a_host(h) -> host_asked_found(h, "listing"),
@@ -867,13 +908,19 @@ export rule host_asked_directly {
 /// the door — the file that defines its verbs and the one that asks
 /// them for a cell — and outside a test.
 fn asks_a_host(h: Code) -> bool {
-    if h.type()?.name() != "Host" { return false }
+    if !(h.type()?.is_declared(compiler_host) ?? false) { return false }
     let f = h.of.view.source.file
-    (f.contains("/std-avrac/src/") || f.contains("/cli/src/")) &&
+    host_packages.contains(h.package()) &&
         !f.contains("/tests/") &&
         !f.ends_with("compiler/host/host.av") &&
         !f.ends_with("compiler/world.av")
 }
+
+/// The packages whose code asks the host only through its door: the compiler's and its CLI's.
+const host_packages: List<string> = ["@std.avrac", "cli"]
+
+/// The host every file read of the compiler goes through.
+const compiler_host: DeclaredType = DeclaredType { package: "@std.avrac", name: "Host" }
 
 fn host_asked_found(h: Code, question: string) -> Fix {
     Fix
@@ -915,12 +962,12 @@ export rule seen_accumulator {
 }
 
 /// Whether any of `body`'s statements calls `${seen}.${verb}(`.
-fn calls(body: List<Code>, seen: string, verb: string) -> bool {
+fn calls(body: List<Syntax>, seen: string, verb: string) -> bool {
     let want = seen + "." + verb + "("
     body.any(it.text().contains(want))
 }
 
-fn seen_accumulator_found(seen: string, init: Code) -> Fix {
+fn seen_accumulator_found(seen: string, init: Syntax) -> Fix {
     let message = "`mut " +
         seen +
         "` accumulates what has been seen so a later turn can ask `" +
@@ -953,7 +1000,7 @@ export rule emit_then_error {
     } -> emit_then_error_found(cx, d),
 }
 
-fn emit_then_error_found(cx: Code, d: Code) -> Fix {
+fn emit_then_error_found(cx: Syntax, d: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -987,11 +1034,11 @@ export rule bracket_ritual {
     } if popped(rest, v.text()) -> bracket_ritual_found(v, x),
 }
 
-fn popped(rest: List<Code>, name: string) -> bool {
+fn popped(rest: List<Syntax>, name: string) -> bool {
     rest.any(it.text().contains(name + ".pop()"))
 }
 
-fn bracket_ritual_found(v: Code, x: Code) -> Fix {
+fn bracket_ritual_found(v: Syntax, x: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -1006,7 +1053,7 @@ fn bracket_ritual_found(v: Code, x: Code) -> Fix {
 /// Whether `mint` is one of the vocabulary's own mint calls — the
 /// `raw_mint_emit_*` family's shared guard (its doc sits on
 /// `raw_mint_emit_bin`, the family's first member).
-fn is_mint_call(mint: Code) -> bool {
+fn is_mint_call(mint: Syntax) -> bool {
     if mint.of.view.source.file.ends_with("features/emit.av") { return false }
     let t = mint.text()
     [
@@ -1022,7 +1069,7 @@ fn is_mint_call(mint: Code) -> bool {
         .any((p) -> t.starts_with(p))
 }
 
-fn raw_mint_emit_found(dst: Code, variant: string) -> Fix {
+fn raw_mint_emit_found(dst: Syntax, variant: string) -> Fix {
     Fix
         .Say(
             said(
@@ -1229,7 +1276,7 @@ export rule raw_mint_emit_load {
 @keeps("Widget { name: other.name, value: another.value }")
 @keeps("Tally { a: x.a + y.a, b: x.b + y.b }")
 @keeps("Widget { name: w.name, value: 2, extra: 3 }")
-export rule modified_copy_literal { quote { ${lit} } if lit.is_struct_lit() -> copy_literal_check(lit) }
+export fact_rule modified_copy_literal { quote { ${lit} } if lit.is_struct_lit() -> copy_literal_check(lit) }
 
 /// A struct literal has no FIXED field count a `quote` pattern OR a
 /// `quote` template can spell (avra-8sb5.25's run holes reach a
@@ -1326,7 +1373,7 @@ fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
 @keeps("fn f(k: K) -> int { match k { .A(d) -> 0, .B(d) -> 0 } }\nenum K { A(n: int), B(s: string) }")
 @keeps("match k { .A(d) -> 0, .B(d) -> 0 }")
 @law("two match arms whose bodies are identical text answer the same value whichever pattern matched, so joining the patterns with `or` changes nothing but which arm parses the choice")
-export rule one_body_arms { quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit) }
+export fact_rule one_body_arms { quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit) }
 
 /// The second arm's own INDEX of the first adjacent, unguarded,
 /// same-body pair — absent when `lit` is not a `match`, or none of
@@ -1421,7 +1468,7 @@ fn arm_text(a: ArmInfo) -> string {
 @says("the repeat's name and home are the author's choice, absent from the one literal found")
 export rule duplicated_message { quote { ${lit} } if is_shared_message(lit) -> duplicated_message_found(lit) }
 
-fn is_shared_message(lit: Code) -> bool {
+fn is_shared_message(lit: Syntax) -> bool {
     if lit.of.view.source.file.contains("/tests/") { return false }
     let v? = lit.str_lit_value() else { return false }
     // A MESSAGE READS AS PROSE, A CODE READS AS A KEY: `.contains(" ")`
@@ -1442,7 +1489,7 @@ fn starts_lowercase(s: string) -> bool {
     c >= 97 && c <= 122
 }
 
-fn duplicated_message_found(lit: Code) -> Fix {
+fn duplicated_message_found(lit: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -1471,7 +1518,7 @@ fn duplicated_message_found(lit: Code) -> Fix {
 @says("the repeat's name and home are the author's choice, absent from the one literal found")
 export rule duplicated_literal { quote { ${lit} } if is_shared_literal(lit) -> duplicated_literal_found(lit) }
 
-fn is_shared_literal(lit: Code) -> bool {
+fn is_shared_literal(lit: Syntax) -> bool {
     if lit.of.view.source.file.contains("/tests/") { return false }
     // A fixture worth naming carries at least two fields — an empty
     // literal (`BlockWords {}`) and a one-field newtype wrap
@@ -1480,7 +1527,7 @@ fn is_shared_literal(lit: Code) -> bool {
     lit.is_struct_lit() && lit.kids().length >= 2 && !lit.fingerprint_siblings().is_empty()
 }
 
-fn duplicated_literal_found(lit: Code) -> Fix {
+fn duplicated_literal_found(lit: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -1512,11 +1559,11 @@ export rule repeated_projection {
     quote { ${a} || ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
 }
 
-fn is_repeated_call(a: Code, b: Code) -> bool {
+fn is_repeated_call(a: Syntax, b: Syntax) -> bool {
     a.is_method_call() && a.fp() == b.fp()
 }
 
-fn repeated_projection_found(a: Code) -> Fix {
+fn repeated_projection_found(a: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -1530,13 +1577,13 @@ fn repeated_projection_found(a: Code) -> Fix {
 
 /// A HOOK-FREE TABLE READ (features/bypass.av's `Bypassed`) called from
 /// outside its own bracket, or the method table's own CELL read past
-/// every wrapper's name. `sig_so_far`, `seat_written_so_far` and
-/// `inferred_errors_so_far` answer a fixpoint's table AS IT STANDS,
-/// mid-computation, and `registered_methods` a type's method table the
-/// same way — none of the four records a dependency, so each is safe
+/// every wrapper's name. `sig_so_far` and `seat_written_so_far` answer a
+/// fixpoint's table AS IT STANDS, mid-computation, and
+/// `registered_methods` a type's method table the same way — none of the
+/// three records a dependency, so each is safe
 /// only from inside the member that IS the computation trusted to see
 /// the table that way. THE CALLEE'S OWN NAME is held open (`${name}`,
-/// a text seat, never a held code position) so the four verbs are ONE
+/// a text seat, never a held code position) so the three verbs are ONE
 /// arm sharing ONE bracket-lookup, over the one call shape a bypass
 /// takes whatever its arity — gating a NAMED wrapper alone would still
 /// leave `self.methods.get()` itself open to a new site reading it
@@ -1547,17 +1594,17 @@ fn repeated_projection_found(a: Code) -> Fix {
 ///
 /// NO REWRITE: the fix is either routing the read through the table's
 /// own recording accessor (`sig`, `writes_receiver`/`declares_writing`,
-/// `inferred_errors`, `declared_methods`, `methods_of`) or marking the
+/// `inferred`, `declared_methods`, `methods_of`) or marking the
 /// caller `@bracket(...)` — a judgement call about which is right for
 /// THIS caller, which this pattern's one bound call cannot make.
 @keeps("x.sig(d)")
-@keeps("x.inferred_errors(d)")
+@keeps("x.inferred(d)")
 @keeps("x.declared_methods(target)")
 @keeps("x.writes_receiver(d)")
 @keeps("x.methods_of(target)")
 @keeps("x.decl(d)")
 @says("the remedy is the table's recording accessor or an `@bracket(...)` caller, and which is right depends on the caller")
-export rule bypass_outside_bracket {
+export fact_rule bypass_outside_bracket {
     quote { ${recv}.${name}(${..args}) } if bypasses_bracket(it, name) -> bypass_found(it, name, covered_bracket(name)!),
     quote { ${r}.methods.get() } if bypasses_methods_cell(it) -> bypass_found(it, "methods.get()", "methods"),
     quote { ${r}.decl_cells.get() } if bypasses_decls_cell(it) -> bypass_found(it, "decl_cells.get()", "decls"),
@@ -1570,7 +1617,7 @@ export rule bypass_outside_bracket {
 /// is read).
 fn covered_bracket(name: string) -> string? {
     match name {
-        "sig_so_far" or "inferred_errors_so_far" -> "fail_summary",
+        "sig_so_far" -> "fail_summary",
         "seat_written_so_far" -> "receivers",
         "registered_methods" -> "methods",
         rest -> null,
@@ -1600,18 +1647,7 @@ fn bypasses_decls_cell(c: Code) -> bool {
 /// `@bracket(name)` — by DECLARATION, never a bare compare of the
 /// word: a package's own fn named `bracket` answers false, exactly as
 /// `marks_identity` (compiler/typing/declare.av) reads `@identity`.
-fn bracketed(c: Code, name: string) -> bool {
-    let d? = enclosing_decl(c.of.view, c.at) else { return false }
-    let decls = c.of.view.decls
-    let file = decls.annotation_home(d)
-    decls
-        .annotations_of(d)
-        .any(
-            (a: AnnotationFact) -> a.args.length == 1 &&
-                a.args[0].text == name &&
-                decls.is_meta_annotation(a, file, "bracket"),
-        )
-}
+fn bracketed(c: Code, name: string) -> bool { c.wears_bracket(name) }
 
 fn bypass_found(c: Code, verb: string, bracket: string) -> Fix {
     Fix
@@ -1645,7 +1681,7 @@ fn bypass_found(c: Code, verb: string, bracket: string) -> Fix {
 /// relation indexes it — is the relation's own design, not this site's.
 @keeps("[s for s in rows if s.at == c]")
 @says("which column narrows the rows, and whether it is indexed, is the relation's design")
-export rule file_id_across_relation {
+export fact_rule file_id_across_relation {
     quote { ${lit} } if file_scoped_column(lit) != null -> file_id_across_relation_found(file_scoped_column(lit)!),
 }
 
@@ -1656,9 +1692,9 @@ fn file_scoped_column(lit: Code) -> Code? {
     let s? = lit.comp_scan() ?? call_scan(lit) else { return null }
     if s.source.method_name() != "all" { return null }
     let db? = s.source.call_args().first() else { return null }
-    if db.type()?.name() != "Db" || nodes_under(db).any(per_file_holder) { return null }
+    if !(db.type()?.is_declared(relation_store) ?? false) || code_under(db).any(per_file_holder) { return null }
     let row? = s.source.type()?.element() else { return null }
-    let cols = [c for t in s.tests for c in nodes_under(t) if column_of(c, row)]
+    let cols = [c for t in s.tests for c in code_under(t) if column_of(c, row)]
     if cols.any((c) -> column_typed(c, global_id_types)) { return null }
     cols.find((c) -> column_typed(c, file_id_types))
 }
@@ -1672,29 +1708,50 @@ fn call_scan(lit: Code) -> Scan? {
 
 const scan_methods: List<string> = ["find", "any", "all"]
 
+/// The store a relation's rows are read from.
+const relation_store: DeclaredType = DeclaredType { package: "@std.relation", name: "Db" }
+
 /// The ids an arena mints per file.
-const file_id_types: List<string> = ["ExprId", "StmtId", "PatId", "At"]
+const file_id_types: List<DeclaredType> = [
+    DeclaredType { package: "@std.avrac", name: "ExprId" },
+    DeclaredType { package: "@std.avrac", name: "StmtId" },
+    DeclaredType { package: "@std.avrac", name: "PatId" },
+    DeclaredType { package: "@std.avrac", name: "At" },
+]
 
 /// The ids that name one thing across the workspace.
-const global_id_types: List<string> = ["DeclId", "FileId"]
+const global_id_types: List<DeclaredType> = [
+    DeclaredType { package: "@std.avrac", name: "DeclId" },
+    DeclaredType { package: "@std.avrac", name: "FileId" },
+]
 
 /// The holders whose stores are built from one file.
-const per_file_holders: List<string> = ["FileView", "SyntaxArena", "NodeStore"]
+const per_file_holders: List<DeclaredType> = [
+    DeclaredType { package: "@std.avrac", name: "FileView" },
+    DeclaredType { package: "@std.avrac", name: "SyntaxArena" },
+]
 
-fn nodes_under(c: Code) -> List<Code> { [c].concat(flatten([nodes_under(k) for k in c.kids()])) }
+fn nodes_under(c: Syntax) -> List<Syntax> { [c].concat(flatten([nodes_under(k) for k in c.kids()])) }
 
-fn per_file_holder(c: Code) -> bool { per_file_holders.contains(c.type()?.name() ?? "") }
+/// Every node under `c`, each with what the compiler knows of it.
+fn code_under(c: Code) -> List<Code> { [c].concat(flatten([code_under(k) for k in c.kids()])) }
+
+fn per_file_holder(c: Code) -> bool {
+    let t? = c.type() else { return false }
+    per_file_holders.any((d) -> t.is_declared(d))
+}
 
 /// Whether `c` reads a field off a value typed `row`.
-fn column_of(c: Code, row: Ty) -> bool {
+fn column_of(c: Code, row: RuleType) -> bool {
     if c.prop_name() == null { return false }
     c.kids().first()?.type()?.same(row) ?? false
 }
 
-/// Whether `c`'s type, through one nullable, is named in `names`.
-fn column_typed(c: Code, names: List<string>) -> bool {
+/// Whether `c`'s type, through one nullable, is one of `types`.
+fn column_typed(c: Code, types: List<DeclaredType>) -> bool {
     let t? = c.type() else { return false }
-    names.contains((t.carried() ?? t).name())
+    let held = t.carried() ?? t
+    types.any((d) -> held.is_declared(d))
 }
 
 fn file_id_across_relation_found(col: Code) -> Fix {
@@ -1721,12 +1778,12 @@ export rule direct_test_workspace {
 }
 
 /// Whether a node stands in a package's test file.
-fn in_a_test(c: Code) -> bool {
+fn in_a_test(c: Syntax) -> bool {
     let f = c.of.view.source.file
     f.contains("/src/") && f.contains("/tests/")
 }
 
-fn direct_test_workspace_found(host: Code) -> Fix {
+fn direct_test_workspace_found(host: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -1748,7 +1805,7 @@ fn direct_test_workspace_found(host: Code) -> Fix {
 @says("the per-run base is a new declaration whose source is the author's to choose")
 export rule fixed_tmp_path { quote { ${lit} } if is_fixed_tmp_path(lit) -> fixed_tmp_path_found(lit) }
 
-fn is_fixed_tmp_path(lit: Code) -> bool {
+fn is_fixed_tmp_path(lit: Syntax) -> bool {
     if !in_a_test(lit) { return false }
     let v? = lit.text_head() else { return false }
     v.starts_with("/tmp/") && !lit.file_callees().any(names_run_base)
@@ -1758,7 +1815,7 @@ fn names_run_base(callee: string) -> bool {
     callee == "stamp" || callee == "now_ns" || callee.ends_with("_base")
 }
 
-fn fixed_tmp_path_found(lit: Code) -> Fix {
+fn fixed_tmp_path_found(lit: Syntax) -> Fix {
     Fix
         .Say(
             said(
@@ -1768,4 +1825,26 @@ fn fixed_tmp_path_found(lit: Code) -> Fix {
                 "root it at a per-run base: `once fn run_base() -> string { \"/tmp/…/\${stamp()}\" }` (`@std/time`), then `\"\${run_base()}/…\"`",
             ),
         )
+}
+
+/// A fn held in a field is called where it's read — `(self.f)(x)` — never bound to a name first
+/// only so it can be called.
+@fixes("{\n    let f = self.f\n    f(x)\n}", "{\n    (self.f)(x)\n}")
+@keeps("{\n    let f = self.f\n    f(x)\n    f(y)\n}")
+@keeps("{\n    let f = self.f\n    g(f)\n}")
+@keeps("{\n    let f = pick()\n    f(x)\n}")
+export rule fn_field_pinned {
+    quote {
+        {
+            ${..head}
+            let ${f} = ${field}
+            ${callee}(${..args})
+        }
+    } if callee == f && field.prop_name() != null -> fn_field_called(head, field, args),
+}
+
+/// The block with its last call reading the field it called.
+fn fn_field_called(head: List<Syntax>, field: Syntax, args: List<Syntax>) -> Fix {
+    let leading = [c.text() + "\n" for c in head].join("")
+    Fix.Rewrite(name("{\n${leading}(${field.text()})(${[a.text() for a in args].join(", ")})\n}"))
 }

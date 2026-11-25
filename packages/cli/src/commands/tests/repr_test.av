@@ -1,9 +1,8 @@
-//! `avra repr <type>` — the runtime REPRESENTATION `repr_word`
-//! (features/values.av) names for a type expression: flat, boxed, niche,
-//! or a one-slot box.
+//! `avra repr <type>` — the runtime REPRESENTATION `type_repr` names for a
+//! type expression on the program layer: flat, boxed, niche, a one-slot
+//! box, a pair, or a spare tag.
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
-use commands.{root_program}
 
 /// One directory per run, so no earlier run's cache answers for this one.
 once fn repr_base() -> string { "/tmp/avra-explain-repr-test/${stamp()}" }
@@ -30,54 +29,60 @@ fn pkg_wide(name: string) -> string {
     root
 }
 
+/// The representation `text` has in the package at `root`, absent where it resolves nothing.
+fn repr_of(root: string, text: string) -> string? { avra_said_in(root, ["repr", text]) }
+
 spec "commands/repr" {
     given "a package declaring a flat struct" {
         then "a nullable scalar is a register pair" {
-            root_program(pkg_with_id("pair")).explain_repr("int?") == "pair"
+            repr_of(pkg_with_id("pair"), "int?") == "pair"
         }
         then "a nullable string is a niche — the pointer's own null is absence" {
-            root_program(pkg_with_id("niche")).explain_repr("string?") == "niche"
+            repr_of(pkg_with_id("niche"), "string?") == "niche"
         }
         then "a nullable flat record is a one-slot box — a word has no spare value" {
-            root_program(pkg_with_id("boxed-opt")).explain_repr("Id?") == "one-slot box"
+            repr_of(pkg_with_id("boxed-opt"), "Id?") == "one-slot box"
         }
         then "a bare scalar is flat — it rides in registers, no pointer" {
-            root_program(pkg_with_id("bare-scalar")).explain_repr("int") == "flat"
+            repr_of(pkg_with_id("bare-scalar"), "int") == "flat"
         }
         then "a bare flat record is flat too — it rides as its one field" {
-            root_program(pkg_with_id("bare-record")).explain_repr("Id") == "flat"
+            repr_of(pkg_with_id("bare-record"), "Id") == "flat"
         }
         then "a List is boxed — an ordinary managed pointer" {
-            root_program(pkg_with_id("list")).explain_repr("List<int>") == "boxed"
+            repr_of(pkg_with_id("list"), "List<int>") == "boxed"
         }
         then "an undeclared name resolves nothing" {
-            root_program(pkg_with_id("miss-name")).explain_repr("NotDeclared") == null
+            repr_of(pkg_with_id("miss-name"), "NotDeclared") == null
         }
         then "malformed syntax resolves nothing, never a crash" {
-            root_program(pkg_with_id("miss-syntax")).explain_repr("int??") == null
+            repr_of(pkg_with_id("miss-syntax"), "int??") == null
         }
     }
     given "a package declaring every other kind the resolver could be asked about" {
         then "a non-flat multi-field struct is boxed — an ordinary managed pointer" {
-            root_program(pkg_wide("pair-struct")).explain_repr("Pair") == "boxed"
+            repr_of(pkg_wide("pair-struct"), "Pair") == "boxed"
         }
         then "a non-flat struct's nullable is a niche — it already rode a pointer" {
-            root_program(pkg_wide("pair-struct-opt")).explain_repr("Pair?") == "niche"
+            repr_of(pkg_wide("pair-struct-opt"), "Pair?") == "niche"
         }
-        then "an enum resolves nothing — this door only opens structs and scalars" {
-            root_program(pkg_wide("enum-miss")).explain_repr("Color") == null
+        then "an enum whose variants carry nothing is flat — its tag is its whole value" {
+            repr_of(pkg_wide("enum"), "Color") == "flat"
         }
-        then "a nullable enum resolves nothing either" {
-            root_program(pkg_wide("enum-opt-miss")).explain_repr("Color?") == null
+        then "its nullable spends a tag no variant has" { repr_of(pkg_wide("enum-opt"), "Color?") == "tag -1" }
+        then "a named alias is what it stands for" {
+            repr_of(pkg_wide("alias"), "Alias") == "flat" &&
+                repr_of(pkg_wide("alias-opt"), "Alias?") == "pair"
         }
-        then "a named alias over a scalar resolves nothing — the alias itself is not the scalar" {
-            root_program(pkg_wide("alias-miss")).explain_repr("Alias") == null
+        then "a declared name nested inside List/Map is read too — the list is boxed whatever it holds" {
+            repr_of(pkg_wide("nested"), "List<Map<string, Id>>") == "boxed"
         }
-        then "a declared name nested inside List/Map resolves nothing, never a wrong word" {
-            root_program(pkg_wide("nested-miss")).explain_repr("List<Map<string, Id>>") == null
+        then "a name nothing declares, nested, resolves nothing, never a wrong word" {
+            repr_of(pkg_wide("nested-miss"), "List<Map<string, Nope>>") == null
         }
-        then "a map keyed by anything but string resolves nothing" {
-            root_program(pkg_wide("map-key-miss")).explain_repr("Map<int, int>") == null
+        then "a map is boxed" { repr_of(pkg_wide("map"), "Map<string, int>") == "boxed" }
+        then "a map keyed by anything but text is no type, and resolves nothing" {
+            repr_of(pkg_wide("map-key"), "Map<int, int>") == null
         }
     }
 }

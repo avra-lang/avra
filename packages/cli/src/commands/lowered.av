@@ -1,0 +1,144 @@
+//! A PROGRAM MADE WHOLE — what `emit` and `ir` read: the entry the argued path names and every body
+//! it reaches, as one lowered program on the program layer. A build cuts the same bodies into
+//! objects; here they stand as one, for the one module or the one listing a command prints.
+use @std.program.pass.{Pass}
+use @std.cli.{CliResult}
+use @std.avrac.compiler.{
+    MadeProgram,
+    avra_fact_definitions,
+    entry_files,
+    file_embedded,
+    file_imports,
+    spelled_file,
+    made_program,
+    phased,
+    program_refused,
+    program_worked,
+}
+use @std.avrac.compiler.host.{no_target}
+use @std.avrac.compiler.lower.{Lowered}
+use @std.avrac.diagnostics.{render_among}
+use @std.io.{env}
+use @std.path.{joined_path}
+use @std.avrac.core.{distinct, flatten}
+use @std.program.address.{SourceFileAddress}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.saved_query.{definitions_of}
+
+/// A program a command reads: the package it stands in, and its entry under that package.
+type Aimed = { disk: Disk, bin: string }
+
+/// THE PROGRAM A PATH NAMES: a package's directory, its entry; a file, itself — in the package it
+/// belongs to, or a package of that one file. Where it names none, the exit its refusal spoke.
+fn program_aimed(path: string) -> Result<Aimed, int> {
+    if is_a_dir(path) {
+        let bin? = entry_written(path) else {
+            println(render_among(no_target(path), []))
+            return .Err(1)
+        }
+        let disk? = disk_at(path, "") else { return .Err(std_unfound()) }
+        return .Ok(Aimed { disk: disk, bin: bin })
+    }
+    let home? = sourced_home(path) else {
+        let lone? = lone_disk_at(path) else { return .Err(std_unfound()) }
+        return .Ok(Aimed { disk: lone, bin: "src/${lone.lone}" })
+    }
+    let disk? = disk_at(home, "") else { return .Err(std_unfound()) }
+    Aimed { disk: disk, bin: path.substring(home.length + 1, path.length) }
+}
+
+/// A COMMAND OVER THE ARGUED PROGRAM, LOWERED WHOLE: what its laws refuse said as a build says it,
+/// exit 1; a program not made, why, exit 1; else `act`'s exit, its refusal printed as exit 1. What
+/// the engine worked out is kept for the next command, and `--time` says the rows a build says.
+fn on_lowered(args: CliResult, act: fn(Lowered) -> Result<int, string>) -> int {
+    let path? = argued_path(args) else { return 2 }
+    let aimed = match program_aimed(path) { .Ok(a) -> a, .Err(code) -> { return code } }
+    let disk = aimed.disk
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let asks_timed = env("AVRA_QUERY_TIMES") == "1"
+    let worked = program_worked(
+        joined_path(disk.root, ".avra-cache/tapes"),
+        disk.name,
+        avra_fact_definitions().concat(definitions_of(listed_build_facts)),
+        ahead_count(),
+        asks_timed,
+        (e: QueryEngine) -> vouched_files(e, disk),
+    )
+    let engine = worked.engine
+    if timed(args) { engine.time_queries() }
+    let refused = manifests_door(engine, disk)
+    if refused != null { return refused! }
+    let entry = disk.file_at(aimed.bin)
+    let refusing = phased(
+        engine,
+        "the refusals",
+        Pass.Laws,
+        () -> program_refused(engine, entry, disk.name, vouched_files(engine, disk)),
+    )
+    if !refusing.is_empty() {
+        let said = refusals_said(engine, disk, refusing, entry)
+        store_kept(engine, worked.store)
+        return said
+    }
+    let made = phased(engine, "the shape", Pass.Lower, () -> made_program(engine, entry))
+    store_kept(engine, worked.store)
+    if timed(args) { eprintln(time_rows_said(engine, CHECK_ROWS)) }
+    let lowered = match made {
+        .Made(l) -> l,
+        .Unmade(why, at) -> {
+            println(unmade_said(why, at))
+            return 1
+        },
+        .Refused(files) -> { return refusals_said(engine, disk, files, entry) },
+    }
+    match act(lowered) {
+        .Ok(code) -> code,
+        .Err(report) -> {
+            println(report)
+            1
+        },
+    }
+}
+
+fn unmade_said(why: string, at: string) -> string { "avra: the program isn't made: ${why}, at ${at}" }
+
+/// THE FILES A BUILD OF THE PACKAGE AT `root` READS NOW, as the program layer reads them: every
+/// source its entry reaches, in its own package and each one it imports from, each file one of them reads as data, and each of those
+/// packages' manifests, where each stands. Asked afresh each time — the package graph read off the
+/// disk as it is — and nothing of it is kept. Its refusal where the package has no entry, or no std
+/// stands beside this compiler.
+export fn build_reads(root: string) -> Result<List<string>, string> {
+    let bin? = entry_written(root) else { return .Err("${root} declares no entry point") }
+    let disk? = disk_at(root, "") else { return .Err("no std stands beside this compiler") }
+    let engine = query_engine(
+        program_store_at(joined_path(root, ".avra-cache/tapes")),
+        avra_fact_definitions(),
+        disk.name,
+    )
+    let files = entry_files(engine, disk.file_at(bin))
+    let data = distinct_files(flatten([file_embedded(engine, f) for f in files]))
+    .Ok(
+        [disk.on_disk(f.package_name, f.path_in_package) for f in files.concat(data)]
+            .concat(
+                [joined_path(disk.package_root(p), "avra.toml") for p in distinct([f.package_name for f in files])],
+            ),
+    )
+}
+
+/// Whether one of the package's own sources imports the module `module`, as its `use` lines say.
+fn imports_module(root: string, module: string) -> bool {
+    let disk? = disk_at(root, "") else { return false }
+    let engine = query_engine(
+        program_store_at(joined_path(root, ".avra-cache/tapes")),
+        avra_fact_definitions(),
+        disk.name,
+    )
+    disk.held(engine).any((p) -> file_imports(engine, disk.file_at(p)).contains(module))
+}
+
+/// Each file once, in the order first met.
+fn distinct_files(files: List<SourceFileAddress>) -> List<SourceFileAddress> {
+    let spelled = [spelled_file(f) for f in files]
+    [f for j, f in files if !spelled.take(j).contains(spelled[j])]
+}

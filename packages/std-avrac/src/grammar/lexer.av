@@ -18,7 +18,7 @@
 //! one pass reports everything.
 use @std.text.{Text, builder}
 use core.{Span, span_of, Remark, Trivia}
-use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
+use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder, sorted_by}
 
 /// What a token is; Lit-vs-kind matching keys off this. The IStr
 /// kinds are an interpolated string's pieces: `"a ${x} b ${y} c"`
@@ -32,7 +32,7 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 /// text between the braces, holes as placeholders. `Component` is an
 /// imported component's word, which opens an instance. `Octets` is a
 /// byte string `b"…"`, its `text` the spelling between the quotes.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide, On }
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide, On, Ctx }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters. A
@@ -94,32 +94,35 @@ export type LexResult = { tokens: List<Token>, docs: List<DocComment>, file_doc:
 /// Membership in the single-char operator set; `-`, `<`, `>`, `!`,
 /// `.`, and `|` reach here only after their two-char munches have
 /// failed.
-/// A single-character operator, by code — the scanner asks this of
-/// every character that is not a name, a number or a space.
-fn is_single_op_code(c: int) -> bool {
-    c == 61 ||
-        c == 124 ||
-        c == 40 ||
-        c == 41 ||
-        c == 42 ||
-        c == 43 ||
-        c == 63 ||
-        c == 58 ||
-        c == 44 ||
-        c == 45 ||
-        c == 60 ||
-        c == 62 ||
-        c == 123 ||
-        c == 125 ||
-        c == 47 ||
-        c == 37 ||
-        c == 33 ||
-        c == 91 ||
-        c == 93 ||
-        c == 46 ||
-        c == 38 ||
-        c == 94 ||
-        c == 126
+/// A single-character operator's text, by code, absent for any other character — the scanner asks
+/// this of every character that is not a name, a number or a space.
+fn single_op(c: int) -> string? {
+    match c {
+        61 -> "=",
+        124 -> "|",
+        40 -> "(",
+        41 -> ")",
+        42 -> "*",
+        43 -> "+",
+        63 -> "?",
+        58 -> ":",
+        44 -> ",",
+        45 -> "-",
+        60 -> "<",
+        62 -> ">",
+        123 -> "{",
+        125 -> "}",
+        47 -> "/",
+        37 -> "%",
+        33 -> "!",
+        91 -> "[",
+        93 -> "]",
+        46 -> ".",
+        38 -> "&",
+        94 -> "^",
+        126 -> "~",
+        _ -> null,
+    }
 }
 // the bitwise three: `&` and `^` reach here only after `&&`
 // failed its munch, and `~` has no two-character form at all
@@ -246,8 +249,7 @@ fn opens_syntax(raw: List<Token>, just: Token?) -> bool {
 
 /// The name token before a `{` just consumed, or null.
 fn word_before_brace(raw: List<Token>, just: Token?) -> Token? {
-    if just == null { return null }
-    if just!.kind != TokenKind.Op || just!.text != "{" { return null }
+    if just?.kind != TokenKind.Op || just?.text != "{" { return null }
     if raw.length < 2 { return null }
     let before = raw[raw.length - 2]
     if before.kind == TokenKind.Name { before } else { null }
@@ -556,6 +558,23 @@ fn two_char_at(src: string, n: int, i: int) -> string? {
     two_char_of(src.char_code(i), src.char_code(i + 1))
 }
 
+/// The name, or the operator that is no brace, starting at `i`, whose first character is `c`: a
+/// token no context routes and no block opens, scanned as `scan_step` scans it; absent for any other
+/// start.
+fn plain_token(src: string, n: int, i: int, c: int) -> Token? {
+    if c == 98 && i + 1 < n && src.char_code(i + 1) == 34 { return null }
+    if is_name_start(c) {
+        let j = scan_while(src, n, i + 1, is_name_cont)
+        return token(TokenKind.Name, src.substring(i, j), i, j)
+    }
+    if c == 47 && i + 1 < n && src.char_code(i + 1) == 47 { return null }
+    let pair? = two_char_at(src, n, i) else {
+        let single? = single_op(c) else { return null }
+        return if c == 123 || c == 125 { null } else { token(TokenKind.Op, single, i, i + 1) }
+    }
+    token(TokenKind.Op, pair, i, i + 2)
+}
+
 /// One token (or skip, or error) starting at `i`.
 fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
     let c = src.char_code(i)
@@ -596,7 +615,7 @@ fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
         }
         // A two-char op munches before its single-char prefix.
         pair != null -> emit(token(TokenKind.Op, pair!, i, i + 2), i + 2)
-        is_single_op_code(c) -> emit(token(TokenKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
+        single_op(c) != null -> emit(token(TokenKind.Op, single_op(c)!, i, i + 1), i + 1)
         _ -> refused(
             if c < 128 { "unexpected character `${src.substring(i, i + 1)}`" } else { "unexpected character" },
             i,
@@ -628,7 +647,7 @@ fn line_boundary(tokens: List<Token>, j: int) -> bool {
 /// and the line does not continue; leading breaks always drop.
 fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> List<Token> {
     mut out: List<Token> = []
-    mut open: List<string> = []
+    mut open: List<bool> = []
     // A COLUMN, and a file's first statement stands at column zero.
     // `span.lo` is a byte OFFSET, which only reads as a column while
     // the first token is on line one — a leading comment makes
@@ -658,12 +677,16 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
             }
             i = j
         } else {
-            if opens_bracket(t) { opened_at.push(line_indent) }
-            if closes_bracket(t) && !opened_at.is_empty() {
+            let bracket = bracket_of(t)
+            if bracket > 0 {
+                opened_at.push(line_indent)
+                open.push(t.text.char_code() == "{".char_code())
+            }
+            if bracket < 0 && !opened_at.is_empty() {
                 line_indent = opened_at.last()!
                 opened_at = opened_at.slice(0, opened_at.length - 1)
             }
-            open = opened(open, t)
+            if bracket < 0 && !open.is_empty() { let _ = open.pop() }
             out.push(t)
             i = i + 1
         }
@@ -690,22 +713,18 @@ fn continued_by(raw: List<Token>, j: int, deeper: bool, last: Token) -> bool {
 }
 
 /// Whether a line break separates here: outside every bracket, or
-/// directly inside a brace — inside `(` or `[` it never does.
-fn separates(open: List<string>) -> bool {
-    let top: string? = open.last()
-    top == null || top! == "{"
+/// directly inside a brace — inside `(` or `[` it never does. `open` holds,
+/// for each bracket open, whether it is a brace.
+fn separates(open: List<bool>) -> bool { open.last() ?? true }
+
+/// What the token `t` does to the brackets open around it, read by its one character: 1 opens one,
+/// -1 closes one, 0 neither.
+fn bracket_of(t: Token) -> int {
+    if t.kind != TokenKind.Op || t.text.length != 1 { return 0 }
+    let c = t.text.char_code()
+    if c == "(".char_code() || c == "[".char_code() || c == "{".char_code() { return 1 }
+    if c == ")".char_code() || c == "]".char_code() || c == "}".char_code() { 0 - 1 } else { 0 }
 }
-
-/// The bracket stack after a token: an opener pushes, a closer pops.
-fn opened(open: List<string>, t: Token) -> List<string> {
-    if opens_bracket(t) { return open.concat([t.text]) }
-    if closes_bracket(t) && !open.is_empty() { return open.slice(0, open.length - 1) }
-    open
-}
-
-fn opens_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == "(" || t.text == "[" || t.text == "{") }
-
-fn closes_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == ")" || t.text == "]" || t.text == "}") }
 
 /// A token after which the line continues — an operator that wants
 /// a right side, or the `or` between a pattern's alternatives.
@@ -725,11 +744,31 @@ fn continues(t: Token) -> bool {
 /// the next statement onto this line. The asymmetry belongs to the
 /// bracket, not to the operator; it is the `>>`-munch law at the
 /// LINE rather than the token.
-fn continuing_op(text: string) -> bool {
-    match text {
-        "+" or "-" or "*" or "/" or "%" or "==" or "!=" or "<" or "<=" or ">=" or "&&" or "||" or "??" or "|>" or "=" or "->" or "," -> true,
-        _ -> false,
-    }
+fn continuing_op(text: string) -> bool { continuing_ops().has(text) }
+
+/// The operators `continuing_op` names, as a set made once a process.
+once fn continuing_ops() -> Map<string, bool> {
+    mut ops: Map<string, bool> = {}
+    for op in [
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">=",
+        "&&",
+        "||",
+        "??",
+        "|>",
+        "=",
+        "->",
+        ",",
+    ] { ops.set(op, true) }
+    ops
 }
 
 /// The whole input, one ScanStep at a time; then the line policy, a
@@ -794,24 +833,7 @@ fn lex_words(
 /// interleaved line already pushed straight to the list — so the
 /// list is sorted once, the printer's cursor being a single forward
 /// walk that a single out-of-order entry would desync for good.
-fn sorted_remarks(rs: List<Remark>) -> List<Remark> {
-    mut remaining = rs
-    mut out: List<Remark> = []
-    while !remaining.is_empty() {
-        let m = lowest_at_index(remaining)
-        out.push(remaining[m])
-        remaining = remaining.slice(0, m).concat(remaining.slice(m + 1, remaining.length))
-    }
-    out
-}
-
-fn lowest_at_index(rs: List<Remark>) -> int {
-    mut best = 0
-    for i, r in rs {
-        if r.at < rs[best].at { best = i }
-    }
-    best
-}
+fn sorted_remarks(rs: List<Remark>) -> List<Remark> { sorted_by(rs, (a: Remark, b: Remark) -> a.at < b.at) }
 
 /// What the scanner is INSIDE, innermost last: a quote's or block's
 /// body, a string's hole, or a template hole. A hole's brace depth
@@ -978,8 +1000,24 @@ impl Lexing {
             self.src.char_code(self.i + 1) == 123
     }
 
-    /// One scanner step, routed by what the scanner is inside.
+    /// One scanner step: a run of blanks skipped whole, a token no context routes pushed as it is
+    /// scanned, and any other step routed by what the scanner is inside.
     mut fn step() {
+        let c = self.src.char_code(self.i)
+        if is_space(c) {
+            self.i = scan_while(self.src, self.n, self.i + 1, is_space)
+            return
+        }
+        let plain? = plain_token(self.src, self.n, self.i, c) else {
+            self.scanned()
+            return
+        }
+        self.push(plain)
+        self.i = plain.span.hi
+    }
+
+    /// One scanner step through `scan_step`, routed by what the scanner is inside.
+    mut fn scanned() {
         let s = scan_step(self.src, self.n, self.i, self.interpolate)
         let routed = self.routed(s)
         if routed.token != null { self.push(routed.token!) }
@@ -1055,6 +1093,7 @@ impl Lexing {
     /// source; a block word's `{` opens a RAW frame. A `{` that opens
     /// nothing nests the enclosing context — the one depth law.
     mut fn opened_blocks(just: Token?) {
+        if just?.kind != TokenKind.Op || just?.text != "{" { return }
         if opens_grammar(self.sink(), just) || opens_syntax(self.sink(), just) {
             let body = scan_raw_block(self.src, self.n, self.i, "grammar")
             if body.token != null { self.push(body.token!) }
@@ -1072,7 +1111,7 @@ impl Lexing {
             self.opened_frame(true)
             return
         }
-        if just != null && just!.kind == TokenKind.Op && just!.text == "{" { self.nested(1) }
+        self.nested(1)
     }
 
     mut fn opened_frame(raw: bool) {
@@ -1478,6 +1517,7 @@ export fn lex_blocks(
     lexed with { tokens: [when {
         opens_instance(ts, i, components, named, keywords) -> t with { kind: TokenKind.Component }
         opens_state(ts, i) -> t with { kind: TokenKind.State }
+        opens_ctx(ts, i) -> t with { kind: TokenKind.Ctx }
         opens_on(ts, i, keywords) -> t with { kind: TokenKind.On }
         _ -> t
     } for i, t in ts] }
@@ -1487,13 +1527,26 @@ export fn lex_blocks(
 /// SOFT keyword: it means `state` only where a binding follows, so a
 /// binding, a field or a property called `state` stays an ordinary name.
 /// `state NAME :` and `state NAME =` are the two shapes it claims, at a
-/// statement's start or a parameter's own mark position.
+/// statement's start — after the marks a member writes before it too
+/// (`@attr(.Value) state value: string`) — or a parameter's own mark position.
 fn opens_state(ts: List<Token>, i: int) -> bool {
     let t = ts[i]
     if t.kind != TokenKind.Name || t.text != "state" { return false }
-    if !starts_statement(ts, i) && !after_param_sep(ts, i) { return false }
+    if !starts_member(ts, i) && !after_param_sep(ts, i) { return false }
     if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
     i + 2 < ts.length && (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
+}
+
+/// Whether the token at `i` is `ctx` opening a context's form — a SOFT keyword: `ctx NAME :` declares
+/// one and `ctx NAME =` sets one, at a statement's start; `ctx.NAME` reads one, where no `.` stands
+/// before it. Anywhere else `ctx` is an ordinary name.
+fn opens_ctx(ts: List<Token>, i: int) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name || t.text != "ctx" || i + 2 >= ts.length { return false }
+    if ts[i + 1].lit_matches(".") { return ts[i + 2].kind == TokenKind.Name && (i == 0 || !ts[i - 1].lit_matches(".")) }
+    starts_statement(ts, i) &&
+        ts[i + 1].kind == TokenKind.Name &&
+        (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
 }
 
 /// Whether `i` stands where a parameter's mark does: right after the
@@ -1706,7 +1759,7 @@ fn heads_instance(ts: List<Token>, at: int, keywords: List<string>) -> bool {
     match ts[at].kind {
         .Str or .IStrBegin or .Num -> true,
         .Name -> !keywords.contains(ts[at].text) || value_words.contains(ts[at].text),
-        .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Octets or .Env or .Provide or .On -> false,
+        .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Octets or .Env or .Provide or .On or .Ctx -> false,
     }
 }
 

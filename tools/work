@@ -2,7 +2,7 @@
 # The whole path from new work to main:
 #
 #   sh tools/work new <name>   a worktree ../avra-<name> off main, and its Sprite
-#   sh tools/work run <cmd>    run it on this lane's Sprite, streamed, its exit status
+#   sh tools/work run <cmd>    run it on a GitHub runner (--sprite: this lane's Sprite), its exit status
 #   sh tools/work test         what this branch touches, on this lane's Sprite
 #   sh tools/work land         push, PR, arm auto-merge — no Sprite involved
 #   sh tools/work status       PRs and their merge state; each lane and its Sprite
@@ -64,16 +64,26 @@ main_tree() {
 # WHAT A BUILT COMPILER WAS BUILT FROM, said by `make avra` beside the
 # binary (build/.avra-built-from): the compiler source's hash, then the
 # commit it stood at — or `edited` when that source differed from the
-# commit, which only its own tree can account for.
+# commit, which only its own tree can account for — then its GENERATION
+# of that source: one more than its builder's where the builder (whose
+# record `$2` names) was built from the same source, else 1. Two
+# generations of one source reach its fixed point; a compiler built once
+# from another source's is not that source's compiler yet.
 built_from() {
     tree=${1:-$PWD}
     at=$(git -C "$tree" rev-parse HEAD 2>/dev/null) || at=edited
     if [ -n "$(git -C "$tree" status --porcelain -- $(compiler_paths "$tree") 2>/dev/null | grep -v '/tests/' | head -n 1)" ]; then at=edited; fi
-    echo "$(compiler_hash "$tree") $at"
+    hash=$(compiler_hash "$tree")
+    gen=1
+    if [ -n "${2:-}" ] && [ -s "$2" ]; then
+        read -r by_hash _by_at by_gen < "$2" || :
+        if [ "$by_hash" = "$hash" ]; then gen=$(( ${by_gen:-1} + 1 )); fi
+    fi
+    echo "$hash $at $gen"
 }
 
 # THE DEPOT: every compiler `make avra` builds from a clean tree is kept, stamped, under the user's cache
-# (newest AVRA_DEPOT_KEEP, default 3), so a fresh worktree has a compiler to start from after the
+# (newest AVRA_DEPOT_KEEP, default 8), so a fresh worktree has a compiler to start from after the
 # worktree that built it is gone. A Linux binary from a published release cannot run on macOS, so on a
 # Mac the depot (or a worktree) is the only source short of `make bootstrap`.
 depot() { echo "${AVRA_COMPILER_DEPOT:-${XDG_CACHE_HOME:-$HOME/.cache}/avra/compilers}"; }
@@ -83,7 +93,7 @@ depot() { echo "${AVRA_COMPILER_DEPOT:-${XDG_CACHE_HOME:-$HOME/.cache}/avra/comp
 deposit() {
     tree=${1:-$PWD}
     [ -x "$tree/build/avra" ] && [ -s "$tree/build/.avra-built-from" ] || return 0
-    read -r hash at < "$tree/build/.avra-built-from" || return 0
+    read -r hash at _gen < "$tree/build/.avra-built-from" || return 0
     [ "$at" != edited ] || return 0
     d=$(depot)/$hash
     mkdir -p "$d"
@@ -91,7 +101,7 @@ deposit() {
         [ ! -f "$tree/build/$f" ] || cp -p "$tree/build/$f" "$d/$f"
     done
     touch "$d"
-    keep=${AVRA_DEPOT_KEEP:-3}
+    keep=${AVRA_DEPOT_KEEP:-8}
     ls -t "$(depot)" | tail -n +$((keep + 1)) | while IFS= read -r old; do find "$(depot)/$old" -delete; done
 }
 
@@ -112,7 +122,7 @@ seed_local() {
     for tree in $holders; do
         [ "$tree" != "$1/build" ] || continue
         [ -x "$tree/avra" ] && [ -s "$tree/.avra-built-from" ] || continue
-        read -r hash at < "$tree/.avra-built-from" || continue
+        read -r hash at _gen < "$tree/.avra-built-from" || continue
         if [ "$hash" = "$want" ]; then best=$tree; best_n=0; break; fi
         [ "$at" != edited ] && git -C "$1" merge-base --is-ancestor "$at" origin/main 2>/dev/null || continue
         n=$(git -C "$1" rev-list --count "$at..origin/main" -- $paths ':(exclude,glob)**/tests/**' 2>/dev/null) || continue
@@ -333,13 +343,29 @@ ladder_ship() {
     echo "$ls_key:$ls_plan"
 }
 # The compiler to stand as a lane's builder, matched by COMPILER KEY, never by commit: `<key> exact` when
-# a compiler is published for the key of the tree's merge-base with origin/main (a commit that moved no
+# a compiler is published for the key of the tree's base point (`base_point`: main or a base branch) (a commit that moved no
 # compiler source shares its parent's key), else `<key> ancestor <n>` for the nearest published key
 # among its first-parent ancestors (n commits back, at most AVRA_BUILDER_BACK, 40), else nothing.
+# THE BASES: the branches whose pushes publish their compiler (the push branches of .github/workflows/checks.yml).
+bases() {
+    awk '/^  push:/ { on = 1 } on && /branches:/ { gsub(/.*\[|\].*|,/, " "); print; exit }' .github/workflows/checks.yml 2>/dev/null | tr ' ' '\n' | grep -v '^main$' | grep . || :
+}
+# Where this tree leaves the line it was cut from: the nearest merge-base with main or a base, the
+# one fewest commits behind HEAD. A lane off a base stands on that base's published compiler.
+base_point() {
+    best=
+    bestn=
+    for ref in origin/main $(for b in $(bases); do echo "origin/$b"; done); do
+        c=$(git merge-base HEAD "$ref" 2>/dev/null) || continue
+        n=$(git rev-list --count "$c..HEAD")
+        if [ -z "$best" ] || [ "$n" -lt "$bestn" ]; then best=$c; bestn=$n; fi
+    done
+    [ -n "$best" ] && echo "$best"
+}
 builder_key() {
     (
         cd "$1"
-        mb=$(git merge-base HEAD origin/main 2>/dev/null) || exit 0
+        mb=$(base_point) || exit 0
         n=0
         seen=
         first=1
@@ -364,9 +390,20 @@ compiler_hash() {
     (
         cd "$1"
         compiler_paths "$1" | while IFS= read -r p; do
-            find "$p" -type f ! -path '*/build/*' ! -path '*/.avra-cache/*' ! -path '*/.claude/*' ! -path '*/tests/*' 2>/dev/null
-        done | LC_ALL=C sort -u | xargs shasum -a 256
+            sources_under "$p"
+        done | grep -v -e '/build/' -e '/\.avra-cache/' -e '/\.claude/' -e '/tests/' | LC_ALL=C sort -u | xargs shasum -a 256
     ) | shasum -a 256 | cut -d' ' -f1
+}
+
+# THE SOURCE FILES UNDER `$1` that git tracks, as they stand in the tree — so nothing a build or a run
+# leaves beside the source (a linked `src/main`, a print, a store), ignored or not, moves the hash: two
+# clean trees at one commit hash alike, and a run never moves it. Outside a git tree, every file there.
+sources_under() {
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git ls-files -- "$1" | while IFS= read -r f; do [ ! -f "$f" ] || echo "$f"; done
+    else
+        find "$1" -type f
+    fi
 }
 
 # ONE COMMAND STRING, from either ONE command arg (a shell string, run as
@@ -721,7 +758,110 @@ carry() {
     }
 }
 
+# THE DEFAULT BACKEND: a GitHub runner (.github/workflows/lane-run.yml). The worktree as it stands,
+# uncommitted files included, is one commit on `run/<lane>` whose message is the order; the push
+# starts the run, and this follows it to the command's status (the log's `lane-run: status <n>`).
+# The ref is deleted after; its caches stay, keyed by the lane, so the next run is warm.
+run_github() {
+    minutes=15
+    builder=""
+    [ "${1:-}" != --builder ] || { builder=1; shift; }
+    if [ "${1:-}" = --for ]; then
+        case ${2:-} in '' | *[!0-9]*) usage run >&2; exit 64 ;; esac
+        minutes=$2
+        shift 2
+    fi
+    [ "${1:-}" != --browser ] || die "the browser leg runs on a Sprite alone — \`run --sprite --browser …\`"
+    case "$*" in "make try"* | "make -s try"*) builder=1 ;; esac
+    case ${1:-} in '' | -*) [ -z "${1:-}" ] || echo "work: \`run\` has no flag \`$1\`" >&2; usage run >&2; exit 64 ;; esac
+    inside
+    cmd=$(assemble "$@")
+    tree=$(git rev-parse --show-toplevel)
+    lane=$(basename "$tree" | sed 's/^avra-//')
+    ref=run/$lane
+    wf=lane-run.yml
+    t0=$(date +%s)
+    live=$($gh_ run list --workflow "$wf" --branch "$ref" --json databaseId,status \
+        -q '[.[] | select(.status != "completed")][0].databaseId // empty' 2>/dev/null) || live=
+    [ -z "$live" ] || { echo "work: BUSY — run $live is live on $ref; \`gh run cancel $live\` ends it" >&2; exit 76; }
+    bk=
+    if [ -n "$builder" ]; then
+        bk=$(builder_key "$tree")
+        [ -n "$bk" ] || echo "work: no compiler is published for the merge-base or its recent ancestors — the run builds the tree's own" >&2
+    fi
+    snap=$(snapshot "$tree" "$(printf 'lane-run: %s\n\nlane: %s\nminutes: %s\nbuilder: %s\ncmd-b64: %s\n' "$lane" "$lane" "$minutes" "${bk%% *}" "$(printf '%s' "$cmd" | base64 | tr -d '\n')")") ||
+        die "could not snapshot the worktree"
+    git push -q -f origin "$snap:refs/heads/$ref" 2>/dev/null || { echo "work: CONNECTION — could not push $ref" >&2; exit 74; }
+    echo "work: github — $ref at $(printf '%s' "$snap" | cut -c1-12), bound $minutes min: $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
+    id=
+    for _ in $(seq 1 30); do
+        id=$($gh_ run list --workflow "$wf" --branch "$ref" --json databaseId,headSha \
+            -q ".[] | select(.headSha == \"$snap\") | .databaseId" 2>/dev/null | head -n 1) || id=
+        [ -z "$id" ] || break
+        sleep 3
+    done
+    [ -n "$id" ] || { git push -q origin ":refs/heads/$ref" 2>/dev/null || :; echo "work: CONNECTION — no run started for $ref within 90s" >&2; exit 74; }
+    url=$($gh_ run view "$id" --json url -q .url 2>/dev/null || :)
+    echo "work: github — run $id $url" >&2
+    trap '$gh_ run cancel "$id" >/dev/null 2>&1 || :; echo "work: COMMAND — stopped (run $id cancelled), $(gh_since)s" >&2; exit 130' INT
+    follow_github "$id" $(( (minutes + 60) * 60 )) || exit $?
+    trap - INT
+    github_status "$id"
+    git push -q origin ":refs/heads/$ref" 2>/dev/null || :
+    case $st in
+        0) echo "work: github — passed, $(gh_since)s ($url)" >&2 ;;
+        70) echo "work: COMMAND — this tree's compiler or libraries did not build, $(gh_since)s ($url)" >&2 ;;
+        124) echo "work: COMMAND — stopped at its bound (\`run --for <minutes>\` raises it), $(gh_since)s ($url)" >&2 ;;
+        143) echo "work: COMMAND — the run ended without a status (cancelled?), $(gh_since)s ($url)" >&2 ;;
+        *) echo "work: COMMAND — exit $st, $(gh_since)s ($url)" >&2 ;;
+    esac
+    return "$st"
+}
+gh_since() { echo $(($(date +%s) - t0)); }
+
+# snapshot <tree> <message>: the worktree as it stands — tracked edits and untracked files git does
+# not ignore — as one commit over HEAD, through a scratch index, so the lane's own index is untouched.
+snapshot() {
+    idx=$(mktemp)
+    (
+        export GIT_INDEX_FILE="$idx"
+        cd "$1" && git read-tree HEAD && git add -A . && git commit-tree "$(git write-tree)" -p HEAD -m "$2"
+    ) && s=0 || s=$?
+    rm -f "$idx"
+    return "$s"
+}
+
+# follow_github <run> <bound s>: says each step as it starts, until the run completes.
+follow_github() {
+    step=
+    while :; do
+        [ "$(gh_since)" -lt "$2" ] || { echo "work: CONNECTION — run $1 did not finish within $(($2 / 60)) min of following" >&2; return 74; }
+        view=$($gh_ run view "$1" --json status,jobs \
+            -q '.status + " " + ([.jobs[0].steps[]? | select(.status == "in_progress") | .name][0] // "")' 2>/dev/null) || { sleep 10; continue; }
+        [ "${view%% *}" != completed ] || return 0
+        now=${view#* }
+        [ -z "$now" ] || [ "$now" = "$step" ] || { step=$now; echo "work: github — $(gh_since)s: $step" >&2; }
+        sleep 10
+    done
+}
+
+# github_status <run>: prints the command's output and sets `st` to its status; a run that never
+# reached the command prints its failed step's tail on stderr and sets 70, or 143 when nothing
+# failed (cancelled).
+github_status() {
+    log=$($gh_ run view "$1" --log 2>/dev/null) || log=
+    printf '%s\n' "$log" | awk -F '\t' '$2 == "command" { sub(/^[^ ]* /, "", $3); if (said && $3 !~ /^##\[/) print $3; if ($3 ~ /^##\[endgroup\]/) said = 1 }' | grep -v '^lane-run: status ' || :
+    st=$(printf '%s\n' "$log" | sed -n 's/.*lane-run: status \([0-9][0-9]*\).*/\1/p' | tail -n 1)
+    if [ -z "$st" ]; then
+        failed=$($gh_ run view "$1" --json jobs -q '[.jobs[0].steps[]? | select(.conclusion == "failure") | .name][0] // ""' 2>/dev/null || :)
+        printf '%s\n' "$log" | awk -F '\t' -v s="$failed" '$2 == s { sub(/^[^ ]* /, "", $3); print $3 }' | tail -n 40 >&2
+        if [ -n "$failed" ]; then st=70; else st=143; fi
+    fi
+}
+
 run() {
+    [ "${1:-}" = --sprite ] || { run_github "$@"; return; }
+    shift
     minutes=15
     browser=""
     builder=""
@@ -804,7 +944,7 @@ run() {
             "") echo "work: no compiler is published for the merge-base or its recent ancestors — the run takes the tree's own route" >&2 ;;
             *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
             *)
-                mb=$(git -C "$tree" merge-base HEAD origin/main)
+                mb=$(cd "$tree" && base_point)
                 mbk=$(cd "$tree" && python3 tools/compiler_release.py key-of "$mb")
                 route="builderold:${bk%% *}:$mbk"
                 echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2
@@ -1206,7 +1346,7 @@ wait_landed() {
 usage() {
     case ${1:-} in
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
-        run) echo "usage: sh tools/work run [--builder] [--for <minutes>] [--browser] <cmd…>   — run it on this lane's Sprite (--builder keeps the merge-base's published compiler as the standing one, never building this tree's, so an edit loop's store stays warm — \`make try\` asks for it itself; --browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
+        run) echo "usage: sh tools/work run [--sprite] [--builder] [--for <minutes>] [--browser] <cmd…>   — run it on a GitHub runner over this worktree as it stands, uncommitted files included (.github/workflows/lane-run.yml), and answer its status; --sprite runs it on this lane's Sprite instead (--builder keeps the merge-base's published compiler as the standing one, never building this tree's, so an edit loop's store stays warm — \`make try\` asks for it itself; --browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
         land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
@@ -1241,7 +1381,7 @@ case "${1:-}" in
     seed) shift; seed "$@" ;;
     builder-key) builder_key "${2:-$PWD}" ;;
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
-    built-from) built_from "${2:-$PWD}" ;;
+    built-from) built_from "${2:-$PWD}" "${3:-}" ;;
     deposit) deposit "${2:-$PWD}" ;;
     compiler) if [ "${2:-}" = --get ]; then get_compiler; else seed_local "$PWD"; fi ;;
     main-compiler) main_compiler ;;

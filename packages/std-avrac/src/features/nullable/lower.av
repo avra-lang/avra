@@ -5,7 +5,7 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins}
-use features.{LowerCx, property_of}
+use features.{LowerCx, StructSig, property_of, slot_want}
 
 /// The absence itself: a null constant, typed as absence. It has no
 /// carried layout — the ADOPTING edge gives it one (values.av,
@@ -91,9 +91,7 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx
         .region(cx.okness_of(r), e) { cx -> cx.payload_of(r, cx.type_at(e)) } else { cx ->
-            let leaving = cx.propagated(r)
-            cx.failing()
-            cx.emit(Ins.FnExit(leaving))
+            cx.fail_exit(cx.propagated(r))
             cx.hollow_of(cx.type_at(e))
         }
 }
@@ -101,8 +99,7 @@ fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
 /// The absent arm's whole story: the enclosing fn answers absence.
 fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
     let ret? = cx.enclosing_ret() else { return cx.lower_defect(e, "a propagation without an enclosing fn survived typing") }
-    cx.leaving(null)
-    cx.emit(Ins.FnExit(cx.absent_of(ret)))
+    cx.answer_exit(cx.absent_of(ret))
     cx.hollow_of(cx.type_at(e))
 }
 
@@ -151,12 +148,20 @@ fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId, name: string,
 fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId, name: string, answer: TypeId) -> Reg {
     let fields? = cx.fields_of(held) else { return cx.adopted(answer, false, chained_row(cx, e, carried, held, name)) }
     let at? = fields.slot_of(name) else { return memberless_chain(cx, e) }
-    let own = fields.types[at]
-    if !types_differ(own, answer) { return cx.field_read(carried, held, at, own) }
+    let own = slot_want(cx.view.types, fields, at)
+    if !types_differ(own, answer) { return field_value(cx, carried, held, fields, at) }
     if types_differ(own, cx.carried_type(answer)) {
         return cx.lower_defect(e, "a chain's member wears a type its lift does not expect")
     }
-    cx.adopted(answer, false, cx.field_read(carried, held, at, own))
+    cx.adopted(answer, false, field_value(cx, carried, held, fields, at))
+}
+
+/// What field `at` of the carried record holds: its slot, or what the
+/// cell in a `state` field's slot holds.
+fn field_value(mut cx: LowerCx, carried: Reg, held: TypeId, fields: StructSig, at: int) -> Reg {
+    let slot = cx.field_read(carried, held, at, fields.types[at])
+    if !fields.state_at(at) { return slot }
+    cx.proven_read(slot, 0, slot_want(cx.view.types, fields, at))
 }
 
 /// The property the receiver answers, lowered from the carried

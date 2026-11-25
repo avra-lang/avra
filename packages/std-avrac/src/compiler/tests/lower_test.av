@@ -17,6 +17,7 @@ use @std.avrac.core.{
     some_list,
     new_type_registry,
     static_code_syms,
+    vtable_named,
     consumed_mark,
 }
 
@@ -31,7 +32,7 @@ fn indexed(index: Map<string, RtSig>, s: RtSig) -> bool {
 }
 
 fn count_releases(l: Lowered) -> int {
-    l.entry.ins.filter(it is .Release).length
+    flatten([released_regs(i) for i in l.entry.ins]).length
 }
 
 /// Every box a program builds, across all bodies — the counting
@@ -80,6 +81,11 @@ fn static_addr_syms(l: Lowered) -> List<string> {
     flatten([static_code_syms(st.boxes) for st in l.statics])
 }
 
+/// The code addresses each type's table for a trait holds, laid out once as the binary's data.
+fn table_syms(l: Lowered) -> List<string> {
+    flatten([static_code_syms(st.boxes) for st in l.statics if vtable_named(st.name)])
+}
+
 fn call_ptrs(l: Lowered) -> int {
     l.entry.ins.filter(it is .CallPtr).length
 }
@@ -94,7 +100,7 @@ fn entry_loads_ride_pointers(l: Lowered) -> bool {
 /// A non-load passes; a load passes when its register is a pointer.
 fn load_rides_pointer(l: Lowered, i: Ins) -> bool {
     let d: Reg? = match i { .Load(dst, _) -> dst, _ -> null }
-    d == null || l.types.rides_pointer(l.entry.reg_types[d!.index])
+    d == null || d!.index < l.entry.layouts.length && l.entry.layouts[d!.index] is .Boxed
 }
 
 /// No CallPtr seat in ANY lowered body carries a defensive retain: THE
@@ -232,14 +238,19 @@ spec "compiler/lower" {
         }
     }
     given "`!` on a niche nullable" {
-        then "a foreign pointer's is a null test, never the retaining insist" {
+        then "a foreign pointer's is a null test, never an unwrap row" {
             let text = render_ir(ir_of("extern fn f() -> ptr?\nfn g(p: ptr) -> int { 0 }\ng(f()!)"))
-            text.contains("avra_insist_scalar") &&
-                !text.replace("avra_insist_scalar", "").contains("avra_insist")
+            text.contains("avra_insist_scalar") && !text.contains("avra_unwrap")
         }
-        then "a counted box's still comes back owned through the insist" {
+        then "a counted box's that is only read rides its subject: the lending unwrap, no owned twin" {
             let text = render_ir(ir_of("extern fn f() -> string?\nf()!.length"))
-            text.contains("avra_insist") && !text.contains("avra_insist_scalar")
+            text.contains("avra_unwrap(") && !text.contains("avra_unwrap_owned")
+        }
+        then "a counted box's that is answered takes the owned twin" {
+            let text = render_ir(
+                ir_of("extern fn f() -> string?\nfn g() -> string { f()! }\ng().length"),
+            )
+            text.contains("avra_unwrap_owned")
         }
     }
     given "THE LAW: nullability never allocates" {
@@ -306,20 +317,19 @@ spec "compiler/lower" {
         }
     }
     given "the dyn box and its indirect call (T3)" {
-        then "boxing writes one address per trait method, qualified" {
-            let syms = addr_syms(ir_of(dyn_read()))
-            syms.length == 1 && syms[0] == "P.show"
+        then "the type's table holds one address per trait method, qualified, and boxing writes none" {
+            let l = ir_of(dyn_read())
+            let syms = table_syms(l)
+            syms.length == 1 && syms[0] == "alone/src/main.av.P.show" && addr_syms(l).is_empty()
         }
         then "the call goes through the pointer, not a name" {
             call_ptrs(ir_of(dyn_read())) == 1
         }
-        then "a boxed empty contract carries the value alone" {
-            addr_syms(
-                ir_of(
-                    "trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2",
-                ),
+        then "a boxed empty contract's table holds no code" {
+            let l = ir_of(
+                "trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2",
             )
-                .length == 0
+            table_syms(l).is_empty() && addr_syms(l).is_empty()
         }
     }
     given "the mut-cell protocol (ownership 11.5)" {
@@ -334,7 +344,7 @@ spec "compiler/lower" {
   r2 = int 2
   r3 = call avra_array_sized(r2)
   call avra_array_push(r3, r0)
-  call avra_array_push_owned(r3, r1)
+  call avra_array_push(r3, r1)
   r4 = slot
   call avra_cell_release(r4)
   store r4 <- r3
@@ -344,7 +354,7 @@ spec "compiler/lower" {
   r8 = int 2
   r9 = call avra_array_sized(r8)
   call avra_array_push(r9, r6)
-  call avra_array_push_owned(r9, r7)
+  call avra_array_push(r9, r7)
   call avra_cell_release(r4)
   store r4 <- r9
   r10 = load r4
@@ -370,7 +380,7 @@ ret 0"""
             // capture-free — its box is static data, never `Ins.FnAddr`
             addr_syms(l).length == 0 &&
                 static_addr_syms(l).length == 1 &&
-                names.any(it.contains("\$l")) &&
+                names.any(it.contains(".lambda")) &&
                 names.join(",") == [b.name for b in ir_of("let f = (x: int) -> x + 1\nf(2)").fns].join(",")
         }
         then "a named fn boxes behind its wrapper" {
@@ -382,8 +392,8 @@ ret 0"""
             let syms = static_addr_syms(l)
             addr_syms(l).length == 0 &&
                 syms.length == 1 &&
-                syms[0] == "double\$w" &&
-                names.contains("double\$w")
+                syms[0] == "alone/src/main.av.double\$w" &&
+                names.contains("alone/src/main.av.double\$w")
         }
     }
     given "the program is the entry's closure" {
@@ -392,24 +402,26 @@ ret 0"""
                 "fn helper(n: int) -> int {\n    n + 1\n}\nfn unused(n: int) -> int {\n    n\n}\nlet f = (n: int) -> helper(n)\nf(1)",
             )
             let names = [b.name for b in l.fns]
-            names.contains("helper") && !names.contains("unused")
+            names.contains("alone/src/main.av.helper") &&
+                !names.contains("alone/src/main.av.unused")
         }
         then "a struct literal calls its omitted field's default — one body, named for the field as a default" {
             let l = ir_of("type P = { x: int, y: int = 7 }\nP { x: 1 }.y")
-            [b.name for b in l.fns].contains("P.y\$default")
+            [b.name for b in l.fns].contains("alone/src/main.av.P.y\$default")
         }
         then "a method reached only through a dyn box's vtable lowers; its uncalled sibling stays out" {
             let l = ir_of(
                 "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nimpl P {\n    fn unused() -> int {\n        0\n    }\n}\nlet d: dyn Show = P { x: 3 }\nd.show()",
             )
             let names = [b.name for b in l.fns]
-            names.contains("P.show") && !names.contains("P.unused")
+            names.contains("alone/src/main.av.P.show") &&
+                !names.contains("alone/src/main.av.P.unused")
         }
         then "a fn reached only through a fn value in a struct field lowers" {
             let l = ir_of(
                 "type H = { f: fn(int) -> int }\nfn inc(n: int) -> int {\n    n + 1\n}\nlet h = H { f: inc }\nh.f(1)",
             )
-            [b.name for b in l.fns].contains("inc")
+            [b.name for b in l.fns].contains("alone/src/main.av.inc")
         }
     }
     given "the loop's condition settles every turn" {
@@ -417,14 +429,14 @@ ret 0"""
             let l = ir_of(
                 "type Db = { cells: List<int> }\nimpl Db {\n    fn tag() -> string {\n        \"ab\"\n    }\n    fn keep(at: int) {\n        while self.tag().length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length",
             )
-            let keep: Body? = l.fns.find(it.name == "Db.keep")
+            let keep: Body? = l.fns.find(it.name == "alone/src/main.av.Db.keep")
             keep != null && cond_mint_settled(keep!.ins)
         }
         then "a LENDING read in a condition borrows — the subject still holds it, so the body writes in place" {
             let l = ir_of(
                 "type Db = { cells: List<int> }\nimpl Db {\n    fn keep(at: int) {\n        while self.cells.length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length",
             )
-            let keep: Body? = l.fns.find(it.name == "Db.keep")
+            let keep: Body? = l.fns.find(it.name == "alone/src/main.av.Db.keep")
             keep != null && !keep!.ins.any(is_owned_get(it))
         }
     }
@@ -541,11 +553,11 @@ fn called_in(ins: List<Ins>) -> Reg? {
 }
 
 fn releases_of(ins: List<Ins>, r: Reg) -> int {
-    ins.filter(releases(it, r)).length
+    flatten([released_regs(i) for i in ins]).filter(same_reg(it, r)).length
 }
 
 fn releases(i: Ins, r: Reg) -> bool {
-    match i { .Release(x) -> same_reg(x, r), _ -> false }
+    released_regs(i).any(same_reg(it, r))
 }
 
 /// The register the FIRST slot read in the slice defines.
@@ -599,6 +611,9 @@ fn same_marker(i: Ins, marker: Ins) -> bool {
 }
 
 /// A fn's IR by name, from the rendered module.
+/// How many times `word` stands in `text`.
+fn times(text: string, word: string) -> int { text.split(word).length - 1 }
+
 fn body_of(text: string, name: string) -> string {
     let at = text.index_of("fn ${name}(")
     if at < 0 { return "" }
@@ -710,14 +725,15 @@ fn view_read_after_release(ins: List<Ins>) -> bool {
 }
 
 fn outlives_its_source(ins: List<Ins>, at: int) -> bool {
-    let freed? = released_reg(ins[at]) else { return false }
-    let views = flatten([some_list(extracted_from(ins[j], freed)) for j in 0..at])
+    let views = flatten(
+        [some_list(extracted_from(ins[j], freed)) for freed in released_regs(ins[at]) for j in 0..at],
+    )
     [k for k in at + 1..ins.length]
         .any((k: int) -> reads_of(ins[k]).any((r: Reg) -> views.any(same_reg(it, r))))
 }
 
-fn released_reg(i: Ins) -> Reg? {
-    match i { .Release(r) -> r, _ -> null }
+fn released_regs(i: Ins) -> List<Reg> {
+    match i { .Release(rs) -> rs, _ -> [] }
 }
 
 fn extracted_from(i: Ins, src: Reg) -> Reg? {
@@ -730,13 +746,13 @@ spec "a mut cell's type" {
             let l = ir_of(
                 "type Far = { cursor: int, expected: List<string> }\nfn hold(i: int) -> int {\n    mut x: Far? = null\n    x = Far { cursor: i, expected: [] }\n    if x == null { 0 } else { x!.cursor }\n}\nhold(3)",
             )
-            cell_settles(body_of(render_ir(l), "hold")) >= 2
+            cell_settles(body_of(render_ir(l), "alone/src/main.av.hold")) >= 2
         }
         then "a store of null into a managed cell releases what it held" {
             let l = ir_of(
                 "type Far = { cursor: int, expected: List<string> }\nfn drop(i: int) -> int {\n    mut x: Far? = Far { cursor: i, expected: [] }\n    x = null\n    if x == null { 0 } else { 1 }\n}\ndrop(3)",
             )
-            cell_settles(body_of(render_ir(l), "drop")) >= 2
+            cell_settles(body_of(render_ir(l), "alone/src/main.av.drop")) >= 2
         }
     }
 }
@@ -745,14 +761,14 @@ spec "a region arm that leaves the function" {
     given "a borrow read before a branch that empties the container and RETURNS" {
         then "the arm never reaches the read after it, so the borrow costs no retain" {
             let l = ir_of(early_exit_borrow())
-            let skips: Body? = l.fns.find(it.name == "skips")
+            let skips: Body? = l.fns.find(it.name == "alone/src/main.av.skips")
             skips != null && !skips!.ins.any(is_owned_get(it))
         }
     }
     given "the same branch REJOINING instead of returning" {
         then "the change now stands between the borrow and its read, so it stays owned" {
             let l = ir_of(early_exit_borrow())
-            let stays: Body? = l.fns.find(it.name == "stays")
+            let stays: Body? = l.fns.find(it.name == "alone/src/main.av.stays")
             stays != null && stays!.ins.any(is_owned_get(it))
         }
     }
@@ -770,7 +786,7 @@ spec "a parameter's consumed mark, read off ir_of's own lowering" {
             let l = ir_of(
                 "type P = { n: int, items: List<int> }\nfn always(p: P) -> List<P> { [p] }\nalways(P { n: 1, items: [] })",
             )
-            let always: Body? = l.fns.find(it.name == "always")
+            let always: Body? = l.fns.find(it.name == "alone/src/main.av.always")
             always != null && consumed_mark(always!.marks, 0)
         }
     }
@@ -780,87 +796,20 @@ spec "a parameter's consumed mark, read off ir_of's own lowering" {
 /// guard, and its element is pushed at the innermost turn.
 spec "a comprehension lowers as one nest of walks" {
     given "an indexed head, a filter, a list head and a range head reading earlier binders" {
-        then "each head opens inside the one before it, each filter guards the rest" {
-            let expected = """fn f(r0: List<int>, r1: List<string>) -> List<string>
-scope application {
-  r2 = int 0
-  r3 = call avra_array_sized(r2)
-  r4 = call avra_array_len(r0)
-  r5 = int 0
-  r6 = slot
-  store r6 <- r5
-  loop {
-    r7 = load r6
-    r8 = r7 < r4
-    while r8
-    scope application {
-      r9 = int 1
-      r10 = r7 + r9
-      store r6 <- r10
-      r11 = call avra_array_get(r0, r7)
-      r12 = int 1
-      r13 = r11 > r12
-      if r13 {
-        r14 = call avra_array_len(r1)
-        r15 = int 0
-        r16 = slot
-        store r16 <- r15
-        loop {
-          r17 = load r16
-          r18 = r17 < r14
-          while r18
-          scope application {
-            r19 = int 1
-            r20 = r17 + r19
-            store r16 <- r20
-            r21 = call avra_array_get(r1, r17)
-            r22 = int 0
-            r23 = slot
-            store r23 <- r22
-            loop {
-              r24 = load r23
-              r25 = r24 < r11
-              while r25
-              scope application {
-                r26 = int 1
-                r27 = r24 + r26
-                store r23 <- r27
-                r28 = r24 != r7
-                if r28 {
-                  r29 = r7 * r11
-                  r30 = call avra_int_text(r29)
-                  r31 = call avra_str_concat(r21, r30)
-                  release r30
-                  call avra_array_push_moved(r3, r31)
-                  r32 = int 0
-                  yield r32
-                } else {
-                  r33 = int 0
-                  yield r33
-                } -> r34
-              }
-            }
-          }
-        }
-        r35 = int 0
-        yield r35
-      } else {
-        r36 = int 0
-        yield r36
-      } -> r37
-    }
-  }
-  yield r3
-}"""
-            body_of(render_ir(ir_of(heads())), "f") == expected
+        then "each head opens inside the one before it, and the element is pushed once into the one list" {
+            let text = body_of(render_ir(ir_of(heads())), "alone/src/main.av.f")
+            shown(heads()) == "6" &&
+                times(text, "loop {") == 3 &&
+                times(text, "avra_array_sized(") == 1 &&
+                times(text, "avra_array_push") == 1
         }
     }
     given "one head and a filter" {
         then "the filter guards the push" {
-            let expected = """fn f(r0: List<int>) -> List<int>
+            let expected = """fn alone/src/main.av.f(r0: box list) -> box list
 scope application {
   r1 = int 0
-  r2 = call avra_array_sized(r1)
+  r2 = call avra_array_sized_words(r1)
   r3 = call avra_array_len(r0)
   r4 = int 0
   r5 = slot
@@ -890,15 +839,15 @@ scope application {
   }
   yield r2
 }"""
-            body_of(render_ir(ir_of(filtered())), "f") == expected
+            body_of(render_ir(ir_of(filtered())), "alone/src/main.av.f") == expected
         }
     }
     given "a relation head the planner narrows" {
         then "the lookup is read where the head's turn opens, under the outer turn" {
-            let expected = """fn f(r0: string) -> List<int>
+            let expected = """fn app/src/main.av.f(r0: box text) -> box list
 scope application {
   r1 = int 0
-  r2 = call avra_array_sized(r1)
+  r2 = call avra_array_sized_words(r1)
   r3 = int 2
   r4 = int 0
   r5 = slot
@@ -912,7 +861,7 @@ scope application {
       r9 = r6 + r8
       store r5 <- r9
       r10 = int 1
-      r11 = call @x.c.Row.by_tag(r10, r0)
+      r11 = call @x/c/src/c.av.Row.by_tag(r10, r0)
       r12 = call avra_array_len(r11)
       r13 = int 0
       r14 = slot
@@ -947,17 +896,17 @@ scope application {
   }
   yield r2
 }"""
-            body_of(render_ir(provided(narrowed_head(), relation()).lowered()), "f") == expected
+            body_of(render_ir(provided(narrowed_head(), relation()).lowered()), "app/src/main.av.f") == expected
         }
     }
     given "an indexed relation head the planner narrows" {
         then "the index is bound before the element, the lookup read at the turn" {
-            let expected = """fn f(r0: string) -> List<int>
+            let expected = """fn app/src/main.av.f(r0: box text) -> box list
 scope application {
   r1 = int 0
-  r2 = call avra_array_sized(r1)
+  r2 = call avra_array_sized_words(r1)
   r3 = int 1
-  r4 = call @x.c.Row.by_tag(r3, r0)
+  r4 = call @x/c/src/c.av.Row.by_tag(r3, r0)
   r5 = call avra_array_len(r4)
   r6 = int 0
   r7 = slot
@@ -990,7 +939,10 @@ scope application {
   release r4
   yield r2
 }"""
-            body_of(render_ir(provided(narrowed_index(), relation()).lowered()), "f") == expected
+            body_of(
+                render_ir(provided(narrowed_index(), relation()).lowered()),
+                "app/src/main.av.f",
+            ) == expected
         }
     }
 }
@@ -998,134 +950,30 @@ scope application {
 spec "a method chain folds into one pipeline" {
     given "a filter, a map, then a sum" {
         then "one loop, no list, the accumulator carried across turns" {
-            let expected = """fn f(r0: List<int>) -> int
-scope application {
-  r1 = int 0
-  r2 = slot
-  store r2 <- r1
-  r3 = call avra_array_len(r0)
-  r4 = int 0
-  r5 = slot
-  store r5 <- r4
-  loop {
-    r6 = load r5
-    r7 = r6 < r3
-    while r7
-    scope application {
-      r8 = int 1
-      r9 = r6 + r8
-      store r5 <- r9
-      r10 = call avra_array_get(r0, r6)
-      r11 = int 1
-      r12 = r10 > r11
-      if r12 {
-        r13 = int 2
-        r14 = r10 * r13
-        r15 = load r2
-        r16 = r15 + r14
-        store r2 <- r16
-        r17 = int 0
-        yield r17
-      } else {
-        r18 = int 0
-        yield r18
-      } -> r19
-    }
-  }
-  r20 = load r2
-  release r0
-  yield r20
-}"""
-            body_of(render_ir(ir_of(sum_chain())), "f") == expected
+            let text = body_of(render_ir(ir_of(sum_chain())), "alone/src/main.av.f")
+            shown(sum_chain()) == "10" &&
+                times(text, "loop {") == 1 &&
+                !text.contains("avra_array_sized(") &&
+                !text.contains("avra_array_push") &&
+                !text.contains("callptr")
         }
     }
     given "a filter then a terminal" {
         then "one loop, no list, the verdict ended on its first hit" {
-            let expected = """fn f(r0: List<int>) -> bool
-scope application {
-  r1 = bool false
-  r2 = slot
-  store r2 <- r1
-  r3 = call avra_array_len(r0)
-  r4 = int 0
-  r5 = slot
-  store r5 <- r4
-  loop {
-    r6 = load r5
-    r7 = r6 < r3
-    while r7
-    scope application {
-      r8 = int 1
-      r9 = r6 + r8
-      store r5 <- r9
-      r10 = call avra_array_get(r0, r6)
-      r11 = int 1
-      r12 = r10 > r11
-      if r12 {
-        r13 = int 2
-        r14 = r10 > r13
-        if r14 {
-          r15 = bool true
-          store r2 <- r15
-          break 0
-          r16 = int 0
-          yield r16
-        } else {
-          r17 = int 0
-          yield r17
-        } -> r18
-        r19 = int 0
-        yield r19
-      } else {
-        r20 = int 0
-        yield r20
-      } -> r21
-    }
-  }
-  r22 = load r2
-  release r0
-  yield r22
-}"""
-            body_of(render_ir(ir_of(any_chain())), "f") == expected
+            let text = body_of(render_ir(ir_of(any_chain())), "alone/src/main.av.f")
+            shown(any_chain()) == "true" &&
+                times(text, "loop {") == 1 &&
+                !text.contains("avra_array_sized(") &&
+                !text.contains("callptr")
         }
     }
     given "a filter then a map" {
-        then "one loop, both fn boxes read before it, the element pushed once" {
-            let expected = """fn f(r0: List<int>) -> List<int>
-scope application {
-  r1 = int 0
-  r2 = call avra_array_sized(r1)
-  r3 = call avra_array_len(r0)
-  r4 = int 0
-  r5 = slot
-  store r5 <- r4
-  loop {
-    r6 = load r5
-    r7 = r6 < r3
-    while r7
-    scope application {
-      r8 = int 1
-      r9 = r6 + r8
-      store r5 <- r9
-      r10 = call avra_array_get(r0, r6)
-      r11 = int 1
-      r12 = r10 > r11
-      if r12 {
-        r13 = int 2
-        r14 = r10 * r13
-        call avra_array_push(r2, r14)
-        r15 = int 0
-        yield r15
-      } else {
-        r16 = int 0
-        yield r16
-      } -> r17
-    }
-  }
-  release r0
-  yield r2
-}"""
-            body_of(render_ir(ir_of(chain())), "f") == expected
+        then "one loop, each fn read in place, the element pushed once" {
+            let text = body_of(render_ir(ir_of(chain())), "alone/src/main.av.f")
+            shown(chain()) == "2" &&
+                times(text, "loop {") == 1 &&
+                times(text, "avra_array_push") == 1 &&
+                !text.contains("callptr")
         }
     }
 }

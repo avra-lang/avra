@@ -20,7 +20,7 @@ use core.{
 }
 use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing, fills_type_seat}
 use @std.meta.{Diagnostic}
-use diagnostics.{refusal, loc_at}
+use diagnostics.{Voice, guessed, refusal, loc_at, said_as}
 use @std.errors.{Loc}
 
 export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
@@ -93,7 +93,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     // A declaration's NAME is source-known too: `@derive(Show)` must
     // reach the trait while the file's names are still being made.
     if declares &&
-        a.args.any((e: ExprId) -> !source_spelled(cx.view.store.expr(e)) && !names_a_decl(cx, e)) {
+        a.args.any((e: ExprId) -> !source_spelled(cx.view.store.valued(e)) && !names_a_decl(cx, e)) {
         computed_argument(cx, a)
         return
     }
@@ -239,91 +239,126 @@ fn at_annotation(cx: TypeCx, a: Annotation) -> Loc? {
 }
 
 fn not_a_fn(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.callee",
-                at_annotation(cx, a),
-                "an annotation names a fn over a declaration",
-                "`@${a.name}` names no fn",
-                "write `fn ${a.name}(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.callee", at_annotation(cx, a), names_no_fn(a.name)))
 }
 
 fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.receiver",
-                at_annotation(cx, a),
-                receiver_law,
-                "`${a.name}` takes nothing",
-                "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.receiver", at_annotation(cx, a), takes_nothing(a.name)))
+}
+
+/// An annotation whose name names no fn.
+export fn names_no_fn(name: string) -> Voice {
+    Voice {
+        message: "an annotation names a fn over a declaration",
+        label: "`@${name}` names no fn",
+        help: "write `fn ${name}(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it",
+    }
+}
+
+/// A mark whose word a module in reach exports as a mark's fn, which `home` brings and the file
+/// doesn't import.
+export fn mark_unimported(word: string, home: string) -> Voice {
+    Voice {
+        message: "a mark names a fn its file imports — the `use` shows where it comes from",
+        label: "`@${word}` is imported nowhere here",
+        help: "import it — `use ${home}`",
+    }
+}
+
+/// An annotation naming a fn that takes no declaration.
+export fn takes_nothing(name: string) -> Voice {
+    Voice {
+        message: receiver_law,
+        label: "`${name}` takes nothing",
+        help: "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum",
+    }
 }
 
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
-    let found = if counterfeit_meta(cx, seat) {
-        "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
+    let said = if counterfeit_meta(cx, seat) {
+        counterfeit_receiver(a.name, took)
     } else {
-        "`${a.name}` takes `${took}`, and this is ${a_kind(kind)}"
+        takes_another_kind(a.name, took, a_kind(kind))
     }
+    let _ = cx.spoken(said_as("annotation.receiver", at_annotation(cx, a), said))
+}
+
+/// `@${name}`, whose first seat takes `@std/meta`'s `took`, on a declaration of another kind,
+/// `found` in a refusal's words (`a fn`).
+export fn takes_another_kind(name: string, took: string, found: string) -> Voice { receiver_unfit("`${name}` takes `${took}`, and this is ${found}") }
+
+fn receiver_unfit(found: string) -> Voice {
+    Voice {
+        message: receiver_law,
+        label: found,
+        help: "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration",
+    }
+}
+
+fn wrong_count(mut cx: TypeCx, a: Annotation, least: int, most: int) {
     let _ = cx
         .spoken(
-            refusal(
-                "annotation.receiver",
+            said_as(
+                "annotation.seats",
                 at_annotation(cx, a),
-                receiver_law,
-                found,
-                "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration",
+                miscounted(a.name, "${least}", "${most}", "${a.args.length}"),
             ),
         )
 }
 
-fn wrong_count(mut cx: TypeCx, a: Annotation, least: int, most: int) {
-    let count = if least == most { "${most}" } else { "${least}..${most}" }
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.seats",
-                at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` takes ${count} after the declaration, this writes ${a.args.length}",
-                "write the arguments the annotation takes — `@${a.name}(…)`",
-            ),
-        )
+/// The annotation `name` written with `written` arguments, where its fn takes `least..most` after
+/// the declaration.
+export fn miscounted(name: string, least: string, most: string, written: string) -> Voice {
+    let count = if least == most { most } else { "${least}..${most}" }
+    Voice {
+        message: seats_law,
+        label: "`${name}` takes ${count} after the declaration, this writes ${written}",
+        help: "write the arguments the annotation takes — `@${name}(…)`",
+    }
 }
 
 fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
     let _ = cx
         .spoken(
-            refusal(
+            said_as(
                 "annotation.seats",
                 cx.loc_of(e),
-                seats_law,
-                "this seat of `${a.name}` takes `${cx.view.types.name_of(want)}`",
-                "an argument is evaluated at compile time and must fit the written seat",
+                seat_takes(a.name, cx.view.types.name_of(want)),
             ),
         )
+}
+
+/// An argument of `@${name}` that doesn't fit its seat, which takes `want`.
+export fn seat_takes(name: string, want: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "this seat of `${name}` takes `${want}`",
+        help: "an argument is evaluated at compile time and must fit the written seat",
+    }
 }
 
 /// A declaration-GENERATING annotation reaches only literals: its
 /// generated names must exist before the file's names are known, so
 /// its arguments run at the same moment, before any typed answer.
-fn computed_argument(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.seats",
-                at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` generates declarations, so its arguments come from the source alone",
-                "a computed argument needs typed answers that do not exist until the name it makes is known",
-            ),
-        )
+fn computed_argument(mut cx: TypeCx, a: Annotation) { let _ = cx.spoken(said_as("annotation.seats", at_annotation(cx, a), argument_computed(a.name))) }
+
+/// `@${name}`, which generates declarations, handed an argument the source doesn't spell.
+export fn argument_computed(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "`${name}` generates declarations, so its arguments come from the source alone",
+        help: "a computed argument needs typed answers that do not exist until the name it makes is known",
+    }
+}
+
+/// `@${ann}`, which generates declarations, handed the const `name`, whose value is no literal.
+export fn const_unspelled(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` generates declarations, so `${name}` must name a literal",
+        label: "names a value the source does not spell",
+        help: "a declaring annotation's argument is a literal, or a const whose value is one",
+    }
 }
 
 /// A declaration-generating annotation's fn must stand in another
@@ -331,15 +366,7 @@ fn computed_argument(mut cx: TypeCx, a: Annotation) {
 /// which are the very thing still being resolved.
 fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
     let _ = cx
-        .spoken(
-            refusal(
-                "annotation.seats",
-                at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` generates declarations and stands in this file",
-                "declare the annotation fn in another file — expanding it needs this file's names, which are still being made",
-            ),
-        )
+        .spoken(said_as("annotation.seats", at_annotation(cx, a), stands_in_this_file(a.name)))
 }
 
 /// THE `@derive` PROVIDER LAW, asked of every trait argument: its
@@ -362,10 +389,6 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
                 return true
             }
             let m = member!
-            if same_file(cx.view.decls.decl(m).file, cx.view.file) {
-                derived_same_file(cx, a)
-                return true
-            }
             // THE SEAT LAW REACHES THE SECOND HOP TOO. `@derive` itself
             // takes `Named`, which fits every declaration by design, so
             // the door above passes whatever is written — and the
@@ -424,15 +447,20 @@ fn derive_takes_another_kind(
 ) {
     let _ = cx
         .spoken(
-            refusal(
+            said_as(
                 "annotation.receiver",
                 cx.loc_of(e),
-                receiver_law,
-                "`${name}`'s `derive` takes `${cx.view.types.name_of(takes)}`, and this is ${a_kind(kind)}",
-                "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration",
+                derive_takes(name, cx.view.types.name_of(takes), a_kind(kind)),
             ),
         )
 }
+
+/// The trait `name`, whose `derive` takes `@std/meta`'s `took`, derived on a declaration of another
+/// kind, `found` in a refusal's words.
+export fn derive_takes(name: string, took: string, found: string) -> Voice { receiver_unfit("`${name}`'s `derive` takes `${took}`, and this is ${found}") }
+
+/// `@${name}`, whose first seat takes a type named `took` that `@std/meta` doesn't declare.
+export fn counterfeit_receiver(name: string, took: string) -> Voice { receiver_unfit("`${name}` takes `${took}` from another module, not `@std.meta.${took}`") }
 
 /// A declaration's kind in the words a refusal uses.
 fn a_kind(kind: DeclKind?) -> string {
@@ -441,63 +469,46 @@ fn a_kind(kind: DeclKind?) -> string {
 }
 
 /// A `@derive` argument that names something other than a trait.
-fn not_a_trait(mut cx: TypeCx, a: Annotation, e: ExprId, name: string) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.derive",
-                cx.loc_of(e),
-                derive_law_words,
-                "`${name}` is not a trait",
-                "`@${a.name}` names a trait — `trait ${name} { static fn derive(t: Type) -> List<Directive> }`",
-            ),
-        )
+fn not_a_trait(mut cx: TypeCx, a: Annotation, e: ExprId, name: string) { let _ = cx.spoken(said_as("annotation.derive", cx.loc_of(e), derives_no_trait(a.name, name))) }
+
+/// `@${annotation}` handed `name`, which is no trait.
+export fn derives_no_trait(annotation: string, name: string) -> Voice {
+    Voice {
+        message: derive_law_words,
+        label: "`${name}` is not a trait",
+        help: "`@${annotation}` names a trait — `trait ${name} { static fn derive(t: Type) -> List<Directive> }`",
+    }
 }
 
 /// A trait named by `@derive` that ships no associated `derive`.
-fn no_derive(mut cx: TypeCx, e: ExprId, name: string) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.derive",
-                cx.loc_of(e),
-                derive_law_words,
-                "`${name}` declares no `derive`",
-                "add `static fn derive(t: Type) -> List<Directive>` to the trait",
-            ),
-        )
-}
+fn no_derive(mut cx: TypeCx, e: ExprId, name: string) { let _ = cx.spoken(said_as("annotation.derive", cx.loc_of(e), derives_nothing(name))) }
 
-/// A `@derive` trait's associated `derive` must stand in another
-/// file: expanding needs this file's names, which are still being made.
-fn derived_same_file(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.seats",
-                at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` derives from a trait whose `derive` stands in this file",
-                "declare the trait — with its `derive` — in another file; expanding it needs this file's names, which are still being made",
-            ),
-        )
+/// A trait `name` a `@derive` names, which declares no `derive`.
+export fn derives_nothing(name: string) -> Voice {
+    Voice {
+        message: derive_law_words,
+        label: "`${name}` declares no `derive`",
+        help: "add `static fn derive(t: Type) -> List<Directive>` to the trait",
+    }
 }
 
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
     let shown = match cx.view.types.shape_of(ret) {
-        .List(e) if cx.view.types.name_of(e) == "Diagnostic" -> "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`",
+        .List(e) if cx.view.types.name_of(e) == "Diagnostic" -> foreign_diagnostics,
         rest -> "`${cx.view.types.name_of(ret)}`",
     }
     let _ = cx
-        .spoken(
-            refusal(
-                "annotation.answer",
-                at_annotation(cx, a),
-                "an annotation answers an effect",
-                "`${a.name}` answers ${shown}",
-                [effect_words(x) for x in effect_census].join("; "),
-            ),
-        )
+        .spoken(said_as("annotation.answer", at_annotation(cx, a), answers_no_effect(a.name, shown)))
+}
+
+/// The annotation `name`, whose fn answers `shown` — written as the refusal shows it — which is no
+/// effect.
+export fn answers_no_effect(name: string, shown: string) -> Voice {
+    Voice {
+        message: "an annotation answers an effect",
+        label: "`${name}` answers ${shown}",
+        help: [effect_words(x) for x in effect_census].join("; "),
+    }
 }
 
 /// The effects' words, one sentence per arm.
@@ -520,8 +531,20 @@ fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Diagnosti
     if x.kind != null && !is_kind_word(x.kind!) { return bad_kind(cx, a, x) }
     let here: Loc? = x.at ?? cx.view.stmt_loc(s)
     let kind = user_kind(cx.view.decls.package_of(d), x.kind) ?? "annotation.said"
-    let _ = cx
-        .spoken(refusal(kind, here, x.message, "refused by `@${a.name}`", x.help ?? said_help))
+    let _ = cx.spoken(said_as(kind, here, annotation_said(x.message, a.name, x.help)))
+}
+
+/// What the annotation `@${name}` said refusing the declaration: its words, and its help or the
+/// annotation's own way out.
+export fn annotation_said(message: string, name: string, help: string?) -> Voice { Voice { message: message, label: "refused by `@${name}`", help: help ?? said_help } }
+
+/// The annotation `@${name}` naming the kind `kind`, which is no word, saying `message`.
+export fn kind_unworded(name: string, kind: string, message: string) -> Voice {
+    Voice {
+        message: "an annotation's kind is a word",
+        label: "`@${name}` named `${kind}`, saying: ${message}",
+        help: "spell the kind `[A-Za-z0-9_-]+`, like `E1`",
+    }
 }
 
 /// A kind that is not a word is the ANNOTATION's mistake, spoken in
@@ -529,12 +552,10 @@ fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Diagnosti
 fn bad_kind(mut cx: TypeCx, a: Annotation, x: Diagnostic) {
     let _ = cx
         .spoken(
-            refusal(
+            said_as(
                 "annotation.kind",
                 at_annotation(cx, a),
-                "an annotation's kind is a word",
-                "`@${a.name}` named `${x.kind!}`, saying: ${x.message}",
-                "spell the kind `[A-Za-z0-9_-]+`, like `E1`",
+                kind_unworded(a.name, x.kind!, x.message),
             ),
         )
 }
@@ -543,32 +564,31 @@ fn bad_kind(mut cx: TypeCx, a: Annotation, x: Diagnostic) {
 /// against. The crossing reads and writes by SLOT, so a shape that
 /// moved reads a different value in every seat — the annotation
 /// cannot run at all.
-fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.meta",
-                at_annotation(cx, a),
-                "the compiler crosses `@std/meta`'s own shapes",
-                "the compiler was built against another `@std/meta` — ${moved}",
-                "build against the `@std/meta` this compiler ships",
-            ),
-        )
+fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) { let _ = cx.spoken(said_as("annotation.meta", at_annotation(cx, a), meta_foreign(moved))) }
+
+/// A loaded `@std/meta` whose shapes part from the ones this compiler was built against, where
+/// `moved` says the first that does.
+export fn meta_foreign(moved: string) -> Voice {
+    Voice {
+        message: "the compiler crosses `@std/meta`'s own shapes",
+        label: "the compiler was built against another `@std/meta` — ${moved}",
+        help: "build against the `@std/meta` this compiler ships",
+    }
 }
 
 fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
     let label = unsettled_label(a.name, why)
     if label.is_empty() { return }
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.unsettled",
-                at_annotation(cx, a),
-                "an annotation could not run",
-                label,
-                "an annotation runs at compile time from pure computation alone",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.unsettled", at_annotation(cx, a), could_not_run(label)))
+}
+
+/// An annotation that ran and stopped before it answered, `label` saying why.
+export fn could_not_run(label: string) -> Voice {
+    Voice {
+        message: "an annotation could not run",
+        label: label,
+        help: "an annotation runs at compile time from pure computation alone",
+    }
 }
 
 /// What a refusal says when the annotation gave no way out.
@@ -576,4 +596,92 @@ const said_help: string = "change the declaration the annotation refuses, or the
 
 const derive_law_words: string = "an annotation derives through a trait that declares `derive`"
 export const receiver_law: string = "an annotation's first seat says what it takes"
+/// A list of a `Diagnostic` another module declares, as an annotation's answer is shown.
+export const foreign_diagnostics: string = "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`"
+
 const seats_law: string = "an annotation's arguments fill its seats"
+
+/// `word`, written into a seat taking fields of `decl`, names none of `fields`.
+export fn no_such_field(word: string, decl: string, fields: List<string>) -> Voice {
+    guessed(
+        Voice {
+            message: seats_law,
+            label: "`${word}` is no field of `${decl}`",
+            help: "its fields are ${["`${f}`" for f in fields].join(", ")}",
+        },
+        word,
+        fields,
+    )
+}
+
+/// A seat of `@${name}` taking fields, written something other than a field's bare name.
+export fn field_not_bare(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "a field seat of `${name}` takes a field's name, written bare",
+        help: "write the field's name as it is declared — `@${name}(id)`",
+    }
+}
+
+/// `@${name}`, whose seats name fields, on a declaration with none, `found` in a refusal's words.
+export fn takes_fields(name: string, found: string) -> Voice {
+    Voice {
+        message: receiver_law,
+        label: "`${name}` takes fields of a record, and this is ${found}",
+        help: "an annotation that names fields stands on a record or a component",
+    }
+}
+
+/// The fn `name`, a seat of which takes fields, whose first seat takes no `Type`.
+export fn fields_without_type(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "a `Field` seat names fields of the declaration the annotation stands on, and `${name}`'s first seat takes no `Type`",
+        help: "make `${name}`'s first seat `t: Type`",
+    }
+}
+
+/// `@${ann}` generates `name`, which its file already declares.
+export fn generated_name_taken(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` generates `${name}`, which this file already declares",
+        label: "asked here",
+        help: "rename the written declaration, or the generated one",
+    }
+}
+
+/// `@${name}`, which generates declarations, standing in the file its annotation is written in.
+export fn stands_in_this_file(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "`${name}` generates declarations and stands in this file",
+        help: "declare the annotation fn in another file — expanding it needs this file's names, which are still being made",
+    }
+}
+
+/// `@${ann}` asks to wrap `name`, and the source it writes declares no fn of that name.
+export fn wrap_source_unnamed(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` asks to wrap `${name}`, and its `source` declares no fn of that name",
+        label: "asked here",
+        help: "a WRAP directive's `source` writes the wrapper under the annotated fn's own name",
+    }
+}
+
+/// `@${ann}` asks to wrap `name`, which has no written body.
+export fn wrap_unbodied(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}` asks to wrap `${name}`, which has no body to move",
+        label: "asked here",
+        help: "WRAP moves a written body behind its wrapper — an extern or a trait member has none",
+    }
+}
+
+/// `@${ann}`'s wrapper for `name` signed otherwise than `name` is written.
+export fn wrap_resigned(ann: string, name: string) -> Voice {
+    Voice {
+        message: "`@${ann}`'s wrapper for `${name}` does not redeclare its exact signature",
+        label: "asked here",
+        help: "match the `static`/`mut fn` word, the params (marks and defaults included) and the answer type, word for word",
+    }
+}

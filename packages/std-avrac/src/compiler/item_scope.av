@@ -1,0 +1,561 @@
+//! WHAT A FILE'S TOP LEVEL SEES, under one law: a name binds once. A module's declarations bind in
+//! file then declaration order; the first binder of a name in a space wins and every later one
+//! clashes — except a private name two files each declare, which each keeps apart: each file sees
+//! its own and no sibling sees either. A file sees its own kept-apart names and its imports, then
+//! its module's winners, then the prelude's exports where nothing else took the name. Values, types
+//! and sublanguages are spaces apart. A file's scope holds only what is its own; the rest is read
+//! by name where it stands.
+use core.{distinct}
+use compiler.typing.{builtin_type_name}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
+use @std.program.source_facts.{item_tape_saved}
+use @std.program.syntax_tape.{SyntaxTape, tape_declares}
+use @std.program.saved_query.{
+    cut_query,
+    definitions_of,
+    ListedQuery,
+    parted_query,
+    query,
+    query_definition,
+}
+
+/// Where a name binds.
+@derive(Saved)
+export enum Space {
+    Value
+    Type
+    Syntax
+}
+
+/// The space a kind of declaration binds its name in.
+export fn space_of(kind: ItemKind) -> Space {
+    match kind {
+        .Fn or .Const or .Collect or .State or .Ctx -> Space.Value,
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .CollectEnum -> Space.Type,
+        .Syntax -> Space.Syntax,
+    }
+}
+
+/// Names bound in each space.
+@derive(Saved)
+export type Bound = { values: Map<string, DeclaredName>, types: Map<string, DeclaredName>, syntaxes: Map<string, DeclaredName> }
+
+fn nothing_bound() -> Bound { Bound { values: {}, types: {}, syntaxes: {} } }
+
+impl Bound {
+    /// The declaration `name` is bound to in `space`.
+    fn held(space: Space, name: string) -> DeclaredName? {
+        match space {
+            .Value -> self.values.get(name),
+            .Type -> self.types.get(name),
+            .Syntax -> self.syntaxes.get(name),
+        }
+    }
+
+    /// Every name bound in `space`.
+    fn names_in(space: Space) -> List<string> {
+        match space {
+            .Value -> self.values.keys(),
+            .Type -> self.types.keys(),
+            .Syntax -> self.syntaxes.keys(),
+        }
+    }
+
+    /// Every declaration bound, a space's in the order its names were bound.
+    fn declarations() -> List<DeclaredName> { self.values.values().concat(self.types.values()).concat(self.syntaxes.values()) }
+
+    /// `name` bound to `d` in `space`.
+    mut fn bind(space: Space, name: string, d: DeclaredName) {
+        match space {
+            .Value -> self.values.set(name, d),
+            .Type -> self.types.set(name, d),
+            .Syntax -> self.syntaxes.set(name, d),
+        }
+    }
+}
+
+/// A declaration that lost its name to another, the module's or an import's.
+@derive(Saved)
+export type NameClash = { lost: DeclaredName, holder: DeclaredName, imported: bool }
+
+/// A module's names bound: the winners its files share, the private names its files keep apart, and
+/// every declaration that lost.
+@derive(Saved)
+export type ModuleBindings = { shared: Bound, apart: List<DeclaredName>, clashes: List<NameClash> }
+
+@cut_query("resolve")
+export fn module_bindings(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleBindings {
+    mut held = nothing_bound()
+    mut apart: List<DeclaredName> = []
+    mut clashes: List<NameClash> = []
+    for d in module_names(engine, module_files(engine, package, local, as_root)) {
+        let space = space_of(d.kind)
+        let prior? = held.held(space, d.name) else {
+            held.bind(space, d.name, d)
+            continue
+        }
+        // the module's own declaration, again on its surface as one of its files re-exports it
+        if prior.is(d) || clashes.any(it.lost.is(d)) { continue }
+        let own = apart
+            .find((a) -> same_file(a.file, d.file) && a.name == d.name && space_of(a.kind) == space) ?? prior
+        if kept_apart(own, d) {
+            if !apart.any(it.is(prior)) { apart.push(prior) }
+            apart.push(d)
+        } else if !minted_twice(engine, own, d) {
+            clashes.push(NameClash { lost: d, holder: own, imported: false })
+        }
+    }
+    ModuleBindings { shared: without(held, apart), apart: apart, clashes: clashes }
+}
+
+/// Whether two declarations of one name are one declaration an expansion minted twice: one kind and
+/// one face, and neither written in its item, so a template made both alike.
+fn minted_twice(engine: QueryEngine, a: DeclaredName, b: DeclaredName) -> bool {
+    a.kind == b.kind && a.face.same_as(b.face) && !written_in(engine, a) && !written_in(engine, b)
+}
+
+/// Whether `d` is written in its item as it stands, before anything expands it.
+fn written_in(engine: QueryEngine, d: DeclaredName) -> bool {
+    if !item_held(engine, d.file, d.item) { return false }
+    let item = item_under(engine, d.file, d.item)
+    tape_declares(item_tape_saved(engine, item.text, item.context)).any(it.name == d.name)
+}
+
+/// Whether two declarations of one name are each their own file's: both private, in different files.
+fn kept_apart(a: DeclaredName, b: DeclaredName) -> bool { !a.exported && !b.exported && !same_file(a.file, b.file) }
+
+/// `held`, each declaration bound under its own name, with every kept-apart one taken out.
+fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
+    mut shared = nothing_bound()
+    for d in held.declarations() { if !apart.any(it.is(d)) { shared.bind(space_of(d.kind), d.name, d) } }
+    shared
+}
+
+/// A module's shared winners, one part per name, each holding that name's winner in every space it
+/// binds in, so a reader of one name stands when another moves.
+@parted_query("resolve")
+export fn module_winners(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
+    parts_by_name(module_bindings(engine, package, local, as_root).shared.declarations())
+}
+
+/// The winner `file`'s module shares for `name` in `space`, absent for none.
+fn winner(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
+    declarations_kept(
+        module_winners_part_kept(engine, file.package_name, module_segments(file), true, name),
+    )
+        .find(space_of(it.kind) == space)
+}
+
+/// What a module keeps apart of its shared winners: the private names its files keep apart, and
+/// every declaration that lost.
+@derive(Saved)
+type ModuleKept = { apart: List<DeclaredName>, clashes: List<NameClash> }
+
+@query("resolve")
+fn module_kept(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleKept {
+    let bindings = module_bindings(engine, package, local, as_root)
+    ModuleKept { apart: bindings.apart, clashes: bindings.clashes }
+}
+
+/// What is a file's own at its top level: its kept-apart names and its imports (`own`); its
+/// siblings' kept-apart names, which a read of here is refused with, and the same by name
+/// (`siblings_named`), so a read asks one entry rather than every sibling; and each of its declarations and
+/// imports that lost its name. Its module's shared winners and the prelude are read where they
+/// stand (`resolved`).
+@derive(Saved)
+export type FileScope = {
+    own: Bound,
+    siblings: List<DeclaredName>,
+    siblings_named: Map<string, List<DeclaredName>>,
+    clashes: List<NameClash>,
+    pending: List<PendingImport> = [],
+}
+
+/// What is `file`'s own at its top level; absent for a file that isn't there. THE WRITTEN SCOPE,
+/// COMPLETED: a file whose imports its modules' files all write is its written scope, read once; one
+/// with an import left pending binds it from what that module's generators make (`completed_scope`),
+/// so no file's written part is made twice.
+export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
+    let written? = written_file_scope(engine, file) else { return null }
+    if written.pending.is_empty() { return written }
+    completed_scope(engine, file)
+}
+
+/// `file`'s written scope with each import it left pending bound, in its `use` order, from what the
+/// import's module makes of the name — an export, or a tests module's private read — or kept apart
+/// as a clash with what the file already holds, which keeps the name.
+@cut_query("resolve")
+export fn completed_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
+    let written? = written_file_scope(engine, file) else { return null }
+    mut own = written.own
+    mut clashes = written.clashes
+    for p in written.pending {
+        let ds = module_declarations_of(
+            engine,
+            ModuleAt { package: p.package, local: p.local, as_root: p.as_root },
+            p.item,
+        )
+        for d in ds {
+            if !d.exported && !(p.privately && read_privately(ds, d)) { continue }
+            let clash = imported(engine, own, file, p.name, d, p.claiming)
+            if clash != null { clashes.push(clash!) } else { own.bind(space_of(d.kind), p.name, d) }
+        }
+    }
+    written with { own: own, clashes: clashes, pending: [] }
+}
+
+/// What is `file`'s own at its top level among written names alone: an import whose module writes
+/// nothing of its name is left pending, never asking what that module's generators make. Generators
+/// stand in strata: what a generator is made of and fed never reads what generators make, so the
+/// names a generator's own file imports from the module it makes for are asked one by one, as
+/// `resolved` reads each — never all at once, under the making of the generator that answers them.
+@cut_query("resolve")
+export fn written_file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope? { scope_built(engine, file) }
+
+/// `file`'s scope among written names: an import of a name its module's files don't write is left
+/// pending, for `completed_scope` or a read of that name alone (`stratum_resolved`) to bind.
+fn scope_built(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
+    if !file_present(engine, file) { return null }
+    let module = module_kept(engine, file.package_name, module_segments(file), true)
+    mut own = nothing_bound()
+    for d in module.apart { if same_file(d.file, file) { own.bind(space_of(d.kind), d.name, d) } }
+    mut clashes: List<NameClash> = []
+    mut pending: List<PendingImport> = []
+    for u in file_words(engine, file).uses {
+        let at? = imported_module(engine, file, u) else { continue }
+        let privately = tests_of(file, at)
+        for j, item in u.items {
+            let written = declarations_of(engine, at.package, at.local, at.as_root, item)
+            if written.is_empty() && !reexports_name(engine, at, item) {
+                pending
+                    .push(
+                        PendingImport {
+                            name: u.bound_as(j),
+                            item: item,
+                            package: at.package,
+                            local: at.local,
+                            as_root: at.as_root,
+                            privately: privately,
+                            claiming: u.exported,
+                        },
+                    )
+                continue
+            }
+            for d in written {
+                if !d.exported && !(privately && read_privately(written, d)) { continue }
+                let clash = imported(engine, own, file, u.bound_as(j), d, u.exported)
+                if clash != null { clashes.push(clash!) } else { own.bind(space_of(d.kind), u.bound_as(j), d) }
+            }
+        }
+    }
+    let siblings = [d for d in module.apart if !same_file(d.file, file)]
+    mut named: Map<string, List<DeclaredName>> = {}
+    for d in siblings { named.set(d.name, (named.get(d.name) ?? []).concat([d])) }
+    FileScope {
+        own: own,
+        siblings: siblings,
+        siblings_named: named,
+        clashes: [c for c in module.clashes if same_file(c.lost.file, file)].concat(clashes),
+        pending: pending,
+    }
+}
+
+/// An import of `item` as `name` from a module that writes nothing of it: what the module's
+/// generators make of it, asked only when `name` itself is read (`resolved`).
+@derive(Saved)
+export type PendingImport = {
+    name: string,
+    item: string,
+    package: string,
+    local: List<string>,
+    as_root: bool,
+    privately: bool,
+    /// Whether the `use` is a re-export, which claims the name for its module.
+    claiming: bool = false,
+}
+
+/// What the pending import `p` binds `p.name` to in `space` once its module's generators are asked:
+/// as `file_scope` binds it — an export, or a tests module's private read — unless it clashes with
+/// what the file already holds, which keeps the name. Absent where they make none of it.
+fn pending_bound(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    p: PendingImport,
+    space: Space,
+) -> DeclaredName? {
+    let ds = generated_declarations_of(engine, p.package, p.local, p.as_root, p.item)
+    let d? = ds
+        .find((d) -> space_of(d.kind) == space && (d.exported || p.privately && read_privately(ds, d))) else { return null }
+    if imported(engine, scope.own, file, p.name, d, p.claiming) != null { return null }
+    d
+}
+
+/// Every declaration of `name` the module `at` makes: what its files write or re-export, and only
+/// where they do neither, what its generators declare.
+fn module_declarations_of(engine: QueryEngine, at: ModuleAt, name: string) -> List<DeclaredName> {
+    let written = declarations_of(engine, at.package, at.local, at.as_root, name)
+    if !written.is_empty() || imports_name(engine, at, name) { return written }
+    generated_declarations_of(engine, at.package, at.local, at.as_root, name)
+}
+
+/// Whether an `export use` line of the module `at`'s files puts `name` on its surface: the name is
+/// then the re-export's, whatever stands behind it, and no generator's.
+fn reexports_name(engine: QueryEngine, at: ModuleAt, name: string) -> bool {
+    module_files(engine, at.package, at.local, at.as_root)
+        .any(
+            (f) -> file_words(engine, f)
+                .uses
+                .any((u) -> u.exported && (0..u.items.length).any((j: int) -> u.bound_as(j) == name)),
+        )
+}
+
+/// Whether a `use` line of the module `at`'s files binds `name`: the name is then that line's — on
+/// its surface where it's an `export use`, the module's own where it's not — whatever stands behind
+/// it, and no generator's, so asking it runs none (a generator's run asks every file's scope, and a
+/// scope asking it back would loop).
+fn imports_name(engine: QueryEngine, at: ModuleAt, name: string) -> bool {
+    module_files(engine, at.package, at.local, at.as_root)
+        .any(
+            (f) -> file_words(engine, f)
+                .uses
+                .any((u) -> (0..u.items.length).any((j: int) -> u.bound_as(j) == name)),
+        )
+}
+
+/// Whether a module's own test reads its private `d`, among `ds`, every declaration of its name:
+/// it's the one declaration of that name in its space. An export there wins, and two private ones
+/// keep the name apart from the test too.
+fn read_privately(ds: List<DeclaredName>, d: DeclaredName) -> bool { ds.filter(space_of(it.kind) == space_of(d.kind)).length == 1 }
+
+/// The clash an import of `d` as `name` makes, absent when it binds: a name already this file's, or
+/// its module's export or its own, clashes unless it's that very declaration; a sibling's private
+/// one a plain import shadows, and a re-export (`claiming`), which claims the name for the module,
+/// clashes with.
+fn imported(
+    engine: QueryEngine,
+    own: Bound,
+    file: SourceFileAddress,
+    name: string,
+    d: DeclaredName,
+    claiming: bool,
+) -> NameClash? {
+    let space = space_of(d.kind)
+    let prior? = own.held(space, name) ?? claimed(engine, file, space, name, claiming) else { return null }
+    if prior.is(d) { return null }
+    NameClash { lost: d, holder: prior, imported: true }
+}
+
+/// The module's holder of a name as `file` sees it claimed: an export, or this file's own — or,
+/// where a re-export claims the name itself (`claiming`), a sibling's private one.
+fn claimed(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string, claiming: bool) -> DeclaredName? {
+    let d? = winner(engine, file, space, name) else { return null }
+    if claiming || d.exported || same_file(d.file, file) { d } else { null }
+}
+
+/// The prelude's export `file` sees as `name` in `space` where nothing else took it; a file of
+/// the prelude sees none.
+fn lent(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
+    if file.package_name == PRELUDE { return null }
+    declarations_of(engine, PRELUDE, [], false, name).find(lends(it, space))
+}
+
+/// Whether the prelude lends `d` in `space`: it's exported there.
+fn lends(d: DeclaredName, space: Space) -> bool { d.exported && space_of(d.kind) == space }
+
+/// Whether `file` stands directly in the `tests/` of the module `at` names, so its imports read that
+/// module's private names too.
+fn tests_of(file: SourceFileAddress, at: ModuleAt) -> bool {
+    let module = module_segments(file)
+    at.package == file.package_name &&
+        module.last() == TESTS &&
+        module.take(module.length - 1).join(".") == at.local.join(".")
+}
+
+/// The directory a module's own tests stand in.
+const TESTS: string = "tests"
+
+/// The package every file sees without a `use`.
+const PRELUDE: string = "@std/prelude"
+
+/// Whether `file` is one of the prelude's own.
+export fn of_prelude(file: SourceFileAddress) -> bool { file.package_name == PRELUDE }
+
+/// Whether a program `file` is a file of sees the prelude's own types: a file of a package does; a
+/// file that stands in no package can't name what the prelude declares.
+export fn sees_prelude(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    of_prelude(file) || rooted(engine, file.package_name)
+}
+
+/// What a name names from a file's top level.
+@derive(Saved)
+export enum Resolution {
+    /// One declaration.
+    Named(declaration: DeclaredName)
+    /// Private declarations the file's siblings each keep apart, none of them its own: a read of the
+    /// name here is refused, naming them.
+    KeptApart(declarations: List<DeclaredName>)
+    /// Nothing.
+    Unbound
+}
+
+impl Resolution {
+    /// The one declaration named, absent when there's none to read.
+    fn named() -> DeclaredName? { match self { .Named(d) -> d, _ -> null } }
+}
+
+/// What `name` names in `space` from `file`'s top level: what written names name, and only where
+/// they leave it unbound, what its module's generators declare. A file that isn't there names
+/// nothing. One question per name, so what reads a name depends on that name alone, and a name
+/// something writes never asks what generators make.
+@cut_query("resolve")
+export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
+    let scope? = written_file_scope(engine, file) else { return Resolution.Unbound }
+    let p = if scope.own.held(space, name) == null { scope.pending.find(it.name == name) } else { null }
+    if p != null {
+        let d = pending_bound(engine, scope, file, p!, space)
+        if d != null { return Resolution.Named(d!) }
+    }
+    let written = resolved_in(engine, scope, file, space, name)
+    match written {
+        .Unbound -> if written_elsewhere(engine, scope, file, space, name) { written } else { generated_resolution(engine, file, space, name) },
+        .Named(_) or .KeptApart(_) -> written,
+    }
+}
+
+/// What `name` names in `space` as `file` reads it among what is written alone: what no generator
+/// made, so asking it runs none.
+export fn resolved_written(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
+    let scope? = file_scope(engine, file) else { return Resolution.Unbound }
+    resolved_in(engine, scope, file, space, name)
+}
+
+/// Whether `name` is the language's own type, or written names bind it in a space but `space`: a
+/// name something writes never asks what generators make, in any space.
+fn written_elsewhere(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> bool {
+    builtin_type_name(avra().rows.types, name) ||
+        SPACES.any((s) -> s != space && resolved_in(engine, scope, file, s, name).named() != null)
+}
+
+/// Every space a name is bound in.
+const SPACES: List<Space> = [Space.Value, Space.Type, Space.Syntax]
+
+/// What a declaration a generator of `file`'s module made names as `name` in `space`; unbound for none.
+fn generated_resolution(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
+    let d? = generated_declarations_of(engine, file.package_name, module_segments(file), true, name)
+        .find(space_of(it.kind) == space) else { return Resolution.Unbound }
+    Resolution.Named(d)
+}
+
+/// What `name` names in `space` from the top level of `file` among written names alone — the stratum
+/// a generator is made of and fed: never what `file`'s own module's generators make, and an import of
+/// what another module's generators make asked of that name alone.
+export fn written_resolution(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> Resolution {
+    let scope? = written_file_scope(engine, file) else { return Resolution.Unbound }
+    stratum_resolved(engine, scope, file, space, name)
+}
+
+/// What `name` names in `space` from the top level of `file`, whose written stratum is `scope`: a
+/// pending import bound as that name, asked of what its module's generators make, else what written
+/// names name (`resolved_in`).
+export fn stratum_resolved(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> Resolution {
+    let p = if scope.own.held(space, name) == null { scope.pending.find(it.name == name) } else { null }
+    if p != null {
+        let d = pending_bound(engine, scope, file, p!, space)
+        if d != null { return Resolution.Named(d!) }
+    }
+    resolved_in(engine, scope, file, space, name)
+}
+
+/// What `name` names in `space` from the top level of `file`, whose scope is `scope`, among written
+/// names alone: the file's own, else its module's shared winner, else its siblings' kept-apart
+/// declarations, else the prelude's.
+export fn resolved_in(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> Resolution {
+    let mine? = scope.own.held(space, name) ?? winner(engine, file, space, name) else {
+        return unclaimed(engine, scope, file, space, name)
+    }
+    Resolution.Named(mine)
+}
+
+/// What a name neither the file nor its module's winners claim names: its siblings' kept-apart
+/// declarations, else the prelude's export.
+fn unclaimed(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> Resolution {
+    let apart = scope.kept_apart(space, name)
+    if !apart.is_empty() { return Resolution.KeptApart(apart) }
+    let prelude? = lent(engine, file, space, name) else { return Resolution.Unbound }
+    Resolution.Named(prelude)
+}
+
+impl FileScope {
+    /// The declarations of `name` in `space` the file's siblings keep apart.
+    fn kept_apart(space: Space, name: string) -> List<DeclaredName> {
+        let named? = self.siblings_named.get(name) else { return [] }
+        [d for d in named if space_of(d.kind) == space]
+    }
+
+    /// The name of every declaration in `space` the file's siblings keep apart, as a set.
+    fn apart_in(space: Space) -> Map<string, bool> {
+        mut names: Map<string, bool> = {}
+        for d in self.siblings { if space_of(d.kind) == space { names.set(d.name, true) } }
+        names
+    }
+}
+
+/// Every name the top level of `file`, whose scope is `scope`, names a declaration by in `space`,
+/// each once: its own, its module's shared winners, then the prelude's exports no sibling keeps
+/// apart.
+export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, space: Space) -> List<
+    string,
+> {
+    let shared = module_bindings(engine, file.package_name, module_segments(file), true).shared
+    let prelude = if file.package_name == PRELUDE { [] } else { module_names(engine, module_files(engine, PRELUDE, [], false)) }
+    let apart = scope.apart_in(space)
+    distinct(
+        scope
+            .own
+            .names_in(space)
+            .concat(shared.names_in(space))
+            .concat([d.name for d in prelude if lends(d, space) && !apart.has(d.name)]),
+    )
+}
+
+collect listed_scope_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a file's scope reads through, for a process to hand its engine.
+export fn scope_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_scope_facts) }
+
+/// Whether two addresses name one file.
+fn same_file(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.package_name == b.package_name && a.path_in_package == b.path_in_package }

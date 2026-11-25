@@ -9,10 +9,10 @@
 use style.box.{Box}
 use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout, around}
-use style.theme.{Theme, Mode}
-use tree.lists.{flatten}
+use style.theme.{Theme, Mode, Contrast, Dial, Shades, plain}
+use style.look.{Ground, Measure, Wear, worn}
 use tree.node.{Node, Prim, Attribute, own_axis, gap_between}
-use style.tokens.{Size, Tone, Font}
+use style.tokens.{Size, Tone, Ink, Font, Level, TypeSize, LineHeight, Tracking}
 use realize.html.tags.{HtmlTag}
 
 /// One atomic rule: its class name (already state-prefixed), the state
@@ -20,10 +20,6 @@ use realize.html.tags.{HtmlTag}
 /// or a growth speaks for; nothing for a rule that needs no parent), and
 /// the declaration it carries.
 export type CssRule = { name: string, state: Interaction?, under: string, decl: string }
-
-const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
-const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
-const fonts = [Font.Body, .Heading, .Footnote, .Mono]
 
 /// The pseudo-class a state maps to on the web — ONE match, so no
 /// per-row aggregate settles.
@@ -98,12 +94,39 @@ fn gap_word(z: Size) -> CssWord {
     CssWord { name: "gap-${z.word()}", decl: "gap:var(--space-${z.word()})" }
 }
 
-fn color_word(c: Tone) -> CssWord {
-    CssWord { name: "color-${c.word()}", decl: "color:var(--tone-${c.word()})" }
+fn color_word(c: Ink) -> CssWord {
+    CssWord { name: "color-${c.word()}", decl: "color:var(--ink-${c.word()})" }
 }
 
-fn fill_word(c: Tone) -> CssWord {
-    CssWord { name: "fill-${c.word()}", decl: "background:var(--tone-${c.word()})" }
+fn fill_word(t: Tone) -> CssWord {
+    CssWord { name: "fill-${t.word()}", decl: "background:var(--tone-${t.word()})" }
+}
+
+/// What sits on a surface: the ink its pair names.
+fn on_word(t: Tone) -> CssWord {
+    CssWord { name: "on-${t.word()}", decl: "color:var(--on-${t.word()})" }
+}
+
+/// A level: the surface the theme names for it.
+fn level_word(l: Level) -> CssWord {
+    CssWord { name: "level-${l.word()}", decl: "background:var(--level-${l.word()})" }
+}
+
+/// What sits on a level: the ink of the surface it wears.
+fn level_on_word(l: Level) -> CssWord {
+    CssWord { name: "on-level-${l.word()}", decl: "color:var(--on-level-${l.word()})" }
+}
+
+fn text_size_word(z: TypeSize) -> CssWord {
+    CssWord { name: "text-${z.word()}", decl: "font-size:var(--text-${z.word()})" }
+}
+
+fn line_height_word(h: LineHeight) -> CssWord {
+    CssWord { name: "leading-${h.word()}", decl: "line-height:var(--leading-${h.word()})" }
+}
+
+fn tracking_word(t: Tracking) -> CssWord {
+    CssWord { name: "tracking-${t.word()}", decl: "letter-spacing:var(--tracking-${t.word()})" }
 }
 
 fn radius_word(z: Size) -> CssWord {
@@ -123,9 +146,34 @@ fn align_rule(a: Align?, state: Interaction?) -> List<CssRule> { opted(a, state,
 
 fn distribute_rule(d: Distribute?, state: Interaction?) -> List<CssRule> { opted(d, state, distribute_word) }
 
-fn color_rule(c: Tone?, state: Interaction?) -> List<CssRule> { opted(c, state, color_word) }
+fn color_rule(c: Ink?, state: Interaction?) -> List<CssRule> { opted(c, state, color_word) }
 
-fn fill_rule(c: Tone?, state: Interaction?) -> List<CssRule> { opted(c, state, fill_word) }
+fn fill_rule(t: Tone?, state: Interaction?) -> List<CssRule> { opted(t, state, fill_word) }
+
+fn on_rule(t: Tone?, state: Interaction?) -> List<CssRule> { opted(t, state, on_word) }
+
+fn level_rule(l: Level?, state: Interaction?) -> List<CssRule> { opted(l, state, level_word) }
+
+fn level_on_rule(l: Level?, state: Interaction?) -> List<CssRule> { opted(l, state, level_on_word) }
+
+fn text_size_rule(z: TypeSize?, state: Interaction?) -> List<CssRule> { opted(z, state, text_size_word) }
+
+fn line_height_rule(h: LineHeight?, state: Interaction?) -> List<CssRule> { opted(h, state, line_height_word) }
+
+fn tracking_rule(t: Tracking?, state: Interaction?) -> List<CssRule> { opted(t, state, tracking_word) }
+
+/// The surface a look stands on: the fill it names, else its level's.
+fn surface_rule(s: Style, state: Interaction?) -> List<CssRule> {
+    if s.fill == null { level_rule(s.elevation, state) } else { fill_rule(s.fill, state) }
+}
+
+/// The ink a look is drawn in: the colour it names, else what sits on the
+/// surface it stands on — so a node's ink is decided here, never by the
+/// cascade's order.
+fn ink_rule(s: Style, state: Interaction?) -> List<CssRule> {
+    if s.color != null { return color_rule(s.color, state) }
+    if s.fill == null { level_on_rule(s.elevation, state) } else { on_rule(s.fill, state) }
+}
 
 fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state, radius_word) }
 
@@ -133,9 +181,10 @@ fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> { opted(f, state, f
 
 /// A size along `along`, the parent axis it is the main one of. A fixed
 /// size holds on it; a fill takes the room that is left there (a growth
-/// given is its share) and stretches across; hug and a fraction write
-/// nothing. The flex basis is a percentage so that a parent whose size
-/// along is not yet known gives it the content's.
+/// given is its share) and stretches across; a percent reads its share from the
+/// node, as a fixed size does; hug writes nothing. The flex basis is a
+/// percentage so that a parent whose size along is not yet known gives it the
+/// content's.
 fn sizing_rule(
     along: Axis,
     prefix: string,
@@ -146,7 +195,8 @@ fn sizing_rule(
 ) -> List<CssRule> {
     let v? = s else { return [] }
     match v {
-        .Hug or .Percent(_) -> [],
+        .Hug -> [],
+        .Percent(_) -> rule("${prefix}-pct", state, "${prop}:var(--${prefix})"),
         .Fill -> scoped(along, "${prefix}-fill", state, "flex:var(--grow) 1 0%;${least}:0")
             .concat(scoped(across(along), "${prefix}-fill", state, "align-self:stretch")),
         .Fixed(_) -> rule("${prefix}-fixed", state, "${prop}:var(--${prefix})")
@@ -226,34 +276,35 @@ fn margin_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
 }
 
 fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
-    flatten(
-        [
-            axis_rule(l.direction, state),
-            gap_rule(l.gap, state),
-            pad_rules(l.pad, state),
-            align_rule(l.align, state),
-            distribute_rule(l.distribute, state),
-            sizing_rule(.Row, "w", "width", "min-width", l.width, state),
-            sizing_rule(.Column, "h", "height", "min-height", l.height, state),
-            wrap_rule(l.wrap, state),
-            margin_rules(l.margin, state),
-            grow_rule(l.grow, state),
-            order_rule(l.order, state),
-        ],
-    )
+    [
+        axis_rule(l.direction, state),
+        gap_rule(l.gap, state),
+        pad_rules(l.pad, state),
+        align_rule(l.align, state),
+        distribute_rule(l.distribute, state),
+        sizing_rule(.Row, "w", "width", "min-width", l.width, state),
+        sizing_rule(.Column, "h", "height", "min-height", l.height, state),
+        wrap_rule(l.wrap, state),
+        margin_rules(l.margin, state),
+        grow_rule(l.grow, state),
+        order_rule(l.order, state),
+    ]
+        .flatten()
 }
 
 // ── appearance ──────────────────────────────────────────────────
 
 fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
-    flatten(
-        [
-            color_rule(s.color, state),
-            fill_rule(s.fill, state),
-            radius_rule(s.radius, state),
-            face_rule(s.face, state),
-        ],
-    )
+    [
+        surface_rule(s, state),
+        ink_rule(s, state),
+        radius_rule(s.radius, state),
+        face_rule(s.face, state),
+        text_size_rule(s.text_size, state),
+        line_height_rule(s.line_height, state),
+        tracking_rule(s.tracking, state),
+    ]
+        .flatten()
 }
 
 // ── the rules a box names ───────────────────────────────────────
@@ -276,12 +327,13 @@ impl CssVar {
     fn property() -> string { "--${self.name}" }
 }
 
-/// The property a fixed sizing writes, in pixels; nothing for any other sizing.
-fn px_var(name: string, s: Sizing?) -> List<CssVar> {
+/// The property a fixed or a percent sizing writes, in pixels or percent; nothing for any other sizing.
+fn size_var(name: string, s: Sizing?) -> List<CssVar> {
     let v? = s else { return [] }
     match v {
         .Fixed(n) -> [CssVar { name: name, value: "${n}px" }],
-        .Hug or .Fill or .Percent(_) -> [],
+        .Percent(p) -> [CssVar { name: name, value: "${p}%" }],
+        .Hug or .Fill -> [],
     }
 }
 
@@ -289,14 +341,13 @@ fn px_var(name: string, s: Sizing?) -> List<CssVar> {
 /// and its order — the values its `w-fixed`, `h-fixed`, `grow` and `order`
 /// classes read.
 export fn box_vars(box: Box) -> List<CssVar> {
-    flatten(
-        [
-            px_var("w", box.layout.width),
-            px_var("h", box.layout.height),
-            if box.layout.grow > 0 { [CssVar { name: "grow", value: "${box.layout.grow}" }] } else { [] },
-            if box.layout.order != 0 { [CssVar { name: "order", value: "${box.layout.order}" }] } else { [] },
-        ],
-    )
+    [
+        size_var("w", box.layout.width),
+        size_var("h", box.layout.height),
+        if box.layout.grow > 0 { [CssVar { name: "grow", value: "${box.layout.grow}" }] } else { [] },
+        if box.layout.order != 0 { [CssVar { name: "order", value: "${box.layout.order}" }] } else { [] },
+    ]
+        .flatten()
 }
 
 /// Every rule a node names: its primitive's own axis unless its layout
@@ -328,7 +379,13 @@ export fn rules_of(n: Node) -> List<CssRule> {
 }
 
 /// Every class a node names, once, in rule order.
-export fn class_names(n: Node) -> List<string> { names_once([r.name for r in node_rules(n.prim, drawn_box(n))]) }
+/// A stamped node also names its theme's scope, where `scopes` (`scopes_of` its page) holds it.
+export fn class_names(n: Node, scopes: List<string> = []) -> List<string> {
+    let own = names_once([r.name for r in node_rules(n.prim, drawn_box(n))])
+    let stamp? = n.theme else { return own }
+    let scope? = theme_scope(stamp.theme, scopes) else { return own }
+    own.concat([scope])
+}
 
 fn names_once(names: List<string>) -> List<string> { [name for i, name in names if !names.slice(0, i).contains(name)] }
 
@@ -352,47 +409,52 @@ const axes = [Axis.Row, .Column]
 const aligns = [Align.Start, .Center, .End, .Stretch, .Baseline]
 const distributions = [Distribute.Start, .Center, .End, .SpaceBetween, .SpaceAround, .SpaceEvenly]
 const wraps = [Wrap.NoWrap, .Wrap, .WrapReverse]
-const interactions = [Interaction.Hover, .Focus, .Pressed, .Disabled]
 
 /// The states a look may be given in: at rest, then each interaction.
 fn states() -> List<Interaction?> {
     let rest: List<Interaction?> = [null]
-    let each: List<Interaction?> = [i for i in interactions]
+    let each: List<Interaction?> = [i for i in Interaction.every()]
     rest.concat(each)
 }
 
 /// Every layout rule a token can name. A size, a growth and an order ride a
 /// custom property, so each is ONE rule here whatever its value.
 fn layout_vocabulary() -> List<CssRule> {
-    flatten(
-        [
-            flatten([axis_rule(a, null) for a in axes]),
-            flatten([gap_rule(z, null) for z in sizes]),
-            flatten([pad_rules(around(z), null) for z in sizes]),
-            flatten([margin_rules(around(z), null) for z in sizes]),
-            flatten([align_rule(a, null) for a in aligns]),
-            flatten([distribute_rule(d, null) for d in distributions]),
-            flatten([wrap_rule(w, null) for w in wraps]),
-            sizing_rule(.Row, "w", "width", "min-width", Sizing.Fill, null),
-            sizing_rule(.Row, "w", "width", "min-width", Sizing.Fixed(0), null),
-            sizing_rule(.Column, "h", "height", "min-height", Sizing.Fill, null),
-            sizing_rule(.Column, "h", "height", "min-height", Sizing.Fixed(0), null),
-            grow_rule(1, null),
-            order_rule(1, null),
-        ],
-    )
+    [
+        [axis_rule(a, null) for a in axes].flatten(),
+        [gap_rule(z, null) for z in Size.every()].flatten(),
+        [pad_rules(around(z), null) for z in Size.every()].flatten(),
+        [margin_rules(around(z), null) for z in Size.every()].flatten(),
+        [align_rule(a, null) for a in aligns].flatten(),
+        [distribute_rule(d, null) for d in distributions].flatten(),
+        [wrap_rule(w, null) for w in wraps].flatten(),
+        sizing_rule(.Row, "w", "width", "min-width", Sizing.Fill, null),
+        sizing_rule(.Row, "w", "width", "min-width", Sizing.Fixed(0), null),
+        sizing_rule(.Row, "w", "width", "min-width", Sizing.Percent(0.0), null),
+        sizing_rule(.Column, "h", "height", "min-height", Sizing.Fill, null),
+        sizing_rule(.Column, "h", "height", "min-height", Sizing.Fixed(0), null),
+        sizing_rule(.Column, "h", "height", "min-height", Sizing.Percent(0.0), null),
+        grow_rule(1, null),
+        order_rule(1, null),
+    ]
+        .flatten()
 }
 
 /// Every appearance rule a token can name, at rest and in each state.
 fn appearance_vocabulary() -> List<CssRule> {
-    flatten(
-        [
-            flatten([color_rule(c, s) for s in states() for c in tones]),
-            flatten([fill_rule(c, s) for s in states() for c in tones]),
-            flatten([radius_rule(z, s) for s in states() for z in sizes]),
-            flatten([face_rule(f, s) for s in states() for f in fonts]),
-        ],
-    )
+    [
+        [color_rule(c, s) for s in states() for c in Ink.every()].flatten(),
+        [on_rule(t, s) for s in states() for t in Tone.every()].flatten(),
+        [fill_rule(t, s) for s in states() for t in Tone.every()].flatten(),
+        [level_rule(l, s) for s in states() for l in Level.every()].flatten(),
+        [level_on_rule(l, s) for s in states() for l in Level.every()].flatten(),
+        [radius_rule(z, s) for s in states() for z in Size.every()].flatten(),
+        [face_rule(f, s) for s in states() for f in Font.every()].flatten(),
+        [text_size_rule(z, s) for s in states() for z in TypeSize.every()].flatten(),
+        [line_height_rule(h, s) for s in states() for h in LineHeight.every()].flatten(),
+        [tracking_rule(t, s) for s in states() for t in Tracking.every()].flatten(),
+    ]
+        .flatten()
 }
 
 /// EVERY RULE THE VOCABULARY CAN NAME, once, in a fixed order: no value ever
@@ -400,44 +462,98 @@ fn appearance_vocabulary() -> List<CssRule> {
 /// It is the same for every program on this version of the vocabulary.
 export fn all_rules() -> List<CssRule> { distinct_rules(layout_vocabulary().concat(appearance_vocabulary())) }
 
-/// The vocabulary as a stylesheet — the page's base and every rule, with no
-/// theme in it: one file for every page of every program.
+/// The vocabulary as a stylesheet — the page's plumbing and every rule, with
+/// no theme in it: one file for every page of every program.
 export fn atoms_sheet() -> string { base_rules().concat([rule_source(r) for r in all_rules()]).join("\n") }
-
-/// A theme as a stylesheet: its variables, then each alternate under its mode's query.
-export fn theme_sheet(t: Theme, alternates: List<Theme>) -> string {
-    [root_vars(t)].concat([alternate(a) for a in alternates]).join("\n")
-}
 
 // ── the stylesheet ──────────────────────────────────────────────
 
 fn space_vars(t: Theme) -> string {
-    ["--space-${z.word()}:${t.space_of(z)}px;" for z in sizes].join("")
+    ["--space-${z.word()}:${t.space.at(z)}px;" for z in Size.every()].join("")
 }
 
 fn radius_vars(t: Theme) -> string {
-    ["--radius-${z.word()}:${t.radius_of(z)}px;" for z in sizes].join("")
+    ["--radius-${z.word()}:${t.radius.at(z)}px;" for z in Size.every()].join("")
 }
 
-fn tone_vars(t: Theme) -> string {
-    ["--tone-${c.word()}:${t.color_of(c)};" for c in tones].join("")
+/// A colour the theme names, and the variable that carries it.
+type ColourVar = { name: string, dial: Dial }
+
+/// Every colour the theme names: each surface's fill and what sits on it,
+/// then each ink.
+fn colour_vars(t: Theme) -> List<ColourVar> {
+    [[
+        ColourVar { name: "tone-${c.word()}", dial: t.tone.at(c).fill },
+        ColourVar { name: "on-${c.word()}", dial: t.tone.at(c).on },
+    ] for c in Tone.every()]
+        .flatten()
+        .concat([ColourVar { name: "ink-${c.word()}", dial: t.ink.at(c) } for c in Ink.every()])
 }
+
+/// A colour in both schemes; the scheme the page wears picks one.
+fn dialed(name: string, s: Shades) -> string { "--${name}:light-dark(${s.light},${s.dark});" }
+
+/// The colours at rest: the shades the theme's contrast reads.
+fn colours_at_rest(t: Theme) -> string {
+    [dialed(v.name, v.dial.read_at(t.contrast)) for v in colour_vars(t)].join("")
+}
+
+/// The colours a reader who asks for more contrast reads instead: only
+/// those that carry a stronger shade, and none when the theme holds its
+/// contrast or no colour carries one.
+fn more_contrast(selector: string, t: Theme) -> string {
+    let raised = [dialed(v.name, more) for v in colour_vars(t) for more in present(v.dial.more)]
+    if raised.is_empty() { return "" }
+    match t.contrast {
+        .System -> "\n@media (prefers-contrast: more){${selector}{${raised.join("")}}}",
+        .Standard or .More -> "",
+    }
+}
+
+fn present<T>(s: T?) -> List<T> {
+    match s {
+        v? -> [v]
+        null -> []
+    }
+}
+
+/// The surface each level wears, and what sits on it.
+fn level_vars(t: Theme) -> string {
+    ["--level-${l.word()}:var(--tone-${t.elevation.at(l).word()});--on-level-${l.word()}:var(--on-${t.elevation.at(l).word()});" for l in Level.every()]
+        .join("")
+}
+
+/// The type scale, its leading and its tracking.
+fn type_vars(t: Theme) -> string {
+    ["--text-${z.word()}:${t.text_size.at(z)}px;" for z in TypeSize.every()]
+        .concat(["--leading-${h.word()}:${t.line_height.at(h)};" for h in LineHeight.every()])
+        .concat(["--tracking-${k.word()}:${t.tracking.at(k)}em;" for k in Tracking.every()])
+        .join("")
+}
+
+/// A control's height and a row's padding.
+fn measure_vars(t: Theme) -> string { "--control:${t.control}px;--row:${t.row}px;" }
 
 fn face_vars(t: Theme) -> string {
-    ["--face-${f.word()}:${t.face_of(f)};" for f in fonts].join("")
+    ["--face-${f.word()}:${t.face.at(f)};" for f in Font.every()].join("")
 }
 
-/// The scheme a mode asks the browser's own controls to wear. Every
-/// mode spelled.
+/// The schemes a mode lets the page wear: both, the reader's settings
+/// choosing, or the one it holds. Every mode spelled.
 fn scheme(m: Mode) -> string {
-    match m { .Light or .HighContrast -> "light", .Dark -> "dark" }
+    match m { .System -> "light dark", .Light -> "light", .Dark -> "dark" }
 }
 
-/// The theme as the variables every class reads, and the scheme its
-/// mode is. A mode is a whole
-/// theme, so a mode change rewrites these and moves no class.
-export fn root_vars(t: Theme) -> string {
-    ":root{color-scheme:${scheme(t.mode)};${space_vars(t)}${radius_vars(t)}${tone_vars(t)}${face_vars(t)} }"
+/// The theme as the variables every class reads, each colour carrying both
+/// schemes, and the scheme its mode lets the page wear; then the stronger
+/// colours under the reader's contrast setting — so the page follows the
+/// reader's settings, and a held mode rewrites one word and moves no class.
+export fn root_vars(t: Theme) -> string { vars_under(":root", t) }
+
+/// The variables `t` gives and the scheme it is drawn in, under `selector`: the page's root, or the
+/// scope of a subtree drawn in another theme, whose element they cascade from.
+fn vars_under(selector: string, t: Theme) -> string {
+    "${selector}{color-scheme:${scheme(t.mode)};${space_vars(t)}${radius_vars(t)}${colours_at_rest(t)}${level_vars(t)}${face_vars(t)}${type_vars(t)}${measure_vars(t)} }${more_contrast(selector, t)}"
 }
 
 /// A class name as a selector; `:` in a state prefix is escaped.
@@ -458,51 +574,280 @@ fn tags(of: List<HtmlTag>) -> string { [t.word() for t in of].join(",") }
 /// The axis classes, as what an element that is no flex box does not wear.
 fn unflexed() -> string { [":not(.${axis_word(a).name})" for a in [Axis.Row, .Column]].join("") }
 
-/// What the page looks like under every node, read from the same
-/// variables. The page wears the surface, the text colour and the body
-/// face, and a control wears them too rather than the browser's own: a
-/// button shows what it stands on inside a border, so a fill it names is
-/// the fill a reader sees, and one that cannot speak is muted. A heading
-/// and a rule keep no margin: space is a gap or a pad. A control and its
-/// words sit on one line, a step apart; what an item holds on one line
-/// stands a step apart too, and the item keeps its marker. A dialog wears
-/// the surface over the middle of the page, and a closed one is not
-/// drawn whatever its classes say.
+/// What the page is under every node, read from the same variables: the
+/// web's plumbing, never a look a theme gives a primitive. The page wears
+/// the canvas, what sits on it and the body face, and a control wears them
+/// too rather than the browser's own. A heading and a rule keep no margin:
+/// space is a gap or a pad. A control and its words sit on one line, a step
+/// apart; what an item holds on one line stands a step apart too, and the
+/// item keeps its marker. A dialog stands over the middle of the page, and
+/// a closed one is not drawn whatever its classes say.
 fn base_rules() -> List<string> {
     [
         "*,*::before,*::after{box-sizing:border-box}",
         "@property --grow{syntax:\"<number>\";inherits:false;initial-value:1}",
-        "body{margin:0;overflow-wrap:break-word;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}",
+        "body{margin:0;overflow-wrap:break-word;${fill_word(.Canvas).decl};${on_word(.Canvas).decl};${face_word(.Body).decl};${text_size_word(.Body).decl};${line_height_word(.Normal).decl}}",
         "${tags([.Button, .Input])}{font:inherit;color:inherit}",
-        "${tags([.Button])}{background:transparent;border:1px solid var(--tone-${Tone.Muted.word()});padding:var(--space-${Size.Xs.word()}) var(--space-${Size.S.word()})}",
-        "${tags([.Button])}:disabled{${color_word(.Muted).decl}}",
         "${tags([.H1, .H2, .H3, .H4, .H5, .H6, .Hr])}{margin:0}",
         "${tags([.Label])}{display:inline-flex;align-items:center;${gap_word(.Xs).decl}}",
         "${tags([.Li])}${unflexed()}>*+*{margin-inline-start:var(--space-${Size.S.word()})}",
-        "${tags([.Dialog])}{position:fixed;inset-block:0;${fill_word(.Surface).decl};${color_word(.Text).decl}}",
+        "${tags([.Dialog])}{position:fixed;inset-block:0}",
         "${tags([.Dialog])}:not([open]){display:none}",
     ]
 }
 
-/// The media query under which a reader's settings ask for a mode. Every
-/// mode spelled.
-fn mode_query(m: Mode) -> string {
-    match m {
-        .Light -> "(prefers-color-scheme: light)",
-        .Dark -> "(prefers-color-scheme: dark)",
-        .HighContrast -> "(prefers-contrast: more)",
+// ── the look a theme gives each primitive ───────────────────────
+
+/// How the web finds a primitive's element: the tags it is drawn as, and
+/// what narrows a tag to it where another primitive draws the same one.
+type Placed = { tags: List<string>, kinds: List<string> }
+
+/// A primitive alone on its tag.
+fn alone(tag: HtmlTag) -> Placed { Placed { tags: [tag.word()], kinds: [] } }
+
+/// An `input`, narrowed to the kinds a primitive draws.
+fn input(kinds: List<string>) -> Placed { Placed { tags: [HtmlTag.Input.word()], kinds: kinds } }
+
+/// Where the web finds each primitive's element, or nothing where its tag
+/// is shared and nothing on the element tells it apart. Every primitive
+/// spelled.
+fn placed(p: Prim) -> Placed? {
+    match p {
+        .Text -> alone(.Span),
+        .Heading -> Placed { tags: [t.word() for t in [HtmlTag.H1, .H2, .H3, .H4, .H5, .H6]], kinds: [] },
+        .Button -> alone(.Button),
+        .Link -> alone(.A),
+        .Field -> input(["[type=text]", "[type=password]"]),
+        .Checkbox -> input(["[type=checkbox]:not([role=switch])"]),
+        .Switch -> input(["[role=switch]"]),
+        .Slider -> input(["[type=range]"]),
+        .Dialog -> alone(.Dialog),
+        .Divider -> alone(.Hr),
+        .List -> alone(.Ul),
+        .Item -> alone(.Li),
+        .Card -> alone(.Article),
+        .Progress -> alone(.Progress),
+        .Form -> alone(.Form),
+        .Fieldset -> alone(.Fieldset),
+        .Image or .Icon or .Row or .Column or .Surface or .Alert or .Spinner or .Key -> null,
     }
 }
 
-/// An alternate theme: the same variables, rewritten while its mode is asked for.
-fn alternate(t: Theme) -> string { "@media ${mode_query(t.mode)}{${root_vars(t)}}" }
+/// The primitives a theme gives a look the web cannot place: their tag is
+/// another primitive's too, and nothing on the element tells them apart.
+export fn unplaced_looks(t: Theme) -> List<Prim> {
+    [p for p in Prim.every() if placed(p) == null && states().any(looked(t, p, it) != "")]
+}
 
-/// A whole page's stylesheet: the theme, each alternate under its mode's
-/// query, the page's own base, then the rules the tree named.
-export fn page_sheet(rules: List<CssRule>, t: Theme, alternates: List<Theme>) -> string {
+/// A length a look names, as the variable that carries it.
+fn measured(m: Measure) -> string {
+    match m {
+        .Step(z) -> "var(--space-${z.word()})",
+        .Control -> "var(--control)",
+        .Row -> "var(--row)",
+    }
+}
+
+/// The surface a look stands on, shaded toward what sits on it.
+fn ground_decls(g: Ground) -> List<string> {
+    match g {
+        .Native -> [],
+        .Clear -> ["background:transparent"],
+        .Fill(t, mix) -> [if mix == 0 { fill_word(t).decl } else { shade_decl(t, mix) }],
+    }
+}
+
+/// A surface `mix` percent of the way to what sits on it.
+fn shade_decl(t: Tone, mix: int) -> string {
+    "background:color-mix(in srgb,var(--tone-${t.word()}),var(--on-${t.word()}) ${mix}%)"
+}
+
+/// The ink a look is drawn in: the one it names, else what sits on its fill.
+fn ink_decls(w: Wear) -> List<string> {
+    let i? = w.ink else {
+        return match w.ground { .Fill(t, _) -> [on_word(t).decl], .Native or .Clear -> [] }
+    }
+    [color_word(i).decl]
+}
+
+/// The padding above and below, and at each side.
+fn pad_decls(w: Wear) -> List<string> {
+    let b? = w.block else { return ["padding-inline:${measured(i)}" for i in present(w.inline)] }
+    match w.inline {
+        i? -> ["padding:${measured(b)} ${measured(i)}"]
+        null -> ["padding-block:${measured(b)}"]
+    }
+}
+
+/// What a wear declares on the web.
+fn wear_decls(w: Wear) -> string {
+    [
+        ground_decls(w.ground),
+        ink_decls(w),
+        ["border:1px solid var(--ink-${i.word()})" for i in present(w.line)],
+        [radius_word(z).decl for z in present(w.radius)],
+        ["min-height:${measured(m)}" for m in present(w.least)],
+        pad_decls(w),
+    ]
+        .flatten()
+        .join(";")
+}
+
+/// What a primitive's look declares at rest, or in a state.
+fn looked(t: Theme, p: Prim, s: Interaction?) -> string {
+    match s {
+        v? -> wear_decls(worn(t.look.at(p), v, t.shading))
+        null -> wear_decls(t.look.at(p).rest)
+    }
+}
+
+/// One primitive's look in one state.
+type LookRule = { prim: Prim, state: Interaction?, decls: string }
+
+/// Every placed primitive's look that declares anything, at rest and then
+/// in each state.
+fn look_rules(t: Theme) -> List<LookRule> {
+    [LookRule { prim: p, state: s, decls: looked(t, p, s) } for s in states() for p in Prim.every() if placed(p) != null && looked(t, p, s) != ""]
+}
+
+/// Two rules share a line when they declare the same in the same state.
+fn alike(a: LookRule, b: LookRule) -> bool { a.state == b.state && a.decls == b.decls }
+
+/// The selectors a set of primitives is written under: a tag alone where
+/// every primitive drawn as it is in the set, else each one's kinds.
+fn parts(prims: List<Prim>) -> List<string> {
+    let ps = [pl for p in prims for pl in present(placed(p))]
+    [tag_parts(k, ps) for k in names_once([pl.tags.join(",") for pl in ps])].flatten()
+}
+
+fn tag_parts(key: string, ps: List<Placed>) -> List<string> {
+    let mine = [pl for pl in ps if pl.tags.join(",") == key]
+    let every = [pl for p in Prim.every() for pl in present(placed(p)) if pl.tags.join(",") == key]
+    if mine.length == every.length { return key.split(",") }
+    [t + k for pl in mine for t in pl.tags for k in pl.kinds]
+}
+
+/// The theme's look for every primitive; primitives that declare alike in a
+/// state share one rule.
+fn look_sheet(t: Theme) -> List<string> { look_where(t, "", "") }
+
+/// The theme `t`'s look drawn under the chain of scope classes `scopes`, outer first: on what stands
+/// inside the nearest scope, and on the element that wears it.
+fn look_in(scopes: List<string>, t: Theme) -> List<string> {
+    let nearest? = scopes.last() else { return [] }
+    look_where(t, scopes.slice(0, scopes.length - 1).map("${it} ").join(""), nearest)
+}
+
+/// The theme `t`'s look, each primitive's selector part under `outer` (scopes and their spaces) and
+/// the `nearest` scope; the page's own, unscoped, where `nearest` is empty.
+fn look_where(t: Theme, outer: string, nearest: string) -> List<string> {
+    let rules = look_rules(t)
+    ["${[placed_part(part, pseudo_of(r.state), outer, nearest) for part in parts([q.prim for q in rules if alike(q, r)])].join(",")}{${r.decls}}" for i, r in rules if !rules.slice(0, i).any(alike(it, r))]
+}
+
+/// A primitive's selector part in a state (`pseudo`): bare on the page, else on what stands inside
+/// the nearest scope and on the element that wears it.
+fn placed_part(part: string, pseudo: string, outer: string, nearest: string) -> string {
+    if nearest.is_empty() { return part + pseudo }
+    "${outer}${nearest} ${part}${pseudo},${outer}${part}${nearest}${pseudo}"
+}
+
+/// What each theme the stamped nodes of `root` are drawn in wears, once, in the order a walk from
+/// `root` first meets it. A scope is named by its place here: an identity within one page, so the
+/// page's HTML and the DOM that takes it over, walking one tree, name it alike.
+export fn scopes_of(root: Node) -> List<string> { names_once([worn_by(t) for chain in scope_chains(root, []) for t in chain]) }
+
+/// The class of the scope at `at` (from 0) among a page's `scopes_of`.
+fn scope_class(at: int) -> string { "th-${at + 1}" }
+
+/// The class a subtree drawn in `t` wears on a page whose scopes are `scopes` (`scopes_of`): two
+/// subtrees in one theme wear one. None where the page draws nothing in `t`.
+export fn theme_scope(t: Theme, scopes: List<string>) -> string? {
+    let at = scopes.index_of(worn_by(t)) ?? -1
+    if at < 0 { return null }
+    scope_class(at)
+}
+
+/// The scoped part of a page's sheet, where a subtree of `root` is drawn in a theme other than the
+/// page's `page`: each theme a subtree is drawn in, the page's own among them, once — its variables
+/// under its scope's class, which the cascade nests — and its look under each chain of scopes it is
+/// drawn under, so the nearest scope is always the most specific.
+export fn scoped_sheet(root: Node, page: Theme) -> string {
+    if !stamped_under(root) { return "" }
+    let page_wears = worn_by(page)
+    let chains = scope_chains(root, [])
+    if !chains.any(it.any(worn_by(it) != page_wears)) { return "" }
+    mut seen: List<string> = []
+    mut parts: List<string> = []
+    for chain in chains {
+        for t in chain {
+            let wears = worn_by(t)
+            if seen.contains(wears) { continue }
+            parts = parts.concat([vars_under(".${scope_class(seen.length)}", t)])
+            seen = seen.concat([wears])
+        }
+    }
+    mut chained: List<string> = []
+    for chain in chains {
+        if chain.all(worn_by(it) == page_wears) { continue }
+        let scopes = [".${c!}" for t in chain for c in [theme_scope(t, seen)] if c != null]
+        let scope = scopes.join(" ")
+        if chained.contains(scope) { continue }
+        chained = chained.concat([scope])
+        let nearest? = chain.last() else { continue }
+        parts = parts.concat(look_in(scopes, nearest))
+    }
+    parts.join("\n")
+}
+
+/// Whether a node under `n` carries a theme: what a page with no nested theme answers without
+/// building anything.
+fn stamped_under(n: Node) -> bool {
+    for c in n.children {
+        if c.theme != null || stamped_under(c) { return true }
+    }
+    false
+}
+
+/// The chains of themes the stamped nodes of `n` are drawn under, `above` being the stamps over it,
+/// in the order they stand, outer first.
+fn scope_chains(n: Node, above: List<Theme>) -> List<List<Theme>> {
+    let stamp? = n.theme else { return [scope_chains(c, above) for c in n.children].flatten() }
+    let here = above.concat([stamp.theme])
+    [here].concat([scope_chains(c, here) for c in n.children].flatten())
+}
+
+/// A tree as a page draws it: the theme its root was drawn in (the target's own where it carries
+/// none), and the root itself unscoped, since the whole page wears that theme.
+export type PageDrawn = { root: Node, theme: Theme }
+
+export fn page_drawn(root: Node) -> PageDrawn {
+    let stamp? = root.theme else { return PageDrawn { root: root, theme: plain() } }
+    PageDrawn { root: root with { theme: null }, theme: stamp.theme }
+}
+
+/// A page's whole sheet: its theme's, the rules its tree named, then each theme a subtree of it is
+/// drawn in, under that subtree's scope.
+export fn page_sheet_of(rules: List<CssRule>, p: PageDrawn) -> string {
+    let scoped = scoped_sheet(p.root, p.theme)
+    let own = page_sheet(rules, p.theme)
+    if scoped.is_empty() { own } else { "${own}\n${scoped}" }
+}
+
+/// What a page wears of its themes: the page's own, and each a subtree of it is drawn in.
+export fn worn_by_page(p: PageDrawn) -> string { "${worn_by(p.theme)}${scoped_sheet(p.root, p.theme)}" }
+
+/// What a page wears of its theme: the variables every class reads and the
+/// look of every primitive. A page whose theme moves either is sent its
+/// sheet again.
+export fn worn_by(t: Theme) -> string { [root_vars(t)].concat(look_sheet(t)).join("\n") }
+
+/// A whole page's stylesheet: the theme, the page's own base, the look the
+/// theme gives each primitive, then the rules the tree named.
+export fn page_sheet(rules: List<CssRule>, t: Theme) -> string {
     [root_vars(t)]
-        .concat([alternate(a) for a in alternates])
         .concat(base_rules())
+        .concat(look_sheet(t))
         .concat([rule_source(r) for r in rules])
         .join("\n")
 }

@@ -1,0 +1,186 @@
+//! @std.queue.job — a queue and its worker in one declaration. A job is
+//! the queue its items are sent to and the worker that runs its handler
+//! over them; every term of either is the job's own.
+//!
+//!     job resize {
+//!         name: "resize"
+//!         durable: stored<Upload>()
+//!         letter: stored_dead<Upload>()
+//!         retries: 3
+//!         each: thumbnails
+//!     }
+//!     let _ = resize.send(upload, id: "resize-${upload.id}")?
+//!     let serving = spawn resize.run()
+//!
+//! A buried item goes to `buries_in:`, a letter the program declares, or
+//! to the job's own, `<name>/dead`, standing on `letter:` when one is
+//! named and in memory otherwise, so a job always names a fate. A
+//! durable job's letter outlives the process too, so a durable job
+//! names one of them.
+use queue.{
+    Dead,
+    Delivery,
+    DrainError,
+    Durable,
+    Guarantee,
+    Home,
+    HomeError,
+    Key,
+    Order,
+    Overflow,
+    Transaction,
+    drain,
+    key,
+    queue,
+    run,
+    worker,
+}
+use @std.meta.{Diagnostic, refuse}
+use @std.time.{Duration, ms}
+
+/// A job's declaration: a queue's terms, a worker's, and the letter its
+/// buried items go to. Its events are its queue's and its worker's,
+/// fired where they fire.
+export component job<T, R, E> {
+    name: string = ""
+    each: fn(Delivery<T>) -> Result<R, E>
+    capacity: int = default_capacity
+    lease: Duration = default_lease
+    delivery: Guarantee = default_delivery
+    retries: int = default_retries
+    backoff: Duration = default_backoff
+    backoff_cap: Duration = default_backoff_cap
+    overflow: Overflow = default_overflow
+    order: Order = default_order
+    homed: Home<T>? = null
+    durable: Durable<T>? = null
+    dedupe: Duration = default_dedupe
+    at_once: int = default_at_once
+    in_tx: bool = false
+    buries_in: queue<Dead<T, E>>? = null
+    letter: Durable<Dead<T, E>>? = null
+    state made: Cell<worker<T, R, E>?> = Cell.new(null)
+    on took(d: Delivery<T>)
+    on acked(d: Delivery<T>)
+    on failed(d: Delivery<T>, e: E)
+    on buried(dead: Dead<T, E>)
+    /// The laws of the queue and the worker the job declares, and the
+    /// job's own over its letter.
+    fn check() -> List<Diagnostic> {
+        let laws = queue_laws(
+            QueueLaws {
+                capacity: self.capacity,
+                retries: self.retries,
+                unnamed_durable: (self.durable != null || self.letter != null) && self.name == "",
+                overflow: self.overflow,
+                delivery: self.delivery,
+            },
+        )
+            .concat(
+                worker_laws(
+                    WorkerLaws {
+                        exactly_once: self.delivery == Guarantee.exactly_once,
+                        lettered: true,
+                        at_once: self.at_once,
+                        letter: self.buries_in?.name ?? own_letter(self.name),
+                        letter_overflow: self.buries_in?.overflow ?? Overflow.park,
+                    },
+                ),
+            )
+        if self.buries_in != null && self.letter != null { return laws.concat([refuse(two_letters())]) }
+        if self.durable != null && self.buries_in == null && self.letter == null {
+            return laws.concat([refuse(letter_forgets(self.name))])
+        }
+        laws
+    }
+    /// The worker the job declares, over the queue it declares, made at
+    /// the first ask and the same one after.
+    fn crew() -> worker<T, R, E> {
+        let already = self.made.get()
+        if already != null { return already! }
+        let items = queue<T> {
+            name: self.name
+            capacity: self.capacity
+            lease: self.lease
+            delivery: self.delivery
+            retries: self.retries
+            backoff: self.backoff
+            backoff_cap: self.backoff_cap
+            overflow: self.overflow
+            order: self.order
+            homed: self.homed
+            durable: self.durable
+            dedupe: self.dedupe
+            took: self.took
+            acked: self.acked
+        }
+        let w = worker<T, R, E> {
+            reads: items
+            each: self.each
+            dead: self.buries_in ?? self.letter_made()
+            at_once: self.at_once
+            in_tx: self.in_tx
+            failed: self.failed
+            buried: self.buried
+        }
+        self.made.set(w)
+        w
+    }
+    /// The letter the job declares for itself.
+    fn letter_made() -> queue<Dead<T, E>> {
+        queue<Dead<T, E>> {
+            name: own_letter(self.name)
+            durable: self.letter
+        }
+    }
+    /// The queue the job's items are sent to.
+    fn inbox() -> queue<T> {
+        self.crew().reads!
+    }
+    /// The letter the job's buried items go to.
+    fn letters() -> queue<Dead<T, E>> {
+        self.crew().dead!
+    }
+    /// Send one item, as the job's queue's `send` does.
+    fn send(
+        item: T,
+        id: string = "",
+        under: Key = key(""),
+        after: Duration = ms(0),
+        tx: dyn Transaction? = null,
+    ) -> Result<string?, HomeError> {
+        self.inbox().send(item, id: id, under: under, after: after, tx: tx)
+    }
+    /// How many items the job still owes a fate.
+    fn depth() -> Result<int, HomeError> {
+        self.inbox().home().depth()
+    }
+    /// Run the job's worker for as long as the scope stands, as `run`
+    /// does.
+    fn run() -> Result<int, DrainError> {
+        run(self.crew())
+    }
+    /// Run the job's worker until no item is due, as `drain` does.
+    fn drain() -> Result<int, DrainError> {
+        drain(self.crew())
+    }
+    /// Ask the job's `run` to end, as the worker's `stop` does.
+    fn stop() {
+        self.crew().stop()
+    }
+}
+
+/// The name of a job's own letter.
+fn own_letter(name: string) -> string {
+    "${name}/dead"
+}
+
+// ── The voices ──
+
+fn two_letters() -> string {
+    "a job's buried items go to `buries_in:` or to its own `letter:`, and this names both"
+}
+
+fn letter_forgets(name: string) -> string {
+    "a durable job's letter outlives the process too, and `${name}` buries into memory — name `letter:` or `buries_in:`"
+}

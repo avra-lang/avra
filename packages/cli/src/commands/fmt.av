@@ -1,6 +1,6 @@
 //! `avra fmt <file>` — the file as canonical Avra: SAID by default,
 //! or WRITTEN with `--write`, gated on the LOSSLESS RECEIPT
-//! (compiler/format/receipt.av, `Workspace.write_checked_source`):
+//! (compiler/format/receipt.av, `file_write_checked`):
 //! the same significant tokens, remarks and doc groups the input
 //! carried, in order. A rewrite the receipt cannot confirm is
 //! refused, and nothing on disk moves.
@@ -12,46 +12,43 @@
 //! `fmt(x) == x` for an already-canonical file, byte-exact.
 //!
 //! IT PARSES AND DOES NOT ANALYZE. Formatting moves no token that
-//! typing decides, and the analyzed path cost 2.5 MINUTES for one file
-//! because asking for the entry forces the whole package to type.
+//! typing decides: a file is read on the program layer for its text
+//! and the words its `use` lines and its module give it, and nothing
+//! of it is typed.
 //!
 //! `--check <dir|files…>` IS ONE PROCESS: every `.av` file under a
 //! given directory (package boundaries found by `avra.toml`, never
 //! crossed into a nested package's OWN root a second time), or the
-//! files named, in ONE run — so the per-file `avra` start-up
-//! `tools/fmt_lossless.sh` once paid (~730 times, ~30s of nothing but
-//! process launches) is paid ONCE. A canonical file's own bytes are
-//! remembered under this compiler's print in the tree's store, so a
-//! warm re-run skips its parse and its print both — only a file that
-//! moved, or one this compiler has never seen, pays for either.
+//! files named, in ONE run. Whether a package's file stands canonical
+//! is an answer its package's store keeps with what it read — the
+//! file's text and its words' shapes — so a warm re-run parses and
+//! prints only a file that moved, or one whose provider did.
 use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{write_text}
-use @std.avrac.compiler.{Workspace, Phase, phase_total, current_read_digest}
-use @std.avrac.compiler.store.{Store, Stored, Reading, node_key}
-use @std.avrac.core.{FileId, digest_of, joined, distinct}
-use @std.avrac.features.{BlockWords}
-use @std.path.{dir_of, joined_path}
-use @std.time.{now_ns}
+use @std.avrac.compiler.{
+    Canonical,
+    ProgramFile,
+    avra_fact_definitions,
+    file_canonical,
+    file_formatted,
+    file_write_checked,
+}
+use @std.avrac.core.{flatten}
+use @std.path.{joined_path, relative_path}
+use @std.program.address.{SourceFileAddress}
+use @std.program.layered_store.{LayeredStore, program_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
 
 type FmtCmd = {}
 
 impl Runnable for FmtCmd {
     fn run(args: CliResult) -> int {
-        if args.has_flag("check") || args.has_flag("write") { return walked(args, args.has_flag("write")) }
-        let path = path_arg(args)
-        // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
-        let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
-        if !there {
-            no_such_file(path)
-            return 2
-        }
-        // ONE WORKSPACE. A `FileId` is an INDEX into the workspace that
-        // minted it, so asking a second workspace to read it indexes a
-        // table that never had the file — "index 0 is out of bounds
-        // (length 0)", for every input.
-        let ws = file_workspace(path)
-        let f = ws.file_id(path)
-        let outcome = match ws.formatted_source(f) {
+        if args.has_flag("check") || args.has_flag("write") { return walked(args, if args.has_flag("write") { Walk.Write } else { Walk.Check }) }
+        let path? = argued_path(args) else { return 2 }
+        let group = loose_groups([path])[0]
+        let read? = reading(group) else { return std_unfound() }
+        let file? = read.files.first() else { return 2 }
+        let outcome = match file_formatted(read.engine, file.file) {
             .Ok(text) -> {
                 println(text)
                 eprintln(printed_only_note())
@@ -62,289 +59,143 @@ impl Runnable for FmtCmd {
                 1
             },
         }
-        if timed(args) { eprintln(time_report(ws.phases.get())) }
+        if timed(args) { eprintln(time_rows_said(read.engine, FMT_ROWS)) }
         outcome
     }
 }
 
 // ── --check / --write: one process over a tree ──
 
-/// WHERE THE VERDICT "ALREADY CANONICAL" IS REMEMBERED: a named answer under this
-/// compiler (`canonical_row`), kept with what it read — the file's own bytes, and the
-/// provider files its `use` lines take block words from (§6.5, avra-8sb5.57.9.6: a
-/// provider that drops or changes a word must un-canonicalize every importer whose own
-/// bytes never moved). The row holds while every read still has its digest
-/// (`Store.get_valid`), and nothing else judges it: a later compiler asks another row,
-/// and a file that moved reads a different digest.
-fn canonical_row(ws: Workspace, path: string) -> string {
-    node_key(Stored.Rows, ["fmt.canonical", ws.compiler_id(), path])
-}
+/// examined, differing (written, under `--write`), refused, and which
+/// paths differed — folded across every group the walk visits.
+type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }
 
-/// The files a canonical verdict stood on, each at its digest: the file as it stands (or
-/// as `own` says it will, for a file about to be written), then every provider file.
-fn canonical_reads(ws: Workspace, f: FileId, path: string, own: string) -> List<Reading> {
-    [Reading { name: path, digest: digest_of(own) }]
-        .concat(
-            [Reading { name: p, digest: current_read_digest(p) ?? "-" } for p in provider_origins(ws.block_words(f, ws.parsed(f)))],
-        )
-}
+/// What a walk does with a file that is not canonical: says it, or rewrites it.
+enum Walk { Check, Write }
 
-/// The files a file's block words come from, each once.
-fn provider_origins(bw: BlockWords) -> List<string> {
-    distinct([g.origin for g in bw.grammars].concat([c.origin for c in bw.components]))
-}
+/// A package's files read on the program layer, or a lone file's: where
+/// they stand, the engine that answers for them, and the store its
+/// answers are kept in.
+type Reading = { files: List<ProgramFile>, engine: QueryEngine, store: LayeredStore }
 
-/// Whether the saved verdict still holds: no parse, no print.
-fn canonical_kept(store: Store, ws: Workspace, path: string) -> bool {
-    store.get_valid(Stored.Rows, canonical_row(ws, path), current_read_digest) != null
-}
+/// The rows `--time` speaks for a format: the parse and print are the
+/// engine's own work, the keep its store's.
+const FMT_ROWS: List<string> = ["analyze", "keep"]
 
-/// Remember `path` as canonical with the bytes `own` it stands on.
-fn canonical_keep(store: Store, ws: Workspace, f: FileId, path: string, own: string) {
-    let _ = store
-        .keep_reading(Stored.Rows, canonical_row(ws, path), "canonical", canonical_reads(ws, f, path, own))
-}
-
-/// examined, differing (written, under `--write`), refused, which paths
-/// differed, and every phase either side of the run timed — folded
-/// across every group the walk visits.
-type Tally = { examined: int, differing: int, refused: int, diffs: List<string>, phases: List<Phase> }
-
-fn empty_tally() -> Tally { Tally { examined: 0, differing: 0, refused: 0, diffs: [], phases: [] } }
-
-fn combined(a: Tally, b: Tally) -> Tally {
-    Tally {
-        examined: a.examined + b.examined,
-        differing: a.differing + b.differing,
-        refused: a.refused + b.refused,
-        diffs: a.diffs.concat(b.diffs),
-        phases: a.phases.concat(b.phases),
-    }
-}
-
-/// EVERY NAMED SPAN, SUMMED — `--time`'s report. `store` is
-/// `build_cache_root`'s cost (the compiler's own binary digest, paid
-/// once per package); `source` and `digest` are the per-file read and
-/// the canonical-cache's own lookup/write; `ast` folds the lexer in
-/// (there is no seam here to time it apart); `sublang` is the
-/// block-grammar lookup ALONE — a provider file it falls back to
-/// parsing counts under `ast`, so this phase holds only the lookup's
-/// own overhead; `print` and `compare` are the render and the byte
-/// check.
-fn time_report(phases: List<Phase>) -> string {
-    "time: ${joined(["${n} ${ms(phase_total(phases, n))}" for n in distinct([p.name for p in phases])], ", ")}"
-}
-
-/// A root's workspace, checking either its WHOLE package (`explicit`
-/// absent) or only the files named — the files a directory argument
-/// walked to, or a bare file argument gave outright.
+/// A package root with the files asked of it — its WHOLE package
+/// (`explicit` absent), or only the files named — or a lone file,
+/// its own root.
 type Group = { root: string, explicit: List<string>? }
 
 /// `--check` reports what differs from canonical; `--write` puts the
 /// receipt-checked canonical text on disk. Both walk every file in ONE
-/// process, one workspace per package, and both remember a canonical
-/// file's bytes in the store so the next walk skips it.
-fn walked(args: CliResult, write: bool) -> int {
+/// process, one engine per package.
+fn walked(args: CliResult, walk: Walk) -> int {
+    let write = walk == Walk.Write
     let asked = [rooted(p) for p in args.args_of("file")]
-    let t = fold_groups(expanded_groups(asked), write)
+    mut t = Tally { examined: 0, differing: 0, refused: 0, diffs: [] }
+    for g in expanded_groups(asked) {
+        let read? = reading(g) else { return std_unfound() }
+        light_or_leave(t.examined + read.files.length)
+        if timed(args) { read.engine.time_queries() }
+        for h in read.files {
+            let c = if write { written_one(read.engine, h) } else { file_canonical(read.engine, h.file) }
+            t = Tally {
+                examined: t.examined + 1,
+                differing: t.differing + if differs(c) { 1 } else { 0 },
+                refused: t.refused + refusal_of(c).length,
+                diffs: if differs(c) { t.diffs.concat([h.full]) } else { t.diffs },
+            }
+            if !write { for why in refusal_of(c) { eprintln("${h.full}: ${why}") } }
+        }
+        store_kept(read.engine, read.store)
+        if timed(args) { eprintln(time_rows_said(read.engine, FMT_ROWS)) }
+    }
     for p in t.diffs { println(p) }
     println(walk_summary(t, write))
-    if timed(args) { eprintln(time_report(t.phases)) }
     if t.refused > 0 || !write && t.differing > 0 { 1 } else { 0 }
 }
+
+fn differs(c: Canonical) -> bool { match c { .Differs -> true, .Stands or .Refused(_) -> false } }
+
+/// Why a file was refused, where it was.
+fn refusal_of(c: Canonical) -> List<string> { match c { .Refused(why) -> [why], .Stands or .Differs -> [] } }
 
 fn walk_summary(t: Tally, write: bool) -> string {
     if write { "fmt --write: ${t.examined} examined, ${t.differing} written, ${t.refused} refused" } else { "fmt --check: ${t.examined} examined, ${t.differing} differing, ${t.refused} refused" }
 }
 
-fn expanded_groups(asked: List<string>) -> List<Group> {
-    dir_groups([p for p in asked if is_a_dir(p)])
-        .concat(loose_groups([p for p in asked if !is_a_dir(p)]))
+/// THE FILES OF A GROUP, READ ON THE PROGRAM LAYER: a package's — every
+/// source under its `src/`, or the ones named, each by its place under
+/// the package's root; a lone file as a package of itself, its store
+/// beside it. Absent where no std stands beside this compiler.
+fn reading(g: Group) -> Reading? {
+    let disk? = (if is_a_dir(g.root) { disk_at(g.root, "") } else { lone_disk_at(g.root) }) else { return null }
+    let store = program_store_at(joined_path(disk.root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions(), disk.name)
+    let paths = when {
+        !disk.lone.is_empty() -> ["src/${disk.lone}"]
+        g.explicit == null -> disk.held(engine)
+        _ -> [relative_path(g.root, p) for p in g.explicit!]
+    }
+    Reading {
+        files: [program_file(disk, disk.file_at(p)) for p in paths],
+        engine: engine,
+        store: store,
+    }
 }
 
-fn dir_groups(dirs: List<string>) -> List<Group> {
-    if dirs.is_empty() { return [] }
-    [Group { root: r, explicit: null } for r in package_roots_under(dirs[0])]
-        .concat(dir_groups(dirs.slice(1, dirs.length)))
+fn expanded_groups(asked: List<string>) -> List<Group> {
+    flatten(
+        [[Group { root: r, explicit: null } for r in package_roots_under(p)] for p in asked if is_a_dir(p)],
+    )
+        .concat(loose_groups([p for p in asked if !is_a_dir(p)]))
 }
 
 /// Every `avra.toml`-rooted package under `dir` — `dir` itself when
 /// it stands at one, never descending past it into a package nested
 /// inside a package.
 fn package_roots_under(dir: string) -> List<string> {
-    let host = disk_host()
-    // LICENSED compiler.host_asked_directly: package roots are found on disk before any workspace exists — no query frame is open
-    let rooted = match host.there(joined_path(dir, "avra.toml")) {
-        .Exists(_, t) -> t,
-        rest -> false,
-    }
-    if rooted { return [dir] }
-    // LICENSED compiler.host_asked_directly: package roots are found on disk before any workspace exists — no query frame is open
-    match host.listing(dir) {
-        .Listing(_, entries) -> roots_from(dir, [e.name for e in entries ?? []]),
-        rest -> [],
-    }
+    if exists_at(joined_path(dir, "avra.toml")) { return [dir] }
+    flatten(
+        [package_roots_under(p) for name in names_at(dir) ?? [] for p in [joined_path(dir, name)] if is_a_dir(p)],
+    )
 }
 
-fn roots_from(dir: string, names: List<string>) -> List<string> {
-    if names.is_empty() { return [] }
-    let path = joined_path(dir, names[0])
-    let heads = if is_a_dir(path) { package_roots_under(path) } else { [] }
-    heads.concat(roots_from(dir, names.slice(1, names.length)))
-}
-
-/// The loose files, grouped by the package root each stands in — one
-/// workspace per root, never one per file.
+/// The loose files, grouped by the package each belongs to (`file_home`,
+/// the one rule every door reads) — one engine per package, never one
+/// per file — each file that belongs to none a group of its own.
 fn loose_groups(files: List<string>) -> List<Group> {
     mut roots: List<string> = []
     mut by_root: Map<string, List<string>> = {}
     for path in files {
-        let root = package_root(dir_of(path)) ?? path
+        let root = sourced_home(path) ?? path
         if !roots.contains(root) { roots.push(root) }
         by_root.set(root, (by_root.get(root) ?? []).concat([path]))
     }
-    [Group { root: r, explicit: by_root.get(r) } for r in roots]
+    [Group { root: r, explicit: if is_a_dir(r) { by_root.get(r) } else { null } } for r in roots]
 }
 
-/// `shared_id` is null on the top-level call (`walked`'s own): the
-/// FIRST group's workspace hashes the running binary for real, and
-/// every LATER group is seeded with that same answer instead of
-/// hashing its own copy — one process, one binary, one hash, never
-/// the process-wide cache `compiler_print` itself refuses (a rebuilt
-/// binary at the SAME path inside one process must still disagree;
-/// see compiler/build.av). `shared_id` is a caller's OWN knowledge
-/// that ITS workspaces share one binary, never a general assumption.
-///
-/// `seen` counts the files every earlier group took, so a run asked to
-/// stay light leaves before the group that would take it past the bound.
-fn fold_groups(groups: List<Group>, write: bool, shared_id: string? = null, seen: int = 0) -> Tally {
-    if groups.is_empty() { return empty_tally() }
-    let g = groups[0]
-    let ws = workspace_for(g.root)
-    if shared_id != null { ws.seed_compiler_id(shared_id!) }
-    let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
-    light_or_leave(seen + files.length)
-    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-    let t0 = now_ns()
-    let store = ws.opened_store()
-    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-    let store_ns = now_ns() - t0
-    let group = check_files(store, ws, files, write)
-    // THE GROUP'S WORKSPACE PHASES ARE READ ONCE, after its files are
-    // all checked — `ws.phases` accumulates for the whole workspace,
-    // so reading it per file would fold the same early spans in again
-    // with every later one.
-    let all = group with { phases: group.phases.concat([Phase { name: "store", ns: store_ns }]).concat(ws.phases.get()) }
-    combined(
-        all,
-        fold_groups(
-            groups.slice(1, groups.length),
-            write,
-            shared_id ?? ws.compiler_id(),
-            seen + files.length,
-        ),
-    )
-}
-
-fn workspace_for(root: string) -> Workspace {
-    if is_a_dir(root) { root_workspace(root) } else { lone(root) }
-}
-
-enum Outcome { Canonical, Differs, Refused }
-
-type Checked1 = { outcome: Outcome, phases: List<Phase> }
-
-fn ended(outcome: Outcome, phases: List<Phase>) -> Checked1 { Checked1 { outcome: outcome, phases: phases } }
-
-fn check_files(store: Store, ws: Workspace, files: List<string>, write: bool) -> Tally {
-    mut t = empty_tally()
-    for path in files {
-        let c = checked_one(store, ws, path, write)
-        t = Tally {
-            examined: t.examined + 1,
-            differing: t.differing + if c.outcome == Outcome.Differs { 1 } else { 0 },
-            refused: t.refused + if c.outcome == Outcome.Refused { 1 } else { 0 },
-            diffs: if c.outcome == Outcome.Differs { t.diffs.concat([path]) } else { t.diffs },
-            phases: t.phases.concat(c.phases),
-        }
-    }
-    t
-}
-
-/// A cache hit answers without a parse or a print; a miss pays for
-/// both and, when the file turns out canonical, remembers so the
-/// next `--check` need not ask again. `source` and `digest` are timed
-/// here directly — `ast`, `sublang` and `print` ride the workspace's
-/// own clock (`ws.phases`, folded in once per group by the caller).
-fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checked1 {
-    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-    let t0 = now_ns()
-    let f = ws.file_id(path)
-    let src = ws.source(f)
-    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-    let source_ns = now_ns() - t0
-    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-    let t1 = now_ns()
-    let hit = canonical_kept(store, ws, path)
-    let base = [
-        Phase { name: "source", ns: source_ns },
-        // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-        Phase { name: "digest", ns: now_ns() - t1 },
-    ]
-    if hit { return ended(Outcome.Canonical, base) }
-    if write { return written_one(store, ws, f, path, src.text, base) }
-    match ws.formatted_source(f) {
-        .Ok(text) -> {
-            // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-            let t2 = now_ns()
-            let matches = "${text}\n" == src.text
-            // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-            let compare = Phase { name: "compare", ns: now_ns() - t2 }
-            if matches {
-                // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-                let t3 = now_ns()
-                canonical_keep(store, ws, f, path, src.text)
-                Checked1 {
-                    outcome: Outcome.Canonical,
-                    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
-                    phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]),
-                }
-            } else {
-                Checked1 { outcome: Outcome.Differs, phases: base.concat([compare]) }
-            }
-        },
-        .Err(_) -> ended(Outcome.Refused, base),
-    }
-}
-
-/// `--write`'s one file: the receipt-checked text, put on disk and
-/// remembered as canonical — or refused, and nothing on disk moves.
-fn written_one(
-    store: Store,
-    ws: Workspace,
-    f: FileId,
-    path: string,
-    before: string,
-    base: List<Phase>,
-) -> Checked1 {
-    match ws.write_checked_source(f) {
+/// `--write`'s one file: the receipt-checked text put on disk — said as
+/// differing — or standing as it was; or refused, and nothing on disk
+/// moves.
+fn written_one(engine: QueryEngine, h: ProgramFile) -> Canonical {
+    match file_write_checked(engine, h.file) {
         .Ok(text) -> {
             let after = "${text}\n"
-            canonical_keep(store, ws, f, path, after)
-            if after == before { return ended(Outcome.Canonical, base) }
-            match write_text(path, after) {
-                .Ok(_) -> ended(Outcome.Differs, base),
-                .Err(e) -> {
-                    eprintln("avra: ${path}: ${e.describe().message}")
-                    ended(Outcome.Refused, base)
-                },
+            if after == text_at(h.full) ?? "" { return Canonical.Stands }
+            match write_text(h.full, after) {
+                .Ok(_) -> Canonical.Differs,
+                .Err(e) -> refused_said("avra: ${h.full}: ${e.describe().message}"),
             }
         },
-        .Err(report) -> {
-            eprintln("${path}: ${report}")
-            ended(Outcome.Refused, base)
-        },
+        .Err(report) -> refused_said("${h.full}: ${report}"),
     }
+}
+
+fn refused_said(why: string) -> Canonical {
+    eprintln(why)
+    Canonical.Refused(why)
 }
 
 /// A bare run only SAYS the canonical text, so its stdout reads the same

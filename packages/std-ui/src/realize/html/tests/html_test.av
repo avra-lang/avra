@@ -4,13 +4,16 @@
 use @std.ui.tree.node.{Node, Prim, Attribute}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.env.{Env}
-use @std.ui.realize.html.css.{all_rules, class_names}
+use @std.ui.realize.html.css.{all_rules, class_names, unplaced_looks, worn_by}
+use @std.ui.style.look.{Look, Wear, StateWear}
 use @std.text.{codepoints}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{dark_theme, high_contrast_theme}
+use @std.ui.style.tokens.{Tone, Ink}
+use @std.ui.style.theme.{Theme, default_theme}
 use @std.ui.realize.tests.support.{
+    stamped_with,
     served_at,
     leaf,
     boxed,
@@ -44,6 +47,29 @@ fn css_of(document: string) -> string { document.split("<style>")[1].split("</st
 fn sheet() -> string { css_of(render(tree(), Env {})) }
 
 fn count(hay: string, needle: string) -> int { hay.split(needle).length - 1 }
+
+/// The default theme with no stronger shade on any ink.
+fn unraised() -> Theme {
+    default_theme with { ink: default_theme.ink with { muted: default_theme.ink.muted with { more: null }, disabled: default_theme.ink.disabled with { more: null }, border: default_theme.ink.border with { more: null }, field: default_theme.ink.field with { more: null } } }
+}
+
+/// The default theme with the surface's dark fill replaced.
+fn night() -> Theme {
+    default_theme with { tone: default_theme.tone with { surface: default_theme.tone.surface with { fill: default_theme.tone.surface.fill with { dark: "#123456" } } } }
+}
+
+/// The default theme with a button filled by the accent, its focus named.
+fn filled() -> Theme {
+    let focus = StateWear { state: .Focus, wear: Wear { line: .Focus } }
+    default_theme with { look: default_theme.look with { button: Look { rest: Wear { ground: .Fill(.Accent, 0) }, acts: true, states: [focus] } } }
+}
+
+fn filled_sheet() -> string { css_of(render(stamped_with(tree(), filled()), Env {})) }
+
+/// The default theme with a look on a row, which draws as a bare `div`.
+fn filled_row() -> Theme {
+    default_theme with { look: default_theme.look with { row: Look { rest: Wear { radius: .S } } } }
+}
 
 spec "std/ui html — primitives" {
     given "each primitive" {
@@ -95,7 +121,7 @@ spec "std/ui html — primitives" {
         then "an empty card keeps its title" { fragment(card_node("T", [])) == "<article title=\"T\" class=\"dir-col\"><h2>T</h2></article>" }
         then "a card given no title has no heading" { fragment(holding(.Card, [])) == "<article class=\"dir-col\"></article>" }
         then "a card's appearance classes sit on its own element" {
-            fragment(card_node("T", []) with { box: Box { style: Style { fill: .Surface } } }) == "<article title=\"T\" class=\"dir-col fill-surface\"><h2>T</h2></article>"
+            fragment(card_node("T", []) with { box: Box { style: Style { fill: .Surface } } }) == "<article title=\"T\" class=\"dir-col fill-surface on-surface\"><h2>T</h2></article>"
         }
         then "a keyed item carries its identity" {
             fragment(keyed(holding(.Item, [text_node("x")]), "a")) == "<li data-key=\"a\"><span>x</span></li>"
@@ -116,7 +142,51 @@ spec "std/ui html — primitives" {
         then "every appearance token names its own class" {
             fragment(
                 styled(Style { radius: .L, fill: .SurfaceRaised, color: .Danger, face: .Mono }),
-            ) == "<span class=\"color-danger fill-surface-raised radius-l face-mono\">x</span>"
+            ) == "<span class=\"fill-surface-raised color-danger radius-l face-mono\">x</span>"
+        }
+        then "every type field names its own class, and the sheet holds each one's rule and value" {
+            let n = styled(Style { text_size: .Title, line_height: .Tight, tracking: .Wide })
+            let css = render(n, Env {})
+            class_names(n).join(" ") == "text-title leading-tight tracking-wide" &&
+                css.contains("\n.text-title{font-size:var(--text-title)}") &&
+                css.contains("\n.leading-tight{line-height:var(--leading-tight)}") &&
+                css.contains("\n.tracking-wide{letter-spacing:var(--tracking-wide)}") &&
+                css.contains("--text-title:17px;") &&
+                css.contains("--leading-tight:1.2;") &&
+                css.contains("--tracking-wide:0.06em;")
+        }
+        then "an elevation is the surface its level wears, never a shadow" {
+            let n = styled(Style { elevation: .High })
+            let css = render(n, Env {})
+            class_names(n).join(" ") == "level-high on-level-high" &&
+                css
+                    .contains(
+                        "--level-high:var(--tone-surface-raised);--on-level-high:var(--on-surface-raised);",
+                    ) &&
+                css.contains("\n.level-high{background:var(--level-high)}") &&
+                !css.contains("shadow")
+        }
+        then "a fill stands over an elevation, and a colour over both" {
+            class_names(styled(Style { fill: .Danger, elevation: .High })).join(" ") == "fill-danger on-danger" &&
+                class_names(styled(Style { fill: .Danger, elevation: .High, color: .Muted }))
+                    .join(" ") == "fill-danger color-muted"
+        }
+        then "every class any one style field names has a rule in the vocabulary" {
+            let all = all_rules().map(it.name)
+            [
+                Style { radius: .S },
+                Style { fill: .Accent },
+                Style { color: .Link },
+                Style { elevation: .Low },
+                Style { face: .Heading },
+                Style { text_size: .Display },
+                Style { line_height: .Loose },
+                Style { tracking: .Tight },
+            ]
+                .all(
+                    (s) -> !class_names(styled(s)).is_empty() &&
+                        class_names(styled(s)).all((c) -> all.contains(c)),
+                )
         }
         then "a column flows down, its axis class first" {
             fragment(boxed(.Column, gap(.M), [])) == "<div class=\"dir-col gap-m\"></div>"
@@ -166,23 +236,20 @@ spec "std/ui html — primitives" {
             ["none", "xs", "s", "m", "l", "xl"]
                 .all((z) -> sheet().contains("--space-${z}:") && sheet().contains("--radius-${z}:"))
         }
-        then "it names every tone" {
-            [
-                "text",
-                "muted",
-                "danger",
-                "surface",
-                "surface-raised",
-                "surface-sunk",
-                "surface-hover",
-            ]
-                .all((t) -> sheet().contains("--tone-${t}:"))
+        then "it names every surface, what sits on it, and every ink" {
+            Tone
+                    .every()
+                    .all(
+                        (t) -> sheet().contains("--tone-${t.word()}:") &&
+                            sheet().contains("--on-${t.word()}:"),
+                    ) &&
+                Ink.every().all((i) -> sheet().contains("--ink-${i.word()}:"))
         }
         then "it names every face" { ["body", "heading", "footnote", "mono"].all((f) -> sheet().contains("--face-${f}:")) }
-        then "the page's base reads the surface, the text tone and the body face" {
+        then "the page's base reads the canvas, what sits on it, the body face and the body's type" {
             sheet()
                 .contains(
-                    "body{margin:0;overflow-wrap:break-word;background:var(--tone-surface);color:var(--tone-text);font-family:var(--face-body)}",
+                    "body{margin:0;overflow-wrap:break-word;background:var(--tone-canvas);color:var(--on-canvas);font-family:var(--face-body);font-size:var(--text-body);line-height:var(--leading-normal)}",
                 )
         }
         then "the axis classes are flex" {
@@ -197,23 +264,32 @@ spec "std/ui html — primitives" {
             ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
                 .all((c) -> count(sheet(), ".${c}{") == 1)
         }
-        then "it holds the variables, the eleven base rules and one line per class the tree named" {
-            sheet().split("\n").length == 1 + 11 + 8
+        then "it holds the variables, the stronger colours, nine base rules, five lines of the theme's look and one line per class the tree named" {
+            sheet().split("\n").length == 1 + 1 + 9 + 5 + 8
         }
         then "a button shows what it stands on inside a border, so a fill it names is the fill a reader sees" {
             sheet()
                 .contains(
-                    "\nbutton{background:transparent;border:1px solid var(--tone-muted);padding:var(--space-xs) var(--space-s)}\n",
+                    "\nbutton{background:transparent;border:1px solid var(--ink-field);border-radius:var(--radius-m);min-height:var(--control);padding:var(--space-xs) var(--space-s)}\n",
                 )
         }
-        then "a button that cannot speak is muted" { sheet().contains("\nbutton:disabled{color:var(--tone-muted)}\n") }
+        then "every other control keeps the theme's corner and height, under one rule" {
+            sheet().contains("\ninput{border-radius:var(--radius-m);min-height:var(--control)}\n")
+        }
+        then "an item stands a row's padding above and below" { sheet().contains("\nli{padding-block:var(--row)}\n") }
+        then "a control that cannot speak wears the disabled ink" {
+            sheet().contains("\nbutton:disabled,input:disabled{color:var(--ink-disabled)}\n")
+        }
         then "what an item holds on one line stands a step apart, and the item keeps its marker" {
             sheet()
                 .contains("\nli:not(.dir-row):not(.dir-col)>*+*{margin-inline-start:var(--space-s)}\n")
         }
         then "the variables say which scheme the browser's own controls wear" {
-            sheet().starts_with(":root{color-scheme:light;") &&
-                render(tree(), Env { theme: dark_theme }).contains(":root{color-scheme:dark;")
+            sheet().starts_with(":root{color-scheme:light dark;") &&
+                render(stamped_with(tree(), default_theme with { mode: .Dark }), Env {})
+                    .contains(":root{color-scheme:dark;") &&
+                render(stamped_with(tree(), default_theme with { mode: .Light }), Env {})
+                    .contains(":root{color-scheme:light;")
         }
         then "a control wears the page's ink and face, never the browser's" {
             sheet().contains("\nbutton,input{font:inherit;color:inherit}\n")
@@ -223,15 +299,40 @@ spec "std/ui html — primitives" {
             sheet()
                 .contains("\nlabel{display:inline-flex;align-items:center;gap:var(--space-xs)}\n")
         }
-        then "a dialog wears the surface, and a closed one is not drawn whatever its classes say" {
-            sheet()
+        then "a dialog stands over the page and wears the raised surface, and a closed one is not drawn whatever its classes say" {
+            sheet().contains("\ndialog{position:fixed;inset-block:0}\n") &&
+                sheet()
                     .contains(
-                        "\ndialog{position:fixed;inset-block:0;background:var(--tone-surface);color:var(--tone-text)}\n",
+                        "\ndialog{background:var(--tone-surface-raised);color:var(--on-surface-raised)}\n",
                     ) &&
-                sheet().contains("\ndialog:not([open]){display:none}")
+                sheet().contains("\ndialog:not([open]){display:none}\n")
         }
         then "two renders of one tree are equal" { render(tree(), Env {}) == render(tree(), Env {}) }
         then "it holds no `<`" { !sheet().contains("<") }
+    }
+    given "the look a theme gives each primitive" {
+        then "the web places every look Crisp names" { unplaced_looks(default_theme).is_empty() }
+        then "a look on a primitive the web cannot tell apart is named" {
+            unplaced_looks(filled_row()).map(it.word()).join(",") == "row"
+        }
+        then "a filled control shades toward what sits on it while pointed at and pressed" {
+            filled_sheet()
+                    .contains("\nbutton{background:var(--tone-accent);color:var(--on-accent)}\n") &&
+                filled_sheet()
+                    .contains(
+                        "\nbutton:hover{background:color-mix(in srgb,var(--tone-accent),var(--on-accent) 8%);color:var(--on-accent)}\n",
+                    ) &&
+                filled_sheet()
+                    .contains(
+                        "\nbutton:active{background:color-mix(in srgb,var(--tone-accent),var(--on-accent) 16%);color:var(--on-accent)}\n",
+                    )
+        }
+        then "a state the theme names stands in place of the rule" {
+            filled_sheet().contains("\nbutton:focus-visible{border:1px solid var(--ink-focus)}\n")
+        }
+        then "a theme whose look moves is worn differently, whatever its variables" {
+            worn_by(filled()) != worn_by(default_theme)
+        }
     }
     given "the page" {
         then "it is a complete document around the tree" {
@@ -248,21 +349,62 @@ spec "std/ui html — primitives" {
                 .contains("<html lang=\"ar\" dir=\"rtl\">")
         }
         then "its variables are the environment's theme" {
-            css_of(page(Page { title: "T", env: Env { theme: dark_theme } }, tree()))
-                    .contains(":root{") &&
-                css_of(page(Page { title: "T", env: Env { theme: dark_theme } }, tree()))
-                    .contains("--tone-surface:#121212")
+            css_of(page(Page { title: "T" }, stamped_with(tree(), night())))
+                .contains("--tone-surface:light-dark(#FFFFFF,#123456)")
         }
-        then "with no alternate it holds no media query" { !page(Page { title: "T" }, tree()).contains("@media") }
-        then "a dark alternate rewrites the variables under the dark scheme query, once" {
-            let css = css_of(page(Page { title: "T", alternates: [dark_theme] }, tree()))
-            count(css, "@media (prefers-color-scheme: dark){:root{") == 1 &&
-                css.split("prefers-color-scheme: dark")[1].contains("--tone-text:#eeeeee") &&
-                css.split("prefers-color-scheme: dark")[0].contains("--tone-text:#111111")
+        then "every colour carries its light and its dark value, once each" {
+            let css = css_of(page(Page { title: "T" }, tree()))
+            count(css.split("}")[0], "light-dark(") == 2 * Tone.every().length + Ink.every().length &&
+                css
+                    .contains(
+                        "--tone-canvas:light-dark(#FFFFFF,#0A0A0A);--on-canvas:light-dark(#0A0A0A,#FAFAFA);",
+                    ) &&
+                css.contains("--ink-muted:light-dark(#525252,#ADADAD);")
         }
-        then "a high-contrast alternate sits under the contrast query" {
-            css_of(page(Page { title: "T", alternates: [high_contrast_theme] }, tree()))
-                .contains("@media (prefers-contrast: more){:root{")
+        then "it follows the reader's scheme, so it holds no scheme query" {
+            css_of(page(Page { title: "T" }, tree()))
+                    .starts_with(":root{color-scheme:light dark;") &&
+                !page(Page { title: "T" }, tree()).contains("prefers-color-scheme")
+        }
+        then "a reader who asks for more contrast reads the stronger colours, and only those, once" {
+            let css = css_of(page(Page { title: "T" }, tree()))
+            count(css, "@media (prefers-contrast: more){:root{") == 1 &&
+                css
+                    .contains(
+                        "\n@media (prefers-contrast: more){:root{--ink-muted:light-dark(#2E2E2E,#D9D9D9);--ink-disabled:light-dark(#5C5C5C,#A3A3A3);--ink-border:light-dark(#0A0A0A,#FAFAFA);--ink-field:light-dark(#0A0A0A,#FAFAFA);}}\n",
+                    )
+        }
+        then "a theme whose colours carry no stronger shade says nothing more" {
+            !css_of(page(Page { title: "T" }, stamped_with(tree(), unraised())))
+                .contains("prefers-contrast")
+        }
+        then "a theme holding more contrast wears the stronger colours at rest, and asks nothing" {
+            let css = css_of(
+                page(
+                    Page { title: "T" },
+                    stamped_with(tree(), default_theme with { contrast: .More }),
+                ),
+            )
+            css.contains(":root{color-scheme:light dark;") &&
+                css.split("}")[0].contains("--ink-muted:light-dark(#2E2E2E,#D9D9D9);") &&
+                css.split("}")[0].contains("--ink-text:light-dark(#0A0A0A,#FAFAFA);") &&
+                !css.contains("prefers-contrast")
+        }
+        then "a theme holding standard contrast asks nothing" {
+            !css_of(
+                page(
+                    Page { title: "T" },
+                    stamped_with(tree(), default_theme with { contrast: .Standard }),
+                ),
+            )
+                .contains("prefers-contrast")
+        }
+        then "a held mode rewrites the scheme and nothing else" {
+            let held = css_of(
+                page(Page { title: "T" }, stamped_with(tree(), default_theme with { mode: .Dark })),
+            )
+            held == css_of(page(Page { title: "T" }, tree()))
+                .replace("color-scheme:light dark;", "color-scheme:dark;")
         }
         then "the fragment is the page's body" {
             page(Page { title: "T" }, tree()).contains("<body>${fragment(tree())}</body>")
@@ -440,5 +582,17 @@ spec "std/ui html — a window's spacer" {
                 !item.contains("style=")
         }
         then "has its height in the page's sheet" { page(Page { title: "t" }, spacer()).contains("{--h:80px}") }
+    }
+}
+
+spec "std/ui html — a percent size" {
+    given "a node that is a share of its parent" {
+        then "wears one class for every share, and the share rides its custom property" {
+            let half = boxed(.Row, Layout { width: .Percent(50.0), height: .Percent(25.0) }, [])
+            fragment(half).contains("w-pct h-pct") && page(Page { title: "t" }, half).contains("%}")
+        }
+        then "two shares are the same markup" {
+            fragment(boxed(.Row, Layout { width: .Percent(50.0) }, [])) == fragment(boxed(.Row, Layout { width: .Percent(33.0) }, []))
+        }
     }
 }

@@ -5,7 +5,7 @@
 //! once the length agreed. The `..` binds the middle as a list of its own.
 use core.{PatId, TypeId, Reg, BinOp, Type, SeqParts, flatten}
 use features.{PatSemantics, TypeCx, LowerCx, pat_semantics_of}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 export type ListPatSemantics = {}
 
@@ -39,6 +39,7 @@ fn reached_wrongly(mut cx: LowerCx) -> Reg {
 /// The element patterns each against the list's element, the `..`
 /// against the list itself; the subject must be a list.
 fn seq_types(mut cx: TypeCx, p: PatId, parts: SeqParts, expected: TypeId) -> List<TypeId> {
+    if parts.rest.length > 1 { return two_middles(cx, p) }
     let elem? = cx.view.types.element(cx.seen(expected)) else { return not_a_list(cx, p, expected) }
     let listed = cx.type(List<elem>)
     flatten([sub_types(cx, a, elem) for a in parts.before])
@@ -158,16 +159,38 @@ fn no_list(mut cx: LowerCx) {
     cx.defect("a list pattern over a value that is no list survived typing")
 }
 
+/// A list pattern has one `..`: it stands for the middle.
+fn two_middles(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx.emit(said_as("type.list_pattern", cx.pat_loc(p), list_pattern_two_rests()))
+    []
+}
+
+/// A list pattern that writes `..` twice.
+export fn list_pattern_two_rests() -> Voice {
+    Voice {
+        message: "a list pattern has one `..` — it stands for the middle",
+        label: "two `..` here",
+        help: "keep one `..`; the elements before and after it are matched by place",
+    }
+}
+
 fn not_a_list(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.list_pattern",
                 cx.pat_loc(p),
-                "a list pattern matches a list, found `${cx.view.types.name_of(expected)}`",
-                "this pattern",
-                "match a list — `[first, ..rest]`; for any other value, match what it is",
+                list_pattern_unlisted(cx.view.types.name_of(expected)),
             ),
         )
     []
+}
+
+/// A list pattern over a value of `found`, which is no list.
+export fn list_pattern_unlisted(found: string) -> Voice {
+    Voice {
+        message: "a list pattern matches a list, found `${found}`",
+        label: "this pattern",
+        help: "match a list — `[first, ..rest]`; for any other value, match what it is",
+    }
 }

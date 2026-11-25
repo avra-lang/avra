@@ -1,7 +1,9 @@
 //! The const's StmtSemantics: the value walks and types like any
 //! binding's, the SETTLED law judges it, and the declaration lowers
-//! to nothing — a const is not a thing the program does.
-use core.{StmtId}
+//! to nothing — a const is not a thing the program does — but a named
+//! instance the entry builds where it's written: its unit is called
+//! there, built once, the box every fn reads.
+use core.{Reg, StmtId}
 use core.stmt.{ConstDecl}
 use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
 
@@ -9,7 +11,10 @@ use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
 /// values around it are not its to read, and a read of one is refused where it stands.
 fn resolve_value(mut cx: ResolveCx, s: StmtId) {
     let v? = cx.view.store.stmt_value(s) else { return }
+    let was = cx.in_instance
+    cx.in_instance = cx.view.store.is_component_inst(s)
     if cx.floors.is_empty() { cx.walk_under([], v) } else { cx.walk(v) }
+    cx.in_instance = was
 }
 
 impl StmtSemantics for ConstDecl {
@@ -20,5 +25,12 @@ impl StmtSemantics for ConstDecl {
 
     fn type_stmt(mut cx: TypeCx, s: StmtId) {
         check_const(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        if !cx.view.store.is_component_inst(s) { return null }
+        let d? = cx.view.decls.decl_of(cx.view.file, s) else { return null }
+        if !cx.view.decls.is_instance(d) { return null }
+        cx.instance_value_reg(self.value, d)
     }
 }

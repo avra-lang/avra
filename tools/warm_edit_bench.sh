@@ -27,6 +27,13 @@
 # so loudly. On macOS the measurement goes to the lane's Sprite
 # (`tools/work run`), as `speed-ratchet` does — a loaded Mac supplies no
 # number, and a worktree with no Sprite refuses rather than passing.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
+# THE LAYER IS WHAT IS MEASURED: its check alone, without the old check the net forks beside it. What
+# the net costs is said beside the number, never judged (`net_wall`).
+export AVRA_PROGRAM_NET=0
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -34,7 +41,7 @@ avra=${AVRA_SPEED_BIN:-build/avra}
 rounds=${SPEED_ROUNDS:-3}
 target=${SPEED_TARGET:-packages/cli}
 file=${SPEED_EDIT_FILE:-packages/cli/src/commands/shared.av}
-lit=${SPEED_EDIT_LIT:-· memo}
+lit=${SPEED_EDIT_LIT:-'"build/libavra_runtime.a'}
 case "$rounds" in ''|*[!0-9]*) rounds=3 ;; esac
 
 # A SKIP IS A FAILURE. `WARM_EDIT_SKIP` is the ONE hand-set opt-out — the
@@ -81,9 +88,9 @@ now() {
     n=$(date +%s%N 2>/dev/null)
     case "$n" in ''|*[!0-9]*) python3 -c 'import time; print(time.time_ns())' ;; *) printf '%s' "$n" ;; esac
 }
-wall() { # -> "<ms> <status>"; an answer that never came reads as 0 ms and a failed check
+wall() { # [net] -> "<ms> <status>"; an answer that never came reads as 0 ms and a failed check
     s=$(now)
-    "$avra" check "$target" >/dev/null 2>&1
+    AVRA_PROGRAM_NET=${1:-0} "$avra" check "$target" >/dev/null 2>&1
     st=$?
     e=$(now)
     printf '%s %s\n' "$(((e - s) / 1000000))" "$st"
@@ -105,16 +112,22 @@ restore() {
 }
 trap restore EXIT INT TERM
 [ ! -d .avra-cache ] || mv .avra-cache "$held/kept"
-set -- $(wall)
+# warmed with the net on, so its old check's store is as warm as the layer's for `net_wall`
+set -- $(wall 1)
 [ "${2:-1}" = 0 ] || { echo "warm_edit_bench: the warming check exited ${2:-1} — not measured" >&2; exit 1; }
 
 # A FRESH EDIT per round, of the same WIDTH every run (a count of bytes written is exact only
 # if the edit's text is): the appended word carries a run nonce and the
 # round's own name, so no round lands on a store hit.
 nonce=${SPEED_NONCE:-$(date +%s)-$(printf '%07d' $$)}
+# EACH EDIT ONE CHARACTER LONGER THAN THE ONE BEFORE, in the file's first item: every item below it
+# moves, as almost every edit a person makes moves them, and none lands on a length a round before
+# it left answers for. What it costs is its own item's work, wherever the item stands.
+grown=0
 edit() { # <word>
     cp "$orig" "$file"
-    python3 - "$file" "$lit" "$1$nonce" <<'PY'
+    grown=$((grown + 1))
+    python3 - "$file" "$lit" "$1$nonce$(printf '%*s' "$grown" '' | tr ' ' 'x')" <<'PY'
 import sys
 path, lit, word = sys.argv[1:4]
 text = open(path, encoding="utf-8").read()
@@ -156,6 +169,11 @@ while [ "$i" -lt "$rounds" ]; do
     if [ "$least" -eq 0 ] || [ "$ms" -lt "$least" ]; then least=$ms; fi
 done
 printf 'warm edit %s\n' "$least" >> "$raw"
+# WHAT THE NET COSTS AN EDIT, to stderr beside the number and never judged: one more fresh edit
+# checked with the net's old check forked beside the layer's.
+edit "net"
+set -- $(wall 1)
+echo "warm_edit_bench: net_wall edit ${1:-0} ms with the net on (not judged; the layer's own is \`warm edit\`)" >&2
 
 # THE WORK, COUNTED: what the unchanged check and one more fresh edit DID, as the
 # compiler counts it (`check --counts`, compiler/work.av) — exact on every machine,

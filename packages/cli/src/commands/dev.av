@@ -8,8 +8,9 @@
 //!
 //! A BUILD IS A CHILD: `avra build`, as anyone runs it, so what it says
 //! is what a build says, and a compiler that traps takes no server with
-//! it. THE WATCH IS THE BUILD'S OWN INPUTS (`Workspace.build_inputs`):
-//! every file its key covers, asked again each turn, so a file that
+//! it. THE WATCH IS THE BUILD'S OWN INPUTS (`build_reads`): every source
+//! its entry reaches, each file one reads as data and each manifest, asked
+//! again each turn, so a file that
 //! arrives is seen. THE HOST SAYS WHEN TO LOOK: the loop is parked on a
 //! watch over those files (`@std.io.watch`) and costs nothing between
 //! saves; `--interval` opts into looking on a clock instead, and a host
@@ -19,7 +20,7 @@
 //! another.
 use @std.http_message.message.{Header, Method}
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
-use @std.avrac.compiler.{Workspace, Toolchain, inputs_this_turn}
+use @std.avrac.compiler.{Toolchain}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, mounted, fixed}
 use @std.http.server.{server}
@@ -55,15 +56,11 @@ const web_module: string = "@std.ui.web"
 
 /// Whether a package's own sources reach for the page: one of them
 /// imports the module a page is mounted through. Asked of the `use`
-/// lines the workspace reads, never of a file's name.
-fn mounts_a_page(ws: Workspace) -> bool {
-    ws
-        .all_files(ws.packages()[0].src)
-        .any((path) -> ws.imported_by(path).any(it.text() == web_module))
-}
+/// lines the program layer reads, never of a file's name.
+fn mounts_a_page(root: string) -> bool { imports_module(root, web_module) }
 
 /// What `path` is. A package is a directory with a manifest; what it holds
-/// is the workspace's to say.
+/// is the program layer's to say.
 export fn pointed(path: string) -> Pointed {
     if !is_a_dir(path) { return .File }
     // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
@@ -72,9 +69,8 @@ export fn pointed(path: string) -> Pointed {
         rest -> false,
     }
     if !there { return .Files }
-    let ws = root_workspace(path)
-    if ws.entry_of() == null { return .Library }
-    if mounts_a_page(ws) { .Page } else { .Program }
+    if entry_written(path) == null { return .Library }
+    if mounts_a_page(path) { .Page } else { .Program }
 }
 
 impl Runnable for DevCmd {
@@ -271,14 +267,13 @@ type Watched = { path: string, mark: Mark }
 /// it failed since.
 type Standing = { module: Bytes, number: int, failure: string }
 
-/// One package's page being served. `lister` is asked what the build
-/// reads; `moved` is rung when the standing changes.
+/// One package's page being served. `moved` is rung when the standing
+/// changes.
 export type Page = {
     root: string,
     tools: Toolchain,
     compiler: Tool,
     glue: string,
-    lister: Cell<Workspace>,
     standing: Cell<Standing>,
     said: Cell<List<string>>,
     watched: Cell<List<Watched>>,
@@ -294,8 +289,7 @@ fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]
 /// The page of the package at `root`, nothing built yet — or the exit
 /// code of the refusal spoken: what this machine lacks to build one.
 fn page_at(root: string, target: string) -> Result<Page, int> {
-    let lister = root_workspace(root)
-    let tools = toolchain(lister, target, true, false, true)?
+    let tools = toolchain_with(host_lookup(), target, true, false, true)?
     let glue? = glue_dir() else { return .Err(unequipped(no_glue())) }
     let own? = own_binary() else { return .Err(unequipped(no_compiler())) }
     let compiler = match tool(own) { .Ok(c) -> c, .Err(e) -> { return .Err(refused_by_host(e)) } }
@@ -304,22 +298,20 @@ fn page_at(root: string, target: string) -> Result<Page, int> {
         .Err(why) -> { return .Err(unequipped(why)) },
     }
     .Ok(
-        page_of(lister, tools, compiler, glue) with { backend: backend, glue_files: glue_files(glue) },
+        page_of(root, tools, compiler, glue) with { backend: backend, glue_files: glue_files(glue) },
     )
 }
 
-/// The page of the package `lister` stands over, built by `compiler` for
+/// The page of the package at `root`, built by `compiler` for
 /// `tools` and served with the glue standing in `glue`; nothing built yet.
-export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: string) -> Page {
-    lister.built_for(tools)
+export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) -> Page {
     let none: List<Watched> = []
     let none_said: List<string> = []
     Page {
-        root: lister.root,
+        root: root,
         tools: tools,
         compiler: compiler,
         glue: glue,
-        lister: Cell.new(lister),
         standing: Cell.new(Standing { module: "".bytes(), number: 0, failure: "" }),
         said: Cell.new(none_said),
         watched: Cell.new(none),
@@ -330,7 +322,7 @@ export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: str
 impl Page {
     /// Every file the build reads, each as it stands now.
     fn looked() -> List<Watched> {
-        match inputs_this_turn(self.lister) {
+        match build_reads(self.root) {
             .Ok(read) -> [Watched { path: p, mark: mark_of(p) } for p in read],
             .Err(why) -> {
                 eprintln("avra: ${why}")

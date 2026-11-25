@@ -41,7 +41,14 @@ static uint64_t g_pid_reads = 0;
 uint64_t avra_tick_cold_pid_reads(void) { return __atomic_load_n(&g_pid_reads, __ATOMIC_RELAXED); }
 
 // A child of fork has no source, and its inherited pid is the parent's.
-static void tick_after_fork(void) { g_owner = 0; }
+// The inherited wake pipe is closed here, while its numbers are still that
+// pipe's: the child may close every descriptor it was not given, and a
+// number kept past that names whatever the child opens next.
+static void tick_after_fork(void) {
+    g_owner = 0;
+    if (g_wake[0] >= 0) { close(g_wake[0]); close(g_wake[1]); }
+    g_wake[0] = g_wake[1] = -1;
+}
 
 // The process id, read once per cold arm; every hot arm compares the
 // cached owner instead. The count sits at the read.

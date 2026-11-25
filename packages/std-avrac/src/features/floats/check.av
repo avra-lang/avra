@@ -2,6 +2,7 @@
 //! with `ToInt` the prelude's enum named by its declaration.
 use features.{MethodCall, TypeCx}
 use core.{Type, TypeId, TypeRegistry}
+use diagnostics.{Voice, said_as}
 
 fn on_float(t: Type) -> bool { t is .Float }
 
@@ -18,8 +19,24 @@ fn check_round(mut cx: TypeCx, mc: MethodCall) -> TypeId { rounded_answer(cx, mc
 fn check_trunc(mut cx: TypeCx, mc: MethodCall) -> TypeId { rounded_answer(cx, mc, "trunc") }
 
 fn rounded_answer(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
-    let to_int? = cx.view.decls.prelude_named("ToInt") else { return cx.error_type }
+    let to_int? = cx.view.decls.prelude_named("ToInt") else { return no_to_int(cx, mc, name) }
     let err = cx.view.types.intern(Type.Enum(to_int, "ToInt"))
     let ok = cx.view.types.type(int)
     cx.worded(mc, name, [], Type.Res(ok, err))
+}
+
+/// A rounding where the program sees no prelude: its failure is the prelude's `ToInt`, so
+/// a lone file has no answer to give it.
+fn no_to_int(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    cx.spoken(said_as("type.to_int", cx.loc_of(mc.e), to_int_unseen(name)))
+}
+
+/// The rounding `name` of a float, which answers the prelude's `ToInt`, in a program that sees no
+/// prelude.
+export fn to_int_unseen(name: string) -> Voice {
+    Voice {
+        message: "`float.${name}` answers `Result<int, ToInt>`, and this program sees no `@std/prelude`",
+        label: "rounded here",
+        help: "a file in a package sees the prelude",
+    }
 }

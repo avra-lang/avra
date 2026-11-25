@@ -1,0 +1,362 @@
+//! THE ERROR A `Result<T, _>` INFERS, on the program layer: what each `fail` site in the fn's body
+//! raises, and through each `?` site whose call answers another `_` fn's `Result`, whatever that
+//! fn raises, through any recursion, each strongly connected set of such fns folded once. A body's
+//! own sites are read off a typing that reads every callee's answer as it is WRITTEN, so asking
+//! what a fn raises never asks what another raises to type a body: the sites are one question per
+//! fn, and what a fn raises is the union of the sites the fns it reaches answer. Every other typing
+//! reads a callee's answer with its error so inferred. A site whose raised type isn't read, a call
+//! through a value among them, raises what nothing names, and the inference refuses.
+use core.{
+    ExprId,
+    Span,
+    NodeReads,
+    Stmt,
+    StmtId,
+    SignedType,
+    SyntaxArena,
+    TypeHead,
+    flatten,
+    headed_type,
+    some_list,
+    reached_union,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+
+/// A fn whose answer may infer its error: the file and name it's declared as, and for a method, the
+/// impl that gives it.
+@derive(Saved)
+export type InferringFn = { file: SourceFileAddress, name: string, impl_at: ImplAt? = null }
+
+/// What a fn's own body raises: the type each `fail` site raises and each `?` site forwards whose
+/// call answers a written error, the `_` fns whose answers its other `?` sites forward, and whether
+/// a site raises what its typing doesn't name.
+@derive(Saved)
+export type OwnFailures = { direct: List<SignedType>, forwards: List<InferringFn>, unnamed: bool }
+
+/// What a `_` fn raises: each error type it can fail with, and whether a site it reaches raises what
+/// nothing names.
+@derive(Saved)
+export type RaisedSet = { members: List<SignedType>, unnamed: bool }
+
+/// What the body of the fn `at` raises of its own, read off its typing under written answers.
+@query("typing")
+export fn own_failures(engine: QueryEngine, at: InferringFn) -> OwnFailures {
+    let surveyed? = surveyed_body(engine, at) else { return OwnFailures { direct: [], forwards: [], unnamed: true } }
+    let store = surveyed.store
+    let under = store.every_expr(surveyed.body)
+    let held = Cell.new(filled_flags(store.expr_count()))
+    for e in under { held.set_at(e.index, true) }
+    let fails = [v for s in fail_stmts(store) for v in [fail_value(store, s)] if v != null && held.get()[v!.index]]
+    let forwarded = [p! for e in under for p in [propagated(store, e)] if p != null]
+    let raised = [surveyed.types[v!.index] for v in fails]
+    let carried = [site_error(engine, at, surveyed, p) for p in forwarded]
+    OwnFailures {
+        direct: [t! for t in raised if t != null].concat([c.direct! for c in carried if c.direct != null]),
+        forwards: [c.forward! for c in carried if c.forward != null],
+        unnamed: raised.any(it == null) || carried.any(it.unnamed),
+    }
+}
+
+/// What the `_` fn `at` raises: the union of what every fn it reaches through `?` raises of its own.
+@query("typing")
+export fn raised(engine: QueryEngine, at: InferringFn) -> RaisedSet {
+    let fns: Cell<Map<string, InferringFn>> = Cell.new({})
+    let types: Cell<Map<string, SignedType>> = Cell.new({})
+    let unnamed = Cell.new(false)
+    let root = fn_key(at)
+    fns.put(root, at)
+    let keys = reached_union(
+        root,
+        (k) -> {
+            let own = own_failures(engine, fns.get().get(k)!)
+            if own.unnamed { unnamed.set(true) }
+            for t in own.direct { if !types.get().has(t.spelled()) { types.put(t.spelled(), t) } }
+            for f in own.forwards { if !fns.get().has(fn_key(f)) { fns.put(fn_key(f), f) } }
+            NodeReads {
+                own: [t.spelled() for t in own.direct],
+                refs: [fn_key(f) for f in own.forwards],
+            }
+        },
+    )
+    RaisedSet { members: [types.get().get(k)! for k in keys], unnamed: unnamed.get() }
+}
+
+/// The fn `file` declares as `name`, signed with the error its answer infers: its written signature
+/// where its answer infers none, or where what it raises isn't known, which a law refuses.
+@query("typing")
+export fn fn_answered(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
+    let written? = fn_signature(engine, file, name) else { return null }
+    let answer? = inferred_answer(engine, InferringFn { file: file, name: name }, written.answer) else { return written }
+    written with { answer: answer }
+}
+
+/// `answer`, the answer the `_` fn `at` writes, with the error it infers in its place; absent where
+/// it writes none or what it raises isn't known.
+export fn inferred_answer(engine: QueryEngine, at: InferringFn, answer: SignedType) -> SignedType? {
+    if !infers(answer) { return null }
+    let r = raised(engine, at)
+    let err? = raised_type(engine, r, at.file.package_name) else { return null }
+    answer with { args: [answer.args[0], err] }
+}
+
+/// The error what a fn raises is: its one member, or the union of several; absent where it raises
+/// nothing, or what nothing names.
+export fn raised_type(engine: QueryEngine, r: RaisedSet, reader: string) -> SignedType? {
+    if r.unnamed || r.members.is_empty() { return null }
+    if r.members.length == 1 { return r.members[0] }
+    headed_type(TypeHead.Union) with { alternatives: union_ordered(engine, r.members, reader) }
+}
+
+/// The body of the fn `at` signed with the error its answer infers, where it infers one, which a
+/// lowering lays out.
+export fn answered_body(engine: QueryEngine, at: InferringFn, signed: SignedBody) -> SignedBody {
+    let answer? = inferred_answer(engine, at, signed.signature.answer) else { return signed }
+    signed with { signature: signed.signature with { answer: answer } }
+}
+
+/// The method `method` a value of `subject` has, as a fn of its receiver then its seats, its answer
+/// with the error it infers where one impl gives it.
+export fn method_answered(engine: QueryEngine, subject: SignedType, method: string, reader: string) -> SignedType? {
+    let written? = method_type(engine, subject, method, reader) else { return null }
+    let answer? = written.answer else { return written }
+    if !infers(answer) { return written }
+    let declared? = declared_at(subject) else { return written }
+    let impls = impls_given(engine, declared.file, declared.name, method, false, reader)
+    if impls.length != 1 { return written }
+    let inferred? = inferred_answer(
+        engine,
+        InferringFn { file: impls[0].file, name: method, impl_at: impls[0] },
+        answer,
+    ) else { return written }
+    written with { answer: inferred }
+}
+
+/// THE ORDER A UNION'S MEMBERS STAND IN, written or inferred, as the package `reader` reads it: a
+/// type the language owns first, by its spelling; then each a program declares, the reader's own
+/// before any other package's, by the path of the file declaring it, and in one file in the order
+/// its declarations are written. The order is the members' own, never the order a site raises them
+/// in or a union spells them in.
+export fn union_ordered(engine: QueryEngine, members: List<SignedType>, reader: string) -> List<
+    SignedType,
+> {
+    sorted_by(members, (a, b) -> member_before(engine, a, b, reader))
+}
+
+/// Whether the union member `a` stands before `b`, as the package `reader` reads them.
+fn member_before(engine: QueryEngine, a: SignedType, b: SignedType, reader: string) -> bool {
+    let pa = member_place(engine, a, reader)
+    let pb = member_place(engine, b, reader)
+    if pa.file != pb.file { return text_before(pa.file, pb.file) }
+    if pa.at != pb.at { return pa.at < pb.at }
+    text_before(a.spelled(), b.spelled())
+}
+
+/// Where a union member is declared: its file, spelled after whether its package is the reader's,
+/// and its place among the file's declarations; a type the language owns before every file.
+type MemberPlace = { file: string, at: int }
+
+fn member_place(engine: QueryEngine, t: SignedType, reader: string) -> MemberPlace {
+    match t.head {
+        .Declared(file, name) -> MemberPlace {
+            file: "${if file.package_name == reader { 0 } else { 1 }}${file.package_name}:${file.path_in_package}",
+            at: file_declares(engine, file).names.find_index(it.name == name) ?? -1,
+        },
+        rest -> MemberPlace { file: "", at: -1 },
+    }
+}
+
+/// Whether a written answer is a `Result` whose error is inferred.
+export fn infers(answer: SignedType) -> bool { answer.resulted() && answer.args[1].head is .Inferred }
+
+// ── A body's sites ──────────────────────────────────────────────────
+
+/// A fn's body typed under written answers: its item's store, its body, and each node's type.
+type SurveyedBody = { store: SyntaxArena, body: ExprId, types: List<SignedType?> }
+
+/// The body of the fn `at`, typed under every callee's written answer; absent where it has none.
+fn surveyed_body(engine: QueryEngine, at: InferringFn) -> SurveyedBody? {
+    let signed? = inferring_body(engine, at) else { return null }
+    SurveyedBody {
+        store: signed.item.store,
+        body: signed.body,
+        types: kept_body(body_checked(engine, signed_file(at), signed, false, true)).types,
+    }
+}
+
+/// The body of the fn `at` beside its signature: a free fn's, or the method its impl gives.
+fn inferring_body(engine: QueryEngine, at: InferringFn) -> SignedBody? {
+    let impl_at? = at.impl_at else { return signed_body(engine, at.file, at.name) }
+    signed_method(engine, impl_at, at.name, false)?.signed
+}
+
+/// The file a fn's body reads its names from.
+fn signed_file(at: InferringFn) -> SourceFileAddress { at.impl_at?.file ?? at.file }
+
+/// What a `?` site forwards: the error its call answers where it's written, or the `_` fn the call
+/// names where that fn's written answer infers it, which a typing under written answers leaves
+/// untyped; nothing where its value isn't a `Result`; unnamed for any other value whose type isn't
+/// known, a call through a value among them.
+type SiteError = { direct: SignedType? = null, forward: InferringFn? = null, unnamed: bool = false }
+
+/// What the `?` site whose value is `v` forwards, in the body of `at`.
+fn site_error(engine: QueryEngine, at: InferringFn, surveyed: SurveyedBody, v: ExprId) -> SiteError {
+    let ty? = surveyed.types[v.index] else { return forwarded(engine, at, surveyed, v) }
+    if !ty.resulted() { return SiteError {} }
+    if !infers(ty) { return SiteError { direct: ty.args[1] } }
+    forwarded(engine, at, surveyed, v)
+}
+
+/// What the `?` site whose value is the call `v` forwards from the `_` fn it names: that fn, where
+/// its written answer infers its error; unnamed for any other value.
+fn forwarded(engine: QueryEngine, at: InferringFn, surveyed: SurveyedBody, v: ExprId) -> SiteError {
+    let callee? = called_fn(engine, at, surveyed, v) else { return SiteError { unnamed: true } }
+    if !infers(written_answer(engine, callee) ?? headed_type(TypeHead.Never)) { return SiteError { unnamed: true } }
+    SiteError { forward: callee }
+}
+
+/// The answer the fn `f` writes: a free fn's, or the method its impl gives.
+fn written_answer(engine: QueryEngine, f: InferringFn) -> SignedType? {
+    let impl_at? = f.impl_at else { return fn_signature(engine, f.file, f.name)?.answer }
+    method_signature(engine, impl_at, f.name)?.answer
+}
+
+/// The `_` fn the call `v` names: a fn by its name, or a method of the receiver's declared type
+/// one impl gives; absent for a call through a value, or one naming neither.
+fn called_fn(engine: QueryEngine, at: InferringFn, surveyed: SurveyedBody, v: ExprId) -> InferringFn? {
+    let file = signed_file(at)
+    match surveyed.store.expr(v) {
+        .Call(callee, _, _) -> {
+            let d? = resolved(engine, file, Space.Value, callee.text()).named() else { return null }
+            if !(d.kind is .Fn) { return null }
+            InferringFn { file: d.file, name: d.name }
+        },
+        .MethodCall(subject, name, _) -> {
+            let receiver? = surveyed.types[subject.index] else { return null }
+            let declared? = declared_at(receiver) else { return null }
+            let impls = impls_given(
+                engine,
+                declared.file,
+                declared.name,
+                name.of,
+                false,
+                file.package_name,
+            )
+            if impls.length != 1 { return null }
+            InferringFn { file: impls[0].file, name: name.of, impl_at: impls[0] }
+        },
+        rest -> null,
+    }
+}
+
+/// Every `fail` statement in a store.
+fn fail_stmts(store: SyntaxArena) -> List<StmtId> {
+    store.stmts_by_kind(0, store.stmts.count(), store.tag_stmt(Stmt.Fail(ExprId { index: 0 })))
+}
+
+/// The value a `fail` statement raises.
+fn fail_value(store: SyntaxArena, s: StmtId) -> ExprId? {
+    match store.stmt(s) { .Fail(v) -> v, rest -> null }
+}
+
+/// The value a `?` forwards, where `e` is one.
+fn propagated(store: SyntaxArena, e: ExprId) -> ExprId? {
+    match store.expr(e) { .Propagate(v) -> v, rest -> null }
+}
+
+/// A flag per node, each unset.
+fn filled_flags(n: int) -> List<bool> { [false for _i in 0..n] }
+
+/// A fn's key among the fns a reach reads.
+fn fn_key(f: InferringFn) -> string {
+    let impl_at? = f.impl_at else { return "${f.file.package_name}:${f.file.path_in_package}#${f.name}" }
+    "${impl_at.file.package_name}:${impl_at.file.path_in_package}@${impl_at.item}/${impl_at.nth}#${f.name}"
+}
+
+// ── The laws ────────────────────────────────────────────────────────
+
+/// A `_` fn the written item `at` of `file` declares, its own or a method its impls give, where its
+/// statement stands.
+type InferringDecl = { f: InferringFn, at: Span? }
+
+/// Each `_` fn the written item `at` of `file` declares: its fns, and the methods its impls give.
+fn inferring_decls(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<InferringDecl> {
+    let item = read_item(engine, file, at)
+    let own = [InferringDecl { f: InferringFn { file: file, name: p!.name }, at: item.store.stmt_span(s) } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && infers(fn_signature(engine, file, p!.name)?.answer ?? headed_type(TypeHead.Never))]
+    own.concat(flatten([methods_inferring(engine, a) for a in impls_at(engine, file, at)]))
+}
+
+/// Each method the impl `a` gives whose written answer infers its error.
+fn methods_inferring(engine: QueryEngine, a: ImplAt) -> List<InferringDecl> {
+    let item = read_item(engine, a.file, a.item)
+    let fns = [f for s in some_list(impl_stmt_at(item, a)) for f in item.store.impl_parts(s)!.fns]
+    [InferringDecl {
+        f: InferringFn { file: a.file, name: p!.name, impl_at: a },
+        at: item.store.stmt_span(s),
+    } for s in fns for p in [item.store.fn_parts(s)] if p != null &&
+        !item.store.is_static(s) &&
+        infers(method_signature(engine, a, p!.name)?.answer ?? headed_type(TypeHead.Never))]
+}
+
+/// Each `_` fn the item declares that reaches a site raising what nothing names.
+fn unnamed_raised(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [found_at(d) for d in inferring_decls(engine, file, at) if raised(engine, d.f).unnamed]
+}
+
+/// Each `_` fn the item declares that raises nothing.
+fn nothing_raised(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    [found_at(d) for d in inferring_decls(engine, file, at) for r in [raised(engine, d.f)] if !r.unnamed && r.members.is_empty()]
+}
+
+/// A law's finding at the `_` fn `d`, said where its declaration starts.
+fn found_at(d: InferringDecl) -> Found { Found { at: declaration_point(d.at), args: [] } }
+
+/// Where a declaration is said to stand: its first character.
+fn declaration_point(at: Span?) -> Span? {
+    let s? = at else { return null }
+    Span { lo: s.lo, hi: s.lo + 1 }
+}
+
+/// a `Result<T, _>` whose `fail` or `?` site raises a type nothing names
+export law infer_unnamed {
+    kind: "type.infer_result"
+    reads: unnamed_raised
+    voice: unnamed_words
+    witness: "enum E { E(n: int) }\n\nfn base(k: int) -> Result<int, _> {\n    if k == 0 { fail E.E(0) }\n    k\n}\n\nfn through(k: int) -> Result<int, _> {\n    let h = base\n    let v = h(k)?\n    v\n}\n"
+}
+
+/// a `Result<T, _>` with no `fail` or `?` site to infer from
+export law infer_nothing {
+    kind: "type.infer_result"
+    reads: nothing_raised
+    voice: nothing_words
+    witness: "fn none(k: int) -> Result<int, _> { k }\n"
+}
+
+fn unnamed_words(_a: List<string>) -> Voice {
+    Voice {
+        message: "a `fail` or `?` site here raises something this walk cannot structurally name",
+        label: "declared here",
+        help: "spell the union by hand — `Result<T, A or B>`",
+    }
+}
+
+fn nothing_words(_a: List<string>) -> Voice {
+    Voice {
+        message: "nothing here can fail — write the fn's true answer type, not `Result<T, _>`",
+        label: "declared here",
+        help: "a `fail` or a `?` site is what `_` infers from; with none, spell the answer this fn actually returns",
+    }
+}
+
+collect listed_inferred_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries an inferred error reads through, for a process to hand its engine.
+export fn inferred_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_inferred_facts) }

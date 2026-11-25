@@ -1,0 +1,24 @@
+//! proves a worker's `check` refuses a dead letter that drops on
+//! overflow, under each dropping term, and takes one that parks or
+//! fails.
+use @std.queue.{queue, worker, Dead, Delivery, Overflow}
+
+fn pay(d: Delivery<int>) -> Result<int, string> { d.item }
+
+fn said(o: Overflow) -> string {
+    let jobs = queue<int> {}
+    let letter = queue<Dead<int, string>> {
+        name: "undeliverable"
+        overflow: o
+    }
+    let w = worker<int, int, string> {
+        reads: jobs
+        each: pay
+        dead: letter
+    }
+    let laws = w.check()
+    if laws.is_empty() { "taken" } else { laws[0].message }
+}
+
+[said(o) for o in [Overflow.drop_newest, Overflow.drop_oldest, Overflow.latest, Overflow.park, Overflow.fail]]
+    .join(" | ")

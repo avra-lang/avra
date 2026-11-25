@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type}
+use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type, mark_at}
 use features.{state_slot}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
@@ -204,11 +204,23 @@ impl LowerCx {
     }
 
     /// A method's receiver, a borrowed parameter: no cell stands behind
-    /// it, so its box is thawed once here — idempotent, since the call
-    /// site already thawed it.
+    /// it. `self` and a `mut` seat hold a box their caller opened, so
+    /// the write rides the seat; any other seat may hold the binary's
+    /// own data, which the thaw copies.
     mut fn borrowed_box(s: ExprId) -> Reg {
         let reg? = self.def_reg(s) else { return self.lower_defect(s, "a mutation rooted outside a mut cell survived resolve") }
+        if self.opened_by_caller(s) { return self.seat_opened(self.shape_at(s), reg) }
         self.box_thawed(self.shape_at(s), reg)
+    }
+
+    /// Whether a written root is a seat its caller opens: `self`, or a `mut` seat.
+    fn opened_by_caller(s: ExprId) -> bool {
+        let b? = self.names.binding(s) else { return false }
+        match b {
+            .Receiver -> true,
+            .Param(i) -> mark_at(self.seat_marks, i).mutable,
+            .Def(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) or .TypeParam(_) -> false,
+        }
     }
 
     /// The box a nullable carries, unique and insisted present. Only a

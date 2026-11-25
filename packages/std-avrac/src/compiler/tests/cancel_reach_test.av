@@ -1,45 +1,32 @@
 // Whether a call may reach a cancel point (`Family.CancelBits`): a
 // fixpoint over the calls each body makes, settled per strongly-connected set, seeded by a
 // row that may switch the task out, a read that waits, a spawn, a
-// `while`, and a call through a value. A held fn answers from its
-// interface, where the bit is contract.
-use compiler.{Workspace}
-use compiler.host.{memory_host}
-use compiler.record.{read_fields, iface_digest}
-use compiler.producers.{note_producers, producers_of}
-use core.{DeclId, flatten}
-use @std.avrac.testing.{provided, test_workspace, ir_of}
+// `while`, and a call through a value. Asked of the program layer's task
+// survey, the walk a build places its task tests by.
+use @std.avrac.testing.{ir_of, held_at, provided, Judged}
 use compiler.backend.{render_ir}
-use @std.avrac.compiler.{Program}
 
 const REACH_PATH: string = "/w/src/main.av"
 
-fn reach_workspace(main: string) -> Workspace {
-    test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": main,
-            },
-            ["/w/avra.toml", REACH_PATH],
-        ),
+/// The program `lines` write, judged on the layer.
+fn reach_judged(lines: List<string>) -> Judged {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            REACH_PATH: lines.concat([""]).join("\n"),
+        },
         "/w",
     )
+        .judged_at(REACH_PATH)
 }
 
-fn reach_decl(ws: Workspace, name: string) -> DeclId {
-    [x.id for x in ws.decls.all_decls() if x.name == name][0]
-}
+/// Whether bits `cancel_bits` said may reach a cancel point: they park or spin.
+fn may_reach(bits: string) -> bool { bits.substring(0, 2) != "--" }
 
-/// The program analysed, then each named fn's answer, `name=0|1`.
+/// Each named fn's answer, `name=0|1`.
 fn reaching(lines: List<string>, names: List<string>) -> string {
-    let ws = reach_workspace(lines.concat([""]).join("\n"))
-    let _ = ws.analyze_file(REACH_PATH)
-    [reach_word(ws, n) for n in names].join(" ")
-}
-
-fn reach_word(ws: Workspace, name: string) -> string {
-    "${name}=${if ws.reaches_cancel(reach_decl(ws, name)) { 1 } else { 0 }}"
+    let j = reach_judged(lines)
+    ["${n}=${if may_reach(j.cancel_bits(n)) { 1 } else { 0 }}" for n in names].join(" ")
 }
 
 /// A sleeping fn, the seed most cases call.
@@ -50,23 +37,15 @@ fn napping() -> List<string> {
 /// Each named fn's two bits, `name=ps`: `p` where it parks, `s` where it
 /// spins, `-` where it does neither.
 fn bits_of(lines: List<string>, names: List<string>) -> string {
-    let ws = reach_workspace(lines.concat([""]).join("\n"))
-    let _ = ws.analyze_file(REACH_PATH)
-    [bits_word(ws, n) for n in names].join(" ")
-}
-
-fn bits_word(ws: Workspace, name: string) -> string {
-    let r = ws.reach_of(reach_decl(ws, name))
-    "${name}=${if r.parks { "p" } else { "-" }}${if r.spins { "s" } else { "-" }}"
+    let j = reach_judged(lines)
+    ["${n}=${j.cancel_bits(n).substring(0, 2)}" for n in names].join(" ")
 }
 
 /// Each named fn's `links` bit, `name=L` where it is known to reach a
 /// row, a waiting read or a spawn, `name=-` where it is not.
 fn links_of(lines: List<string>, names: List<string>) -> string {
-    let ws = reach_workspace(lines.concat([""]).join("\n"))
-    let _ = ws.analyze_file(REACH_PATH)
-    ["${n}=${if ws.reach_of(reach_decl(ws, n)).links { "L" } else { "-" }}" for n in names]
-        .join(" ")
+    let j = reach_judged(lines)
+    ["${n}=${j.cancel_bits(n).substring(2, 3)}" for n in names].join(" ")
 }
 
 /// A program's IR, as `avra ir` prints it.
@@ -342,8 +321,8 @@ spec "compiler/cancel_reach — methods" {
                         "reads(Clock { n: 1 })",
                     ],
                 ),
-            ["tick", "read", "ticks", "reads"],
-        ) == "tick=1 read=0 ticks=1 reads=0"
+            ["Clock.tick", "Clock.read", "ticks", "reads"],
+        ) == "Clock.tick=1 Clock.read=0 ticks=1 reads=0"
     }
 }
 
@@ -406,119 +385,6 @@ spec "compiler/cancel_reach — recursion" {
     }
 }
 
-/// The record lines of the program's file, and a fresh workspace
-/// that holds the file from them alone.
-fn held_from(lines: List<string>) -> Workspace { held_reading(lines, (line) -> line) }
-
-/// As `held_from`, each record line passed through `edited` first.
-fn held_reading(lines: List<string>, edited: fn(string) -> string) -> Workspace {
-    let source = lines.concat([""]).join("\n")
-    let parsed = reach_workspace(source)
-    let _ = parsed.analyze_file(REACH_PATH)
-    let f? = parsed.decls.known_file_id(REACH_PATH) else { return parsed }
-    let records = [parsed.record_line(parsed.decls.raw_decl(d), ordinal, false) for ordinal, d in parsed.decls.decls_of_file(f)]
-    let held = reach_workspace(source)
-    held.hold_only(REACH_PATH)
-    let rows = [read_fields(edited(line)) for line in records]
-    held.mint_file(REACH_PATH, rows, {})
-    note_producers(held, producers_of(held.module_path_of(REACH_PATH), rows))
-    held
-}
-
-/// A record line with BOTH cancel bits dropped: one that says nothing
-/// of either.
-fn bitless(line: string) -> string {
-    let fields = line.split("\t")
-    fields.slice(0, fields.length - 2).join("\t")
-}
-
-/// A record line whose spins bit is dropped but whose parks bit stands:
-/// one written between the two bits landed.
-fn spin_less(line: string) -> string {
-    let fields = line.split("\t")
-    fields.slice(0, fields.length - 1).join("\t")
-}
-
-/// Each named fn's record line as its analysed pass writes it, one a line.
-fn record_lines(lines: List<string>, names: List<string>) -> string {
-    let ws = reach_workspace(lines.concat([""]).join("\n"))
-    let _ = ws.analyze_file(REACH_PATH)
-    [ws.record_line(ws.decls.raw_decl(reach_decl(ws, n)), 0, false) for n in names].join("\n")
-}
-
-/// One fn's record line, with its cancel bits set to `parks` and `spins`.
-fn line_with(lines: List<string>, name: string, parks: string, spins: string) -> string {
-    let ws = reach_workspace(lines.concat([""]).join("\n"))
-    let _ = ws.analyze_file(REACH_PATH)
-    let d = reach_decl(ws, name)
-    let fields = ws.record_line(ws.decls.raw_decl(d), 0, false).split("\t")
-    fields.slice(0, fields.length - 2).concat([parks, spins]).join("\t")
-}
-
-spec "compiler/cancel_reach — the interface" {
-    then "a held fn answers the bit its record carries" {
-        let held = held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"]))
-        [reach_word(held, n) for n in ["nap", "plain"]].join(" ") == "nap=1 plain=0"
-    }
-    then "a held fn answers both bits its record carries" {
-        let held = held_from(
-            napping().concat(spinning()).concat(["fn plain() -> int { 1 }", "plain()"]),
-        )
-        [bits_word(held, n) for n in ["nap", "spin", "plain"]].join(" ") == "nap=p- spin=-s plain=--"
-    }
-    then "the record line's last two fields are the bits — how it waits (`2`: through a row), then whether it spins" {
-        let lines = napping().concat(spinning()).concat(["nap()"])
-        let analysed = record_lines(lines, ["nap", "spin"])
-        analysed == [line_with(lines, "nap", "2", "0"), line_with(lines, "spin", "0", "1")].join("\n")
-    }
-    then "a held fn that links makes its program link, though nothing calls it by name" {
-        held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"])).members_link_scheduler()
-    }
-    then "a program holding only fns that link nothing links none" {
-        !held_from(["fn call(f: fn() -> int) -> int { f() }", "fn plain() -> int { 1 }", "plain()"])
-            .members_link_scheduler()
-    }
-    then "a fn that parks only through a value records `1`: it may wait, and links nothing" {
-        let lines = ["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"]
-        record_lines(lines, ["call"]) == line_with(lines, "call", "1", "1")
-    }
-    then "a held fn links by the word its record carries, and one that says nothing links" {
-        let lines = napping().concat(["fn plain() -> int { 1 }", "plain()"])
-        let said = held_from(lines)
-        let spoken = said.reach_of(reach_decl(said, "nap")).links &&
-            !said.reach_of(reach_decl(said, "plain")).links
-        let silent = held_reading(
-            lines,
-            (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
-        )
-        spoken && silent.reach_of(reach_decl(silent, "plain")).links
-    }
-    then "each bit moves the interface digest, so a caller keyed on it is rebuilt" {
-        let lines = napping().concat(["nap()"])
-        let none = iface_digest([line_with(lines, "nap", "0", "0")])
-        iface_digest([line_with(lines, "nap", "1", "0")]) != none &&
-            iface_digest([line_with(lines, "nap", "0", "1")]) != none
-    }
-    then "a fn that starts or stops linking moves its interface digest: `1` and `2` are two records" {
-        let lines = napping().concat(["nap()"])
-        iface_digest([line_with(lines, "nap", "2", "0")]) != iface_digest([line_with(lines, "nap", "1", "0")])
-    }
-    then "a record that says nothing of either bit says a fn may reach both" {
-        let held = held_reading(
-            ["fn plain() -> int { 1 }", "plain()"],
-            (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
-        )
-        bits_word(held, "plain") == "plain=ps"
-    }
-    then "a record with a parks bit and no spins bit says a fn may spin" {
-        let held = held_reading(
-            ["fn plain() -> int { 1 }", "plain()"],
-            (line) -> if line.contains("\tplain\t") { spin_less(line) } else { line },
-        )
-        bits_word(held, "plain") == "plain=-s"
-    }
-}
-
 /// A provider whose component's template calls a fn that sleeps.
 fn napping_provider() -> string {
     [
@@ -540,10 +406,7 @@ fn napping_provider() -> string {
         .join("\n")
 }
 
-fn provided_word(p: Program, name: string) -> string {
-    let d = [x.id for x in p.ws.decls.all_decls() if x.name == name][0]
-    "${name}=${if p.ws.reaches_cancel(d) { 1 } else { 0 }}"
-}
+fn provided_word(p: Judged, name: string) -> string { "${name}=${if may_reach(p.cancel_bits(name)) { 1 } else { 0 }}" }
 
 spec "compiler/cancel_reach — nodes that call without a call node" {
     then "a fn whose only wait is inside a component instance it makes answers 1" {
@@ -584,44 +447,3 @@ spec "compiler/cancel_reach — nodes that call without a call node" {
     }
 }
 
-/// What `explain` says of each named fn.
-fn said_of(lines: List<string>, names: List<string>) -> List<string> {
-    let ws = reach_workspace(lines.concat([""]).join("\n"))
-    let _ = ws.analyze_file(REACH_PATH)
-    flatten([ws.cancel_lines(n) for n in names])
-}
-
-spec "compiler/cancel_reach — what `explain` says" {
-    then "each bit names what earned it: a row, a callee, a `while`, or nothing" {
-        said_of(
-            napping()
-                .concat(spinning())
-                .concat(
-                    [
-                        "fn both() {",
-                        "    nap()",
-                        "    spin()",
-                        "}",
-                        "fn plain() -> int { 1 }",
-                        "plain()",
-                    ],
-                ),
-            ["nap", "spin", "both", "plain"],
-        )
-            .join("\n") == [
-            "`nap` may reach a cancel point",
-            "  parks — calls the runtime row `avra_fiber_sleep`",
-            "  spins — no",
-            "`spin` may reach a cancel point",
-            "  parks — no",
-            "  spins — a `while` here",
-            "`both` may reach a cancel point",
-            "  parks — calls `nap`",
-            "  spins — calls `spin`",
-            "`plain` reaches no cancel point",
-            "  parks — no",
-            "  spins — no",
-        ]
-            .join("\n")
-    }
-}

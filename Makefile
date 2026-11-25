@@ -22,6 +22,13 @@
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
+# An archive is its members alone, never the hour it was made: a check reads it as an
+# input, so two checkouts' archives must be the same bytes (macOS `ar` stamps the clock).
+export ZERO_AR_DATE = 1
+# A TARGET REPLACES, COPIES AND EMPTIES WHAT A BUILD JUST WROTE — the compiler a build ran from, the
+# stores it saved — so every build `make` runs saves its store before it answers, leaving no heir
+# running the binary a recipe is about to replace.
+export AVRA_STORE_KEPT_HERE = 1
 # THE C++ RUNTIME AND THE SYSTEM LIBRARY DIRECTORY the static LLVM link names
 # (packages/std-avrac/avra.toml), per platform.
 ifeq ($(shell uname -s),Darwin)
@@ -311,10 +318,10 @@ build/wasm32/%.o: runtime/%.c build/%.sha
 	@mkdir -p build/wasm32
 	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated $(WASM_SJLJ_$(notdir $<)) -c -o $@ $<
 
-# A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
-# A package opts in by naming its wasm objects; one that names none is refused
-# by the build, never compiled here.
-WASM_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --wasm)
+# A PACKAGE'S C FOR WASM, the objects its manifest carries on `wasm32`. A
+# package whose `[link.objects_for]` gives wasm32 none is refused by the build,
+# never compiled here.
+WASM_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --platform wasm32)
 
 build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
@@ -336,6 +343,37 @@ wasm-runtime: $(WASM_RUNTIME_LIB)
 
 # The package objects every wasm build may link — the manifests declare them.
 wasm-packages: $(WASM_PACKAGE_OBJS)
+
+# THE RUNTIME FOR AN APPLE SDK, one object per file plus the tick, MINUS the
+# core: an app may not fork. It stands in build/<sdk>/, where the compiler
+# looks beside the native archive (packages/cli/src/commands/shared.av,
+# `apple_toolchain`), built for the release the compiler settles a bare triple
+# on — one of two copies; packages/std-avrac/src/compiler/targets.av's
+# `APPLE_OSES` is the other.
+APPLE_SDK ?= iphonesimulator
+APPLE_TRIPLE_iphonesimulator := arm64-apple-ios17.0-simulator
+APPLE_TRIPLE_iphoneos := arm64-apple-ios17.0
+APPLE_SDKROOT = $(shell xcrun --sdk $(APPLE_SDK) --show-sdk-path 2>/dev/null)
+APPLE_RUNTIME_OBJS := $(patsubst runtime/%.c,build/$(APPLE_SDK)/%.o,$(filter-out runtime/avra_cores.c,$(wildcard runtime/*.c))) build/$(APPLE_SDK)/avra_tick.o
+APPLE_RUNTIME_LIB := build/$(APPLE_SDK)/libavra_runtime.a
+
+build/$(APPLE_SDK)/%.o: %.c build/%.sha
+	@mkdir -p build/$(APPLE_SDK)
+	clang -target $(APPLE_TRIPLE_$(APPLE_SDK)) -isysroot $(APPLE_SDKROOT) -c -O2 -MMD -MP $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) -Iruntime $(CFLAGS_$*) -o $@ $<
+
+-include $(patsubst %.o,%.d,$(APPLE_RUNTIME_OBJS))
+
+$(APPLE_RUNTIME_LIB): $(APPLE_RUNTIME_OBJS)
+	@rm -f $@
+	@ar rcs $@ $^
+
+apple-runtime: $(APPLE_RUNTIME_LIB)
+
+# A PACKAGE'S C FOR AN APPLE SDK, the objects its manifest carries on that
+# SDK's directory, by the same rule as the runtime's members.
+APPLE_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --platform $(APPLE_SDK))
+
+apple-packages: $(filter %.o,$(APPLE_PACKAGE_OBJS))
 
 # THE WASM PROOF: build the fixtures native and for wasm32 and require
 # identical stdout. Skips, spoken, where the wasm toolchain or node is absent.
@@ -400,7 +438,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -426,6 +464,10 @@ SEED_FLOOR := 100000
 # Every C object the compiler and the packages link, built from its source.
 objects: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 
+# THE SEED IS COMMITTED COMPRESSED: `bootstrap/seed.ll.gz`, about a twelfth of the IR, so a refresh
+# stays under the host's per-file limit and adds megabytes to history, not a hundred. gzip because
+# every machine and image has it; `-n` keeps the bytes a function of the IR alone.
+# Every reader takes `build/seed.ll`, made from it by the one rule below.
 seed: $(COMPILER_OBJS)
 	@./avra emit packages/cli > build/seed.ll.new
 	@n=$$(wc -l < build/seed.ll.new | tr -d ' '); \
@@ -433,9 +475,14 @@ seed: $(COMPILER_OBJS)
 		echo "seed: refused — the emit wrote $$n lines, under $(SEED_FLOOR); the committed seed stands"; \
 		rm -f build/seed.ll.new; exit 1; \
 	fi; \
-	mv build/seed.ll.new bootstrap/seed.ll; \
+	gzip -9 -n -c build/seed.ll.new > bootstrap/seed.ll.gz || exit 1; \
+	mv build/seed.ll.new build/seed.ll; \
 	sh tools/sources_hash.sh > bootstrap/seed.sources; \
-	echo "seed: bootstrap/seed.ll ($$n lines)"
+	echo "seed: bootstrap/seed.ll.gz ($$n lines)"
+
+build/seed.ll: bootstrap/seed.ll.gz
+	@mkdir -p build
+	@gzip -d -c bootstrap/seed.ll.gz > build/seed.ll
 
 # THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
 # recovery must take — `seed` and `avra` link through the compiler.
@@ -448,9 +495,9 @@ seed: $(COMPILER_OBJS)
 # source — so a source that traps while compiling itself (a probe in an
 # analysis path, a broken pass) has no way back: every rebuild traps
 # again. `make recover` is that way back.
-recover: $(COMPILER_OBJS)
+recover: $(COMPILER_OBJS) build/seed.ll
 	@mkdir -p build
-	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
+	@clang -w -O1 -rdynamic build/seed.ll $(SEED_LINK_OBJS) \
 	    $(LLVM_LINK) -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
@@ -496,14 +543,24 @@ avra: $(COMPILER_OBJS)
 	@mkdir -p build
 	@# the log is BOUNDED: only its last 200 KB is ever read, and a build failing in a
 	@# loop filled the volume twice (tools/capped.sh, which also carries the status).
-	@sh tools/capped.sh build/avra-build.out 200000 ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
+	@# THE COMPILER IS THE OPTIMISED BUILD: `avra build` makes a dev binary, and every compiler a ladder
+	@# climbs with reads this spelling, where only today's knows `--release`.
+	@sh tools/capped.sh build/avra-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
-	@cp packages/cli/src/main build/avra
+	@cp packages/cli/src/main build/avra.next && mv -f build/avra.next build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
-	@# what this binary was built from, for a worktree that wants to start from it
-	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
+	@# what this binary was built from, for a worktree that wants to start from it, and its generation
+	@# of that source: the record still standing is its builder's
+	@sh tools/work built-from . build/.avra-built-from > build/.avra-built-from.next 2>/dev/null && mv -f build/.avra-built-from.next build/.avra-built-from || rm -f build/.avra-built-from build/.avra-built-from.next
 	@sh tools/work deposit . || true
+	@# THE CHECKOUT'S STD ANSWERS, made as `make install` makes an install's: the binary's packs over
+	@# this tree's std and its verdict, beside it in build/answers, so a check here reads std as a
+	@# user's does — the compiler's own package among them, cli's import. Kept as they stand where
+	@# neither the binary nor std moved; a std package its own compiler refuses (a std mid-edit) ships
+	@# its answers and no verdict, so a check here judges its files. AVRA_STD_ANSWERS=0 makes none:
+	@# the gate's compilers, whose slices never read them.
+	@[ "$${AVRA_STD_ANSWERS:-1}" = 0 ] || STD_ANSWERS_COMPILER=1 STD_ANSWERS_REFUSED=skip sh tools/std_answers.sh $(CURDIR)/build/avra $(CURDIR)/packages $(CURDIR)/build/answers || find $(CURDIR)/build/answers -delete 2>/dev/null || true
 	@echo "avra: build/avra"
 
 # WHAT A COMPILER BUILD LEAVES, one path a line: the binary, its hot leaves
@@ -517,6 +574,10 @@ compiler-files:
 # GENS times (one `make avra` advances one generation; two reach a fixed point), and where none stands or
 # it cannot read the tree — new syntax, a refusal about its own source — the
 # seed bootstraps it, a FULL build, so a source wrong for real still dies.
+# A SEED EMITTED FROM THIS VERY SOURCE comes first: linking it already is the
+# compiler this tree builds (tools/seed_is_tree.sh), so no ladder and no
+# standing compiler can do better, and a tree too new for every published one
+# still builds; with rungs named, it is their product too.
 # RUNGS are the tree's `Rung:` commits, oldest first (tools/rungs.sh): each is
 # built by the product of the one before (tools/ladder.sh), starting from the
 # standing compiler or the seed as linked, and HEAD by the last; a laddered
@@ -535,11 +596,16 @@ GENS ?= 2
 BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
 compiler:
 	@gens() { n=$(GENS); while [ "$$n" -gt 0 ]; do $(BOUNDED)$(MAKE) -s avra || return 1; n=$$((n - 1)); done; }; \
-	if [ -n "$(strip $(RUNGS))" ]; then \
+	if [ "$$(sh tools/seed_is_tree.sh "$$(sh tools/sources_hash.sh)" "$$(cat bootstrap/seed.sources 2>/dev/null)")" = seed ]; then \
+	  echo "compiler: the committed seed was emitted from this tree — linked, not climbed"; \
+	  $(BOUNDED)$(MAKE) -s bootstrap || exit 1; \
+	  [ -z "$(strip $(RUNGS))" ] || cp build/avra build/avra-ladder; \
+	elif [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
 	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
-	  cp "$$product" build/avra-ladder && cp "$$product" build/avra; \
+	  cp "$$product" build/avra-ladder && cp "$$product" build/avra.next && mv -f build/avra.next build/avra; \
+	  sh tools/ladder.sh --clean "$${AVRA_LADDER_DIR:-$${RUNNER_TEMP:-/tmp}/ladder}"; \
 	  gens || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
 	elif [ -x build/avra ] && gens; then :; else \
 	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \
@@ -553,9 +619,9 @@ compiler:
 # change the compiler must READ to build itself (codegen, the front end, a
 # refusal about its own source) reaches the product only through `make avra`.
 try: $(COMPILER_OBJS)
-	@sh tools/capped.sh build/avra-try-build.out 200000 ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
+	@sh tools/capped.sh build/avra-try-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
 	@grep '^time: ast' build/avra-try-build.out | grep -oE 'held [0-9]+/[0-9]+' || true
-	@cp packages/cli/src/main build/avra-try
+	@cp packages/cli/src/main build/avra-try.next && mv -f build/avra-try.next build/avra-try
 	@codesign -f -s - build/avra-try 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "try: build/avra-try — ./avra-try runs it"
@@ -571,10 +637,11 @@ edit-loop:
 PREFIX ?= /usr/local
 install: avra
 	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
-	@cp build/avra $(PREFIX)/bin/avra
+	@cp build/avra $(PREFIX)/bin/avra.next && mv -f $(PREFIX)/bin/avra.next $(PREFIX)/bin/avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
+	@sh tools/std_answers.sh $(PREFIX)/bin/avra $(PREFIX)/lib/avra/std $(PREFIX)/lib/avra/answers
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
 
 # A Sprite is a stock Ubuntu image; `make sprite` provisions the machine
@@ -660,13 +727,23 @@ RUNTIME_TESTS = $(patsubst runtime/tests/%.c,build/runtime-tests/%,$(wildcard ru
 build/runtime-tests/%: runtime/tests/%.c $(RUNTIME_OBJS)
 	@mkdir -p build/runtime-tests
 	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS)
+build/runtime-tests/io_fork_test: runtime/tests/io_fork_test.c $(RUNTIME_OBJS) build/std_io.o
+	@mkdir -p build/runtime-tests
+	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS) build/std_io.o
 runtime-tests: $(RUNTIME_TESTS)
 	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
+# one runtime test alone (`make runtime-test-pool_claim_test`): the gate's rows, each timed apart
+runtime-test-%: build/runtime-tests/%
+	@$<
 
 # THE TESTS, TESTED: one line of the scheduler broken at a time, and some
 # runtime test must fail for each (runtime/tests/mutations.py).
 runtime-mutations: $(RUNTIME_OBJS)
 	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
+
+# A KEPT OBJECT OR BINARY IS ITS COMPILER'S: one compiler's build is never taken by another.
+compiler-key: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/witness_compiler_key.sh
 
 # A TRACE HAS ONE SHAPE IN BOTH ENGINES: one program traced compiled
 # and evaluated, the reader's shape of each held to a committed text.
@@ -703,9 +780,7 @@ db-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # The two shards are one job each on CI, one runner each, so the store they clear
 # is their own; locally they run in order.
-cache-attacks: cache-attacks-a cache-attacks-b cache-attacks-w
-cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/cache_attacks.sh
+cache-attacks: cache-attacks-b cache-attacks-w
 
 # THE STORE'S CLEAN AND TIME TRAVEL (§6.7): the window, the size and age limits,
 # a reader beside clean, a torn frame, a hold, the empty and absent cases — each
@@ -718,40 +793,66 @@ store-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b: cache-attacks-b1 cache-attacks-b2
 cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
-	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
 	@sh tools/closure_gather_attack.sh
 	@sh tools/closure_fold_attack.sh
 	@sh tools/impl_held_attack.sh
 	@sh tools/store_reads_attack.sh
-	@sh tools/cas_attack.sh
 	@sh tools/docs_cache_attack.sh
-	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
-	@sh tools/held_runs_attack.sh
+	@sh tools/path_leak_attack.sh
 
 cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/stamp_attack.sh
-	@sh tools/expanded_attack.sh
-	@sh tools/held_generated_attack.sh
+	@sh tools/print_mix_attack.sh
 	@sh tools/store_quiet_attack.sh
-	@sh tools/store_seal_attack.sh
-	@sh tools/store_index_attack.sh
 	@sh tools/stale_imports_attack.sh
-	@sh tools/fn_add_attack.sh
+	@sh tools/sig_restore_attack.sh
 	@sh tools/host_fn_edit_attack.sh
 	@sh tools/suspect_narrow_attack.sh
 	@sh tools/store_bound_attack.sh
+	@sh tools/object_gone_attack.sh
 	@sh tools/obj_gone_attack.sh
 	@sh tools/names_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
-	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/file_module_attack.sh
-	@sh tools/cancel_bits_attack.sh
-	@sh tools/readfound_attack.sh
-	@sh tools/durable_symbol_attack.sh
 	@sh tools/store_clean_attack.sh
+	@sh tools/package_swap_attack.sh
+
+# AN EDIT BETWEEN A WAVE AND ITS MERGE IS CAUGHT: the asking process takes what its cores learned
+# without walking it only where every input a core read is the one it reads now. It builds in a
+# store of its own.
+ahead-edit-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/ahead_edit_attack.sh
+
+# A TYPING NAMES THE NODES OF THE STORE IT CHECKED: a program built cold as the process holds its
+# items and again with every item let go as soon as another is read, which puts a fresh store under
+# a typing kept from one its elaborations grew. Both pass, with the same binary and words.
+held-store-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/held_store_attack.sh
+
+# WHAT A CHANGE COSTS TO PROVE: one literal of the cli edited and built warm proves and reads no
+# more than the shares of the change's reach tools/cutoff.ceiling holds.
+cutoff-witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/cutoff_witness.sh
+
+# A BUILD ANSWERS BEFORE ITS STORE IS SAVED, AND THE NEXT BUILD READS THE SAVE WHOLE: an heir held
+# back, waited for, killed, its store emptied under it, and the save kept in the build.
+heir-save-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/heir_save_attack.sh
+
+# A WAVE'S PACKS MERGED BY SHARES ARE THE PACKS MERGED HERE: one package built cold merged in the
+# asking process, by shares, and with a share left unpublished; one binary, each store stood on.
+share-merge-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/share_merge_attack.sh
+
+beside-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/beside_attack.sh
+
+# WHAT A WAVE'S PROCESSES SHARE NEVER COSTS AN ANSWER: one package built cold sharing, each process
+# alone, with a claim's holder killed and trapped, and across one, two and three processes.
+wave-share-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/wave_share_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
@@ -759,11 +860,11 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/code_hash_attacks.sh
 
-# ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
-# link of a chain of held bodies, under a ceiling one attempt clears and their
-# sum trips. It CLEARS the store, as the attacks above do.
-turn-memory-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/turn_memory_attack.sh
+
+# A BUILD AFTER THE TREE'S CACHE WAS CLEARED: the machine's store names objects the tree's cache
+# no longer holds. It CLEARS the tree's cache, as the attacks above do.
+object-gone-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/object_gone_attack.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"
@@ -806,10 +907,10 @@ clean:
 # manifest still carried its rows, and it fails the day they go. The
 # binary links beside `build/avra`, which is the layout the resolver
 # describes; the scratch keeps its own directory.
-seed-check: $(COMPILER_OBJS)
+seed-check: $(COMPILER_OBJS) build/seed.ll
 	@sh tools/seed_guard.sh
 	@mkdir -p build/seed-check
-	@cp bootstrap/seed.ll build/seed-check/seed.ll
+	@cp build/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
 	    $(LLVM_LINK) -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
@@ -900,18 +1001,11 @@ rule-examples:
 families-left:
 	@sh tools/avra_tools.sh families
 
-# NO ANSWER STANDS ON A LONG READ LIST: a cold derivation of the cli, each family's longest
-# read list held under 3,000, and the families still over it only shorten (tools/read_lists.py).
+# NO ANSWER STANDS ON A LONG READ LIST: a cold check of the cli on the program layer, each query's
+# longest read list held under 3,000, and the queries still over it only shorten (tools/read_lists.py).
 read-lists:
 	@python3 tools/read_lists.py --self-test
 	@python3 tools/read_lists.py
-
-# THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
-# read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
-# family, the answers a read of which cannot be named, and the baseline only falls.
-# keeper: nightly (orders) — two cold whole-compiler checks, over 220 s warm for the cli alone, too long for every pull request
-leaves:
-	@sh tools/leaves.sh --check
 
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
 # `@std/relation` — the engine below them all — never names the compiler.
@@ -1014,20 +1108,17 @@ wall-accept:
 # loudly. In CI the store rides down from prepare and SPEED_HOST is
 # `ci-warm`, so a runner's CPU never decides whether the gate is judged.
 # On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
-# THE COLD-COMPILE WORK GATE: a cold `check packages/cli` under the census runtime, its exact
-# retain/release/list counts held per declaration to tools/census.budget. `SPEED_ACCEPT` (the
-# PR body's reason) lets a PR cost more, loudly; see tools/census_ratchet.py. The cold CHECK
-# is the gated workload, not the compiler's own build: the build would need a census-built
-# builder (one more compiler generation, ~+150 s), and the check runs the same front end,
-# lowering and store.
-census-gate:
-	@python3 tools/census_ratchet.py --self-test >/dev/null
-	@sh tools/speed_note.sh --self-test >/dev/null
-	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
-	@python3 tools/census_ratchet.py --raw build/census-gate.out --main $${CENSUS_MAIN:-census-main.txt} --main-sites $${CENSUS_SITES_MAIN:-census-sites-main.txt}
-census-accept:
-	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
-	@python3 tools/census_ratchet.py --accept --raw build/census-gate.out
+# THE EXACT-COUNT GATE: the census compiler of this tree, cold, over fixed workloads whose sources are
+# the commit tools/cost.baseline pins; every counter held to its row within 0.05% (tools/cost.sh,
+# tools/cost_ratchet.py). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
+# cost-accept` moves the snapshot and records every count over it.
+cost:
+	@python3 tools/cost_ratchet.py --self-test >/dev/null
+	@sh tools/cost.sh
+	@python3 tools/cost_ratchet.py --judge build/cost
+cost-accept:
+	@COST_ACCEPTING=1 sh tools/cost.sh
+	@python3 tools/cost_ratchet.py --accept build/cost
 
 warm-edit:
 	@python3 tools/ratchet_rows.py --self-test >/dev/null
@@ -1120,6 +1211,13 @@ ui-host-test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 ui-fuzz: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/ui_fuzz.sh
 
+# EXACT PATCHES AGREE WITH THE FULL PAINT: each std-ui program with a `.check`
+# runs natively under AVRA_EXACT=check, where every turn the exact path answers
+# is held to the full paint's, and prints its count of answered and declined
+# turns (tools/exact-patches/check_tests.sh).
+exact-patches: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/exact-patches/check_tests.sh build/avra
+
 # THE HOST SEAM, END TO END: the board built as a wasm reactor and run over the
 # real page glue, each claim checked (tools/ui-board/demo.mjs). Skips, spoken,
 # where node or a wasm toolchain is absent.
@@ -1137,7 +1235,7 @@ dev-server:
 # Where Firefox, node or a wasm toolchain is absent it FAILS, unless
 # UI_BROWSER_SKIP=<reason> stands it down; ui-browser-skip holds that contract.
 ui-browser:
-	@sh tools/ui_board_browser.sh
+	@sh tools/bounded.sh 900 sh tools/ui_board_browser.sh
 
 ui-browser-skip:
 	@sh tools/ui_board_browser.sh --self-test
@@ -1155,6 +1253,7 @@ layout-oracle:
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
+	@python3 tools/avsrc.py >/dev/null
 	@python3 tools/fingerprints.py
 
 # THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
@@ -1211,11 +1310,11 @@ no-threads:
 KEEPERS_ALONE = runtime-tests runtime-mutations
 # KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
 # (speed-ratchet is the longest keeper, alone it is half the set).
-KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
+KEEPERS_A1 = speed-ratchet cost fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope h2spec tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
-            ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+            ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
 # the refusals, the hosted scheduler broken on purpose, the store across targets, the
@@ -1319,7 +1418,7 @@ keepers-static:
 # attacks a feature mechanically, in seconds. A refusal stops on the PR
 # instead of failing a train. Each is one of KEEPERS, which the train runs
 # whole.
-KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack speed-ratchet warm-edit
+KEEPERS_PR = rt-header rt-ns parser witnesses dogfooding-rules footprint attack speed-ratchet warm-edit
 # not a keeper — a lane's quick subset of KEEPERS before pushing; CI runs every keeper
 keepers-pr:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
@@ -1371,6 +1470,30 @@ rt-ns:
 	  echo "rt-ns:   ./avra runtime-namespace > packages/std-avrac/src/features/rt.av"; \
 	  diff packages/std-avrac/src/features/rt.av build/rt.av.gen 2>/dev/null | head -20; exit 1; }
 	@echo "rt-ns: $$(grep -c '^    mut fn ' packages/std-avrac/src/features/rt.av) row(s) reach a typed LowerCx method, checked by the compiler that builds itself"
+
+# THE MACHINE'S MEMORY POOL, held with real processes: a run over the whole
+# pool refuses, one inside it finishes, one that finds it held waits.
+pool-check:
+	@sh tools/pool_check.sh
+
+# THE GRAMMAR'S CLAIM ON THE PARSER. compiler/untold_parser.av is the
+# assembled grammar's untold run written as code, one fn per rule. A
+# parser the grammar no longer prints never runs (`avra()` holds it to
+# the grammar's print and falls back to the engine), so a stale one is
+# a slow compiler, never a wrong one; this keeper refuses it. A fresh one
+# is then held to the engine on every file of std-avrac: a form whose
+# rule the generated parser cannot hold traps or differs there.
+parser:
+	@./avra grammar --untold > build/untold_parser.av.gen
+	@cmp -s build/untold_parser.av.gen packages/std-avrac/src/compiler/untold_parser.av || { \
+	  echo "parser: packages/std-avrac/src/compiler/untold_parser.av is not what the grammar makes — it is generated, never edited:"; \
+	  echo "parser:   ./avra grammar --untold > packages/std-avrac/src/compiler/untold_parser.av"; \
+	  diff packages/std-avrac/src/compiler/untold_parser.av build/untold_parser.av.gen 2>/dev/null | head -20; exit 1; }
+	@./avra parsers packages/std-avrac > build/parsers.out 2>&1 || { \
+	  grep -vE '^watch' build/parsers.out | tail -20; \
+	  echo "parser: the generated parser and the grammar engine part on a file of std-avrac, whose feature cases hold every form"; exit 1; }
+	@grep '^parsers:' build/parsers.out
+	@echo "parser: $$(grep -c '^fn avra_r' packages/std-avrac/src/compiler/untold_parser.av) rule(s) run as generated code, made from the grammar the compiler assembles"
 
 # EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.
 # docs/DIAGNOSTICS.md is made by `avra diagnostics` — each entry is a
@@ -1458,7 +1581,7 @@ SQLITE_FLAGS := \
   -DSQLITE_ENABLE_API_ARMOR=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS=1 \
   -DSQLITE_STRICT_SUBTYPE=1 -DSQLITE_DEFAULT_FOREIGN_KEYS=1 \
   -DSQLITE_THREADSAFE=1 -DSQLITE_MAX_EXPR_DEPTH=1000 \
-  -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 \
+  -DSQLITE_DEFAULT_MEMSTATUS=0 \
   -DSQLITE_DEFAULT_MMAP_SIZE=268435456 -DSQLITE_MAX_MMAP_SIZE=1099511627776 \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
@@ -1502,7 +1625,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
 # not a keeper — a lane's local union of keepers; CI runs each in its own job
-gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns parser witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
@@ -1573,14 +1696,14 @@ census-types:
 REACH := hello limits plain unreached tls sign
 # not a keeper — a report: what each reach program carries
 sizes:
-	@build/avra build tools/bench/request/src/main.av >/dev/null
+	@AVRA_PROGRAM_MODE=release build/avra build tools/bench/request/src/main.av >/dev/null
 	@python3 tools/symsize.py build/avra $(BEFORE)
 	@echo
 	@python3 tools/symsize.py tools/bench/request/src/main $(REQUEST_BEFORE)
 	@echo
 	@echo '| reach probe | bytes |'
 	@echo '|---|---:|'
-	@for p in $(REACH); do build/avra build tools/bench/reach/$$p >/dev/null && \
+	@for p in $(REACH); do AVRA_PROGRAM_MODE=release build/avra build tools/bench/reach/$$p >/dev/null && \
 	    echo "| $$p | $$(wc -c < tools/bench/reach/$$p/src/main | tr -d ' ') |"; done
 
 # Mutated program tests through `avra check`: diagnose, never crash.

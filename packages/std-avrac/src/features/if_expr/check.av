@@ -5,17 +5,21 @@
 //! that name inside the branch its truth proves: `!= null` the
 //! then, `== null` the else — sugar over bind-fresh, never
 //! load-bearing (spec 10.4).
-use core.{ExprId, TypeId}
+use core.{ExprId, TypeId, Decision}
 use features.{TypeCx, Asked, this_is}
-use diagnostics.{refusal}
+use diagnostics.{Voice, said_as}
 
 fn if_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .If(c, t, f) -> {
-            cx.require_bool(c, "an `if` condition", "this decides the branch")
+            cx.require_bool(c, Decision.If)
+            if cx.facts.guards(e) {
+                cx.facts.mark_guard(t)
+                if f != null { cx.facts.mark_guard(f!) }
+            }
             walk_branches(cx, c, t, f)
             let other? = f else { return cx.type(void) }
-            if cx.view.store.statement_if(e) { return cx.type(void) }
+            if cx.facts.guards(e) { return cx.type(void) }
             branch_type(cx, e, t, other)
         },
         _ -> cx.error_type,
@@ -71,17 +75,17 @@ fn branch_type(mut cx: TypeCx, e: ExprId, t: ExprId, f: ExprId) -> TypeId {
     }
     if cx.want_at(e) != null { return cx.arms_agree("type.mismatch", "an `if`'s branches", "the first branch", e, t, [f]) }
     if cx.types_disagree(cx.type_at(t), cx.type_at(f)) {
-        let n = cx.name_at(f)
         return cx
-            .spoken(
-                refusal(
-                    "type.mismatch",
-                    cx.loc_of(f),
-                    "an `if`'s branches disagree: `${cx.name_at(t)}` vs `${n}`",
-                    this_is(n),
-                    "make both branches answer one type — or declare the seat's type (`let x: T = if …`)",
-                ),
-            )
+            .spoken(said_as("type.mismatch", cx.loc_of(f), branches_apart(cx.name_at(t), cx.name_at(f))))
     }
     cx.type_at(t)
+}
+
+/// An `if` no seat judges whose first branch answers `first`, its second `found`.
+export fn branches_apart(first: string, found: string) -> Voice {
+    Voice {
+        message: "an `if`'s branches disagree: `${first}` vs `${found}`",
+        label: this_is(found),
+        help: "make both branches answer one type — or declare the seat's type (`let x: T = if …`)",
+    }
 }

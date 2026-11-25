@@ -5,6 +5,7 @@
 // the same octets, so the two spellings cannot drift.
 use @std.io.{write_text, write_bytes, make_dirs}
 use @std.time.{stamp}
+use @std.hash.{blake3_hex}
 use @std.relation.stable.{writer, reader, Reader}
 use compiler.store.mapped.{
     Mapped,
@@ -13,6 +14,7 @@ use compiler.store.mapped.{
     mapped_at,
     mapped_check,
     mapped_close,
+    mapped_digest,
     mapped_holds,
     window_count,
     window_done,
@@ -115,8 +117,7 @@ fn walk_through(w: Window) -> string {
         let length = window_count(w) ?? 0
         let inner = window_under(w, length)!
         let count = window_count(inner) ?? 0
-        mut run: List<int> = []
-        for _j in 0..count { run.push(window_int(inner) ?? 0) }
+        let run = [window_int(inner) ?? 0 for _j in 0..count]
         parts.push("${name}:${spelled(run)}")
     }
     parts.join(" ")
@@ -154,6 +155,19 @@ spec "compiler/store/mapped — a file read where it lies" {
             mapped_close(m)
             whole != null && whole?.length == 16 && half != null && half != whole
         }
+        then "a whole file's digest, a window at a time, is the digest of its octets read whole" {
+            let text = ["abcdefgh" for _i in 0..20000].join("") + "tail"
+            let m = map_of("digested.txt", text)
+            let digest = mapped_digest(m)
+            mapped_close(m)
+            digest == blake3_hex(text.bytes())
+        }
+        then "an empty file's digest is the digest of no octets" {
+            let m = map_of("digested_empty.txt", "")
+            let digest = mapped_digest(m)
+            mapped_close(m)
+            digest == blake3_hex("".bytes())
+        }
     }
     given "a reverse section, as the store writes one" {
         then "the window reads the names and runs the reader reads" {
@@ -188,8 +202,7 @@ spec "compiler/store/mapped — a file read where it lies" {
             let m = map_octets("run.bin", section)
             let walk = window_of(m, 0, section.length)!
             let count = window_count(walk) ?? 0
-            mut got: List<int> = []
-            for _j in 0..count { got.push(window_int(walk) ?? 0) }
+            let got = [window_int(walk) ?? 0 for _j in 0..count]
             mapped_close(m)
             spelled(got) == spelled(ints_of(reader(section))) && spelled(got) == "1,128,300,4608"
         }

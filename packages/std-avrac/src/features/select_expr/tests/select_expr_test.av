@@ -1,6 +1,7 @@
 // The front end, vertically: every arm form parses and prints back as
 // written, the laws a builder holds are spoken in its words, and a
 // `select` that types is refused by name where it is lowered.
+use @std.avrac.testing.held.{Judged}
 use @std.avrac.testing.{
     projected,
     refused_with,
@@ -12,10 +13,9 @@ use @std.avrac.testing.{
     shown,
     ir_of,
     said,
+    judged,
 }
-use compiler.{Program, avra}
 use compiler.backend.{render_ir}
-use @std.avrac.diagnostics.{new_source_file}
 
 /// Whether `source` is its own canonical form — it parsed, and the
 /// printer said it back unchanged.
@@ -56,7 +56,7 @@ fn timers() -> string {
 }
 
 /// A program over the stand-in timers.
-fn timed(body: string) -> Program {
+fn timed(body: string) -> Judged {
     floored_beside("use @std.time.{after, quiet, every}\n${body}", "time", timers())
 }
 
@@ -67,12 +67,12 @@ fn sources() -> string {
 }
 
 /// A program over the stand-in supplies.
-fn supplies(body: string) -> Program {
+fn supplies(body: string) -> Judged {
     floored_beside("use @std.task.{Source, AnyOf}\n${body}", "task", sources())
 }
 
 /// Whether a floored program analyzes clean.
-fn clean(p: Program) -> bool { said(p).is_empty() }
+fn clean(p: Judged) -> bool { said(p).is_empty() }
 
 spec "features/select_expr" {
     given "the arm forms" {
@@ -145,29 +145,26 @@ spec "features/select_expr" {
         }
         then "an `else` that is not last renders at its own arm, with the remedy" {
             let expected = """error[flow.select]: the `else` arm ends a `select` — move it last
-  ╭─[arm_set.av:6:5]
+  ╭─[<source>:6:5]
 6 │     else -> 1
   ·     ┬
   ·     ╰── an arm waits after it
 ──╯
 help: move `else` below every arm that waits"""
-            avra()
-                .check(
-                    new_source_file(
-                        "arm_set.av",
-                        "fn one() -> int {\n    1\n}\nlet job = spawn one()\nselect {\n    else -> 1\n    job -> 2\n}",
-                    ),
-                ) == expected
+            judged(
+                "fn one() -> int {\n    1\n}\nlet job = spawn one()\nselect {\n    else -> 1\n    job -> 2\n}",
+            )
+                .report() == expected
         }
         then "an arm set with nothing to wait on names what every arm is" {
             let expected = """error[flow.select]: a `select` needs an arm to wait on
-  ╭─[arm_set.av:1:1]
+  ╭─[<source>:1:1]
 1 │ select { }
   · ┬
   · ╰── every arm here is `else`
 ──╯
 help: wait on a task, a source or a timer — `else` runs when no arm is ready"""
-            avra().check(new_source_file("arm_set.av", "select { }")) == expected
+            judged("select { }").report() == expected
         }
     }
     given "what an arm binds" {

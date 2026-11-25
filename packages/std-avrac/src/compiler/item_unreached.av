@@ -1,0 +1,258 @@
+//! AN ARM NO VALUE REACHES: an unguarded arm that takes every value — a hole, or a bare name with no
+//! const of its name to compare against — leaves the arm after it nothing to match. Read over a
+//! written item's `match`es; the arm after each such catch-all is warned of where its first pattern
+//! stands.
+use core.{Arm, ExprId, GrammarSpec, PatId, SignedType, SyntaxArena, flatten, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.enums.{last_arm_compares_said, unreached_after_binder_said, unreached_after_hole_said}
+use features.formats.{format_covers_arm, pattern_text}
+
+use @std.meta.{derive, format_subsumes}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// An arm no value reaches: where its first pattern stands, and the name the catch-all above it
+/// binds, empty for a hole that binds none.
+@derive(Saved)
+type Unreached = { at: FindingAt?, binder: string }
+
+/// Every unreached arm one written item's `match`es hold.
+@derive(Saved)
+type ItemUnreached = { arms: List<Unreached> }
+
+fn after_binders(view: ItemView) -> List<Found> {
+    [Found { at: span_of(u.at), args: [u.binder] } for u in unreached_seen(view).arms if !u.binder.is_empty()]
+}
+
+fn after_holes(view: ItemView) -> List<Found> {
+    [Found { at: span_of(u.at), args: [] } for u in unreached_seen(view).arms if u.binder.is_empty()]
+}
+
+/// Every arm of the written item `at` of `file`'s `match`es that comes right after an unguarded
+/// arm taking every value, in node order; a `match` over a name nothing answers judged no further.
+fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnreached {
+    if !item_held(engine, file, at) { return unreached_made(engine, file, at) }
+    unreached_seen(item_view(engine, file, at))
+}
+
+/// What `item_unreached` answers through the item's `view`, made the first time it is asked.
+fn unreached_seen(view: ItemView) -> ItemUnreached {
+    let held? = view.unreached.get() else {
+        let made = unreached_made(view.engine, view.file, view.at)
+        view.unreached.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_unreached` answers, made.
+fn unreached_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnreached {
+    if !item_held(engine, file, at) { return ItemUnreached { arms: [] } }
+    let item = read_item(engine, file, at)
+    let refusals = item_refusals(engine, file, at)
+    let unread = [u.at for u in refusals.unread]
+    let written_only = template_nodes(item.store)
+    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if !written_only.contains(e) for m in some_list(match_at(item.store, e)) if !reads_unanswered(item.store, m.subject, unread)]
+    if matches.is_empty() { return ItemUnreached { arms: [] } }
+    let cover = reach_cover(engine, file, refusals.compared, item)
+    ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
+}
+
+/// The nodes a `quote`'s template is written with — code whose `${…}` holes are values spliced later,
+/// which no value runs through, so no arm of theirs is judged.
+fn template_nodes(store: SyntaxArena) -> List<ExprId> {
+    flatten(
+        [flatten([store.every_expr(x) for x in template_roots(store, ExprId { index: i })]) for i in 0..store.exprs.count()],
+    )
+}
+
+/// The nodes the body `e` holds as a template written verbatim; none for any other node.
+fn template_roots(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    let body? = store.expr(e).body_of() else { return [] }
+    match body.view {
+        .Verbatim(stmts, arms) -> store
+            .stmts_exprs(stmts)
+            .concat([a.value for a in arms])
+            .concat(flatten([some_list(a.guard) for a in arms])),
+        .None or .Expanded(_) -> [],
+    }
+}
+
+/// Whether the subject `subject` is a name nothing answers, among `unread`: a `match` over it chooses
+/// nothing, and its arms are judged no further.
+fn reads_unanswered(store: SyntaxArena, subject: ExprId, unread: List<FindingAt?>) -> bool {
+    let at? = kept_at(store.expr_span(subject)) else { return false }
+    unread.any(stands_at(it, at))
+}
+
+/// Whether the place `u`, where it is kept, is `at`.
+fn stands_at(u: FindingAt?, at: FindingAt) -> bool {
+    let held? = u else { return false }
+    held.lo == at.lo && held.hi == at.hi
+}
+
+/// What the arms' reach reads of the written item `at` of `file`, read as `item`: no type, and a
+/// bare name by what it is bound to where its pattern stands.
+fn reach_cover(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    compared: List<FindingAt>,
+    item: ReadItem,
+) -> Cover {
+    Cover {
+        store: item.store,
+        type_at: (_k: int) -> no_type(),
+        enum_of: (ty: SignedType) -> enum_shape(engine, ty),
+        compares: (p: PatId, n: string) -> pattern_compares(engine, file, compared, item.store, p, n),
+    }
+}
+
+/// No type: what the arms' reach reads of none.
+fn no_type() -> SignedType? { null }
+
+/// The arm of the `match` at `e` right after its first unguarded arm taking every value.
+fn unreached_in(cover: Cover, e: ExprId) -> List<Unreached> {
+    let m? = match_at(cover.store, e) else { return [] }
+    let k? = cover.catching(m.arms) else { return [] }
+    if k + 1 >= m.arms.length || m.arms[k + 1].pats.is_empty() { return [] }
+    [
+        Unreached {
+            at: kept_at(cover.store.pat_span(m.arms[k + 1].pats[0])),
+            binder: binder_of(cover, cover.hole_of(m.arms[k].pats)!),
+        },
+    ]
+}
+
+/// The name the catch-all `hole` binds, empty for one that binds none.
+fn binder_of(cover: Cover, hole: PatId) -> string { cover.store.bind_name(hole) ?? "" }
+
+/// The last arm of each `match` the written item `view` shows holds, none of whose arms takes
+/// every value, that is one unguarded bare name naming a const, which compares rather than binds:
+/// the name.
+fn last_arms_comparing(view: ItemView) -> List<Found> {
+    let item = view.item
+    let store = item.store
+    let compared = refusals_seen(view).compared
+    let cover = reach_cover(view.engine, view.file, compared, item)
+    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) if cover.catching(m.arms) == null for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && pattern_compares(view.engine, view.file, compared, store, p, n!)]
+}
+
+/// the last arm of a `match` whose bare name is a const
+export law last_arm_compares {
+    kind: "type.const_pattern"
+    reads_view: last_arms_comparing
+    voice: comparing_words
+    warns: true
+    witness: "enum M {\n    A\n    B\n}\n\nconst a = M.A\n\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\n"
+}
+
+fn comparing_words(a: List<string>) -> Voice { last_arm_compares_said(a[0]) }
+
+/// an arm after a binder that takes every value
+export law arm_after_binder {
+    kind: "type.unreachable_arm"
+    reads_view: after_binders
+    voice: binder_words
+    warns: true
+    witness: "fn f(n: int) -> int {\n    match n {\n        other -> 1,\n        2 -> 2,\n    }\n}\n"
+}
+
+/// an arm after a hole that takes every value
+export law arm_after_hole {
+    kind: "type.unreachable_arm"
+    reads_view: after_holes
+    voice: hole_words
+    warns: true
+    witness: "fn f(n: int) -> int {\n    match n {\n        _ -> 1,\n        2 -> 2,\n    }\n}\n"
+}
+
+/// Every arm of the written item `view` shows whose pattern an earlier unguarded arm's format
+/// accepts every text of — `format_subsumes` answering that it covers — found where it stands; handed
+/// the earlier pattern as written. An item holding fewer than two format or text patterns has none,
+/// and reads none of its nodes for it.
+fn formats_covered(view: ItemView) -> List<Found> {
+    let store = view.item.store
+    let first? = (0..store.pat_count()).find((i) -> text_pattern(store, PatId { index: i })) else { return [] }
+    if !(first + 1..store.pat_count()).any((i) -> text_pattern(store, PatId { index: i })) { return [] }
+    let written_only = template_nodes(store)
+    let signing = signing_in(view.engine, view.file, [])
+    [f! for i in 0..store.exprs.count() for e in [ExprId { index: i }] if !written_only.contains(e) for m in some_list(match_at(store, e)) for j in 0..m.arms.length for f in [covered_arm(store, signing, m.arms, j)] if f != null]
+}
+
+/// The arm `j` of `arms` where an earlier unguarded arm's format covers its pattern: found at its
+/// pattern, handed the earlier one; absent where none does or none can be told to.
+fn covered_arm(store: SyntaxArena, signing: Signing, arms: List<Arm>, j: int) -> Found? {
+    if arms[j].pats.length != 1 { return null }
+    let b? = pat_shape(store, signing, arms[j].pats[0]) else { return null }
+    let k? = (0..j)
+        .find(
+            (i) -> arms[i].guard == null &&
+                arms[i].pats.length == 1 &&
+                shape_covers(store, signing, arms[i].pats[0], b),
+        ) else { return null }
+    let above? = pattern_spelled(store, arms[k].pats[0]) else { return null }
+    Found { at: store.pat_span(arms[j].pats[0]), args: ["\"${above}\""] }
+}
+
+/// Whether the pattern `p` is a format that accepts every text `b` does.
+fn shape_covers(store: SyntaxArena, signing: Signing, p: PatId, b: FormatShape) -> bool {
+    let a? = pat_shape(store, signing, p) else { return false }
+    format_subsumes(a, b) is .Covers
+}
+
+/// Whether the pattern `p` is a format or a text literal: the patterns a format covers, and the ones
+/// it covers with.
+fn text_pattern(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) {
+        .Format(_, _) -> true,
+        .Lit(v) -> store.expr(v).text_of() != null,
+        rest -> false,
+    }
+}
+
+/// The shape of the pattern `p` where it is a format or a text literal; absent for any other.
+fn pat_shape(store: SyntaxArena, signing: Signing, p: PatId) -> FormatShape? {
+    match store.pat(p) {
+        .Format(head, parts) -> {
+            let format = GrammarSpec { head: head, parts: parts }
+            format_shape(format, readings_of(format, signing))
+        },
+        .Lit(v) -> {
+            let text? = store.expr(v).text_of() else { return null }
+            FormatShape { head: text, holes: [] }
+        },
+        rest -> null,
+    }
+}
+
+/// The pattern `p`, a format or a text literal, as it is written; absent for any other.
+fn pattern_spelled(store: SyntaxArena, p: PatId) -> string? {
+    match store.pat(p) {
+        .Format(head, parts) -> pattern_text(head, parts),
+        .Lit(v) -> store.expr(v).text_of(),
+        rest -> null,
+    }
+}
+
+/// an arm after a format that accepts every text it does
+export law arm_after_format {
+    kind: "type.unreachable_arm"
+    reads_view: formats_covered
+    voice: format_arm_words
+    warns: true
+    witness: "fn f(t: string) -> int {\n    match t {\n        \"/a/{x}\" -> 1,\n        \"/a/b\" -> 2,\n        _ -> 3,\n    }\n}\n"
+}
+
+fn format_arm_words(a: List<string>) -> Voice { format_covers_arm(a[0]) }
+
+fn binder_words(a: List<string>) -> Voice { unreached_after_binder_said(a[0]) }
+
+fn hole_words(_a: List<string>) -> Voice { unreached_after_hole_said() }
+
+collect listed_unreached_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unreached-arm laws are read through, for a process to hand its engine.
+export fn unreached_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unreached_facts) }

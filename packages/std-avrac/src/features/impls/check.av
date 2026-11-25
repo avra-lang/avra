@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, StmtId, TypeId, DeclId, same_type, counted}
+use core.{ExprId, StmtId, Type, TypeId, DeclId, closest, edit_distance, same_type, counted}
 use features.{
     TypeCx,
     FnSig,
@@ -13,8 +13,10 @@ use features.{
     no_pins,
     unpinned_of,
     tparams_refused,
+    method_row,
 }
-use diagnostics.{refusal}
+use diagnostics.{Guess, Voice, guess_fix, refusal, said_as}
+use features.maps.{map_unknowable}
 use @std.errors.{Loc}
 
 fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
@@ -36,7 +38,11 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
         .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
         .Declared(decl, tname) -> declared_call(cx, e, subject, decl, tname, name, args),
-        .Nameless -> form_refusal(cx, e, cx.name_at(subject), name) ?? no_methods_here(cx, subject, name),
+        .Nameless -> form_refusal(cx, e, cx.name_at(subject), name) ?? empty_map_verb(cx, e, subject, name) ?? no_methods_here(
+            cx,
+            subject,
+            name,
+        ),
     }
 }
 
@@ -466,6 +472,18 @@ fn instantiated_sig(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, si
     }
 }
 
+/// An unanswered dot-call of a map's verb on `{}`, whose values
+/// nothing says, refuses in the words every map verb there has. Null
+/// for any other call.
+fn empty_map_verb(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId? {
+    if !(cx.seen_at(subject) is .EmptyMap) { return null }
+    let maps? = cx.view.decls.builtins.get().find((b) -> cx.view.decls.decl(b).name == "Map") else { return null }
+    let verbed = method_row(cx.view.lang.methods, name, Type.Map(cx.error_type, cx.error_type)) != null ||
+        cx.view.decls.method(maps, name) != null
+    if !verbed { return null }
+    cx.spoken(said_as("type.map_value", cx.loc_of(e), map_unknowable(name)))
+}
+
 /// An unanswered dot-call that is a grammar FORM refuses in the
 /// form's words — a type literal's, or a keyword-named call's, the
 /// form it failed to be. Null for an ordinary call: the caller's
@@ -480,22 +498,79 @@ fn form_refusal(mut cx: TypeCx, e: ExprId, target: string, name: string) -> Type
 
 fn no_methods_here(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     let n = cx.name_at(subject)
+    let sh: Type = cx.view.types.seen_shape(cx.type_at(subject))
+    let methods = [r.name for r in cx.view.lang.methods if r.takes(sh)]
+    let properties = [r.name for r in cx.view.lang.properties if r.takes(sh)]
     cx
         .spoken(
             cx
                 .nearest(
-                    refusal(
+                    said_as(
                         "type.method",
                         cx.loc_of(subject),
-                        "`.${name}(…)` calls a method, and `${n}` has none",
-                        this_is(n),
-                        "methods live on lists, maps, and declared types with an `impl`",
+                        methodless(n, name, methods, properties),
                     ),
                     subject,
                     name,
-                    cx.answers_to(cx.type_at(subject)),
+                    properties.concat(methods),
                 ),
         )
+}
+
+/// A method call of `name` on a value of `found`, a type no method of that name is given to, beside
+/// the methods and the properties it has: a property called is named as one, the member nearest
+/// by name is offered where one is near, else the methods it has, and a type with no method is said
+/// to have none.
+export fn methodless(
+    found: string,
+    name: string,
+    methods: List<string> = [],
+    properties: List<string> = [],
+) -> Voice {
+    if properties.contains(name) {
+        return Voice {
+            message: "`.${name}(…)` calls `${name}`, a property of `${found}`, not a method",
+            label: this_is(found),
+            help: "read it uncalled: `.${name}`",
+        }
+    }
+    if methods.is_empty() {
+        return Voice {
+            message: "`.${name}(…)` calls a method, and `${found}` has none",
+            label: this_is(found),
+            help: "methods live on lists, maps, and declared types with an `impl`",
+        }
+    }
+    let v = Voice {
+        message: "`${found}` has no method `${name}`",
+        label: this_is(found),
+        help: "`${found}` has ${offered(methods)}",
+    }
+    let n? = closest(name, properties.concat(methods)) else { return v }
+    if name.length <= 4 && n.distance > 1 { return v }
+    v with { help: "did you mean `${n.name}`?", guess: Guess { written: name, meant: n.name, distance: n.distance } }
+}
+
+/// The methods a type has, as a voice names them: each once, at most ten, then how many more.
+fn offered(names: List<string>) -> string {
+    let each = [n for j, n in names if names.index_of(n) == j]
+    let listed = ["`${n}`" for n in each.take(10)].join(", ")
+    if each.length > 10 { "${listed} and ${each.length - 10} more" } else { listed }
+}
+
+/// A method call naming a method the declared type `target` doesn't have, beside the `methods` it
+/// has: the one nearest by name where one is near, else the impl to declare it in.
+export fn no_method_on(target: string, name: string, methods: List<string> = []) -> Voice {
+    let v = Voice {
+        message: "`${target}` has no method `${name}`",
+        label: "called here",
+        help: "declare it — `impl ${target} { fn ${name}(…) -> … }`",
+    }
+    let n? = closest(name, methods) else { return v }
+    // a short name one letter off is a typo; two off is a different word
+    if name.length <= 4 && n.distance > 1 { return v }
+    let near = [m for j, m in methods if methods.index_of(m) == j && edit_distance(name, m) == n.distance]
+    v with { help: "did you mean `${n.name}`?", guess: Guess { written: name, meant: n.name, distance: n.distance, tied: near.length > 1 } }
 }
 
 /// The names a declared type's impls give it.
@@ -504,50 +579,39 @@ fn members_of(cx: TypeCx, decl: DeclId) -> List<string> {
 }
 
 fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string, near: List<string>) -> TypeId {
-    cx
-        .spoken(
-            cx
-                .nearest(
-                    refusal(
-                        "type.method",
-                        cx.loc_of(e),
-                        "`${target}` has no method `${name}`",
-                        "called here",
-                        "declare it — `impl ${target} { fn ${name}(…) -> … }`",
-                    ),
-                    cx.receiver_of(e),
-                    name,
-                    near,
-                ),
-        )
+    let v = no_method_on(target, name, near)
+    let d = said_as("type.method", cx.loc_of(e), v)
+    let subject = cx.receiver_of(e)
+    let at: Loc? = if subject == null { null } else { cx.name_after(subject!, name) }
+    let g? = v.guess else { return cx.spoken(d) }
+    let named? = at else { return cx.spoken(d) }
+    cx.spoken(d with { suggestions: [guess_fix(g, named)] })
 }
 
 /// A dot-call named by a KEYWORD is a grammar form that did not match
 /// — no method can wear the name, so the remedy is the form's.
-fn keyword_form(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`.${name}(…)` names no method — `${name}` is a keyword, and the grammar's form did not match",
-                "written here",
-                "a type literal is `.type(T)` over a TYPE: `int?`, `List<T>`, `fn(int) -> bool`, or a name holding an id",
-            ),
-        )
+fn keyword_form(mut cx: TypeCx, e: ExprId, name: string) -> TypeId { cx.spoken(said_as("type.method", cx.loc_of(e), keyword_called(name))) }
+
+/// A dot-call named by the keyword `name`, which no method can wear.
+export fn keyword_called(name: string) -> Voice {
+    Voice {
+        message: "`.${name}(…)` names no method — `${name}` is a keyword, and the grammar's form did not match",
+        label: "written here",
+        help: "a type literal is `.type(T)` over a TYPE: `int?`, `List<T>`, `fn(int) -> bool`, or a name holding an id",
+    }
 }
 
 fn no_interned(mut cx: TypeCx, e: ExprId, target: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`.type(…)` interns into its receiver, and `${target}` has no `interned`",
-                "written here",
-                "declare `interned` on `${target}` — its seat is the enum the literal spells, its answer the id — or name a table that has one: `cx.type(…)`",
-            ),
-        )
+    cx.spoken(said_as("type.method", cx.loc_of(e), literal_uninterned(target)))
+}
+
+/// A type literal over a receiver of `target`, which has no `interned` to intern it into.
+export fn literal_uninterned(target: string) -> Voice {
+    Voice {
+        message: "`.type(…)` interns into its receiver, and `${target}` has no `interned`",
+        label: "written here",
+        help: "declare `interned` on `${target}` — its seat is the enum the literal spells, its answer the id — or name a table that has one: `cx.type(…)`",
+    }
 }
 
 fn wrong_method_arity(
@@ -558,68 +622,65 @@ fn wrong_method_arity(
     wants: int,
     found: int,
 ) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${target}.${name}` takes ${counted(wants, "argument")} beside `self`, found ${found}",
-                "this call",
-                "pass exactly that many — `avra docs ${target}.${name}` shows the signature",
-            ),
-        )
+    cx.spoken(said_as("type.method", cx.loc_of(e), method_arity_missed(target, name, wants, found)))
 }
 
 fn unbounded_call(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string) -> TypeId {
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.method",
                 cx.loc_of(e),
-                "`${tname}` has no known methods",
-                "called here",
-                bound_remedy(cx, decl, tname),
+                unbounded_method(tname, bound_remedy(cx, decl, tname)),
             ),
         )
 }
 
-fn receiver_through_type(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${trait_name}.${name}` takes a receiver, and `${tname}` names a type — call it on a value of `${tname}`",
-                "called here",
-                "a type parameter calls its bound's `static fn`s alone",
-            ),
-        )
+/// A method called on a value of the type parameter `tname`, which carries no bound: `remedy` says
+/// how to give it one.
+export fn unbounded_method(tname: string, remedy: string) -> Voice {
+    Voice { message: "`${tname}` has no known methods", label: "called here", help: remedy }
+}
+
+fn receiver_through(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), receiver_through_type(trait_name, name, tname)))
+}
+
+/// The method `name` of the bound `trait_name`, which takes a receiver, called through the type
+/// parameter `tname` itself.
+export fn receiver_through_type(trait_name: string, name: string, tname: string) -> Voice {
+    Voice {
+        message: "`${trait_name}.${name}` takes a receiver, and `${tname}` names a type — call it on a value of `${tname}`",
+        label: "called here",
+        help: "a type parameter calls its bound's `static fn`s alone",
+    }
 }
 
 fn no_trait_method(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${trait_name}` has no method `${name}`",
-                "called here",
-                "the bound decides what `${tname}` can do",
-            ),
-        )
+    cx.spoken(said_as("type.method", cx.loc_of(e), bound_lacks_method(trait_name, name, tname)))
+}
+
+/// The method `name` called on a value of the type parameter `tname`, whose bound `trait_name`
+/// declares none.
+export fn bound_lacks_method(trait_name: string, name: string, tname: string) -> Voice {
+    Voice {
+        message: "`${trait_name}` has no method `${name}`",
+        label: "called here",
+        help: "the bound decides what `${tname}` can do",
+    }
 }
 
 fn no_dyn_method(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${tname}` has no method `${name}`",
-                "called here",
-                "the contract decides what a `dyn ${tname}` can do",
-            ),
-        )
+    cx.spoken(said_as("type.method", cx.loc_of(e), contract_lacks(tname, name)))
+}
+
+/// The method `name` called on a `dyn` value of the trait `tname`, which declares none.
+export fn contract_lacks(tname: string, name: string) -> Voice {
+    Voice {
+        message: "`${tname}` has no method `${name}`",
+        label: "called here",
+        help: "the contract decides what a `dyn ${tname}` can do",
+    }
 }
 
 fn wrong_static_arity(
@@ -630,16 +691,25 @@ fn wrong_static_arity(
     wants: int,
     found: int,
 ) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${target}.${name}` takes ${seat_word(wants)}, found ${found}",
-                "this call",
-                "a `static fn` has no receiver — every seat is written",
-            ),
-        )
+    cx.spoken(said_as("type.method", cx.loc_of(e), static_arity_missed(target, name, wants, found)))
+}
+
+/// A call of the method `name` of `target`, whose seats beside `self` take `wants`, writing `found`.
+export fn method_arity_missed(target: string, name: string, wants: int, found: int) -> Voice {
+    Voice {
+        message: "`${target}.${name}` takes ${counted(wants, "argument")} beside `self`, found ${found}",
+        label: "this call",
+        help: "pass exactly that many — `avra docs ${target}.${name}` shows the signature",
+    }
+}
+
+/// A call of the static `name` of `target`, whose seats take `wants`, writing `found`.
+export fn static_arity_missed(target: string, name: string, wants: int, found: int) -> Voice {
+    Voice {
+        message: "`${target}.${name}` takes ${seat_word(wants)}, found ${found}",
+        label: "this call",
+        help: "a `static fn` has no receiver — every seat is written",
+    }
 }
 
 fn seat_word(n: int) -> string {
@@ -719,7 +789,7 @@ fn bound_static_call(
     if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
     let tdecl? = cx.bound_trait(decl, trait_name) else { return cx.error_type }
     let member? = cx.view.decls.trait_member(tdecl, name) else { return no_trait_method(cx, e, trait_name, name, tname) }
-    if !cx.view.decls.is_static_of(member) { return receiver_through_type(cx, e, trait_name, name, tname) }
+    if !cx.view.decls.is_static_of(member) { return receiver_through(cx, e, trait_name, name, tname) }
     let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
     if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
     let sig = selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j))
@@ -734,12 +804,17 @@ fn bound_static_call(
 fn bound_remedy(cx: TypeCx, decl: DeclId, tname: string) -> string {
     if cx.view.decls.component_parts_of(decl) != null { return bound_written(tname) }
     match cx.view.decls.decl(decl).kind {
-        .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now",
+        .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> typewide_remedy(tname),
         .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> bound_written(tname),
     }
 }
 
-fn bound_written(tname: string) -> string { "add a bound — `<${tname}: SomeTrait>`" }
+/// The remedy for a type's or an impl's parameter `tname`, which takes no bound.
+export fn typewide_remedy(tname: string) -> string {
+    "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now"
+}
+
+export fn bound_written(tname: string) -> string { "add a bound — `<${tname}: SomeTrait>`" }
 
 /// A method on a CONTRACT value: the trait's sig judges (self
 /// omitted — the boxed value fills that seat at dispatch); the
@@ -879,29 +954,29 @@ fn derive_answer(cx: TypeCx, ret: TypeId) -> bool {
 }
 
 fn derive_shape(mut cx: TypeCx, m: DeclId) {
-    cx
-        .emit(
-            refusal(
-                "type.derive_contract",
-                member_loc(cx, m),
-                "a trait's `derive` answers the declarations it makes",
-                "declared here",
-                "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`",
-            ),
-        )
+    cx.emit(said_as("type.derive_contract", member_loc(cx, m), derive_unshaped()))
 }
 
 fn marks_shape(mut cx: TypeCx, m: DeclId) {
-    cx
-        .emit(
-            refusal(
-                "type.derive_contract",
-                member_loc(cx, m),
-                "a trait's `marks` is `static fn marks(t: Type) -> List<string>`",
-                "declared here",
-                "take the same declaration its `derive` takes, and answer the mark names it reads",
-            ),
-        )
+    cx.emit(said_as("type.derive_contract", member_loc(cx, m), marks_unshaped()))
+}
+
+/// A trait's `derive` that isn't `static`, takes no one declaration, or answers no declarations.
+export fn derive_unshaped() -> Voice {
+    Voice {
+        message: "a trait's `derive` answers the declarations it makes",
+        label: "declared here",
+        help: "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`",
+    }
+}
+
+/// A trait's `marks` that isn't `static fn marks(t: Type) -> List<string>`.
+export fn marks_unshaped() -> Voice {
+    Voice {
+        message: "a trait's `marks` is `static fn marks(t: Type) -> List<string>`",
+        label: "declared here",
+        help: "take the same declaration its `derive` takes, and answer the mark names it reads",
+    }
 }
 
 fn member_loc(cx: TypeCx, m: DeclId) -> Loc? {
@@ -909,16 +984,17 @@ fn member_loc(cx: TypeCx, m: DeclId) -> Loc? {
 }
 
 fn no_member_fits(mut cx: TypeCx, e: ExprId, target: string, name: string, keys: List<string>) {
-    cx
-        .emit(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "no `${target}.${name}` takes these arguments",
-                "called here",
-                "`${target}` declares ${keys.join(", ")} — pass an argument one of them takes",
-            ),
-        )
+    cx.emit(said_as("type.method", cx.loc_of(e), no_member_takes(target, name, keys)))
+}
+
+/// A call of `target.name`, a member several impls of one generic trait give, that none of the
+/// members `keys` takes.
+export fn no_member_takes(target: string, name: string, keys: List<string>) -> Voice {
+    Voice {
+        message: "no `${target}.${name}` takes these arguments",
+        label: "called here",
+        help: "`${target}` declares ${keys.join(", ")} — pass an argument one of them takes",
+    }
 }
 
 fn members_ambiguous(mut cx: TypeCx, e: ExprId, target: string, name: string, keys: List<string>) {
@@ -935,16 +1011,17 @@ fn members_ambiguous(mut cx: TypeCx, e: ExprId, target: string, name: string, ke
 }
 
 fn members_incomplete(mut cx: TypeCx, e: ExprId, target: string, name: string, unmet: List<string>) {
-    cx
-        .emit(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${target}.${name}` is chosen by a `dyn` argument's type, and no member takes ${unmet.join(", ")}",
-                "called here",
-                "every type that can reach this call needs a member — implement it for ${unmet.join(", ")}",
-            ),
-        )
+    cx.emit(said_as("type.method", cx.loc_of(e), members_incomplete_said(target, name, unmet)))
+}
+
+/// A call of `target.name` a `dyn` argument's run-time type chooses a member of, where no member
+/// takes the types `unmet` that implement the argument's trait.
+export fn members_incomplete_said(target: string, name: string, unmet: List<string>) -> Voice {
+    Voice {
+        message: "`${target}.${name}` is chosen by a `dyn` argument's type, and no member takes ${unmet.join(", ")}",
+        label: "called here",
+        help: "every type that can reach this call needs a member — implement it for ${unmet.join(", ")}",
+    }
 }
 
 fn default_unbound(mut cx: TypeCx, e: ExprId, trait_name: string) {
@@ -961,16 +1038,17 @@ fn default_unbound(mut cx: TypeCx, e: ExprId, trait_name: string) {
 }
 
 fn static_unbound(mut cx: TypeCx, e: ExprId, callee: string, parameter: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${callee}` needs a type for `${parameter}` from its arguments or expected answer",
-                "no type binds this parameter",
-                "give the call a typed argument or an annotated answer",
-            ),
-        )
+    cx.spoken(said_as("type.method", cx.loc_of(e), static_unpinned(callee, parameter)))
+}
+
+/// A call of the static `callee` whose type parameter `parameter` neither its arguments nor its
+/// wanted answer fill.
+export fn static_unpinned(callee: string, parameter: string) -> Voice {
+    Voice {
+        message: "`${callee}` needs a type for `${parameter}` from its arguments or expected answer",
+        label: "no type binds this parameter",
+        help: "give the call a typed argument or an annotated answer",
+    }
 }
 
 fn static_unholdable(mut cx: TypeCx, e: ExprId, callee: string, side: TypeId) -> TypeId {
@@ -995,12 +1073,20 @@ fn default_unimplemented(
 ) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.method",
                 cx.loc_of(e),
-                "`${recv}` does not implement `${trait_name}<${args.join(", ")}>`",
-                "called here",
-                "a default runs through the impl at its arguments — implement `${trait_name}<${args.join(", ")}>` for `${recv}`",
+                default_impl_missing(recv, "${trait_name}<${args.join(", ")}>"),
             ),
         )
+}
+
+/// A trait's own body called on a value of `recv` at `applied`, the trait at the arguments the call
+/// fills it with, which `recv` doesn't implement.
+export fn default_impl_missing(recv: string, applied: string) -> Voice {
+    Voice {
+        message: "`${recv}` does not implement `${applied}`",
+        label: "called here",
+        help: "a default runs through the impl at its arguments — implement `${applied}` for `${recv}`",
+    }
 }

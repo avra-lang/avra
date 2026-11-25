@@ -20,6 +20,7 @@
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
 use @std.meta.{derive, delegates, Rewrite}
+use @std.relation.{codec}
 use core.{
     Expr,
     Stmt,
@@ -37,6 +38,7 @@ use core.{
     DeclId,
     found_at,
     Binding,
+    Scoped,
     SyntaxArena,
     Span,
     Provided,
@@ -45,10 +47,10 @@ use core.{
     Minting,
     minting,
 }
-use core.{SeatMark, SideTable, Fingerprint, StaticBox, nothing_bound}
+use core.{SeatMark, SideTable, Fingerprint, StaticBox, closest, nothing_bound}
 use core.{fp, fp_list, fp_str}
 // LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, Voice, refusal, said_as}
 use @std.errors.{Loc}
 
 /// Resolve capabilities: an impl reports a name use — as a value
@@ -69,11 +71,16 @@ export type ResolveCx = {
     dispatch: Dispatch,
     keywords: List<string>,
     // the file's `let` definitions and their names (the typo
-    // candidates), the program scope's bindings, the open overlays
+    // candidates); every open binding, the program scope's first and
+    // then each open overlay's in order, its key as two columns (each
+    // name, and the file that wrote it); and where each open overlay's
+    // bindings start
     all_defs: List<Def>,
     def_names: List<string>,
-    visible: Map<string, Binding>,
-    overlays: List<Map<string, Binding>>,
+    bind_names: List<Scoped>,
+    bind_origins: List<int>,
+    binds: List<Binding>,
+    overlays: List<int>,
     // the open lambda frames; the open fn bodies' floors; one entry
     // per open impl or trait body (inside, `self` names the receiver
     // seat and the written params start at seat 1); the open fn
@@ -88,8 +95,12 @@ export type ResolveCx = {
     scoped: SideTable<bool>,
     // THE WALK'S STATE: the open fn body's seat names, and whether
     // the statement in hand stands inside a block
-    scope: List<string>,
+    scope_names: List<Scoped>,
+    scope_origins: List<int>,
     in_block: bool,
+    /// Whether the walk is inside a named instance's value: a declaration's, which reads
+    /// declarations, so a run-time binding of the top level read there is refused as an instance's.
+    in_instance: bool = false,
     // the type parameters the open declarations name, and each read of
     // one no static call has seated yet
     tnames: List<string>,
@@ -113,13 +124,23 @@ export type Elsewhere = {
 
 impl Elsewhere {
     fn unread_root() -> Diag? {
-        let ask = self.unread
-        ask()
+        (self.unread)()
     }
 }
 
 /// One `let` definition of the program, in order.
-export type Def = { name: string, stmt: StmtId }
+export type Def = { name: Scoped, stmt: StmtId }
+
+/// A binder's KEY in the scope tables: its name, and the file that wrote a template's text, or
+/// `OWN_WRITING` for the file's own. A template's `tmp` and a hole's `tmp` are two keys, which is the
+/// whole of hygiene. Two keys compare as two ints.
+export type ScopeKey = { name: Scoped, origin: int }
+
+/// The origin a key of the file's own writing wears.
+export const OWN_WRITING: int = 0 - 1
+
+/// Where a key is bound inside the open overlays: the overlay, and the binding.
+export type OverlayHit = { overlay: int, binding: Binding }
 
 /// A binder an arm opens, with the file that WROTE its text — a
 /// generated pattern's name and its arm's value may come from
@@ -129,7 +150,7 @@ export type Bound = { name: string, origin: FileId? }
 /// One OPEN lambda during the walk: its params, and the overlay
 /// depth at entry — an overlay at or above the floor is
 /// lambda-local; below it lies the outer world, reached by capture.
-export type LFrame = { lam: ExprId, params: List<string>, floor: int }
+export type LFrame = { lam: ExprId, param_names: List<Scoped>, param_origins: List<int>, floor: int }
 
 /// A fn's typed signature, as the type pass computed it.
 @derive(Fingerprint)
@@ -139,7 +160,7 @@ export type FnSig = { params: List<TypeId>, ret: TypeId }
 /// each of its Vars bound to by ordinal, and the VALUE fingerprints
 /// of its settled (`const`) seats. Typing records it; mono lowers one
 /// body per distinct binding AND per distinct settled value.
-@derive(Fingerprint)
+@codec
 export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [] }
 
 /// A struct's typed field table, in declaration order — the index
@@ -244,7 +265,7 @@ export fn res_enum_sig(ok: TypeId, err: TypeId) -> EnumSig {
 export enum SelfSeat { Receiver, Static, Default }
 
 @derive(Projections)
-@derive(Fingerprint)
+@codec
 export enum DeclSig {
     Fn(sig: FnSig)
     Record(sig: StructSig)
@@ -446,7 +467,15 @@ export type LowerCx = {
     // its channel's `Sink<T>` was read into — what a `yield` sends
     // into. Null outside a producer.
     producer_sink: Reg? = null,
+    // THE BODY'S `once` SLOT: where every exit that answers keeps its
+    // answer. Null for a body that is not `once`.
+    once_slot: OnceSlot? = null,
 }
+
+/// A `once` body's slot: the symbol that addresses it, the answer it
+/// keeps, and whether that answer rides a one-cell box — the slot's
+/// own null means only "not yet".
+export type OnceSlot = { symbol: string, answer: TypeId, boxed: bool }
 
 /// A lambda literal lowered where it is CALLED rather than lifted:
 /// its params resolve to `regs`, the seats the inline site hands it.
@@ -597,13 +626,16 @@ export fn duplicate_names(kind: string, owner: string, names: List<string>, at: 
 /// A declaration naming the same member twice — one refusal for
 /// every declared table (a record's fields, an enum's variants).
 export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?) -> Diag {
-    refusal(
-        kind,
-        at,
-        "`${owner}` declares `${member}` more than once",
-        "in this declaration",
-        "rename one of them",
-    )
+    said_as(kind, at, declared_more_than_once(owner, member))
+}
+
+/// A declaration naming `member` a second time among `owner`'s own.
+export fn declared_more_than_once(owner: string, member: string) -> Voice {
+    Voice {
+        message: "`${owner}` declares `${member}` more than once",
+        label: "in this declaration",
+        help: "rename one of them",
+    }
 }
 
 impl LowerCx {
@@ -612,7 +644,7 @@ impl LowerCx {
     /// payload the dispatch GUARANTEES comes back absent; never a
     /// plausible default, which would compile a wrong program silently.
     mut fn lower_defect(e: ExprId, what: string) -> Reg {
-        self.defect(what)
+        self.defect("${what} in `${self.view.source.file}` at expression ${e.index}")
         self.result(e)
     }
 
@@ -628,23 +660,39 @@ impl LowerCx {
 /// was written. The namespaces are gathered from the program's own
 /// statements, so a nested declaration is invisible — and blaming
 /// the later USE ("`E` is not defined") hides the real mistake.
-export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
-    refusal(
-        kind,
-        at,
-        "${what} live at the top level",
-        "declared inside a block",
-        "move it out of the block",
-    )
+export fn nested_decl(kind: string, v: Voice, at: Loc?) -> Diag { said_as(kind, at, v) }
+
+/// `what`, which lives at the top level, written inside a block.
+export fn declared_in_block(what: string) -> Voice {
+    Voice {
+        message: "${what} live at the top level",
+        label: "declared inside a block",
+        help: "move it out of the block",
+    }
 }
+
+/// A fn declaration written inside a block.
+export fn nested_fns() -> Voice { declared_in_block("fn declarations") }
+
+/// A type declaration written inside a block.
+export fn nested_types() -> Voice { declared_in_block("type declarations") }
+
+/// A spec block written inside a block.
+export fn nested_specs() -> Voice { declared_in_block("spec blocks") }
+
+/// An impl or a trait block written inside a block.
+export fn nested_blocks() -> Voice { declared_in_block("impl and trait blocks") }
+
+/// A use line written inside a block.
+export fn nested_uses() -> Voice { declared_in_block("use lines") }
 
 impl ResolveCx {
     /// THE nested-declaration guard every declaring statement opens
     /// with: inside a block it refuses and answers true, so the rule
     /// returns; at the top level it answers false.
-    mut fn refuses_nested(s: StmtId, kind: string, what: string) -> bool {
+    mut fn refuses_nested(s: StmtId, kind: string, v: Voice) -> bool {
         if !self.in_block { return false }
-        self.emit(nested_decl(kind, what, self.stmt_loc(s)))
+        self.emit(nested_decl(kind, v, self.stmt_loc(s)))
         true
     }
 
@@ -668,16 +716,40 @@ export fn zip_defect_of(what: string) -> string {
 export const zip_defect: string = zip_defect_of("names and values")
 
 /// The help EVERY "no such variant" refusal gives — what there IS.
-/// Construction and `match` both name a variant, so both offer the
-/// same list, in the same words.
-export fn variants_are(sig: EnumSig) -> string {
-    "the variants are ${sig.listed()}"
+/// Construction, a read and `match` each name a variant, so each offers the same help, in the same
+/// words. The help for the variant `written`, which an enum declaring `names` doesn't have: the one near
+/// name it was likely meant as, else every variant the enum declares.
+export fn variant_meant(written: string, names: List<string>) -> string {
+    let near? = closest(written, names) else { return variants_named(names) }
+    "did you mean `${near.name}`?"
 }
+
+/// A variant `name` read off the name of the enum `owner`, which declares only `names`.
+export fn no_variant_read_of(owner: string, name: string, names: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no variant `${name}`",
+        label: "read here",
+        help: variant_meant(name, names),
+    }
+}
+
+/// The help naming the variants `names` an enum declares.
+export fn variants_named(names: List<string>) -> string { "the variants are ${named_list(names)}" }
 
 /// The same, for a record: a property read and a literal both name
 /// a field, so both offer the same list.
-export fn fields_are(sig: StructSig) -> string {
-    "the fields are ${sig.listed()}"
+export fn fields_are(sig: StructSig) -> string { fields_named(sig.names) }
+
+/// The help naming the fields `names` a record declares.
+export fn fields_named(names: List<string>) -> string { "the fields are ${named_list(names)}" }
+
+/// A field read that the record `record`, whose fields are `fields`, doesn't declare.
+export fn no_field_on(record: string, field: string, fields: List<string>) -> Voice {
+    Voice {
+        message: "no field `${field}` on `${record}`",
+        label: "read here",
+        help: "the fields are ${named_list(fields)}",
+    }
 }
 
 /// A lacked field's refusal, read or written: the record's own reason.

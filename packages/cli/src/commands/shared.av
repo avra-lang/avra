@@ -2,36 +2,31 @@
 //! file, the analyze-or-refuse step, and what every file command takes.
 use @std.cli.{CliResult, flag, arg}
 use @std.avrac.compiler.{
-    Program,
-    Workspace,
-    lone_workspace_on,
-    timed_workspace,
-    programs_workspace,
+    default_opt,
     avra,
     stage_words,
-    build_program,
     Toolchain,
-    Checked,
-    phase_total,
     BuildError,
-    BuildOutcome,
-    VerifyHeld,
-    HeldMismatch,
-    Subject,
+    platform_of,
+    triple_settled,
+    object_dir,
+    Platform,
 }
 use @std.avrac.core.{joined, distinct, some_list}
-use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, stem_of}
+use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
 use @std.process.{Tool, tool_at, cmd, Command, Exit, Streams, inherited, ProcessError, exit}
 use @std.time.{now_ns}
-use @std.io.{exists, make_dirs, compile_slot, Entry}
-use @std.avrac.compiler.backend.{emit_ll, links_with_ld64}
-use @std.avrac.compiler.host.{no_target, Stamp, Host}
+use @std.program.worked_ahead.{Apart, answered_apart}
+use @std.io.{env, exists, make_dirs, compile_slot, Entry, append_bytes}
+use @std.avrac.compiler.backend.{links_with_ld64}
+use @std.avrac.compiler.host.{Stamp, Host}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
-// THE TWO TRUE EXTERNS: no std package owns "re-exec this image" or
-// "where does this image stand".
+// THE TRUE EXTERNS: no std package owns "re-exec this image", "where does this image stand" or
+// "which file is this image".
 extern fn avra_exec_self(args: List<string>) -> int
 extern fn avra_self_dir() -> string
+extern fn avra_self_path() -> string
 extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 
 /// The runtime's library, the same two ways: beside the binary in a
@@ -40,11 +35,14 @@ fn runtime_library() -> string {
     toolchain_files(["libavra_runtime.a", "../lib/avra/libavra_runtime.a"]).find(exists(it)) ?? "build/libavra_runtime.a"
 }
 
-/// The wasm runtime archive, under the native one's own directory.
-fn wasm_runtime_library() -> string {
-    let at = joined_path(dir_of(runtime_library()), "wasm32/libavra_runtime.a")
-    if exists(at) { at } else { joined_path("build", "wasm32/libavra_runtime.a") }
+/// A platform's runtime archive, in its object directory `dir` under the native one's own.
+fn target_runtime_library(dir: string) -> string {
+    let at = joined_path(dir_of(runtime_library()), "${dir}/libavra_runtime.a")
+    if exists(at) { at } else { joined_path("build", "${dir}/libavra_runtime.a") }
 }
+
+/// The wasm runtime archive.
+fn wasm_runtime_library() -> string { target_runtime_library(object_dir(Platform.Wasm)) }
 
 /// The triples a toolchain may spell the WASI target, the one this compiler
 /// named first leading.
@@ -69,14 +67,26 @@ const LLVM_PREFIXES: List<string> = ["/opt/homebrew/opt/llvm", "/usr/local/opt/l
 /// asked: `CC` alone when it is set — the developer chose — else the LLVM
 /// `LLVM_PREFIX` names, then the package managers' prefixes, then `clang`
 /// on the PATH.
-fn wasm_linkers(ws: Workspace) -> List<Stamp> {
-    let words = if ws.env("CC") ?? "" != "" {
-        [chosen(ws, "CC", "clang")]
+fn wasm_linkers(look: ToolLookup) -> List<Stamp> {
+    let words = if (look.env)("CC") ?? "" != "" {
+        [chosen(look, "CC", "clang")]
     } else {
-        [joined_path(p, "bin/clang") for p in some_list(ws.env("LLVM_PREFIX")).concat(LLVM_PREFIXES)]
+        [joined_path(p, "bin/clang") for p in some_list((look.env)("LLVM_PREFIX")).concat(LLVM_PREFIXES)]
             .concat(["clang"])
     }
-    [s for w in words for s in some_list(ws.tool(w))]
+    [s for w in words for s in some_list((look.tool)(w))]
+}
+
+/// HOW A TOOLCHAIN IS FOUND: a variable of the environment, and the tool a word names — a
+/// workspace's own doors for a build that reads one, the host's for one that doesn't.
+export type ToolLookup = { env: fn(string) -> string?, tool: fn(string) -> Stamp? }
+
+/// The host's doors, as a command reads them.
+export fn host_lookup() -> ToolLookup {
+    ToolLookup {
+        env: (n: string) -> env_of(disk_host(), n),
+        tool: (w: string) -> disk_host().found(w).as_stamp(),
+    }
 }
 
 /// A tool a word names, read through the door: the stamp's path with the
@@ -103,21 +113,21 @@ fn found(asked: List<Result<Tool, ProcessError>>) -> List<Tool> {
 
 /// The word a variable names a tool by, taken as written — a path or a
 /// name — or `fallback` when the variable is unset or empty.
-fn chosen(ws: Workspace, name: string, fallback: string) -> string {
-    let named = ws.env(name) ?? ""
+fn chosen(look: ToolLookup, name: string, fallback: string) -> string {
+    let named = (look.env)(name) ?? ""
     if named.is_empty() { fallback } else { named }
 }
 
 /// THE FAST LINKER: lld beside the C compiler, else under `LLVM_PREFIX`, else on the PATH. GNU ld
 /// resolves the compiler's own static LLVM link in ~6 s where lld takes ~0.4 s, and a `clang`
 /// reached through a symlink directory has no lld beside it.
-fn fast_linker(ws: Workspace, host: Stamp) -> Stamp? {
-    let prefix = ws.env("LLVM_PREFIX") ?? ""
-    let beside = ws.tool(joined_path(dir_of(host.path), "ld.lld"))
+fn fast_linker(look: ToolLookup, host: Stamp) -> Stamp? {
+    let prefix = (look.env)("LLVM_PREFIX") ?? ""
+    let beside = (look.tool)(joined_path(dir_of(host.path), "ld.lld"))
     if beside != null { return beside }
-    let under = if prefix.is_empty() { null } else { ws.tool(joined_path(joined_path(prefix, "bin"), "ld.lld")) }
+    let under = if prefix.is_empty() { null } else { (look.tool)(joined_path(joined_path(prefix, "bin"), "ld.lld")) }
     if under != null { return under }
-    ws.tool("ld.lld")
+    (look.tool)("ld.lld")
 }
 
 /// Whether `clang` links a module for `triple`: where it says that target's
@@ -137,9 +147,9 @@ fn ran(s: Stamp) -> Tool { tool_at(s.path, s.path) }
 /// THE WASM TOOLCHAIN THIS MACHINE HAS: the first C compiler, of those that
 /// may link, with a WASI libc for one of the triples `spelled` may mean — or
 /// what was asked of which, so the refusal says what to point where.
-fn wasm_tools(ws: Workspace, spelled: string) -> Result<WasmTools, string> {
+fn wasm_tools(look: ToolLookup, spelled: string) -> Result<WasmTools, string> {
     let triples = triples_of(spelled)
-    let linkers = wasm_linkers(ws)
+    let linkers = wasm_linkers(look)
     let fits = [WasmTools { linker: clang, target: triple } for clang in linkers for triple in triples if links_wasm(ran(clang), triple)]
     let first? = fits.first() else { return .Err(no_wasm_toolchain([l.path for l in linkers], triples)) }
     first
@@ -186,112 +196,19 @@ fn rooted(path: string) -> string {
     normalized(joined_path(here(), path))
 }
 
-/// The argued file as a PROGRAM, entered. Null when it does not exist.
-fn program_arg(args: CliResult) -> Program? {
-    let path = path_arg(args)
-    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
-    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
-    if !there {
-        no_such_file(path)
-        return null
-    }
-    let ws = file_workspace(path)
-    let entered: Program = ws.program(path)
-    entered
-}
-
-/// THE WORKSPACE A NAMED FILE BELONGS TO: its package when it sits
-/// under one's `src/` — an `avra.toml` ancestor marks the root; the
-/// DIRECTORY OF PROGRAMS when that root has no `src/` and the file
-/// sits DIRECTLY in it, since a program test sits beside its
-/// `avra.toml` and every file there is a program of its own; the
-/// lone file otherwise. A directory of programs never recurses
-/// (`all_files`), so a file it would not find is not one of its
-/// programs — checked on its own, never silently skipped.
-export fn file_workspace(path: string) -> Workspace {
-    let root? = package_root(dir_of(path)) else { return lone(path) }
+/// THE PACKAGE A NAMED FILE BELONGS TO, by the one rule every door reads: the nearest root an
+/// `avra.toml` marks above it, when the file sits under that root's `src/`, or directly in a root
+/// with no `src/` — a directory of programs; absent for a lone file, whatever manifest stands
+/// further up.
+export fn file_home(path: string) -> string? {
+    let root? = package_root(dir_of(path)) else { return null }
     let src = joined_path(root, "src")
     // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
     let there = match disk_host().there(src) { .Exists(_, t) -> t, rest -> false }
-    if !there {
-        if dir_of(path) != root { return lone(path) }
-        return root_workspace(root)
-    }
-    if !under_dir(path, src) { return lone(path) }
-    root_workspace(root)
+    if !there { return if dir_of(path) == root { root } else { null } }
+    if !under_dir(path, src) { return null }
+    root
 }
-
-/// A file outside any package: a package of one holding just it.
-fn lone(path: string) -> Workspace {
-    lone_workspace_on(disk_host(), path, read_or_die(path), avra())
-}
-
-/// A package ROOT'S workspace, the one choice every caller who already
-/// knows where the root stands makes: `src/` when it has one, else its own
-/// direct files as a directory of programs. `file_workspace` reaches here
-/// once it has settled a file's ancestor root; a directory argument IS its
-/// own root already, so `build_workspace` reaches here directly.
-export fn root_workspace(root: string) -> Workspace {
-    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
-    let there = match disk_host().there(joined_path(root, "src")) {
-        .Exists(_, t) -> t,
-        rest -> false,
-    }
-    if there {
-        // LICENSED input.clock: the workspace's own phase clock, never an input of what is built
-        timed_workspace(disk_host(), root, avra(), () -> now_ns())
-    } else {
-        // LICENSED input.clock: the workspace's own phase clock, never an input of what is built
-        programs_workspace(disk_host(), root, avra(), () -> now_ns())
-    }
-}
-
-/// A subject and the package it is asked of.
-type Aim = { root: string, subject: Subject }
-
-/// A target read by its spelling alone for the command named `word`, and
-/// the package it is asked of: nothing is the package, `@name` a declaration,
-/// `Family(subject)` an answer — each asked of the package above `from` —
-/// and anything else a path, asked of the package at or above it.
-fn aimed(word: string, target: string, from: string) -> Result<Aim, string> {
-    if target == "" { return under(word, from, Subject.Package) }
-    if target.starts_with("@") {
-        if target.length == 1 { return .Err(decl_unnamed(word)) }
-        return under(word, from, Subject.Decl(target.substring(1, target.length)))
-    }
-    if target.contains("(") {
-        if !target.ends_with(")") { return .Err(query_unclosed(target)) }
-        return under(word, from, Subject.Query(target))
-    }
-    let path = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
-    under(word, path, Subject.File(path))
-}
-
-/// A subject against the world, asked through the door of the workspace the
-/// command goes on to derive in: a path nothing stands at is refused, and
-/// one a directory stands at is its package.
-fn placed(word: string, target: string, subject: Subject, ws: Workspace) -> Result<Subject, string> {
-    match subject {
-        .File(at) -> {
-            if !ws.there(at) { return .Err(no_such_path(word, target)) }
-            if ws.is_dir(at) { Subject.Package } else { subject }
-        },
-        .Package or .Decl(_) or .Query(_) -> subject,
-    }
-}
-
-fn under(word: string, dir: string, subject: Subject) -> Result<Aim, string> {
-    let root? = package_root(dir) else { return .Err(no_package_above(word, dir)) }
-    Aim { root: root, subject: subject }
-}
-
-fn decl_unnamed(word: string) -> string { "avra: `${word} @` names no declaration — write `@name` or `@Owner.name`" }
-
-fn query_unclosed(target: string) -> string { "avra: `${target}` opens an answer's subject and never closes it — write `Family(subject)`" }
-
-fn no_such_path(word: string, target: string) -> string { "avra: no `${target}` — `${word}` reads a file, a package's directory, `@name` or `Family(subject)`" }
-
-fn no_package_above(word: string, dir: string) -> string { "avra: no `avra.toml` at or above ${dir} — `${word}` answers for a package" }
 
 /// The package the command stands in: the CALLER's directory, which
 /// the `avra` shim records before moving to the tree's root — a bare
@@ -306,26 +223,6 @@ fn env_of(host: Host, name: string) -> string? {
     match host.variable(name) { .Env(_, value) -> value, rest -> null }
 }
 
-/// A package root as a program entered at its `[bin]` when it has
-/// one — every file analyzed either way.
-export fn root_program(root: string) -> Program {
-    // LICENSED input.clock: the workspace's own phase clock, never an input of what is built
-    let ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
-    ws.program(ws.entry_of())
-}
-
-/// A package-scoped command's one door: the package the command
-/// stands in, clean — its refusal already reported, so every caller
-/// below answers only the absence it was written for.
-export fn clean_program() -> Program? {
-    let p = root_program(here())
-    if !p.clean() {
-        eprintln(p.report())
-        return null
-    }
-    p
-}
-
 /// A found answer prints and exits clean; an absence explains why and
 /// exits 1 — the shape every package-scoped command closes with.
 export fn answered(text: string?, absent: string) -> int {
@@ -335,59 +232,6 @@ export fn answered(text: string?, absent: string) -> int {
     }
     println(text)
     0
-}
-
-/// The argued path as a program: a directory is a package root, a
-/// file is entered.
-fn program_at(args: CliResult) -> Program? {
-    let path = path_arg(args)
-    if is_a_dir(path) {
-        let whole: Program = root_program(path)
-        return whole
-    }
-    program_arg(args)
-}
-
-/// A command over the argued program — every command's one prologue:
-/// no such file exits 2.
-fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
-    let held? = program_at(args) else { return 2 }
-    act(held)
-}
-
-/// Analyze, refuse with the report, or write the verified `.ll` under the
-/// package's `build/` and answer its path.
-fn lowered_or_report(p: Program) -> Result<string, string> {
-    if !p.clean() { return .Err(p.report()) }
-    let entry? = p.entry_file() else { return .Err(p.rendered([no_target(p.ws.root)])) }
-    if entry.view.stmts.is_empty() { return .Err("the program is empty") }
-    let lo = p.lowered_checked()?
-    let path = joined_path(joined_path(p.ws.root, "build"), "${stem_of(entry.view.source.file)}.ll")
-    let _ = make_dirs(dir_of(path))
-    let failure: string? = emit_ll(lo, path, "")
-    if failure != null { return .Err(failure!) }
-    .Ok(path)
-}
-
-/// A clean program's warnings, to stderr — never silent, never
-/// blocking.
-fn warn(p: Program) {
-    let text = p.warnings()
-    if text != "" { eprintln(text) }
-}
-
-/// The `--time` report: analysis by phase, then what the command
-/// itself did, then the memo's hits and misses.
-/// The phases, each name once with its times summed — a phase the
-/// workspace timed twice (a parse before discovery, its remainder
-/// under analysis) reads as one.
-fn timings(p: Program, own: string, own_ns: int) -> string {
-    let inner = joined(
-        ["${name} ${ms(phase_total(p.phases, name))}" for name in distinct([ph.name for ph in p.phases])],
-        ", ",
-    )
-    let cache = if p.cache == "" { "" } else { " · memo ${p.cache}" }
-    "time: ${inner} · ${own} ${ms(own_ns)}${cache}"
 }
 
 /// Nanoseconds as milliseconds with one decimal.
@@ -421,6 +265,17 @@ fn handed_off(binaries: List<string>) -> int {
     let _ = avra_exec_self(stage_words(binaries))
     eprintln("avra: could not run this program again for the suites")
     1
+}
+
+/// Whether a test run goes on past a red suite: `AVRA_SUITE_ALL=1` runs every suite, each red one
+/// spoken, and leaves by the first red one's code — so one run names every failing case.
+// LICENSED input.test_setting: which suites run, never an input of what is built
+export fn every_suite() -> bool { env("AVRA_SUITE_ALL") == "1" }
+
+/// What the program layer cannot do for `command` yet, said once: exit 2, nothing done.
+export fn program_door_refused(command: string, missing: string) -> int {
+    eprintln("avra: the program layer can't ${command} this yet — ${missing}")
+    2
 }
 
 /// The one voice for a child the host would not run.
@@ -482,17 +337,6 @@ fn status_of_exit(e: Exit) -> int {
 // The cache is @std.avrac's; what a COMMAND owes it is an argued path, a host that
 // can write, and clang run over the words it answers.
 
-/// The workspace a build stands in — a directory is a package root, a file is a lone
-/// program — built WITHOUT analysis, so the key is taken before a line is typed.
-fn build_workspace(path: string) -> Workspace {
-    if is_a_dir(path) { root_workspace(path) } else { file_workspace(path) }
-}
-
-/// The entry a build of this workspace runs: a package's `[bin]`, or the file itself.
-fn build_entry(ws: Workspace, path: string) -> string? {
-    if ws.is_dir(path) { ws.entry_of() } else { path }
-}
-
 /// EVERY BUILD-CACHE COMMAND'S PROLOGUE — `build`, `check`, `test`: the
 /// argued path, checked to exist (`no_such_file` spoken and exit 2
 /// otherwise). The command mints its workspace from it IN ITS OWN
@@ -538,39 +382,6 @@ export fn slotted_path(args: CliResult) -> string? {
     path
 }
 
-/// `avra check`'s judgement of an argued path — the command and its tests
-/// ask this one door.
-export fn checked_at(path: string) -> Result<Checked, string> {
-    let ws = build_workspace(path)
-    ws.checked(build_entry(ws, path))
-}
-
-/// `--verify-held`'s own answer, printed the same way `checked_at`'s
-/// refusal is: a report, or the ratio one line per mismatch and a summary
-/// names what it examined — a check that examined nothing says so.
-export fn verify_held_said(path: string) -> int {
-    let ws = build_workspace(path)
-    match ws.verify_held(build_entry(ws, path)) {
-        .Ok(v) -> reported_verify_held(v),
-        .Err(report) -> {
-            println(report)
-            1
-        },
-    }
-}
-
-fn reported_verify_held(v: VerifyHeld) -> int {
-    for m in v.mismatches { println(verify_held_line(m)) }
-    println(
-        "verify-held: ${v.declarations} held declaration(s) in ${v.files} file(s) compared, ${v.mismatches.length} mismatch(es)",
-    )
-    if v.mismatches.is_empty() { 0 } else { 1 }
-}
-
-fn verify_held_line(m: HeldMismatch) -> string {
-    "${m.file}\t${m.decl}\t${m.field}\theld=${m.held}\tfresh=${m.fresh}"
-}
-
 fn hit_line(reused: bool) -> string {
     if reused { "time: lower+emit · cache hit" } else { "time: lower+emit · built" }
 }
@@ -578,7 +389,7 @@ fn hit_line(reused: bool) -> string {
 /// A build's own failure, wrapped so its full cause is one render away —
 /// the top line names the fact, `cause` carries what actually broke.
 fn build_failed(e: BuildError) -> Diag {
-    error_at("build.command_failed", null, "the build failed") with { cause: e }
+    error_at("build.command_failed", null, "the build failed").caused_by(e)
 }
 
 /// A build failure's report: `Diagnosed` already IS the finished words to
@@ -586,28 +397,29 @@ fn build_failed(e: BuildError) -> Diag {
 /// it goes straight out rather than nesting under one more `caused by:`
 /// line. Every other variant is a short leaf fact, which is exactly what
 /// `build_failed`'s cause chain is for.
-fn build_report(e: BuildError) -> string {
+export fn build_report(e: BuildError) -> string {
     match e {
         .Diagnosed(report) -> report,
         .Empty or .EmitFailed(_) or .ModuleUnreadable(_) or .LinkFailed(_, _) or .ObjectGone(_) or .NotClosed(_) or .Unpublished(_) or .UnsupportedOnWasm(_) or .ObjectsMissing(_) -> render(build_failed(e), new_source_file("<build>", "")),
     }
 }
 
-/// WHAT A BUILD FOR `target` LINKS WITH — the host's own C compiler and
-/// runtime for the empty target, a wasm toolchain found on this machine for
-/// any other — or the exit code of the refusal it spoke, naming what is
-/// missing and how to point at one. Each tool is an input of `ws`.
-export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool, fallback: bool) -> Result<
-    Toolchain,
-    int,
-> {
+/// THE TOOLS A BUILD FOR `target` LINKS WITH, found through `look`: the host's C compiler and its fast
+/// linker, or for a wasm target the C compiler with a WASI libc, wasm-opt and the wasm runtime
+/// archive — or the exit code of the refusal that says which is missing.
+export fn toolchain_with(
+    look: ToolLookup,
+    target: string,
+    reactor: bool,
+    debug: bool,
+    fallback: bool,
+) -> Result<Toolchain, int> {
     if target == "" {
-        let word = chosen(ws, "CC", "clang")
-        let host? = ws.tool(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, ws.env("PATH") ?? ""))) }
-        let ld = if links_with_ld64() { null } else { fast_linker(ws, host) }
+        let host = match host_compiler(look) { .Ok(h) -> h, .Err(code) -> { return .Err(code) } }
+        let ld = if links_with_ld64() { null } else { fast_linker(look, host) }
         return .Ok(
             Toolchain {
-                opt: "-O1",
+                opt: default_opt(""),
                 runtime: runtime_library(),
                 linker: host.path,
                 tools: [host].concat(some_list(ld)),
@@ -615,14 +427,19 @@ export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool, f
             },
         )
     }
-    let wasm = match wasm_tools(ws, target) {
+    match platform_of(target) {
+        .Apple(sdk) -> { return apple_toolchain(look, triple_settled(target), sdk) },
+        .Native -> { return .Err(unequipped(no_target_platform(target))) },
+        .Wasm -> {},
+    }
+    let wasm = match wasm_tools(look, target) {
         .Ok(w) -> w,
         .Err(why) -> { return .Err(unequipped(why)) },
     }
-    let wasm_opt? = ws.tool(chosen(ws, "WASM_OPT", "wasm-opt")) else { return .Err(unequipped(no_wasm_opt())) }
+    let wasm_opt? = (look.tool)(chosen(look, "WASM_OPT", "wasm-opt")) else { return .Err(unequipped(no_wasm_opt())) }
     if !exists(wasm_runtime_library()) { return .Err(unequipped(no_wasm_runtime(wasm_runtime_library()))) }
     Toolchain {
-        opt: "-Oz",
+        opt: default_opt(wasm.target),
         runtime: wasm_runtime_library(),
         linker: wasm.linker.path,
         tools: [wasm.linker, wasm_opt],
@@ -632,6 +449,42 @@ export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool, f
         wasm_opt: wasm_opt.path,
         fallback: fallback,
     }
+}
+
+/// The C compiler `CC` names, else `clang` — or the exit code of the refusal that says it is not
+/// there.
+fn host_compiler(look: ToolLookup) -> Result<Stamp, int> {
+    let word = chosen(look, "CC", "clang")
+    let host? = (look.tool)(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, (look.env)("PATH") ?? ""))) }
+    host
+}
+
+/// THE TOOLS A BUILD FOR AN APPLE SDK LINKS WITH: the host's C compiler, the root `xcrun` names
+/// for `sdk`, and the runtime archive built for that SDK — or the exit code of the refusal that
+/// says which is missing.
+fn apple_toolchain(look: ToolLookup, triple: string, sdk: string) -> Result<Toolchain, int> {
+    let host = match host_compiler(look) { .Ok(h) -> h, .Err(code) -> { return .Err(code) } }
+    let sysroot? = sdk_root(look, sdk) else { return .Err(unequipped(no_apple_sdk(sdk))) }
+    let runtime = target_runtime_library(object_dir(Platform.Apple(sdk)))
+    if !exists(runtime) { return .Err(unequipped(no_apple_runtime(runtime, sdk))) }
+    Toolchain {
+        opt: default_opt(triple),
+        runtime: runtime,
+        linker: host.path,
+        tools: [host],
+        target: triple,
+        sysroot: sysroot,
+    }
+}
+
+/// The root of the SDK `sdk`, as `xcrun` names it; absent where it names none.
+fn sdk_root(look: ToolLookup, sdk: string) -> string? {
+    let xcrun? = (look.tool)("xcrun") else { return null }
+    let said = match cmd(ran(xcrun), ["--sdk", sdk, "--show-sdk-path"]).outcome() {
+        .Ok(o) -> o.out.stdout.trim(),
+        .Err(_) -> { return null },
+    }
+    if is_absolute(said) && exists(said) { said } else { null }
 }
 
 /// A build this machine has no tools for, spoken: exit 2 — nothing was
@@ -645,38 +498,25 @@ fn unequipped(why: string) -> int {
 /// The cache is the library's; the link and the print are the caller's.
 export fn built_binary(args: CliResult) -> Result<string, int> {
     let path? = slotted_path(args) else { return .Err(2) }
-    let ws = build_workspace(path)
-    let tools = match toolchain(
-        ws,
-        args.option("target"),
-        args.has_flag("wasm_reactor"),
-        args.has_flag("wasm_debug"),
-        !args.has_flag("no_wasm_fallback"),
-    ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
-    let b = built_outcome(ws, path, tools)?
-    if b.warnings != "" { eprintln(b.warnings) }
-    if timed(args) {
-        for line in b.host_fns { eprintln("host fn: ${line}") }
-        eprintln(hit_line(b.reused))
-        if b.phases != "" { eprintln("time: ${b.phases}") }
+    let target = args.option("target")
+    let tools = if target == "" {
+        null
+    } else {
+        match toolchain_with(
+            host_lookup(),
+            target,
+            args.has_flag("wasm_reactor"),
+            args.has_flag("wasm_debug"),
+            !args.has_flag("no_wasm_fallback"),
+        ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
     }
-    b.binary
-}
-
-/// What a build of `path` with `tools` came to — or the exit code its
-/// refusal spoke. What it warned of is the caller's to say.
-fn built_outcome(ws: Workspace, path: string, tools: Toolchain) -> Result<BuildOutcome, int> {
-    let entry? = build_entry(ws, path) else {
-        eprintln("avra: ${ws.root} declares no entry point")
+    let built = if is_a_dir(path) { program_built(path, timed(args), tools, args.has_flag("release")) } else { program_file_built(path, timed(args), tools, args.has_flag("release")) }
+    let binary = match built { .Ok(b) -> b, .Err(code) -> { return .Err(code) } }
+    if !exists_at(binary) {
+        eprintln("avra: the program layer wrote no binary at ${binary}")
         return .Err(1)
     }
-    match build_program(ws, entry, tools) {
-        .Ok(b) -> b,
-        .Err(e) -> {
-            println(build_report(e))
-            .Err(1)
-        },
-    }
+    .Ok(binary)
 }
 
 /// `avra build`: the binary's path on stdout, or the refusal.
@@ -696,11 +536,16 @@ export flag time { description: "print phase timings and memo hits" }
 /// `check`'s own: what the run did, counted exactly (compiler/work.av).
 export flag counts { description: "print the run's exact work counts: files loaded, parsed and minted, queries computed, store KiB written" }
 
-/// `check`/`build`'s own: after a warm run, diff every held declaration
-/// against a fresh parse+sign of its file.
-export flag verify_held {
-    description: "diff every held declaration against a fresh parse+sign of its file"
-    aliases: ["--verify-held"]
+/// The run's pass ledger (std-program/src/pass_ledger.av).
+export flag passes_shown {
+    description: "print the run's pass ledger: each pass's own time, asks, units, asks per unit and per item an edit moved"
+    aliases: ["--passes"]
+}
+
+/// The pass ledger's deterministic columns, a line a pass, for a ratchet to read.
+export flag passes_rows {
+    description: "with --passes, also print each pass's asks and asks per unit as tab-separated `pass-row` lines"
+    aliases: ["--passes-rows"]
 }
 
 /// The source file a file command reads.
@@ -713,6 +558,18 @@ export arg file {
 
 fn no_wasm_toolchain(asked: List<string>, triples: List<string>) -> string {
     "no C compiler here links a wasm module: ${if asked.is_empty() { "none was found" } else { asked.join(", ") }} ${if asked.length > 1 { "have" } else { "has" }} no WASI libc for ${triples.join(" or ")} — set `CC` to a clang whose `--target=${triples.last() ?? ""} -print-file-name=crt1.o` names a file, or `LLVM_PREFIX` to an LLVM whose `bin/clang` does"
+}
+
+fn no_target_platform(target: string) -> string {
+    "`${target}` names no platform this compiler builds for — it builds for its host (no `--target`), `wasm`, and Apple SDK triples such as `arm64-apple-ios-simulator`"
+}
+
+fn no_apple_sdk(sdk: string) -> string {
+    "no Apple SDK `${sdk}` here — `xcrun --sdk ${sdk} --show-sdk-path` names none; install Xcode and its ${sdk} platform"
+}
+
+fn no_apple_runtime(at: string, sdk: string) -> string {
+    "no ${sdk} runtime archive at ${at} — `make apple-runtime APPLE_SDK=${sdk}` builds it"
 }
 
 fn no_wasm_opt() -> string {

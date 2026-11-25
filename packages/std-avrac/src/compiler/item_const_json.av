@@ -1,0 +1,297 @@
+//! A SETTLED CONST AS JSON TEXT (P10, P11): what the compiler holds of a const's value, read by any
+//! tool — the words it settled to and the data the binary holds for them (`const_settlement`), read
+//! back under the const's type. The type names the fields and the variants: a record is an object by
+//! field name, a list an array, a nullable its value or null, a map an object, an enum its variant's
+//! name (`{"variant": …, "payload": […]}` when it carries something), a result `{"ok": …}` or
+//! `{"err": …}`, bytes `{"base64": …}`, a float its shortest round-trip text (`null` for infinity
+//! and NaN, which JSON has no word for).
+use core.{
+    ABSENT_TAG,
+    BoxKind,
+    CheckedProgram,
+    FieldSeat,
+    Layout,
+    SignedType,
+    Slot,
+    StaticBox,
+    joined,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.text.{base64}
+
+/// A float's bit pattern as the shortest text that reads back as the same number.
+extern fn avra_float_text_bits(bits: int) -> string
+
+/// The JSON text of the const `name` that `file` declares, as it settled; or why there is none.
+export fn const_json(engine: QueryEngine, file: SourceFileAddress, name: string) -> Result<
+    string,
+    string,
+> {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.kind is .Const && it.name == name) else { return .Err(no_such_const(name)) }
+    let ty? = binding_type(engine, file, name) else { return .Err(untyped_const(name)) }
+    let settled = const_settlement(engine, file, name, d.item)
+    if settled.unsettled != null { return .Err(settled.unsettled!) }
+    Projecting {
+        program: program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
+        boxes: settled.data?.boxes ?? [],
+    }
+        .seat([w.slot for w in settled.words], ty)
+}
+
+/// A settled value read back: the program its types are laid out by, and the boxes its data holds.
+type Projecting = { program: CheckedProgram, boxes: List<StaticBox> }
+
+impl Projecting {
+    /// One seat's words under its type: a value enum's tag and word, a value record's fields, else
+    /// its one slot; a named type's, its shape's.
+    fn seat(words: List<Slot>, ty: SignedType) -> Result<string, string> {
+        let shape = (self.program.named_of)(ty)
+        if shape != null { return self.seat(words, shape!) }
+        let l? = self.program.layout(ty) else { return .Err(unread(ty)) }
+        match l {
+            .Tagged(_) -> self.valued(words, ty.unwrapped()),
+            .Fields(_) -> {
+                let record? = (self.program.record_of)(ty) else { return .Err(unread(ty)) }
+                self
+                    .object(
+                        words,
+                        [f with { ty: f.ty?.bound(ty.args) } for f in record.fields],
+                        [1 for _f in record.fields],
+                    )
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> {
+                let one? = words.first() else { return .Err(misfit(ty)) }
+                self.slot(one, ty)
+            },
+        }
+    }
+
+    /// One slot under its type.
+    fn slot(s: Slot, ty: SignedType) -> Result<string, string> {
+        if ty.nullable() { return self.nullable(s, ty) }
+        let shape = (self.program.named_of)(ty)
+        if shape != null { return self.slot(s, shape!) }
+        let l? = self.program.layout(ty) else { return .Err(unread(ty)) }
+        let lone = self.lone_field(ty, l)
+        if lone != null { return .Ok("{" + json_text(lone!.name) + ":" + self.slot(s, lone!.ty ?? ty)? + "}") }
+        match l {
+            .Word -> match s {
+                .Int(n) -> self.word(n, ty),
+                .Float(_) or .Bool(_) or .Text(_) or .Box(_) or .Null or .Absent or .Code(_) -> .Err(misfit(ty)),
+            },
+            .Truth -> match s {
+                .Bool(b) -> .Ok("${b}"),
+                .Int(_) or .Float(_) or .Text(_) or .Box(_) or .Null or .Absent or .Code(_) -> .Err(misfit(ty)),
+            },
+            .Real -> match s {
+                .Float(bits) -> .Ok(float_json(bits)),
+                .Int(_) or .Bool(_) or .Text(_) or .Box(_) or .Null or .Absent or .Code(_) -> .Err(misfit(ty)),
+            },
+            .Boxed(box) -> self.boxed(s, box, ty),
+            .Fields(_) or .Tagged(_) -> self.seat(self.cells(s) ?? [], ty),
+            .Void or .Bare or .Maybe(_) -> .Err(unread(ty)),
+        }
+    }
+
+    /// A word: an int, or the name of the variant it tags where its type is an enum.
+    fn word(n: int, ty: SignedType) -> Result<string, string> {
+        let shape? = self.program.enum_shape(ty) else { return .Ok("${n}") }
+        if n < 0 || n >= shape.variants.length { return .Err(misfit(ty)) }
+        .Ok(json_text(shape.variants[n].name))
+    }
+
+    /// The one field of a record that IS its field: a flat record of one field, carried as it.
+    fn lone_field(ty: SignedType, l: Layout) -> FieldSeat? {
+        let record? = (self.program.record_of)(ty) else { return null }
+        let boxed = match l {
+            .Boxed(_) or .Fields(_) -> true,
+            .Void or .Word or .Truth or .Real or .Bare or .Tagged(_) or .Maybe(_) -> false,
+        }
+        if boxed || record.fields.length != 1 { return null }
+        record.fields[0] with { ty: record.fields[0].ty?.bound(ty.args) }
+    }
+
+    /// A nullable's slot: null where it marks absence, else what it holds — a flat record out of its
+    /// one-slot box, a value enum out of the box its two words cross in.
+    fn nullable(s: Slot, ty: SignedType) -> Result<string, string> {
+        let inner = ty.unwrapped()
+        let l? = self.program.layout(ty) else { return .Err(unread(ty)) }
+        let absent = match s {
+            .Null or .Absent -> true,
+            .Int(n) -> n == ABSENT_TAG && l is .Word && self.program.enum_shape(inner) != null,
+            .Float(_) or .Bool(_) or .Text(_) or .Box(_) or .Code(_) -> false,
+        }
+        if absent { return .Ok("null") }
+        match l {
+            .Boxed(_) -> if l.slot_box() { self.seat(self.cells(s) ?? [], inner) } else { self.slot(s, inner) },
+            .Tagged(_) -> self.valued(self.cells(s) ?? [], inner),
+            .Word or .Maybe(_) -> self.slot(s, inner),
+            .Void or .Truth or .Real or .Bare or .Fields(_) -> .Err(unread(ty)),
+        }
+    }
+
+    /// The cells of the box a slot points at; absent for any other slot, or a box of no cells.
+    fn cells(s: Slot) -> List<Slot>? {
+        let at? = match s { .Box(at) -> at, rest -> null } else { return null }
+        match self.boxes[at] { .Slots(cells) -> cells, .Table(_, _) or .Octets(_) -> null }
+    }
+
+    /// A box under its type: text, bytes, a list, a record, an enum's variant, a map.
+    fn boxed(s: Slot, box: BoxKind, ty: SignedType) -> Result<string, string> {
+        match box {
+            .Text -> match s {
+                .Text(text) -> .Ok(json_text(text)),
+                .Int(_) or .Float(_) or .Bool(_) or .Box(_) or .Null or .Absent or .Code(_) -> .Err(misfit(ty)),
+            },
+            .Bytes -> self.octets(s, ty),
+            .List -> {
+                let elem? = ty.listed() else { return .Err(unread(ty)) }
+                let cells? = self.cells(s) else { return .Err(misfit(ty)) }
+                let parts = all_or_first([self.slot(c, elem) for c in cells])?
+                .Ok("[" + joined(parts, ",") + "]")
+            },
+            .Record -> {
+                let record? = (self.program.record_of)(ty) else { return .Err(unread(ty)) }
+                let cells? = self.cells(s) else { return .Err(misfit(ty)) }
+                let fields = [f with { ty: f.ty?.bound(ty.args) } for f in record.fields]
+                self.object(cells, fields, [self.width(f) for f in fields])
+            },
+            .Enum -> self.variant(s, ty),
+            .Map -> self.table(s, ty),
+            .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> .Err(unread(ty)),
+        }
+    }
+
+    /// How many cells a seat takes in a box: a value enum two, a value record one per field, any
+    /// other one.
+    fn width(f: FieldSeat) -> int {
+        let ty? = f.ty else { return 1 }
+        match self.program.layout(ty) ?? Layout.Word {
+            .Tagged(_) -> 2,
+            .Fields(fields) -> fields.length,
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> 1,
+        }
+    }
+
+    /// Fields read off consecutive cells, each as wide as `widths` says: an object by field name.
+    fn object(cells: List<Slot>, fields: List<FieldSeat>, widths: List<int>) -> Result<
+        string,
+        string,
+    > {
+        let starts = [widths.take(j).fold(0, (a, w) -> a + w) for j in 0..widths.length]
+        if widths.fold(0, (a, w) -> a + w) != cells.length { return .Err("the const's value does not fit its record's fields") }
+        let parts = all_or_first(
+            [self.field(cells.slice(starts[j], starts[j] + widths[j]), f) for j, f in fields],
+        )?
+        .Ok("{" + joined([json_text(f.name) + ":" + parts[j] for j, f in fields], ",") + "}")
+    }
+
+    fn field(cells: List<Slot>, f: FieldSeat) -> Result<string, string> {
+        let ty? = f.ty else { return .Err("the field `${f.name}` writes no type") }
+        self.seat(cells, ty)
+    }
+
+    /// A value enum's two words: its tag and the word its variant carries; the spare tag is a
+    /// nullable's absence. A result is its one side under `ok` or `err`.
+    fn valued(words: List<Slot>, ty: SignedType) -> Result<string, string> {
+        if words.length != 2 { return .Err(misfit(ty)) }
+        let tag = match words[0] { .Int(n) -> n, rest -> ABSENT_TAG }
+        if tag == ABSENT_TAG { return .Ok("null") }
+        self.tagged(tag, [words[1]], ty)
+    }
+
+    /// The variant `tag` of the enum `ty` over the cells its payloads take.
+    fn tagged(tag: int, cells: List<Slot>, ty: SignedType) -> Result<string, string> {
+        let shape? = self.program.enum_shape(ty) else { return .Err(unread(ty)) }
+        if tag < 0 || tag >= shape.variants.length { return .Err(misfit(ty)) }
+        let v = shape.variants[tag]
+        if v.payloads.is_empty() { return .Ok(json_text(v.name)) }
+        let payloads = [p with { ty: p.ty?.bound(ty.args) } for p in v.payloads]
+        let widths = [self.width(p) for p in payloads]
+        let starts = [widths.take(j).fold(0, (a, w) -> a + w) for j in 0..widths.length]
+        if starts.last()! + widths.last()! > cells.length { return .Err(misfit(ty)) }
+        let held = all_or_first(
+            [self.field(cells.slice(starts[j], starts[j] + widths[j]), p) for j, p in payloads],
+        )?
+        if ty.owned() == "Result" { return .Ok("{" + json_text(if tag == 0 { "ok" } else { "err" }) + ":" + held[0] + "}") }
+        .Ok("{\"variant\":" + json_text(v.name) + ",\"payload\":[" + joined(held, ",") + "]}")
+    }
+
+    /// A boxed enum's variant: its tag, then its payloads' cells.
+    fn variant(s: Slot, ty: SignedType) -> Result<string, string> {
+        let cells? = self.cells(s) else { return .Err(misfit(ty)) }
+        let head? = cells.first() else { return .Err(misfit(ty)) }
+        let tag? = match head { .Int(n) -> n, rest -> null } else { return .Err(misfit(ty)) }
+        self.tagged(tag, cells.drop(1), ty)
+    }
+
+    /// A map: an object in the order its keys were written.
+    fn table(s: Slot, ty: SignedType) -> Result<string, string> {
+        let value? = ty.mapped() else { return .Err(unread(ty)) }
+        let at? = match s { .Box(at) -> at, rest -> null } else { return .Err(misfit(ty)) }
+        match self.boxes[at] {
+            .Table(keys, values) -> {
+                let parts = all_or_first([self.slot(v, value) for v in values])?
+                .Ok("{" + joined([json_text(k) + ":" + parts[j] for j, k in keys], ",") + "}")
+            },
+            .Slots(_) or .Octets(_) -> .Err(misfit(ty)),
+        }
+    }
+
+    /// Bytes: their base64, under the name that says so.
+    fn octets(s: Slot, ty: SignedType) -> Result<string, string> {
+        let at? = match s { .Box(at) -> at, rest -> null } else { return .Err(misfit(ty)) }
+        match self.boxes[at] {
+            .Octets(b) -> .Ok("{\"base64\":" + json_text(base64(b)) + "}"),
+            .Slots(_) or .Table(_, _) -> .Err(misfit(ty)),
+        }
+    }
+}
+
+/// Every part, or the first refusal among them.
+fn all_or_first(parts: List<Result<string, string>>) -> Result<List<string>, string> {
+    let bad = parts.find_map(match it { .Ok(_) -> null, .Err(why) -> why })
+    if bad != null { return .Err(bad!) }
+    .Ok([p catch "" for p in parts])
+}
+
+/// A float's text; infinity and NaN, which JSON has no word for, are null.
+fn float_json(bits: int) -> string {
+    let text = avra_float_text_bits(bits)
+    if text.contains("n") { "null" } else { text }
+}
+
+/// A string as a JSON string literal.
+fn json_text(s: string) -> string {
+    "\"" + [escaped(s.char_code(i), s.substring(i, i + 1)) for i in 0..s.length].join("") + "\""
+}
+
+fn escaped(code: int, raw: string) -> string {
+    when {
+        raw == "\"" -> "\\\""
+        raw == "\\" -> "\\\\"
+        code == 10 -> "\\n"
+        code == 13 -> "\\r"
+        code == 9 -> "\\t"
+        code < 32 -> "\\u00${hex2(code)}"
+        _ -> raw
+    }
+}
+
+fn hex2(n: int) -> string {
+    let digits = "0123456789abcdef"
+    digits.substring(n / 16, n / 16 + 1) + digits.substring(n % 16, n % 16 + 1)
+}
+
+// ── The voices ──
+
+fn no_such_const(name: string) -> string { "no const `${name}` is declared here" }
+
+fn untyped_const(name: string) -> string { "`${name}` writes no type, and its JSON is read by its type" }
+
+fn misfit(ty: SignedType) -> string { "the const's value does not fit its type `${ty.spelled()}`" }
+
+fn unread(ty: SignedType) -> string { "a const of type `${ty.spelled()}` is not projected to JSON" }

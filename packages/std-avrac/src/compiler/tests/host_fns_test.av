@@ -2,80 +2,63 @@
 //! spells — a host calls it by that name, a non-host target exports it from
 //! wherever it is declared, and a bodiless `extern fn` of the name is
 //! answered by it. An `export` is a module's visibility and exports nothing.
-use @std.avrac.testing.{test_workspace}
 use @std.io.{make_dirs, read_text}
 use @std.time.{stamp}
-use @std.avrac.testing.{refused_in, refused_n, vendored_meta, vendored_meta_paths}
-use compiler.{Workspace, Program}
+use @std.avrac.testing.{vendored_meta, refused_in, refused_n, held_at, Judged}
 use compiler.lower.{Lowered}
 use compiler.backend.{emit_ll}
-use compiler.host.{memory_host}
 
 const HOSTED_MAIN: string = "/w/src/main.av"
 
 /// An entry over `near`, which imports `far`: `far` declares a host fn the
 /// entry never names, every module exports a fn nothing calls, and `seam`
 /// names a symbol bodiless that `main` answers when it is asked to.
-fn hosted_ws(main: string) -> Workspace {
-    test_workspace(
-        memory_host(
-            {
-                "/w/src/main.av": main,
-                "/w/src/near.av": "use far.{helper}\nexport fn used(n: int) -> int {\n    helper(n)\n}\nexport fn offered(n: int) -> int {\n    n + 1\n}\n",
-                "/w/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\nexport fn unreached(n: int) -> int {\n    n - 1\n}\nextern fn far_event(n: int) -> int {\n    n + 40\n}\n",
-                "/w/src/seam.av": "extern fn told(n: int) -> int\nexport fn asked(n: int) -> int {\n    told(n)\n}\n",
-            },
-            [HOSTED_MAIN, "/w/src/near.av", "/w/src/far.av", "/w/src/seam.av"],
-        ),
-        "/w",
-    )
+fn hosted_files(main: string) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": main,
+        "/w/src/near.av": "use far.{helper}\nexport fn used(n: int) -> int {\n    helper(n)\n}\nexport fn offered(n: int) -> int {\n    n + 1\n}\n",
+        "/w/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\nexport fn unreached(n: int) -> int {\n    n - 1\n}\nextern fn far_event(n: int) -> int {\n    n + 40\n}\n",
+        "/w/src/seam.av": "extern fn told(n: int) -> int\nexport fn asked(n: int) -> int {\n    told(n)\n}\n",
+    }
 }
 
 /// A program `app` over two packages: `@x/near`, which names an extern
 /// bodiless and imports `@x/far`; and `@x/far`, which declares `far_src`.
-fn packaged(main: string, far_src: string) -> Program {
-    test_workspace(
-        memory_host(
-            vendored_meta(
-                {
-                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
-                    "/w/src/main.av": main,
-                    "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
-                    "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
-                    "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-                    "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n${far_src}",
-                },
-            ),
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/near/avra.toml",
-                "/w/vendor/near/src/near.av",
-                "/w/vendor/far/avra.toml",
-                "/w/vendor/far/src/far.av",
-            ]
-                .concat(vendored_meta_paths()),
+fn packaged(main: string, far_src: string) -> Judged {
+    held_at(
+        vendored_meta(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
+                "/w/src/main.av": main,
+                "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
+                "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
+                "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+                "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n${far_src}",
+            },
         ),
         "/w",
     )
-        .program("/w/src/main.av")
+        .judged_at("/w/src/main.av")
 }
 
 /// A far host fn marked for the page.
 const PAGE_HOSTED: string = "use @std.meta.{Host, host}\n@host(Host.Page)\nextern fn far_event(n: int) -> int {\n    n\n}\n"
 
 /// The one refusal lowering speaks of `p`, rendered — or how many it spoke.
-fn lowering_refusal(p: Program) -> string {
-    let spoken = p.lowered().diagnostics
+fn lowering_refusal(p: Judged) -> string {
+    let spoken = p.diagnostics
     if spoken.length == 1 { p.rendered(spoken) } else { "${spoken.length} refusals" }
 }
 
 /// The entry most cases stand over: one host fn of its own, one call.
 fn plain_main() -> string { "use near.{used}\nextern fn handle(n: int) -> int {\n    n\n}\nused(1)\n" }
 
-fn hosted(main: string) -> Program { hosted_ws(main).program(HOSTED_MAIN) }
+fn hosted(main: string) -> Judged { held_at(hosted_files(main), "/w").judged_at(HOSTED_MAIN) }
 
-fn lowers(l: Lowered, name: string) -> bool { l.fns.any(it.name == name) }
+/// Whether `l` lowers the fn `name`: a host fn under its bare symbol, any other under its module's
+/// path, as the layer spells a body.
+fn lowers(l: Lowered, name: string) -> bool { l.fns.any(it.name == name || it.name.ends_with(".av.${name}")) }
 
 /// One directory per run, so no earlier run's module answers for this one.
 once fn hosted_base() -> string { "/tmp/avra-host-fns-test/${stamp()}" }
@@ -196,7 +179,7 @@ spec "compiler/lower — a host fn" {
             let p = hosted(
                 "use near.{used}\nextern fn far_event(n: int) -> int {\n    n\n}\nused(1)\n",
             )
-            let spoken = p.lowered().diagnostics
+            let spoken = p.diagnostics
             spoken.length == 1 &&
                 p
                     .rendered(spoken)
@@ -210,7 +193,7 @@ spec "compiler/lower — a host fn" {
                 PAGE_HOSTED,
             )
             let got = p.run() catch e -> e
-            p.lowered().diagnostics.is_empty() && lowers(p.lowered(), "far_event") && got == "21"
+            p.clean() && lowers(p.lowered(), "far_event") && got == "21"
         }
         then "the program never imports that package: refused where the host fn stands" {
             lowering_refusal(

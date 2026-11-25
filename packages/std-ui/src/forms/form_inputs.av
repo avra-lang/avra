@@ -45,13 +45,12 @@ component shape_inputs(shapes: List<FieldShape>) {
     on ticking(entry: Ticking)
     list self.shapes by it.name { f ->
         column {
-            if drawn(f.kind) == Drawn.Ticked {
-                checkbox f.name {
-                    checked: self.ticked.get(self.at(f))
+            match drawn(f.kind) {
+                .Ticked -> checkbox f.name {
+                    shown: self.ticked.get(self.at(f)) ?? false
                     on change { on -> self.ticked_at(self.at(f), on) }
-                }
-            } else if drawn(f.kind) == Drawn.Grouped {
-                fieldset f.name {
+                },
+                .Grouped -> fieldset f.name {
                     shape_inputs grouped(f.kind) {
                         prefix: self.at(f)
                         typed: self.typed
@@ -60,16 +59,14 @@ component shape_inputs(shapes: List<FieldShape>) {
                         on typing: self.typing
                         on ticking: self.ticking
                     }
-                }
-            } else if drawn(f.kind) == Drawn.Unlisted {
-                error_text { message: records_undrawn(f.name) }
-            } else {
-                field f.name {
-                    value: self.typed.get(self.at(f))
+                },
+                .Unlisted -> error_text { message: records_undrawn(f.name) },
+                .Typed -> field f.name {
+                    shown: self.typed.get(self.at(f)) ?? ""
                     masked: f.secret
                     invalid: !issued(self.issues, self.at(f)).is_empty()
                     on input { t -> self.typed_at(self.at(f), t) }
-                }
+                },
             }
             for i in issued(self.issues, self.at(f)) { error_text { message: i.message } }
         }

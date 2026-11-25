@@ -1,0 +1,35 @@
+// proves: a generic call reaching a static fn of a generic type's
+// instance lowers it — `T.word()` with `T` a `Box<A>`, a `Box<int>`, a
+// nested `Box<Box<A>>` and a two-parameter `Pair<A, int>`, directly and
+// through a forwarding caller — the instance's own arguments laying out
+// the impl's parameters
+
+trait Named {
+    static fn word() -> string
+}
+
+type A = { x: int }
+
+impl Named for A {
+    static fn word() -> string { "a" }
+}
+
+type Box<T> = { v: T }
+
+impl Named for Box<T> {
+    static fn word() -> string { "box" }
+}
+
+type Pair<L, R> = { left: L, right: R }
+
+impl Named for Pair<L, R> {
+    static fn word() -> string { "pair" }
+}
+
+fn said<T: Named>() -> string { T.word() }
+
+fn forwarded<U: Named>() -> string { said<U>() }
+
+println(
+    "${said<Box<A>>()} ${said<Box<int>>()} ${said<Box<Box<A>>>()} ${said<Pair<A, int>>()} ${forwarded<Box<A>>()} ${said<A>()}",
+)

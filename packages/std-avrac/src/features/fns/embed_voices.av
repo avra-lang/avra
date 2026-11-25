@@ -1,0 +1,85 @@
+//! THE EMBED LAW'S VOICES: how each fault of an `embed` or `provided` literal is worded, and the kind
+//! it is said as — one definition for every pass that judges a literal.
+use core.{EmbedBase}
+use diagnostics.{Voice}
+use features.{EmbedFault, embed_literal_law}
+
+/// The kind a fault of an embedded file's literal is said as: where it stands, or what stands there.
+export fn embed_fault_kind(fault: EmbedFault) -> string {
+    match fault {
+        .Outside or .Undeclared(_) or .Linked -> "type.embed_place",
+        .Missing or .NotText(_) or .Refused(_) -> "type.embed_file",
+    }
+}
+
+/// A fault of the literal `rel`, read from `base`, worded.
+export fn embed_fault_voice(fault: EmbedFault, rel: string, base: EmbedBase) -> Voice {
+    match fault {
+        .Outside -> Voice {
+            message: "`embed` reads inside its own package — `${rel}` names a file outside it",
+            label: "leaves the package here",
+            help: "keep the file in this package, or name a dependency's by its package — `embed(\"@scope/name/path\")`",
+        },
+        .Undeclared(key) -> Voice {
+            message: "`embed` reads `${key}` as a package, and this package does not depend on it",
+            label: "names a dependency here",
+            help: "a directory of this package that is named so is `./${rel}`; a package's file needs the package in `[dependencies]`",
+        },
+        .Linked -> Voice {
+            message: "`embed` follows no link — one stands on the way to `${rel}`",
+            label: "reached through a symlink",
+            help: "embed the file itself: a link can lead out of the package",
+        },
+        .Missing -> Voice {
+            message: embed_missing_words(rel, base),
+            label: "no file stands here",
+            help: embed_missing_help(base),
+        },
+        .NotText(at) -> Voice {
+            message: "`embed` answers text, and `${rel}` is not UTF-8 — byte ${at}",
+            label: "not text",
+            help: "embed a UTF-8 file",
+        },
+        .Refused(why) -> Voice {
+            message: "`embed` could not read its file — ${why}",
+            label: "named here",
+            help: "the build reads this file as it reads its sources",
+        },
+    }
+}
+
+/// A path an `embed` reads that the source computes.
+export fn embed_computed_voice() -> Voice {
+    Voice {
+        message: embed_literal_law,
+        label: "this path is computed, not written here",
+        help: "name the file directly, as a string literal",
+    }
+}
+
+/// Where the missing file was looked for.
+fn embed_missing_words(rel: string, base: EmbedBase) -> string {
+    match base {
+        .Beside -> "`embed` finds no `${rel}` beside this source file",
+        .Root -> "`provided` finds no `${rel}` at this package's root",
+    }
+}
+
+fn embed_missing_help(base: EmbedBase) -> string {
+    match base {
+        .Beside -> "the path is read from this file's own directory",
+        .Root -> "the path is read from the package's root, whatever directory this file is in",
+    }
+}
+
+/// Why a compile-time run's read of the file it was lowered to read, `rel` beneath its package's
+/// root, answers nothing: a path no literal placed is the literal law's.
+export fn embed_unread_words(fault: EmbedFault, rel: string) -> string {
+    match fault {
+        .Outside or .Undeclared(_) -> embed_literal_law,
+        .Missing -> "`embed` finds no `${rel}`",
+        .Linked -> "`embed` follows no link — one stands on the way to `${rel}`",
+        .NotText(at) -> "`embed` answers text, and `${rel}` is not UTF-8 — byte ${at}",
+        .Refused(why) -> "`embed` could not read its file — ${why}",
+    }
+}

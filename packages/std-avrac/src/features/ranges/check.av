@@ -1,0 +1,28 @@
+//! The range's typing law: both bounds are `int`s, refused once, at the
+//! first bound that is not.
+use core.{ExprId}
+use features.{TypeCx, this_is}
+use diagnostics.{Diag, Voice, said_as}
+
+/// A range bound is an `int`; Error absorbs.
+fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
+    if cx.accepts(e, cx.type(int)) { return true }
+    if cx.shape_at(e) is .Error { return false }
+    cx.emit(bound_not_int(cx, e, verb))
+    false
+}
+
+// ── The voices ──
+
+fn bound_not_int(cx: TypeCx, e: ExprId, verb: string) -> Diag {
+    said_as("type.mismatch", cx.loc_of(e), range_bound_said(verb, cx.name_at(e)))
+}
+
+/// A range's bound — where it `verb`s, `starts` or `ends` — that is a `found`, no `int`.
+export fn range_bound_said(verb: string, found: string) -> Voice {
+    Voice {
+        message: "a range ${verb} at an `int`, found `${found}`",
+        label: this_is(found),
+        help: "a range counts between `int`s — `for i in 0..n`; to walk a list, name it directly: `for x in xs`",
+    }
+}

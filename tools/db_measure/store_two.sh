@@ -5,6 +5,8 @@
 # D: a check, then a build. Each pair's stores are compared key by key by
 # store_diff.py: a key on one side only, or one key holding two values, is a store
 # that depends on more than the source.
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 export AVRA_MEM_CEILING_MB=5000 AVRA_WATCH_HELD=1 LLVM_PREFIX=/usr/lib/llvm-22
 make -s -o avra objects libs > /dev/null 2>&1
 clear() { find . -name .avra-cache -type d -prune -exec rm -rf {} +; }

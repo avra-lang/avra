@@ -7,7 +7,8 @@
 //! A `collect enum E: Surfaced` derives it for every member.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Field, Directive, Code, literal}
+use @std.meta.{Type as MetaType, Field, Directive, Code, literal, beside}
+use @std.program.names.{text_of}
 
 /// What a payload holds, as far as a template's hole can say.
 export enum Fill {
@@ -34,18 +35,16 @@ export trait Surfaced {
 
     static fn derive(t: MetaType) -> List<Directive> {
         [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
+            beside(
+                t,
+                quote {
                     impl Surfaced for ${t} {
                         fn surface() -> Surface {
                             Surface { node: ${literal(t.name)}, fills: ${fills_of(t)} }
                         }
                     }
                 },
-            },
+            ),
         ]
     }
 }
@@ -62,7 +61,10 @@ fn fill_of(f: Field) -> Code {
     match f.ty {
         "ExprId" -> quote { Fill.Value(self.${f.name}) },
         "ExprId?" -> quote { if self.${f.name} == null { Fill.Gone } else { Fill.Value(self.${f.name}!) } },
-        "Plain" or "Scoped" -> quote { Fill.Name(self.${f.name}.of) },
+        // Generated code reads a name's text through a free fn: a method would resolve against the
+        // impls the generators of its own file are still making.
+        "Scoped" -> quote { Fill.Name(text_of(self.${f.name}.of)) },
+        "Plain" -> quote { Fill.Name(self.${f.name}.of) },
         "TypeRef" -> quote { Fill.Ty(self.${f.name}) },
         _ -> quote { Fill.Other },
     }

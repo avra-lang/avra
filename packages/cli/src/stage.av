@@ -5,11 +5,10 @@
 //! red suite stops the run, so a failure names one thing.
 use @std.avrac.compiler.{verdict_of, staged_binaries, Want, Verdict}
 use @std.avrac.compiler.backend.{program_ended}
-use @std.avrac.compiler.lower.{program_symbol}
 use @std.process.{status_of, cmd, Env, Outcome, ProcessError, minimal}
 use @std.text.{parse_int}
 use @std.io.{env}
-use commands.{run_binary, refused_by_host, root_workspace, tool, ended_as}
+use commands.{run_binary, refused_by_host, tool, ended_as, program_refuse_evaluated, every_suite}
 
 /// A child-run program test's EVAL leg's own hand-off word — a package's
 /// root and one file under it, never a suite binary.
@@ -53,20 +52,7 @@ export fn light_phase(words: List<string>) -> int? {
 /// not derive is no end at all: its report goes to stderr, where the
 /// suite reads a leg, under an exit of its own.
 fn refuse_eval(root: string, path: string) -> int {
-    let ws = root_workspace(root)
-    match ws.from_sources(null, Want.Binary) {
-        .Ok(d) -> match program_ended(d.lowered, program_symbol(ws.file_name(path))) {
-            .Ok(end) -> ended_as(end),
-            .Err(words) -> {
-                eprintln("avra: ${words}")
-                2
-            },
-        },
-        .Err(report) -> {
-            eprintln(report)
-            underived
-        },
-    }
+    program_refuse_evaluated(root, path)
 }
 
 /// `AVRA_SOUNDNESS` asks for the two extra runs below — off by
@@ -79,34 +65,43 @@ fn soundness_wanted() -> bool {
     env("AVRA_SOUNDNESS") != null
 }
 
-/// Each suite run in turn: the first red one's code, or 0. A suite the
+/// Each suite run in turn: the first red one's code, or 0 — stopping there unless every suite is
+/// asked for (`every_suite`). A suite the
 /// plain run proved green is then run SOUND, when asked — there is
 /// nothing to check in one the plain run already refused.
 fn first_red(binaries: List<string>) -> int {
     let checked = soundness_wanted()
+    mut red = 0
     for binary in binaries {
         let code = match run_binary(binary) {
             .Ok(x) -> judged(binary, status_of(x)),
             .Err(e) -> refused_by_host(e),
         }
-        if code != 0 { return code }
-        if checked {
-            let sound = soundness_of(binary)
-            if sound != 0 { return sound }
-        }
+        let sound = if code == 0 && checked { soundness_of(binary) } else { 0 }
+        let now = if code != 0 { code } else { sound }
+        if now != 0 && !every_suite() { return now }
+        if red == 0 { red = now }
     }
-    0
+    red
 }
 
 /// The words a non-green verdict owes the reader — null for green,
 /// which speaks nothing. Pinned on its own so the wording is checked
 /// without calling the print `judged` wraps it in.
-export fn voice_of(binary: string, v: Verdict) -> string? {
+export fn voice_of(binary: string, v: Verdict, runs_on: bool) -> string? {
     match v {
         .Green -> null,
-        .Red -> "STOPPED — ${binary} reported a failure above; the rest of the suite never ran",
+        .Red -> if runs_on {
+            "${binary} reported a failure above; every suite after it runs on (AVRA_SUITE_ALL=1)"
+        } else {
+            "STOPPED — ${binary} reported a failure above; the rest of the suite never ran"
+        },
         .CouldNotStart -> "the binary could not start — the link answered a path that does not run",
-        .Died -> "STOPPED — the case or program named above trapped, and everything after it never ran",
+        .Died -> if runs_on {
+            "the case or program named above trapped; every suite after it runs on (AVRA_SUITE_ALL=1)"
+        } else {
+            "STOPPED — the case or program named above trapped, and everything after it never ran"
+        },
     }
 }
 
@@ -121,7 +116,7 @@ export fn exit_of(v: Verdict) -> int {
 /// that the run stops here without running the rest.
 export fn judged(binary: string, status: int) -> int {
     let v = verdict_of(status)
-    let voice? = voice_of(binary, v) else { return exit_of(v) }
+    let voice? = voice_of(binary, v, every_suite()) else { return exit_of(v) }
     println(voice)
     exit_of(v)
 }

@@ -15,7 +15,7 @@ use core.{
     some_list,
 }
 use features.{TypeCx, declared_decl, bound_decl_of}
-use diagnostics.{refusal, Diag}
+use diagnostics.{Diag, Voice, refusal, said_as}
 use @std.errors.{Loc}
 
 /// The value walks under its declaration's want, then records the
@@ -53,18 +53,19 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     if cx.refuses_void_value(v) { return }
     let held = declared ?? cx.type_at(v)
     // a top-level instance is built once per run, so it holds anything
-    if !written(cx.view.store.expr(v)) &&
+    if !const_written(cx.view.store.valued(v)) &&
         !materializable(cx, held) &&
         !cx.view.store.is_component_inst(s) {
         unformed(cx, v, cx.view.store.let_name(s) ?? "this const", held)
         return
     }
     if declared != null { cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!) }
-    cx.view.decls.record_const_type(cx.view.file, s, held)
+    cx.facts.record_const_type(s, held)
 }
 
 /// A value read straight off the page.
-fn written(value: Expr) -> bool {
+/// Whether a const's value is written as a literal the lowering spells: a number, a text, a truth.
+export fn const_written(value: Expr) -> bool {
     value.int_of() != null ||
         value.text_of() != null ||
         value.bool_of() != null ||
@@ -142,7 +143,7 @@ fn self_collect_words(cx: TypeCx, s: StmtId) -> List<string> {
 
 fn gathers(cx: TypeCx, word: string, d: DeclId) -> bool {
     let p? = collect_parts_of(cx, d) else { return false }
-    match p.kind { .Component(w) or .Annotated(w) -> w == word, .UnknownKind(_) -> false }
+    match p.kind { .Component(w) or .Annotated(w) -> w == word }
 }
 
 /// `d`'s own `CollectParts`, absent for anything not a `.Collect`
@@ -156,29 +157,31 @@ fn collect_parts_of(cx: TypeCx, d: DeclId) -> CollectParts? {
 // ── The voices ──
 
 fn self_read_refused(cx: TypeCx, at: Loc?, name: string, d: DeclId) -> Diag {
-    let coll = cx.view.decls.decl(d).name
-    refusal(
-        "collect.self_read",
-        at,
-        "`${name}` is collected into `${coll}`, so it cannot read `${coll}` while compiling",
-        "reads it here",
-        "an instance's own body sees what it is given directly, never the collection it joins",
-    )
+    said_as("collect.self_read", at, reads_own_collection(name, cx.view.decls.decl(d).name))
+}
+
+/// A value `name`, gathered into the collection `coll`, reading `coll` while compiling.
+export fn reads_own_collection(name: string, coll: string) -> Voice {
+    Voice {
+        message: "`${name}` is collected into `${coll}`, so it cannot read `${coll}` while compiling",
+        label: "reads it here",
+        help: "an instance's own body sees what it is given directly, never the collection it joins",
+    }
 }
 
 /// A computed const needs a compile-time value form: a literal the
 /// lowering spells, or a type the materializer can rebuild from the
 /// evaluator's crossed tree.
 fn unformed(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
-    let form = "`${cx.view.types.name_of(held)}`"
     let _ = cx
-        .spoken(
-            refusal(
-                "const.form",
-                cx.loc_of(v),
-                "a computed const needs a compile-time value form",
-                "`${name}` declares ${form}",
-                "use a scalar, text, octets, list, map, record, enum, result, or an optional over one — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance",
-            ),
-        )
+        .spoken(said_as("const.form", cx.loc_of(v), unformed_voice(name, cx.view.types.name_of(held))))
+}
+
+/// A computed const `name` of the type spelled `form`, which has no compile-time value form.
+export fn unformed_voice(name: string, form: string) -> Voice {
+    Voice {
+        message: "a computed const needs a compile-time value form",
+        label: "`${name}` declares `${form}`",
+        help: "use a scalar, text, octets, list, map, record, enum, result, or an optional over one — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance",
+    }
 }

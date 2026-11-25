@@ -452,7 +452,7 @@ by nobody.
 
 ### The seed law
 
-`make seed-check` links `bootstrap/seed.ll` and has it compile
+`make seed-check` links the seed (`bootstrap/seed.ll.gz`, decompressed) and has it compile
 `packages/cli`. It is the guard against the committed seed drifting away
 from the tree. A seed refusal reads "the seed cannot compile HEAD — run
 `make seed`", and the failure is fixed by refreshing the seed on the
@@ -674,7 +674,7 @@ auto-merge (§0). None of these is a command to run.
 | command | what it does |
 |---|---|
 | `sh tools/work new <name>` | a worktree `../avra-<name>` off `main`, and its Sprite |
-| `sh tools/work run <cmd>` | run `<cmd>` on this lane's Sprite, followed to its status |
+| `sh tools/work run <cmd>` | run `<cmd>` on a GitHub runner over the worktree as it stands (`--sprite`: this lane's Sprite), followed to its status |
 | `sh tools/work run --for <minutes> <cmd>` | the same, with a raised bound |
 | `sh tools/work test` | what this branch touches, on this lane's Sprite |
 | `sh tools/work land` | rebase, fmt-check, push, open PR, mark ready, strip a `DO NOT MERGE` title, arm auto-merge |
@@ -693,7 +693,7 @@ auto-merge (§0). None of these is a command to run.
 | `make try` | build `build/avra-try` with the standing compiler |
 | `make bootstrap` | the cold path: recover the seed, then build twice |
 | `make recover` | link the seed into a compiler, no build |
-| `make seed` | refresh `bootstrap/seed.ll` and `seed.sources` |
+| `make seed` | refresh `bootstrap/seed.ll.gz` and `seed.sources` |
 | `make sprite` | provision this machine (no-op on macOS) |
 | `make sprite-check` | does a fresh Sprite from this tree need a build? |
 | `make census CMD="check <pkg>"` | exact retain/release/list-write counts and their callers |

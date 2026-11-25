@@ -152,13 +152,17 @@ int64_t avra_proc_executable(const char* path) {
 
 /* A child's cwd bound through a file action: POSIX-2024's name where
    the SDK has it (macOS 26), the `_np` spelling before (Darwin 10.15,
-   glibc 2.29); elsewhere a cwd is refused as unsupported. */
+   glibc 2.29); elsewhere — iOS among them — a cwd is refused as
+   unsupported. */
 #if defined(__APPLE__)
 #include <Availability.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir
 #else
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
 #endif
 #elif defined(__GLIBC__)
 #if __GLIBC_PREREQ(2, 29)
@@ -171,6 +175,7 @@ extern char** environ;
 // The runtime's: a blocking call here holds the world, so a virtual
 // clock flows at wall rate across it.
 void avra_clock_hold(int64_t by);
+void avra_mem_settle(void);
 
 enum {
     PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
@@ -372,6 +377,7 @@ int64_t avra_proc_spawn(int64_t token, const char* file, const char* cwd, int64_
     /* what this program printed comes out before the child's words */
     fflush(NULL);
     pid_t pid = -1;
+    avra_mem_settle();
     int started = (cargv && cenvp) ? posix_spawn(&pid, file, &fa, &at, cargv, cenvp) : ENOMEM;
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&at);

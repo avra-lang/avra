@@ -14,7 +14,14 @@
 use core.{DeclId, ExprId, same_file}
 use features.{TypeCx, Decl}
 use compiler.{WaitReader, NodeWait, may_wait, is_default}
-use diagnostics.{refusal}
+use diagnostics.{said_as}
+use features.tasks.{
+    broken_call_said,
+    broken_default_said,
+    broken_spawn_said,
+    broken_value_said,
+    broken_wait_said,
+}
 use @std.errors.{Loc}
 
 impl TypeCx {
@@ -67,68 +74,13 @@ impl TypeCx {
 
     // ── The voices ──
 
-    mut fn broken_call(at: Loc?, owner: string, callee: string) {
-        self
-            .emit(
-                refusal(
-                    "flow.broken",
-                    at,
-                    "`${owner}` is `@unbroken`, and `${callee}` may let another task run",
-                    "called here",
-                    "mark `${callee}` `@unbroken` if nothing in it can wait, or make the call outside `${owner}`",
-                ),
-            )
-    }
+    mut fn broken_call(at: Loc?, owner: string, callee: string) { self.emit(said_as("flow.broken", at, broken_call_said(owner, callee))) }
 
-    mut fn broken_default(at: Loc?, owner: string, seat: string) {
-        self
-            .emit(
-                refusal(
-                    "flow.broken",
-                    at,
-                    "`${owner}` is `@unbroken`, and the default this call leaves to `${seat}` may wait",
-                    "called here",
-                    "pass `${seat}` explicitly, or make the call outside `${owner}`",
-                ),
-            )
-    }
+    mut fn broken_default(at: Loc?, owner: string, seat: string) { self.emit(said_as("flow.broken", at, broken_default_said(owner, seat))) }
 
-    mut fn broken_value(at: Loc?, owner: string) {
-        self
-            .emit(
-                refusal(
-                    "flow.broken",
-                    at,
-                    "`${owner}` is `@unbroken`, and a call through a value may be any fn",
-                    "called here",
-                    "call the fn by its name, and mark it `@unbroken`",
-                ),
-            )
-    }
+    mut fn broken_value(at: Loc?, owner: string) { self.emit(said_as("flow.broken", at, broken_value_said(owner))) }
 
-    mut fn broken_spawn(at: Loc?, owner: string) {
-        self
-            .emit(
-                refusal(
-                    "flow.broken",
-                    at,
-                    "`${owner}` is `@unbroken`, and a task it spawns is joined where its scope ends",
-                    "spawned here",
-                    "spawn outside `${owner}`",
-                ),
-            )
-    }
+    mut fn broken_spawn(at: Loc?, owner: string) { self.emit(said_as("flow.broken", at, broken_spawn_said(owner))) }
 
-    mut fn broken_wait(at: Loc?, owner: string, what: string) {
-        self
-            .emit(
-                refusal(
-                    "flow.broken",
-                    at,
-                    "`${owner}` is `@unbroken`, and `${what}` waits",
-                    "waits here",
-                    "wait outside `${owner}`",
-                ),
-            )
-    }
+    mut fn broken_wait(at: Loc?, owner: string, what: string) { self.emit(said_as("flow.broken", at, broken_wait_said(owner, what))) }
 }

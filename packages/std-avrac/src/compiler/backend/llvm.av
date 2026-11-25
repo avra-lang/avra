@@ -6,7 +6,11 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
+use @std.io.{env}
 use core.{
+    MARK_ABSENT,
+    MARK_OWNED,
+    some_list,
     cleanups_open,
     Ins,
     sorted_by,
@@ -17,6 +21,7 @@ use core.{
     static_symbol,
     TypeId,
     TypeRegistry,
+    Layout,
     RtKind,
     RtSig,
     rt_sigs,
@@ -34,6 +39,8 @@ use @std.text.{text_before}
 use features.{nothing}
 use @std.relation.engine.{map_cell}
 use compiler.lower.{Body, LinkedPackage, Lowered}
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
 
 // The runtime's wreck. The backend has no diagnostic channel — by the
 // time IR is emitted the program has been judged — so an IR shape the
@@ -50,8 +57,11 @@ type Emit = {
     m: ptr,
     b: ptr,
     fn_val: ptr,
+    /// Each register's language type, read only where a layout cannot answer: a census label's
+    /// name, and whether a crossing seat holds text as the evaluator judges it.
     types: TypeRegistry,
     tys: List<TypeId>,
+    layouts: List<Layout>,
     vals: List<ptr>,
     frames: List<Region>,
     loops: List<LoopFrame>,
@@ -72,6 +82,8 @@ type Emit = {
     rt: Map<string, RtSig>,
     // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
     census: bool,
+    // under the census, the tags of the boxes the body mints, by register (frame_census.av, strided_census.av)
+    frame_tags: Map<string, string>,
 }
 
 /// One open scope: a plain one, or a cleanup region and the block the walk
@@ -191,9 +203,10 @@ impl EmitIndex {
 /// WHICH BODIES A MODULE DEFINES: every one; one file's; the PROGRAM's — what
 /// no file owns (an instantiation, a wrapper several files ask for) and the
 /// entry — or one BUCKET of that: the program's bodies whose name falls in bucket
-/// `i` of `of` (a power of two), bucket 0 carrying the entry. Exactly one module
-/// of a program defines the entry.
-export enum Owned { Whole, File(f: FileId), Program, Bucket(i: int, of: int) }
+/// `i` of `of` (a power of two), bucket 0 carrying the entry; or none, laying out
+/// the frames of the file at `at` of the program's. Exactly one module of a
+/// program defines the entry.
+export enum Owned { Whole, File(f: FileId), Program, Bucket(i: int, of: int), Frames(at: int) }
 
 impl Owned {
     /// Where in `l.fns` the bodies this module defines stand, in program order: the index's answer
@@ -204,17 +217,30 @@ impl Owned {
             .File(f) -> ix.homed.get("${f.index}") ?? [],
             .Program -> ix.homeless,
             .Bucket(i, of) -> ix.bucket_positions(l, i, of),
+            .Frames(_) -> [],
         }
     }
 
     fn carries_entry() -> bool {
-        match self { .Whole or .Program -> true, .File(_) -> false, .Bucket(i, _) -> i == 0 }
+        match self {
+            .Whole or .Program -> true,
+            .File(_) or .Frames(_) -> false,
+            .Bucket(i, _) -> i == 0,
+        }
     }
+
+    /// Whether the module lays out every static it's handed, each for the other modules to read: a
+    /// file's frames, read by the modules of the bodies they frame.
+    fn shares_statics() -> bool { self is .Frames }
 }
 
-/// The bucket of `of` a program body falls in: its name's hash — except
-/// the code hashes' answers, which share the last, since their constants move with any edit.
-export fn program_bucket(b: Body, of: int) -> int { if b.hash_answer { of - 1 } else { (fp_str(b.name) & 9223372036854775807) % (of - 1) } }
+/// The bucket of `of` a program body falls in: its home's, else its name's — except a body whose
+/// code reads the whole program, which falls in the last.
+export fn program_bucket(b: Body, of: int) -> int { if b.program_wide { of - 1 } else { symbol_bucket(b.home ?? b.name, of) } }
+
+/// The bucket of `of` the home `home` falls in, by its hash alone: one home's bucket moves with no
+/// other's. The last is the program-wide bodies'.
+export fn symbol_bucket(home: string, of: int) -> int { (fp_str(home) & 9223372036854775807) % (of - 1) }
 
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a body in, the file it belongs to out.
 export fn home_of(b: Body) -> FileId? { b.file }
@@ -277,19 +303,71 @@ export fn in_symbol_order(l: Lowered) -> Lowered {
     l with { fns: sorted_by(l.fns, (a: Body, b: Body) -> text_before(a.name, b.name)) }
 }
 
-/// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
-/// NAME — LLVM wants a called symbol declared where it is called — and lays out
-/// the statics they read: private linkage, so each module's copy is its own.
-/// The caller has asked `program_closed`, a whole-program scan with one answer.
-export fn emit_closed(l: Lowered, ix: EmitIndex, path: string, which: Owned, target: string) -> string? {
-    emit_mode(l, ix, path, which, Written.Bitcode, target)
+extern fn avra_cores_online() -> int
+extern fn avra_disk_free_bytes(path: string) -> int
+extern fn avra_file_bytes(path: string) -> int
+extern fn avra_file_placed(from: string, to: string) -> int
+
+/// Whether the file `from` now also stands at `to`, linked and renamed onto it, no byte written.
+// LICENSED input.staged_output: the build's own output, written and read back by the build
+export fn file_placed(from: string, to: string) -> bool { avra_file_placed(from, to) == 0 }
+
+/// The bytes free on the file system holding `path`; absent where it can't be asked.
+export fn disk_free_at(path: string) -> int? {
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
+    let free = avra_disk_free_bytes(path)
+    if free < 0 { null } else { free }
 }
 
-extern fn avra_cores_online() -> int
+/// The size of the file at `path`: none where none stands.
+// LICENSED input.staged_output: the build's own output, written and read back by the build
+export fn file_bytes(path: string) -> int { avra_file_bytes(path) }
+extern fn avra_cores_group(count: int) -> int
+extern fn avra_cores_fork(group: int, serving: int) -> int
+extern fn avra_cores_claimed(group: int) -> int
+extern fn avra_cores_leave(group: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_end_fd(group: int, core: int) -> int
+extern fn avra_cores_heard(group: int, core: int) -> int
+extern fn avra_cores_finished(group: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// How long a wait for a forked emit lasts before it looks again.
+const EMIT_WAIT_MS: int = 1000
+
+/// How many processes the machine runs at once.
+export fn emit_cores() -> int {
+    // LICENSED input.machine_width: the core count sets how many processes make objects, never what they hold
+    avra_cores_online()
+}
+
+/// `count` turns taken across `processes` forked processes, each taking the next turn no other
+/// has taken until none is left, so none sits idle while another still holds turns: whether
+/// every process ran each turn it took clean; absent where none forked.
+export fn turns_across(processes: int, count: int, run: fn(int) -> bool) -> bool? {
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let group = avra_cores_group(processes)
+    if group < 0 { return null }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
+    let core = avra_cores_fork(group, 0 - 1)
+    if core < 0 { return null }
+    if core < processes {
+        mut clean = true
+        mut turn = avra_cores_claimed(group)
+        while turn < count {
+            if !run(turn) { clean = false }
+            turn = avra_cores_claimed(group)
+        }
+        let _ = avra_cores_leave(group, core, 0, if clean { 0 } else { 1 })
+    }
+    for c in 0..processes {
+        while avra_cores_heard(group, c) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(group, c), 0, EMIT_WAIT_MS) }
+    }
+    avra_cores_finished(group) == processes
+}
 
 /// How many objects are made at once: a worker is a thread of this process and holds one
 /// module, so the width is the machine's cores, at most sixteen.
-fn emit_width() -> int {
+export fn emit_width() -> int {
     // LICENSED input.machine_width: the core count sets how many objects are made at once, never what they hold
     let cores = avra_cores_online()
     when {
@@ -301,7 +379,8 @@ fn emit_width() -> int {
 
 /// The same module as an OBJECT, optimized and generated in this process at
 /// clang's level — BY A WORKER: the module is built here and handed over, and
-/// `objects_made` waits for every one handed.
+/// `objects_made` waits for every one handed. At most `workers` work at once; none
+/// named is `emit_width`.
 export fn emit_object(
     l: Lowered,
     ix: EmitIndex,
@@ -309,8 +388,16 @@ export fn emit_object(
     which: Owned,
     opt: int,
     target: string,
+    workers: int = 0,
 ) -> string? {
-    emit_mode(l, ix, path, which, Written.Object(opt), target)
+    emit_mode(
+        l,
+        ix,
+        path,
+        which,
+        Written.Object(opt, if workers < 1 { emit_width() } else { workers }),
+        target,
+    )
 }
 
 /// The link option that drops code nothing reaches: Mach-O drops by
@@ -348,9 +435,14 @@ export fn objects_made() -> string? {
 /// inlined (`AVRA_INLINE_RUNTIME=0` keeps them calls).
 export fn inlines_runtime() -> bool { avra_llvm_inlines_runtime() != 0 }
 
+/// The ways the objects this process writes are emitted that its environment chooses — frame
+/// pointers kept, boxes counted by type, stores tracked — as one word: each makes another object of
+/// the same code, so a kept object's key holds it.
+export fn emit_modes() -> int { avra_llvm_emit_modes() }
+
 /// What a module is written as. An `Object`'s module leaves with its context,
 /// for a worker to write and dispose.
-enum Written { Text, Bitcode, Object(opt: int) }
+enum Written { Text, Bitcode, Object(opt: int, workers: int) }
 
 /// A program with a symbol nothing declares — a DEFECT, in its own words.
 export fn not_closed(missing: string) -> string {
@@ -359,6 +451,9 @@ export fn not_closed(missing: string) -> string {
 
 fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Written, target: string) -> string? {
     let lc = avra_llvm_context_create()
+    let dev = form is .Object && match form { .Object(opt, _) -> opt == 0, rest -> false }
+    if dev { avra_llvm_context_unnamed(lc) }
+    let verified = !dev || llvm_verified()
     let m = avra_llvm_module_create("avra", lc)
     // the target IS part of the module, not of the code generator that runs
     // later: it decides pointer width, the data layout and, for wasm, the
@@ -369,22 +464,33 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
     let wasm = is_wasm(target)
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics, ix) }
+    let refs: Refs = if which is .Whole || which.shares_statics() { every_name() } else { refs_of(scanned, l.statics, ix) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs, ix.hosted, wasm)
     let named_at = if refs.whole { [i for i in 0..l.fns.length] } else { ix.body_positions(refs.bodies.keys()) }
-    for p in named_at { declare_user(lc, m, l.types, l.fns[p]) }
+    for p in named_at { declare_user(lc, m, l.fns[p]) }
     let carried = if refs.whole { l.statics } else { [l.statics[p] for p in ix.static_positions(refs.statics.keys())] }
-    for st in in_read_order(carried, scanned, refs, ix) { emit_static(lc, m, st) }
+    for st in in_read_order(carried, scanned, refs, ix) { emit_static(lc, m, st, which.shares_statics()) }
     let rt = rt_index()
     let defined_at = if which is .Whole { [i for i in 0..l.fns.length] } else { ix.body_positions(mine.keys()) }
     for p in defined_at {
         let bd = l.fns[p]
         if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
-            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f, !wasm)
+            let failure: string? = emit_body(
+                lc,
+                m,
+                b,
+                l.types,
+                l.externs,
+                rt,
+                bd,
+                f,
+                !wasm,
+                verified,
+            )
             if failure != null { return wreck(m, path, failure!) }
             if bd.weak { avra_llvm_set_weak_odr(f) }
             // a wasm module runs no task, so it files no site
@@ -393,14 +499,14 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
         }
     }
     if which.carries_entry() {
-        let failure: string? = emit_entry(lc, m, b, l, rt, target)
+        let failure: string? = emit_entry(lc, m, b, l, rt, target, verified)
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
     let written = match form {
         .Text -> avra_llvm_print_module_to_file(m, path),
         .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
-        .Object(opt) -> avra_llvm_emit_object_later_targeted(m, lc, path, opt, emit_width(), target),
+        .Object(opt, workers) -> avra_llvm_emit_object_later_targeted(m, lc, path, opt, workers, target),
     }
     // a handed module's context is its worker's
     if !(form is .Object) { avra_llvm_context_dispose(lc) }
@@ -410,9 +516,16 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
 /// One static as its globals: every box under its own name, the
 /// root under the static's, so a read finds it by that name alone.
 /// Boxes are laid out child-first, as the fold pushed them, so each
-/// slot's box already stands when the slot names it.
-fn emit_static(lc: ptr, m: ptr, st: Static) {
+/// slot's box already stands when the slot names it. One another module
+/// defines is its root declared alone; a `shared` one's root is the
+/// other modules' to read.
+fn emit_static(lc: ptr, m: ptr, st: Static, shared: bool) {
+    if st.elsewhere {
+        avra_llvm_static_declared(m, mangled(st.name))
+        return
+    }
     for j, b in st.boxes { emit_box(lc, m, box_name(st, j), st, b) }
+    if shared { avra_llvm_static_shared(m, mangled(st.name)) }
 }
 
 fn box_name(st: Static, j: int) -> string {
@@ -453,8 +566,8 @@ fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) ->
 /// holds, absent for a nullable scalar that is not there.
 fn slot_mark(c: Slot) -> int {
     match c {
-        .Text(_) or .Box(_) or .Null -> 1,
-        .Absent -> 2,
+        .Text(_) or .Box(_) or .Null -> MARK_OWNED.bit,
+        .Absent -> MARK_ABSENT.bit,
         // a code address is a raw word, never a header — `push_slot`
         // treats a dynamic closure's own code slot the same way
         .Int(_) or .Float(_) or .Bool(_) or .Code(_) -> 0,
@@ -478,24 +591,20 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
     }
 }
 
-/// WHAT A NON-HOST TARGET HAS NO BODY FOR, by NAME: a runtime row that
-/// declares no wasm body (a fiber, a core), and a closure package that owns C,
-/// names no wasm object, and defines a symbol a body calls. It reads the program
-/// LOWERED FROM ITS ENTRY (`Program.reached`), so a body nothing reaches names
-/// nothing. The build speaks which one — never a linker's "undefined symbol",
-/// which accuses the innocent.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
-export fn unsupported_on_wasm(l: Lowered) -> List<string> {
+/// What a non-host target has no body for among `calls`, a program's reached fns each calling a
+/// symbol, linking `libraries`: each runtime row declaring no wasm body, then each package whose C
+/// has no wasm object and defines a symbol one of them calls.
+export fn wasm_missing(calls: List<WasmCall>, libraries: List<LinkedPackage>) -> List<string> {
     let absent = [s.name for s in rt_sigs() if !s.wasm]
-    let calls = [WasmCall { caller: bd.name, symbol: n! } for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
     distinct([c.symbol for c in calls if absent.contains(c.symbol)])
         .concat(
-            [refused_package(p, calls) for p in l.libraries if p.library != "" && !p.wasm && calls.any((c) -> calls_its_c(p, c))],
+            [refused_package(p, calls) for p in libraries if p.library != "" && !p.wasm && calls.any((c) -> calls_its_c(p, c))],
         )
 }
 
 /// A reached fn calling a symbol, as the link's own reach saw it.
-type WasmCall = { caller: string, symbol: string }
+@derive(Saved)
+export type WasmCall = { caller: string, symbol: string }
 
 /// Whether the call is to a symbol the package's own C defines: an extern it
 /// declares over a runtime row is the runtime's.
@@ -509,35 +618,54 @@ fn refused_package(p: LinkedPackage, calls: List<WasmCall>) -> string {
     "${p.name} (`${first.caller}` calls `${first.symbol}`)"
 }
 
-/// Whether a program calls a runtime row that may switch a task out: it runs
-/// tasks, and a wasm build of it has a fallback for a host that cannot suspend
-/// a stack. The same reading of the rows `unsupported_on_wasm` makes.
-export fn runs_tasks(l: Lowered) -> bool {
+/// Whether any of the symbols `called` names a runtime row that may switch a task out.
+export fn calls_waiting(called: List<string>) -> bool {
     let rt = rt_index()
-    let called = [n! for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
     called.any((n) -> row_waits(rt, n))
 }
 
 /// Whether the runtime row `name` may switch the task that calls it out.
 fn row_waits(rt: Map<string, RtSig>, name: string) -> bool { rt.get(name)?.waits ?? false }
 
-/// THE CLOSURE LAW: every name a program's steps call is one the
-/// module will declare — a body the program lowered, a runtime row,
-/// or one of its own externs. The first that is not, named, instead
-/// of a null function at emission.
-export fn program_closed(l: Lowered) -> string? {
+/// THE CLOSURE LAW: every name a program's steps call, and every code
+/// address its data holds, is one the module will declare — a body the
+/// program lowered, a runtime row, or one of its own externs. The first
+/// that is not, named, instead of a null function at emission.
+export fn program_closed(l: Lowered) -> string? { program_opens(l).first() }
+
+/// Every name `l`'s steps call and every code address its data holds that the module won't declare,
+/// each once, in the order first met: the data's, then the steps'. A fn the program defers, and its
+/// wrapper, is answered: made the first time a run calls it.
+export fn program_opens(l: Lowered) -> List<string> { opens_among(l, l.fns.concat([l.entry]), l.statics) }
+
+/// What `bodies` call and `statics` hold that `l` won't declare, as `program_opens` says it of `l`'s
+/// own: a program grown from a closed one is closed once what it added is, so only that is read.
+export fn opens_among(l: Lowered, bodies: List<Body>, statics: List<Static>) -> List<string> {
     mut declared: Map<string, bool> = {}
     for bd in l.fns.concat([l.entry]) { declared.set(bd.name, true) }
+    for d in l.deferred {
+        declared.set(d.callee.symbol, true)
+        if d.wrapper != null { declared.set(d.wrapper!.symbol, true) }
+    }
     for row in rt_sigs().concat(l.externs) { declared.set(row.name, true) }
-    for bd in l.fns.concat([l.entry]) {
-        for i in bd.ins {
-            let body: string? = body_symbol(i)
-            if body != null && declared.get(body!) == null { return body }
-            let host: string? = hosted_symbol(i)
-            if host != null && declared.get(host!) == null { return host }
+    mut opens: List<string> = []
+    for s in flatten([static_code_syms(st.boxes) for st in statics]) {
+        if declared.get(s) == null {
+            declared.set(s, true)
+            opens.push(s)
         }
     }
-    null
+    for bd in bodies {
+        for i in bd.ins {
+            for named in some_list(body_symbol(i)).concat(some_list(hosted_symbol(i))) {
+                if declared.get(named) == null {
+                    declared.set(named, true)
+                    opens.push(named)
+                }
+            }
+        }
+    }
+    opens
 }
 
 /// THE ENTRY. The program's own statements become `avra_main`; C's
@@ -548,7 +676,15 @@ export fn program_closed(l: Lowered) -> string? {
 /// host from then on. A reactor links
 /// no `main`, so its link exports the entry and its host runs the
 /// program's statements by that name (`reactor_entry_words`).
-fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: string) -> string? {
+fn emit_entry(
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    l: Lowered,
+    rt: Map<string, RtSig>,
+    target: string,
+    verified: bool,
+) -> string? {
     declare(
         m,
         "avra_args_init",
@@ -569,6 +705,7 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, targe
         l.entry,
         entry,
         !is_wasm(target),
+        verified,
     )
     if failure != null { return failure }
     open_main(lc, m, b, entry, target)
@@ -640,7 +777,8 @@ fn run_ended(m: ptr, b: ptr, code: ptr) -> ptr {
 }
 
 /// One body into one function: params seed the value table, every
-/// instruction emits, the verifier gates.
+/// instruction emits, the verifier gates where `verified` — every build
+/// but a level-0 object, and that one too under `AVRA_VERIFY_LLVM`.
 fn emit_body(
     lc: ptr,
     m: ptr,
@@ -651,10 +789,11 @@ fn emit_body(
     bd: Body,
     f: ptr,
     unwinds: bool,
+    verified: bool,
 ) -> string? {
     mut vals: List<ptr> = []
     // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
-    for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
+    for j in 0..bd.seats.length { vals.push(avra_llvm_get_param(f, j)) }
     mut em = Emit {
         lc: lc,
         m: m,
@@ -662,6 +801,7 @@ fn emit_body(
         fn_val: f,
         types: types,
         tys: bd.reg_types,
+        layouts: bd.layouts,
         vals: vals,
         frames: [],
         loops: [],
@@ -675,6 +815,7 @@ fn emit_body(
         externs: externs,
         rt: rt,
         census: avra_llvm_census_types() != 0,
+        frame_tags: if avra_llvm_census_types() != 0 { census_tags(bd.ins, bd.layouts, rt) } else { {} },
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for at, i in bd.ins {
@@ -682,7 +823,7 @@ fn emit_body(
         em.emit_ins(i)
     }
     em.finished()
-    if avra_llvm_verify_function(f) != 0 {
+    if verified && avra_llvm_verify_function(f) != 0 {
         return "internal compiler error: LLVM verification failed for ${bd.name}"
     }
     null
@@ -774,12 +915,12 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
 }
 
 /// One user fn's declaration, typed from its signature's shapes.
-fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
+fn declare_user(lc: ptr, m: ptr, bd: Body) {
     declare(
         m,
         mangled(bd.name),
-        ll_type_of(lc, types, bd.ret),
-        [ll_type_of(lc, types, pt) for pt in bd.params],
+        ll_layout(lc, bd.answer!),
+        [ll_layout(lc, s) for s in bd.seats],
         false,
     )
 }
@@ -810,14 +951,14 @@ fn host_symbol_defined(
     if wasm { avra_llvm_set_export(f, bd.name) }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let body = avra_llvm_get_named_function(m, mangled(bd.name))
-    let seats = avra_llvm_value_array_new(bd.params.length)
-    for j in 0..bd.params.length { avra_llvm_value_array_set(seats, j, avra_llvm_get_param(f, j)) }
+    let seats = avra_llvm_value_array_new(bd.seats.length)
+    for j in 0..bd.seats.length { avra_llvm_value_array_set(seats, j, avra_llvm_get_param(f, j)) }
     let answer = avra_llvm_build_call(
         b,
         avra_llvm_fn_type_of(body),
         body,
         seats,
-        bd.params.length,
+        bd.seats.length,
         if answers_nothing(row.ret) { "" } else { "answer" },
     )
     avra_llvm_value_array_free(seats)
@@ -846,53 +987,41 @@ fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
 /// the identity: the value is already the slot, or is no slot at all.
 enum SlotForm { Address, Widened, Reinterpreted, Word }
 
-/// WHICH MACHINE CLASS a value of this type lands in — the third of
-/// the neighbouring questions stated at `rides_pointer`, and the only
-/// one that is not a bool: the pointer arm agrees with
-/// `rides_pointer` and the rest split a word from a double from a
-/// bit.
-fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
-    // a value enum: its tag and its word
-    if types.valued_carrier(ty) {
-        let word = types.type(int)
-        return wide_ll_type(lc, types, [word, word])
-    }
-    if types.travels_wide(ty) { return wide_ll_type(lc, types, types.flat_fields(types.machine_type(ty))) }
-    // THE MACHINE FORM decides, never the bare shape: a FLAT record
-    // IS its one field, so a name over `string` is a pointer and a
-    // name over `float` is a double.
-    match types.machine_shape(ty) {
-        // TypeName never materializes: no value ever has it — nor
-        // does Var: mono substitutes before any register minted.
-        .Float -> avra_llvm_double_type(lc),
-        .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
-        .Bool -> avra_llvm_int1_type(lc),
-        .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> avra_llvm_pointer_type(lc),
+/// WHICH CONVERSION A VALUE CATEGORY OWES THE WORD SLOT, asked in
+/// both directions so neither can be written alone. A CHAIN of `is`
+/// tests answers "no conversion" for every category nobody thought
+/// of, and an unconverted value is not a refusal: a double filed as
+/// a word rides an integer seat and the callee reads a different
+/// number. A nullable pair is a register pair no slot holds.
+fn slot_form(l: Layout) -> SlotForm {
+    match l {
+        .Truth -> SlotForm.Widened,
+        .Real -> SlotForm.Reinterpreted,
+        .Void or .Word or .Maybe(_) -> SlotForm.Word,
+        .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> SlotForm.Address,
     }
 }
 
-/// A VALUE RECORD's machine type: its fields as one aggregate, in
-/// registers.
-fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
-    let arr = avra_llvm_type_array_new(fields.length)
-    for j, f in fields { avra_llvm_type_array_set(arr, j, ll_type_of(lc, types, f)) }
-    let st = avra_llvm_struct_type(lc, arr, fields.length)
-    avra_llvm_type_array_free(arr)
-    st
+/// WHICH MACHINE CLASS a value lands in: a pointer, a word, a double, a bit, or an aggregate of
+/// these — a value record its fields, a value enum its tag and word, a nullable pair its presence
+/// and its value.
+fn ll_layout(lc: ptr, l: Layout) -> ptr {
+    match l {
+        .Void or .Word -> avra_llvm_int64_type(lc),
+        .Truth -> avra_llvm_int1_type(lc),
+        .Real -> avra_llvm_double_type(lc),
+        .Boxed(_) or .Bare -> avra_llvm_pointer_type(lc),
+        .Fields(fields) -> ll_aggregate(lc, [ll_layout(lc, f) for f in fields]),
+        .Tagged(_) -> ll_aggregate(lc, [avra_llvm_int64_type(lc), avra_llvm_int64_type(lc)]),
+        .Maybe(value) -> ll_aggregate(lc, [avra_llvm_int1_type(lc), ll_layout(lc, value)]),
+    }
 }
 
-/// A nullable's machine type: the niche IS its value's pointer; a
-/// WORD ENUM's nullable is its own register, the spare tag its
-/// absence; a scalar pair is a first-class {present: i1, value}
-/// aggregate that lives in registers and never touches memory.
-fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
-    if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
-    if types.is_word_enum(inner) { return ll_type_of(lc, types, inner) }
-    let arr = avra_llvm_type_array_new(2)
-    avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
-    avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))
-    let st = avra_llvm_struct_type(lc, arr, 2)
+/// An aggregate of `parts`, in registers.
+fn ll_aggregate(lc: ptr, parts: List<ptr>) -> ptr {
+    let arr = avra_llvm_type_array_new(parts.length)
+    for j, p in parts { avra_llvm_type_array_set(arr, j, p) }
+    let st = avra_llvm_struct_type(lc, arr, parts.length)
     avra_llvm_type_array_free(arr)
     st
 }
@@ -902,3 +1031,11 @@ const lazy_in_eager: string = "a lazy op reached the eager path"
 /// The integer-only operations, met by a double.
 const int_only_on_floats: string = "an integer-only op reached float operands"
 
+/// `AVRA_VERIFY_LLVM`: every function of a level-0 object held to LLVM's verifier too, as every
+/// other build's is — what the gate's soundness slice sets, so a malformed function is caught.
+fn llvm_verified() -> bool { llvm_verify_asked() == "1" }
+
+once fn llvm_verify_asked() -> string {
+    // LICENSED input.debug_flag: a check of the compiler's own output, which no answer reads
+    env("AVRA_VERIFY_LLVM") ?? ""
+}

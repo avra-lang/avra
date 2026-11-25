@@ -1,0 +1,178 @@
+//! The laws every home keeps for a delayed send, each written once over
+//! a `Queue<int>`. The cases that wait sleep on the suite's virtual
+//! clock, so a home under test reads that clock.
+use @std.time.{hours, ms, sleep}
+use tests.support.laws.{Law}
+use queue.{Order, Overflow, Queue, key}
+
+export fn delay_laws() -> List<Law> {
+    [
+        Law {
+            name: "holds a delayed item back and still owes it",
+            lease: 60000,
+            order: Order.fifo,
+            holds: held_back,
+        },
+        Law {
+            name: "lets an item sent after a delayed one pass it under fifo",
+            lease: 60000,
+            order: Order.fifo,
+            holds: passes_delayed,
+        },
+        Law {
+            name: "lets an item of the same key pass a delayed one under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: passes_delayed,
+        },
+        Law {
+            name: "sends at once under a delay of nothing or less",
+            lease: 60000,
+            order: Order.fifo,
+            holds: no_delay,
+        },
+        Law {
+            name: "hands a delayed item out once it is due",
+            lease: 60000,
+            order: Order.fifo,
+            holds: due_taken,
+        },
+        Law {
+            name: "hands a due item out by its send, before one sent after it, under fifo",
+            lease: 60000,
+            order: Order.fifo,
+            holds: due_by_send,
+        },
+        Law {
+            name: "hands a due item out by its send, before one of its key sent after it, under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: due_by_send,
+        },
+        Law {
+            name: "keeps a due item behind its key's item that is out under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: due_waits_for_key,
+        },
+        Law {
+            name: "keeps a due item behind the item that is out under fifo",
+            lease: 60000,
+            order: Order.fifo,
+            holds: due_waits_for_key,
+        },
+        Law {
+            name: "hands several due items out in the order they were sent, whatever their delays",
+            lease: 60000,
+            order: Order.fifo,
+            holds: dues_in_send_order,
+        },
+        Law {
+            name: "counts a delayed item against the room it was sent into",
+            lease: 60000,
+            order: Order.fifo,
+            overflow: Overflow.fail,
+            holds: takes_room,
+        },
+        Law {
+            name: "refuses a delayed send where overflow gives up the oldest",
+            lease: 60000,
+            order: Order.fifo,
+            overflow: Overflow.drop_oldest,
+            holds: refused_by_overflow,
+        },
+        Law {
+            name: "refuses a delayed send where overflow coalesces a key",
+            lease: 60000,
+            order: Order.by_key,
+            overflow: Overflow.latest,
+            holds: refused_by_overflow,
+        },
+        Law {
+            name: "discards a delayed send into a full queue under drop_newest, answering its id",
+            lease: 60000,
+            order: Order.fifo,
+            overflow: Overflow.drop_newest,
+            holds: discarded_when_full,
+        },
+    ]
+}
+
+fn later(q: Queue<int>, item: int, k: string, after: int) -> bool {
+    (q.send_after(item, key(k), ms(after)) catch null) != null
+}
+
+fn held_back(q: Queue<int>) -> bool {
+    later(q, 1, "a", 3600000) && (q.take() catch null) == null && (q.depth() catch 0) == 1
+}
+
+fn passes_delayed(q: Queue<int>) -> bool {
+    let _ = later(q, 1, "a", 3600000)
+    let _ = q.send(2, key("a"))
+    (q.take() catch null)?.item == 2 && (q.take() catch null) == null && (q.depth() catch 0) == 2
+}
+
+fn no_delay(q: Queue<int>) -> bool {
+    let _ = later(q, 1, "a", 0)
+    let _ = later(q, 2, "a", 0 - 5)
+    let first? = q.take() catch null else { return false }
+    let _ = q.ack(first)
+    first.item == 1 && (q.take() catch null)?.item == 2
+}
+
+fn due_taken(q: Queue<int>) -> bool {
+    let _ = later(q, 1, "a", 50)
+    let early = q.take() catch null
+    sleep(ms(60))
+    early == null && (q.take() catch null)?.item == 1
+}
+
+fn due_by_send(q: Queue<int>) -> bool {
+    let _ = later(q, 1, "a", 50)
+    let _ = q.send(2, key("a"))
+    sleep(ms(60))
+    let first? = q.take() catch null else { return false }
+    let blocked = q.take() catch null
+    let _ = q.ack(first)
+    first.item == 1 && blocked == null && (q.take() catch null)?.item == 2
+}
+
+fn due_waits_for_key(q: Queue<int>) -> bool {
+    let _ = later(q, 1, "a", 50)
+    let _ = q.send(2, key("a"))
+    let out? = q.take() catch null else { return false }
+    sleep(ms(60))
+    let blocked = q.take() catch null
+    let _ = q.ack(out)
+    out.item == 2 && blocked == null && (q.take() catch null)?.item == 1
+}
+
+fn dues_in_send_order(q: Queue<int>) -> bool {
+    let _ = later(q, 1, "a", 90)
+    let _ = later(q, 2, "b", 30)
+    let _ = later(q, 3, "c", 60)
+    sleep(ms(100))
+    mut seen: List<int> = []
+    mut d = q.take() catch null
+    while d != null {
+        seen.push(d!.item)
+        let _ = q.ack(d!)
+        d = q.take() catch null
+    }
+    seen.map("${it}").join(" ") == "1 2 3"
+}
+
+fn takes_room(q: Queue<int>) -> bool {
+    let sent = [later(q, i, "a", 3600000) for i in 0..4]
+    sent.all(it) && (q.send(9, key("a")) catch null) == null && (q.depth() catch 0) == 4
+}
+
+fn refused_by_overflow(q: Queue<int>) -> bool {
+    let refused = match q.send_after(1, key("a"), hours(1)) { .Ok(_) -> false, .Err(_) -> true }
+    refused && (q.depth() catch 1) == 0
+}
+
+fn discarded_when_full(q: Queue<int>) -> bool {
+    for i in 0..4 { let _ = q.send(i, key("a")) }
+    later(q, 9, "a", 50) && (q.depth() catch 0) == 4
+}

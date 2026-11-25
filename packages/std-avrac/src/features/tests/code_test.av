@@ -1,26 +1,31 @@
 // `Code` (features/code.av): the analysed handle a rule reads its
-// facts off, with no context parameter of its own — `type`,
-// `binding`, `declared`, `pure`, `answering`/`is_registry`, `text`,
-// `kids`, `name`, and `Ty`'s own projections.
-use @std.avrac.compiler.{analyze_source, Analysis}
-use @std.avrac.features.{Code, enclosing_decl}
-use @std.avrac.core.{At, ExprId, flatten}
+// facts off, with no context parameter of its own — `type`, `pure`,
+// `text`, `kids`, `name`, and `Ty`'s own projections — as the program
+// layer hands it to a rule (`rule_items`).
+use @std.avrac.compiler.{example_roots}
+use @std.avrac.features.{Code}
+use @std.avrac.core.{At, flatten}
+use @std.avrac.testing.{judged}
+use @std.avrac.testing.held.{RuleItem}
+
+/// A one-file program's items, each as a rule reads it on the program layer.
+fn coded(source: string) -> List<RuleItem> { judged(source).rule_items("/alone/src/main.av") }
 
 /// The last statement's own expression — every subject here is a
 /// short program whose final line is the form under test.
-fn tail(a: Analysis) -> Code {
-    let s = a.view.stmts.last()!
-    match a.view.store.stmt(s) {
-        .ExprStmt(v) -> a.code_at(At.Expr(v)),
-        rest -> a.code_at(At.Stmt(s)),
-    }
-}
+fn tail(items: List<RuleItem>) -> Code { example_roots(items).last()! }
 
 /// The first node anywhere in the file whose own text is `word` — a
 /// declaration mints no expression node of its own, so a name (or
 /// `self`) read once is unambiguous.
-fn find_text(a: Analysis, word: string) -> Code {
-    flatten([text_in(a.code_at(At.Stmt(s)), word) for s in a.view.stmts]).first()!
+fn find_text(items: List<RuleItem>, word: string) -> Code {
+    flatten([text_in(r, word) for r in example_roots(items)]).first()!
+}
+
+/// Which of the program's items holds the node whose own text is `word`.
+fn item_holding(items: List<RuleItem>, word: string) -> int? {
+    [i for i in 0..items.length if !flatten([text_in(r, word) for r in example_roots([items[i]])]).is_empty()]
+        .first()
 }
 
 /// Kids first, and an EXPRESSION seat only: an expression-statement's
@@ -41,7 +46,8 @@ fn is_expr_text(c: Code, word: string) -> bool {
     }
 }
 
-type PureCase = { src: string, want: bool }
+/// A purity row: its program, the answer, and — where the form stands in a body — its own text.
+type PureCase = { src: string, want: bool, at: string = "" }
 
 /// Every form the purity law names, TRUE and FALSE alike.
 fn pure_cases() -> List<PureCase> {
@@ -50,7 +56,13 @@ fn pure_cases() -> List<PureCase> {
         PureCase { src: "1", want: true },
         PureCase { src: "let a = 1\nlet b = 2\na + b", want: true },
         PureCase { src: "let xs = [1, 2]\nxs.length", want: true },
-        PureCase { src: "let m: Map<string, int> = {}\nlet k = \"a\"\nm.get(k)", want: true },
+        // a Read-effect method reads its effect off its receiver's type, which a body's statements
+        // carry: the program layer's rule items type bodies, never the entry's own statements
+        PureCase {
+            src: "fn t() -> int? {\n    let m: Map<string, int> = {}\n    let k = \"a\"\n    m.get(k)\n}",
+            want: true,
+            at: "m.get(k)",
+        },
         PureCase { src: "let x: int? = null\nx ?? 0", want: true },
         PureCase { src: "type P = { x: int }\nlet p = P { x: 1 }\np.x", want: true },
         PureCase { src: "let xs = [1, 2]\nxs[0]", want: true },
@@ -64,8 +76,9 @@ fn pure_cases() -> List<PureCase> {
         PureCase { src: "let c = Cell.new(1)\nc.set(2)", want: false },
         // a Read-effect method whose OWN argument is impure
         PureCase {
-            src: "let m: Map<string, int> = {}\nfn f() -> string { \"a\" }\nm.get(f())",
+            src: "fn f() -> string { \"a\" }\nfn t() -> int? {\n    let m: Map<string, int> = {}\n    m.get(f())\n}",
             want: false,
+            at: "m.get(f())",
         },
         // `!` insists on a nullable read, deterministic within one expression — a `mut` binding included
         PureCase { src: "mut c: int? = 5\nc!", want: true },
@@ -80,92 +93,39 @@ fn pure_cases() -> List<PureCase> {
 
 spec "features/code — the analysed handle" {
     given "type()" {
-        then "an expression's type is named — `n + 1` types `int`" {
-            tail(analyze_source("let n = 1\nn + 1")).type()!.name() == "int"
+        then "an expression's type is asked of — `s + \"b\"` is text, `n + 1` is not" {
+            find_text(
+                    coded("fn t() -> string {\n    let s = \"a\"\n    s + \"b\"\n}"),
+                    "s + \"b\"",
+                )
+                    .type()!
+                    .is_text() &&
+                !find_text(coded("fn t() -> int {\n    let n = 1\n    n + 1\n}"), "n + 1").type()!
+                    .is_text()
         }
-        then "a nullable ident is nullable, and carries its unwrapped type" {
-            let t = tail(analyze_source("let s: string? = null\ns")).type()!
-            t.nullable() && t.carried()!.name() == "string"
-        }
-    }
-    given "binding() and declared() — every Binding variant" {
-
-        then "a let ident's binding is Def, and declared() names its annotation" {
-            let c = find_text(analyze_source("let y: string = \"a\"\ny"), "y")
-            c.binding()! is .Def && c.declared()!.name() == "string"
-        }
-        then "a param's binding is Param, and declared() names its written type" {
-            let c = find_text(analyze_source("fn f(n: int) -> int { n }\nf(1)"), "n")
-            c.binding()! is .Param && c.declared()!.name() == "int"
-        }
-        then "a method's `self` binding is Receiver, and declared() names the impl's own type" {
-            let c = find_text(
-                analyze_source(
-                    "type P = { x: int }\nimpl P { fn same() -> P { self } }\nlet p = P { x: 1 }\np.same()",
-                ),
-                "self",
+        then "a nullable ident carries its unwrapped type" {
+            let t = find_text(
+                coded("fn t() -> string? {\n    let s: string? = null\n    s\n}"),
+                "s",
             )
-            c.binding()! is .Receiver && c.declared()!.name() == "P"
-        }
-        then "a match arm's bound name is Pattern, and declared() names the payload it took" {
-            let c = find_text(
-                analyze_source("enum E { A(n: int) }\nmatch E.A(1) { .A(n) -> n }"),
-                "n",
-            )
-            c.binding()! is .Pattern && c.declared()!.name() == "int"
-        }
-        then "a lambda param's binding is LambdaParam, and declared() names its written type" {
-            let c = find_text(analyze_source("let f = (n: int) -> n\nf"), "n")
-            c.binding()! is .LambdaParam && c.declared()!.name() == "int"
-        }
-        then "a captured name's binding is Capture, and declared() follows the chain to its source" {
-            let c = find_text(analyze_source("let n = 1\nlet f = () -> n\nf"), "n")
-            c.binding()! is .Capture && c.declared()!.name() == "int"
-        }
-        then "a pairing loop's counter is Index, and declared() answers int outright" {
-            let c = find_text(analyze_source("let xs = [1, 2]\nfor i, v in xs { i }"), "i")
-            c.binding()! is .Index && c.declared()!.name() == "int"
-        }
-        then "a declared fn read as a value is Decl, and declared() names some type" {
-            let c = find_text(analyze_source("fn f(n: int) -> int { n }\nlet g = f\ng"), "f")
-            c.binding()! is .Decl && c.declared() != null
+                .type()!
+            !t.is_text() && t.carried()!.is_text()
         }
     }
     given "pure()" {
 
         then "true for a name, a literal, an operator, a field/index read, a Read-effect method, and an aggregate literal; false for a call, a writing method, a lambda, a block, a match, and a comprehension" {
-            pure_cases().all(tail(analyze_source(it.src)).pure() == it.want)
-        }
-    }
-    given "answering() and is_registry()" {
-
-        then "counts one per variant-testing arm, up to a hole; null off a match" {
-            let three = tail(
-                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, .B -> 2, .C -> 3 }"),
-            )
-            let one_and_hole = tail(
-                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, _ -> 0 }"),
-            )
-            let not_a_match = tail(analyze_source("1"))
-            three.answering() == 3 &&
-                one_and_hole.answering() == 1 &&
-                not_a_match.answering() == null
-        }
-        then "is_registry() follows: true at two or more answering arms, false at one and off a match" {
-            let three = tail(
-                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, .B -> 2, .C -> 3 }"),
-            )
-            let one_and_hole = tail(
-                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, _ -> 0 }"),
-            )
-            let not_a_match = tail(analyze_source("1"))
-            three.is_registry() && !one_and_hole.is_registry() && !not_a_match.is_registry()
+            pure_cases()
+                .all(
+                    if it.at == "" { tail(coded(it.src)) } else { find_text(coded(it.src), it.at) }
+                        .pure() == it.want,
+                )
         }
     }
     given "text()" {
 
         then "a node's text is its exact source slice, at any depth" {
-            let c = tail(analyze_source("let n = 1\nn + 22"))
+            let c = tail(coded("let n = 1\nn + 22"))
             c.text() == "n + 22" && c.kids()[1].text() == "22"
         }
     }
@@ -173,31 +133,25 @@ spec "features/code — the analysed handle" {
 
         then "a call's kids are its callee then its args, in payload order" {
             let c = tail(
-                analyze_source(
-                    "fn pick(n: int) -> fn(int) -> int { (m: int) -> m + n }\npick(1)(2)",
-                ),
+                coded("fn pick(n: int) -> fn(int) -> int { (m: int) -> m + n }\npick(1)(2)"),
             )
             let ks = c.kids()
             ks.length == 2 && ks[0].text() == "pick(1)" && ks[1].text() == "2"
         }
     }
     given "enclosing_decl() over a nested declaration" {
-        then "a nested fn owns no range of its own — a node inside it still names the enclosing decl" {
-            let a = analyze_source(
+        then "a nested fn owns no range of its own — a node inside it stands in the enclosing decl's item" {
+            let a = coded(
                 "fn outer() -> int {\n    fn nested() -> int { 420 }\n    nested() + 7\n}\nouter()",
             )
-            let inside_nested = find_text(a, "420")
-            let inside_outer = find_text(a, "7")
-            let nested_owner? = enclosing_decl(a.view, inside_nested.at) else { return false }
-            let outer_owner? = enclosing_decl(a.view, inside_outer.at) else { return false }
+            let nested_owner? = item_holding(a, "420") else { return false }
+            let outer_owner? = item_holding(a, "7") else { return false }
             nested_owner == outer_owner
         }
         then "two SIBLING top-level fns each own only their own range" {
-            let a = analyze_source("fn a() -> int { 111 }\nfn b() -> int { 222 }\na() + b()")
-            let inside_a = find_text(a, "111")
-            let inside_b = find_text(a, "222")
-            let a_owner? = enclosing_decl(a.view, inside_a.at) else { return false }
-            let b_owner? = enclosing_decl(a.view, inside_b.at) else { return false }
+            let a = coded("fn a() -> int { 111 }\nfn b() -> int { 222 }\na() + b()")
+            let a_owner? = item_holding(a, "111") else { return false }
+            let b_owner? = item_holding(a, "222") else { return false }
             a_owner != b_owner
         }
     }

@@ -1,16 +1,9 @@
 // The driver seam: the canonical language assembles clean, programs
 // parse through one fn, recovery holes are VISIBLE Stmt.Error nodes,
 // and lex errors ride the same diagnostics list.
-use @std.avrac.compiler.{
-    avra,
-    assemble,
-    language_features,
-    parse_source,
-    project,
-    builtin_codes,
-    analyze_source,
-}
-use @std.avrac.testing.{shown}
+use @std.avrac.core.{scoped}
+use @std.avrac.compiler.{avra, assemble, language_features, parse_source, project, builtin_codes}
+use @std.avrac.testing.{shown, judged}
 use @std.grammar.{
     Diagnostic,
     Cause,
@@ -25,7 +18,7 @@ use @std.grammar.{
     Expect,
     Recover,
 }
-use @std.avrac.diagnostics.{registered, new_source_file}
+use @std.avrac.diagnostics.{registered}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.features.{LanguageFeature, feature}
 
@@ -65,18 +58,15 @@ spec "language" {
                 lang.diagnostics[0].message == "`lex.error`: diagnostic kind is registered more than once"
         }
         then "a real parse error checks end to end" {
-            let lang = avra()
             let expected = """error[parse.expected]: expected NAME while parsing `stmt`
-  ╭─[app.av:2:5]
+  ╭─[<source>:2:5]
 2 │ let = 3
   ·     ┬
 ──╯
 help: the parse stopped here — a missing or misplaced token just before this point is the usual cause"""
-            lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected &&
-                lang.check(new_source_file("<source>", "let a = 1")) == ""
+            judged("let a = 1\nlet = 3").report() == expected && judged("let a = 1").report() == ""
         }
         then "a `mut` seat sealing a value enum's flat-record payload is found before the enum's layout is read, and the program checks clean (R11c, avra-8sb5.34.21)" {
-            let lang = avra()
             let src = """type Small = { index: int }
 enum Tagged {
     A(Small)
@@ -91,10 +81,9 @@ fn reads_tag(x: Tagged) -> int {
 fn seal(mut s: Small) {
     s.index = 1
 }"""
-            lang.check(new_source_file("app.av", src)) == ""
+            judged(src).report() == ""
         }
         then "an impl's mutating RECEIVER seals its record before the enum's layout is read, and the program checks clean" {
-            let lang = avra()
             let src = """type Small = { index: int }
 enum Tagged {
     A(Small)
@@ -111,7 +100,7 @@ impl Small {
         self.index = self.index + 1
     }
 }"""
-            lang.check(new_source_file("app.av", src)) == ""
+            judged(src).report() == ""
         }
     }
     given "the code table" {
@@ -140,7 +129,7 @@ impl Small {
         then "lets and expression statements land in order" {
             let p = parse_source("let x = 1 + y\nx")
             let let_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, _, _) -> name == "x",
+                .Let(name, _, _) -> name.spells("x"),
                 _ -> false,
             }
             p.voices.list.is_empty() &&
@@ -154,7 +143,7 @@ impl Small {
             let p = parse_source("let a = 1\nlet = 3\nlet y = 2")
             let hole_ok = p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error
             let tail_ok = match p.store.stmt(p.stmts[2]) {
-                .Let(name, _, _) -> name == "y",
+                .Let(name, _, _) -> name.spells("y"),
                 _ -> false,
             }
             p.voices.list.length == 1 && hole_ok && tail_ok

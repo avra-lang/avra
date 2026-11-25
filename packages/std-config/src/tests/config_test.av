@@ -1,0 +1,30 @@
+// The pieces under a load: how a leaf names its variable, how layers stack, and what a layer says
+// of where each leaf came from.
+use @std.validate.{Value, from_toml}
+use @std.config.{variable_named, layer_of, bottom, From, Layer}
+
+fn toml(text: string) -> Value { from_toml(text) catch Value.Null }
+
+fn stacked(texts: List<string>) -> string {
+    mut s = bottom()
+    for i, t in texts { s = s.laid(layer_of(toml(t), From.File, "f${i}")) }
+    "${s.top.value.shown()} | ${[o.path + "@" + o.at for o in s.top.origins].join(",")} | ${[o.path + "@" + o.at for o in s.shadowed].join(",")}"
+}
+
+spec "std/config" {
+    given "a variable's name" {
+        then "the prefix, then each step upper-cased, joined by __" { variable_named("shop", "db.pool") == "SHOP__DB__POOL" }
+        then "an underscore inside a step stays one" { variable_named("SHOP", "db_url") == "SHOP__DB_URL" }
+        then "a step under a record and a field with an underscore never meet" {
+            variable_named("S", "db.url") != variable_named("S", "db_url")
+        }
+    }
+    given "layers stacking" {
+        then "a map merges key by key and the later leaf wins" {
+            stacked(["a = 1\n[db]\nurl = \"x\"\npool = 2\n", "[db]\npool = 3\n"]) == "{\"a\": 1, \"db\": {\"url\": \"x\", \"pool\": 3}} | a@f0,db.url@f0,db.pool@f1 | db.pool@f0"
+        }
+        then "a list replaces whole" { stacked(["xs = [\"a\", \"b\"]\n", "xs = [\"c\"]\n"]) == "{\"xs\": [\"c\"]} | xs@f1 | xs@f0" }
+        then "a layer holding nothing changes nothing" { stacked(["a = 1\n", ""]) == "{\"a\": 1} | a@f0 | " }
+        then "nothing stacked is the empty map" { stacked([]) == "{} |  | " }
+    }
+}

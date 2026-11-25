@@ -6,8 +6,7 @@
 //
 // The fixtures below carry the boilerplate so each test shows only
 // its attack.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run}
+use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run, judged}
 
 /// THE subject under attack: one carrying variant, one unit.
 fn ab() -> string {
@@ -87,7 +86,7 @@ spec "features/enums (adversarial)" {
             refusals("enum E {\n    a(int\n}\n1") == 1
         }
         then "construction with no argument names what is missing" {
-            let a = analyze_source("${ab()}let x = E.a()\n2")
+            let a = judged("${ab()}let x = E.a()\n2")
             a.diagnostics.length == 1 && a.report().contains("carries `int`, given nothing")
         }
         then "construction with two arguments refuses" {
@@ -137,7 +136,7 @@ spec "features/enums (adversarial)" {
             refused_with(src, "an interpolation hole prints as a scalar or string, found `E`")
         }
         then "a declaration inside a block refuses AT the declaration" {
-            let a = analyze_source("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()")
+            let a = judged("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("type declarations live at the top level")
         }
@@ -169,7 +168,7 @@ spec "features/enums (adversarial)" {
         // backend quietly answered `false` — comparing ADDRESSES.
         // An engine divergence AND a silently wrong native answer.
         then "equality refuses, and says to match instead" {
-            let a = analyze_source("${ab()}E.a(1) == E.a(1)")
+            let a = judged("${ab()}E.a(1) == E.a(1)")
             a.diagnostics.length == 1 &&
                 a
                     .report()
@@ -248,9 +247,7 @@ spec "features/enums (adversarial)" {
     }
     given "the slot law vs the name law" {
         then "an unknown PAYLOAD type names the NAME, not the slot law" {
-            let a = analyze_source(
-                "enum E {\n    a(Foo)\n    b\n}\nmatch E.a(1) { .a -> 1, .b -> 0 }",
-            )
+            let a = judged("enum E {\n    a(Foo)\n    b\n}\nmatch E.a(1) { .a -> 1, .b -> 0 }")
             a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
         }
     }

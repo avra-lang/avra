@@ -69,7 +69,10 @@ spec "std/http — static files" {
         }
         then "a missing file" { got("/static/nope.txt").status == 404 }
         then "a HEAD answers like a GET" { served_by(site(), "HEAD /static/a.txt HTTP/1.1", "").status == 200 }
-        then "a POST is not routed" { served_by(site(), "POST /static/a.txt HTTP/1.1", "Content-Length: 0\r\n").status == 404 }
+        then "a POST is refused, naming what the directory takes" {
+            let r = served_by(site(), "POST /static/a.txt HTTP/1.1", "Content-Length: 0\r\n")
+            r.status == 405 && field_of(r, "allow") == "GET, HEAD"
+        }
         then "max_age sends cache-control" {
             field_of(
                 served_by(

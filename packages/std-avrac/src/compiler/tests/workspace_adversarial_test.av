@@ -3,32 +3,42 @@
 // module's line, and the crossings that must simply work. The
 // vertical story lives in workspace_test.av; these are the programs
 // that tried to break it.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{analyze_source, Analysis}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
+use @std.avrac.testing.{judged}
+use @std.avrac.testing.held.{Held, Judged, held_at}
+
+/// The files among `files` a host lists by `names` — what the program can see — under the
+/// package's manifest.
+fn listed(files: Map<string, string>, names: List<string>) -> Map<string, string> {
+    mut held: Map<string, string> = {}
+    for path in names { held.set(path, files.get(path) ?? "") }
+    if !held.has(MANIFEST) { held.set(MANIFEST, "[package]\nname = \"app\"\nversion = \"0.1.0\"\n") }
+    held
+}
+
+/// Where the package under attack keeps its manifest: a package has one.
+const MANIFEST: string = "/w/avra.toml"
 
 /// A root file plus whatever the attack adds.
-fn package(files: Map<string, string>, names: List<string>) -> Workspace {
-    test_workspace(memory_host(files, names), "/w")
+fn package(files: Map<string, string>, names: List<string>) -> Held {
+    held_at(listed(files, names), "/w")
 }
 
 /// The root file's ONE refusal, saying this.
 fn refuses_once(files: Map<string, string>, names: List<string>, saying: string) -> bool {
-    let a = package(files, names).analyze_file("/w/src/main.av")
+    let a = package(files, names).judged_at("/w/src/main.av")
     a.diagnostics.length == 1 && a.report().contains(saying)
 }
 
 fn runs(files: Map<string, string>, names: List<string>) -> string? {
-    match package(files, names).program("/w/src/main.av").run() {
+    match package(files, names).judged_at("/w/src/main.av").run() {
         .Ok(text) -> text,
         .Err(_) -> null,
     }
 }
 
 /// One file's analysis in the package `files` holds.
-fn analysed_at(files: Map<string, string>, names: List<string>, at: string) -> Analysis {
-    package(files, names).analyze_file(at)
+fn analysed_at(files: Map<string, string>, names: List<string>, at: string) -> Judged {
+    package(files, names).judged_at(at)
 }
 
 /// A test file's own helper, the name every attack below reuses.
@@ -368,7 +378,7 @@ spec "compiler/workspace (adversarial)" {
                 },
                 ["/w/src/main.av", "/w/src/hub.av", "/w/src/util.av", "/w/src/util2.av"],
             )
-            let said = [ws.analyze_file(path).report() for path in ["/w/src/main.av", "/w/src/hub.av", "/w/src/util.av", "/w/src/util2.av"]]
+            let said = [ws.judged_at(path).report() for path in ["/w/src/main.av", "/w/src/hub.av", "/w/src/util.av", "/w/src/util2.av"]]
             let all = said.join("\n")
             all.contains("`f` is declared twice in this module") &&
                 !all.contains("import_clash") &&
@@ -397,8 +407,8 @@ spec "compiler/workspace (adversarial)" {
                 "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
                 "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
             }
-            let a = test_workspace(
-                memory_host(
+            let a = held_at(
+                listed(
                     files,
                     [
                         "/w/avra.toml",
@@ -408,10 +418,10 @@ spec "compiler/workspace (adversarial)" {
                         "/std/std-high/avra.toml",
                         "/std/std-high/src/high.av",
                     ],
-                ) with { std_root: "/std" },
+                ),
                 "/std/std-low",
             )
-                .analyze_file("/std/std-low/src/low.av")
+                .judged_at("/std/std-low/src/low.av")
             a
                 .report()
                 .contains(
@@ -547,7 +557,7 @@ spec "compiler/workspace (adversarial)" {
             )
         }
         then "in a file outside any package" {
-            let a = analyze_source("use util.{twice}\n1\n")
+            let a = judged("use util.{twice}\n1\n")
             a.diagnostics.length == 1 &&
                 a.report().contains("this file is not in a package — `use` needs a root")
         }
@@ -710,9 +720,11 @@ spec "compiler/workspace (adversarial)" {
                 },
                 ["/w/src/main.av", "/w/src/util/shapes.av"],
             )
-            let shapes = ws.analyze_file("/w/src/util/shapes.av")
-            ws.analyze_file("/w/src/main.av").clean() &&
+            // a build judges the whole program: what it says stands in the file it's said of
+            let shapes = ws.judged_at("/w/src/util/shapes.av")
+            ws.judged_at("/w/src/main.av").said_in("/w/src/main.av").is_empty() &&
                 shapes.diagnostics.length == 1 &&
+                shapes.said_in("/w/src/util/shapes.av").length == 1 &&
                 shapes.report().contains("`k` is a run-time binding of the top level")
         }
     }
@@ -726,9 +738,11 @@ spec "compiler/workspace (adversarial)" {
                 },
                 ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"],
             )
-            let later = ws.analyze_file("/w/src/util/b.av")
-            ws.analyze_file("/w/src/util/a.av").clean() &&
+            // a build judges the whole program: what it says stands in the file it's said of
+            let later = ws.judged_at("/w/src/util/b.av")
+            ws.judged_at("/w/src/util/a.av").said_in("/w/src/util/a.av").is_empty() &&
                 later.diagnostics.length == 1 &&
+                later.said_in("/w/src/util/b.av").length == 1 &&
                 later.report().contains("`P.show` is declared twice")
         }
     }

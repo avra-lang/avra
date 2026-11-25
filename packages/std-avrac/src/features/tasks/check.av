@@ -1,8 +1,9 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
 //! `.await` answers it back; `.done` is a `bool`.
-use core.{ExprId, TypeId, Type, ResSides, TypeRef}
+use core.{CatchFault, ExprId, TypeId, Type, ResSides, TypeRef}
 use features.{TypeCx, FileView, FailureView, Refusal, MethodCall, this_is}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
+use features.results.{catch_fault}
 
 fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
@@ -76,6 +77,19 @@ fn check_done(cx: TypeCx, _e: ExprId, _ty: TypeId) -> TypeId { cx.type(bool) }
 fn check_cancel(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     if !cx.seated(mc, "Task.cancel", []) { return cx.error_type }
     cx.type(void)
+}
+
+/// `t.filed(arm, member)` — the task's end files a wake for arm `arm` of the wait the task stands in,
+/// as member `member`.
+fn check_filed(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !cx.seated(mc, "Task.filed", [cx.type(int), cx.type(int)]) { return cx.error_type }
+    cx.type(void)
+}
+
+/// `t.since()` — the stamp the task's end took, 0 while it runs: what orders tasks that ended.
+fn check_since(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !cx.seated(mc, "Task.since", []) { return cx.error_type }
+    cx.type(int)
 }
 
 /// `Tasks.new()` — an empty owner.
@@ -168,56 +182,43 @@ fn task_app(cx: TypeCx, name: string, t: TypeId) -> TypeId? {
 
 // ── The voices ──
 
-fn yield_without(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.yield",
-                cx.loc_of(e),
-                "`yield` sends into the producer it stands in, and no producer encloses it",
-                "no producer here",
-                "write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands",
-            ),
-        )
+fn yield_without(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("flow.yield", cx.loc_of(e), yield_unenclosed())) }
+
+/// A `yield` no producer encloses.
+export fn yield_unenclosed() -> Voice {
+    Voice {
+        message: "`yield` sends into the producer it stands in, and no producer encloses it",
+        label: "no producer here",
+        help: "write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands",
+    }
 }
 
 fn no_task(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.produce",
-                cx.loc_of(e),
-                "`produce` answers `@std.task.Source`, and this program loads no `@std/task`",
-                "no `@std/task` here",
-                "add `use @std.task`",
-            ),
-        )
+    cx.spoken(said_as("flow.produce", cx.loc_of(e), taskless("produce", "Source")))
 }
 
 fn no_task_chan(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.channel",
-                cx.loc_of(e),
-                "`channel` answers `@std.task.Channel`, and this program loads no `@std/task`",
-                "no `@std/task` here",
-                "add `use @std.task`",
-            ),
-        )
+    cx.spoken(said_as("flow.channel", cx.loc_of(e), taskless("channel", "Channel")))
 }
 
-fn answers_nothing(mut cx: TypeCx, body: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.within",
-                cx.loc_of(body),
-                "a `within` answers what its block did or the deadline it ran past, and this block answers nothing",
-                "answers nothing",
-                "answer what the block did — end it on a value",
-            ),
-        )
+/// The form `form`, which answers `@std/task`'s `answer`, in a program that loads no `@std/task`.
+export fn taskless(form: string, answer: string) -> Voice {
+    Voice {
+        message: "`${form}` answers `@std.task.${answer}`, and this program loads no `@std/task`",
+        label: "no `@std/task` here",
+        help: "add `use @std.task`",
+    }
+}
+
+fn answers_nothing(mut cx: TypeCx, body: ExprId) -> TypeId { cx.spoken(said_as("type.within", cx.loc_of(body), within_unanswered())) }
+
+/// A `within` whose block answers nothing.
+export fn within_unanswered() -> Voice {
+    Voice {
+        message: "a `within` answers what its block did or the deadline it ran past, and this block answers nothing",
+        label: "answers nothing",
+        help: "answer what the block did — end it on a value",
+    }
 }
 
 /// The limit is no span: `within` arms through `@std/time`'s own
@@ -237,24 +238,20 @@ fn limit_unfit(mut cx: TypeCx, limit: ExprId, span: TypeId) -> TypeId {
         )
 }
 
-fn no_time(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.within",
-                cx.loc_of(e),
-                "a `within` answers `Result<T, TimedOut>`, and `TimedOut` is `@std/time`'s",
-                "no `@std/time` here",
-                "give the limit as `@std/time`'s span — `use @std.time.{ms}`",
-            ),
-        )
+fn no_time(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("type.within", cx.loc_of(e), within_untimed())) }
+
+/// A `within` in a program that loads no `@std/time`.
+export fn within_untimed() -> Voice {
+    Voice {
+        message: "a `within` answers `Result<T, TimedOut>`, and `TimedOut` is `@std/time`'s",
+        label: "no `@std/time` here",
+        help: "give the limit as `@std/time`'s span — `use @std.time.{ms}`",
+    }
 }
 
 fn cancelled_unloaded() -> Refusal {
-    Refusal {
-        message: "a caught `await` recovers the prelude's `Cancelled`, and this program sees no `@std/prelude`",
-        help: "a file in a package sees the prelude",
-    }
+    let said = catch_fault(CatchFault.CancelledUnseen)
+    Refusal { message: said.message, help: said.help ?? "" }
 }
 
 fn not_a_task(mut cx: TypeCx, t: ExprId) -> TypeId {

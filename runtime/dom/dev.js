@@ -65,8 +65,18 @@ export function relayed({ console, post }) {
   };
 }
 
+// Every failure the page's own script hears (`globalThis.avraRelay` in page.html: each told
+// failure and each window error, a masked one among them) reaches the server's output: those held
+// before this script ran first, then each as it comes.
+export function carried({ relay, post }) {
+  for (const line of relay.held.splice(0)) post(line);
+  relay.post = post;
+}
+
 if (typeof document !== "undefined") {
-  relayed({ console, post: (text) => fetch("/@dev/said", { method: "POST", body: text, keepalive: true }).catch(() => {}) });
+  const post = (text) => fetch("/@dev/said", { method: "POST", body: text, keepalive: true }).catch(() => {});
+  relayed({ console, post });
+  carried({ relay: (globalThis.avraRelay ??= { held: [], post: null }), post });
   watch({
     doc: document,
     mine: document.querySelector('meta[name="avra-module"]').content,

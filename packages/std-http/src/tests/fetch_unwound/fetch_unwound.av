@@ -1,14 +1,21 @@
 //! proves: a fetch unwound while it waits for its reply hands back
 //! what it held — the pool's slot is free and the connection closed,
 //! so the server reads the end
-use @std.net.{Conn, NetError, Read, listen}
-use @std.time.{ms, sleep}
+use @std.net.{Conn, NetError, listen}
+use @std.time.{ms, secs, sleep}
 use @std.http.fetch.{Options, fetch}
 use @std.http.pool.{Pool, origin_of}
 
-/// Whether the peer has closed: everything it wrote read, then the end.
+/// Whether the peer ends within two seconds: everything it wrote read, then the end. Each read
+/// waits on the socket, since a close reaches its peer in the kernel's time, not the clock's.
 fn ended(c: Conn) -> Result<bool, NetError> {
-    match c.try_read(65536)? { .Data(_) -> ended(c), .Eof -> true, .Pending -> false }
+    match within secs(2) { drained(c) } { .Ok(r) -> r, .Err(_) -> .Ok(false) }
+}
+
+/// Whether `c` reads to its end, each read parked until the peer writes or finishes.
+fn drained(c: Conn) -> Result<bool, NetError> {
+    if c.read(65536)? == null { return .Ok(true) }
+    drained(c)
 }
 
 fn fetches(url: string, p: Pool) -> bool { fetch(.Get, url, .Empty, Options { pool: p }) is .Ok }

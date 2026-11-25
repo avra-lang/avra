@@ -6,7 +6,7 @@
 use core.{StmtId, TypeId, Reg, Ins}
 use core.stmt.{Fail}
 use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
-use diagnostics.{refusal}
+use diagnostics.{Voice, said_as}
 
 impl StmtSemantics for Fail {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
@@ -29,16 +29,7 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
     let v? = cx.view.store.stmt_value(s) else { return }
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        cx
-            .emit(
-                refusal(
-                    "type.fail",
-                    cx.stmt_loc(s),
-                    "a `fail` raises to a caller, and there is none enclosing",
-                    "raised here",
-                    "at the top level there is no failure channel",
-                ),
-            )
+        cx.emit(said_as("type.fail", cx.stmt_loc(s), fail_unenclosed()))
         return
     }
     let promised = ret!
@@ -70,21 +61,44 @@ fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
         cx.defect("a `fail` without an enclosing fn survived typing")
         return null
     }
-    let raised = cx.failed(ret!, v)
-    cx.failing()
-    cx.emit(Ins.FnExit(raised))
+    cx.fail_exit(cx.failed(ret!, v))
     null
 }
 
-fn not_fallible(mut cx: TypeCx, s: StmtId, promise: string) {
-    cx
-        .emit(
-            refusal(
-                "type.fail",
-                cx.stmt_loc(s),
-                "`fail` raises on a `Result`'s failure channel, and this fn promises `${promise}`",
-                "raised here",
-                "declare the answer fallible — `-> Result<${promise}, E>`",
-            ),
-        )
+fn not_fallible(mut cx: TypeCx, s: StmtId, promise: string) { cx.emit(said_as("type.fail", cx.stmt_loc(s), fail_unfallible(promise))) }
+
+/// A `fail` no fn encloses.
+export fn fail_unenclosed() -> Voice {
+    Voice {
+        message: "a `fail` raises to a caller, and there is none enclosing",
+        label: "raised here",
+        help: "at the top level there is no failure channel",
+    }
+}
+
+/// A `fail` in a block whose seat gives it no answer yet, so no fn is known to take its failure.
+export fn fail_unanswered() -> Voice {
+    Voice {
+        message: "`fail` raises to the fn this block answers for, and no seat gives it an answer yet",
+        label: "raised here",
+        help: "give the block a seat that answers a `Result` — `let f: fn() -> Result<T, E> = …`",
+    }
+}
+
+/// A `fail` in a block whose seat answers `answer`, which is no `Result`.
+export fn fail_seat_unfallible(answer: string) -> Voice {
+    Voice {
+        message: "`fail` raises to the fn this block answers for; this seat answers `${answer}`, not a Result",
+        label: "raised here",
+        help: "make the seat answer a `Result` — `fn(…) -> Result<${answer}, E>`",
+    }
+}
+
+/// A `fail` in a fn promising `promise`, which is no `Result`.
+export fn fail_unfallible(promise: string) -> Voice {
+    Voice {
+        message: "`fail` raises on a `Result`'s failure channel, and this fn promises `${promise}`",
+        label: "raised here",
+        help: "declare the answer fallible — `-> Result<${promise}, E>`",
+    }
 }

@@ -31,6 +31,19 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             boxes: [Box.Text],
         },
+        // The runtime's own `println`, the same line `avra_puts` prints: a bare `extern fn println`
+        // names it, and the evaluator prints it where it prints every line.
+        RtSig {
+            name: "println",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Puts,
+            reach: Reach.World,
+            inert: true,
+            boxes: [Box.Text],
+        },
         // A program's own trap, in its words: exits 2, never returns.
         RtSig {
             name: "avra_trap",
@@ -64,6 +77,36 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
         },
         RtSig {
+            name: "avra_rc_release2",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.Ptr],
+            writes: [true, true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_rc_release3",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
+            writes: [true, true, true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_rc_release4",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
+            writes: [true, true, true, true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
             name: "avra_rc_retain",
             ret: RtKind.Void,
             params: [RtKind.Ptr],
@@ -86,6 +129,51 @@ export once fn rt_sigs() -> List<RtSig> {
             name: "avra_array_sized",
             ret: RtKind.Ptr,
             params: [RtKind.I64],
+            answer: Box.List,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.ArrayNew,
+            inert: true,
+        },
+        // A PACKED LIST, for a list of plain scalars: its cells and no
+        // marks. Made empty, sized, or laid out full of one word.
+        RtSig {
+            name: "avra_array_new_words",
+            ret: RtKind.Ptr,
+            params: [],
+            answer: Box.List,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.ArrayNew,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_array_sized_words",
+            ret: RtKind.Ptr,
+            params: [RtKind.I64],
+            answer: Box.List,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.ArrayNew,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_array_filled_words",
+            traps: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.I64, RtKind.I64],
+            answer: Box.List,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.ArrayFilled,
+            inert: true,
+        },
+        // `[]` of a list of plain scalars: the binary's one empty packed
+        // list, immortal, which its first write opens into a packed clone.
+        RtSig {
+            name: "avra_array_empty_words",
+            ret: RtKind.Ptr,
+            params: [],
             answer: Box.List,
             owns_result: true,
             has_owned_twin: false,
@@ -217,6 +305,19 @@ export once fn rt_sigs() -> List<RtSig> {
             owns_result: true,
             has_owned_twin: false,
             host: RtHost.BoxThawed,
+            inert: true,
+            aliases_arg0: true,
+        },
+        // A write through `self` or a `mut` seat: the box its caller opened, riding the seat's
+        // reference — a seat stands for the whole body, so the opened box never outlives it.
+        RtSig {
+            name: "avra_seat_opened",
+            traps: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.SeatOpened,
             inert: true,
             aliases_arg0: true,
         },
@@ -580,6 +681,19 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.SlotUnique,
             inert: true,
         },
+        // a cell's seed parted from its other holders: a shared counted box opened, the binary's own
+        // data left, since every write opens it again and an immortal box's open is a clone
+        RtSig {
+            name: "avra_owned_slot_unshared",
+            traps: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr, RtKind.I64],
+            writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.SlotUnique,
+            inert: true,
+        },
         RtSig {
             name: "avra_slot_set",
             traps: true,
@@ -860,6 +974,32 @@ export once fn rt_sigs() -> List<RtSig> {
             has_owned_twin: false,
             host: RtHost.Insist,
             inert: true,
+        },
+        // `!` on a counted box: the answer is the subject's own box, riding its reference; the
+        // memory pass takes the owned twin where the answer must outlive the subject.
+        RtSig {
+            name: "avra_unwrap",
+            traps: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: true,
+            host: RtHost.Insist,
+            lends: true,
+            inert: true,
+            aliases_arg0: true,
+        },
+        RtSig {
+            name: "avra_unwrap_owned",
+            traps: true,
+            stood: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.Insist,
+            inert: true,
+            aliases_arg0: true,
         },
         RtSig {
             name: "avra_insist_scalar",
@@ -1187,6 +1327,65 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             boxes: [Box.List],
         },
+        // A STRIDED LIST: each element its `k` words laid in place (the last
+        // seat), so these rows answer in ELEMENTS. Every other list row moves
+        // words and needs no stride.
+        RtSig {
+            name: "avra_stride_len",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.List],
+        },
+        RtSig {
+            name: "avra_stride_at",
+            traps: true,
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.List],
+        },
+        RtSig {
+            name: "avra_stride_last",
+            traps: true,
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.List],
+        },
+        RtSig {
+            name: "avra_stride_slice",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64],
+            answer: Box.List,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            has_reusing_twin: true,
+            boxes: [Box.List],
+        },
+        RtSig {
+            name: "avra_stride_slice_reusing",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64],
+            writes: [true, false, false, false],
+            answer: Box.List,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.List],
+        },
         RtSig {
             name: "avra_str_contains",
             ret: RtKind.I64,
@@ -1284,6 +1483,159 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.StrWordAt,
             inert: true,
             boxes: [Box.Text],
+        },
+        // THE SAVED LAYOUT'S WRITER, held in C: one call a slot, and a node written whole in one
+        // call, byte for byte as `saved_layout.av` reads it.
+        RtSig {
+            name: "avra_sw_new",
+            ret: RtKind.Ptr,
+            params: [RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_length",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_push",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_record",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_list_open",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            writes: [true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_list_close",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            writes: [true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_label",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64],
+            writes: [true, false, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_big",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_octets",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.Ptr],
+            writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.Any, Box.Bytes],
+        },
+        RtSig {
+            name: "avra_sw_text",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.Ptr],
+            writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.Any, Box.Text],
+        },
+        RtSig {
+            name: "avra_sw_closed",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_octets_at",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_sw_emptied",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            writes: [true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        // A WHOLE VALUE FOLDED INTO ONE LANE OF A KEY: what `KeyLane.word` did a word per call, one
+        // call per value.
+        RtSig {
+            name: "avra_lane_text",
+            ret: RtKind.I64,
+            params: [RtKind.I64, RtKind.I64, RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.Any, Box.Any, Box.Text],
+        },
+        RtSig {
+            name: "avra_lane_octets",
+            ret: RtKind.I64,
+            params: [RtKind.I64, RtKind.I64, RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+            boxes: [Box.Any, Box.Any, Box.Bytes],
         },
         RtSig {
             name: "avra_str_trim",
@@ -1606,6 +1958,34 @@ export once fn rt_sigs() -> List<RtSig> {
             has_owned_twin: false,
             host: RtHost.BytesWithRoom,
             inert: true,
+        },
+        // A CELL'S BYTES GROWN IN PLACE: `width` octets of a word, or a run
+        // of octets, appended to the bytes the cell at seat 0 holds — in
+        // place while the cell holds them alone, else into a copy the cell
+        // then owns. Seat 0's own box is the same cell after; what it holds
+        // is not.
+        RtSig {
+            name: "avra_cell_bytes_word",
+            traps: true,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.CellBytesWord,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_cell_bytes_run",
+            traps: true,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.Ptr],
+            writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.CellBytesRun,
+            inert: true,
+            boxes: [Box.Any, Box.Bytes],
         },
         // MEMORY-MAPPED FILES (runtime/avra_runtime.c): a read-only view
         // of a file, handed back as an unmanaged handle — a raw `ptr`,
@@ -2040,7 +2420,9 @@ export once fn rt_sigs() -> List<RtSig> {
         // its deferred calls with this pair. The enter saves and clears
         // the task's unwind bit, so a call inside is not cut at its test
         // and only a wait answers the standing cancel; the leave puts
-        // the saved bit back. Neither waits.
+        // the saved bit back. Neither waits, and neither reads the world:
+        // the unwind bit is the running task's own, which an evaluator
+        // holds itself, so a compile-time run may bracket a deferred call.
         RtSig {
             name: "avra_fiber_shield_enter",
             wasm: true,
@@ -2049,7 +2431,7 @@ export once fn rt_sigs() -> List<RtSig> {
             owns_result: false,
             has_owned_twin: false,
             host: RtHost.ShieldEnter,
-            reach: Reach.World,
+            reach: Reach.Pure,
             inert: true,
         },
         RtSig {
@@ -2060,7 +2442,7 @@ export once fn rt_sigs() -> List<RtSig> {
             owns_result: false,
             has_owned_twin: false,
             host: RtHost.ShieldLeave,
-            reach: Reach.World,
+            reach: Reach.Pure,
             inert: true,
         },
         // THE WAIT SET (runtime/avra_fiber.c): a task registers what it
@@ -2324,6 +2706,161 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             owns_result: false,
             keeps: [false, true],
+        },
+        // THE CONTEXTS A TASK RUNS UNDER (runtime/avra_runtime.c): the
+        // cell its frame holds for a context's key, a set making the next
+        // frame, and the end of a set's block taking it back.
+        RtSig {
+            name: "avra_ctx_read",
+            ret: RtKind.Ptr,
+            params: [RtKind.I64],
+            has_owned_twin: false,
+            host: RtHost.CtxRead,
+            reach: Reach.World,
+            inert: true,
+            owns_result: true,
+        },
+        RtSig {
+            name: "avra_ctx_set",
+            ret: RtKind.Void,
+            params: [RtKind.I64, RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxSet,
+            reach: Reach.World,
+            inert: true,
+            owns_result: false,
+            keeps: [false, true],
+        },
+        RtSig {
+            name: "avra_ctx_back",
+            ret: RtKind.Void,
+            params: [],
+            has_owned_twin: false,
+            host: RtHost.CtxBack,
+            reach: Reach.World,
+            inert: true,
+            owns_result: false,
+        },
+        // THE FRAME A BODY IS MADE UNDER: the one in force, a body made
+        // under one entered (0 where it is the one in force already, else 1,
+        // and a back owed), and a fn box made under another.
+        RtSig {
+            name: "avra_ctx_frame",
+            ret: RtKind.Ptr,
+            params: [],
+            has_owned_twin: false,
+            host: RtHost.CtxFrame,
+            reach: Reach.World,
+            inert: true,
+            owns_result: true,
+        },
+        RtSig {
+            name: "avra_ctx_enter",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxEnter,
+            reach: Reach.World,
+            inert: true,
+            owns_result: false,
+        },
+        RtSig {
+            name: "avra_ctx_frame_pushed",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxFramePushed,
+            reach: Reach.World,
+            inert: true,
+            owns_result: false,
+            writes: [true],
+        },
+        RtSig {
+            name: "avra_ctx_reframed",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxReframed,
+            reach: Reach.World,
+            inert: true,
+            owns_result: true,
+            keeps: [false, false, true],
+            aliases_arg0: true,
+        },
+        // The frame entry a context's read reads, as a word: the cell a set gave it, 0 at its default.
+        RtSig {
+            name: "avra_ctx_entry",
+            ret: RtKind.I64,
+            params: [RtKind.I64],
+            has_owned_twin: false,
+            host: RtHost.CtxEntry,
+            reach: Reach.World,
+            inert: true,
+            owns_result: false,
+        },
+        // WHAT A RUNNING QUERY HEARS OF CONTEXTS: a context read inside a query body filed
+        // as one of its answer's reads (the cold path a read takes where a query is open), a
+        // recording opened and closed around a body, and whether what one heard holds now. Each
+        // touches only the running task's own state, so a query run at compile time may use them.
+        RtSig {
+            name: "avra_ctx_heard",
+            ret: RtKind.Void,
+            params: [RtKind.I64, RtKind.I64, RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxHeard,
+            reach: Reach.Pure,
+            inert: true,
+            owns_result: false,
+        },
+        RtSig {
+            name: "avra_ctx_listen",
+            ret: RtKind.Void,
+            params: [],
+            has_owned_twin: false,
+            host: RtHost.CtxListen,
+            reach: Reach.Pure,
+            inert: true,
+            owns_result: false,
+        },
+        RtSig {
+            name: "avra_ctx_listened",
+            ret: RtKind.Ptr,
+            params: [],
+            has_owned_twin: false,
+            host: RtHost.CtxListened,
+            reach: Reach.Pure,
+            inert: true,
+            owns_result: false,
+        },
+        RtSig {
+            name: "avra_ctx_heard_drop",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxHeardDrop,
+            reach: Reach.Pure,
+            inert: true,
+            owns_result: false,
+        },
+        RtSig {
+            name: "avra_ctx_reheard",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxReheard,
+            reach: Reach.Pure,
+            inert: true,
+            owns_result: false,
+        },
+        RtSig {
+            name: "avra_ctx_holds",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.CtxHolds,
+            reach: Reach.Pure,
+            inert: true,
+            owns_result: false,
         },
         RtSig {
             name: "avra_task_id",
@@ -2783,6 +3320,18 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             boxes: [Box.Text],
         },
+        // The runtime's own `eprintln`, the same line `avra_eputs` prints.
+        RtSig {
+            name: "eprintln",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Eputs,
+            reach: Reach.World,
+            inert: true,
+            boxes: [Box.Text],
+        },
         RtSig {
             name: "avra_io_list",
             ret: RtKind.I64,
@@ -2864,6 +3413,22 @@ export once fn rt_sigs() -> List<RtSig> {
             owns_result: true,
             has_owned_twin: false,
             host: RtHost.TypeNamed,
+            reach: Reach.Lookup,
+            boxes: [Box.Text],
+        },
+        // FN_DECLARED: the fn an annotation names, by the identity it
+        // carries, built only when a derive asks for it. Like
+        // `avra_type_named`, the interpreter's arm reaches the workspace
+        // and natively it traps; the answer is an arbitrary record, `Any`.
+        RtSig {
+            name: "avra_fn_declared",
+            traps: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            answer: Box.Any,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.FnDeclared,
             reach: Reach.Lookup,
             boxes: [Box.Text],
         },
@@ -3085,3 +3650,20 @@ export fn rt_reusing_twin(name: string) -> string? {
     if sig == null || !sig!.has_reusing_twin { return null }
     "${name}_reusing"
 }
+
+/// A bit a box's cell wears in its mark byte (runtime/avra_box.h's `MARK_*`), as the compiler names
+/// it: the header `avra runtime-header` writes asserts each is the C's.
+export type CellMark = { name: string, bit: int }
+
+/// The cell held a managed value the reclaim releases.
+export const MARK_OWNED: CellMark = CellMark { name: "MARK_OWNED", bit: 1 }
+
+/// The cell holds a nullable scalar that is not there.
+export const MARK_ABSENT: CellMark = CellMark { name: "MARK_ABSENT", bit: 2 }
+
+/// The cell is the frame of contexts its box was made or placed under: the one cell a reframe
+/// replaces.
+export const MARK_FRAME: CellMark = CellMark { name: "MARK_FRAME", bit: 4 }
+
+/// Every bit a cell's mark byte holds.
+export fn cell_marks() -> List<CellMark> { [MARK_OWNED, MARK_ABSENT, MARK_FRAME] }

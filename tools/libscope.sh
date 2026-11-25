@@ -28,7 +28,7 @@ ROOT=build/libscope
 fails=0
 rows=0
 
-# A program run under the EVALUATOR alone: `avra run`, its printed
+# A program run under the EVALUATOR alone: `avra run --eval`, its printed
 # value compared with the contract. Native is a different question —
 # a native binary links its packages' objects directly and has no
 # library to scope.
@@ -39,7 +39,7 @@ scoped() {
     mkdir -p "$dir/src"
     printf '[package]\nname    = "zz-scope-%s"\nversion = "0.0.1"\n%s' "$name" "$deps" > "$dir/avra.toml"
     printf '%s' "$src" > "$dir/src/main.av"
-    got=$(./avra run "$dir/src/main.av" 2>&1) || true
+    got=$(./avra run --eval "$dir/src/main.av" 2>&1) || true
     if [ "$got" != "$want" ]; then
         echo "libscope: $name said"; echo "  $got"; echo "  the contract says"; echo "  $want"
         fails=$((fails + 1))

@@ -1,0 +1,39 @@
+//! WHERE THE EVALUATOR STEPS NEXT, worked out once per program: each body by its name, and the pc
+//! each control transfer lands on, kept the first time it's taken. The instruction stream stays the
+//! one both engines read; the plan holds only what the bracket scans over it answered, so it is
+//! derived from the program and never part of it.
+use core.{filled}
+use compiler.lower.{Body, Lowered, hosted_within}
+
+/// A program's bodies by name, and each body's transfers as taken so far — `UNTAKEN` at a pc whose
+/// transfer hasn't been taken. The entry's are apart, since the entry is no body of `l.fns`.
+export type EvalPlan = {
+    fns: Map<string, int>,
+    landed: List<Cell<List<int>>>,
+    entry: Cell<List<int>>,
+    arms: List<Cell<Map<string, int>>>,
+    entry_arms: Cell<Map<string, int>>,
+}
+
+/// The plan of the program `l` as the evaluator runs it, its host fns stood in by their bodies.
+export fn eval_plan(l: Lowered) -> EvalPlan { planned(hosted_within(l)) }
+
+/// The plan of `l` as it stands, nothing taken yet.
+fn planned(l: Lowered) -> EvalPlan {
+    mut fns: Map<string, int> = {}
+    for j, b in l.fns { if !fns.has(b.name) { fns.set(b.name, j) } }
+    EvalPlan {
+        fns: fns,
+        landed: [untaken(b) for b in l.fns],
+        entry: untaken(l.entry),
+        arms: [arms_untaken() for _b in l.fns],
+        entry_arms: arms_untaken(),
+    }
+}
+
+fn untaken(b: Body) -> Cell<List<int>> { Cell.new(filled(b.ins.length, UNTAKEN)) }
+
+fn arms_untaken() -> Cell<Map<string, int>> { Cell.new({}) }
+
+/// A pc whose transfer hasn't been taken.
+export const UNTAKEN: int = -1

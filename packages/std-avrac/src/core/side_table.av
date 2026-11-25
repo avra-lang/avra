@@ -16,28 +16,72 @@
 //! each of thirty reading sites is thirty chances to subtract the
 //! wrong one.
 //!
-//! The key is a SLOT. A typed id cannot be a type parameter here —
-//! a bound is spellable on a free fn's parameters and nowhere else
-//! (CLAUDE.md, "The subset today") — so the typed door stays on the
-//! owner, where it already is and where it is read: `type_at(e:
-//! ExprId)` calls `get(e.index)` and nothing else touches a slot.
+//! THE WINDOW SAYS WHAT IT IS OVER: its start is a typed id — an expression's, a statement's,
+//! a pattern's or a declaration's — so a codec spells it as that id and a fold reaches it as
+//! one. The key a read takes is a SLOT: a typed id cannot be a type parameter here (a bound is
+//! spellable on a free fn's parameters and nowhere else), so the typed door stays on the
+//! owner, where it is read: `type_at(e: ExprId)` calls `get(e.index)`.
 
 use @std.relation.engine.{Table}
+use @std.meta.{derive}
+
+/// Where a window starts, as the id kind it runs over.
+@derive(Fingerprint)
+export enum Window {
+    Exprs(lo: ExprId)
+    Stmts(lo: StmtId)
+    Pats(lo: PatId)
+    Decls(lo: DeclId)
+}
+
+impl Window {
+    /// The window's first slot.
+    fn lo() -> int {
+        match self {
+            .Exprs(at) -> at.index,
+            .Stmts(at) -> at.index,
+            .Pats(at) -> at.index,
+            .Decls(at) -> at.index,
+        }
+    }
+
+    /// The same kind of window, starting at `lo`.
+    fn at(lo: int) -> Window {
+        match self {
+            .Exprs(_) -> expr_window(lo),
+            .Stmts(_) -> stmt_window(lo),
+            .Pats(_) -> pat_window(lo),
+            .Decls(_) -> decl_window(lo),
+        }
+    }
+}
+
+/// A window over expressions from `lo`.
+export fn expr_window(lo: int) -> Window { Window.Exprs(ExprId { index: lo }) }
+
+/// A window over statements from `lo`.
+export fn stmt_window(lo: int) -> Window { Window.Stmts(StmtId { index: lo }) }
+
+/// A window over patterns from `lo`.
+export fn pat_window(lo: int) -> Window { Window.Pats(PatId { index: lo }) }
+
+/// A window over declarations from `lo`.
+export fn decl_window(lo: int) -> Window { Window.Decls(DeclId { index: lo }) }
 
 /// Values for the ids in [lo, lo + cells.length), plus the value a
 /// new id arrives holding.
-export type SideTable<V> = { name: string, lo: int, cells: List<V>, seed: V }
+export type SideTable<V> = { name: string, window: Window, cells: List<V>, seed: V }
 
-/// Born TOTAL over [lo, hi): every id already holds `seed`.
-export fn side_table<V>(name: string, lo: int, hi: int, seed: V) -> SideTable<V> {
-    SideTable { name: name, lo: lo, cells: filled(hi - lo, seed), seed: seed }
+/// Born TOTAL over [lo, hi) of `window`'s kind: every id already holds `seed`.
+export fn side_table<V>(name: string, window: Window, hi: int, seed: V) -> SideTable<V> {
+    SideTable { name: name, window: window, cells: filled(hi - window.lo(), seed), seed: seed }
 }
 
 /// A window over cells the caller already built — for an element
 /// type a generic fill must not seed (a list of lists; the compiler's
 /// own `empty_lists_*` say why).
-export fn side_table_of<V>(name: string, lo: int, cells: List<V>, seed: V) -> SideTable<V> {
-    SideTable { name: name, lo: lo, cells: cells, seed: seed }
+export fn side_table_of<V>(name: string, window: Window, cells: List<V>, seed: V) -> SideTable<V> {
+    SideTable { name: name, window: window, cells: cells, seed: seed }
 }
 
 /// `v` at `k` in the table `c` holds, grown to hold it, WRITTEN IN PLACE:
@@ -60,21 +104,24 @@ export fn side_grow<V>(c: Cell<SideTable<V>>, count: int) {
 }
 
 impl SideTable {
+    /// The window's first slot.
+    fn lo() -> int { self.window.lo() }
+
     fn get(k: int) -> V {
         if !self.holds(k) { self.outside(k) }
-        self.cells[k - self.lo]
+        self.cells[k - self.lo()]
     }
 
     fn set(k: int, v: V) {
         if !self.holds(k) { self.outside(k) }
-        self.cells.set(k - self.lo, v)
+        self.cells.set(k - self.lo(), v)
     }
 
     /// Whether the window holds this id.
-    fn holds(k: int) -> bool { k >= self.lo && k - self.lo < self.cells.length }
+    fn holds(k: int) -> bool { k >= self.lo() && k - self.lo() < self.cells.length }
 
     /// The first id past the window.
-    fn hi() -> int { self.lo + self.cells.length }
+    fn hi() -> int { self.lo() + self.cells.length }
 
     /// How many ids the window holds.
     fn length() -> int { self.cells.length }
@@ -82,7 +129,7 @@ impl SideTable {
     /// THE ONE DOOR FOR AN ARENA THAT GREW: every id below `count`
     /// joins the window holding the seed. Never shrinks.
     fn grow_to(count: int) {
-        let want = count - self.lo
+        let want = count - self.lo()
         while self.cells.length < want { self.cells.push(self.seed) }
     }
 
@@ -92,7 +139,7 @@ impl SideTable {
     /// past its end, and that is the one thing `grow_to` exists for.
     fn lay(other: SideTable<V>) {
         self.grow_to(other.hi())
-        let at = other.lo - self.lo
+        let at = other.lo() - self.lo()
         for j, v in other.cells { self.cells.set(at + j, v) }
     }
 
@@ -100,7 +147,7 @@ impl SideTable {
     /// them — a fold that leaves the rest of this window standing.
     fn lay_named(other: SideTable<V>, p: fn(V) -> bool) {
         self.grow_to(other.hi())
-        let at = other.lo - self.lo
+        let at = other.lo() - self.lo()
         for j, v in other.cells {
             if p(v) { self.cells.set(at + j, v) }
         }
@@ -112,27 +159,32 @@ impl SideTable {
 
     /// The ids whose value the predicate names, in window order.
     fn ids(p: fn(V) -> bool) -> List<int> {
-        [self.lo + j for j, v in self.cells if p(v)]
+        [self.lo() + j for j, v in self.cells if p(v)]
     }
 
-    /// The window's content folded to one value: its placement, then
-    /// each cell's own fold in window order — two windows differ if
-    /// either where they sit or what they hold does. SHARED, like
-    /// `fp_list`: every caller folds a SideTable through this one tag.
-    fn folded(cell: fn(V) -> int) -> int {
-        fp(1, [self.lo, fp_list([cell(c) for c in self.cells])])
+    /// The window's content folded to one value: where it starts, then each cell's own fold in
+    /// window order — two windows differ if either where they sit or what they hold does.
+    /// SHARED, like `fp_list`: every caller folds a SideTable through this one tag.
+    fn folded(cell: fn(V) -> int) -> int { self.folded_at(self.window.fingerprint(), cell) }
+
+    fn folded_at(start: int, cell: fn(V) -> int) -> int {
+        fp(1, [start, fp_list([cell(c) for c in self.cells])])
     }
 
-    /// `folded`, or just the cells when the window's placement is not part of the question.
-    fn folded_as(placed: bool, cell: fn(V) -> int) -> int {
-        if placed { self.folded(cell) } else { fp_list([cell(c) for c in self.cells]) }
+    /// `@derive(Fingerprint)`'s fold of a window: `folded`, each cell by `cell`.
+    fn fingerprint_with(cell: fn(V) -> int) -> int { self.folded(cell) }
+
+    /// `fingerprint_with` with the window's start reached as `ids` reach its id kind — ids
+    /// counted from a window's base fold every window alike wherever it sits.
+    fn fingerprint_with_in(ids: Ids, cell: fn(V) -> int) -> int {
+        self.folded_at(self.window.fingerprint_in(ids), cell)
     }
 
     /// A read outside the window. Does NOT return — the callers read
     /// as if they continued, and the index below them is never taken.
     fn outside(k: int) {
         wreck(
-            "side table `${self.name}` holds [${self.lo}, ${self.hi()}) — id ${k} is outside it",
+            "side table `${self.name}` holds [${self.lo()}, ${self.hi()}) — id ${k} is outside it",
         )
     }
 }

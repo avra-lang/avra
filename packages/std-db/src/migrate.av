@@ -4,13 +4,30 @@
 //! opens a database.
 //!
 //! GROWTH applies by itself: a model with no table, a new column that is
-//! nullable or that carries a default, a column renamed under a hint.
+//! nullable or that carries a default, a column renamed under a hint, an
+//! index ended, one begun — a key's statement is refused by the database
+//! over rows that already repeat, and the whole plan with it — and a
+//! column's type word changed for one that holds every value alike, which
+//! changes the record and no table.
+//! An index is its line: one whose columns change, or are renamed, or whose
+//! rows or uniqueness change, ends and begins again.
 //! MOVING never does: a dropped column, a changed type, a tightened or
 //! loosened NOT NULL, a changed default, link or key, a new column that must
 //! hold a value yet has none to give the rows already there, and a new
 //! `UNIQUE` (the rows already there may break it — a runner that has looked at
 //! them may call it growth).
-use shape.{ColumnFacts, Shape, column_ddl, create_sql, quoted}
+use @std.text.{ascii_lower}
+use shape.{
+    ColumnFacts,
+    Index,
+    Shape,
+    column_ddl,
+    create_sql,
+    index_line,
+    index_sql,
+    quoted,
+    unindex_sql,
+}
 
 /// A column whose name changed: the old name, the new one.
 export type Renamed = { from: string, to: string }
@@ -20,6 +37,11 @@ export enum Step {
     Create(shape: Shape)
     Add(column: ColumnFacts)
     Rename(from: string, to: string)
+    Indexed(index: Index)
+    Unindexed(index: Index)
+    /// The column's recorded type word becomes the declared one. The table is
+    /// left as it is: both words hold every value alike.
+    Reword(column: string, was: string, now: string)
 }
 
 /// What an author must decide.
@@ -50,7 +72,9 @@ export fn diff(stored: Shape?, declared: Shape, renames: List<Renamed>) -> Plan 
     let pairs = [paired(had, d, renames) for d in declared.columns]
     Plan {
         name: declared.name,
-        steps: [step for p in pairs for step in steps_of(p)],
+        steps: indexes_between(declared, had, (i) -> Step.Unindexed(i))
+            .concat([step for p in pairs for step in steps_of(p)])
+            .concat(indexes_between(had, declared, (i) -> Step.Indexed(i))),
         moving: [m for p in pairs for m in moves_of(p)].concat(dropped(had, pairs)),
     }
 }
@@ -73,7 +97,13 @@ export fn report(plans: List<Plan>) -> List<string> {
 fn lines_of(p: Plan) -> List<string> {
     ["${p.name}:"]
         .concat(["  ${s};" for s in statements(p)])
+        .concat(["  ~ ${n}" for n in notes(p)])
         .concat(["  ! ${w}" for w in refusals(p)])
+}
+
+/// A step for each index `to` holds and `from` lacks.
+fn indexes_between(from: Shape, to: Shape, step: fn(Index) -> Step) -> List<Step> {
+    [step(i) for i in to.indexes if !from.indexes.any((j) -> index_line(j) == index_line(i))]
 }
 
 /// A declared column and the recorded one it continues, if any.
@@ -89,7 +119,43 @@ fn has(s: Shape, column: string) -> bool { s.columns.any(it.name == column) }
 
 fn steps_of(p: Pair) -> List<Step> {
     let was? = p.was else { return if grows(p.now) { [.Add(p.now)] } else { [] } }
-    if p.renamed { [.Rename(was.name, p.now.name)] } else { [] }
+    let renames: List<Step> = if p.renamed { [.Rename(was.name, p.now.name)] } else { [] }
+    if reworded(was, p.now) { renames.concat([.Reword(p.now.name, was.sql_type, p.now.sql_type)]) } else { renames }
+}
+
+/// Whether a column's type word changed for one that holds every value
+/// alike. A key's word is never one: only `INTEGER`, to the letter, makes a
+/// key the row's own number.
+fn reworded(was: ColumnFacts, now: ColumnFacts) -> bool {
+    was.sql_type != now.sql_type &&
+        !was.key &&
+        !now.key &&
+        hold_alike(affinity(was.sql_type), affinity(now.sql_type))
+}
+
+/// What a column makes of the values written to it, which is all its type
+/// word decides.
+enum Affinity { Integer, Text, Blob, Real, Numeric }
+
+/// A type word's affinity, as SQLite reads the word: the first of these
+/// its letters spell, in this order, and numeric for a word that spells none.
+fn affinity(word: string) -> Affinity {
+    let w = ascii_lower(word)
+    when {
+        w.contains("int") -> .Integer
+        w.contains("char") || w.contains("clob") || w.contains("text") -> .Text
+        w.contains("blob") || w.is_empty() -> .Blob
+        w.contains("real") || w.contains("floa") || w.contains("doub") -> .Real
+        _ -> .Numeric
+    }
+}
+
+/// Whether two affinities hold every value alike: one affinity, or the
+/// integer and the numeric, which differ under a cast alone.
+fn hold_alike(a: Affinity, b: Affinity) -> bool { a == b || whole(a) && whole(b) }
+
+fn whole(a: Affinity) -> bool {
+    match a { .Integer or .Numeric -> true, .Text or .Blob or .Real -> false }
 }
 
 /// Whether a column new to a table can be added to the rows already there:
@@ -117,7 +183,7 @@ fn new_trouble(c: ColumnFacts) -> Moving {
 fn changes(was: ColumnFacts, now: ColumnFacts) -> List<Moving> {
     let n = now.name
     let found: List<Moving?> = [
-        if was.sql_type != now.sql_type { .Retyped(n, was.sql_type, now.sql_type) } else { null },
+        if was.sql_type != now.sql_type && !reworded(was, now) { .Retyped(n, was.sql_type, now.sql_type) } else { null },
         if was.key != now.key { .Rekeyed(n) } else { null },
         if !was.not_null && now.not_null { .Tightened(n) } else { null },
         if was.not_null && !now.not_null { .Loosened(n) } else { null },
@@ -135,14 +201,33 @@ fn dropped(had: Shape, pairs: List<Pair>) -> List<Moving> {
 }
 
 /// The statements applying a plan's steps, in order.
-export fn statements(p: Plan) -> List<string> { [statement(p.name, s) for s in p.steps] }
+export fn statements(p: Plan) -> List<string> { [text for s in p.steps for text in said(p.name, s)] }
 
-fn statement(name: string, s: Step) -> string {
+/// One step's statements: a table is made, then each of its indexes.
+fn said(name: string, s: Step) -> List<string> {
     match s {
-        .Create(shape) -> create_sql(shape.name, shape.columns),
-        .Add(c) -> "ALTER TABLE ${quoted(name)} ADD COLUMN ${column_ddl(c)}",
-        .Rename(from, to) -> "ALTER TABLE ${quoted(name)} RENAME COLUMN ${quoted(from)} TO ${quoted(to)}",
+        .Create(shape) -> made_sql(shape),
+        .Add(c) -> ["ALTER TABLE ${quoted(name)} ADD COLUMN ${column_ddl(c)}"],
+        .Rename(from, to) -> ["ALTER TABLE ${quoted(name)} RENAME COLUMN ${quoted(from)} TO ${quoted(to)}"],
+        .Indexed(i) -> [index_sql(name, i)],
+        .Unindexed(i) -> [unindex_sql(name, i)],
+        .Reword(_, _, _) -> [],
     }
+}
+
+/// What a plan's steps change that no statement shows, in words.
+export fn notes(p: Plan) -> List<string> { [n! for n in [noted(p.name, s) for s in p.steps] if n != null] }
+
+fn noted(name: string, s: Step) -> string? {
+    match s {
+        .Reword(c, was, now) -> reworded_voice(name, c, was, now),
+        .Create(_) or .Add(_) or .Rename(_, _) or .Indexed(_) or .Unindexed(_) -> null,
+    }
+}
+
+/// The statements that make a table whole: the table, then each index.
+export fn made_sql(s: Shape) -> List<string> {
+    [create_sql(s.name, s.columns)].concat([index_sql(s.name, i) for i in s.indexes])
 }
 
 /// A plan's moving changes in words, one per change.
@@ -163,6 +248,10 @@ fn told(name: string, m: Moving) -> string {
         .Defaulted(c) -> defaulted_voice(name, c),
         .Relinked(c) -> relinked_voice(name, c),
     }
+}
+
+fn reworded_voice(name: string, c: string, was: string, now: string) -> string {
+    "`${name}.${c}` is recorded as ${was} and declared ${now} — both hold every value alike, so the table stays as it is and its record takes the new word"
 }
 
 fn dropped_voice(name: string, c: string) -> string {

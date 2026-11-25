@@ -33,8 +33,7 @@
 use core.{
     Ins,
     Reg,
-    TypeId,
-    TypeRegistry,
+    Layout,
     SeatMark,
     consumed_mark,
     same_reg,
@@ -44,46 +43,38 @@ use core.{
     lent_args,
     rt_owns,
     rt_lends,
+    rt_writes,
     flatten,
 }
 use compiler.lower.{Body, Lowered}
 use diagnostics.{Diag, defect_at}
 
 /// Every body's soundness diagnostics, folded in beside the memory
-/// pass's own output — see `compiler.memory.memory`'s call. `managed`
-/// is `core.is_managed` PINNED to this program's own
-/// types: soundness never imports the memory pass (memory.av calls
-/// THIS module, the one way the layering runs), so it takes the
-/// answer as a predicate rather than the module that computes it.
-export fn checked(l: Lowered, by_name: Map<string, List<SeatMark>>, managed: fn(TypeId) -> bool) -> List<
-    Diag,
-> {
+/// pass's own output — see `compiler.memory.memory`'s call. Each
+/// register is read through its LAYOUT, the one fact every body the
+/// memory pass sees carries on either layer: whether the runtime counts
+/// it, whether it holds a Cell.
+export fn checked(l: Lowered, by_name: Map<string, List<SeatMark>>) -> List<Diag> {
     // `by_name` is the memory pass's OWN map, built over every body
     // BEFORE it drops the held-callee marks-only stubs from `l.fns`.
     // Re-deriving it here from the post-filter list starved this
     // checker of exactly those stubs, so every consumed seat of a
     // held callee read as plain and the born argument looked leaked.
-    flatten([checked_body(b, l.types, by_name, managed) for b in l.fns.concat([l.entry])])
+    flatten([checked_body(b, by_name) for b in l.fns.concat([l.entry])])
 }
 
-fn checked_body(
-    b: Body,
-    types: TypeRegistry,
-    by_name: Map<string, List<SeatMark>>,
-    managed: fn(TypeId) -> bool,
-) -> List<Diag> {
-    let n = b.reg_types.length
+fn checked_body(b: Body, by_name: Map<string, List<SeatMark>>) -> List<Diag> {
+    let n = b.layouts.length
     let immortal = immortal_regs(n, b.ins)
-    let consuming = owned_param_regs(b.params.length, b.marks)
-    let ctx = Ctx {
-        reg_types: b.reg_types,
+    let consuming = owned_param_regs(b.seats.length, b.marks)
+    let facts = WalkFacts {
+        layouts: b.layouts,
         ins: b.ins,
         name: b.name,
-        managed: managed,
         immortal: immortal,
-        owning: owning_table(b.reg_types, immortal, b.ins, managed, consuming),
+        owning: owning_table(b.layouts, immortal, b.ins, consuming),
         defs: def_sites(n, b.ins),
-        types: types,
+        handed: handed_table(n, b.ins),
         by_name: by_name,
     }
     // A body this pass understands ends its own top-level span in a
@@ -95,7 +86,7 @@ fn checked_body(
     // leak check is skipped — every OTHER check still runs, and a
     // register genuinely left dangling inside a NESTED scope is still
     // caught there, where a terminal is never in question.
-    walk(ctx, 0, b.ins.length, fresh_sim(n, consuming), null, ends_in_terminal(b.ins)).diags
+    walk(facts, 0, b.ins.length, fresh_sim(n, consuming), null, ends_in_terminal(b.ins)).diags
 }
 
 /// Which param registers a consuming seat mark names — this body's
@@ -116,7 +107,7 @@ fn ends_in_terminal(ins: List<Ins>) -> bool {
 /// retained, never released), which are OWNING definitions (a fresh
 /// box — never a param, a view, or immortal data), and where each
 /// register is DEFINED (-1 for a param).
-type Ctx = { reg_types: List<TypeId>, ins: List<Ins>, name: string, managed: fn(TypeId) -> bool, immortal: List<bool>, owning: List<bool>, defs: List<int>, types: TypeRegistry, by_name: Map<string, List<SeatMark>> }
+type WalkFacts = { layouts: List<Layout>, ins: List<Ins>, name: string, immortal: List<bool>, owning: List<bool>, defs: List<int>, handed: List<int>, by_name: Map<string, List<SeatMark>> }
 
 /// A string constant or a settled aggregate's address — the binary's
 /// own data, counted by no retain and freed by no release.
@@ -145,16 +136,10 @@ fn immortal_dst(i: Ins) -> Reg? {
 /// `owned_dst` as the whole answer here read every borrowed Load as
 /// a leaked box — `avra_array_get(load r8, ...)` with the load never
 /// retained, own reference correctly none, memory.av's own witness.
-fn owning_def(
-    ins: List<Ins>,
-    at: int,
-    reg_types: List<TypeId>,
-    immortal: List<bool>,
-    managed: fn(TypeId) -> bool,
-) -> Reg? {
+fn owning_def(ins: List<Ins>, at: int, layouts: List<Layout>, immortal: List<bool>) -> Reg? {
     let i = ins[at]
     let dst? = owned_dst(i) else { return null }
-    if immortal[dst.index] || !managed(reg_types[dst.index]) { return null }
+    if immortal[dst.index] || !layouts[dst.index].counted() { return null }
     match i {
         .CallRt(_, callee, _) if !rt_owns(callee) -> null,
         .Load(_, _) -> if retained_next(ins, at, dst) { dst } else { null },
@@ -189,15 +174,14 @@ fn is_retain_of(i: Ins, dst: Reg) -> bool {
 }
 
 fn owning_table(
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     immortal: List<bool>,
     ins: List<Ins>,
-    managed: fn(TypeId) -> bool,
     owned_params: List<bool>,
 ) -> List<bool> {
-    mut out = [j < owned_params.length && owned_params[j] for j in 0..reg_types.length]
+    mut out = [j < owned_params.length && owned_params[j] for j in 0..layouts.length]
     for at, step in ins {
-        let od: Reg? = owning_def(ins, at, reg_types, immortal, managed)
+        let od: Reg? = owning_def(ins, at, layouts, immortal)
         if od != null { out.set(od!.index, true) }
     }
     out
@@ -215,20 +199,10 @@ fn def_sites(count: int, ins: List<Ins>) -> List<int> {
     out
 }
 
-/// A `.Call`/`.CallPtr`'s own callee's seat marks — memory.av's
-/// `callee_marks`, the same two doors: a direct call's SYMBOL, an
-/// indirect one's own register TYPE.
-fn callee_marks(
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
-    by_name: Map<string, List<SeatMark>>,
-    i: Ins,
-) -> List<SeatMark> {
-    match i {
-        .Call(_, callee, _) -> by_name.get(callee) ?? [],
-        .CallPtr(_, f, _) -> types.arrow_parts(reg_types[f.index])?.marks ?? [],
-        rest -> [],
-    }
+/// A `.Call`'s own callee's seat marks, by its SYMBOL — memory.av's
+/// `callee_marks`: a call through a value reads every seat as borrowed.
+fn callee_marks(by_name: Map<string, List<SeatMark>>, i: Ins) -> List<SeatMark> {
+    match i { .Call(_, callee, _) -> by_name.get(callee) ?? [], rest -> [] }
 }
 
 // ── The proof carried forward through the walk ──────────────────────
@@ -261,7 +235,7 @@ fn fresh_sim(count: int, owned_params: List<bool>) -> Sim {
 /// runs (a region's OTHER arms still might).
 type Walked = { sim: Sim, diags: List<Diag>, diverges: bool }
 
-/// `[lo, hi)` of `ctx.ins`, a straight run whose OWN bracket (if any)
+/// `[lo, hi)` of `facts.ins`, a straight run whose OWN bracket (if any)
 /// the caller has already matched to `hi`. `escaping`, when given, is
 /// the one register this span hands UP — never charged against this
 /// span's own leak check, since its debt now belongs to whoever
@@ -285,7 +259,7 @@ type Walked = { sim: Sim, diags: List<Diag>, diverges: bool }
 /// region — a local-only `born` never learns the outer register
 /// existed).
 fn walk(
-    ctx: Ctx,
+    facts: WalkFacts,
     lo: int,
     hi: int,
     sim0: Sim,
@@ -303,9 +277,9 @@ fn walk(
     mut diverges = false
     mut i = lo
     while i < hi && !diverges {
-        let step = ctx.ins[i]
-        diags = diags.concat(dead_read_diags(ctx, sim, i, step))
-        let od: Reg? = owning_def(ctx.ins, i, ctx.reg_types, ctx.immortal, ctx.managed)
+        let step = facts.ins[i]
+        diags = diags.concat(dead_read_diags(facts, sim, i, step))
+        let od: Reg? = owning_def(facts.ins, i, facts.layouts, facts.immortal)
         if od != null {
             // A birth this pass credits at 1 UNLESS its own `Retain`
             // is the very next instruction AND its own SHAPE mints no
@@ -319,10 +293,10 @@ fn walk(
             // (R3, protecting a still-needed argument at a consuming
             // seat) is a SECOND, independent reference, not this one.
             let o = od!
-            if !(defers_to_retain(ctx.ins, i) && retained_next(ctx.ins, i, o)) { sim.refs.set(o.index, 1) }
+            if !(defers_to_retain(facts.ins, i) && retained_next(facts.ins, i, o)) { sim.refs.set(o.index, 1) }
             born.push(o)
         }
-        let stepped = dispatch(ctx, sim, born, i, step, check_end, outer)
+        let stepped = dispatch(facts, sim, born, i, step, check_end, outer)
         sim = stepped.sim
         diags = diags.concat(stepped.diags)
         born = stepped.born
@@ -330,7 +304,7 @@ fn walk(
         i = stepped.next
     }
     if !diverges && check_end {
-        diags = diags.concat(leak_diags(ctx, sim, born, escaping, hi))
+        diags = diags.concat(leak_diags(facts, sim, born, escaping, hi))
     }
     Walked { sim: sim, diags: diags, diverges: diverges }
 }
@@ -342,7 +316,7 @@ fn walk(
 type Stepped = { sim: Sim, diags: List<Diag>, born: List<Reg>, diverges: bool, next: int }
 
 fn dispatch(
-    ctx: Ctx,
+    facts: WalkFacts,
     sim0: Sim,
     born0: List<Reg>,
     i: int,
@@ -357,19 +331,46 @@ fn dispatch(
             sim.refs.set(r.index, sim.refs[r.index] + 1)
             stepped(sim, born, i + 1)
         },
-        .Release(r) -> {
-            let before = sim.refs[r.index]
-            sim.refs.set(r.index, before - 1)
-            let rdiags = if !ctx.owning[r.index] && before <= 0 { [releases_unowned(ctx.name, i, r)] } else { [] }
+        .Release(rs) -> {
+            mut rdiags: List<Diag> = []
+            for r in rs {
+                let before = sim.refs[r.index]
+                sim.refs.set(r.index, before - 1)
+                if !facts.owning[r.index] && before <= 0 { rdiags.push(releases_unowned(facts.name, i, r)) }
+            }
             Stepped { sim: sim, diags: rdiags, born: born, diverges: false, next: i + 1 }
         },
         .CallRt(_, callee, args) -> {
+            let unopened = unopened_writes(facts, i, callee, args)
             if is_reusing_twin(callee) && !args.is_empty() { sim.refs.set(args[0].index, 0) }
-            stepped(sim, born, i + 1)
+            spoken(sim, born, i + 1, unopened)
         },
         .CallRtVoid(callee, args) -> {
+            let unopened = unopened_writes(facts, i, callee, args)
             if is_moving_twin(callee) && !args.is_empty() { sim.refs.set(args.last()!.index, 0) }
-            stepped(sim, born, i + 1)
+            if callee != cell_forget_row || args.is_empty() { return spoken(sim, born, i + 1, unopened) }
+            // A FORGET MOVES THE CELL'S REFERENCE to the load that takes it:
+            // that load owns from here, and the cell reads empty until a store.
+            let slot = args[0]
+            let emptied = emptied_reads(facts, i, slot)
+            let h? = taker(facts.ins, i, slot) else {
+                return Stepped {
+                    sim: sim,
+                    diags: [forget_untaken(facts.name, i, slot)].concat(emptied).concat(unopened),
+                    born: born,
+                    diverges: false,
+                    next: i + 1,
+                }
+            }
+            sim.refs.set(h.index, sim.refs[h.index] + 1)
+            born.push(h)
+            Stepped {
+                sim: sim,
+                diags: emptied.concat(unopened),
+                born: born,
+                diverges: false,
+                next: i + 1,
+            }
         },
         // A STORE MOVES what dies there (its LAST read, owning —
         // memory.av never retains a value that dies at its own
@@ -382,8 +383,8 @@ fn dispatch(
         // point (there always is one — a value that dies here moves
         // instead) finds a credit that already belongs to the cell.
         .Store(_, src) -> {
-            if ctx.managed(ctx.reg_types[src.index]) {
-                if ctx.owning[src.index] && last_read(ctx.ins, src, i) {
+            if counted(facts, src) {
+                if facts.owning[src.index] && last_read(facts.ins, src, i) {
                     sim.refs.set(src.index, 0)
                 } else {
                     sim.refs.set(src.index, sim.refs[src.index] - 1)
@@ -400,20 +401,20 @@ fn dispatch(
         // spent entirely on the callee.
         .Call(_, _, args) or .CallPtr(_, _, args) -> {
             let cargs = lent_args(step)
-            let cdiags = flatten([view_protection(ctx, sim, i, cargs, ar) for ar in cargs])
-            let marks = callee_marks(ctx.types, ctx.reg_types, ctx.by_name, step)
+            let cdiags = flatten([view_protection(facts, sim, i, cargs, ar) for ar in cargs])
+            let marks = callee_marks(facts.by_name, step)
             for j, ar in cargs {
-                if consumed_mark(marks, j) && ctx.managed(ctx.reg_types[ar.index]) {
-                    if ctx.owning[ar.index] && dies_here(ctx.ins, ar, i) { sim.refs.set(ar.index, 0) } else { sim.refs.set(ar.index, sim.refs[ar.index] - 1) }
+                if consumed_mark(marks, j) && counted(facts, ar) {
+                    if facts.owning[ar.index] && dies_here(facts.ins, ar, i) { sim.refs.set(ar.index, 0) } else { sim.refs.set(ar.index, sim.refs[ar.index] - 1) }
                 }
             }
             Stepped { sim: sim, diags: cdiags, born: born, diverges: false, next: i + 1 }
         },
         .ScopeEnter(_) -> {
-            let close_at = scope_close(ctx.ins, i)
-            let gives = scope_gives(ctx.ins[close_at])
-            let w = walk(ctx, i + 1, close_at, sim, gives, check_end, outer.concat(born))
-            if gives != null && ctx.owning[gives!.index] { born.push(gives!) }
+            let close_at = scope_close(facts.ins, i)
+            let gives = scope_gives(facts.ins[close_at])
+            let w = walk(facts, i + 1, close_at, sim, gives, check_end, outer.concat(born))
+            if gives != null && facts.owning[gives!.index] { born.push(gives!) }
             Stepped {
                 sim: w.sim,
                 diags: w.diags,
@@ -425,19 +426,27 @@ fn dispatch(
         // A CLEANUP REGION is entered by an unwind alone: its body is proved on its
         // own, and the path past it stands as it was.
         .Cleanup(_) -> {
-            let close_at = scope_close(ctx.ins, i)
-            let w = walk(ctx, i + 1, close_at, sim, null, check_end, outer.concat(born))
+            let close_at = scope_close(facts.ins, i)
+            let w = walk(facts, i + 1, close_at, sim, null, check_end, outer.concat(born))
             Stepped { sim: sim, diags: w.diags, born: born, diverges: false, next: close_at + 1 }
         },
         .IfStart(_) or .SwitchStart(_, _) -> {
-            let arms = region_arms(ctx.ins, i)
+            let arms = region_arms(facts.ins, i)
             let last_arm = arms.last()!
-            let walked = [yielded(walk(ctx, a.lo, a.hi, sim, a.gives, check_end, outer.concat(born)), a.gives) for a in arms]
-            let m = merged_region(ctx, i, last_arm.hi, sim, walked)
+            let raw = [walk(facts, a.lo, a.hi, sim, a.gives, check_end, outer.concat(born)) for a in arms]
+            let mints = owning_def(facts.ins, last_arm.hi, facts.layouts, facts.immortal) != null
+            let uncounted = if mints { flatten([uncounted_yield(facts, arms[k], w) for k, w in raw]) } else { [] }
+            let m = merged_region(
+                facts,
+                i,
+                last_arm.hi,
+                sim,
+                [yielded(w, arms[k].gives) for k, w in raw],
+            )
             if m.gives != null { born.push(m.gives!) }
             Stepped {
                 sim: m.sim,
-                diags: m.diags,
+                diags: uncounted.concat(m.diags),
                 born: born,
                 diverges: m.diverges,
                 next: last_arm.hi + 1,
@@ -447,10 +456,18 @@ fn dispatch(
         // loop's, so control stands past `LoopEnd` as the condition
         // left it — a turn settles everything it opened.
         .LoopStart -> {
-            let bounds = loop_bounds(ctx.ins, i)
+            let bounds = loop_bounds(facts.ins, i)
             let held = outer.concat(born)
-            let cond = walk(ctx, i + 1, bounds.cond_at, sim, null, check_end, held)
-            let body = walk(ctx, bounds.cond_at + 1, bounds.end_at, cond.sim, null, check_end, held)
+            let cond = walk(facts, i + 1, bounds.cond_at, sim, null, check_end, held)
+            let body = walk(
+                facts,
+                bounds.cond_at + 1,
+                bounds.end_at,
+                cond.sim,
+                null,
+                check_end,
+                held,
+            )
             Stepped {
                 sim: cond.sim,
                 diags: cond.diags.concat(body.diags),
@@ -459,11 +476,11 @@ fn dispatch(
                 next: bounds.end_at + 1,
             }
         },
-        .FnExit(gives) or .RetVal(gives) -> exited(ctx, sim, outer.concat(born), gives, i),
+        .FnExit(gives) or .RetVal(gives) -> exited(facts, sim, outer.concat(born), gives, i),
         // an early end of a turn: this span's own births settle here, and
         // nothing after it on this path runs
-        .LoopJump(_, _) -> exited(ctx, sim, born, null, i),
-        .Ret(_) -> exited(ctx, sim, outer.concat(born), null, i),
+        .LoopJump(_, _) -> exited(facts, sim, born, null, i),
+        .Ret(_) -> exited(facts, sim, outer.concat(born), null, i),
         // Closers, and the loop's own turn: consumed by the opener
         // that matched them above — reached here only under a
         // malformed bracket, where doing nothing is the safe answer.
@@ -471,6 +488,11 @@ fn dispatch(
         // covered by `walk`'s own generic pass.
         .ScopeExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or .LoopCond(_) or .LoopEnd or .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Extract(_, _, _) or .Load(_, _) or .Alloca(_) or .Pack(_, _) -> stepped(sim, born, i + 1),
     }
+}
+
+/// A step that speaks `diags`, this path still open.
+fn spoken(sim: Sim, born: List<Reg>, next: int, diags: List<Diag>) -> Stepped {
+    Stepped { sim: sim, diags: diags, born: born, diverges: false, next: next }
 }
 
 /// The common step: the proof carried as it stands, nothing spoken,
@@ -482,10 +504,10 @@ fn stepped(sim: Sim, born: List<Reg>, next: int) -> Stepped {
 /// An exit — early (`FnExit`) or the body's own tail (`RetVal`,
 /// `Ret`): every span open at this point owes its leak check right
 /// here, and nothing on this path runs again.
-fn exited(ctx: Ctx, sim: Sim, born: List<Reg>, gives: Reg?, i: int) -> Stepped {
+fn exited(facts: WalkFacts, sim: Sim, born: List<Reg>, gives: Reg?, i: int) -> Stepped {
     Stepped {
         sim: sim,
-        diags: leak_diags(ctx, sim, born, gives, i),
+        diags: leak_diags(facts, sim, born, gives, i),
         born: born,
         diverges: true,
         next: i + 1,
@@ -505,13 +527,13 @@ fn exited(ctx: Ctx, sim: Sim, born: List<Reg>, gives: Reg?, i: int) -> Stepped {
 /// zero on purpose — refusing that read would refuse the very shape
 /// the deferral exists to allow. Every other Retain, and every
 /// Release, answers for itself at whatever `sim` already holds.
-fn dead_read_diags(ctx: Ctx, sim: Sim, at: int, step: Ins) -> List<Diag> {
-    if birth_retain(ctx, at, step) { return [] }
-    flatten([dead_read_diag(ctx, sim, at, r) for r in reads_of(step)])
+fn dead_read_diags(facts: WalkFacts, sim: Sim, at: int, step: Ins) -> List<Diag> {
+    if birth_retain(facts, at, step) { return [] }
+    flatten([dead_read_diag(facts, sim, at, r) for r in reads_of(step)])
 }
 
-fn dead_read_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
-    if ctx.owning[r.index] && sim.refs[r.index] <= 0 { [use_after_release(ctx.name, at, r)] } else { [] }
+fn dead_read_diag(facts: WalkFacts, sim: Sim, at: int, r: Reg) -> List<Diag> {
+    if owns_at(facts, r, at) && sim.refs[r.index] <= 0 { [use_after_release(facts.name, at, r)] } else { [] }
 }
 
 /// Whether `step` is the ONE Retain a birth at `at - 1` defers its
@@ -521,11 +543,11 @@ fn dead_read_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
 /// birth to THIS retain rather than to the definition, so this
 /// retain's read of a still-zero register is the credit arriving,
 /// not a use after release.
-fn birth_retain(ctx: Ctx, at: int, step: Ins) -> bool {
+fn birth_retain(facts: WalkFacts, at: int, step: Ins) -> bool {
     match step {
         .Retain(r) -> at > 0 &&
-            defers_to_retain(ctx.ins, at - 1) &&
-            births(owning_def(ctx.ins, at - 1, ctx.reg_types, ctx.immortal, ctx.managed), r),
+            defers_to_retain(facts.ins, at - 1) &&
+            births(owning_def(facts.ins, at - 1, facts.layouts, facts.immortal), r),
         rest -> false,
     }
 }
@@ -555,16 +577,146 @@ fn dies_here(ins: List<Ins>, r: Reg, at: int) -> bool {
 /// released, transferred, or answered on every path out is the whole
 /// of the owning contract; `escaping` is the one register this close
 /// hands upward; its debt is not this span's to pay.
-fn leak_diags(ctx: Ctx, sim: Sim, born: List<Reg>, escaping: Reg?, at: int) -> List<Diag> {
-    flatten([leak_diag(ctx, sim, at, r) for r in born if !kept(r, escaping)])
+fn leak_diags(facts: WalkFacts, sim: Sim, born: List<Reg>, escaping: Reg?, at: int) -> List<Diag> {
+    flatten([leak_diag(facts, sim, at, r) for r in born if !kept(r, escaping)])
 }
 
 fn kept(r: Reg, escaping: Reg?) -> bool {
     escaping != null && same_reg(r, escaping!)
 }
 
-fn leak_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
-    if sim.refs[r.index] <= 0 { [] } else { [leaked(ctx.name, at, r)] }
+fn leak_diag(facts: WalkFacts, sim: Sim, at: int, r: Reg) -> List<Diag> {
+    if sim.refs[r.index] <= 0 { [] } else { [leaked(facts.name, at, r)] }
+}
+
+// ── A forgotten cell: its reference moved to a load ─────────────────
+
+/// The row that empties a cell without releasing what it held.
+const cell_forget_row: string = "avra_cell_forget"
+
+/// Whether `r` owns a reference at `at`: an owning definition, or a
+/// load a forget before `at` handed its cell's reference.
+fn owns_at(facts: WalkFacts, r: Reg, at: int) -> bool {
+    facts.owning[r.index] || facts.handed[r.index] >= 0 && facts.handed[r.index] < at
+}
+
+/// For each register, the forget that hands it its cell's reference;
+/// -1 for every other.
+fn handed_table(count: int, ins: List<Ins>) -> List<int> {
+    mut out = [0 - 1 for i in 0..count]
+    for at, step in ins {
+        let slot? = forgotten(step) else { continue }
+        let h? = taker(ins, at, slot) else { continue }
+        out.set(h.index, at)
+    }
+    out
+}
+
+/// The slot a forget empties.
+fn forgotten(i: Ins) -> Reg? {
+    match i {
+        .CallRtVoid(callee, args) if callee == cell_forget_row && !args.is_empty() -> args[0],
+        rest -> null,
+    }
+}
+
+/// THE LOAD A FORGET HANDS ITS CELL'S REFERENCE TO: the last load of
+/// `slot` before `at` with no store to it between.
+fn taker(ins: List<Ins>, at: int, slot: Reg) -> Reg? {
+    let filled: int = [k for k in 0..at if refills(ins[k], slot)].last() ?? 0 - 1
+    let k? = [k for k in 0..at if k > filled && loads_slot(ins[k], slot)].last() else { return null }
+    dst_of(ins[k])
+}
+
+fn loads_slot(i: Ins, slot: Reg) -> bool {
+    match i { .Load(_, s) -> same_reg(s, slot), rest -> false }
+}
+
+/// AN EMPTIED CELL IS READ BY NOTHING until a store refills it: every
+/// read, on any path after the forget at `at`, of the slot itself or
+/// of a register riding an earlier load of it other than the taker.
+/// An arm's siblings are other paths, never after it; settling the
+/// cell at an exit reads an empty one harmlessly.
+fn emptied_reads(facts: WalkFacts, at: int, slot: Reg) -> List<Diag> {
+    let h: Reg? = taker(facts.ins, at, slot)
+    mut out: List<Diag> = []
+    mut depth = 0
+    mut j = at + 1
+    while j < facts.ins.length {
+        let step = facts.ins[j]
+        if refills(step, slot) || depth <= 0 && leaves_path(step) { return out }
+        if depth == 0 && step is .ArmEnd {
+            j = region_end_after(facts.ins, j)
+            depth = 0 - 1
+        } else {
+            if opens(step) { depth = depth + 1 } else if closes(step) { depth = depth - 1 }
+            if !settles_cell(step, slot) {
+                out = out
+                    .concat(
+                        [emptied_read(facts.name, j, r, slot) for r in reads_of(step) if stale(facts, r, slot, h, at)],
+                    )
+            }
+        }
+        j = j + 1
+    }
+    out
+}
+
+/// Whether `r`, read after the forget at `at`, reads the emptied
+/// cell: the slot itself, or a register riding a load of it made
+/// before the forget — never one that earned its own reference
+/// (retained at the load), never the taker `h`.
+fn stale(facts: WalkFacts, r: Reg, slot: Reg, h: Reg?, at: int) -> bool {
+    if same_reg(r, slot) { return true }
+    let d = facts.defs[r.index]
+    if d < 0 || d > at { return false }
+    match facts.ins[d] {
+        .Load(_, s) -> same_reg(s, slot) && !facts.owning[r.index] && !(h != null && same_reg(h!, r)),
+        step -> {
+            let src? = view_source(step) else { return false }
+            stale(facts, src, slot, h, at)
+        },
+    }
+}
+
+fn refills(i: Ins, slot: Reg) -> bool {
+    match i { .Store(c, _) -> same_reg(c, slot), rest -> false }
+}
+
+/// The row an exit settles a cell with — an empty one releases nothing.
+fn settles_cell(i: Ins, slot: Reg) -> bool {
+    match i {
+        .CallRtVoid(callee, args) -> callee == "avra_cell_release" && args.any(same_reg(it, slot)),
+        rest -> false,
+    }
+}
+
+/// A turn that leaves the forget's own path: a loop's turn or jump,
+/// or the body's exit.
+fn leaves_path(i: Ins) -> bool {
+    i is .LoopEnd || i is .LoopCond || i is .LoopJump || i is .Ret || i is .RetVal || i is .FnExit
+}
+
+/// The `RegionEnd` closing the region whose arm ends at `arm_end`.
+fn region_end_after(ins: List<Ins>, arm_end: int) -> int {
+    mut depth = 0
+    mut i = arm_end + 1
+    while i < ins.length {
+        let step = ins[i]
+        if depth == 0 && step is .RegionEnd { return i }
+        if opens(step) { depth = depth + 1 } else if closes(step) { depth = depth - 1 }
+        i = i + 1
+    }
+    i
+}
+
+/// A YIELD HANDS THE REGION ONE REFERENCE: an arm that reaches the
+/// merge yielding a managed register it holds no reference to leaves
+/// the region's fresh answer counting a reference nobody minted.
+fn uncounted_yield(facts: WalkFacts, a: ArmSpan, w: Walked) -> List<Diag> {
+    let g = a.gives
+    if w.diverges || g.index < 0 || facts.immortal[g.index] || !counted(facts, g) { return [] }
+    if w.sim.refs[g.index] > 0 { [] } else { [yields_uncounted(facts.name, a.hi, g)] }
 }
 
 // ── Regions: fork per arm, merge on the way out ─────────────────────
@@ -690,7 +842,7 @@ fn yielded(w: Walked, gives: Reg) -> Walked {
 /// alive keeps the LARGEST refs among the arms — the reading that
 /// asks the least of a Release still to come, never the one that
 /// reports an over-release a real one of the other arms would not.
-fn merged_region(ctx: Ctx, open_at: int, region_end_at: int, sim0: Sim, walks: List<Walked>) -> Merged {
+fn merged_region(facts: WalkFacts, open_at: int, region_end_at: int, sim0: Sim, walks: List<Walked>) -> Merged {
     mut diags = flatten([w.diags for w in walks])
     let live = [w for w in walks if !w.diverges]
     if live.is_empty() {
@@ -699,10 +851,10 @@ fn merged_region(ctx: Ctx, open_at: int, region_end_at: int, sim0: Sim, walks: L
     let n = sim0.refs.length
     mut merged: Sim = live.first()!.sim
     for r in 0..n {
-        if ctx.defs[r] < open_at {
+        if facts.defs[r] < open_at {
             let states = [w.sim.refs[r] > 0 for w in live]
             if states.any(it != states[0]) {
-                diags.push(region_disagreement(ctx.name, region_end_at, Reg { index: r }))
+                diags.push(region_disagreement(facts.name, region_end_at, Reg { index: r }))
                 merged.refs.set(r, 0)
             } else if states[0] {
                 merged.refs.set(r, largest([w.sim.refs[r] for w in live]))
@@ -711,7 +863,7 @@ fn merged_region(ctx: Ctx, open_at: int, region_end_at: int, sim0: Sim, walks: L
             }
         }
     }
-    let od: Reg? = owning_def(ctx.ins, region_end_at, ctx.reg_types, ctx.immortal, ctx.managed)
+    let od: Reg? = owning_def(facts.ins, region_end_at, facts.layouts, facts.immortal)
     if od != null { merged.refs.set(od!.index, 1) }
     Merged { sim: merged, diags: diags, diverges: false, gives: od }
 }
@@ -734,12 +886,12 @@ fn largest(xs: List<int>) -> int {
 /// (docs/2026_09_23_REUSE_IN_PLACE.md §30, D16).
 enum Provenance { Unknown, At(root: Reg) }
 
-fn view_root(ctx: Ctx, r: Reg) -> Provenance {
-    let d = ctx.defs[r.index]
+fn view_root(facts: WalkFacts, r: Reg) -> Provenance {
+    let d = facts.defs[r.index]
     if d < 0 { return Provenance.At(r) }
-    if ctx.ins[d] is .Load { return Provenance.Unknown }
-    let src? = view_source(ctx.ins[d]) else { return Provenance.At(r) }
-    view_root(ctx, src)
+    if facts.ins[d] is .Load { return Provenance.Unknown }
+    let src? = view_source(facts.ins[d]) else { return Provenance.At(r) }
+    view_root(facts, src)
 }
 
 fn view_source(i: Ins) -> Reg? {
@@ -758,9 +910,9 @@ fn view_source(i: Ins) -> Reg? {
 /// CallRt) is: `view_root`'s walk still crosses the Load beneath it
 /// to answer `Unknown`, but the gate that asks the question at all
 /// is the shape ABOVE the Load, never the Load's own destination.
-fn is_view(ctx: Ctx, r: Reg) -> bool {
-    let d = ctx.defs[r.index]
-    d >= 0 && view_source(ctx.ins[d]) != null
+fn is_view(facts: WalkFacts, r: Reg) -> bool {
+    let d = facts.defs[r.index]
+    d >= 0 && view_source(facts.ins[d]) != null
 }
 
 /// One call argument, checked: a VIEW whose root the call cannot be
@@ -768,15 +920,76 @@ fn is_view(ctx: Ctx, r: Reg) -> bool {
 /// cell Load), or it is ALSO among this call's own seats — must carry
 /// its own protecting Retain; a call argument that stands already, or
 /// that already owns its own reference, needs none.
-fn view_protection(ctx: Ctx, sim: Sim, at: int, cargs: List<Reg>, ar: Reg) -> List<Diag> {
-    if !ctx.managed(ctx.reg_types[ar.index]) || !is_view(ctx, ar) { return [] }
-    let needs = match view_root(ctx, ar) {
+fn view_protection(facts: WalkFacts, sim: Sim, at: int, cargs: List<Reg>, ar: Reg) -> List<Diag> {
+    if !counted(facts, ar) || !is_view(facts, ar) { return [] }
+    let needs = match view_root(facts, ar) {
         .Unknown -> true,
         .At(root) -> cargs.any(same_reg(it, root)),
     }
     if !needs || sim.refs[ar.index] > 0 { return [] }
-    [unprotected_view(ctx.name, at, ar)]
+    [unprotected_view(facts.name, at, ar)]
 }
+
+// ── A write in place opens what it writes ──────────────────────────
+
+/// A WRITE IN PLACE OPENS ITS BOX FIRST: a row writing a list, a slot or
+/// a map where it stands is handed a box this body opened, made, or
+/// holds as a Cell — never the binary's own data, a cell's bare load, or
+/// a view into another box, any of which another holder still reads.
+fn unopened_writes(facts: WalkFacts, at: int, callee: string, args: List<Reg>) -> List<Diag> {
+    if !writes_in_place(callee) { return [] }
+    [unopened_write(facts.name, at, callee, a) for j, a in args if rt_writes(callee, j) && unopened(facts, a)]
+}
+
+/// The rows that write a list, a slot or a map where it stands.
+fn writes_in_place(callee: string) -> bool {
+    [
+        "avra_array_push",
+        "avra_slot_set",
+        "avra_slot_put",
+        "avra_map_set",
+        "avra_map_remove",
+        "avra_array_pop",
+        "avra_array_extend",
+        "avra_slot_unique",
+        "avra_owned_slot_unique",
+        "avra_owned_slot_unshared",
+    ]
+        .any((row) -> callee.starts_with(row))
+}
+
+/// Whether `r` is a box nobody opened for this write.
+fn unopened(facts: WalkFacts, r: Reg) -> bool {
+    if holds_cell(facts, r) { return false }
+    if facts.immortal[r.index] { return true }
+    let d = facts.defs[r.index]
+    if d < 0 { return false }
+    match facts.ins[d] {
+        .Load(_, _) -> true,
+        .CallRt(_, callee, _) if opens_box(callee) -> false,
+        rest -> view_source(facts.ins[d]) != null,
+    }
+}
+
+/// The rows that answer a box opened for writing: the box itself when
+/// nothing else holds it, else its copy.
+fn opens_box(callee: string) -> bool {
+    [
+        "avra_slot_unique",
+        "avra_owned_slot_unique",
+        "avra_cell_unique",
+        "avra_cell_thawed",
+        "avra_box_thawed",
+    ]
+        .contains(callee)
+}
+
+/// A `Cell<_>` register, present or absent: a box any copy of it
+/// writes through.
+fn holds_cell(facts: WalkFacts, r: Reg) -> bool { facts.layouts[r.index].carries_cell() }
+
+/// Whether `r` holds a reference the runtime counts.
+fn counted(facts: WalkFacts, r: Reg) -> bool { facts.layouts[r.index].counted() }
 
 // ── Reusing/moving twins — an OUTPUT shape, read by name ────────────
 
@@ -822,5 +1035,33 @@ fn leaked(name: string, at: int, r: Reg) -> Diag {
     defect_at(
         null,
         "in `${name}`, r${r.index} is a fresh box still alive at instruction ${at} — never released, transferred, or answered on this path",
+    )
+}
+
+fn forget_untaken(name: string, at: int, slot: Reg) -> Diag {
+    defect_at(
+        null,
+        "in `${name}`, instruction ${at} empties the cell r${slot.index} with no load of it to take its reference — the reference is lost",
+    )
+}
+
+fn emptied_read(name: string, at: int, r: Reg, slot: Reg) -> Diag {
+    defect_at(
+        null,
+        "in `${name}`, instruction ${at} reads r${r.index} from the cell r${slot.index} after a forget emptied it and before a store refilled it",
+    )
+}
+
+fn yields_uncounted(name: string, at: int, r: Reg) -> Diag {
+    defect_at(
+        null,
+        "in `${name}`, the arm ending at instruction ${at} yields r${r.index} holding no reference of its own — the region's answer counts one nobody minted",
+    )
+}
+
+fn unopened_write(name: string, at: int, callee: string, r: Reg) -> Diag {
+    defect_at(
+        null,
+        "in `${name}`, instruction ${at} hands r${r.index} to `${callee}`, which writes it in place — a box never opened for writing, which another holder still reads",
     )
 }

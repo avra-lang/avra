@@ -12,11 +12,9 @@
 //! backend.
 use core.{
     Ins,
-    is_managed,
+    Layout,
     Reg,
     Level,
-    TypeId,
-    TypeRegistry,
     SeatMark,
     consumed_mark,
     Stack,
@@ -31,6 +29,8 @@ use core.{
     reads_some,
     same_reg,
     rt_owns,
+    rt_keeps,
+    rt_sig_of,
     rt_lends,
     rt_writes,
     rt_aliases_arg0,
@@ -44,9 +44,18 @@ use core.{
 use compiler.lower.{Lowered, Body}
 use compiler.soundness.{checked}
 use @std.io.{env}
+use @std.program.sorted.{sorted_by}
+use @std.relation.engine.{map_cell}
 
 /// Managed registers bound in one open scope, its tier remembered.
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
+
+/// The memory pass over `late`, bodies made after the program `among` was: each read against the
+/// marks of every body either holds.
+export fn memory_late(among: List<Body>, late: List<Body>) -> List<Body> {
+    let by_name = marks_by_name(among.concat(late))
+    [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name) } for b in late if !(b.weak && b.ins.is_empty())]
+}
 
 export fn memory(l: Lowered) -> Lowered {
     // A `.Call`'s callee is a SYMBOL, never a DeclId — mono may give
@@ -63,8 +72,8 @@ export fn memory(l: Lowered) -> Lowered {
     // reaching emission is an unterminated LLVM function, not a body.
     let by_name = marks_by_name(l.fns)
     let named = [b for b in l.fns if !(b.weak && b.ins.is_empty())]
-    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length, b.marks, by_name) } for b in named]
-    let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0, l.entry.marks, by_name) }
+    let fns = [b with { ins: body_ins(b.layouts, b.ins, b.seats.length, b.marks, by_name) } for b in named]
+    let entry = l.entry with { ins: body_ins(l.entry.layouts, l.entry.ins, 0, l.entry.marks, by_name) }
     let out = l with { fns: fns, entry: entry }
     if !sound_checked() { return out }
     // L2: an independent proof over this pass's OWN output — never a
@@ -77,7 +86,7 @@ export fn memory(l: Lowered) -> Lowered {
     // and `make gate` set it nowhere.
     // The proof takes this pass's OWN `by_name`; the one outside fact
     // it consumes is `Body.marks` — the `consumed` seats.
-    out with { diagnostics: out.diagnostics.concat(checked(out, by_name, (ty: TypeId) -> is_managed(l.types, ty))) }
+    out with { diagnostics: out.diagnostics.concat(checked(out, by_name)) }
 }
 
 /// Whether this process runs the memory pass's own proof — it adds
@@ -94,22 +103,24 @@ export fn sound_checked() -> bool {
 /// bracket opens, and every caller of THIS body reads `marks` by name to
 /// decide whether to hand its dying argument over or retain first.
 fn body_ins(
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     ins: List<Ins>,
     seats: int,
     marks: List<SeatMark>,
     by_name: Map<string, List<SeatMark>>,
 ) -> List<Ins> {
-    let immortal = immortal_regs(reg_types.length, ins)
-    [i for i in memory_ins(
-        types,
-        reg_types,
-        ins,
-        standing_regs(immortal, ins, seats, marks),
-        consuming_seats(seats, marks),
-        by_name,
-    ) if !immortal_rc_op(i, immortal)]
+    let immortal = immortal_regs(layouts.length, ins)
+    runs_joined(
+        noted_pairs(
+            [i for i in memory_ins(
+                layouts,
+                ins,
+                standing_regs(immortal, ins, seats, marks),
+                consuming_seats(seats, marks),
+                by_name,
+            ) if !immortal_rc_op(i, immortal)],
+        ),
+    )
 }
 
 /// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
@@ -174,7 +185,11 @@ fn immortal_dst(i: Ins) -> Reg? {
 /// register the same way, so stripping only the retain leaves the release
 /// unmatched — a debt this body never took.
 fn immortal_rc_op(i: Ins, immortal: List<bool>) -> bool {
-    match i { .Retain(r) or .Release(r) -> immortal[r.index], rest -> false }
+    match i {
+        .Retain(r) -> immortal[r.index],
+        .Release(rs) -> rs.all(immortal[it.index]),
+        rest -> false,
+    }
 }
 
 /// The memory instructions as every scope's strategy places them — the pass's
@@ -186,8 +201,7 @@ fn immortal_rc_op(i: Ins, immortal: List<bool>) -> bool {
 /// it exactly as they do to any other locally-owned value: this pass adds no
 /// new rule for WHAT happens to a consuming param, only for WHERE it starts.
 fn memory_ins(
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     ins: List<Ins>,
     standing: List<bool>,
     consuming: List<Reg>,
@@ -198,23 +212,25 @@ fn memory_ins(
     // each open loop's FLOOR: the scope depth its turn opens at, known
     // from its `LoopCond` on
     mut floors: List<int> = []
-    let last = last_reads(reg_types.length, ins)
-    let defs = def_sites(reg_types.length, ins)
+    // each open region's HANDED yields: what its arms give the merge on the enclosing scope's count
+    mut handing: List<List<Reg>> = []
+    let last = last_reads(layouts.length, ins)
+    let defs = def_sites(layouts.length, ins)
     let next_barrier = barrier_positions(ins)
-    let twins = twin_table(defs, next_barrier, types, reg_types, ins)
+    let twins = twin_table(defs, next_barrier, layouts, ins)
+    let immortal = immortal_regs(layouts.length, ins)
     let life = Lives {
-        types: types,
-        reg_types: reg_types,
+        layouts: layouts,
         ins: ins,
         last: last,
         defs: defs,
         next_barrier: next_barrier,
         twins: twins,
-        viewed: viewed_regs(types, reg_types, ins),
+        viewed: viewed_regs(layouts, ins),
         death: death_points(twins, ins, last),
     }
     for at, raw in ins {
-        let i = owned_form(twins, types, reg_types, at, raw)
+        let i = owned_form(twins, layouts, immortal, at, raw)
         match i {
             .ScopeEnter(tier) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
@@ -229,21 +245,27 @@ fn memory_ins(
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
-                for s in scope.settled(gives) { out.push(s) }
+                for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
                 // SOMETHING ALWAYS RECEIVES A YIELD: an enclosing scope adopts
                 // it, or — at the outermost — the caller takes it as the
                 // answer. A yield the scope does not own takes its own
                 // reference either way: a param answered is the caller's
                 // to keep, and the param was never this body's.
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
-                adopts(types, reg_types, open_scopes, gives)
+                for s in noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives)) { out.push(s) }
+                adopts(layouts, open_scopes, gives)
                 out.push(i)
             },
             // A branch is a scope at its enclosing tier. Its yield
             // escapes to the merge: the branch never releases it —
             // the enclosing scope owns `dst`, the merge of both.
-            .IfStart(_) or .SwitchStart(_, _) or .Cleanup(_) -> {
+            .IfStart(_) or .SwitchStart(_, _) -> {
+                handing.push(life.handed_yields(open_scopes, at))
+                // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
+                open_scopes.push(nested_scope(open_scopes))
+                out.push(i)
+            },
+            .Cleanup(_) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
@@ -251,20 +273,22 @@ fn memory_ins(
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
-                for s in scope.settled(gives) { out.push(s) }
+                for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
+                for s in arm_handed(layouts, scope, gives, handing.last() ?? []) { out.push(s) }
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
             },
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
+                let handed = handing.pop()
                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
-                for s in scope.settled(gives) { out.push(s) }
+                for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
-                manages(types, reg_types, open_scopes, i)
+                for s in arm_handed(layouts, scope, gives, handed) { out.push(s) }
+                for r in handed { disowns(open_scopes, r) }
+                manages(layouts, open_scopes, i)
                 out.push(i)
             },
             // THE CALLER KEEPS ITS ARGUMENTS STANDING, and most stand already.
@@ -285,37 +309,50 @@ fn memory_ins(
             // not move. Independent of `lent` above, which exists for VIEWS
             // a standing/scope-owned argument is excluded from either way.
             .Call(_, _, _) or .CallPtr(_, _, _) -> {
-                let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) &&
+                let lent = [ar for ar in lent_args(i) if layouts[ar.index].counted() &&
                     !standing[ar.index] &&
                     !owned_open(open_scopes, ar) &&
                     root_handed(life, i, ar)]
+                noted("retain+release: a view held across a call", lent.length)
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for r in lent { out.push(Ins.Retain(r)) }
-                let marks: List<SeatMark> = callee_marks(types, reg_types, by_name, i)
+                let marks: List<SeatMark> = callee_marks(by_name, i)
                 for j, ar in lent_args(i) {
-                    if consumed_mark(marks, j) && is_managed(types, reg_types[ar.index]) {
-                        if life.moves(open_scopes, ar, at) { disowns(open_scopes, ar) } else { out.push(Ins.Retain(ar)) }
+                    if consumed_mark(marks, j) && layouts[ar.index].counted() {
+                        if life.moves(open_scopes, ar, at) {
+                            noted("moved: into a consuming seat", 1)
+                            disowns(open_scopes, ar)
+                        } else {
+                            noted("retain: a consuming seat", 1)
+                            out.push(Ins.Retain(ar))
+                        }
                     }
                 }
-                manages(types, reg_types, open_scopes, i)
+                manages(layouts, open_scopes, i)
                 out.push(i)
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for r in lent { out.push(Ins.Release(r)) }
+                for r in lent { out.push(Ins.Release([r])) }
             },
             // An EARLY exit settles EVERY open scope's debts at the
             // site — nothing pops, because other paths continue.
             .FnExit(gives) -> {
                 // an answer no scope owns is the caller's to keep: its own reference, first
-                if is_managed(types, reg_types[gives.index]) && !owned_open(open_scopes, gives) { out.push(Ins.Retain(gives)) }
+                if layouts[gives.index].counted() && !owned_open(open_scopes, gives) {
+                    noted("retain: an early answer no scope owns", 1)
+                    out.push(Ins.Retain(gives))
+                }
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for s in owed_from(open_scopes, 0, gives) { out.push(s) }
+                for s in noted_all("an early exit", owed_from(open_scopes, 0, gives)) { out.push(s) }
                 out.push(i)
             },
             // AN EARLY END OF A TURN settles what the turn's own close
             // would: every scope opened since its loop's `LoopCond`.
             .LoopJump(outward, _) -> {
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for s in owed_from(open_scopes, floors[floors.length - 1 - outward], null) { out.push(s) }
+                for s in noted_all(
+                    "an early turn's end",
+                    owed_from(open_scopes, floors[floors.length - 1 - outward], null),
+                ) { out.push(s) }
                 out.push(i)
             },
             // THE MUT-CELL PROTOCOL: the cell owns ONE reference.
@@ -325,7 +362,7 @@ fn memory_ins(
             // free what it is keeping). The cell's own reference
             // settles when its scope does.
             .Alloca(dst) -> {
-                if is_managed(types, reg_types[dst.index]) && !open_scopes.is_empty() {
+                if layouts[dst.index].counted() && !open_scopes.is_empty() {
                     holds_cell(open_scopes, dst)
                 }
                 out.push(i)
@@ -333,10 +370,16 @@ fn memory_ins(
             // A STORE SETTLES BY THE CELL'S TYPE, never the value's:
             // `x = null` into a managed cell releases what x held.
             .Store(slot, src) -> {
-                if is_managed(types, reg_types[slot.index]) {
+                if layouts[slot.index].counted() {
                     // a value that dies here MOVES in: the scope's reference becomes the cell's
-                    if is_managed(types, reg_types[src.index]) {
-                        if life.moves(open_scopes, src, at) { disowns(open_scopes, src) } else { out.push(Ins.Retain(src)) }
+                    if layouts[src.index].counted() {
+                        if life.moves(open_scopes, src, at) {
+                            noted("moved: into a cell", 1)
+                            disowns(open_scopes, src)
+                        } else {
+                            noted("retain: a value stored in a cell", 1)
+                            out.push(Ins.Retain(src))
+                        }
                     }
                     // EVERY store settles what the cell held: a fresh
                     // cell holds nothing (the alloca nulls it), and a
@@ -352,21 +395,11 @@ fn memory_ins(
             // scope does not own is a release it must not emit.
             .Load(dst, slot) -> {
                 out.push(i)
-                if is_managed(types, reg_types[dst.index]) &&
-                    borrow_outlives(
-                        twins,
-                        defs,
-                        next_barrier,
-                        types,
-                        reg_types,
-                        ins,
-                        at,
-                        dst,
-                        slot,
-                        false,
-                    ) {
+                if layouts[dst.index].counted() &&
+                    borrow_outlives(twins, defs, next_barrier, layouts, ins, at, dst, slot, false) {
+                    noted("retain: a load that outlives its cell", 1)
                     out.push(Ins.Retain(dst))
-                    manages(types, reg_types, open_scopes, i)
+                    manages(layouts, open_scopes, i)
                 }
             },
             // THE CONDITION RUNS EVERY TURN: what it mints is settled
@@ -384,7 +417,7 @@ fn memory_ins(
             .LoopCond(_) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for s in scope.settled(null) { out.push(s) }
+                for s in noted_all("a loop condition's turn", scope.settled(null)) { out.push(s) }
                 floors.set(floors.length - 1, open_scopes.depth())
                 out.push(i)
             },
@@ -398,14 +431,35 @@ fn memory_ins(
             // scope settles both. (Every other pack is a scalar
             // pair, which owns nothing.) Its twin `Extract` is a
             // VIEW and owns nothing, which `managed_dst` says.
-            .Pack(dst, _) -> {
+            .Pack(dst, elems) -> {
                 out.push(i)
-                if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
-                manages(types, reg_types, open_scopes, i)
+                if tallying() &&
+                    layouts[dst.index].counted() &&
+                    part_dies(open_scopes, life, elems, at) {
+                    noted("candidate: a flat record's pack of a part dying there", 1)
+                }
+                if layouts[dst.index].counted() {
+                    noted("retain: a flat record's pack", 1)
+                    out.push(Ins.Retain(dst))
+                }
+                manages(layouts, open_scopes, i)
             },
             // REUSE IN PLACE: a first seat that dies here is HANDED to the
             // row's reusing twin, which writes a box it holds alone
             .CallRt(dst, callee, args) -> {
+                if tallying() &&
+                    twins[at] &&
+                    !args.is_empty() &&
+                    owned_top(open_scopes, args[0]) &&
+                    life.dies_at(args[0], at) {
+                    noted("candidate: an owned twin's read of an owned subject dying there", 1)
+                }
+                if tallying() && layouts[dst.index].counted() && answers_stood(callee) {
+                    noted(
+                        if twins[at] { "retain: an owned twin, ${callee}" } else { "retain: a stood answer, ${callee}" },
+                        1,
+                    )
+                }
                 match life.handover(open_scopes, at) {
                     .Kept -> out.push(i),
                     .Owned -> {
@@ -417,21 +471,23 @@ fn memory_ins(
                         out.push(Ins.CallRt(dst, rt_reusing_twin(callee) ?? callee, args))
                     },
                 }
-                manages(types, reg_types, open_scopes, i)
+                manages(layouts, open_scopes, i)
             },
             // A STORE MOVES what dies there: the scope's reference goes
             // into the slot, and the scope never releases it
-            .CallRtVoid(_, args) -> {
+            .CallRtVoid(callee, args) -> {
                 let moving: string? = life.moved_into(open_scopes, at)
                 if moving == null {
+                    if tallying() && !args.is_empty() && rt_keeps(callee, args.length - 1) { noted("retain: a value a row keeps", 1) }
                     out.push(i)
                 } else {
+                    noted("moved: into a row that keeps it", 1)
                     disowns(open_scopes, args.last()!)
                     out.push(Ins.CallRtVoid(moving!, args))
                 }
             },
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Release(_) or .Extract(_, _, _) or .Retain(_) or .RetVal(_) or .Ret(_) -> {
-                manages(types, reg_types, open_scopes, i)
+                manages(layouts, open_scopes, i)
                 out.push(i)
             },
         }
@@ -439,7 +495,8 @@ fn memory_ins(
         // scope's close keeps the box shared, and the next write to it
         // copies the whole box.
         for r in life.dead_here(open_scopes, at) {
-            out.push(Ins.Release(r))
+            noted("release: a last read", 1)
+            out.push(Ins.Release([r]))
             disowns(open_scopes, r)
         }
     }
@@ -469,8 +526,7 @@ fn borrow_outlives(
     twins: List<bool>,
     defs: List<int>,
     next_barrier: List<int>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     ins: List<Ins>,
     at: int,
     dst: Reg,
@@ -487,7 +543,7 @@ fn borrow_outlives(
             last = j
             let d: Reg? = view_of(i)
             // a child that takes its OWN reference rides nobody's
-            if d != null && is_managed(types, reg_types[d!.index]) && !twins[j] {
+            if d != null && layouts[d!.index].counted() && !twins[j] {
                 views.push(d!)
             }
         }
@@ -696,7 +752,11 @@ fn below_from(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg, deeper: bool) 
 
 /// Whether `i` answers a part of its subject's box, never the box itself.
 fn reads_part(i: Ins) -> bool {
-    match i { .Extract(_, _, _) -> true, .CallRt(_, callee, _) -> rt_lends(callee), rest -> false }
+    match i {
+        .Extract(_, _, _) -> true,
+        .CallRt(_, callee, _) -> rt_lends(callee) && !rt_aliases_arg0(callee),
+        rest -> false,
+    }
 }
 
 /// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a
@@ -856,7 +916,7 @@ fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
 /// value the exit answers, excluded.
 fn owed_from(open_scopes: Stack<Scope>, floor: int, kept: Reg?) -> List<Ins> {
     [cell_settle(c) for c in exit_cells(open_scopes, floor)]
-        .concat([Ins.Release(r) for r in exit_releases(open_scopes, floor, kept)])
+        .concat([Ins.Release([r]) for r in exit_releases(open_scopes, floor, kept)])
 }
 
 /// Everything each open scope from `floor` in owes at an early exit,
@@ -891,12 +951,27 @@ fn enclosing_tier(open_scopes: Stack<Scope>) -> Level {
 /// own it and release it, so it takes its own reference here. A
 /// yield the scope owns MOVES instead: its release is the one the
 /// receiver inherits.
-fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: Reg?) -> List<Ins> {
+fn moved_out(layouts: List<Layout>, scope: Scope, gives: Reg?) -> List<Ins> {
     if gives == null { return [] }
     let r = gives!
-    if !is_managed(types, reg_types[r.index]) { return [] }
+    if !layouts[r.index].counted() { return [] }
     if scope.managed.contains(r) { return [] }
     [Ins.Retain(r)]
+}
+
+/// AN ARM'S CLOSE, ITS YIELD AND THE REGION'S HANDED VALUES SETTLED: a handed value it yields
+/// carries the enclosing scope's count into the merge, and one it does not yield dies on its way
+/// out — released after the arm's own yield took its count, which may ride that value. An arm
+/// that already holds a count of its own for the value (a nested scope's yield took one) gives
+/// that count to the merge, and the enclosing scope's dies on its way out like any other arm's.
+fn arm_handed(layouts: List<Layout>, scope: Scope, gives: Reg, handed: List<Reg>) -> List<Ins> {
+    if handed.any(same_reg(it, gives)) && !scope.managed.any(same_reg(it, gives)) {
+        noted("moved: an arm's yield into the merge", 1)
+        return [Ins.Release([r]) for r in handed if !same_reg(r, gives)]
+    }
+    let kept = noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives))
+    noted("release: a value another arm hands to the merge", handed.length)
+    kept.concat([Ins.Release([r]) for r in handed])
 }
 
 impl Scope {
@@ -959,15 +1034,15 @@ fn empty_scope() -> Scope {
 
 /// A closing scope's yield, adopted by the one outside it: at the
 /// OUTERMOST there is none, and the value escapes to the caller.
-fn adopts(types: TypeRegistry, reg_types: List<TypeId>, mut open_scopes: Stack<Scope>, gives: Reg?) {
+fn adopts(layouts: List<Layout>, mut open_scopes: Stack<Scope>, gives: Reg?) {
     if gives == null || open_scopes.is_empty() { return }
-    if is_managed(types, reg_types[gives!.index]) { takes(open_scopes, gives!) }
+    if layouts[gives!.index].counted() { takes(open_scopes, gives!) }
 }
 
 /// When `i` defines a managed value, the innermost open scope takes
 /// ownership of its destination.
-fn manages(types: TypeRegistry, reg_types: List<TypeId>, mut open_scopes: Stack<Scope>, i: Ins) {
-    let dst: Reg? = managed_dst(types, reg_types, i)
+fn manages(layouts: List<Layout>, mut open_scopes: Stack<Scope>, i: Ins) {
+    let dst: Reg? = managed_dst(layouts, i)
     if dst != null { takes(open_scopes, dst!) }
 }
 
@@ -976,10 +1051,10 @@ fn manages(types: TypeRegistry, reg_types: List<TypeId>, mut open_scopes: Stack<
 /// Null for a destination that owns nothing: a scalar's word, a cell,
 /// an immortal static address (none carries `@owns`), the `@view`
 /// destination, and every non-defining instruction.
-fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
+fn managed_dst(layouts: List<Layout>, i: Ins) -> Reg? {
     let dst: Reg? = owned_dst(i)
     if dst == null { return null }
-    if !is_managed(types, reg_types[dst!.index]) { return null }
+    if !layouts[dst!.index].counted() { return null }
     // Provenance refines the ROLE: a runtime call's answer is managed
     // only when the REGISTRY says it owns one — a static answer
     // (bool_text) never earns a release. The one variant-specific
@@ -993,13 +1068,15 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
 /// managed becomes an owned +1 read — each by the registry's OWNED
 /// TWIN column. Lowering never chooses; ownership stays this
 /// pass's one concern, and no runtime name is spelled here.
-fn owned_form(twins: List<bool>, types: TypeRegistry, reg_types: List<TypeId>, at: int, i: Ins) -> Ins {
+/// A store whose value is IMMORTAL — the binary's own data, a literal's text — takes no reference:
+/// nothing ever frees it, so the slot it lands in owes it nothing.
+fn owned_form(twins: List<bool>, layouts: List<Layout>, immortal: List<bool>, at: int, i: Ins) -> Ins {
     // a pre-filter — the caller's dispatch is exhaustive
     // over Ins; this rewrite touches only the runtime call shapes
     match i {
         .CallRtVoid(callee, args) -> {
             let twin: string? = rt_owned_twin(callee)
-            if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
+            if twin != null && pushes_managed(layouts, args) && !stores_immortal(immortal, args) { Ins.CallRtVoid(twin!, args) } else { i }
         },
         .CallRt(dst, callee, args) if twins[at] -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
         rest -> i,
@@ -1009,23 +1086,23 @@ fn owned_form(twins: List<bool>, types: TypeRegistry, reg_types: List<TypeId>, a
 /// WHETHER EACH READ TAKES ITS OWNED TWIN, by position, once per body. A
 /// read's answer asks only about the reads AFTER it, so a reverse walk has
 /// every answer it needs in hand.
-fn twin_table(
-    defs: List<int>,
-    next_barrier: List<int>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
-    ins: List<Ins>,
-) -> List<bool> {
+fn twin_table(defs: List<int>, next_barrier: List<int>, layouts: List<Layout>, ins: List<Ins>) -> List<
+    bool,
+> {
     mut out = [false for j in 0..ins.length]
     // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
     mut k = ins.length - 1
     while k >= 0 {
-        if takes_twin(out, defs, next_barrier, types, reg_types, ins, k, ins[k]) { out.set(k, true) }
+        if takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) { out.set(k, true) }
         k = k - 1
     }
     out
 }
 
+/// A READ THAT RIDES ITS SUBJECT TAKES NO COUNT: a lending row's answer — a slot, an element, the
+/// box `!` lets through — is a view, and its owned twin is taken only where the answer must outlive
+/// the subject.
+///
 /// WHETHER A READ TAKES ITS OWNED TWIN — its answer its own +1, riding nobody's
 /// reference: a managed answer of a row that has a twin, which a LENDING row
 /// declines only while the child stays a borrow. `twins` answers every
@@ -1034,17 +1111,16 @@ fn takes_twin(
     twins: List<bool>,
     defs: List<int>,
     next_barrier: List<int>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     ins: List<Ins>,
     at: int,
     i: Ins,
 ) -> bool {
     match i {
         .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
-            is_managed(types, reg_types[dst.index]) &&
+            layouts[dst.index].counted() &&
             (!rt_lends(callee) ||
-                read_outlives(twins, defs, next_barrier, types, reg_types, ins, at, dst, args)),
+                read_outlives(twins, defs, next_barrier, layouts, ins, at, dst, args)),
         rest -> false,
     }
 }
@@ -1064,8 +1140,7 @@ fn read_outlives(
     twins: List<bool>,
     defs: List<int>,
     next_barrier: List<int>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     ins: List<Ins>,
     at: int,
     dst: Reg,
@@ -1076,45 +1151,34 @@ fn read_outlives(
         twins,
         defs,
         next_barrier,
-        types,
-        reg_types,
+        layouts,
         ins,
         at,
         dst,
         subject,
-        crosses_cell(defs, ins, types, reg_types, subject),
+        crosses_cell(defs, ins, layouts, subject),
     )
 }
 
 /// Whether `r` carries a `Cell`, or is a view taken, at any depth, from one.
-fn crosses_cell(
-    defs: List<int>,
-    ins: List<Ins>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
-    r: Reg,
-) -> bool {
-    if is_cell(types, reg_types[r.index]) { return true }
+fn crosses_cell(defs: List<int>, ins: List<Ins>, layouts: List<Layout>, r: Reg) -> bool {
+    if layouts[r.index].carries_cell() { return true }
     let d = defs[r.index]
     if d < 0 { return false }
     let src? = view_source(ins[d]) else { return false }
-    crosses_cell(defs, ins, types, reg_types, src)
+    crosses_cell(defs, ins, layouts, src)
 }
 
-/// Whether a value of `ty` carries a `Cell` in its own word: one, a
-/// nullable one, or a flat record with one among its fields.
-fn is_cell(types: TypeRegistry, ty: TypeId) -> bool {
-    match types.shape_of(types.seen_through(ty)) {
-        .Cell(_) -> true,
-        .Opt(inner) -> is_cell(types, inner),
-        rest -> types.flat_fields(ty).any(is_cell(types, it)),
-    }
+/// Whether a store's VALUE seat (its last) is an immortal register.
+fn stores_immortal(immortal: List<bool>, args: List<Reg>) -> bool {
+    let v? = args.last() else { return false }
+    v.index >= 0 && v.index < immortal.length && immortal[v.index]
 }
 
 /// A push's VALUE seat (arg 1) holds a managed type.
-fn pushes_managed(types: TypeRegistry, reg_types: List<TypeId>, args: List<Reg>) -> bool {
+fn pushes_managed(layouts: List<Layout>, args: List<Reg>) -> bool {
     let v: Reg? = args.last()
-    v != null && is_managed(types, reg_types[v!.index])
+    v != null && layouts[v!.index].counted()
 }
 
 /// The cell's held reference, released through the SLOT — the
@@ -1148,7 +1212,7 @@ impl Scope {
     /// then the releases its yield leaves behind.
     fn settled(gives: Reg?) -> List<Ins> {
         [cell_settle(c) for c in reversed(self.cells)]
-            .concat([Ins.Release(r) for r in self.releases_for(gives)])
+            .concat([Ins.Release([r]) for r in self.releases_for(gives)])
     }
 }
 
@@ -1169,8 +1233,7 @@ enum Handover {
 
 /// ONE BODY'S LIVES: where each register is defined and last read.
 type Lives = {
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
+    layouts: List<Layout>,
     ins: List<Ins>,
     last: List<int>,
     defs: List<int>,
@@ -1195,10 +1258,35 @@ impl Lives {
             level_span(self.ins, self.defs[r.index], at)]
     }
 
+    /// THE VALUES THE REGION OPENING AT `at` HANDS TO ITS MERGE: each a register one of its arms
+    /// yields, owned by the scope the region opens in — which runs the region once for each time
+    /// it owns the register — and read for the last time, with every view riding it, by the
+    /// region's own close. The merge takes one of the scope's counts where that arm runs; every
+    /// other arm releases it, and an exit from inside an arm settles it as that scope's own.
+    fn handed_yields(open_scopes: Stack<Scope>, at: int) -> List<Reg> {
+        let close = region_exit(self.ins, at)
+        let merged? = region_dst(self.ins[close]) else { return [] }
+        if !self.layouts[merged.index].counted() { return [] }
+        mut out: List<Reg> = []
+        mut k = at
+        while k < close {
+            k = arm_exit(self.ins, k + 1).boundary
+            let r = arm_gives(self.ins[k])
+            if !out.any(same_reg(it, r)) && self.hands(open_scopes, r, close) { out.push(r) }
+        }
+        out
+    }
+
+    /// Whether `r`, yielded by an arm of the region closing at `close`, is the enclosing scope's
+    /// to hand: a scope further out would release it again at its own close.
+    fn hands(open_scopes: Stack<Scope>, r: Reg, close: int) -> bool {
+        self.layouts[r.index].counted() && owned_top(open_scopes, r) && self.death[r.index] <= close
+    }
+
     /// Whether the call at `at` hands its first seat over, and how.
     fn handover(open_scopes: Stack<Scope>, at: int) -> Handover {
         let r? = handed_seat(self.ins[at]) else { return Handover.Kept }
-        if !is_managed(self.types, self.reg_types[r.index]) || !self.dies_at(r, at) { return Handover.Kept }
+        if !self.layouts[r.index].counted() || !self.dies_at(r, at) { return Handover.Kept }
         if owned_top(open_scopes, r) { return Handover.Owned }
         let slot? = self.refilled_cell(r, at) else { return Handover.Kept }
         Handover.Emptied(slot)
@@ -1210,7 +1298,7 @@ impl Lives {
         let v? = stored_value(self.ins[at]) else { return null }
         if self.last[v.index] != at { return null }
         let callee? = moving_callee(self.ins[at]) else { return null }
-        if !is_managed(self.types, self.reg_types[v.index]) || !self.moves(open_scopes, v, at) { return null }
+        if !self.layouts[v.index].counted() || !self.moves(open_scopes, v, at) { return null }
         rt_moving_twin(callee)
     }
 
@@ -1241,7 +1329,7 @@ impl Lives {
             let d: Reg? = view_of(i)
             if d != null &&
                 reads_any(i, family) &&
-                is_managed(self.types, self.reg_types[d!.index]) &&
+                self.layouts[d!.index].counted() &&
                 !self.twins[j] {
                 family.push(d!)
             }
@@ -1280,8 +1368,7 @@ impl Lives {
             self.twins,
             self.defs,
             self.next_barrier,
-            self.types,
-            self.reg_types,
+            self.layouts,
             self.ins,
             d,
             r,
@@ -1342,26 +1429,15 @@ impl Lives {
     }
 }
 
-/// A `.Call`/`.CallPtr`'s OWN callee's seat marks (R3): a DIRECT call
-/// reads them by the SYMBOL every body carries (`Body.marks`), the
-/// one currency `consumed` actually rides. An INDIRECT one reads the
-/// register's own TYPE instead, which NEVER carries `consumed`
-/// (`Decls.seat_mark` never merges it into a fn value's Arrow —
-/// features/checks.av's `fn_fits` says why) — so a `.CallPtr`
-/// answers plain for every seat, unconditionally, until an adapter
-/// closes that gap. Either way, an absent name (a runtime row, an
-/// unresolved target) answers plain too.
-fn callee_marks(
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
-    by_name: Map<string, List<SeatMark>>,
-    i: Ins,
-) -> List<SeatMark> {
-    match i {
-        .Call(_, callee, _) -> by_name.get(callee) ?? [],
-        .CallPtr(_, f, _) -> types.arrow_parts(reg_types[f.index])?.marks ?? [],
-        rest -> [],
-    }
+/// A `.Call`'s OWN callee's seat marks (R3), read by the SYMBOL every
+/// body carries (`Body.marks`), the one currency `consumed` rides. A
+/// `.CallPtr` goes through a fn VALUE, whose seats are borrowed
+/// whatever its callee consumes (`Decls.seat_mark` never merges
+/// `consumed` into a fn value's type — features/checks.av's `fn_fits`
+/// says why), so it answers plain for every seat; so does an absent
+/// name (a runtime row, an unresolved target).
+fn callee_marks(by_name: Map<string, List<SeatMark>>, i: Ins) -> List<SeatMark> {
+    match i { .Call(_, callee, _) -> by_name.get(callee) ?? [], rest -> [] }
 }
 
 /// The first seat of a call whose row has a reusing twin.
@@ -1385,6 +1461,16 @@ fn stored_value(i: Ins) -> Reg? {
     match i { .CallRtVoid(_, args) -> args.last(), _ -> null }
 }
 
+/// What an arm's close yields.
+fn arm_gives(i: Ins) -> Reg {
+    match i { .ArmEnd(gives) or .RegionEnd(_, gives) -> gives, rest -> Reg { index: 0 - 1 } }
+}
+
+/// The merge a region's close defines.
+fn region_dst(i: Ins) -> Reg? {
+    match i { .RegionEnd(dst, _) -> dst, _ -> null }
+}
+
 /// The cell a load reads.
 fn loaded_slot(i: Ins) -> Reg? {
     match i { .Load(_, slot) -> slot, _ -> null }
@@ -1398,11 +1484,11 @@ fn stores_into(i: Ins, slot: Reg) -> bool {
 /// THE REGISTERS A VIEW MAY BE TAKEN FROM — read by an instruction that
 /// defines a managed view. A superset: `views` still asks which child
 /// takes its own reference, and walks the body only for these.
-fn viewed_regs(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>) -> List<bool> {
-    mut out = [false for j in 0..reg_types.length]
+fn viewed_regs(layouts: List<Layout>, ins: List<Ins>) -> List<bool> {
+    mut out = [false for j in 0..layouts.length]
     for i in ins {
         let d: Reg? = view_of(i)
-        if d != null && is_managed(types, reg_types[d!.index]) {
+        if d != null && layouts[d!.index].counted() {
             for r in reads_of(i) { out.set(r.index, true) }
         }
     }
@@ -1467,4 +1553,114 @@ fn owned_once(open_scopes: Stack<Scope>, r: Reg) -> bool {
 fn disowns(mut open_scopes: Stack<Scope>, r: Reg) {
     let top? = open_scopes.top() else { return }
     open_scopes.rewrite_top(top with { managed: kept_out(top.managed, r) })
+}
+
+// ── The count of counts ──
+
+/// What each count the pass places is FOR, tallied per process under `AVRA_RC_REASONS`: placed
+/// instructions, never runs.
+once fn rc_reasons() -> Cell<Map<string, int>> { map_cell() }
+
+/// Whether this process tallies why the pass places each count.
+once fn rc_reasons_flag() -> string? {
+    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+    env("AVRA_RC_REASONS")
+}
+
+/// Whether this process tallies why the pass places each count.
+fn tallying() -> bool { rc_reasons_flag() != null }
+
+/// The reason a yielded register its scope does not own takes a count.
+const YIELD_NOT_OWNED = "a yield its scope does not own"
+
+/// `n` more counts placed for `reason`.
+fn noted(reason: string, n: int) {
+    if n == 0 || !tallying() { return }
+    rc_reasons().put(reason, (rc_reasons().get().get(reason) ?? 0) + n)
+}
+
+/// `placed`, each retain and release tallied as placed at `site`.
+fn noted_all(site: string, placed: List<Ins>) -> List<Ins> {
+    if !tallying() { return placed }
+    noted("retain: ${site}", placed.filter(it is .Retain).length)
+    noted("release: ${site}", flatten([released_regs(i) for i in placed]).length)
+    noted("settle: ${site}", placed.length - placed.filter(it is .Retain || it is .Release).length)
+    placed
+}
+
+/// Whether `callee` answers a box that already stood, retained.
+fn answers_stood(callee: string) -> bool {
+    let sig? = rt_sig_of(callee) else { return false }
+    sig.stood
+}
+
+/// Whether one of `elems` is owned by the innermost scope and dies at `at`.
+fn part_dies(open_scopes: Stack<Scope>, life: Lives, elems: List<Reg>, at: int) -> bool {
+    for r in elems { if owned_top(open_scopes, r) && life.dies_at(r, at) { return true } }
+    false
+}
+
+/// `placed`, each retain tallied whose release of the same register follows before any bracket or
+/// user call.
+fn noted_pairs(placed: List<Ins>) -> List<Ins> {
+    if !tallying() { return placed }
+    noted(
+        "candidate: a retain its release follows in straight line",
+        [k for k, i in placed if paired_ahead(placed, k, i)].length,
+    )
+    placed
+}
+
+/// Whether `i`, at `k`, retains a register `placed` releases before any bracket or user call.
+fn paired_ahead(placed: List<Ins>, k: int, i: Ins) -> bool {
+    let r? = retained_reg(i) else { return false }
+    for j in k + 1..placed.length {
+        let next = placed[j]
+        if released_regs(next).any(same_reg(it, r)) { return true }
+        if opens(next) || closes(next) || turns(next) || calls(next) { return false }
+    }
+    false
+}
+
+fn retained_reg(i: Ins) -> Reg? {
+    match i { .Retain(r) -> r, rest -> null }
+}
+
+fn released_regs(i: Ins) -> List<Reg> {
+    match i { .Release(rs) -> rs, rest -> [] }
+}
+
+/// `placed`, each run of releases standing side by side made one release of them all, in their
+/// order: what the pass decided is what runs, said in fewer instructions.
+fn runs_joined(placed: List<Ins>) -> List<Ins> {
+    mut out: List<Ins> = []
+    mut run: List<Reg> = []
+    for i in placed {
+        match i {
+            .Release(rs) -> {
+                // LICENSED loops.push_loop: the run grows in place, where a concat copies it whole per release
+                for r in rs { run.push(r) }
+            },
+            rest -> {
+                if !run.is_empty() {
+                    out.push(Ins.Release(run))
+                    run = []
+                }
+                out.push(i)
+            },
+        }
+    }
+    if !run.is_empty() { out.push(Ins.Release(run)) }
+    out
+}
+
+/// The tally of why the pass placed each count, most first; absent unless `AVRA_RC_REASONS` is set.
+export fn rc_reasons_said() -> string? {
+    if rc_reasons_flag() == null { return null }
+    let tally = rc_reasons().get()
+    let reasons = sorted_by(
+        tally.keys(),
+        (a: string, b: string) -> tally.get(a) ?? 0 > tally.get(b) ?? 0,
+    )
+    "rc reasons (placed):\n${["  ${tally.get(r) ?? 0}  ${r}" for r in reasons].join("\n")}"
 }

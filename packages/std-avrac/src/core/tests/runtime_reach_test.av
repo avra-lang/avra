@@ -8,7 +8,7 @@ spec "core/runtime_api — reach" {
             rt_sigs().all(worldly(it.name) == (it.reach is .World))
         }
         then "the world rows are counted" {
-            [r for r in rt_sigs() if r.reach is .World].length == 90
+            [r for r in rt_sigs() if r.reach is .World].length == 98
         }
         then "the rows that embed are the file readers" {
             [r.name for r in rt_sigs() if r.reach is .Embed].join(",") == "avra_embed,avra_embed_octets,avra_embed_digest"
@@ -33,12 +33,19 @@ spec "core/runtime_api — reach" {
 /// arguments. A GUARDED RUN is none of it: it calls a closure, and the
 /// closure's own reach is what a settlement judges.
 /// The unwind's PUSH is none of it: every body's cold exit carries
-/// one, it runs only while a task unwinds, and no settlement does.
+/// one, it runs only while a task unwinds, and no settlement does. Nor
+/// is the shield's bracket: the unwind bit it sets is the running task's own. A CONTEXT is the
+/// world's too: what a read answers is the frame the running task carries when it runs, which no
+/// settlement sees, and a set or its end changes that frame. A RUNNING QUERY'S HEARING of contexts
+/// is none of it (`ctx_heard`): filing a read as one of its answer's reads, the recording opened and
+/// closed around a body, and whether what it heard holds touch only the running task's own state,
+/// so a query run at compile time may use them.
 fn worldly(name: string) -> bool {
     name.starts_with("avra_task_") ||
+        name.starts_with("avra_ctx_") && !ctx_heard(name) ||
         name.starts_with("avra_tasks_") ||
         name.starts_with("avra_unwind_") && name != "avra_unwind_push" ||
-        name.starts_with("avra_fiber_") ||
+        name.starts_with("avra_fiber_") && !name.starts_with("avra_fiber_shield_") ||
         name.starts_with("avra_wait_") ||
         name.starts_with("avra_gate_") ||
         name.starts_with("avra_sched_") ||
@@ -52,6 +59,8 @@ fn worldly(name: string) -> bool {
         name == "avra_clock_virtual" ||
         name == "avra_host_env" ||
         name == "avra_puts" ||
+        name == "println" ||
+        name == "eprintln" ||
         name == "avra_eputs" ||
         name == "avra_errno_text" ||
         name == "avra_exec_self" ||
@@ -71,4 +80,17 @@ fn worldly(name: string) -> bool {
         name == "avra_box_unobserve" ||
         name == "avra_turn_next" ||
         name == "avra_changes_take"
+}
+
+/// The rows a running query hears contexts through.
+fn ctx_heard(name: string) -> bool {
+    [
+        "avra_ctx_heard",
+        "avra_ctx_listen",
+        "avra_ctx_listened",
+        "avra_ctx_heard_drop",
+        "avra_ctx_reheard",
+        "avra_ctx_holds",
+    ]
+        .contains(name)
 }

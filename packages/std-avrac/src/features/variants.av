@@ -4,7 +4,7 @@
 //! (which UNIFIES, pinning a generic declaration's Vars); the answer
 //! is the declared type, instantiated when generic.
 use core.{ExprId, TypeId, Type, DeclId, same_decl}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 impl TypeCx {
     /// The one law, at the call — the module's header states it.
@@ -34,12 +34,10 @@ impl TypeCx {
     mut fn wrong_payload_count(e: ExprId, tname: string, variant: string, carries: int, found: int) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.variant_arity",
                     self.loc_of(e),
-                    "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}",
-                    "built here",
-                    "a variant's payload is a single value — wrap several in a record",
+                    payloads_miscounted(tname, variant, carries, found),
                 ),
             )
     }
@@ -168,18 +166,7 @@ impl TypeCx {
             )
     }
 
-    mut fn no_such_door(e: ExprId, tname: string, name: string) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "`${tname}` is a `grammar`, not an enum",
-                    "built here",
-                    "`${tname}.${name}` is a call only where the grammar declares a door of that name",
-                ),
-            )
-    }
+    mut fn no_such_door(e: ExprId, tname: string, name: string) -> TypeId { self.spoken(said_as("type.unknown_prop", self.loc_of(e), door_unknown(tname, name))) }
 
     /// The static fn a type declares under `name`, if it declares one.
     fn static_named(decl: DeclId, name: string) -> DeclId? {
@@ -198,12 +185,10 @@ impl TypeCx {
     mut fn static_not_value(e: ExprId, tname: string, name: string, m: DeclId) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.unknown_prop",
                     self.loc_of(e),
-                    "`${tname}.${name}` is a static fn, and a static fn is not a value yet",
-                    "read here",
-                    "wrap it in a lambda — `${self.static_wrapper(tname, name, m)}`",
+                    static_unvalued(tname, name, self.static_wrapper(tname, name, m)),
                 ),
             )
     }
@@ -226,26 +211,16 @@ impl TypeCx {
     /// record is built.
     mut fn no_static_fn(e: ExprId, tname: string, name: string, statics: List<string>) -> TypeId {
         self
-            .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "`${tname}` has no static fn `${name}`",
-                    "called here",
-                    if statics.is_empty() { build_a_record(tname) } else { "its static fns are ${["`${s}`" for s in statics].join(", ")}" },
-                ),
-            )
+            .spoken(said_as("type.unknown_prop", self.loc_of(e), static_unknown(tname, name, statics)))
     }
 
     mut fn no_such_variant(e: ExprId, tname: string, variant: string, sig: EnumSig) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.unknown_prop",
                     self.loc_of(e),
-                    "`${tname}` has no variant `${variant}`",
-                    "built here",
-                    variants_are(sig),
+                    variant_uncalled(tname, variant, sig.names),
                 ),
             )
     }
@@ -253,12 +228,10 @@ impl TypeCx {
     mut fn carries_nothing(e: ExprId, tname: string, variant: string) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.variant_arity",
                     self.loc_of(e),
-                    "`${tname}.${variant}` carries nothing",
-                    "given an argument here",
-                    "write `${tname}.${variant}` on its own",
+                    variant_carries_nothing(tname, variant),
                 ),
             )
     }
@@ -294,12 +267,10 @@ impl TypeCx {
     mut fn given_nothing(e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.variant_arity",
                     self.loc_of(e),
-                    "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, given nothing",
-                    "built empty here",
-                    "write `${tname}.${variant}(<value>)`",
+                    variant_given_nothing(tname, variant, self.view.types.name_of(carried)),
                 ),
             )
     }
@@ -321,4 +292,67 @@ impl TypeCx {
 /// "ONE value" or "N values" — the arity as the refusal spells it.
 fn count_word(n: int) -> string {
     if n == 1 { "ONE value" } else { "${n} values" }
+}
+
+/// The variant `variant` of `tname`, which carries `carries` values, built from `found`.
+export fn payloads_miscounted(tname: string, variant: string, carries: int, found: int) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}",
+        label: "built here",
+        help: "a variant's payload is a single value — wrap several in a record",
+    }
+}
+
+/// The variant `variant` of `tname`, which carries nothing, called.
+export fn variant_carries_nothing(tname: string, variant: string) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` carries nothing",
+        label: "given an argument here",
+        help: "write `${tname}.${variant}` on its own",
+    }
+}
+
+/// The variant `variant` of `tname`, which carries `carried`, called with nothing.
+export fn variant_given_nothing(tname: string, variant: string, carried: string) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` carries `${carried}`, given nothing",
+        label: "built empty here",
+        help: "write `${tname}.${variant}(<value>)`",
+    }
+}
+
+/// A call of `name` through the grammar `tname`, which declares no door of that name.
+export fn door_unknown(tname: string, name: string) -> Voice {
+    Voice {
+        message: "`${tname}` is a `grammar`, not an enum",
+        label: "built here",
+        help: "`${tname}.${name}` is a call only where the grammar declares a door of that name",
+    }
+}
+
+/// A call of `name` through the record `owner`, whose static fns are `statics`, none so named.
+export fn static_unknown(owner: string, name: string, statics: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no static fn `${name}`",
+        label: "called here",
+        help: if statics.is_empty() { build_a_record(owner) } else { "its static fns are ${["`${s}`" for s in statics].join(", ")}" },
+    }
+}
+
+/// A call of `variant` through the enum `owner`, whose `variants` hold no such name.
+export fn variant_uncalled(owner: string, variant: string, variants: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no variant `${variant}`",
+        label: "built here",
+        help: variant_meant(variant, variants),
+    }
+}
+
+/// A read of the static fn `name` of `owner` as a value, beside the lambda `wrapper` that is one.
+export fn static_unvalued(owner: string, name: string, wrapper: string) -> Voice {
+    Voice {
+        message: "`${owner}.${name}` is a static fn, and a static fn is not a value yet",
+        label: "read here",
+        help: "wrap it in a lambda — `${wrapper}`",
+    }
 }

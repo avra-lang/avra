@@ -3,11 +3,8 @@
 //! must still name a rule `avra rules` lists, or be an `input.<why>`
 //! or a `whole.<why>`: the input keeper's and the whole-read keeper's
 //! own (tools/inputs.py, tools/whole_reads.py), which hold it at its
-//! site. `Workspace.checked()`
-//! finds stale ones
-//! once, from the Program it already built, and caches the answer
-//! (compiler/db.av's `Licenses` row) under the same key as its
-//! warnings — never `here()`-relative: a cached line is read back by
+//! site. `Workspace.checked()` finds stale ones per file and keeps
+//! them in the program's verdict (verdict.av) — never `here()`-relative: a kept line is read back by
 //! a check that may run from a different directory than the one
 //! that minted it, so the CLI layer (`avra check`) renders the final
 //! message, this file only finds and encodes the citation.
@@ -15,7 +12,7 @@
 //! "is this citation stale" but "does a finding's own site carry
 //! one" — `rule_pass.av`'s door, before a finding is even reported.
 use @std.text.{chars}
-use core.{SyntaxArena, Remark, flatten, joined}
+use core.{SyntaxArena, Remark, joined}
 use diagnostics.{SourceFile}
 
 /// One keeper's family of licence ids, held at its site by the keeper
@@ -43,28 +40,27 @@ export fn belongs(id: string, f: LicenceFamily) -> bool {
 
 fn fits(tail: string, shape: string) -> bool { if shape == "snake" { snake(tail) } else { tail == shape } }
 
-/// Every stale citation across `p`'s files, one `file\tline\tid` per
-/// line, joined — "" for a clean program.
-export fn stale_license_lines(p: Program) -> string {
-    let known = [rule_id(r) for r in rules]
-    joined(flatten([file_stale_lines(a, known) for a in p.files]), "\n")
+/// Every rule a citation may name, as a set: a citation is one lookup, never a walk of the rules.
+once fn known_rule_ids() -> Map<string, bool> {
+    mut known: Map<string, bool> = {}
+    for r in rule_entries() { known.set(rule_id(r), true) }
+    known
 }
 
 /// Whether a citation's id names nothing that reads it: no rule among
 /// `known`, and no member of a keeper's family.
-export fn cites_nothing(id: string, known: List<string>) -> bool {
-    !known.contains(id) && !families().any(belongs(id, it))
+export fn cites_nothing(id: string, known: Map<string, bool>) -> bool {
+    !known.has(id) && !families().any(belongs(id, it))
 }
 
-fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
-    flatten([remark_line(a, r, known) for r in a.view.store.remarks.get()])
-}
+/// A remark's `// LICENSED` citation that names nothing: the offset the remark stands at, and its id.
+export type UnbackedClaim = { at: int, id: string }
 
-fn remark_line(a: Analysis, r: Remark, known: List<string>) -> List<string> {
-    let c? = claimed(r) else { return [] }
-    if !cites_nothing(c.id, known) { return [] }
-    let line = a.view.source.linecol(r.at).line
-    ["${a.view.source.file}\t${line}\t${c.id}"]
+/// Each of `remarks` whose `// LICENSED` citation names nothing among `known`.
+export fn claims_naming_nothing(remarks: List<Remark>, known: Map<string, bool>) -> List<
+    UnbackedClaim,
+> {
+    [UnbackedClaim { at: r.at, id: c!.id } for r in remarks for c in [claimed(r)] if c != null && cites_nothing(c!.id, known)]
 }
 
 /// One `// LICENSED <id>: <reason>` comment, parsed — the id and
@@ -75,6 +71,9 @@ type Cited = { id: string, reason: string }
 /// A remark's own claim, or absence — a bare `// LICENSED — reason`
 /// (no id: a doctrine exemption, never a rule's) claims nothing, and
 /// neither does a comment that merely mentions the word.
+/// A remark's license claim, as a shape reads it.
+fn license_claimed(r: Remark) -> Cited? { claimed(r) }
+
 fn claimed(r: Remark) -> Cited? {
     match r.trivia { .Comment(text) -> claimed_in(text), .Blank -> null }
 }

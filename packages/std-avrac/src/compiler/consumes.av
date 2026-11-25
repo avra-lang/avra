@@ -28,129 +28,35 @@ use core.{
 }
 use features.{NameFacts, Decls, Decl}
 use compiler.families.{Family}
+use @std.relation.{query}
 
-impl Workspace {
-    /// The pass: asking IS the query — the hook the workspace arms
-    /// computes a declaration's own answer on first ask and records
-    /// it; the table only holds.
-    fn computed_consumed(d: DeclId) -> List<bool> {
-        let x = self.decls.decl(d)
-        let n = self.decls.seat_count(d)
-        // A compile-time run infers no consuming seat and records
-        // nothing: the references relation settles after typing, and
-        // an unrecorded row leaves the program's own ask to decide.
-        if self.comptime_active() { return filled(n, false) }
-        // A HELD DECLARATION'S BODY IS READ, NEVER RE-GUESSED: the bit this
-        // scan would infer from a body this attempt does not have is
-        // already sitting in the declaration's own kept record line —
-        // computed the last time the file was fresh, decoded by `fill_fn`'s
-        // `row.marks()` straight into `declared_mark` (record.av's
-        // `mark_of_word`). The scan below is a pure function of the body's
-        // OWN text (no callee's or caller's mark enters it, per this file's
-        // header), so the record already carries the one true answer — a
-        // held declaration's `consumed_seat` is the same value whether this
-        // attempt holds it or a different attempt does.
-        if self.is_held(x.file) {
-            let kept = [self.decls.declared_mark(d, j).consumed for j in 0..n]
-            self.decls.record_consumed(d, kept)
-            return kept
-        }
-        // WHERE THE REFERENCES DO NOT STAND, NOTHING IS INFERRED AND NOTHING
-        // RECORDED: an unread relation is no finding that no one takes `d`
-        // as a value, and a recorded bit reaches the module's own record.
-        if x.root == null { return self.none_consumed(d, n) }
-        let taken? = self.taken_as_value(d) else { return filled(n, false) }
-        if taken { return self.none_consumed(d, n) }
-        let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
-        mut cx = Consumed {
-            store: self.decls.store(d),
-            names: self.names_of(d),
-            eligible: [self.eligible_seat(x, i, seats) for i in 0..n],
-            returned: filled(n, true),
-        }
-        let out = cx.scan(x.root!)
-        self.decls.record_consumed(d, out)
-        out
-    }
-
-    /// A declaration's consumed seats as its own answer: the cell a reader of the bits stands
-    /// on, so a caller moves only when a callee it reads has its bits move. Where the pass
-    /// cannot settle a cell, the bits are read as the pass would infer them, recorded nowhere.
-    fn consumed_cell(d: DeclId) -> int {
-        if self.db.family_active(Family.Resolved.ordinal) || self.comptime_active() {
-            if self.decls.consumed_known(d) { return 0 }
-            let _ = self.computed_consumed(d)
-            return 0
-        }
-        let k = key(Family.Consumed, d.index)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
-        let bits = if self.decls.consumed_known(d) { self.decls.consumed_bits(d) } else { self.computed_consumed(d) }
-        self.db.settle(k, fp(44, [fp_list([if b { 1 } else { 0 } for b in bits])]))
-        0
-    }
-
-    /// No seat of `d` consumed, recorded.
-    fn none_consumed(d: DeclId, n: int) -> List<bool> {
-        let none = filled(n, false)
-        self.decls.record_consumed(d, none)
-        none
-    }
-
-    /// A seat is a candidate at all only as an ordinary BY-VALUE
-    /// parameter: never a method's receiver (seat 0 of an instance
-    /// method — "owned self" is a real question for its own day, not
-    /// this one), never `mut`/`const`/`isolated` (each already
-    /// carries a different, incompatible contract), never a scalar
-    /// (owning one gains nothing — nothing there is ever retained or
-    /// released), and never a seat an IMPL-FOR-TRAIT method declares:
-    /// a `dyn`/generic call dispatches through the TRAIT's OWN
-    /// (bodiless, never-inferred) signature, so an override whose own
-    /// body infers a seat consumed would be CALLED as plain and RUN
-    /// as consuming — a caller that never hands ownership over,
-    /// answered by a callee that releases what it was never given.
-    /// `sigs_agree` (typing/impls.av) checks types, never marks, so
-    /// nothing else stands between an override and that mismatch.
-    fn eligible_seat(x: Decl, i: int, seats: List<TypeId>) -> bool {
-        if i == 0 && x.parent != null && !self.decls.is_static_of(x.id) { return false }
-        if self.under_trait_impl(x) { return false }
-        let m = self.decls.declared_mark(x.id, i)
-        if m.mutable || m.settled || m.unshared || m.state { return false }
-        i < seats.length && is_managed(self.decls.types, seats[i])
-    }
-
-    /// Whether `x` is a method an IMPL-FOR-TRAIT block declares —
-    /// never a free fn, an inherent method, or a trait's own default
-    /// (one body for the whole trait, never per-signatory, so it
-    /// carries no such mismatch).
-    fn under_trait_impl(x: Decl) -> bool {
-        if x.parent == null { return false }
-        let parent = self.decls.decl(x.parent!)
-        if !(parent.kind is .Impl) { return false }
-        self.decls.store(parent.id).impl_parts(parent.stmt)?.of != null
-    }
-
-    /// Whether `d` is ever referenced AS A VALUE — bound by name,
-    /// stored in a field or a list, handed to a seat — anywhere in
-    /// the program, rather than called directly. Such a reference's
-    /// TYPE carries whatever this pass infers, so a plain seat it
-    /// fills, or a `dyn`/generic dispatch through it, would face the
-    /// same mismatch `under_trait_impl` refuses — and unlike a direct
-    /// call (which reads the callee's OWN marks by name or DeclId,
-    /// never through the mismatched type), nothing stands between a
-    /// VALUE reference and it. `fn_fits`'s asymmetry (features/
-    /// checks.av) still refuses the mismatch outright rather than
-    /// building the adapter the full design calls for — excluding the
-    /// DECLARATION here, not the call site, is what landing without
-    /// that adapter means for it.
-    /// Null where the references do not stand to be asked.
-    fn taken_as_value(d: DeclId) -> bool? { self.decls.read_found(d) }
+/// The seat a bare name read at `e` names, by the old path's bindings.
+fn param_read(names: NameFacts, e: ExprId) -> int? {
+    let b? = names.binding(e) else { return null }
+    match b { .Param(i) -> i, _ -> null }
 }
 
-/// What one body's survey reads and gathers: its file's parts, which
-/// seats are still candidates, and the seats every path that RETURNS
-/// has kept.
-type Consumed = { store: SyntaxArena, names: NameFacts, eligible: List<bool>, returned: List<bool> }
+/// THE SEATS A BODY CONSUMES: of the `eligible` ones, each its body `root` in `store` keeps whole on
+/// every path to an answer, `seat_read` naming the seat a bare read at a node reads, absent for any
+/// other node and for a capture.
+export fn kept_seats(
+    store: SyntaxArena,
+    root: ExprId,
+    eligible: List<bool>,
+    seat_read: fn(ExprId) -> int?,
+) -> List<bool> {
+    mut cx = Consumed {
+        store: store,
+        seat_read: seat_read,
+        eligible: eligible,
+        returned: filled(eligible.length, true),
+    }
+    cx.scan(root)
+}
+
+/// What one body's survey reads and gathers: its file's parts, how a read names a seat, which seats
+/// are still candidates, and the seats every path that RETURNS has kept.
+type Consumed = { store: SyntaxArena, seat_read: fn(ExprId) -> int?, eligible: List<bool>, returned: List<bool> }
 
 impl Consumed {
     /// The ELIGIBLE seats every path through the body keeps: at its end
@@ -218,8 +124,8 @@ impl Consumed {
     /// including a capture (a lambda's copy) and a seat this survey
     /// already excluded.
     fn seat_of(e: ExprId) -> int? {
-        let b? = self.names.binding(e) else { return null }
-        match b { .Param(i) if i < self.eligible.length && self.eligible[i] -> i, _ -> null }
+        let i? = (self.seat_read)(e) else { return null }
+        if i < self.eligible.length && self.eligible[i] { i } else { null }
     }
 
     /// The values an expression KEEPS whole: a `with`'s or a method

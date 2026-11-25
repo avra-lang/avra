@@ -25,9 +25,16 @@ use core.{
     CompClause,
     MapEntry,
     map_entry_reach,
+    CatchArm,
     Param,
     Variant,
     UseItem,
+    FieldPat,
+    ProjField,
+    OrderKey,
+    Given,
+    FnSeat,
+    Carried,
 }
 use @std.meta.{Field}
 use diagnostics.{DiagCode}
@@ -42,34 +49,15 @@ export enum LangNode {
     NType(written: TypeRef)
     /// A pattern, in the store's pattern table.
     NPat(id: PatId)
-    /// One match arm — its patterns and its value, as data.
-    NArm(arm: Arm)
-    /// One comprehension clause — a `for` head or an `if` filter, as
-    /// data.
-    NCompClause(clause: CompClause)
-    /// One map-literal entry, as data.
-    NMapEntry(entry: MapEntry)
-    /// Test cases — a `then`, or a `given` group's, as data.
-    NCases(cases: List<Case>)
-    /// A `@word` before a declared member, as data — no pass walks a
-    /// mark, so it needs no id and no arena.
-    NMark(mark: Mark)
-    /// One parameter seat, as data — no pass walks a seat, so it needs
-    /// no id and no arena beyond its own `ParamId`.
-    NParam(param: Param)
-    /// One enum variant — its name, its payloads and its marks, as
-    /// data. No pass walks a variant, so it needs no id and no arena
-    /// beyond its payloads' `ParamId`s.
-    NVariant(variant: Variant)
-    /// One imported item of a `use` line, as data.
-    NUseItem(item: UseItem)
+    /// A record the rule built, as data — no pass walks one.
+    NCarried(carried: Carried)
 }
 
 /// One builder registration: the name grammar text calls, the fn
 /// that answers it, the payloads the model declares for the node it
 /// builds — what lets its body ask by NAME instead of by index — and the
-/// payload that ANCHORS it when one is marked.
-export type BuilderRow = { name: string, build: fn(mut Builder) -> Result<LangNode, string>, payloads: List<Field> = [], anchor: string? = null }
+/// slot of the payload that ANCHORS it when one is marked.
+export type BuilderRow = { name: string, build: fn(mut Builder) -> Result<LangNode, string>, payloads: Payloads = Payloads {}, anchor: int? = null }
 
 impl LangNode {
     /// The extent the built value occupies: the span the arena holds for
@@ -81,17 +69,28 @@ impl LangNode {
             .NStmt(id) -> store.stmt_span(id),
             .NPat(id) -> store.pat_span(id),
             .NType(written) -> written.span,
-            .NParam(param) -> store.param_id_span(param.id),
-            .NVariant(variant) -> variant.span,
-            .NUseItem(_) -> null,
-            .NMark(mark) -> mark.span,
-            .NArm(arm) -> arm_extent(store, arm),
-            .NCompClause(clause) -> clause_extent(store, clause),
-            .NMapEntry(entry) -> cover_of(
-                [store.expr_span(x)! for x in map_entry_reach(entry) if store.expr_span(x) != null],
-            ),
-            .NCases(cases) -> cover_of([c.span! for c in cases if c.span != null]),
+            .NCarried(carried) -> carried_extent(store, carried),
         }
+    }
+}
+
+/// The extent a carried record occupies, where it has a written one.
+fn carried_extent(store: SyntaxArena, carried: Carried) -> Span? {
+    match carried {
+        .Param(param) -> store.param_id_span(param.id),
+        .Variant(variant) -> variant.span,
+        .UseItem(_) or .ProjField(_) or .OrderKey(_) -> null,
+        .FieldPat(field) -> store.pat_span(field.pat),
+        .FnSeat(seat) -> seat.ty.span,
+        .Given(group) -> cover_of([c.span! for c in group.cases if c.span != null]),
+        .CatchArm(arm) -> store.expr_span(arm.value),
+        .Mark(mark) -> mark.span,
+        .Arm(arm) -> arm_extent(store, arm),
+        .CompClause(clause) -> clause_extent(store, clause),
+        .MapEntry(entry) -> cover_of(
+            [store.expr_span(x)! for x in map_entry_reach(entry) if store.expr_span(x) != null],
+        ),
+        .Case(case) -> case.span,
     }
 }
 
@@ -318,6 +317,9 @@ export component LanguageFeature {
     properties: List<PropertyRow> = []
     remedies: List<KeywordRemedy> = []
     refusals: List<RefusalRow> = []
+    /// The words its rules write that stay NAMEs everywhere else: matched
+    /// where the rule writes them, never reserved.
+    soft_words: List<string> = []
 }
 
 /// A grammar's own refusal: a rule ending `-> Refusal.<name>` speaks the

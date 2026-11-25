@@ -5,10 +5,12 @@
 //! projection, the component being the one source of truth.
 use tree.sites.{Reading}
 use style.box.{Box}
+use style.theme.{Theme}
 use style.tokens.{Size}
 use style.layout.{Axis}
 use @std.meta.{derive}
 use style.words.{Words}
+use style.table.{Table}
 use tree.facets.{Facets, Facet}
 use tree.url.{Url}
 use tree.seats.{Seat}
@@ -17,6 +19,7 @@ use @std.assets.{Picture}
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
 @derive(Words)
+@derive(Table)
 export enum Prim {
     @word(text) Text
     @word(heading) Heading
@@ -42,6 +45,34 @@ export enum Prim {
     @word(switch) Switch
     @word(slider) Slider
     @word(key) Key
+}
+
+/// A value for every `Prim`.
+export type Prims<V> = {
+    text: V,
+    heading: V,
+    button: V,
+    link: V,
+    image: V,
+    field: V,
+    checkbox: V,
+    row: V,
+    column: V,
+    dialog: V,
+    divider: V,
+    icon: V,
+    surface: V,
+    list: V,
+    item: V,
+    card: V,
+    progress: V,
+    alert: V,
+    spinner: V,
+    form: V,
+    fieldset: V,
+    switch: V,
+    slider: V,
+    key: V,
 }
 
 /// What a control SAYS when it speaks: the value the user gave it, as
@@ -181,6 +212,24 @@ export type Node = {
     events: List<Action> = [],
     sites: List<Reading> = [],
     drawn_by_order: bool = false,
+    /// The theme the node was drawn in, where it was drawn under another set of `ctx theme` than the
+    /// node above it: the root always carries it, and a realizer carries the nearest down its walk.
+    theme: Stamp? = null,
+}
+
+/// A theme a node was drawn in, and the frame entry it was read from: two stamps of one set are one.
+export type Stamp = { theme: Theme, entry: int }
+
+/// The theme the first node of `n` wearing `words` is drawn in, as a realizer's walk carries it: the
+/// nearest stamp above it, `carried` where none is; none where no node wears them.
+export fn drawn_theme(n: Node, words: string, carried: Theme) -> Theme? {
+    let here = n.theme?.theme ?? carried
+    if n.words() == words { return here }
+    for c in n.children {
+        let found? = drawn_theme(c, words, here) else { continue }
+        return found
+    }
+    null
 }
 
 // ── neutral projections every target reads ──────────────────────

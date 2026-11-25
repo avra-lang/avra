@@ -10,7 +10,14 @@ use features.{LowerCx, EnumSig}
 fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .Catch(s, vs, bs, arms) -> catched_reg(cx, e, s, [t.of for t in vs], [t.of for t in bs], arms),
+        .Catch(s, arms) -> catched_reg(
+            cx,
+            e,
+            s,
+            [a.variant.of for a in arms],
+            [a.bind.text() for a in arms],
+            [a.value for a in arms],
+        ),
         _ -> cx.foreign_node(e),
     }
 }
@@ -107,9 +114,7 @@ fn switched_reg(
     }
     if selective {
         cx.arm_end(answer!)
-        let leaving = cx.propagated(r)
-        cx.failing()
-        cx.emit(Ins.FnExit(leaving))
+        cx.fail_exit(cx.propagated(r))
         answer = cx.hollow_of(cx.type_at(e))
     }
     cx.close_region(e, answer!)
@@ -144,9 +149,7 @@ fn switched_union_reg(
     }
     if selective {
         cx.arm_end(answer!)
-        let leaving = cx.propagated(r)
-        cx.failing()
-        cx.emit(Ins.FnExit(leaving))
+        cx.fail_exit(cx.propagated(r))
         answer = cx.hollow_of(cx.type_at(e))
     }
     cx.close_region(e, answer!)

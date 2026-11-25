@@ -3,8 +3,8 @@
 // structure, spans (cover in anger), and the fingerprint invariant
 // across differently-formatted sources.
 use @std.avrac.core.{SyntaxArena, BinOp, ExprId, StmtId}
-use @std.avrac.compiler.{parse_source, analyze_source}
-use @std.avrac.testing.{shown, refused_with, refused_at_run}
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{shown, refused_with, refused_at_run, judged}
 
 type Tree = { store: SyntaxArena, root: ExprId?, diagnostics: int }
 
@@ -84,6 +84,12 @@ spec "features/expr_spine" {
                     "\${pick(false) != C.blue}\"",
             ) == "true false"
         }
+        then "a `ptr` compares by its address — one instruction, the evaluator's answer the machine's" {
+            shown(
+                "extern fn avra_ptr_at(address: int) -> ptr?\nlet a = avra_ptr_at(65536)!\nlet b = avra_ptr_at(65536)!\nlet c = avra_ptr_at(131072)!\n\"" +
+                    "\${a == b} \${a != c} \${a == c}\"",
+            ) == "true true false"
+        }
         then "an enum carrying a payload still refuses" {
             refused_with(
                 "enum E {\n    a(int)\n    b\n}\nE.b == E.b",
@@ -121,16 +127,16 @@ spec "features/expr_spine" {
     }
     given "the operators' laws" {
         then "a lazy op wants bools, in its own words" {
-            let a = analyze_source("1 && true")
+            let a = judged("1 && true")
             a.diagnostics.length == 1 &&
                 a.report().contains("`&&` needs `bool` operands, found `int`")
         }
         then "`!` wants a bool, in its own words" {
-            let a = analyze_source("!5")
+            let a = judged("!5")
             a.diagnostics.length == 1 && a.report().contains("`!` negates a `bool`, found `int`")
         }
         then "`!=` compares matching types, in its own words" {
-            let a = analyze_source("1 != \"a\"")
+            let a = judged("1 != \"a\"")
             a.diagnostics.length == 1 &&
                 a.report().contains("`!=` compares matching types, found `int` and `string`")
         }
@@ -149,10 +155,10 @@ spec "features/expr_spine — arithmetic that must not diverge" {
             refused_at_run("fn z() -> int { 0 }\n10 / z()", "division by zero")
         }
         then "ordinary division still answers" {
-            analyze_source("100 / 7").ran() == "14"
+            judged("100 / 7").ran() == "14"
         }
         then "ordinary modulo still answers" {
-            analyze_source("100 % 7").ran() == "2"
+            judged("100 % 7").ran() == "2"
         }
     }
 }

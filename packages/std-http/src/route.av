@@ -87,7 +87,24 @@ export enum Reach {
 /// with — kept so a route an earlier one already answers can be
 /// named — how far it reaches, and its handler, with the record type
 /// already erased.
-export type Route = { method: Method, pattern: string, reach: Reach, serve: fn(Request<Unrouted>, Bytes) -> Response? }
+///
+/// `reads` IS THE READER WITHOUT THE HANDLER: whether this route's
+/// grammar takes a target, asked without answering it. It is what lets
+/// a table name the methods a path takes when the request's own is not
+/// among them. A route that states none reads nothing, and lends its
+/// method to no refusal.
+export type Route = {
+    method: Method,
+    pattern: string,
+    reach: Reach,
+    serve: fn(Request<Unrouted>, Bytes) -> Response?,
+    reads: fn(Bytes) -> bool = reads_nothing,
+}
+
+fn reads_nothing(_t: Bytes) -> bool { false }
+
+/// Whether a grammar's reader takes a target.
+fn reading<R>(read: fn(Bytes) -> R?) -> fn(Bytes) -> bool { (t: Bytes) -> read(t) != null }
 
 /// Whether a `{` in this pattern opens a hole or is an octet.
 fn holes_bind(reach: Reach) -> bool {
@@ -114,6 +131,7 @@ export fn routed<R>(
         pattern: pattern,
         reach: .Width,
         serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+        reads: reading(read),
     }
 }
 
@@ -129,6 +147,7 @@ export fn fixed(method: Method, path: string, serve: Handler) -> Route {
         pattern: path,
         reach: .Literal,
         serve: (q: Request<Unrouted>, t: Bytes) -> if t == want { serve(q) } else { null },
+        reads: (t: Bytes) -> t == want,
     }
 }
 
@@ -155,6 +174,7 @@ export fn tailed<R>(
         pattern: pattern,
         reach: .Rest,
         serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+        reads: reading(read),
     }
 }
 
@@ -173,6 +193,7 @@ export fn declared<R, T: Respond>(
         pattern: pattern,
         reach: if marks_rest(pattern) { .Rest } else { .Width },
         serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+        reads: reading(read),
     }
 }
 
@@ -186,28 +207,28 @@ export fn declared<R, T: Respond>(
 export component get(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
     }
 }
 
 export component post(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
     }
 }
 
 export component put(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
     }
 }
 
 export component patch(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
     }
 }
 
@@ -261,7 +282,7 @@ export fn gathered(items: List<dyn Routes>) -> List<Route> {
 export component delete(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse_octets(t), ${self.body}) }
     }
 }
 
@@ -272,10 +293,11 @@ export fn prefixed(prefix: string, routes: List<Route>) -> List<Route> { [placed
 /// A route under a prefix. A route's own `/` is the prefix itself — a
 /// collection lives at `/tasks`, and `/tasks/` is another target nothing answers.
 fn placed(prefix: string, r: Route) -> Route {
+    let under = prefix.bytes()
     if r.pattern == "/" && !prefix.is_empty() {
-        return r with { pattern: prefix, serve: exactly(prefix.bytes(), r.serve) }
+        return r with { pattern: prefix, serve: exactly(under, r.serve), reads: (t: Bytes) -> t == under && r.reads("/".bytes()) }
     }
-    r with { pattern: prefix + r.pattern, serve: beneath(prefix.bytes(), r.serve) }
+    r with { pattern: prefix + r.pattern, serve: beneath(under, r.serve), reads: (t: Bytes) -> falls_under(t, under) && r.reads(t.slice(under.length, t.length)) }
 }
 
 /// `serve`, asked about the prefix alone as the root door it is.
@@ -556,11 +578,51 @@ once fn open_brace() -> Bytes { "{".bytes() }
 ///
 /// A HEAD NO HEAD ROUTE ANSWERS IS ITS GET (RFC 9110 §9.3.2): the GET
 /// route answers it, and the server writes that answer's head alone.
+///
+/// A TARGET ONLY ANOTHER METHOD'S ROUTE READS IS A 405 (RFC 9110
+/// §15.5.6), its `allow` naming every method the path takes. The
+/// readers are asked only once no route has answered, so a request a
+/// route answers costs what it did without them.
 export fn dispatch(t: Table, q: Request<Unrouted>) -> Response {
     let target? = q.path() else { return status(404) }
     let node = landed(t, target)
     if node < 0 { return status(404) }
-    served_as(t, node, q, target, q.head.method) ?? as_get(t, node, q, target) ?? status(404)
+    served_as(t, node, q, target, q.head.method) ?? as_get(t, node, q, target) ?? unserved(
+        t,
+        node,
+        target,
+    )
+}
+
+/// The answer for a target no route answered: a 405 naming the methods
+/// whose routes read it, or a 404 when none does.
+fn unserved(t: Table, node: int, target: Bytes) -> Response {
+    let allow = allowed(
+        [t.routes[i].method for i in t.nodes[node].rows if t.routes[i].reads(target)],
+    )
+    if allow.is_empty() { return status(404) }
+    status(405).with_header("allow", allow.join(", "))
+}
+
+/// The words of the methods a path takes, in one order whatever the
+/// table's: HEAD stands beside GET, since a GET route answers both.
+fn allowed(taken: List<Method>) -> List<string> {
+    [method_word(m)! for m in worded() if taken.contains(m) || m == Method.Head && taken.contains(Method.Get)]
+}
+
+/// Every method that has a word, in the order `allow` lists them.
+fn worded() -> List<Method> {
+    [
+        Method.Get,
+        Method.Head,
+        Method.Post,
+        Method.Put,
+        Method.Delete,
+        Method.Patch,
+        Method.Options,
+        Method.Connect,
+        Method.Trace,
+    ]
 }
 
 /// The first route at `node` declared for `m` that answers.

@@ -1,7 +1,11 @@
 //! `avra rules` — every rule the compiler carries
 //! (compiler/rules_table.av's `rules` collect), by identity and doc.
 use commands.{rules_listing, rules_markdown, block_checked}
-use @std.avrac.compiler.{RuleEntry, rules, rule_id, any_root}
+use @std.avrac.compiler.{RuleEntry, RuleRun, rule_entries, rule_id, any_root}
+use @std.avrac.features.{Fix, Syntax}
+
+/// A rule that never fires.
+fn never_fires(_s: Syntax) -> Fix? { null }
 
 /// A minimal `RuleEntry` — `run` answers nothing, since the listing
 /// never calls it.
@@ -9,7 +13,7 @@ fn entry(module: string, name: string, doc: string) -> RuleEntry {
     RuleEntry {
         name: name,
         module: module,
-        run: (c) -> null,
+        run: RuleRun.Syntax(never_fires),
         root: [any_root],
         kinds: [],
         doc: doc,
@@ -38,21 +42,22 @@ spec "commands/rules" {
     }
     given "the compiler's own live rule table" {
         then "every entry's identity and doc round-trip through the listing, one line each" {
-            let text = rules_listing(rules)
-            [entry_line(r) for r in rules].all((line) -> text.contains(line))
+            let text = rules_listing(rule_entries())
+            [entry_line(r) for r in rule_entries()].all((line) -> text.contains(line))
         }
         then "the header's count agrees with the list's own length" {
-            rules_listing(rules).contains(" ${rules.length}")
+            rules_listing(rule_entries()).contains(" ${rule_entries().length}")
         }
     }
     given "every rule of a file whose `//!` header describes the file" {
         then "carries its own `///` doc, never the header every sibling would then share" {
-            rules.all(!it.doc.contains("The formatter's idioms for the COMPILER's own conventions"))
+            rule_entries()
+                .all(!it.doc.contains("The formatter's idioms for the COMPILER's own conventions"))
         }
     }
     given "a rule that DOES carry its own `///` doc, next to `arm_end_raw` in the SAME file" {
         then "its doc reads its own words, not the file's `//!` header" {
-            let r? = rules.find(rule_id(it) == "compiler.if_start_raw") else { return false }
+            let r? = rule_entries().find(rule_id(it) == "compiler.if_start_raw") else { return false }
             r.doc.length > 0 &&
                 !r.doc.contains("The formatter's idioms for the COMPILER's own conventions")
         }
@@ -78,8 +83,9 @@ spec "commands/rules — the markdown printer (DOGFOODING.md's generated block)"
     }
     given "the compiler's own live rule table" {
         then "every documented rule's bullet round-trips, one line each" {
-            let text = rules_markdown(rules)
-            [documented_line(r) for r in rules if r.doc != ""].all((line) -> text.contains(line))
+            let text = rules_markdown(rule_entries())
+            [documented_line(r) for r in rule_entries() if r.doc != ""]
+                .all((line) -> text.contains(line))
         }
         then "an undocumented rule contributes no bullet at all" {
             !rules_markdown([entry("t", "bare", ""), entry("t", "said", "says")])
@@ -96,7 +102,7 @@ spec "commands/rules — the markdown check (`--check-markdown`)" {
     }
     given "the compiler's own live rule table rendered into a block" {
         then "it passes with the count of documented rules" {
-            verdict(block_doc(rules_markdown(rules)), rules) == "passed with ${[r for r in rules if r.doc != ""].length}"
+            verdict(block_doc(rules_markdown(rule_entries())), rule_entries()) == "passed with ${[r for r in rule_entries() if r.doc != ""].length}"
         }
     }
     given "a block with one stale bullet" {

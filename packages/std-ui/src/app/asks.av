@@ -1,8 +1,9 @@
 //! `app/asks.av` — the sources a handler asks for by name. Each is a
 //! `Want`, data, handed to the app's loop: no task, no host row is named
 //! here, so the same call runs on every target.
-use app.{Act, Async, Cache, Entry, Fetch, Want, Watcher, hung_up, running, watching}
+use app.{Act, Async, Cache, Entry, Fetch, Overlay, Want, Watcher, hung_up, running, watching}
 use @std.http_message.message.{Reply, Request}
+use @std.meta.{contained}
 use @std.time.{Duration}
 
 /// `act` runs as a turn once `span` has gone by. False when no loop runs.
@@ -30,8 +31,25 @@ export fn repeating(period: Duration, act: Act) -> bool {
 /// a write included. An observation whose server announces its changes on a stream (`avra-feed`) is
 /// FRESH while that stream is up and nothing has been announced about what it read: asking it again
 /// sends nothing then, and the moment the stream drops, is refused or says otherwise, the next ask sends.
-export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Result<T, string>) -> bool {
+export fn fetched<T>(
+    held: Fetch<T>,
+    request: Request,
+    parse: fn(Reply) -> Result<T, string>,
+    foresee: Overlay? = null,
+) -> bool {
     let on? = running() else { return false }
+    let went = observed(on, held, request, parse, foresee)
+    on.observed.moved()
+    went
+}
+
+fn observed<T>(
+    on: App,
+    held: Fetch<T>,
+    request: Request,
+    parse: fn(Reply) -> Result<T, string>,
+    foresee: Overlay?,
+) -> bool {
     let entry = on.observed.entry_of(request)
     let before = held.at.get()
     before?.left(held.id)
@@ -51,8 +69,35 @@ export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Resul
         )
     on.observed.swept()
     hung_up(on)
-    if entry.loading() || entry.fresh.get() { return true }
+    if entry.key == null { return written(on, entry, request, foresee) }
+    if entry.loading() {
+        on.observed.counts.bump(on.observed.counts.joined)
+        return true
+    }
+    if entry.fresh.get() {
+        on.observed.counts.bump(on.observed.counts.skipped)
+        return true
+    }
     asking(on, entry, request)
+}
+
+/// A write: its layer, if it foresees one, is shown at once; it goes out when the writes to its row
+/// before it have been answered, and a later write to the row replaces one still waiting.
+fn written(on: App, entry: Entry, request: Request, foresee: Overlay?) -> bool {
+    entry.request.set(request)
+    if foresee != null { let _ = on.observed.lay(request, foresee!, entry.id) }
+    let lane? = on.observed.lane_of(request) else { return asking(on, entry, request) }
+    if !lane.flying.get() {
+        lane.flying.set(true)
+        return asking(on, entry, request)
+    }
+    let waiting = lane.queued.get()
+    if waiting != null {
+        waiting!.superseded()
+        on.observed.handed(waiting!.id, entry.id)
+    }
+    lane.queued.set(entry)
+    true
 }
 
 /// `request` goes out for `entry`, carrying the version it holds. The entry keeps the request,
@@ -60,6 +105,8 @@ export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Resul
 fn asking(on: App, entry: Entry, request: Request) -> bool {
     entry.request.set(request)
     entry.floor.set(on.observed.known.get())
+    on.observed.asks.set(on.observed.asks.get() + 1)
+    entry.asked_n.set(on.observed.asks.get())
     let sent = entry.conditional(request)
     entry.asked()
     let into: Cell<Result<Reply, string>?> = Cell.new(null)
@@ -77,9 +124,57 @@ fn landed(on: App, entry: Entry, into: Cell<Result<Reply, string>?>) -> bool {
     on.observed.learned(stood)
     entry.floor.set(max_of(entry.floor.get(), stood ?? 0))
     on.observed.swept()
+    if entry.key == null { concluded(on, entry, answer) }
     refreshed(on, entry, answer)
     watching(on, entry)
+    reconciled(on)
+    on.observed.settled()
+    on.observed.moved()
     changed && !entry.unread()
+}
+
+/// A write was answered: its layers take the answer's place in the database's order, or are gone when
+/// it was refused; and the next write to its row, if one waits, goes out.
+fn concluded(on: App, entry: Entry, answer: Result<Reply, string>) {
+    let mine = on.observed.owned(entry.id)
+    let reply = succeeded(answer)
+    if reply != null {
+        on.observed.answered(mine, reply!)
+    } else {
+        for l in mine { on.observed.dropped(l) }
+    }
+    let request? = entry.request.get() else { return }
+    let lane? = on.observed.lane_of(request) else { return }
+    let next? = lane.queued.get() else {
+        lane.flying.set(false)
+        return
+    }
+    lane.queued.set(null)
+    let sent? = next.request.get() else { return }
+    let _ = asking(on, next, sent)
+}
+
+/// The reply of a write the server took.
+fn succeeded(answer: Result<Reply, string>) -> Reply? {
+    match answer {
+        .Ok(r) -> if r.status >= 200 && r.status < 300 { r } else { null },
+        .Err(_) -> null,
+    }
+}
+
+/// A layer whose write was answered stands until the views it reaches have been answered past it, so
+/// each that no ask is out for, and was not asked since, is asked now. A reading that
+/// comes back behind the write is asked for no more: the layer stands over it until a later reading passes.
+fn reconciled(on: App) {
+    for l in on.observed.layers.get() {
+        let after? = l.after.get() else { continue }
+        for e in on.observed.reaching(l) {
+            if !e.loading() && e.asked_n.get() <= after && !e.reflects(l.stand.get(), after) {
+                e.stale(.Reconciled)
+                asked_again(on, e)
+            }
+        }
+    }
 }
 
 /// What an answer asks of the observations: a write's names the tables it touched, so each
@@ -95,7 +190,7 @@ fn refreshed(on: App, entry: Entry, answer: Result<Reply, string>) {
     let after = reply.stand()
     for e in on.observed.stale_by(written) {
         if e.id == entry.id || reflects(e, after) { continue }
-        e.fresh.set(false)
+        e.stale(.Wrote(written))
         if e.loading() { e.again.set(true) } else { asked_again(on, e) }
     }
 }
@@ -112,13 +207,18 @@ export fn asked_again(on: App, entry: Entry) {
     let _ = asking(on, entry, request)
 }
 
-/// What a view shows of the entry's state: its parser's word on a reply.
+/// What a view shows of the entry's state: its parser's word on a reply. A parse that traps is that view's
+/// failure alone: the entry's other views are still told, and the answer's bookkeeping still runs.
 fn settled<T>(a: Async<Reply>, parse: fn(Reply) -> Result<T, string>) -> Async<T> {
     match a {
         .Idle -> Async.Idle,
         .Loading -> Async.Loading,
         .Failed(why) -> Async.Failed(why),
-        .Ready(reply) -> match parse(reply) { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) },
+        .Ready(reply) -> match contained(() -> parse(reply)) {
+            .Ok(.Ok(v)) -> Async.Ready(v),
+            .Ok(.Err(m)) -> Async.Failed(m),
+            .Err(trap) -> Async.Failed("the parse trapped: ${trap}"),
+        },
     }
 }
 

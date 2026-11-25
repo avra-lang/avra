@@ -1,6 +1,7 @@
 //! THE REFERENCES RELATION's own contract (compiler/references.av)
-//! and the `Code` facts built over it (features/code.av): `callers()`
-//! crosses files through a declaration, `dead_params()`/
+//! and the `Code` facts built over it (features/code.av), asked of
+//! what a fact rule reads on the program layer: `callers()` crosses
+//! files through a declaration (references_callers_test.av), `dead_params()`/
 //! `is_unwritten_mut()` answer from one file's own body, and
 //! `unused_imports()` reaches a MODULE's sibling files. Two
 //! regressions pinned here by name: a method's WRITTEN parameters
@@ -14,43 +15,48 @@
 //! argument, a `dyn` type) — every position below witnessed FAILING
 //! against the tree's pre-fix binary (`unused_imports()` naming the
 //! import) before `type_use_refs` (compiler/references.av) landed.
-use @std.avrac.testing.{test_workspace}
-use compiler.{analyze_source, Program}
-use compiler.host.{memory_host}
-use core.{At, DeclKind, StmtId}
+use @std.avrac.testing.{held_at, provided_held, Judged}
+use core.{At, StmtId, SyntaxArena}
 use features.{Code}
-use @std.avrac.testing.{provided}
 
-fn top_level(source: string, i: int) -> Code {
-    let a = analyze_source(source)
-    a.code_at(At.Stmt(a.view.stmts[i]))
+const REF_PATH: string = "/w/src/main.av"
+
+/// The package `files` lay beside its manifest, judged at its main file.
+fn ref_judged(files: Map<string, string>) -> Judged {
+    mut all = files
+    all.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
+    held_at(all, "/w").judged_at(REF_PATH)
 }
+
+/// The first statement of `j`'s main file that `pick` admits, as a fact rule reads it.
+fn code_where(j: Judged, pick: fn(SyntaxArena, StmtId) -> bool) -> Code {
+    [Code { of: f, at: At.Stmt(s) } for f in j.rule_files(REF_PATH) for s in f.view.store.stmt_ids() if pick(f.view.store, s)]
+        .first()!
+}
+
+/// The fn or method named `name` that `source` declares.
+fn fn_code(source: string, name: string) -> Code {
+    code_where(
+        ref_judged({REF_PATH: source}),
+        (store: SyntaxArena, s: StmtId) -> store.fn_parts(s)?.name == name,
+    )
+}
+
+/// The `use` line of `j`'s main file.
+fn use_code(j: Judged) -> Code { code_where(j, (store: SyntaxArena, s: StmtId) -> store.stmt(s) is .Use) }
 
 /// A multi-file package's own unused imports over its entry `use`
 /// line — the real shape the bug was reported in: an import read
 /// ONLY through a written type, across files.
-fn unused_of(files: Map<string, string>, names: List<string>) -> List<string> {
-    let ws = test_workspace(memory_host(files, names), "/w")
-    let a = ws.program("/w/src/main.av").entry_file()!
-    let u = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .Use)!
-    a.code_at(At.Stmt(u)).unused_imports()
-}
-
-/// The one METHOD a source declares, by its own statement — never a
-/// top-level index, since a method's statement nests inside its
-/// `impl` block.
-fn one_method(source: string) -> Code {
-    let a = analyze_source(source)
-    let d = a.view.decls.decls_of_kind(DeclKind.Method).first()!
-    a.code_at(At.Stmt(d.stmt))
-}
+fn unused_of(files: Map<string, string>) -> List<string> { use_code(ref_judged(files)).unused_imports() }
 
 /// The one `mut` LOCAL a source declares, wherever it nests — the
 /// file's whole statement arena, flat, never just its top level.
 fn first_mut(source: string) -> Code {
-    let a = analyze_source(source)
-    let id = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .MutLet)!
-    a.code_at(At.Stmt(id))
+    code_where(
+        ref_judged({REF_PATH: source}),
+        (store: SyntaxArena, s: StmtId) -> store.stmt(s) is .MutLet,
+    )
 }
 
 /// A provider declaring one template-form component, `named` — a
@@ -60,40 +66,22 @@ fn word_provider(named: string) -> string {
     "export component ${named}(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n"
 }
 
-/// `main`'s first statement's `Code` — the `use` line importing the
-/// word-headed component, over a program that actually built it.
-fn main_use(main: string, named: string) -> Code {
-    let p = provided(main, word_provider(named))
-    let a = p.entry_file()!
-    a.code_at(At.Stmt(a.view.stmts[0]))
-}
+/// `main`'s `use` line importing the word-headed component, over a
+/// program that actually built it.
+fn main_use(main: string, named: string) -> Code { use_code(provided_held(main, word_provider(named)).judged_at(REF_PATH)) }
 
 spec "compiler/references — the relation and its Code facts" {
-    given "a fn called once, elsewhere in the same file" {
-        then "callers() finds the one call site" {
-            top_level("fn a() -> int { 1 }\nfn b() -> int { a() }", 0).callers().length == 1
-        }
-    }
-    given "a fn never called" {
-        then "callers() is empty" {
-            top_level("fn a() -> int { 1 }\nlet x = 1", 0).callers().is_empty()
-        }
-    }
-    given "a fn called twice" {
-        then "callers() finds both" {
-            top_level("fn a() -> int { 1 }\nfn b() -> int { a() + a() }", 0).callers().length == 2
-        }
-    }
     given "a free fn's parameter, read directly" {
         then "dead_params() does not name it" {
-            let dead = top_level("fn f(a: int, b: int) -> int { a }", 0).dead_params()
+            let dead = fn_code("fn f(a: int, b: int) -> int { a }", "f").dead_params()
             dead.length == 1 && dead.first() == "b"
         }
     }
     given "a method's parameter, past the receiver's own seat 0" {
         then "dead_params() does not name it — the seat offset is paid" {
-            one_method(
+            fn_code(
                 "type Box = { held: int }\nimpl Box {\n    fn plus(n: int) -> int { self.held + n }\n}",
+                "plus",
             )
                 .dead_params()
                 .is_empty()
@@ -101,14 +89,14 @@ spec "compiler/references — the relation and its Code facts" {
     }
     given "a parameter read only inside a comprehension's own lambda" {
         then "dead_params() does not name it — the capture chain is walked to its root" {
-            top_level("fn f(xs: List<int>, n: int) -> List<int> { [x for x in xs if x > n] }", 0)
+            fn_code("fn f(xs: List<int>, n: int) -> List<int> { [x for x in xs if x > n] }", "f")
                 .dead_params()
                 .is_empty()
         }
     }
     given "a parameter named `_prefixed`" {
         then "dead_params() exempts it by convention" {
-            top_level("fn f(_a: int) -> int { 1 }", 0).dead_params().is_empty()
+            fn_code("fn f(_a: int) -> int { 1 }", "f").dead_params().is_empty()
         }
     }
     given "a `mut` local nothing ever assigns" {
@@ -151,7 +139,6 @@ fn unused_in_templates(main: string) -> List<string> {
             "/w/src/main.av": main,
             "/w/src/lib.av": "export fn helper() -> int { 1 }\nexport fn other() -> int { 2 }\n",
         },
-        ["/w/src/main.av", "/w/src/lib.av"],
     )
 }
 
@@ -159,50 +146,35 @@ spec "compiler/references — a written type names a declaration too" {
     given "an import read only through a fn's PARAMETER type" {
         then "unused_imports() is empty" {
             let text = "use lib.{Bar}\nfn f(a: Bar) -> int { 0 }\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"})
                 .is_empty()
         }
     }
     given "an import read only through a bodiless trait member's RETURN type" {
         then "unused_imports() is empty — no construction anywhere isolates the position" {
             let text = "use lib.{Bar}\ntrait T { fn f() -> Bar }\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"})
                 .is_empty()
         }
     }
     given "an import read only through a struct's own FIELD type" {
         then "unused_imports() is empty" {
             let text = "use lib.{Bar}\ntype Holder = { field: Bar }\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"})
                 .is_empty()
         }
     }
     given "an import read only through a `let`'s ANNOTATION" {
         then "unused_imports() is empty" {
             let text = "use lib.{Bar}\nlet x: Bar? = null\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"})
                 .is_empty()
         }
     }
     given "an import read only as a NESTED type argument (`List<Bar>`)" {
         then "unused_imports() is empty" {
             let text = "use lib.{Bar}\nlet xs: List<Bar>? = null\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"})
                 .is_empty()
         }
     }
@@ -214,7 +186,6 @@ spec "compiler/references — a written type names a declaration too" {
                     "/w/src/main.av": text,
                     "/w/src/lib.av": "export trait Speaks { fn say() -> string }\n",
                 },
-                ["/w/src/main.av", "/w/src/lib.av"],
             )
                 .is_empty()
         }
@@ -224,7 +195,6 @@ spec "compiler/references — a written type names a declaration too" {
             let text = "use lib.{Bar}\n0\n"
             let dead = unused_of(
                 {"/w/src/main.av": text, "/w/src/lib.av": "export type Bar = { y: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
             )
             dead.length == 1 && dead.first() == "Bar"
         }
@@ -234,66 +204,8 @@ spec "compiler/references — a written type names a declaration too" {
             let text = "use lib.{T}\ntrait Speaks2 { fn say() -> string }\nfn f<T: Speaks2>(x: T) -> int { 0 }\n0\n"
             let dead = unused_of(
                 {"/w/src/main.av": text, "/w/src/lib.av": "export type T = { z: int }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
             )
             dead.length == 1 && dead.first() == "T"
-        }
-    }
-}
-
-spec "compiler/references — an annotation's own name is a use too (avra-8sb5.25.70)" {
-    given "an import named only as a Declares annotation over a FN" {
-        then "unused_imports() is empty" {
-            let text = "use lib.{mark}\n@mark\nfn f() -> int { 0 }\nf()\n"
-            unused_of(
-                {
-                    "/w/src/main.av": text,
-                    "/w/src/lib.av": "use @std.meta.{Fn}\nexport fn mark(f: Fn) { }\n",
-                },
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
-                .is_empty()
-        }
-    }
-    given "an import named only as a Declares annotation over a TYPE" {
-        then "unused_imports() is empty" {
-            let text = "use lib.{mark}\n@mark\ntype T = { x: int }\n0\n"
-            unused_of(
-                {
-                    "/w/src/main.av": text,
-                    "/w/src/lib.av": "use @std.meta.{Type}\nexport fn mark(t: Type) { }\n",
-                },
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
-                .is_empty()
-        }
-    }
-    given "an import named only as a FIELD MARK" {
-        then "unused_imports() is empty — the mark's word reads through it" {
-            let text = "use lib.{index}\ntype Decl = { @index name: string }\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export fn index() { }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
-                .is_empty()
-        }
-        then "a variant's mark reads through the same door" {
-            let text = "use lib.{index}\nenum E {\n    @index A(x: int)\n}\n0\n"
-            unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export fn index() { }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
-                .is_empty()
-        }
-    }
-    given "a mark matching no fn at all — marks stay free names" {
-        then "unused_imports() still names the import — a mark is a heuristic, never a blanket exemption" {
-            let text = "use lib.{other}\ntype Decl = { @index name: string }\n0\n"
-            let dead = unused_of(
-                {"/w/src/main.av": text, "/w/src/lib.av": "export fn other() { }\n"},
-                ["/w/src/main.av", "/w/src/lib.av"],
-            )
-            dead.length == 1 && dead.first() == "other"
         }
     }
 }
@@ -327,6 +239,54 @@ spec "compiler/references — a template's names are this file's" {
         then "unused_imports() still names that one — a quote is not a blanket yes" {
             let dead = unused_in_templates(
                 "use lib.{helper, other}\nfn t() { let q = quote { fn x() -> int { helper() } } }\n0\n",
+            )
+            dead.length == 1 && dead.first() == "other"
+        }
+    }
+}
+
+spec "compiler/references — an annotation's own name is a use too (avra-8sb5.25.70)" {
+    given "an import named only as a Declares annotation over a FN" {
+        then "unused_imports() is empty" {
+            let text = "use lib.{mark}\n@mark\nfn f() -> int { 0 }\nf()\n"
+            unused_of(
+                {
+                    "/w/src/main.av": text,
+                    "/w/src/lib.av": "use @std.meta.{Fn}\nexport fn mark(f: Fn) { }\n",
+                },
+            )
+                .is_empty()
+        }
+    }
+    given "an import named only as a Declares annotation over a TYPE" {
+        then "unused_imports() is empty" {
+            let text = "use lib.{mark}\n@mark\ntype T = { x: int }\n0\n"
+            unused_of(
+                {
+                    "/w/src/main.av": text,
+                    "/w/src/lib.av": "use @std.meta.{Type}\nexport fn mark(t: Type) { }\n",
+                },
+            )
+                .is_empty()
+        }
+    }
+    given "an import named only as a FIELD MARK" {
+        then "unused_imports() is empty — the mark's word reads through it" {
+            let text = "use lib.{index}\ntype Decl = { @index name: string }\n0\n"
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export fn index() { }\n"})
+                .is_empty()
+        }
+        then "a variant's mark reads through the same door" {
+            let text = "use lib.{index}\nenum E {\n    @index A(x: int)\n}\n0\n"
+            unused_of({"/w/src/main.av": text, "/w/src/lib.av": "export fn index() { }\n"})
+                .is_empty()
+        }
+    }
+    given "a mark matching no fn at all — marks stay free names" {
+        then "unused_imports() still names the import — a mark is a heuristic, never a blanket exemption" {
+            let text = "use lib.{other}\ntype Decl = { @index name: string }\n0\n"
+            let dead = unused_of(
+                {"/w/src/main.av": text, "/w/src/lib.av": "export fn other() { }\n"},
             )
             dead.length == 1 && dead.first() == "other"
         }

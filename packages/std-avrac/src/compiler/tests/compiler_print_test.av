@@ -1,154 +1,56 @@
-// EVERY DURABLE CACHE ROW MUST BE KEYED BY THE COMPILER THAT PRODUCED
-// IT (avra-8sb5.57.25). `Workspace.compiler_id()` is the one place the
-// running compiler's own print is derived; every durable key that folds
-// it in (a module's record, `avra docs`'s answer) must disagree across
-// two different compilers reading the very same input, or a newer
-// compiler silently trusts an older one's row — the "index 221 is out
-// of bounds (length 181)" trap this ticket traces.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{build_cache_root, db_qualified, digest_of_binary}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
-use compiler.store.{Keeping, Producer, Producers, Store, store_at, store_stamped}
-use core.{ModulePath, module_path}
-use @std.io.{write_text, make_dirs}
+// A STORE ANSWERS ONLY THE COMPILER THAT MADE ITS ANSWERS. A compiler is named by its queries' code:
+// another compiler over the same store on disk — one query built from other code — reads none of
+// the first's answers, works everything out again and answers alike, and the first, back over that
+// store, still reads its own.
+use @std.avrac.testing.held.{Pass, another_compiler, held_at}
+use @std.program.query_engine.{QueryDefinition}
 use @std.time.{stamp}
+use compiler.{avra_fact_definitions}
 
-/// A scratch directory nothing has ever written to: nanosecond-unique,
-/// so no run reads what an earlier one left behind.
-fn print_pkg_named(name: string) -> string {
-    let root = "/tmp/avra-cacheprint-test/${name}-${stamp()}"
-    let _ = make_dirs(root)
-    root
-}
+const CP_MAIN: string = "/w/src/main.av"
 
-/// A real file on disk holding `bytes` — `compiler_id` hashes a
-/// compiler's ACTUAL bytes, read straight off disk (never through the
-/// `Host` seam, which a binary's own bytes must not be, since a text
-/// read is lossy over them), so a test double needs a real file too.
-fn real_binary(name: string, bytes: string) -> string {
-    let dir = print_pkg_named(name)
-    let path = "${dir}/binary"
-    let _ = write_text(path, bytes)
-    path
-}
-
-/// A workspace over one package, its host's named compiler swapped for
-/// `binary` — everything else (the roll file, the tree's `.git`/
-/// `avra.toml` walk) stays in-memory and never touches real disk.
-fn print_workspace(binary: string?) -> Workspace {
-    test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": "fn a() { 1 }\n",
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ) with { compiler: binary, print: () -> print_at(binary) },
-        "/w",
-    )
-}
-
-/// A binary's print, as a host that names it settles it; none for none.
-fn print_at(binary: string?) -> string? {
-    let at? = binary else { return null }
-    digest_of_binary(at)
-}
-
-spec "compiler/build — a durable row's key names the compiler that wrote it" {
-    given "two workspaces whose compiler binaries hold different bytes" {
-        then "compiler_id disagrees" {
-            let a = print_workspace(real_binary("id-a", "the old compiler's bytes")).compiler_id()
-            a != print_workspace(real_binary("id-b", "the new compiler's bytes, changed")).compiler_id()
-        }
-        then "their store root is the tree's ONE — the print rides the store's header, not its path" {
-            let a = build_cache_root(print_workspace(real_binary("root-a", "compiler one")))
-            a == build_cache_root(
-                print_workspace(real_binary("root-b", "compiler two, a different one")),
-            )
-        }
-        then "a module's record key agrees — the producer's stamp, not the compiler, decides who reads the row" {
-            let m = module_path(["app"])
-            let a = print_workspace(real_binary("record-a", "compiler generation one"))
-                .record_key(m)
-            a == print_workspace(real_binary("record-b", "compiler generation two")).record_key(m)
-        }
-        then "avra docs's own qualified name disagrees for the same package and the same lookup" {
-            let a = print_workspace(real_binary("docs-a", "the renderer, before")).compiler_id()
-            let b = print_workspace(real_binary("docs-b", "the renderer, after a change"))
-                .compiler_id()
-            db_qualified("/pkg", a, "widget") != db_qualified("/pkg", b, "widget")
-        }
-    }
-    given "two workspaces whose compiler binaries hold the SAME bytes at different paths" {
-        then "compiler_id agrees — the print is the bytes, never the path" {
-            let dir_a = print_pkg_named("same-a")
-            let dir_b = print_pkg_named("same-b")
-            let path_a = "${dir_a}/avra"
-            let path_b = "${dir_b}/avra"
-            let _ = write_text(path_a, "identical compiler bytes")
-            let _ = write_text(path_b, "identical compiler bytes")
-            print_workspace(path_a).compiler_id() == print_workspace(path_b).compiler_id()
-        }
-    }
-    given "a host that names no compiler at all — a test's, or a harness that lost track" {
-        then "two such workspaces still disagree — the fallback is never one shared store for every generation" {
-            let a = print_workspace(null).compiler_id()
-            a != print_workspace(null).compiler_id()
-        }
-    }
-    given "one workspace, asked twice" {
-        then "compiler_id is memoized — the same answer both times, no re-hash" {
-            let a = print_workspace(real_binary("memo", "stable across two asks"))
-            a.compiler_id() == a.compiler_id()
-        }
-    }
-    given "a record durably written by one compiler print, over the SAME real store" {
-        then "another print with the same producer reads it back" {
-            let root = "${print_pkg_named("held-mint-a")}/.avra-cache"
-            let m = module_path(["app"])
-            kept_by(root, "held-mint-a-bin", Producer.Hashed("same"), m)
-            read_by(root, "held-mint-b-bin", Producer.Hashed("same"), m) == "a record generation one wrote"
-        }
-        then "one whose producer differs misses it — never a stranger's bytes" {
-            let root = "${print_pkg_named("held-mint-c")}/.avra-cache"
-            let m = module_path(["app"])
-            kept_by(root, "held-mint-c-bin", Producer.Hashed("one"), m)
-            read_by(root, "held-mint-d-bin", Producer.Hashed("two"), m) == "none"
-        }
-        then "another print's record BODY key is the same too — the stamp separates, not the key" {
-            let a = print_workspace(real_binary("body-key-a-bin", "compiler generation one"))
-                .record_bodies()
-                .key("app", "i")
-            a == print_workspace(real_binary("body-key-b-bin", "compiler generation two"))
-                .record_bodies()
-                .key("app", "i")
-        }
-        then "the SAME compiler print still reads its own record back, over the SAME store" {
-            let store = store_at("${print_pkg_named("held-mint-same")}/.avra-cache")
-            let bin = real_binary("held-mint-same-bin", "one compiler, asked twice")
-            let m = module_path(["app"])
-            let a = print_workspace(bin)
-            a.db.insert_sig(store, a.record_key(m), "the one true record")
-            let b = print_workspace(bin)
-            b.db.sig(store, b.record_key(m)) == "the one true record"
-        }
+fn cp_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        CP_MAIN: "use util.{twice}\ntwice(21)\n",
+        "/w/src/util/u.av": "export fn twice(n: int) -> int { n * 2 }\n",
     }
 }
 
-/// A store over `root` the way `ws`'s compiler opens it, its Sig family under `producer`.
-fn stamped(root: string, ws: Workspace, producer: Producer) -> Store {
-    store_stamped(root, ws.compiler_id(), Producers { sig: producer }, Keeping.Disk)
+/// A store on disk nothing has written to.
+fn cp_store() -> string { "/tmp/avra-compiler-print-test/${stamp()}" }
+
+/// One process of the compiler whose queries are `definitions`, over the disk store at `store`,
+/// saved as the process ends.
+fn cp_pass(store: string, definitions: List<QueryDefinition>) -> Pass {
+    held_at(cp_files(), "/w").passed_on_disk(CP_MAIN, store, definitions)
 }
 
-/// A record filed by a compiler whose binary holds `binary`.
-fn kept_by(root: string, binary: string, producer: Producer, m: ModulePath) {
-    let ws = print_workspace(real_binary(binary, "compiler generation one"))
-    ws.db.insert_sig(stamped(root, ws, producer), ws.record_key(m), "a record generation one wrote")
-}
-
-/// What a compiler whose binary holds another's bytes reads of it.
-fn read_by(root: string, binary: string, producer: Producer, m: ModulePath) -> string {
-    let ws = print_workspace(real_binary(binary, "compiler generation two"))
-    ws.db.sig(stamped(root, ws, producer), ws.record_key(m)) ?? "none"
+spec "compiler/build — a store answers only the compiler that made its answers" {
+    given "a store one compiler checked" {
+        then "another compiler over it works everything out again" {
+            let s = cp_store()
+            let first = cp_pass(s, avra_fact_definitions())
+            let other = cp_pass(s, another_compiler("typed_fn"))
+            !first.worked.is_empty() && other.worked.join(",") == first.worked.join(",")
+        }
+        then "and answers alike" {
+            let s = cp_store()
+            let first = cp_pass(s, avra_fact_definitions())
+            let other = cp_pass(s, another_compiler("typed_fn"))
+            first.ran == "42" && other.ran == first.ran && other.report == first.report
+        }
+        then "a compiler differing in a query no answer here reads keeps nothing of the first's either" {
+            let s = cp_store()
+            let first = cp_pass(s, avra_fact_definitions())
+            cp_pass(s, another_compiler("program_hosts_owed")).worked.join(",") == first.worked.join(",")
+        }
+        then "the first compiler, back over that store, still reads its own" {
+            let s = cp_store()
+            let _ = cp_pass(s, avra_fact_definitions())
+            let _ = cp_pass(s, another_compiler("typed_fn"))
+            let back = cp_pass(s, avra_fact_definitions())
+            back.ran == "42" && back.worked.is_empty()
+        }
+    }
 }

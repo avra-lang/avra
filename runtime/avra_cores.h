@@ -42,6 +42,9 @@ int64_t avra_cores_leave(int64_t g, int64_t core, int64_t accepted, int64_t err)
 int64_t avra_cores_end_fd(int64_t g, int64_t core);
 int64_t avra_cores_heard(int64_t g, int64_t core);
 
+// Core `core` killed when it has not ended, and reaped; 0 once it has ended.
+int64_t avra_cores_killed(int64_t g, int64_t core);
+
 // Every core told to stop. Only the supervisor can; elsewhere nothing.
 void avra_cores_stop(int64_t g);
 
@@ -49,5 +52,25 @@ void avra_cores_stop(int64_t g);
 // for the first that failed. A core that trapped or was killed traps
 // here, naming it. The group is gone after.
 int64_t avra_cores_result(int64_t g);
+int64_t avra_cores_finished(int64_t g);
+int64_t avra_cores_stderr_to(const char* path);
+int64_t avra_cores_claimed(int64_t g);
+// What a reader maps a shared table's octets as: the shape `avra_mmap_word_at` reads.
+typedef struct { const char* base; int64_t len; } AvraSharedView;
+void* avra_shared_made(int64_t slots, int64_t room);
+void avra_shared_ended(void* h);
+void* avra_shared_view(void* h);
+int64_t avra_shared_kept(void* h, int64_t kind, int64_t hi, int64_t lo, const char* p, int64_t n);
+int64_t avra_shared_start(void* h, int64_t kind, int64_t hi, int64_t lo);
+int64_t avra_shared_end(void* h, int64_t kind, int64_t hi, int64_t lo);
+void* avra_shared_apart_view(void* h);
+int64_t avra_shared_logged(void* h, int64_t kind);
+int64_t avra_shared_logged_start(void* h, int64_t kind, int64_t at);
+int64_t avra_shared_logged_end(void* h, int64_t kind, int64_t at);
+int64_t avra_shared_claimed(void* h, int64_t hi, int64_t lo);
+int64_t avra_shared_let_go(void* h, int64_t hi, int64_t lo);
+int64_t avra_shared_awaited(void* h, int64_t hi, int64_t lo, int64_t holder);
+int64_t avra_cores_heir(int64_t quiet);
+int64_t avra_cores_heir_gone(void);
 
 #endif

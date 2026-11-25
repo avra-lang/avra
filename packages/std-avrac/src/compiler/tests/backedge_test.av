@@ -28,7 +28,7 @@ fn in_text(text: string, name: string, word: string) -> int { times(section(text
 
 /// How many times `word` stands in `name`'s body, over a lone source.
 fn in_body(lines: List<string>, name: string, word: string) -> int {
-    in_text(ir(lines), name, word)
+    in_text(ir(lines), "alone/src/main.av.${name}", word)
 }
 
 /// A `while` around a counter, run as a task.
@@ -86,6 +86,7 @@ fn top_level() -> List<string> {
 fn top_sleep() -> List<string> {
     [
         "extern fn avra_fiber_sleep(ms: int)",
+        "fn spinner(n: int) -> int { n }",
         "let t = spawn spinner(3)",
         "avra_fiber_sleep(0)",
         "mut i = 0",
@@ -131,8 +132,8 @@ spec "compiler/lower — a checked `while` back-edge" {
             in_body(walking(), "rng", "call avra_tick_cold()") == 0
     }
     then "an `@unbroken` fn's own `while` carries no check" {
-        in_text(unbroken_ir(), "rouse", "= flag tick") == 0 &&
-            in_text(unbroken_ir(), "rouse", "call avra_tick_cold()") == 0
+        in_text(unbroken_ir(), "app/src/main.av.rouse", "= flag tick") == 0 &&
+            in_text(unbroken_ir(), "app/src/main.av.rouse", "call avra_tick_cold()") == 0
     }
     then "a top-level `while` in a program whose only spawn is top-level carries the check" {
         times(ir(top_level()), "= flag tick") == 1 &&

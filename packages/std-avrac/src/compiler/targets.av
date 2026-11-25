@@ -1,0 +1,78 @@
+//! The platforms a build is for, read off its target triple: what its binary is, what it links
+//! with, and which runtime archive it carries.
+
+/// What a target triple names: a binary linked as the host links one (the host's own, the empty
+/// triple), a WebAssembly module, or a binary an Apple SDK (`sdk`, as `xcrun --sdk` names it)
+/// links.
+export enum Platform {
+    Native
+    Wasm
+    Apple(sdk: string)
+}
+
+/// An Apple OS a triple may name: its word in the triple, the SDK a device build links against
+/// and a simulator build's, and the oldest release a build runs on where the triple names none.
+type AppleOs = { os: string, device: string, simulator: string, min: string }
+
+/// The Apple OSes this compiler links for.
+const APPLE_OSES: List<AppleOs> = [
+    AppleOs { os: "ios", device: "iphoneos", simulator: "iphonesimulator", min: "17.0" },
+]
+
+/// The platform `target` names: an `apple` triple whose OS a row names is that SDK's, a `wasm`
+/// one WebAssembly, and every other — the host's own among them — native.
+export fn platform_of(target: string) -> Platform {
+    if target.starts_with("wasm") { return Platform.Wasm }
+    let parts = target.split("-")
+    let os? = apple_os(parts) else { return Platform.Native }
+    Platform
+        .Apple(if parts.length > 3 && parts[3] == "simulator" { os.simulator } else { os.device })
+}
+
+/// The Apple OS the triple `parts` names, where its vendor is `apple`.
+fn apple_os(parts: List<string>) -> AppleOs? {
+    if parts.length < 3 || parts[1] != "apple" { return null }
+    APPLE_OSES.find((o) -> parts[2].starts_with(o.os))
+}
+
+/// The triple `spelled` as a build is made for: an Apple triple whose OS names no release takes its
+/// OS's oldest (`arm64-apple-ios-simulator` is `arm64-apple-ios17.0-simulator`); any other is itself.
+export fn triple_settled(spelled: string) -> string {
+    let parts = spelled.split("-")
+    let os? = apple_os(parts) else { return spelled }
+    if parts[2] != os.os { return spelled }
+    parts.take(2).concat(["${os.os}${os.min}"]).concat(parts.drop(3)).join("-")
+}
+
+/// The suffix a build's binary carries beside the host's, so two platforms' builds of one source
+/// never stand at one path.
+export fn binary_suffix(p: Platform) -> string {
+    match p { .Native -> "", .Wasm -> ".wasm", .Apple(sdk) -> ".${sdk}" }
+}
+
+/// The directory, under the host's build directory, a platform's objects and runtime archive are
+/// built in: the host's own is the build directory itself.
+export fn object_dir(p: Platform) -> string {
+    match p { .Native -> "", .Wasm -> "wasm32", .Apple(sdk) -> sdk }
+}
+
+/// The words a link for an Apple SDK starts with: the triple and the SDK's root, what nothing
+/// reaches dropped — a framework included — and the binary named where it lands.
+export fn apple_link_head(target: string, sysroot: string, binary: string) -> List<string> {
+    [
+        "-w",
+        "-target",
+        target,
+        "-isysroot",
+        sysroot,
+        "-Wl,-dead_strip",
+        "-Wl,-dead_strip_dylibs",
+        "-Wl,-final_output,${binary}",
+    ]
+}
+
+/// The words a link for an Apple SDK ends with: the runtime archive `runtime`, the frameworks every
+/// app stands on, and the binary it writes at `out`.
+export fn apple_link_tail(runtime: string, out: string) -> List<string> {
+    [runtime, "-framework", "Foundation", "-lm", "-o", out]
+}

@@ -37,6 +37,7 @@
 #include <mach-o/getsect.h>
 #endif
 #include "avra_fiber.h"
+#include "avra_unwind.h"
 #include "avra_runtime.h"
 #include "avra_platform.h"
 
@@ -287,7 +288,7 @@ enum { GATE_HEAD, GATE_TAIL, GATE_OPEN, GATE_CELLS };
 enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_SITE, TASK_SINCE, TASK_FRAMES };
 // The unwind frames a task has passed: sixteen on the record, the
 // middle dropped and counted once they fill.
-enum { UNWIND_CAP = 16, TASK_FRAMES_N = TASK_FRAMES + UNWIND_CAP, TASK_DROPPED, TASK_CELLS };
+enum { UNWIND_CAP = AVRA_UNWIND_CAP, TASK_FRAMES_N = TASK_FRAMES + UNWIND_CAP, TASK_DROPPED, TASK_CELLS };
 enum { END_LIVE, END_ANSWERED, END_CANCELLED };
 
 static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
@@ -416,6 +417,9 @@ static int64_t g_timer_until = 0;
 
 static int g_flow_trace = 0;
 static int g_trace_fd = 2;
+
+// The flow trace's own file, kept across a core's close; -1 while it writes to stderr.
+int avra_fiber_trace_fd(void) { return g_trace_fd > 2 ? g_trace_fd : -1; }
 static int64_t g_trace_left = 0;
 
 static int64_t now_ns(void);
@@ -546,32 +550,55 @@ static void traced_join(const Fiber* f, int64_t on) {
 
 // The program's site table (avra_box.h): its rows and their count.
 #if defined(__APPLE__)
-static const AvraSiteRow* site_rows(size_t* n) {
+static const AvraSiteRow* site_rows_of(uint32_t image, size_t* n) {
     unsigned long bytes = 0;
-    const struct mach_header_64* image = (const struct mach_header_64*)_dyld_get_image_header(0);
-    const uint8_t* at = getsectiondata(image, AVRA_SITES_MACHO_SEGMENT, AVRA_SITES_MACHO_SECTION, &bytes);
+    const struct mach_header_64* header = (const struct mach_header_64*)_dyld_get_image_header(image);
+    const uint8_t* at = header ? getsectiondata(header, AVRA_SITES_MACHO_SEGMENT, AVRA_SITES_MACHO_SECTION, &bytes) : NULL;
     *n = at ? bytes / sizeof(AvraSiteRow) : 0;
     return (const AvraSiteRow*)at;
 }
 #else
 extern const AvraSiteRow __start_avra_sites[] __attribute__((weak));
 extern const AvraSiteRow __stop_avra_sites[] __attribute__((weak));
-static const AvraSiteRow* site_rows(size_t* n) {
-    *n = __start_avra_sites ? (size_t)(__stop_avra_sites - __start_avra_sites) : 0;
-    return __start_avra_sites;
-}
 #endif
 
-// Where a task's body was written — the row that names its entry — or
-// NULL for code no row names.
-static const char* site_of(void* body) {
-    const void* code = (const void*)(uintptr_t)((AvraArray*)body)->data[0];
-    size_t n = 0;
-    const AvraSiteRow* rows = site_rows(&n);
+// THE SITE TABLES OF A PROGRAM LINKED IN LAYERS: each image's own, handed
+// over as it loads by a constructor its objects carry (backend/llvm_wrapper.c
+// `sites_registered`), every object of one image handing the same table.
+enum { SITE_TABLES = 16 };
+static struct { const AvraSiteRow* rows; size_t n; } g_site_tables[SITE_TABLES];
+static size_t g_site_tables_n;
+
+void avra_sites_register(const AvraSiteRow* rows, size_t n) {
+    for (size_t t = 0; t < g_site_tables_n; t++) {
+        if (g_site_tables[t].rows == rows) return;
+    }
+    if (g_site_tables_n < SITE_TABLES) g_site_tables[g_site_tables_n++] = (typeof(g_site_tables[0])){ rows, n };
+}
+
+static const char* site_in(const AvraSiteRow* rows, size_t n, const void* code) {
     for (size_t i = 0; i < n; i++) {
         if (rows[i].code == code) return rows[i].site;
     }
     return NULL;
+}
+
+// Where a task's body was written — the row that names its entry, in the
+// image's own table or any layer's — or NULL for code no row names.
+static const char* site_of(void* body) {
+    const void* code = (const void*)(uintptr_t)((AvraArray*)body)->data[0];
+    const char* found = NULL;
+#if defined(__APPLE__)
+    for (uint32_t i = 0, images = _dyld_image_count(); i < images && !found; i++) {
+        size_t n = 0;
+        const AvraSiteRow* rows = site_rows_of(i, &n);
+        found = site_in(rows, n, code);
+    }
+#else
+    if (__start_avra_sites) found = site_in(__start_avra_sites, (size_t)(__stop_avra_sites - __start_avra_sites), code);
+#endif
+    for (size_t t = 0; t < g_site_tables_n && !found; t++) found = site_in(g_site_tables[t].rows, g_site_tables[t].n, code);
+    return found;
 }
 
 // A spawn, and where its body was written.
@@ -1171,6 +1198,7 @@ static void sig_disarm(int sig) {
     if (g_poller >= 0) {
         struct kevent ev;
         EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+        // the clock: a change list with no events asked returns at once
         kevent(g_poller, &ev, 1, NULL, 0, NULL);
     }
     sigaction(sig, &g_sig_prior[sig], NULL);
@@ -1209,6 +1237,7 @@ static int sig_arm(int sig) {
     signal(sig, SIG_IGN);
     struct kevent ev;
     EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    // the clock: a change list with no events asked returns at once
     if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) {
         sigaction(sig, &prior, NULL);
         return 0;
@@ -1257,8 +1286,14 @@ static int sig_arm(int sig) {
 // its signal and claims that signal's waiters.
 static void sigfd_drain(void) {
     struct signalfd_siginfo si;
+    // the clock: the signalfd is SFD_NONBLOCK, so an empty one answers EAGAIN
     while (read(g_signalfd, &si, sizeof si) == (ssize_t)sizeof si) sig_ready((int)si.ssi_signo);
 }
+#endif
+
+#if !AVRA_HOSTED
+static void (*g_host_loop)(void) = NULL;
+static void host_idle_native(int64_t timeout_ns);
 #endif
 
 // Waits for the poller up to `timeout_ns` (below zero: forever) and
@@ -1272,6 +1307,11 @@ static void poller_wait(int64_t timeout_ns) {
 #if AVRA_HOSTED
     host_idle(timeout_ns);
 #else
+    // a host's loop waits in its place, and the poller then claims what it heard
+    if (g_host_loop) {
+        host_idle_native(timeout_ns);
+        timeout_ns = 0;
+    }
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1463,6 +1503,10 @@ static void scope_inherited(Fiber* child, const Fiber* from) {
 // another share the stack the last one left warm.
 #define STACK_DEFAULT ((size_t)256 << 10)
 
+// The task stack a binary asks for, weak: an unoptimised binary links a
+// definition of its own (runtime/avra_task_stack_unoptimised.c).
+__attribute__((weak)) const int64_t avra_task_stack_bytes = (int64_t)STACK_DEFAULT;
+
 // A stack and the page whose fault is its overflow: its own, directly
 // under it, or the one at the foot of its slab.
 typedef struct { char* base; char* guard; } Stack;
@@ -1579,7 +1623,7 @@ static void guards_settle(void) {
 static void stacks_settle(void) {
     if (g_page) return;
     g_page = (size_t)sysconf(_SC_PAGESIZE);
-    size_t want = STACK_DEFAULT;
+    size_t want = (size_t)avra_task_stack_bytes;
     const char* env = getenv("AVRA_FIBER_STACK");
     if (env) {
         long long v = atoll(env);
@@ -1812,6 +1856,11 @@ void avra_task_entry(void) {
     shadow_set(g_current->sp);
     fiber_start();
 }
+// A hosted module's idle is its host's already: no loop attaches here.
+static int host_listens(void) { return 0; }
+static int host_current(void) { return 0; }
+static int host_turn_spent(void) { return 0; }
+static void host_callback_waited(void) {}
 #else
 #define fiber_switched(self, next) avra_fiber_switch(&(self)->sp, (next)->sp)
 // A fiber's first run: a stack from the pool, and at its top a frame
@@ -1826,6 +1875,84 @@ static void fiber_framed(Fiber* f, Stack s, size_t bytes) {
     memset(frame, 0, FIBER_FRAME);
     frame[FIBER_RETURN] = (uint64_t)(uintptr_t)fiber_start;
     f->sp = frame;
+}
+
+// ── The host's loop ─────────────────────────────────────────────
+//
+// THE HOST'S IDLE, ON A NATIVE TARGET: wasm's hosted idle, generalized. A host
+// whose own loop must hold the thread (an app's run loop) attaches it, and the
+// scheduler's idle returns to that loop until a source fires — where wasm's
+// host suspends the module, here the loop stands on a stack of its own and the
+// idle switches to it. While the loop runs the host IS the current fiber: what
+// it calls into the program may post and wake, never wait, and only an idle
+// program is resumed.
+
+static Fiber g_host_fib = { .state = FIBER_RUNNING, .canary = &g_untouched, .local = &avra_main_local };
+// The fiber that idled, while the host's loop runs; NULL during a turn.
+static Fiber* g_host_back = NULL;
+static int64_t g_host_wait = -1;
+static int64_t g_host_turn_at = 0;
+static int64_t g_host_budget_ns = 4000000;
+enum { HOST_STACK = 8 << 20 };
+
+static int host_listens(void) { return g_host_loop != NULL; }
+static int host_current(void) { return g_current == &g_host_fib; }
+
+static int host_turn_spent(void) {
+    return g_host_loop && now_ns() - g_host_turn_at > g_host_budget_ns;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void host_callback_waited(void) {
+    avra_trap("a host callback waited — what the host calls into the program may post and wake, never wait; a turn of the program is where it waits");
+}
+
+static void host_started(void) {
+    g_host_loop();
+    avra_trap("the host's loop returned");
+}
+
+static void host_stacked(void) {
+    stacks_settle();
+    char* low = reserved(HOST_STACK + g_page);
+    if (mprotect(low, g_page, PROT_NONE) != 0) avra_trap("the scheduler could not guard the host's stack");
+    g_host_fib.floor = (uintptr_t)(low + g_page);
+    uint64_t* frame = (uint64_t*)((((uintptr_t)low + g_page + HOST_STACK - 16) & ~(uintptr_t)15) - FIBER_FRAME);
+    memset(frame, 0, FIBER_FRAME);
+    frame[FIBER_RETURN] = (uint64_t)(uintptr_t)host_started;
+    g_host_fib.sp = frame;
+}
+
+static void host_idle_native(int64_t timeout_ns) {
+    if (!g_host_fib.sp) host_stacked();
+    Fiber* self = g_current;
+    g_host_wait = timeout_ns;
+    g_host_back = self;
+    g_current = &g_host_fib;
+    fiber_switched(self, &g_host_fib);
+    g_current = self;
+    g_host_back = NULL;
+    g_host_turn_at = now_ns();
+}
+
+void avra_host_attach(void (*loop)(void)) {
+    const char* budget = getenv("AVRA_HOST_BUDGET_MS");
+    if (budget && atoll(budget) > 0) g_host_budget_ns = atoll(budget) * 1000000;
+    g_host_loop = loop;
+}
+
+int avra_host_poller(void) {
+    poller_open();
+    return g_poller;
+}
+
+int64_t avra_host_wait_ns(void) { return g_host_wait; }
+
+int avra_host_idling(void) { return g_host_back != NULL; }
+
+void avra_host_resume(void) {
+    if (!g_host_back || !host_current()) avra_trap("a host callback ran the program inside a running turn — the host resumes the program only from its own loop, while the program idles");
+    fiber_switched(&g_host_fib, g_host_back);
 }
 
 // THE WIDE STACK: one reservation the size of the main thread's stack,
@@ -1877,6 +2004,8 @@ static void switched_to_fresh(Fiber* self, Fiber* next) {
     __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
+    avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
+    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);
@@ -1897,6 +2026,8 @@ static inline void switch_to(Fiber* next) {
     __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
+    avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
+    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);
@@ -2045,6 +2176,11 @@ static Fiber* next_with_world(void) {
             else if (g_parked_fds > 0) g_until_poll = FAIR_TURNS;
             else g_until_poll = POLL_IDLE;
         }
+        // a turn past its budget lets the host's loop draw and hear before it goes on
+        if (g_ready_head && host_turn_spent()) {
+            poller_wait(0);
+            continue;
+        }
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) {
             // an ask counted during this pass, after its count was reset,
@@ -2053,7 +2189,7 @@ static Fiber* next_with_world(void) {
             g_in_world = 0;
             return next;
         }
-        if (g_timers_len == 0 && g_parked_fds == 0) {
+        if (g_timers_len == 0 && g_parked_fds == 0 && !host_listens()) {
             if (case_deadlocked()) continue;
             if (run_deadlocked()) { g_in_world = 0; return NULL; }
             deadlock_reported();
@@ -2104,6 +2240,7 @@ static void run_next_with_world(void) {
 
 __attribute__((always_inline))
 static inline void run_next(void) {
+    if (__builtin_expect(host_current(), 0)) host_callback_waited();
     if (queue_alone()) {
         Fiber* next = ready_pop();
         if (next) { switch_to(next); return; }
@@ -2226,15 +2363,13 @@ static void waits_sig(Fiber* f, int64_t kind, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
-static void unwind_cleared(void);
-
 // A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set,
 // and the frames it had passed belong to no unwind — the new one's list
 // begins empty.
 static void cancel_met(void) {
     if (avra_unwinding) return;
     avra_unwinding = 1;
-    unwind_cleared();
+    avra_unwind_clear();
 }
 
 // Who asked the request that stands on a task: a task's cancel, else
@@ -2464,53 +2599,26 @@ static void* task_made(Fiber* f, void* body) {
     return task;
 }
 
-// The frame list on a task's record, and the same layout for main's own.
-typedef struct { int64_t frames[UNWIND_CAP]; int64_t n; int64_t dropped; } Unwind;
-static Unwind g_main_unwind;
-
+// The frame list on a task's record: the core's list (avra_unwind.h), laid out in the record's
+// reserved cells.
 // THE RECORD'S RESERVED CELLS ARE THE LIST'S OWN WORDS, and the names
 // `task_made` seeds between them sit where the struct lays them: a
 // reordered or resized Unwind is caught here, not by a lost frame.
-_Static_assert(TASK_FRAMES_N == TASK_FRAMES + (int64_t)(offsetof(Unwind, n) / sizeof(int64_t)),
+_Static_assert(TASK_FRAMES_N == TASK_FRAMES + (int64_t)(offsetof(AvraUnwind, n) / sizeof(int64_t)),
     "TASK_FRAMES_N names the frame count's cell");
-_Static_assert(TASK_DROPPED == TASK_FRAMES + (int64_t)(offsetof(Unwind, dropped) / sizeof(int64_t)),
+_Static_assert(TASK_DROPPED == TASK_FRAMES + (int64_t)(offsetof(AvraUnwind, dropped) / sizeof(int64_t)),
     "TASK_DROPPED names the drop count's cell");
-_Static_assert((int64_t)sizeof(Unwind) == (TASK_CELLS - TASK_FRAMES) * (int64_t)sizeof(int64_t),
+_Static_assert((int64_t)sizeof(AvraUnwind) == (TASK_CELLS - TASK_FRAMES) * (int64_t)sizeof(int64_t),
     "the task record's reserved cells are the Unwind's words");
 
-static Unwind* running_unwind(void) {
-    if (g_current->task) return (Unwind*)(task_cells(g_current->task) + TASK_FRAMES);
-    return &g_main_unwind;
+// The running task's list, else the main program's: the core asks it here once this scheduler is
+// linked, so a program that spawns nothing keeps its frames without one.
+static AvraUnwind* task_unwind(void) {
+    if (g_current->task) return (AvraUnwind*)(task_cells(g_current->task) + TASK_FRAMES);
+    return avra_unwind_main();
 }
 
-static void unwind_cleared(void) { memset(running_unwind(), 0, sizeof(Unwind)); }
-
-// One frame the unwind passed: appended, or — full — the middle dropped
-// and counted, the newest kept in the last slot.
-void avra_unwind_push(void* frame) {
-    Unwind* held = running_unwind();
-    if (held->n < UNWIND_CAP) {
-        held->frames[held->n++] = (int64_t)(uintptr_t)frame;
-        return;
-    }
-    memmove(
-        &held->frames[UNWIND_CAP / 2],
-        &held->frames[UNWIND_CAP / 2 + 1],
-        (UNWIND_CAP / 2 - 1) * sizeof(int64_t));
-    held->frames[UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;
-    held->dropped = held->dropped + 1;
-}
-
-int64_t avra_unwind_count(void) { return running_unwind()->n; }
-
-void* avra_unwind_at(int64_t i) {
-    Unwind* held = running_unwind();
-    if (i < 0 || i >= held->n) return NULL;
-    return (void*)(uintptr_t)held->frames[i];
-}
-
-// How many frames a full list has dropped; the landing says so.
-int64_t avra_unwind_dropped(void) { return running_unwind()->dropped; }
+__attribute__((constructor)) static void unwind_hooked(void) { avra_unwind_running = task_unwind; }
 
 // Where every new fiber begins: run the body, keep its answer, wake
 // whoever waits on it, and hand the thread on for good.
@@ -2690,7 +2798,7 @@ static void tasks_shed(AvraArray* a) {
             continue;
         }
         a->data[kept] = a->data[i];
-        a->marks[kept] = a->marks[i];
+        if (a->marks) a->marks[kept] = a->marks[i];
         kept++;
     }
     a->len = kept;
@@ -2932,13 +3040,15 @@ int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
     // A CANCEL IS HEARD BEFORE THE TURN IS COUNTED: a schedule decides who
     // runs next, never whether a request is heard, and a task that
-    // unwinds draws nothing from it.
+    // unwinds draws nothing from it. A CHECKED BACK-EDGE IN A SHIELDED TASK
+    // RAISES NOTHING, as the compiled one's (`avra_tick_cold`): a deferred
+    // call that loops runs to its end under a cancel.
     if (g_seeded) {
-        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }
+        if (!f->shield_depth && f->cancel_by != 0) { f->unwinding = 1; return 0; }
         return tick_turn_comes(f);
     }
     if (g_timers_len > 0) fire_due_timers(now_ns());
-    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
+    if (!f->shield_depth && (deadline_passed(f) || f->cancel_by != 0)) f->unwinding = 1;
     return g_ready_head != NULL;
 }
 
@@ -3045,9 +3155,15 @@ static void shield_left(Fiber* f, uint8_t* bit) {
     if (--f->shield_depth == 0) *bit |= f->shield_saved;
 }
 
-void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }
+static void running_shield_entered(void) { shield_entered(g_current, &avra_unwinding); }
 
-void avra_fiber_shield_leave(void) { shield_left(g_current, &avra_unwinding); }
+static void running_shield_left(void) { shield_left(g_current, &avra_unwinding); }
+
+// The shield is the core's to raise and this scheduler's to keep, named here once it is linked.
+__attribute__((constructor)) static void shield_hooked(void) {
+    avra_shield_entered = running_shield_entered;
+    avra_shield_left = running_shield_left;
+}
 
 int64_t avra_task_request(void* task) {
     const Fiber* f = (const Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
@@ -3678,9 +3794,15 @@ static int64_t case_refused(void) {
     return 0;
 }
 
+void avra_once_set(void* key, void* value);
+
 int64_t avra_case_run(int64_t (*body)(void)) {
     if (g_case_waited || g_timers_len > 0 || g_parked_fds > 0) return case_refused();
-    if (!g_case_alarm) g_case_alarm = avra_gate_new();
+    // the alarm is the runner's for the process's life: held as a cache is
+    if (!g_case_alarm) {
+        g_case_alarm = avra_gate_new();
+        avra_once_set((void*)"avra.case_alarm", g_case_alarm);
+    }
     g_case_first = g_fiber_seq;
     g_case_spoiled = 0;
     g_case_spun = 0;
@@ -3927,6 +4049,7 @@ static void path_wire_put(int fd, const PathWire* w) {
 static int path_wire_get(int fd, PathWire* w) {
     char* at = (char*)w;
     for (size_t n = sizeof *w; n > 0;) {
+        // the clock: the suite reads its schedule's child, outside every clock run
         ssize_t got = read(fd, at, n);
         if (got <= 0) return 0;
         at += got;
@@ -3951,6 +4074,7 @@ static int64_t program_under(int64_t schedule, int64_t* choices) {
     pid_t pid = fork();
     if (pid < 0) avra_trap("a program test cannot fork its schedule");
     if (pid == 0) {
+        avra_pool_forked();
         close(told[0]);
         int64_t made = 0;
         scheduled(schedule, &made, program_body_called);

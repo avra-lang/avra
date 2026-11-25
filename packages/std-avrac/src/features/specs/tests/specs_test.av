@@ -1,33 +1,31 @@
 // The spec DSL: `spec`/`given`/`then` is one declaration whose cases
 // are bool-answering bodies — the program lists them in order, runs
-// each by its symbol, and the laws refuse in their own words.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{Program, TestCase, case_words}
-use @std.avrac.testing.{shown, refused_with}
+// each by its symbol, and the laws refuse in their own words. Asked of
+// the program layer: the suite `avra test` makes of a package's files.
+use @std.avrac.compiler.{MadeSuite}
+use @std.avrac.testing.{shown, refused_with, held_at}
 use compiler.backend.{run_program, run_symbol}
-use compiler.lower.{Lowered}
-use compiler.host.{memory_host}
 
 fn manifest() -> string {
     "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
 }
 
-/// A package whose one module is `text`.
-fn package_of(text: string) -> Program {
-    let files: Map<string, string> = {"/w/avra.toml": manifest(), "/w/src/main.av": text}
-    test_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av"]), "/w")
-        .program("/w/src/main.av")
+/// The suite a package of `modules` makes, each module by its path under `src/`, `main.av` the
+/// entry: every case each module writes.
+fn suite_over(modules: Map<string, string>) -> Result<MadeSuite, string> {
+    mut files: Map<string, string> = {"/w/avra.toml": manifest()}
+    for name, text in modules { files.set("/w/src/${name}", text) }
+    held_at(files, "/w")
+        .judged_at("/w/src/main.av")
+        .suite(["/w/src/${name}" for name in modules.keys()])
 }
 
-/// A package of two modules: the entry and a sibling.
-fn package_of_two(main: string, other: string) -> Program {
-    let files: Map<string, string> = {
-        "/w/avra.toml": manifest(),
-        "/w/src/main.av": main,
-        "/w/src/other.av": other,
-    }
-    test_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/src/other.av"]), "/w")
-        .program("/w/src/main.av")
+/// The suite of a package whose one module is `text`.
+fn package_of(text: string) -> Result<MadeSuite, string> { suite_over({"main.av": text}) }
+
+/// The suite of a package of two modules: the entry and a sibling.
+fn package_of_two(main: string, other: string) -> Result<MadeSuite, string> {
+    suite_over({"main.av": main, "other.av": other})
 }
 
 /// Two groups, three cases — the middle one false on purpose.
@@ -44,33 +42,34 @@ fn suite() -> string {
         "}\n"
 }
 
-/// Every case's verdict, in listing order; a program that refuses
-/// to lower has none.
-fn verdicts_of(p: Program) -> List<bool> {
-    match p.every_body_checked() { .Ok(lo) -> [passed(lo, c) for c in p.cases()], .Err(_) -> [] }
+/// Each case's line as the suite says it, in listing order; none where the suite isn't made.
+fn cases_of(made: Result<MadeSuite, string>) -> List<string> {
+    match made { .Ok(m) -> [c.label for c in m.cases], .Err(_) -> [] }
+}
+
+/// Every case's verdict, in listing order; a suite that isn't made has none.
+fn verdicts_of(made: Result<MadeSuite, string>) -> List<bool> {
+    match made {
+        .Ok(m) -> [match run_symbol(m.lowered, c.symbol) { .Ok(b) -> b, .Err(_) -> false } for c in m.cases],
+        .Err(_) -> [],
+    }
 }
 
 fn verdicts(text: string) -> List<bool> {
     verdicts_of(package_of(text))
 }
 
-fn passed(lo: Lowered, c: TestCase) -> bool {
-    match run_symbol(lo, c.symbol) { .Ok(b) -> b, .Err(_) -> false }
-}
-
 /// The first case's refusal, or the empty word when it answered.
 fn note_of(text: string) -> string {
-    let p = package_of(text)
-    match p.every_body_checked() { .Ok(lo) -> refusal_of(lo, p.cases()[0]), .Err(why) -> why }
+    match package_of(text) {
+        .Ok(m) -> match run_symbol(m.lowered, m.cases[0].symbol) { .Ok(_) -> "", .Err(why) -> why },
+        .Err(why) -> why,
+    }
 }
 
-fn refusal_of(lo: Lowered, c: TestCase) -> string {
-    match run_symbol(lo, c.symbol) { .Ok(_) -> "", .Err(why) -> why }
-}
-
-/// Whether lowering the cases refuses, saying `phrase`.
-fn refused_cases(p: Program, phrase: string) -> bool {
-    match p.every_body_checked() { .Ok(_) -> false, .Err(why) -> why.contains(phrase) }
+/// Whether making the suite refuses, saying `phrase`.
+fn refused_cases(made: Result<MadeSuite, string>, phrase: string) -> bool {
+    match made { .Ok(_) -> false, .Err(why) -> why.contains(phrase) }
 }
 
 /// One verdict, and it is true — lists compare by identity here.
@@ -88,9 +87,8 @@ fn ran_case(body: string) -> string { ran_full(one_case(body)) }
 
 /// A whole spec source run for its printed words.
 fn ran_full(text: string) -> string {
-    let p = package_of(text)
-    match p.every_body_checked() {
-        .Ok(lo) -> match run_program(lo, p.cases()[0].symbol) { .Ok(out) -> out, .Err(why) -> why },
+    match package_of(text) {
+        .Ok(m) -> match run_program(m.lowered, m.cases[0].symbol) { .Ok(out) -> out, .Err(why) -> why },
         .Err(why) -> why,
     }
 }
@@ -98,7 +96,7 @@ fn ran_full(text: string) -> string {
 spec "features/specs" {
     given "the declaration" {
         then "a spec lists its cases in written order, each knowing its suite, group and line" {
-            let cs = [case_words(c) for c in package_of(suite()).cases()]
+            let cs = cases_of(package_of(suite()))
             cs.length == 3 &&
                 cs[0] == "arithmetic / doubling / two doubles to four @ /w/src/main.av:4" &&
                 cs[1] == "arithmetic / doubling / three doubles to seven @ /w/src/main.av:5" &&
@@ -108,13 +106,12 @@ spec "features/specs" {
             shown("${suite()}double(21)") == "42"
         }
         then "a spec may hold no groups, and a group no cases" {
-            package_of("spec \"empty\" {\n}\nspec \"s\" {\n    given \"g\" {\n    }\n}\n")
-                .cases()
+            cases_of(package_of("spec \"empty\" {\n}\nspec \"s\" {\n    given \"g\" {\n    }\n}\n"))
                 .is_empty()
         }
         then "a then directly under the spec is a case of the empty group" {
             let p = package_of("spec \"s\" {\n    then \"t\" { true }\n}\n")
-            case_words(p.cases()[0]) == "s /  / t @ /w/src/main.av:2" && only_true(verdicts_of(p))
+            cases_of(p).join("|") == "s /  / t @ /w/src/main.av:2" && only_true(verdicts_of(p))
         }
         then "two specs in one file both list and run" {
             let v = verdicts(

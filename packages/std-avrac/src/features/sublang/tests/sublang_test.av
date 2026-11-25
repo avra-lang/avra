@@ -1,10 +1,8 @@
 // A sublanguage block is the calls its grammar's actions name: the
 // library's fns resolve in the library, the user's holes in the user's
 // file, and every refusal speaks where its mistake is.
-use @std.avrac.testing.{test_workspace}
+use @std.avrac.testing.held.{Judged, held_at}
 use @std.avrac.testing.{refused_n}
-use @std.avrac.compiler.{Program}
-use compiler.host.{memory_host}
 
 /// The toy SQL provider: a named grammar whose actions are its fns.
 fn provider() -> string {
@@ -12,29 +10,18 @@ fn provider() -> string {
 }
 
 /// A program with the provider package `@x/sql` beside it.
-fn packaged(main: string, prov: string) -> Program {
+fn packaged(main: string, prov: string) -> Judged {
     let files = {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/sql\" = { path = \"vendor/sql\" }\n",
         "/w/src/main.av": main,
         "/w/vendor/sql/avra.toml": "[package]\nname = \"@x/sql\"\nversion = \"0.1.0\"\n",
         "/w/vendor/sql/src/sql.av": prov,
     }
-    let ws = test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/sql/avra.toml",
-                "/w/vendor/sql/src/sql.av",
-            ],
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
-fn clean(p: Program) -> bool { p.check() is .Ok }
+fn clean(p: Judged) -> bool { p.checked() is .Ok }
 
 fn use_sql() -> string { "use @x.sql.{sql, Select, Where}\n" }
 
@@ -81,16 +68,6 @@ spec "features/sublang — a block is its grammar's actions" {
                     provider(),
                 ),
             )
-        }
-        then "a block prints as written" {
-            let p = packaged(
-                use_sql() +
-                    "let uid = 7\nlet q: Select = sql { SELECT name FROM users WHERE id = \${uid} }\n1",
-                provider(),
-            )
-            p
-                .expanded_source(p.ws.file_id("/w/src/main.av"))
-                .contains("sql { SELECT name FROM users WHERE id = \${uid} }")
         }
     }
     given "the declaration" {

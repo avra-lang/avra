@@ -37,21 +37,25 @@ LICENSE = re.compile(r"LICENSED\s+traps\.(process_limit|defect)\b")
 KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__builtin_expect",
             "__builtin_unreachable", "__builtin_offsetof", "_Static_assert", "typeof", "__typeof__"}
 # Callees that run no Avra code and raise no language trap: the C library, the
-# compiler's builtins, the runtime's own macros, and the two C function-pointer
-# params (`text`, `source`) that only ever name C fns. A callee not here and not
-# defined in the runtime is a call out, which may trap.
+# compiler's builtins, the runtime's own macros, the two C function-pointer
+# params (`text`, `source`) that only ever name C fns, and the core's hooks the
+# scheduler names (`avra_unwind_running`, `avra_shield_entered`, `avra_shield_left`),
+# which only ever name its own bookkeeping. A callee not here and not defined in
+# the runtime is a call out, which may trap.
 SAFE = set("""
-__atomic_add_fetch __atomic_load_n __atomic_store_n __builtin_add_overflow __builtin_memcpy
-__builtin_mul_overflow __builtin_return_address __builtin_sub_overflow
-_dyld_get_image_header _dyld_get_image_vmaddr_slide atoi calloc clock_gettime close closedir
-dirfd dl_iterate_phdr epoll_wait fclose fcntl fflush fopen fork fprintf fputc fputs fread free
-fseek fstat ftell fwrite getenv getpid getsectiondata isfinite kevent longjmp mallinfo2 malloc
-malloc_size malloc_usable_size malloc_zone_statistics memchr memcmp memcpy memmem memmove memset
-mmap munmap open opendir pipe qsort raise read readdir realloc sched_getaffinity setjmp snprintf
-strcmp strerror strlen strtod strtoll sysconf utimes va_arg va_end va_start waitpid write
-AVRA_CALLER CENSUS CPU_COUNT IS_IMMORTAL KIND_IMMORTAL KIND_SHAPE MB S_ISREG WEXITSTATUS WIFEXITED
-WIFSIGNALED WTERMSIG volatile
-text source
+__atomic_add_fetch __atomic_compare_exchange_n __atomic_load_n __atomic_store_n __builtin_bswap64 __builtin_add_overflow __builtin_ctzll __builtin_memcpy
+__builtin_mul_overflow __builtin_return_address __builtin_sub_overflow _dyld_get_image_header _dyld_image_count
+_dyld_get_image_vmaddr_slide atoi atoll calloc clock_gettime close closedir confstr dirfd
+dl_iterate_phdr epoll_wait fclose fcntl fflush flock fopen fork fprintf fputc fputs fread free fseek
+fstat fstatat ftell ftruncate fwrite getenv geteuid getpid getsectiondata isfinite kevent kill longjmp
+madvise mallinfo2 malloc malloc_size malloc_trim malloc_usable_size malloc_zone_pressure_relief
+malloc_zone_statistics memchr memcmp memcpy memmem memmove memset mkdir mmap munmap nanosleep open
+opendir pipe pread pwrite qsort raise read readdir realloc sched_getaffinity sched_yield setjmp snprintf strchr
+strcmp strerror strlen strtod strtoll sysconf sysctlbyname utimes va_arg va_end va_start waitpid
+write
+AVRA_CALLER CENSUS CPU_COUNT IS_IMMORTAL KIND_IMMORTAL KIND_SHAPE MB S_ISDIR S_ISLNK S_ISREG
+WEXITSTATUS WIFEXITED WIFSIGNALED WTERMSIG volatile
+text source avra_unwind_running avra_shield_entered avra_shield_left
 """.split())
 
 
@@ -68,7 +72,8 @@ def c_bodies():
     """fn name -> (file, body text), over the runtime's C and headers."""
     bodies = {}
     paths = sorted(glob.glob(os.path.join(ROOT, "runtime", "*.c")) + glob.glob(os.path.join(ROOT, "runtime", "*.h")))
-    head = re.compile(r"^[A-Za-z_][\w\s\*]*?\b(\w+)\s*\([^;{}]*\)[^;{}]*\{", re.M)
+    # A definition may open with attributes (`__attribute__((unused)) static …`), which are not its name.
+    head = re.compile(r"^(?:__attribute__\(\((?:[^()]|\([^()]*\))*\)\)\s*)*[A-Za-z_][\w\s\*]*?\b(\w+)\s*\([^;{}]*\)[^;{}]*\{", re.M)
     for path in paths:
         text = open(path).read()
         for m in head.finditer(text):

@@ -37,10 +37,12 @@
 #include <setjmp.h>
 #ifndef __wasm__
 #include <unwind.h>
+#include <execinfo.h>
 #endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
@@ -58,6 +60,19 @@
 #include <time.h>
 #include <unistd.h>
 #include "avra_box.h"
+// THE SLABS (below, beside `fresh`) need a reserved address range, which a wasm module has no way to
+// ask for: there the small blocks stay malloc's. `-DAVRA_SLABS=0` builds a host runtime without them,
+// the control a measurement of them runs against.
+#ifndef AVRA_SLABS
+#if !defined(__wasm32__)
+#define AVRA_SLABS 1
+#else
+#define AVRA_SLABS 0
+#endif
+#endif
+#if AVRA_SLABS
+#include <sys/mman.h>
+#endif
 #include "avra_platform.h"
 #include "avra_runtime.h"
 #include "avra_hot.h"
@@ -200,24 +215,26 @@ unsigned long long avra_number(const char* s, unsigned base) {
 // tag.
 static Header* hdr(void* p) { return avra_hdr(p); }
 
-// SIZE CLASSES: a box of up to CLASS_MAX payload bytes is recycled
-// through a per-class free list instead of handed back to malloc —
-// a parse mints and drops a record per match, and malloc and free
-// were a third of it. A record's header `len` holds its payload
-// bytes; a string's holds its text length, one less than its
-// payload. The class follows from either; past the classes a box is
-// malloc's.
-// A list is BOUNDED: it holds the churn (a parse mints and drops
-// the same records by the million) and no more — past LIST_LIMIT a
-// freed box goes back to malloc, whose pools any size can reuse.
-// Unbounded lists hoarded a phase's freed memory by class and
-// nearly doubled a gate's peak.
+// SIZE CLASSES: a box of up to CLASS_MAX payload bytes is a block of its class, never malloc's — a
+// parse mints and drops a record per match, and malloc and free were a third of it. A record's
+// header `len` holds its payload bytes; a string's holds its text length, one less than its payload.
+// The class follows from either; past the classes a box is malloc's. Where the slabs stand (below,
+// beside `fresh`) a class's blocks come from its pages; elsewhere from a per-class free list that is
+// BOUNDED: past LIST_LIMIT a freed box goes back to malloc, since unbounded lists hoarded a phase's
+// freed memory by class and nearly doubled a gate's peak.
 #define CLASS_BYTES 16
+#if AVRA_SLABS
+// A classed box is a slab's block: its header and its class's bytes fill at most SLAB_MAX.
+#define CLASS_MAX 1008
+#else
 #define CLASS_MAX 256
+#endif
 #define CLASSES (CLASS_MAX / CLASS_BYTES + 1)
 #define LIST_LIMIT 16384
+#if !AVRA_SLABS
 static Header* g_free[CLASSES];
 static int64_t g_free_len[CLASSES];
+#endif
 
 // THE ACCOUNTING (AVRA_MEM_STATS=1): live bytes by what they hold —
 // records, strings, list boxes and their buffers, map boxes and their
@@ -259,7 +276,12 @@ static int cap_bucket(int64_t cap) {
 // report prints it unslid, so `atos -o build/avra <addr>` names it.
 // the table is kept under half full, and a probe gives up at 64
 // steps: a full table cost a suite compile a minute of probing
+// A census names every minting site of the whole compiler, which outgrows the shipping table.
+#ifdef AVRA_CENSUS
+#define SITES 1048576
+#else
 #define SITES 65536
+#endif
 typedef struct { void* site; int64_t live; int64_t peak; int64_t count; int64_t made; void* sample; } Site;
 static Site g_sites[SITES];
 static int64_t g_site_slots = 0;
@@ -312,8 +334,10 @@ static intptr_t image_slide(void) {
 #ifdef AVRA_CENSUS
 
 int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
-static int64_t g_list_pushes;
+int64_t g_list_pushes;
+static int64_t g_empty_made, g_empty_grown;
 static int64_t g_once_reads, g_once_steps;
+static int64_t g_copies, g_streqs, g_empty_opens;
 static int64_t g_boxes_made, g_bufs_made;
 static int64_t g_made_by_kind[8];
 
@@ -326,17 +350,136 @@ static Site g_push_sites[SITES];
 static int64_t g_push_slots = 0;
 static Site g_copy_sites[SITES];
 static int64_t g_copy_slots = 0;
+// Boxes made, by the runtime row's caller and that caller's own caller: a row that mints is
+// asked by the Avra code that wants the box, or by another row that the Avra code asked.
+static Site g_made_sites[SITES];
+static int64_t g_made_slots = 0;
+static Site g_made_up_sites[SITES];
+static int64_t g_made_up_slots = 0;
+// Empty lists, by the Avra fn that made one and by the one whose push first grew one.
+static Site g_empty_sites[SITES];
+static int64_t g_empty_slots = 0;
+static Site g_empty_grown_sites[SITES];
+static int64_t g_empty_grown_slots = 0;
+// Unwraps that retain, by the Avra fn that unwrapped.
+static Site g_insist_sites[SITES];
+static int64_t g_insist_slots = 0;
 static int g_sites_census = 0;
 
-static void note_push(void* site) {
+// Elements copied by concat, slice and extend, charged to the Avra fn that asked: a copy is
+// one call in `copy`, and its length is what a quadratic accumulation spends.
+static Site g_append_sites[SITES];
+static int64_t g_append_slots = 0;
+static void* g_append_site = NULL;
+
+static void note_appended(int64_t n) {
+    if (!g_sites_census || n <= 0) return;
+    Site* s = site_in(g_append_sites, &g_append_slots, g_append_site);
+    if (s) s->made += n;
+}
+
+void note_push(void* site) {
     if (!g_sites_census) return;
     Site* s = site_in(g_push_sites, &g_push_slots, site);
     if (s) s->made++;
 }
 
+// The bytes of the box minted last: a type label is noted right after the row that minted it.
+static int64_t g_last_box_bytes = 0;
+
+// Blocks asked for, by size: 16-byte steps up to 1024 (the slabs' sizes), then powers of two.
+#define SIZE_ROWS 96
+static int64_t g_size_blocks[SIZE_ROWS];
+static int64_t g_size_bytes[SIZE_ROWS];
+
+static int size_row(int64_t bytes) {
+    if (bytes <= 1024) return (int)((bytes + 15) >> 4);
+    int row = 65;
+    for (int64_t top = 2048; top < bytes && row < SIZE_ROWS - 1; top <<= 1) row++;
+    return row;
+}
+
+static void note_block(int64_t bytes) {
+    int row = size_row(bytes);
+    g_size_blocks[row]++;
+    g_size_bytes[row] += bytes;
+}
+
+static void report_sizes(void) {
+    for (int row = 0; row < SIZE_ROWS; row++) {
+        if (g_size_blocks[row] == 0) continue;
+        int64_t top = row <= 64 ? (int64_t)row * 16 : (int64_t)2048 << (row - 65);
+        avra_say("size: up to %lld B: %lld blocks, %lld B\n", (long long)top, (long long)g_size_blocks[row],
+                (long long)g_size_bytes[row]);
+    }
+}
+
+// The Avra fn that asked for the box minted last: its birth stamp names it.
+static void* g_last_made_site = NULL;
+// The death census, defined beside the box allocator it reads.
+static int g_deaths_on;
+static void report_deaths(intptr_t slide);
+
+static void note_empty(Site* table, int64_t* slots, void* site, int64_t* total) {
+    (*total)++;
+    if (!g_sites_census || site == NULL) return;
+    Site* s = site_in(table, slots, site);
+    if (s) s->made++;
+}
+
+// A RETAIN AND THE RELEASE THAT CANCELS IT: a box retained, then released with no count moved
+// between, by the pair of sites (the move-at-last-use census). And A FREE AND THE ALLOC IT COULD
+// HAVE BEEN: a box freed, then the next box made of the same size class (the reuse census).
+typedef struct { void* made; void* dropped; int64_t n; int64_t bytes; } Pair;
+#define SITE_PAIRS (1 << 18)
+static Pair g_move_pairs[SITE_PAIRS];
+static int64_t g_move_slots = 0;
+static Pair g_reuse_pairs[SITE_PAIRS];
+static int64_t g_reuse_slots = 0;
+static void* g_retained_box = NULL;
+static void* g_retained_at = NULL;
+static void* g_freed_at = NULL;
+static int g_freed_row = 0;
+static void pair_in(Pair* table, int64_t size, int64_t* slots, void* made, void* dropped, int64_t bytes);
+static void report_pairs(const char* label, Pair* table, int64_t size, intptr_t slide);
+
+static void note_made(void* site, void* up, int64_t bytes) {
+    g_last_box_bytes = bytes;
+    g_last_made_site = site;
+    note_block(bytes);
+    if (g_freed_at != NULL) {
+        if (size_row(bytes) == g_freed_row) pair_in(g_reuse_pairs, SITE_PAIRS, &g_reuse_slots, g_freed_at, site, bytes);
+        g_freed_at = NULL;
+    }
+    if (!g_sites_census) return;
+    Site* s = site_in(g_made_sites, &g_made_slots, site);
+    if (s) { s->made++; s->count += bytes; }
+    Site* u = site_in(g_made_up_sites, &g_made_up_slots, up);
+    if (u) { u->made++; u->count += bytes; }
+}
+
+static void note_insist(void* site) {
+    if (!g_sites_census) return;
+    Site* s = site_in(g_insist_sites, &g_insist_slots, site);
+    if (s) s->made++;
+}
+
 static void note_copy(void* site) {
+    g_copies++;
     if (!g_sites_census) return;
     Site* s = site_in(g_copy_sites, &g_copy_slots, site);
+    if (s) s->made++;
+}
+
+// An open of the binary's own empty literal (`[]`, `{}`): no cell crosses, so it is no copy — it is
+// the allocation a first write into a fresh empty pays, by the Avra fn that wrote.
+static Site g_empty_open_sites[SITES];
+static int64_t g_empty_open_slots = 0;
+
+static void note_empty_open(void* site) {
+    g_empty_opens++;
+    if (!g_sites_census) return;
+    Site* s = site_in(g_empty_open_sites, &g_empty_open_slots, site);
     if (s) s->made++;
 }
 
@@ -351,20 +494,63 @@ static void note_copy(void* site) {
 static Site g_retain_sites[SITES];
 static int64_t g_retain_slots = 0;
 
-void note_retain(void* site) {
+
+void note_retain(void* box, void* site) {
     if (!g_sites_census) return;
+    g_retained_box = box;
+    g_retained_at = site;
     Site* s = site_in(g_retain_sites, &g_retain_slots, site);
     if (s) s->made++;
 }
+
+void note_release(void* box, void* site) {
+    if (!g_sites_census) return;
+    if (box == g_retained_box) pair_in(g_move_pairs, SITE_PAIRS, &g_move_slots, g_retained_at, site, 0);
+    g_retained_box = NULL;
+}
+
+// The strings `avra_streq` compares, by the Avra fn that asked.
+static Site g_streq_sites[SITES];
+static int64_t g_streq_slots = 0;
 
 // Boxes a row answered owned, by what they are: each label is a type
 // and the row (`List<int> by avra_array_sized`), counted where the
 // backend was asked to (AVRA_CENSUS_TYPES), keyed by the label's address.
 static Site g_type_sites[SITES];
 static int64_t g_type_slots = 0;
+// The same boxes by the Avra code that asked for them, each site keeping its label: a label that
+// names a machine type (`List<int>`, `[]`) says what the box is only beside where it was made.
+static Site g_type_at_sites[SITES];
+static int64_t g_type_at_slots = 0;
+
+// Runtime rows a body called, by the body's call site, each site keeping the row's name: where the
+// read, write and count traffic is asked for.
+static Site g_row_sites[SITES];
+static int64_t g_row_slots = 0;
+
+// A table's heaviest sites with their labels, most first; a printed row is spent.
+static int by_made_first(const void* a, const void* b);
+
+static void report_labelled_sites(const char* name, Site* tbl, int limit, intptr_t slide) {
+    Site* rows = malloc(sizeof(Site) * (size_t)(SITES / 2 + 1));
+    if (!rows) return;
+    int64_t n = 0;
+    for (int i = 0; i < SITES; i++) if (tbl[i].site && tbl[i].made > 0) rows[n++] = tbl[i];
+    qsort(rows, (size_t)n, sizeof(Site), by_made_first);
+    for (int64_t i = 0; i < n && i < limit; i++) {
+        avra_say("%s: site %p %lld %lldB %s\n", name, (void*)((char*)rows[i].site - slide), (long long)rows[i].made,
+                (long long)rows[i].count, rows[i].sample ? (const char*)rows[i].sample : "-");
+    }
+    free(rows);
+}
 
 static int by_label(const void* a, const void* b) {
     return strcmp((const char*)((const Site*)a)->site, (const char*)((const Site*)b)->site);
+}
+
+static int by_made_first(const void* a, const void* b) {
+    int64_t x = ((const Site*)a)->made, y = ((const Site*)b)->made;
+    return x < y ? 1 : x > y ? -1 : 0;
 }
 
 static int by_made(const void* a, const void* b) {
@@ -383,7 +569,10 @@ static void report_types(int limit) {
     qsort(rows, (size_t)n, sizeof(Site), by_label);
     int64_t merged = 0;
     for (int64_t i = 0; i < n; i++) {
-        if (merged > 0 && by_label(&rows[merged - 1], &rows[i]) == 0) rows[merged - 1].made += rows[i].made;
+        if (merged > 0 && by_label(&rows[merged - 1], &rows[i]) == 0) {
+            rows[merged - 1].made += rows[i].made;
+            rows[merged - 1].count += rows[i].count;
+        }
         else rows[merged++] = rows[i];
     }
     qsort(rows, (size_t)merged, sizeof(Site), by_made);
@@ -394,8 +583,8 @@ static void report_types(int limit) {
     for (int64_t i = 0; i < merged && i < limit; i++) {
         // a share in tenths of a percent, rounded
         long long share = total ? ((long long)rows[i].made * 2000 / total + 1) / 2 : 0;
-        avra_say("type: %12lld  %3lld.%lld%%  %s\n", (long long)rows[i].made, share / 10, share % 10,
-               (const char*)rows[i].site);
+        avra_say("type: %12lld  %3lld.%lld%%  %14lld B  %s\n", (long long)rows[i].made, share / 10, share % 10,
+               (long long)rows[i].count, (const char*)rows[i].site);
     }
     free(rows);
 }
@@ -403,17 +592,7 @@ static void report_types(int limit) {
 // A table's heaviest callers, most first. A printed row is SPENT —
 // its count goes negative — so the next pass finds the next one.
 static void report_made(const char* label, Site* tbl, int limit, intptr_t slide) {
-    for (int shown = 0; shown < limit; shown++) {
-        Site* top = NULL;
-        for (int i = 0; i < SITES; i++) {
-            if (tbl[i].site && tbl[i].made > 0 &&
-                (top == NULL || tbl[i].made > top->made)) top = &tbl[i];
-        }
-        if (top == NULL) return;
-        avra_say("%s: site %p %lld\n", label,
-                (void*)((char*)top->site - slide), (long long)top->made);
-        top->made = -top->made;
-    }
+    report_labelled_sites(label, tbl, limit, slide);
 }
 #endif
 
@@ -448,7 +627,7 @@ static int64_t g_mortal_live;
 // pusher is the key, the box's own site (who made the list) the sample,
 // so the report names the writer and the holder of every buffer that
 // reached AVRA_MEM_WIDE (default 262144) cells.
-static size_t buf_bytes(int64_t cap);
+static size_t buf_bytes(int64_t cap, int words);
 static Site g_wide[SITES];
 static int64_t g_wide_slots = 0;
 static int64_t g_wide_cells = 262144;
@@ -459,7 +638,7 @@ static void note_wide(AvraArray* a, int64_t cap, void* pusher) {
     if (cap < g_wide_cells || pusher == NULL) return;
     Site* w = site_in(g_wide, &g_wide_slots, pusher);
     if (w == NULL) return;
-    w->live += (int64_t)buf_bytes(cap);
+    w->live += (int64_t)buf_bytes(cap, avra_packed(a));
     w->count++;
     w->sample = a->site;
 }
@@ -478,16 +657,32 @@ static void report_wide(intptr_t slide) {
     }
 }
 
+// The process the ledger judges: the one whose load settled it. A process forked from it shares
+// its stderr and its ledger's counts, and is never the one judged, so it says none of them.
+static int64_t g_acc_pid = 0;
+
+static int64_t acc_process(void) {
+#ifdef __wasm__
+    return 0;
+#else
+    return (int64_t)getpid();
+#endif
+}
+
 static void acc_report(void) {
+    if (acc_process() != g_acc_pid) return;
 #ifdef AVRA_CENSUS
     avra_say("rc: %lld retains, %lld releases, %lld reclaims\n",
             (long long)g_rc_retains, (long long)g_rc_releases, (long long)g_rc_frees);
+    avra_say("rc: %lld empty lists made, %lld grown\n", (long long)g_empty_made, (long long)g_empty_grown);
     avra_say("rc: %lld list reads, %lld list writes\n",
             (long long)g_list_gets, (long long)g_list_pushes);
     avra_say("once: %lld reads, %lld pointer compares\n",
             (long long)g_once_reads, (long long)g_once_steps);
     avra_say("alloc: %lld boxes, %lld list buffers\n",
             (long long)g_boxes_made, (long long)g_bufs_made);
+    avra_say("rc: %lld copies, %lld string compares\n", (long long)g_copies, (long long)g_streqs);
+    avra_say("rc: %lld opens of an empty literal\n", (long long)g_empty_opens);
     for (int k = 0; k < ACC_KINDS; k++) {
         if (g_made_by_kind[k]) avra_say("alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
     }
@@ -495,12 +690,11 @@ static void acc_report(void) {
 
     avra_say("mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
     // EXACT, never MB-rounded: a small program's leak is bytes, and a
-    // shift that floors to zero would certify it clean. `avra_once_set`
-    // already credited every cached answer out of this ledger the
-    // moment it made one immortal, so this line is 0 exactly when
-    // nothing outstanding would still need freeing — the soundness
+    // shift that floors to zero would certify it clean. What every cache
+    // holds is credited out (`avra_mem_owed`), so this line is 0 exactly
+    // when nothing outstanding would still need freeing — the soundness
     // runner reads this line alone.
-    avra_say("mem: live %lld bytes at exit\n", (long long)g_mortal_live);
+    avra_say("mem: live %lld bytes at exit\n", (long long)avra_mem_owed());
     for (int k = 0; k < ACC_KINDS; k++) {
         avra_say("mem:   %-13s peak %6lld MB, now %6lld MB\n", g_acc_name[k],
                 (long long)(g_acc_peak[k] >> 20), (long long)(g_acc_live[k] >> 20));
@@ -508,11 +702,28 @@ static void acc_report(void) {
     intptr_t slide = image_slide();
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
-        report_made("copy", g_copy_sites, 12, slide);
+        const char* top = getenv("AVRA_CENSUS_TOP");
+        report_made("copy", g_copy_sites, top ? (int)avra_number(top, 10) : 12, slide);
+        report_made("append", g_append_sites, 16, slide);
         report_made("push", g_push_sites, 16, slide);
-        report_made("retain", g_retain_sites, 20, slide);
+        report_made("made", g_made_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_made("made-up", g_made_up_sites, 30, slide);
+        report_made("empty", g_empty_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_made("empty-grown", g_empty_grown_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_made("insist", g_insist_sites, top ? (int)avra_number(top, 10) : 20, slide);
+        report_made("retain", g_retain_sites, top ? (int)avra_number(top, 10) : 20, slide);
+        report_labelled_sites("typed", g_type_at_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        const char* rows_top = getenv("AVRA_CENSUS_ROWS_TOP");
+        report_labelled_sites("rowcall", g_row_sites, rows_top ? (int)avra_number(rows_top, 10) : 30, slide);
+        report_made("streq", g_streq_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_made("empty-open", g_empty_open_sites, top ? (int)avra_number(top, 10) : 30, slide);
+        report_pairs("move", g_move_pairs, SITE_PAIRS, slide);
+        report_pairs("reuse", g_reuse_pairs, SITE_PAIRS, slide);
     }
-    report_types(40);
+    const char* types_top = getenv("AVRA_CENSUS_TYPES_TOP");
+    report_types(types_top ? (int)avra_number(types_top, 10) : 40);
+    report_sizes();
+    report_deaths(slide);
 #endif
     const char* wanted = getenv("AVRA_MEM_SITES");
     int limit = wanted ? (int)avra_number(wanted, 10) : 24;
@@ -559,6 +770,11 @@ static void acc_report(void) {
 #if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling;
 static int64_t g_mem_next;
+int64_t avra_pool_allowed(int64_t in_use);
+int64_t avra_pool_let_go(int64_t in_use);
+int64_t avra_pool_spare_at(void);
+int64_t avra_pool_held(void);
+int64_t avra_pool_free_bytes(void);
 #endif
 
 // Settled at load, for the reason `rc_guard_init` gives: a lazy
@@ -568,6 +784,7 @@ static void acc_settled(void) {
 #if AVRA_INSTRUMENTS
     g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
 #endif
+    g_acc_pid = acc_process();
     if (g_acc_on) atexit(acc_report);
     const char* dump = getenv("AVRA_MEM_DUMP_AT");
     if (g_acc_on && dump && *dump) g_dump_at = (int64_t)avra_number(dump, 10) << 20;
@@ -575,9 +792,12 @@ static void acc_settled(void) {
     if (wide && *wide) g_wide_cells = (int64_t)avra_number(wide, 10);
 #if AVRA_MEASURES_MEMORY
     const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
-    if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = (int64_t)avra_number(ceiling, 10) << 20;
+    if (ceiling && *ceiling) g_mem_ceiling = (int64_t)avra_number(ceiling, 10) << 20;
+    int64_t first_look = avra_pool_free_bytes();
+    g_mem_next = first_look < g_mem_ceiling ? first_look : g_mem_ceiling;
 #endif
     CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
+    CENSUS(g_deaths_on = getenv("AVRA_CENSUS_DEATHS") != NULL);
 }
 
 static inline int accounting(void) { return g_acc_on; }
@@ -585,10 +805,24 @@ static inline int accounting(void) { return g_acc_on; }
 // A box a runtime row just minted, named by `label`: counted by a census
 // build, nothing in a shipping one. The calls exist only in a program
 // the backend built with AVRA_CENSUS_TYPES set.
+void avra_census_row(const char* label) {
+#ifdef AVRA_CENSUS
+    if (!g_sites_census) return;
+    Site* at = site_in(g_row_sites, &g_row_slots, __builtin_return_address(0));
+    if (at) { at->made++; at->sample = (void*)(uintptr_t)label; }
+#else
+    (void)label;
+#endif
+}
+
 void avra_census_box(const char* label) {
 #ifdef AVRA_CENSUS
     Site* s = site_in(g_type_sites, &g_type_slots, (void*)(uintptr_t)label);
-    if (s) s->made++;
+    if (s) { s->made++; s->count += g_last_box_bytes; }
+    if (g_sites_census) {
+        Site* at = site_in(g_type_at_sites, &g_type_at_slots, __builtin_return_address(0));
+        if (at) { at->made++; at->count += g_last_box_bytes; at->sample = (void*)(uintptr_t)label; }
+    }
 #else
     (void)label;
 #endif
@@ -601,6 +835,11 @@ void avra_census_box(const char* label) {
 // and `check packages/std-avrac` timed the same with it gated.
 static int64_t g_live_bytes = 0;
 
+// The bytes the slabs hold from the system: every page in use, and every pooled page not yet given
+// back. What the allocator holds is malloc's bytes in use and these.
+static int64_t g_slab_held = 0;
+static inline void slab_relieve(void);
+
 int64_t avra_mem_live(void) { return g_live_bytes; }
 
 // THE MEMORY CEILING: memory in use past AVRA_MEM_CEILING_MB traps, so
@@ -612,58 +851,341 @@ int64_t avra_mem_live(void) { return g_live_bytes; }
 // `g_mem_next` measures the allocator's own bytes in use: past the
 // ceiling it traps, and under it the next look waits for the ledger to
 // grow by the headroom that measurement left.
+// AND THE MACHINE'S POOL IS ASKED AT THE SAME LOOK (runtime/avra_pool.c): past
+// a small allowance a process reserves the memory it uses from what every
+// process on the machine shares, and waits for it when others hold it all, so
+// the first look comes at that allowance rather than at the ceiling.
 #if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling = (int64_t)6000 << 20;
 static int64_t g_mem_next = (int64_t)6000 << 20;
 
-static int64_t mem_in_use(void) {
+// WHAT A FORKED CORE HELD WHEN IT WAS FORKED IS ITS PARENT'S: the parent answers to the pool and
+// to its ceiling for that memory, which the two share until one writes it, so a core answers for
+// what it adds. Zero in a process no group forked.
+static int64_t g_mem_inherited = 0;
+
+static int64_t mem_held(void) {
 #ifdef __APPLE__
     malloc_statistics_t st;
     malloc_zone_statistics(NULL, &st);
-    return (int64_t)st.size_in_use;
+    return (int64_t)st.size_in_use + g_slab_held;
 #else
     struct mallinfo2 mi = mallinfo2();
-    return (int64_t)(mi.uordblks + mi.hblkhd);
+    return (int64_t)(mi.uordblks + mi.hblkhd) + g_slab_held;
 #endif
 }
 
+static int64_t mem_in_use(void) {
+    int64_t own = mem_held() - g_mem_inherited;
+    return own > 0 ? own : 0;
+}
+
+// What the allocator keeps of freed memory, handed back to the system: a slot given back is
+// memory the machine can have, not only memory this process no longer counts.
+static void mem_relieved(void) {
+    slab_relieve();
+#ifdef __APPLE__
+    malloc_zone_pressure_relief(NULL, 0);
+#else
+    malloc_trim(0);
+#endif
+}
+
+// The in-use at or under which a slot this process holds goes back, as a point on the ledger:
+// crossing it downward looks again. INT64_MIN while nothing could go back.
+static int64_t g_mem_low = INT64_MIN;
+
+// The next looks, up and down, from `used` measured while the ledger read `live`.
+static void mem_looks(int64_t live, int64_t used, int64_t allowed) {
+    int64_t limit = allowed < g_mem_ceiling ? allowed : g_mem_ceiling;
+    g_mem_next = live + (limit - used);
+    int64_t spare = avra_pool_spare_at();
+    g_mem_low = spare == INT64_MIN ? INT64_MIN : live - (used - spare);
+}
+
+// `taking` is what the caller is about to take: the look judges the use it is about to have.
 __attribute__((noinline, cold))
-static void mem_ceiling_measure(void) {
-    int64_t used = mem_in_use();
+static void mem_ceiling_measure(int64_t taking) {
+    int64_t used = mem_in_use() + taking;
     if (used > g_mem_ceiling) {
         char msg[96];
         avra_fmt(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
                (long long)(g_mem_ceiling >> 20));
         avra_trap(msg); // LICENSED traps.process_limit: the memory ceiling is a limit of the process
     }
-    g_mem_next = g_live_bytes + (g_mem_ceiling - used);
+    int64_t allowed = avra_pool_allowed(used);
+    if (allowed < 0) {
+        char msg[160];
+        if (allowed == -1) {
+            avra_fmt(msg, sizeof msg, "this run needs more than the machine's whole memory pool: %lld MB in use (AVRA_MEM_POOL_MB)",
+                   (long long)(used >> 20));
+        } else if (allowed == -2) {
+            avra_fmt(msg, sizeof msg, "other runs held the machine's memory pool past this run's wait: %lld MB in use (AVRA_MEM_POOL_WAIT_MS)",
+                   (long long)(used >> 20));
+        } else {
+            avra_fmt(msg, sizeof msg, "the machine's memory pool is held wholly by runs waiting for more, and this run holds the least of it: %lld MB in use",
+                   (long long)(used >> 20));
+        }
+        avra_trap(msg); // LICENSED traps.process_limit: the pool is a limit of the machine
+    }
+    mem_looks(g_live_bytes + taking, used, allowed);
 }
 #endif
 
-static inline void mem_ceiling_check(void) {
+// A core, just forked: what it holds now is its parent's to answer for.
+void avra_mem_forked(void) {
 #if AVRA_MEASURES_MEMORY
-    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_next, 0)) mem_ceiling_measure();
+    g_mem_inherited = 0;
+    g_mem_inherited = mem_held();
 #endif
+}
+
+// THE POOL IS HELD FOR WHAT IS IN USE, NEVER FOR A PEAK: the slots this process's memory no
+// longer fills go back to the machine. Asked when the ledger falls past its low look, and
+// before a run waits on a child.
+__attribute__((noinline, cold))
+void avra_mem_settle(void) {
+#if AVRA_MEASURES_MEMORY
+    if (g_mem_ceiling <= 0) return;
+    int64_t used = mem_in_use();
+    int64_t held = avra_pool_held();
+    int64_t allowed = avra_pool_let_go(used);
+    if (avra_pool_held() < held) mem_relieved();
+    mem_looks(g_live_bytes, used, allowed);
+#endif
+}
+
+static inline void mem_ceiling_check(int64_t taking) {
+#if AVRA_MEASURES_MEMORY
+    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes + taking > g_mem_next, 0)) mem_ceiling_measure(taking);
+#else
+    (void)taking;
+#endif
+}
+
+#if AVRA_MEASURES_MEMORY
+// Memory handed back to the system, then the pool settled.
+__attribute__((noinline, cold))
+static void freed_settled(void* p) {
+    free(p);
+    avra_mem_settle();
+}
+#endif
+
+// Memory handed back to the system: past the low look, the pool hears of it. Out of line, so a
+// caller's free branch stays a tail call and the compare costs no caller a frame.
+__attribute__((noinline))
+static void mem_freed(void* p) {
+#if AVRA_MEASURES_MEMORY
+    if (__builtin_expect(g_live_bytes < g_mem_low, 0)) { freed_settled(p); return; }
+#endif
+    free(p);
 }
 
 // Fresh memory from the system, past the ceiling's check: one call in
 // the caller either way, so the check adds nothing to a caller's size.
 __attribute__((noinline))
 static void* fresh(size_t n) {
-    mem_ceiling_check();
+    mem_ceiling_check((int64_t)n);
     return malloc(n);
 }
 
+// THE SLABS: every box and every cell buffer of up to SLAB_MAX bytes lives in a page of SLAB_PAGE
+// bytes whose blocks are all one size. A page hands out a block it got back first, then the next of
+// its untouched end; a freed block goes back to its own page, found by masking its address. So the
+// blocks a phase makes together lie together, and a page reuses what it freed while those lines are
+// warm — a free list across the whole heap hands out a cold line per block. A page with no block in
+// use goes to ONE pool every size draws from, and past SLAB_POOL_KEEP pooled pages a page's memory
+// goes back to the system (its address stays reserved, and refills on touch): a cascade that frees a
+// phase's boxes leaves at most that much held. The pages are cut from one reserved range, so whether a
+// block is a slab's is a compare, never a read of memory it may not own.
+#define SLAB_PAGE ((size_t)1 << 16)
+#define SLAB_MAX 1024
+#define SLAB_SIZES (SLAB_MAX / 16 + 1)
+#define SLAB_HEAD 64
+#define SLAB_RESERVE ((size_t)1 << 37)
+#define SLAB_POOL_KEEP 256
+
+#if AVRA_SLABS
+typedef struct SlabPage {
+    struct SlabPage* next;
+    struct SlabPage* prev;
+    void* free;
+    uint32_t size;
+    uint32_t used;
+    uint32_t bump;
+    uint32_t open;
+} SlabPage;
+
+static char* g_slab_base = NULL;
+static char* g_slab_top = NULL;
+static char* g_slab_end = NULL;
+// Per size, the pages with a block to hand out, the one handing out first.
+static SlabPage* g_slab_open[SLAB_SIZES];
+// The pooled pages: those still holding their memory first, then those given back.
+static SlabPage* g_slab_pool = NULL;
+static int64_t g_slab_pooled = 0;
+static SlabPage* g_slab_bare = NULL;
+
+static inline int is_slab(const void* p) {
+    return (const char*)p >= g_slab_base && (const char*)p < g_slab_top;
+}
+
+static inline SlabPage* slab_page_of(const void* p) {
+    return (SlabPage*)((uintptr_t)p & ~(uintptr_t)(SLAB_PAGE - 1));
+}
+
+// Whether the range was asked for and refused at every size: the small blocks are then malloc's.
+static int g_slab_refused = 0;
+
+// The range the pages are cut from, the largest the machine grants from SLAB_RESERVE down to a
+// gigabyte. A process whose address space is bounded — under valgrind, or a ulimit — gets a smaller
+// range, or none: the small blocks are then malloc's, which the range compare already tells apart.
+static void slab_reserve(void) {
+    for (size_t want = SLAB_RESERVE; want >= ((size_t)1 << 30); want >>= 1) {
+        void* r = mmap(NULL, want + SLAB_PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (r == MAP_FAILED) continue;
+        g_slab_base = (char*)(((uintptr_t)r + SLAB_PAGE - 1) & ~(uintptr_t)(SLAB_PAGE - 1));
+        g_slab_top = g_slab_base;
+        g_slab_end = g_slab_base + want;
+        return;
+    }
+    g_slab_refused = 1;
+}
+
+static void slab_open(SlabPage* pg, size_t idx) {
+    pg->prev = NULL;
+    pg->next = g_slab_open[idx];
+    if (pg->next) pg->next->prev = pg;
+    g_slab_open[idx] = pg;
+    pg->open = 1;
+}
+
+static void slab_close(SlabPage* pg, size_t idx) {
+    if (pg->prev) pg->prev->next = pg->next; else g_slab_open[idx] = pg->next;
+    if (pg->next) pg->next->prev = pg->prev;
+    pg->next = pg->prev = NULL;
+    pg->open = 0;
+}
+
+// A page for blocks of `size` bytes: a pooled one, else one more from the range; absent where the
+// range was refused or is spent, and the block is malloc's.
+static SlabPage* slab_page(uint32_t size) {
+    SlabPage* pg;
+    if (g_slab_pool) {
+        pg = g_slab_pool;
+        g_slab_pool = pg->next;
+        g_slab_pooled--;
+    } else if (g_slab_bare) {
+        pg = g_slab_bare;
+        g_slab_bare = pg->next;
+        mem_ceiling_check((int64_t)SLAB_PAGE);
+        g_slab_held += (int64_t)SLAB_PAGE;
+    } else {
+        if (g_slab_base == NULL && !g_slab_refused) slab_reserve();
+        if (g_slab_refused || g_slab_top + SLAB_PAGE > g_slab_end) return NULL;
+        mem_ceiling_check((int64_t)SLAB_PAGE);
+        pg = (SlabPage*)g_slab_top;
+        g_slab_top += SLAB_PAGE;
+        g_slab_held += (int64_t)SLAB_PAGE;
+    }
+    pg->free = NULL;
+    pg->size = size;
+    pg->used = 0;
+    pg->bump = SLAB_HEAD;
+    return pg;
+}
+
+// A page with no block in use, pooled; past the pool's keep, its memory goes back first.
+static void slab_pooled(SlabPage* pg) {
+    if (g_slab_pooled >= SLAB_POOL_KEEP) {
+        madvise(pg, SLAB_PAGE, MADV_DONTNEED);
+        g_slab_held -= (int64_t)SLAB_PAGE;
+        pg->next = g_slab_bare;
+        g_slab_bare = pg;
+        return;
+    }
+    pg->next = g_slab_pool;
+    g_slab_pool = pg;
+    g_slab_pooled++;
+}
+
+// Every pooled page's memory given back: the pool is asked to let go.
+static inline void slab_relieve(void) {
+    while (g_slab_pool) {
+        SlabPage* pg = g_slab_pool;
+        g_slab_pool = pg->next;
+        madvise(pg, SLAB_PAGE, MADV_DONTNEED);
+        g_slab_held -= (int64_t)SLAB_PAGE;
+        pg->next = g_slab_bare;
+        g_slab_bare = pg;
+    }
+    g_slab_pooled = 0;
+}
+
+// A block of at least `bytes` (at most SLAB_MAX), 16-aligned.
+static void* slab_alloc(size_t bytes) {
+    size_t idx = (bytes + 15) >> 4;
+    SlabPage* pg = g_slab_open[idx];
+    for (;;) {
+        if (pg == NULL) {
+            pg = slab_page((uint32_t)(idx << 4));
+            if (pg == NULL) return fresh(bytes);
+            slab_open(pg, idx);
+        }
+        void* b = pg->free;
+        if (b) {
+            pg->free = *(void**)b;
+        } else if (pg->bump + pg->size <= SLAB_PAGE) {
+            b = (char*)pg + pg->bump;
+            pg->bump += pg->size;
+        } else {
+            slab_close(pg, idx);
+            pg = g_slab_open[idx];
+            continue;
+        }
+        pg->used++;
+        return b;
+    }
+}
+
+// A page whose last block just came back, or that was full and has room again: pooled, or opened
+// to its size. Out of line, so a free that leaves its page as it was keeps no frame.
+__attribute__((noinline))
+static void slab_page_changed(SlabPage* pg) {
+    size_t idx = pg->size >> 4;
+    if (pg->used == 0 && !(g_slab_open[idx] == pg && pg->next == NULL)) {
+        if (pg->open) slab_close(pg, idx);
+        slab_pooled(pg);
+    } else if (!pg->open) {
+        slab_open(pg, idx);
+    }
+}
+
+static void slab_free(void* b) {
+    SlabPage* pg = slab_page_of(b);
+    *(void**)b = pg->free;
+    pg->free = b;
+    pg->used--;
+    if (__builtin_expect(pg->used == 0 || !pg->open, 0)) slab_page_changed(pg);
+}
+
+// A block's size as its allocator gave it.
+static size_t slab_block(const void* b) { return slab_page_of(b)->size; }
+#else
+static inline int is_slab(const void* p) { (void)p; return 0; }
+static inline size_t slab_block(const void* b) { (void)b; return 0; }
+static inline void slab_relieve(void) {}
+#endif
+
 // THE MORTAL LEDGER: every byte a box or buffer holds that a normal
-// release path would eventually free. A box `avra_once_set` makes
-// IMMORTAL never reaches that path again by design (the answer is
-// held for the process's life), so `avra_once_set` credits its bytes
-// back out of this ledger the moment it promotes it (`once_box_credit`)
-// rather than leaving them counted as still owed — a STATIC aggregate
-// (a const's, baked by the backend at compile time) never touches
-// this ledger to begin with, so it needs no credit at all. This is
-// what lets a leak check read the ledger against zero without a
-// `once` cache or a compile-time constant reading as one.
+// release path would eventually free. What a `once` cache holds never
+// reaches that path again by design, so the leak line reads the ledger
+// less what every cached key and answer holds at the end
+// (`avra_mem_owed`) — a STATIC aggregate (a const's, baked by the
+// backend at compile time) never touches this ledger to begin with.
+// This is what lets a leak check read the ledger against zero without
+// a cache or a compile-time constant reading as one.
 static int64_t g_mortal_live = 0;
 
 // The report's own tables, kept only while it is on.
@@ -692,8 +1214,8 @@ static int acc_kind_of(int32_t kind);
 // Immortal and static kinds (negative) never reach `box_free`, so they
 // are excluded from the mortal ledger at the same test that already
 // excludes them from retain/release (`kind < 0`) — a `once` answer's
-// OWN box is credited back separately, since it is minted mortal and
-// only turns immortal after this call already counted it.
+// OWN box is minted mortal and counted here; what a cache holds is
+// credited at the end (`avra_mem_owed`).
 static inline void acc_box(int32_t kind, int64_t bytes) {
     g_live_bytes += bytes;
     if (kind >= 0) g_mortal_live += bytes;
@@ -722,12 +1244,196 @@ static size_t class_of(size_t bytes) {
     return cls < CLASSES ? cls : 0;
 }
 
+#ifdef AVRA_CENSUS
+// THE DEATH CENSUS (AVRA_CENSUS_DEATHS=1): every box that dies, by kind and size; each release
+// cascade by how many boxes it frees and the site that released its root; and, for a box a slab
+// holds, its life in allocations and the pair of sites that made it and released its cascade's root
+// — read offline, by symbol, a box made and dying in one fn. A slab block's birth is stamped in a side
+// table over the slabs' range, one word per 16 bytes, reserved and filled by touch.
+static int g_deaths_on = 0;
+__attribute__((unused)) static uint64_t* g_births = NULL;
+static uint32_t g_clock = 0;
+static void* g_mint_site_of[1 << 20];
+static Site g_mint_ids[SITES];
+static int64_t g_mint_slots = 0;
+static int64_t g_mint_count = 0;
+#define DEATH_KINDS 6
+static int64_t g_death_n[DEATH_KINDS][SIZE_ROWS];
+static int64_t g_death_b[DEATH_KINDS][SIZE_ROWS];
+static int64_t g_life_n[34];
+static int g_dying = 0;
+static int64_t g_cascade_boxes = 0;
+static void* g_cascade_site = NULL;
+static int64_t g_cascade_n[34];
+static int64_t g_cascade_b[34];
+static Site g_big_cascades[SITES];
+static int64_t g_big_slots = 0;
+static int64_t g_empty_list_deaths = 0, g_list_deaths = 0;
+// Dying lists by their length (log2) and whether any cell is owned: the scan a death walks.
+static int64_t g_dead_len_n[2][34];
+static int64_t g_dead_len_cells[2][34];
+static int64_t g_dead_laid[2];
+
+static int log2_row(uint64_t v);
+
+static void list_death_noted(AvraArray* a) {
+    int owned = 0;
+    for (int64_t i = 0; i < a->len; i++) if (avra_mark_at(a, i) & MARK_OWNED) { owned = 1; break; }
+    int row = log2_row((uint64_t)a->len + 1);
+    g_dead_len_n[owned][row]++;
+    g_dead_len_cells[owned][row] += a->len;
+    g_dead_laid[a->data == (int64_t*)(a + 1)]++;
+}
+#define PAIRS (1 << 21)
+static Pair g_pairs[PAIRS];
+static int64_t g_pair_slots = 0;
+
+static int log2_row(uint64_t v) { int r = 0; while (v > 1 && r < 33) { v >>= 1; r++; } return r; }
+
+__attribute__((unused)) static uint32_t mint_id(void* site) {
+    Site* s = site_in(g_mint_ids, &g_mint_slots, site);
+    if (s == NULL) return 0;
+    if (s->count == 0) {
+        if (g_mint_count + 1 >= (1 << 20)) return 0;
+        s->count = ++g_mint_count;
+        g_mint_site_of[s->count] = site;
+    }
+    return (uint32_t)s->count;
+}
+
+static void death_born(Header* h) {
+    g_clock++;
+#if !AVRA_SLABS
+    (void)h;
+    return;
+#else
+    if (!g_deaths_on || !is_slab(h)) return;
+    if (g_births == NULL) {
+        void* r = mmap(NULL, (size_t)(g_slab_end - g_slab_base) / 16 * sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (r == MAP_FAILED) { g_deaths_on = 0; return; }
+        g_births = (uint64_t*)r;
+    }
+    g_births[((char*)h - g_slab_base) >> 4] = ((uint64_t)g_clock << 32) | mint_id(g_last_made_site);
+#endif
+}
+
+static void pair_in(Pair* table, int64_t size, int64_t* slots, void* made, void* dropped, int64_t bytes) {
+    uint64_t k = ((uint64_t)(uintptr_t)made * 0x9E3779B97F4A7C15ull) ^ (uint64_t)(uintptr_t)dropped;
+    uint64_t i = (k >> 11) & (uint64_t)(size - 1);
+    for (int step = 0; step < 64; step++) {
+        Pair* p = &table[i];
+        if (p->n && p->made == made && p->dropped == dropped) { p->n++; p->bytes += bytes; return; }
+        if (p->n == 0) {
+            if (*slots >= size / 2) return;
+            p->made = made; p->dropped = dropped; p->n = 1; p->bytes = bytes; (*slots)++;
+            return;
+        }
+        i = (i + 1) & (uint64_t)(size - 1);
+    }
+}
+
+__attribute__((unused)) static void pair_noted(void* made, void* dropped, int64_t bytes) {
+    pair_in(g_pairs, PAIRS, &g_pair_slots, made, dropped, bytes);
+}
+
+// Every pair a table holds, as `<label>: <first site> <second site> <count> <bytes>`, unslid.
+static void report_pairs(const char* label, Pair* table, int64_t size, intptr_t slide) {
+    for (int64_t i = 0; i < size; i++) {
+        Pair* p = &table[i];
+        if (p->n == 0) continue;
+        avra_say("%s: %p %p %lld %lld\n", label, p->made ? (void*)((char*)p->made - slide) : NULL,
+                p->dropped ? (void*)((char*)p->dropped - slide) : NULL, (long long)p->n, (long long)p->bytes);
+    }
+}
+
+static void death_noted(Header* h, int64_t block) {
+    if (!g_deaths_on) return;
+    int k = avra_kind(h);
+    int kind = k >= 0 && k <= 4 ? k : 5;
+    int row = size_row(block);
+    g_death_n[kind][row]++;
+    g_death_b[kind][row] += block;
+    g_cascade_boxes++;
+    g_freed_at = g_cascade_site;
+    g_freed_row = size_row(block);
+#if AVRA_SLABS
+    if (!is_slab(h) || g_births == NULL) return;
+    uint64_t* at = &g_births[((char*)h - g_slab_base) >> 4];
+    uint64_t born = *at;
+    *at = 0;
+    if (born == 0) return;
+    g_life_n[log2_row((uint64_t)(g_clock - (uint32_t)(born >> 32)) + 1)]++;
+    pair_noted(g_mint_site_of[born & 0xFFFFFFFFu], g_dying ? g_cascade_site : NULL, block);
+#endif
+}
+
+static void cascade_opened(void* site) {
+    if (!g_deaths_on || g_dying++ > 0) return;
+    g_cascade_boxes = 0;
+    g_cascade_site = site;
+}
+
+static void cascade_closed(void) {
+    if (!g_deaths_on || --g_dying > 0) return;
+    int row = log2_row((uint64_t)g_cascade_boxes);
+    g_cascade_n[row]++;
+    g_cascade_b[row] += g_cascade_boxes;
+    if (g_cascade_boxes >= 1024) {
+        Site* s = site_in(g_big_cascades, &g_big_slots, g_cascade_site);
+        if (s) { s->made += g_cascade_boxes; s->count++; }
+    }
+}
+
+static void report_deaths(intptr_t slide) {
+    if (!g_deaths_on) return;
+    static const char* kinds[DEATH_KINDS] = {"record/enum", "list", "map", "text", "bytes", "other"};
+    for (int k = 0; k < DEATH_KINDS; k++)
+        for (int row = 0; row < SIZE_ROWS; row++) {
+            if (g_death_n[k][row] == 0) continue;
+            int64_t top = row <= 64 ? (int64_t)row * 16 : (int64_t)2048 << (row - 65);
+            avra_say("death: kind %s up to %lld B: %lld boxes, %lld B\n", kinds[k], (long long)top,
+                    (long long)g_death_n[k][row], (long long)g_death_b[k][row]);
+        }
+    avra_say("death: lists %lld, of them never written (no cells) %lld\n", (long long)g_list_deaths, (long long)g_empty_list_deaths);
+    avra_say("death: lists with cells laid in the box %lld, in a buffer of their own %lld\n", (long long)g_dead_laid[1], (long long)g_dead_laid[0]);
+    for (int o = 0; o < 2; o++) for (int r = 0; r < 34; r++) if (g_dead_len_n[o][r])
+        avra_say("deadlist: %s length %lld..%lld: %lld lists, %lld cells\n", o ? "some owned" : "none owned",
+                ((long long)1 << r) - 1, ((long long)2 << r) - 2, (long long)g_dead_len_n[o][r], (long long)g_dead_len_cells[o][r]);
+    for (int r = 0; r < 34; r++) if (g_cascade_n[r])
+        avra_say("cascade: %lld..%lld boxes: %lld cascades, %lld boxes\n", (long long)1 << r, ((long long)2 << r) - 1,
+                (long long)g_cascade_n[r], (long long)g_cascade_b[r]);
+    for (int r = 0; r < 34; r++) if (g_life_n[r])
+        avra_say("life: %lld..%lld allocations: %lld boxes\n", (long long)1 << r, ((long long)2 << r) - 1, (long long)g_life_n[r]);
+    report_labelled_sites("bigcascade", g_big_cascades, 200, slide);
+    Pair* rows = malloc(sizeof(Pair) * (size_t)(g_pair_slots + 1));
+    if (!rows) return;
+    int64_t n = 0;
+    for (int64_t i = 0; i < PAIRS; i++) if (g_pairs[i].n) rows[n++] = g_pairs[i];
+    for (int64_t i = 0; i < n; i++)
+        avra_say("pair: %p %p %lld %lld\n", rows[i].made ? (void*)((char*)rows[i].made - slide) : NULL,
+                rows[i].dropped ? (void*)((char*)rows[i].dropped - slide) : NULL, (long long)rows[i].n, (long long)rows[i].bytes);
+    free(rows);
+}
+#endif
+
 // A fresh box of `size` payload bytes, refcount 1.
+#ifdef AVRA_CENSUS
+__attribute__((noinline))
+#endif
 static void* box_alloc(size_t size, int32_t kind) {
     size_t bytes = size > 0 ? size : 1;
     size_t cls = class_of(bytes);
     CENSUS(g_boxes_made++);
+#ifdef AVRA_CENSUS
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wframe-address"
+    note_made(__builtin_return_address(1), __builtin_return_address(2), (int64_t)(sizeof(Header) + bytes));
+#pragma clang diagnostic pop
+#endif
     CENSUS(g_made_by_kind[acc_kind_of(kind)]++);
+#if AVRA_SLABS
+    Header* h = (Header*)(cls ? slab_alloc(sizeof(Header) + cls * CLASS_BYTES) : fresh(sizeof(Header) + bytes));
+#else
     Header* h = cls ? g_free[cls] : NULL;
     if (h) {
         g_free[cls] = *(Header**)(h + 1);
@@ -735,11 +1441,13 @@ static void* box_alloc(size_t size, int32_t kind) {
     } else {
         h = (Header*)fresh(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
     }
+#endif
     h->tag = AVRA_TAG;
     h->kind_word = (int32_t)((uint32_t)kind & 0xFFu);
     h->rc = 1;
     h->len = (uint32_t)bytes;
     acc_box(kind, (int64_t)(sizeof(Header) + bytes));
+    CENSUS(death_born(h));
     return (void*)(h + 1);
 }
 
@@ -789,14 +1497,20 @@ static void box_free(void* p) {
     size_t bytes = box_bytes(h);
     size_t cls = class_of(bytes);
     acc_box(avra_kind(h), -(int64_t)(sizeof(Header) + bytes));
+    CENSUS(death_noted(h, (int64_t)(sizeof(Header) + bytes)));
     h->tag = 0;
+#if AVRA_SLABS
+    (void)cls;
+    if (is_slab(h)) slab_free(h); else mem_freed(h);
+#else
     if (cls && g_free_len[cls] < LIST_LIMIT) {
         *(Header**)(h + 1) = g_free[cls];
         g_free[cls] = h;
         g_free_len[cls]++;
     } else {
-        free(h);
+        mem_freed(h);
     }
+#endif
 }
 
 // An IMMORTAL copy of `s`: retain and release leave it alone. What
@@ -932,6 +1646,7 @@ void avra_release_guarded(void* p, Header* h) {
 
 __attribute__((noinline))
 void avra_release_dead(void* p, int32_t kind) {
+    CENSUS(cascade_opened(__builtin_return_address(0)));
     if (kind == KIND_ARRAY) {
         array_reclaim(p);
     } else if (kind == KIND_MAP) {
@@ -939,6 +1654,7 @@ void avra_release_dead(void* p, int32_t kind) {
     } else {
         box_free(p);
     }
+    CENSUS(cascade_closed());
 }
 
 
@@ -962,6 +1678,7 @@ static inline int sole_sized(const char* p) {
 }
 
 static size_t block_size(Header* h) {
+    if (is_slab(h)) return slab_block(h);
 #ifdef __APPLE__
     return malloc_size(h);
 #else
@@ -1033,7 +1750,7 @@ static char* sized_moved(char* p, size_t need) {
         }
         return out;
     }
-    mem_ceiling_check();
+    mem_ceiling_check((int64_t)(sizeof(Header) + room + 1));
     Header* moved = (Header*)realloc(h, sizeof(Header) + room + 1);
     if (moved == NULL) avra_trap("out of memory growing a value in place");
     return (char*)(moved + 1);
@@ -1128,18 +1845,27 @@ static const char* guard_caught(const char* msg) {
     return msg;
 }
 
+static void ctx_restored(void* frame);
+
 int64_t avra_guard_run(void* body) {
     Guard g;
     g.unwinding = 0;
     g.task = avra_task_id();
     g.up = g_guard;
     g_guard = &g;
+    // The frame the guard is entered under, put back where it catches: a
+    // trap leaves no block's end to hand it back.
+    void* frame = avra_task_local->slot[AVRA_SLOT_CTX];
+    avra_rc_retain(frame);
     if (setjmp(g.at) != 0) {
         guard_close(&g);
+        ctx_restored(frame);
+        avra_rc_release(frame);
         return 1;
     }
     (void)((GuardCode)(uintptr_t)((AvraArray*)body)->data[0])(body);
     guard_close(&g);
+    avra_rc_release(frame);
     return 0;
 }
 
@@ -1149,11 +1875,13 @@ const char* avra_guard_words(void) { return str_owned(g_guard_text, strlen(g_gua
 
 // THE CASE IN FLIGHT. A suite runs in one process, so a trap kills
 // every case after it — this is how the wreck names which one it
-// was running when it died.
+// was running when it died. Every process a case starts is told it
+// too (`AVRA_CASE`), so what a child leaves is filed under its case.
 static const char* g_case = NULL;
 
 void avra_case_begin(const char* label) {
     g_case = label;
+    if (label) setenv("AVRA_CASE", label, 1);
 }
 
 const char* avra_case_now(void) {
@@ -1171,6 +1899,15 @@ const char* avra_case_now(void) {
 int64_t avra_case_schedule = -1;
 char avra_case_path[128] = {0};
 
+// Under AVRA_TRAP_TRACE, the stack a trap stood on, one frame a line, to stderr.
+static void trap_traced(void) {
+#ifndef __wasm__
+    if (!getenv("AVRA_TRAP_TRACE")) return;
+    void* frames[64];
+    backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
+#endif
+}
+
 void avra_trap(const char* msg) {
     msg = guard_caught(msg);
     fflush(stdout);
@@ -1186,6 +1923,7 @@ void avra_trap(const char* msg) {
     fputs("avra: ", stderr);
     fputs(msg, stderr);
     fputc('\n', stderr);
+    trap_traced();
     exit(2);
 }
 
@@ -1220,6 +1958,13 @@ void avra_puts(const char* s) {
 // first: unequal lengths are unequal text in O(1), where `strcmp`
 // scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
+    CENSUS(g_streqs++);
+#ifdef AVRA_CENSUS
+    if (g_sites_census) {
+        Site* s = site_in(g_streq_sites, &g_streq_slots, AVRA_CALLER());
+        if (s) s->made++;
+    }
+#endif
     // one box is one text: a literal compared at its own call site is
     // the same static box every time
     if (a == b) return 1;
@@ -1254,21 +1999,7 @@ int64_t avra_int_or(int64_t a, int64_t b)  { return a | b; }
 int64_t avra_int_xor(int64_t a, int64_t b) { return a ^ b; }
 int64_t avra_int_not(int64_t a)            { return ~a; }
 
-int64_t avra_int_shl(int64_t a, int64_t b) {
-    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
-    /* shifting INTO the sign bit is undefined for a signed left
-       operand, so the shift is done on the unsigned twin and read
-       back — the bits are what the program asked for either way. */
-    return (int64_t)((uint64_t)a << (uint64_t)b);
-}
 
-int64_t avra_int_shr(int64_t a, int64_t b) {
-    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
-    /* ARITHMETIC: the sign bit fills, so `-8 >> 1` is -4 and not a
-       huge positive. That is the shift Avra's one integer means, and
-       it is what LLVM's `ashr` does on the other side. */
-    return a >> b;
-}
 
 /* WHETHER THE EXACT ANSWER FITS: 1 when `a op b` has no int, 0 when it
    does. `checked_*` answers absence on a 1; one body serves both engines.
@@ -1422,58 +2153,94 @@ const char* avra_bool_text(int64_t b) {
 // of kind 1 — see the memory model note.
 
 // ONE BUFFER holds a list's cells and, after them, its owned marks:
-// one allocation per list, not two. A buffer of a small capacity —
-// one to eight exactly (a record's slots, a literal's elements),
-// then sixteen and thirty-two — is recycled through a per-capacity
-// free list; a bigger one is malloc's and grows in place.
+// one allocation per list, not two — and a packed list's buffer is its
+// cells alone (`words`). A buffer of a small capacity — one to eight
+// exactly (a record's slots, a literal's elements), then sixteen and
+// thirty-two — is recycled through a free list per capacity and
+// shape; a bigger one is malloc's and grows in place.
 #define ARRAY_FIRST 8
-#define BUF_CLASSES 10
+// No list holds more cells than this: a capacity past it is a
+// corrupted box, and the program stops rather than asking the
+// machine for the memory.
+#define CELL_CEILING ((int64_t)1 << 31)
+#define BUF_SIZES 10
+#define BUF_CLASSES (2 * BUF_SIZES)
 static void* g_buf_free[BUF_CLASSES];
 static int64_t g_buf_free_len[BUF_CLASSES];
 
-static size_t buf_bytes(int64_t cap) {
-    return (size_t)cap * (sizeof(int64_t) + 1);
+static size_t buf_bytes(int64_t cap, int words) {
+    return (size_t)cap * (sizeof(int64_t) + (words ? 0 : 1));
+}
+
+// A list's own buffer's bytes, at its capacity.
+static size_t array_buf_bytes(const AvraArray* a) {
+    return buf_bytes(a->cap, avra_packed(a));
 }
 
 // The class of a capacity: 0..7 for one to eight, 8 for sixteen, 9
-// for thirty-two; -1 past the classes.
-static int buf_class(int64_t cap) {
-    if (cap >= 1 && cap <= 8) return (int)cap - 1;
-    if (cap == 16) return 8;
-    if (cap == 32) return 9;
+// for thirty-two, the same past BUF_SIZES for a packed buffer; -1 past
+// the classes.
+static int buf_class(int64_t cap, int words) {
+    int at = words ? BUF_SIZES : 0;
+    if (cap >= 1 && cap <= 8) return at + (int)cap - 1;
+    if (cap == 16) return at + 8;
+    if (cap == 32) return at + 9;
     return -1;
 }
 
-static int64_t* buf_alloc(int64_t cap) {
-    acc_add(ACC_BUF, (int64_t)buf_bytes(cap));
-    if (g_acc_on > 0) acc_buf(cap, (int64_t)buf_bytes(cap), 1);
-    int cls = buf_class(cap);
+static int64_t* buf_alloc(int64_t cap, int words) {
+    size_t bytes = buf_bytes(cap, words);
+    acc_add(ACC_BUF, (int64_t)bytes);
+    if (g_acc_on > 0) acc_buf(cap, (int64_t)bytes, 1);
     CENSUS(g_bufs_made++);
+    CENSUS(note_block((int64_t)bytes));
+#if AVRA_SLABS
+    if (bytes <= SLAB_MAX) return (int64_t*)slab_alloc(bytes);
+    return (int64_t*)fresh(bytes);
+#endif
+    int cls = buf_class(cap, words);
     if (cls >= 0 && g_buf_free[cls]) {
         int64_t* buf = (int64_t*)g_buf_free[cls];
         g_buf_free[cls] = *(void**)buf;
         g_buf_free_len[cls]--;
         return buf;
     }
-    return (int64_t*)fresh(buf_bytes(cap));
+    return (int64_t*)fresh(bytes);
 }
 
-static void buf_free(int64_t* buf, int64_t cap) {
-    acc_add(ACC_BUF, -(int64_t)buf_bytes(cap));
-    if (g_acc_on > 0) acc_buf(cap, -(int64_t)buf_bytes(cap), -1);
-    int cls = buf_class(cap);
+static void buf_free(int64_t* buf, int64_t cap, int words) {
+    acc_add(ACC_BUF, -(int64_t)buf_bytes(cap, words));
+    if (g_acc_on > 0) acc_buf(cap, -(int64_t)buf_bytes(cap, words), -1);
+#if AVRA_SLABS
+    if (is_slab(buf)) slab_free(buf); else mem_freed(buf);
+    return;
+#endif
+    int cls = buf_class(cap, words);
     if (cls >= 0 && g_buf_free_len[cls] < LIST_LIMIT) {
         *(void**)buf = g_buf_free[cls];
         g_buf_free[cls] = buf;
         g_buf_free_len[cls]++;
     } else {
-        free(buf);
+        mem_freed(buf);
     }
 }
 
-// The marks live after the cells; a fresh mark region is all zero.
-static void array_marks(AvraArray* a) {
-    a->marks = (uint8_t*)(a->data + a->cap);
+// The marks live after the cells; a packed list has none.
+static void array_marks(AvraArray* a, int words) {
+    a->marks = words ? NULL : (uint8_t*)(a->data + a->cap);
+}
+
+// A mark written into cell `i`. A packed list keeps no marks: a zero
+// mark is already what it answers, and any other is a defect — an owned
+// or absent cell in a list made for scalars.
+__attribute__((noinline, cold, noreturn))
+static void packed_marked(void) {
+    avra_trap("defect: an owned or absent cell written into a packed list"); // LICENSED traps.defect: a packed list is made only for a scalar element
+}
+
+static inline void mark_put(AvraArray* a, int64_t i, uint8_t mark) {
+    if (__builtin_expect(a->marks != NULL, 1)) a->marks[i] = mark;
+    else if (mark != 0) packed_marked();
 }
 
 // A box that will hold `n` slots — a record's, a literal's — takes
@@ -1488,7 +2255,7 @@ static int laid_out(AvraArray* a);
 // not laid inside the box.
 static int64_t array_bytes(AvraArray* a) {
     int64_t box = (int64_t)(sizeof(Header) + ((Header*)a - 1)->len);
-    return laid_out(a) ? box : box + (int64_t)buf_bytes(a->cap);
+    return laid_out(a) ? box : box + (int64_t)array_buf_bytes(a);
 }
 
 __attribute__((noinline, cold))
@@ -1502,21 +2269,40 @@ static void sized_noted(AvraArray* a, void* ra) {
 // AvraArray, as static data is — so a record costs one allocation, and
 // so does an EMPTY list: it holds no cells until the first push grows
 // it out of the box.
-static AvraArray* array_made(int64_t cap, void* ra) {
-    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray) + buf_bytes(cap), KIND_ARRAY);
+static AvraArray* array_made(int64_t cap, void* ra, int words) {
+    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray) + buf_bytes(cap, words), KIND_ARRAY);
     a->cap = cap;
     a->data = (int64_t*)(a + 1);
     a->len = 0;
-    array_marks(a);
-    memset(a->marks, 0, (size_t)a->cap);
+    array_marks(a, words);
+    if (!words) memset(a->marks, 0, (size_t)a->cap);
     a->site = NULL;
+    CENSUS(if (cap == 0) note_empty(g_empty_sites, &g_empty_slots, ra, &g_empty_made));
     if (__builtin_expect(g_acc_on > 0, 0)) sized_noted(a, ra);
     return a;
 }
 
-void* avra_array_sized(int64_t n) { return array_made(n, AVRA_CALLER()); }
+void* avra_array_sized(int64_t n) { return array_made(n, AVRA_CALLER(), 0); }
 
-void* avra_array_new(void) { return array_made(0, AVRA_CALLER()); }
+void* avra_array_new(void) { return array_made(0, AVRA_CALLER(), 0); }
+
+// THE PACKED LIST'S CONSTRUCTIONS, for a list of plain scalars: the
+// same shapes, with no marks.
+void* avra_array_sized_words(int64_t n) { return array_made(n, AVRA_CALLER(), 1); }
+
+void* avra_array_new_words(void) { return array_made(0, AVRA_CALLER(), 1); }
+
+// `n` cells, each the word `w`: a packed list laid out full, its cells
+// written by one fill. A count below zero makes the empty list.
+void* avra_array_filled_words(int64_t n, int64_t w) {
+    if (n < 0) n = 0;
+    if (n >= CELL_CEILING) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: no list holds more cells than this
+    AvraArray* a = array_made(n, AVRA_CALLER(), 1);
+    if (w == 0) memset(a->data, 0, (size_t)n * sizeof(int64_t));
+    else for (int64_t i = 0; i < n; i++) a->data[i] = w;
+    a->len = n;
+    return a;
+}
 
 // The guard's reclaim: children released as usual, the box kept and
 // its cells poisoned, so a stale reader trips instead of finding a
@@ -1524,7 +2310,7 @@ void* avra_array_new(void) { return array_made(0, AVRA_CALLER()); }
 static void array_poison(void* p) {
     AvraArray* a = (AvraArray*)p;
     for (int64_t i = 0; i < a->len; i++) {
-        if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
+        if (avra_mark_at(a, i) & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
     memset(a->data, 0xDD, (size_t)a->len * sizeof(int64_t));
 }
@@ -1538,7 +2324,7 @@ static void guard_kept(void* p, Header* h) {
     if (avra_kind(h) == KIND_ARRAY) {
         AvraArray* a = (AvraArray*)p;
         if (a->site) acc_site(a->site, -array_bytes(a), -1);
-        if (!laid_out(a)) acc_add(ACC_BUF, -(int64_t)buf_bytes(a->cap));
+        if (!laid_out(a)) acc_add(ACC_BUF, -(int64_t)array_buf_bytes(a));
     } else if (avra_kind(h) == KIND_MAP) {
         acc_add(ACC_INDEX, -index_words((AvraMap*)p) * (int64_t)sizeof(int64_t));
     }
@@ -1552,21 +2338,139 @@ static int64_t guard_len(void* p) {
     return h == NULL ? -1 : ((AvraArray*)p)->len;
 }
 
+// The first cell at or after `i`, before `len`, whose mark is owned; `len` where none is. THE MARKS
+// ARE READ A WORD AT A TIME — eight cells per load, a word with no owned bit skipped whole — and the
+// tail shorter than a word a byte at a time, so no read passes `len`, the end of the marks that
+// hold cells. A word is assembled by `memcpy`, which asks nothing of the marks' alignment; the
+// owned bit is bit 0 of each mark, and the runtime is little-endian (avra_box.h), so the first set
+// byte is the lowest.
+static inline int64_t next_owned(const uint8_t* marks, int64_t i, int64_t len) {
+    while (len - i >= 8) {
+        uint64_t w;
+        memcpy(&w, marks + i, 8);
+        w &= 0x0101010101010101ull * MARK_OWNED;
+        if (w) return i + (__builtin_ctzll(w) >> 3);
+        i += 8;
+    }
+    while (i < len && !(marks[i] & MARK_OWNED)) i++;
+    return i;
+}
+
+
+// A dying list's own box freed: its header's LENGTH is its payload's bytes, as `box_bytes` reads a
+// list's, so the ledger moves by what `box_free` would move it by.
+#if AVRA_SLABS
+// The same, with the accounting's report or the census on: every ledger moved, then the box freed.
+__attribute__((noinline, cold))
+static void array_box_counted_freed(AvraArray* a) {
+    Header* h = (Header*)a - 1;
+    int64_t bytes = (int64_t)(sizeof(Header) + h->len);
+    acc_box(KIND_ARRAY, -bytes);
+    CENSUS(death_noted(h, bytes));
+    h->tag = 0;
+#if AVRA_SLABS
+    if (is_slab(h)) slab_free(h); else mem_freed(h);
+#else
+    mem_freed(h);
+#endif
+}
+#endif
+
+static inline void array_box_freed(AvraArray* a) {
+#if AVRA_SLABS && !defined(AVRA_CENSUS)
+    if (__builtin_expect(accounting(), 0)) {
+        array_box_counted_freed(a);
+        return;
+    }
+    Header* h = (Header*)a - 1;
+    int64_t bytes = (int64_t)(sizeof(Header) + h->len);
+    g_live_bytes -= bytes;
+    g_mortal_live -= bytes;
+    h->tag = 0;
+    if (is_slab(h)) slab_free(h); else mem_freed(h);
+#elif AVRA_SLABS
+    array_box_counted_freed(a);
+#else
+    box_free(a);
+#endif
+}
+
+// A dying list's storage freed where its cells lie apart or the accounting follows it: the site's
+// bytes, the cells' own buffer, then the box.
+__attribute__((noinline))
+static void array_storage_apart_freed(AvraArray* a) {
+    if (a->site != NULL) acc_site(a->site, -array_bytes(a), -1);
+    if (!laid_out(a)) buf_free(a->data, a->cap, avra_packed(a));
+    array_box_freed(a);
+}
+
+// A dying list's storage freed: a list whose cells lie in its box, with no site counting it — most
+// of them — is its box alone, freed by a leaf that keeps no frame.
+static inline void array_storage_freed(AvraArray* a) {
+    if (__builtin_expect(a->site != NULL || !laid_out(a), 0)) {
+        array_storage_apart_freed(a);
+        return;
+    }
+    array_box_freed(a);
+}
+
+// A dying list's owned cells released, from the first, at `i`, then its storage freed. Out of line,
+// so a list that owns nothing is freed by a leaf that keeps no frame. The cells and marks cannot
+// move while it runs: nothing else holds the list.
+__attribute__((noinline))
+static void array_cells_released(AvraArray* a, int64_t i) {
+    const int64_t* data = a->data;
+    const uint8_t* marks = a->marks;
+    int64_t len = a->len;
+    for (; i < len; i = next_owned(marks, i + 1, len)) avra_rc_release((void*)(uintptr_t)data[i]);
+    array_storage_freed(a);
+}
+
 // Releases every owned slot, then the array itself.
 static void array_reclaim(void* p) {
     AvraArray* a = (AvraArray*)p;
-    for (int64_t i = 0; i < a->len; i++) {
-        if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    CENSUS(if (g_deaths_on) { g_list_deaths++; if (a->cap == 0) g_empty_list_deaths++; list_death_noted(a); });
+    int64_t first = avra_packed(a) ? a->len : next_owned(a->marks, 0, a->len);
+    if (first < a->len) {
+        array_cells_released(a, first);
+        return;
     }
-    if (a->site) acc_site(a->site, -array_bytes(a), -1);
-    if (!laid_out(a)) buf_free(a->data, a->cap);
-    box_free(a);
+    array_storage_freed(a);
 }
 
-// No list holds more cells than this: a capacity past it is a
-// corrupted box, and the program stops rather than asking the
-// machine for the memory.
-#define CELL_CEILING ((int64_t)1 << 31)
+
+__attribute__((noinline, cold, noreturn))
+static void avra_wrote_static(void);
+
+// THE BINARY'S OWN DATA: a box the backend laid out, its flags byte all
+// ones (runtime/avra_box.h), or the one empty list below, laid out the
+// same way — never a box minted here, made immortal later. Nothing
+// grows one or writes one in place: every write opens its box first,
+// and an open copies it.
+static int box_is_static(const Header* h) {
+    return IS_IMMORTAL(avra_kind(h)) && ((const uint8_t*)h)[AVRA_FLAGS_AT] == 0xFF;
+}
+
+// THE EMPTY LIST an answer that holds nothing is: the box the backend
+// lays out for `[]`, laid out once here — its header immortal with the
+// static flags, its no cells right after it — so a concat or a slice
+// that comes out empty allocates nothing.
+static struct { Header h; AvraArray a; } g_empty_list __attribute__((aligned(16))) = {
+    { AVRA_TAG, KIND_IMMORTAL(KIND_ARRAY), 0, (uint32_t)sizeof(AvraArray) },
+    { 0, 0, (int64_t*)(&g_empty_list.a + 1), (uint8_t*)(&g_empty_list.a + 1), NULL },
+};
+
+static void* empty_list(void) { return &g_empty_list.a; }
+
+// THE EMPTY PACKED LIST `[]` is for a list of plain scalars: laid out the
+// same way, with no marks, so the open its first push makes clones a
+// packed list.
+static struct { Header h; AvraArray a; } g_empty_words __attribute__((aligned(16))) = {
+    { AVRA_TAG, KIND_IMMORTAL(KIND_ARRAY), 0, (uint32_t)sizeof(AvraArray) },
+    { 0, 0, (int64_t*)(&g_empty_words.a + 1), NULL, NULL },
+};
+
+void* avra_array_empty_words(void) { return &g_empty_words.a; }
 
 // Doubles the capacity: a classed buffer moves to the next class, a
 // big one grows in place; the marks follow the cells to their new
@@ -1581,40 +2485,68 @@ static int laid_out(AvraArray* a) {
 }
 
 static void array_grow(AvraArray* a, void* pusher) {
+    if (box_is_static((Header*)a - 1)) avra_wrote_static();
     int64_t old_cap = a->cap;
+    CENSUS(if (old_cap == 0) note_empty(g_empty_grown_sites, &g_empty_grown_slots, pusher, &g_empty_grown));
     int64_t cap = old_cap < ARRAY_FIRST ? ARRAY_FIRST : old_cap * 2;
     int64_t* buf;
     int fixed = laid_out(a);
+    int words = avra_packed(a);
     int64_t before = a->site ? array_bytes(a) : 0;
-    if (fixed || buf_class(old_cap) >= 0) {
-        buf = buf_alloc(cap);
+    if (fixed || buf_class(old_cap, words) >= 0 || is_slab(a->data) || buf_bytes(cap, words) <= SLAB_MAX) {
+        buf = buf_alloc(cap, words);
         memcpy(buf, a->data, (size_t)old_cap * sizeof(int64_t));
-        memcpy((uint8_t*)(buf + cap), a->marks, (size_t)old_cap);
-        if (!fixed) buf_free(a->data, old_cap);
+        if (!words) memcpy((uint8_t*)(buf + cap), a->marks, (size_t)old_cap);
+        if (!fixed) buf_free(a->data, old_cap, words);
     } else {
-        mem_ceiling_check();
-        buf = (int64_t*)realloc(a->data, buf_bytes(cap));
-        acc_add(ACC_BUF, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)));
-        if (g_acc_on > 0) { acc_buf(old_cap, -(int64_t)buf_bytes(old_cap), -1); acc_buf(cap, (int64_t)buf_bytes(cap), 1); }
-        memmove((uint8_t*)(buf + cap), (uint8_t*)(buf + old_cap), (size_t)old_cap);
+        mem_ceiling_check((int64_t)buf_bytes(cap, words));
+        CENSUS(note_block((int64_t)buf_bytes(cap, words)));
+        buf = (int64_t*)realloc(a->data, buf_bytes(cap, words));
+        acc_add(ACC_BUF, (int64_t)(buf_bytes(cap, words) - buf_bytes(old_cap, words)));
+        if (g_acc_on > 0) { acc_buf(old_cap, -(int64_t)buf_bytes(old_cap, words), -1); acc_buf(cap, (int64_t)buf_bytes(cap, words), 1); }
+        if (!words) memmove((uint8_t*)(buf + cap), (uint8_t*)(buf + old_cap), (size_t)old_cap);
     }
     a->data = buf;
     a->cap = cap;
-    array_marks(a);
-    memset(a->marks + a->len, 0, (size_t)(cap - a->len));
+    array_marks(a, words);
+    if (!words) memset(a->marks + a->len, 0, (size_t)(cap - a->len));
     if (a->site) acc_site(a->site, array_bytes(a) - before, 0);
     if (g_acc_on > 0) note_wide(a, cap, pusher);
 }
 
 // A FULL LIST'S WRITE, whole and out of line, so the common write
-// TAIL-calls it and keeps no frame of its own.
+// TAIL-calls it and keeps no frame of its own. The binary's own data is
+// laid out full (its length its capacity), so every push into it comes
+// here, and is refused before anything grows. So does an owned push into
+// a packed list, refused before anything is written. The pusher the
+// accounting names is the leaf's caller: the leaf tail-calls here, or
+// is inlined into the caller that calls here.
 __attribute__((noinline))
-static void push_grown(AvraArray* a, int64_t v) {
-    if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
-    array_grow(a, __builtin_return_address(0));
+static void push_grown(AvraArray* a, int64_t v, uint8_t mark, void* pusher) {
+    if (mark != 0 && avra_packed(a)) packed_marked();
+    if (a->len == a->cap) {
+        if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
+        array_grow(a, pusher);
+    }
     a->data[a->len] = v;
-    a->marks[a->len] = 0;
+    mark_put(a, a->len, mark);
     a->len++;
+}
+
+__attribute__((noinline, cold))
+void avra_push_grown(void* arr, int64_t v) {
+    push_grown((AvraArray*)arr, v, 0, __builtin_return_address(0));
+}
+
+__attribute__((noinline, cold))
+void avra_push_owned_grown(void* arr, void* v) {
+    push_grown((AvraArray*)arr, (int64_t)(uintptr_t)v, MARK_OWNED, __builtin_return_address(0));
+    avra_rc_retain(v);
+}
+
+__attribute__((noinline, cold))
+void avra_push_moved_grown(void* arr, void* v) {
+    push_grown((AvraArray*)arr, (int64_t)(uintptr_t)v, MARK_OWNED, __builtin_return_address(0));
 }
 
 void avra_array_reserve(void* arr, int64_t spare) {
@@ -1625,36 +2557,6 @@ void avra_array_reserve(void* arr, int64_t spare) {
     }
 }
 
-void avra_array_push(void* arr, int64_t v) {
-    CENSUS(g_list_pushes++);
-    CENSUS(note_push(AVRA_CALLER()));
-    AvraArray* a = (AvraArray*)arr;
-    if (__builtin_expect(a->len == a->cap, 0)) { push_grown(a, v); return; }
-    a->data[a->len] = v;
-    a->marks[a->len] = 0;
-    a->len++;
-}
-
-// RETAIN-AT-PACK: the array takes its own reference to a managed
-// value and remembers the slot, so reclaim releases it.
-void avra_array_push_owned(void* arr, void* v) {
-    CENSUS(g_list_pushes++);
-    CENSUS(note_push(AVRA_CALLER()));
-    avra_array_push(arr, (int64_t)(uintptr_t)v);
-    AvraArray* a = (AvraArray*)arr;
-    a->marks[a->len - 1] = MARK_OWNED;
-    avra_rc_retain(v);
-}
-
-// The push twin of `avra_slot_set_moved`: the caller's reference moves
-// into the new slot.
-void avra_array_push_moved(void* arr, void* v) {
-    CENSUS(g_list_pushes++);
-    CENSUS(note_push(AVRA_CALLER()));
-    avra_array_push(arr, (int64_t)(uintptr_t)v);
-    AvraArray* a = (AvraArray*)arr;
-    a->marks[a->len - 1] = MARK_OWNED;
-}
 
 
 // Worded exactly like the evaluator's refusal — the divergence
@@ -1671,6 +2573,23 @@ void avra_array_push_moved(void* arr, void* v) {
 // that escapes through `!` must survive its subject's release.
 void* avra_insist(void* p) {
     if (!p) { avra_trap("unwrapped an absent value"); }
+    CENSUS(note_insist(__builtin_return_address(0)));
+    avra_rc_retain(p);
+    return p;
+}
+
+// `v!` whose answer RIDES its subject's reference: the guard alone. The
+// memory pass chooses it wherever the subject stands past every use of
+// the answer, and the owned twin below everywhere else.
+void* avra_unwrap(void* p) {
+    if (!p) { avra_trap("unwrapped an absent value"); }
+    return p;
+}
+
+// `v!` whose answer outlives its subject: the same box, its own +1.
+void* avra_unwrap_owned(void* p) {
+    if (!p) { avra_trap("unwrapped an absent value"); }
+    CENSUS(note_insist(__builtin_return_address(0)));
     avra_rc_retain(p);
     return p;
 }
@@ -1681,16 +2600,21 @@ void* avra_insist(void* p) {
 // The cache keeps ONE reference to the key and ONE to the value,
 // forever: both are the caller's, consumed here (callee-cleans).
 // Every ask answers the value OWNED, so the caller's scope releases
-// its own reference and the cache's survives.
-#define AVRA_ONCE_MAX 256
+// its own reference and the cache's survives. THE TABLE GROWS: a
+// program holds as many `once` values as it has `once` fns, so no
+// count fixed here can be right for every program.
 
 typedef struct {
     void* key;
     void* value;
+    // whether caching made the answer immortal: it was minted mortal, so
+    // the ledger counted it — a backend-baked static answer never was
+    int counted;
 } OnceSlot;
 
-static OnceSlot g_once[AVRA_ONCE_MAX];
+static OnceSlot* g_once = NULL;
 static int g_once_count = 0;
+static int g_once_cap = 0;
 
 // A POINTER INDEX, AND THE STRCMP ONLY IF IT MISSES. A key is a
 // symbol constant, so after the first read the pointer matches — but
@@ -1703,29 +2627,45 @@ static int g_once_count = 0;
 // order because `avra_once_set` refuses a duplicate, so no two
 // entries can share a string. A key found that way is INDEXED on the
 // way out, so it costs the scan once rather than once per read.
-#define AVRA_ONCE_IX 1024   /* power of two, a quarter full at MAX */
-static int g_once_ix[AVRA_ONCE_IX];   /* index + 1; 0 is empty */
+static int* g_once_ix = NULL;   /* index + 1; 0 is empty; a power of two, a quarter full at most */
+static int g_once_ix_cap = 0;
 
 static int once_slot(const void* key) {
-    return (int)(((uintptr_t)key >> 4) & (AVRA_ONCE_IX - 1));
+    return (int)(((uintptr_t)key >> 4) & (g_once_ix_cap - 1));
 }
 
 static void once_index(const void* key, int at) {
     int i = once_slot(key);
-    for (int step = 0; step < AVRA_ONCE_IX; step++) {
+    for (int step = 0; step < g_once_ix_cap; step++) {
         if (g_once_ix[i] == 0) { g_once_ix[i] = at + 1; return; }
-        i = (i + 1) & (AVRA_ONCE_IX - 1);
+        i = (i + 1) & (g_once_ix_cap - 1);
     }
 }
 
+// The table made room for one more value: its slots doubled, its index
+// four times their number and every key filed in it again.
+static void once_grow(void) {
+    int cap = g_once_cap == 0 ? 256 : g_once_cap * 2;
+    OnceSlot* slots = (OnceSlot*)realloc(g_once, (size_t)cap * sizeof(OnceSlot));
+    int* ix = (int*)calloc((size_t)cap * 4, sizeof(int));
+    if (slots == NULL || ix == NULL) { avra_trap("out of memory growing the `once` cache"); } // LICENSED traps.process_limit: out of memory is a limit of the process
+    g_once = slots;
+    g_once_cap = cap;
+    free(g_once_ix);
+    g_once_ix = ix;
+    g_once_ix_cap = cap * 4;
+    for (int j = 0; j < g_once_count; j++) { once_index(g_once[j].key, j); }
+}
+
 static int once_at(const char* key) {
+    if (g_once_ix_cap == 0) { return -1; }
     int i = once_slot(key);
-    for (int step = 0; step < AVRA_ONCE_IX; step++) {
+    for (int step = 0; step < g_once_ix_cap; step++) {
         CENSUS(g_once_steps++);
         int at = g_once_ix[i];
         if (at == 0) break;
         if (g_once[at - 1].key == (void*)key) return at - 1;
-        i = (i + 1) & (AVRA_ONCE_IX - 1);
+        i = (i + 1) & (g_once_ix_cap - 1);
     }
     for (int j = 0; j < g_once_count; j++) {
         if (strcmp((const char*)g_once[j].key, key) == 0) {
@@ -1747,52 +2687,135 @@ void* avra_once_get(void* key) {
     return held;
 }
 
-// ONE STILL-MORTAL BOX'S FOOTPRINT, walked the way `array_reclaim`
-// and `map_reclaim` would free it — box, buffer and every OWNED slot,
-// recursively — except nothing here is freed. Called from
-// `avra_once_set` BEFORE the kind is flipped, so `avra_kind(h)` is still
-// its true shape and `avra_kind(h) < 0` unambiguously means "never added
-// to the mortal ledger": a STATIC aggregate (a const's, baked by the
-// backend at compile time) never touched `acc_box`/`acc_add` to
-// begin with, and neither did a string literal reached as a map key,
-// so both are credited as nothing rather than walked — crediting a
-// box the ledger never counted is the over-credit this guard exists
-// to refuse. A KIND_PLAIN box (a record, an enum) has no
-// runtime-visible owned fields — the compiler releases those by
-// name, never by a mark the runtime can walk — so only its own
-// header and payload are credited here; a `once fn` answering a
-// record or enum with a managed field is undercredited, a recorded
-// trigger for the day one exists.
-static int64_t once_box_credit(void* p) {
-    Header* h = hdr(p);
-    if (h == NULL || avra_kind(h) < 0) return 0;
-    switch (avra_kind(h)) {
+// WHAT AN IMMORTAL HOLDS IS NOT LIVE DEBT. A `once` answer lives for the
+// process, and so does everything it holds when the process ends —
+// whether it held it the moment it was cached or took it in after (a
+// table filled ask by ask, a pool of writers parked between answers):
+// no release will ever reach any of it, so none of it is owed. The
+// credit is taken at the end, over what every cached key and answer
+// reaches then, each box once and by its layout alone: an array's owned
+// slots (a list's items, a record's or an enum's fields, a cell's value,
+// a closure's captures — every one of them an array), a map's keys and
+// values. No box is guessed at: the runtime mints no other kind that
+// holds one. An immortal box reached is a backend-baked constant, which
+// the ledger never counted, or another cache's answer, credited as its
+// own root. Accounting only — nothing is freed and no count moves.
+
+// The bytes one box adds to the mortal ledger by itself: its header and
+// payload, and an array's buffer. A static box never entered the ledger.
+static int64_t own_bytes(Header* h) {
+    int32_t k = avra_kind(h);
+    if (k == KIND_STATIC || k == KIND_DEAD) return 0;
+    switch (KIND_SHAPE(k)) {
+        case KIND_ARRAY: return array_bytes((AvraArray*)(h + 1));
+        case KIND_MAP: return (int64_t)(sizeof(Header) + sizeof(AvraMap)) + index_words((AvraMap*)(h + 1)) * (int64_t)sizeof(int64_t);
+        case KIND_STR:
+        case KIND_BYTES: return (int64_t)(sizeof(Header) + h->len + 1);
+        default: return (int64_t)(sizeof(Header) + h->len);
+    }
+}
+
+// The boxes a walk has reached, so each is credited once.
+typedef struct { uintptr_t* slots; size_t cap; size_t used; } Reached;
+
+static int reached_first(Reached* r, uintptr_t p) {
+    if ((r->used + 1) * 2 > r->cap) {
+        Reached grown = { calloc(r->cap ? r->cap * 2 : 1024, sizeof(uintptr_t)), r->cap ? r->cap * 2 : 1024, 0 };
+        if (grown.slots == NULL) return 0;
+        for (size_t i = 0; i < r->cap; i++) if (r->slots[i]) reached_first(&grown, r->slots[i]);
+        free(r->slots);
+        *r = grown;
+    }
+    size_t i = (size_t)((p >> 4) * 11400714819323198485ull) & (r->cap - 1);
+    while (r->slots[i]) {
+        if (r->slots[i] == p) return 0;
+        i = (i + 1) & (r->cap - 1);
+    }
+    r->slots[i] = p;
+    r->used++;
+    return 1;
+}
+
+// A stack of boxes still to walk.
+typedef struct { uintptr_t* items; size_t len; size_t cap; } Pending;
+
+static void pending_push(Pending* q, uintptr_t p) {
+    if (q->len == q->cap) {
+        size_t cap = q->cap ? q->cap * 2 : 1024;
+        uintptr_t* items = realloc(q->items, cap * sizeof(uintptr_t));
+        if (items == NULL) return;
+        q->items = items;
+        q->cap = cap;
+    }
+    q->items[q->len++] = p;
+}
+
+// The holdings of the box at `p` queued.
+static void holdings_queued(Pending* q, uintptr_t p, Header* h) {
+    switch (KIND_SHAPE(avra_kind(h))) {
         case KIND_ARRAY: {
             AvraArray* a = (AvraArray*)p;
-            int64_t total = array_bytes(a);
+            if (avra_packed(a)) break;
             for (int64_t i = 0; i < a->len; i++) {
-                if (a->marks[i] & MARK_OWNED) total += once_box_credit((void*)(uintptr_t)a->data[i]);
+                if (a->marks[i] & MARK_OWNED) pending_push(q, (uintptr_t)a->data[i]);
             }
-            return total;
+            break;
         }
         case KIND_MAP: {
             AvraMap* m = (AvraMap*)p;
-            int64_t total = (int64_t)(sizeof(Header) + sizeof(AvraMap)) + index_words(m) * (int64_t)sizeof(int64_t);
-            return total + once_box_credit(m->keys) + once_box_credit(m->vals);
+            pending_push(q, (uintptr_t)m->keys);
+            pending_push(q, (uintptr_t)m->vals);
+            break;
         }
-        case KIND_STR:
-        case KIND_BYTES:
-            return (int64_t)(sizeof(Header) + h->len + 1);
-        default:
-            return (int64_t)(sizeof(Header) + h->len);
+        default: break;
     }
 }
+
+// Every mortal box the queued holdings reach, not reached before, its own
+// bytes summed. An immortal box met on the way is a backend-baked static
+// aggregate — the ledger never counted it, and it holds nothing mortal —
+// or another cache's answer, credited as a root of its own.
+static int64_t held_from_queue(Reached* r, Pending* q) {
+    int64_t total = 0;
+    while (q->len) {
+        uintptr_t p = q->items[--q->len];
+        Header* h = hdr((void*)p);
+        if (h == NULL || avra_kind(h) < 0 || !reached_first(r, p)) continue;
+        total += own_bytes(h);
+        holdings_queued(q, p, h);
+    }
+    return total;
+}
+
+// The bytes every cached key and answer holds now: each answer's own box
+// — minted mortal, made immortal when it was cached — and every mortal box
+// a key or an answer reaches.
+static int64_t cache_held(void) {
+    Reached r = { NULL, 0, 0 };
+    Pending q = { NULL, 0, 0 };
+    int64_t total = 0;
+    for (int j = 0; j < g_once_count; j++) {
+        Header* h = hdr(g_once[j].value);
+        if (h == NULL || !g_once[j].counted || !reached_first(&r, (uintptr_t)g_once[j].value)) continue;
+        total += own_bytes(h);
+        holdings_queued(&q, (uintptr_t)g_once[j].value, h);
+    }
+    for (int j = 0; j < g_once_count; j++) pending_push(&q, (uintptr_t)g_once[j].key);
+    total += held_from_queue(&r, &q);
+    free(r.slots);
+    free(q.items);
+    return total;
+}
+
+// What the program still owes at this point: every mortal byte not held
+// by a cache.
+int64_t avra_mem_owed(void) { return g_mortal_live - cache_held(); }
 
 void avra_once_set(void* key, void* value) {
     // the guard answered absent, so a second setter cannot happen;
     // if it did, the FIRST answer stands
     if (once_at((const char*)key) >= 0) { return; }
-    if (g_once_count == AVRA_ONCE_MAX) { avra_trap("more `once` values than the cache holds"); } // LICENSED traps.process_limit: the once cache is full
+    if (g_once_count == g_once_cap) { once_grow(); }
     avra_rc_retain(key);
     avra_rc_retain(value);
     // THE ANSWER BECOMES IMMORTAL. It is held for the life of the
@@ -1804,12 +2827,11 @@ void avra_once_set(void* key, void* value) {
     // names its true shape — a cache held for the process's life is
     // not a leak, so it must not read as bytes still owed.
     Header* vh = hdr(value);
-    if (vh != NULL && avra_kind(vh) >= 0) {
-        g_mortal_live -= once_box_credit(value);
-        avra_set_kind(vh, KIND_IMMORTAL(avra_kind(vh)));
-    }
+    int counted = vh != NULL && avra_kind(vh) >= 0;
+    if (counted) avra_set_kind(vh, KIND_IMMORTAL(avra_kind(vh)));
     g_once[g_once_count].key = key;
     g_once[g_once_count].value = value;
+    g_once[g_once_count].counted = counted;
     once_index(key, g_once_count);
     g_once_count++;
 }
@@ -1942,9 +2964,18 @@ void avra_cell_release(void* slot) {
 // ── Places: copy-on-write ───────────────────────────────────────
 
 // A shallow clone that takes its own reference to every owned
-// slot — exactly what reclaim would release. A fresh box, rc 1.
+// slot — exactly what reclaim would release. A fresh box, rc 1. The
+// only write that changes an empty list is a push, so an empty one is
+// laid out with a first push's cells: the open and the push are one
+// allocation. A packed list's clone is packed, its cells one copy.
 static void* array_clone(AvraArray* a) {
-    AvraArray* c = (AvraArray*)avra_array_sized(a->len);
+    if (avra_packed(a)) {
+        AvraArray* c = array_made(a->len > 0 ? a->len : ARRAY_FIRST, AVRA_CALLER(), 1);
+        memcpy(c->data, a->data, (size_t)a->len * sizeof(int64_t));
+        c->len = a->len;
+        return c;
+    }
+    AvraArray* c = (AvraArray*)avra_array_sized(a->len > 0 ? a->len : ARRAY_FIRST);
     for (int64_t i = 0; i < a->len; i++) {
         avra_array_push(c, a->data[i]);
         c->marks[i] = a->marks[i];
@@ -2020,7 +3051,6 @@ void avra_cell_forget(void* slot) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
-    CENSUS(note_copy(AVRA_CALLER()));
     g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
@@ -2046,6 +3076,13 @@ void* avra_cell_thawed(void* slot) {
 // either way, so the memory pass releases what it gets back exactly
 // once. `ra` is the ORIGINAL call site, carried in from the hot leaf
 // so the clone log names the write, not this out-of-line half.
+// A seat its caller must open was handed the binary's own data.
+__attribute__((noinline, cold, noreturn))
+void avra_seat_static(void) {
+    avra_trap("defect: a writing seat was handed the binary's own data, unopened"); // LICENSED traps.defect: a caller left a writing seat's box unopened
+    abort();
+}
+
 void* avra_box_thawed_cloned(void* p, void* ra) {
     g_clone_site = ra;
     void* c = box_clone(p);
@@ -2060,7 +3097,7 @@ void* avra_box_thawed_cloned(void* p, void* ra) {
 // A nullable's absent tag (-1) is the null pointer.
 void* avra_enum_boxed(int64_t tag, int64_t word, int64_t counted) {
     if (tag < 0) return NULL;
-    void* box = array_made(2, AVRA_CALLER());
+    void* box = array_made(2, AVRA_CALLER(), 0);
     avra_array_push(box, tag);
     if ((counted >> tag) & 1) avra_array_push_owned(box, (void*)(uintptr_t)word);
     else avra_array_push(box, word);
@@ -2079,18 +3116,22 @@ int64_t avra_enum_word(void* box) {
     return a && a->len > 1 ? a->data[1] : 0;
 }
 
-// The same one level down: the box in a slot, made unique in place.
-void* avra_slot_unique(void* arr, int64_t i) {
+// The same one level down: the box in a slot, made unique in place —
+// avra_slot_unique's whole row, which its leaf hands every open but a
+// unique box's in a box no log or guard must see.
+__attribute__((noinline, cold))
+void* avra_slot_opened(void* arr, int64_t i) {
     avra_box_touch(arr);
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
+    if (box_is_static((Header*)arr - 1)) avra_wrote_static();
     AvraArray* a = (AvraArray*)arr;
     g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
     a->data[i] = (int64_t)(uintptr_t)c;
-    a->marks[i] = MARK_OWNED;
+    mark_put(a, i, MARK_OWNED);
     avra_rc_release(p);
     return c;
 }
@@ -2100,41 +3141,82 @@ void* avra_slot_unique(void* arr, int64_t i) {
 void* avra_owned_slot_unique(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     int64_t w = avra_array_get(arr, i);
-    if (!(a->marks[i] & MARK_OWNED)) return (void*)(uintptr_t)w;
+    if (!(avra_mark_at(a, i) & MARK_OWNED)) return (void*)(uintptr_t)w;
     return avra_slot_unique(arr, i);
 }
 
-// A write into a slot: the old owned content is released.
-void avra_slot_set(void* arr, int64_t i, int64_t v) {
-    avra_array_get(arr, i);
+// A CELL'S HELD BOX PARTED FROM ITS SEED'S OTHER HOLDERS: a counted box
+// another holder shares is cloned into the slot, as avra_owned_slot_unique
+// opens it; the binary's own data is left where it stands. NOTHING WRITES
+// AN IMMORTAL BOX IN PLACE — every write through a cell opens its box first
+// (avra_slot_unique, avra_cell_unique, avra_cell_thawed, avra_box_thawed, the
+// cell bytes rows' sole-holder test), and each of those opens clones an
+// immortal box — so a cell holding one shares nothing writable with the
+// binding it was made from, and its first write makes its box.
+void* avra_owned_slot_unshared(void* arr, int64_t i) {
+    AvraArray* a = (AvraArray*)arr;
+    int64_t w = avra_array_get(arr, i);
+    if (!(avra_mark_at(a, i) & MARK_OWNED)) return (void*)(uintptr_t)w;
+    Header* h = hdr((void*)(uintptr_t)w);
+    if (h != NULL && IS_IMMORTAL(avra_kind(h))) return (void*)(uintptr_t)w;
+    return avra_slot_unique(arr, i);
+}
+
+// avra_slot_set under the guard: the guarded read's dead-box check and
+// bound, then the write.
+__attribute__((noinline, cold))
+void avra_slot_set_guarded(void* arr, int64_t i, int64_t v) {
+    avra_get_guarded(arr, i);
     avra_slot_put(arr, i, v);
 }
 
 void avra_slot_put_owned(void* arr, int64_t i, void* v) {
+    if (avra_packed((AvraArray*)arr)) packed_marked();
     avra_rc_retain(v);
     avra_slot_put(arr, i, (int64_t)(uintptr_t)v);
     ((AvraArray*)arr)->marks[i] = MARK_OWNED;
 }
 
 void avra_slot_put_moved(void* arr, int64_t i, void* v) {
+    if (avra_packed((AvraArray*)arr)) packed_marked();
     avra_slot_put(arr, i, (int64_t)(uintptr_t)v);
     ((AvraArray*)arr)->marks[i] = MARK_OWNED;
 }
 
-// The same write into a slot the box's shape proves exists — a cell's one
-// slot, a record's declared field — so it has no bound to trap on.
-void avra_slot_put(void* arr, int64_t i, int64_t v) {
+// avra_slot_put into a box the turn's log must stamp first: logged,
+// then the leaf's write, whose log test now answers no.
+__attribute__((noinline, cold))
+void avra_slot_put_logged(void* arr, int64_t i, int64_t v) {
+    avra_box_changed(arr);
+    avra_slot_put(arr, i, v);
+}
+
+// A write landed in the binary's own data.
+__attribute__((noinline, cold, noreturn))
+static void avra_wrote_static(void) {
+    avra_trap("defect: a write landed in the binary's own data — a box never opened for writing"); // LICENSED traps.defect: a writer skipped the open of a static box
+}
+
+// A slot write into a box with a flag set: the binary's own data
+// refused, a box a site observed stamped and logged on its turn's first
+// write, then the write as the leaf writes it.
+__attribute__((noinline, cold))
+void avra_slot_put_flagged(void* arr, int64_t i, int64_t v) {
+    if (box_is_static((Header*)arr - 1)) avra_wrote_static();
     avra_box_touch(arr);
     AvraArray* a = (AvraArray*)arr;
-    if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    int64_t old = a->data[i];
+    uint8_t mark = avra_mark_at(a, i);
     a->data[i] = v;
-    a->marks[i] = 0;
+    if (mark != 0) a->marks[i] = 0;
+    if (mark & MARK_OWNED) avra_rc_release((void*)(uintptr_t)old);
 }
 
 // RETAIN-AT-PACK for a slot write: the incoming value is retained
 // FIRST (a self-store must not free what it keeps), then the old
 // content goes.
 void avra_slot_set_owned(void* arr, int64_t i, void* v) {
+    if (avra_packed((AvraArray*)arr)) packed_marked();
     avra_rc_retain(v);
     avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
     ((AvraArray*)arr)->marks[i] = MARK_OWNED;
@@ -2157,6 +3239,7 @@ void avra_slot_set_tagged(void* arr, int64_t i, int64_t word, int64_t tag, int64
 // the slot keeps it without a retain — the pack of a value that dies
 // there, which the caller then never releases.
 void avra_slot_set_moved(void* arr, int64_t i, void* v) {
+    if (avra_packed((AvraArray*)arr)) packed_marked();
     avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
     ((AvraArray*)arr)->marks[i] = MARK_OWNED;
 }
@@ -2165,14 +3248,16 @@ void avra_slot_set_moved(void* arr, int64_t i, void* v) {
 // the word is zero and `MARK_ABSENT` set. No box — the mark byte is
 // already there, beside every cell.
 void avra_array_push_maybe(void* arr, int64_t present, int64_t v) {
+    if (!present && avra_packed((AvraArray*)arr)) packed_marked();
     avra_array_push(arr, present ? v : 0);
     AvraArray* a = (AvraArray*)arr;
-    a->marks[a->len - 1] = present ? 0 : MARK_ABSENT;
+    mark_put(a, a->len - 1, present ? 0 : MARK_ABSENT);
 }
 
 void avra_slot_set_maybe(void* arr, int64_t i, int64_t present, int64_t v) {
+    if (!present && avra_packed((AvraArray*)arr)) packed_marked();
     avra_slot_set(arr, i, present ? v : 0);
-    ((AvraArray*)arr)->marks[i] = present ? 0 : MARK_ABSENT;
+    mark_put((AvraArray*)arr, i, present ? 0 : MARK_ABSENT);
 }
 
 // The twins for a nullable over a MANAGED value: present, the slot
@@ -2193,13 +3278,13 @@ void avra_slot_set_maybe_owned(void* arr, int64_t i, int64_t present, void* v) {
 int64_t avra_array_last_present(void* arr) {
     AvraArray* a = (AvraArray*)arr;
     if (a->len == 0) avra_trap("pop on an empty list");
-    return !(a->marks[a->len - 1] & MARK_ABSENT);
+    return !(avra_mark_at(a, a->len - 1) & MARK_ABSENT);
 }
 
 int64_t avra_slot_present(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     avra_array_get(arr, i);
-    return !(a->marks[i] & MARK_ABSENT);
+    return !(avra_mark_at(a, i) & MARK_ABSENT);
 }
 
 // ── Maps: string-keyed, insertion-ordered ───────────────────────
@@ -2389,7 +3474,7 @@ static inline int64_t index_words(AvraMap* m) { return m->index ? m->icap + 1 : 
 
 static void index_free(AvraMap* m) {
     acc_add(ACC_INDEX, -index_words(m) * (int64_t)sizeof(int64_t));
-    if (m->index) free(m->index - 1);
+    if (m->index) mem_freed(m->index - 1);
     m->index = NULL;
     m->icap = 0;
 }
@@ -2405,7 +3490,7 @@ static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
     m->index = words + 1;
     m->icap = icap;
     acc_add(ACC_INDEX, index_words(m) * (int64_t)sizeof(int64_t));
-    mem_ceiling_check();
+    mem_ceiling_check(0);
     uint64_t mask = (uint64_t)icap - 1;
     for (int64_t s = 0; s < m->keys->len; s++) {
         uint64_t h = key_hash(keyed, (const char*)(uintptr_t)m->keys->data[s]);
@@ -2434,6 +3519,7 @@ void* avra_map_new(void) {
 }
 
 // Releases both arrays (their owned slots follow), then the map.
+__attribute__((noinline))
 static void map_reclaim(void* p) {
     AvraMap* m = (AvraMap*)p;
     avra_rc_release(m->keys);
@@ -2577,14 +3663,14 @@ void* avra_map_vals(void* map) {
 // The slot at `at` dropped: an owned element released, the rest
 // moved down, the length one shorter.
 static void array_drop(AvraArray* a, int64_t at) {
-    if (a->marks[at] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[at]);
+    if (avra_mark_at(a, at) & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[at]);
     int64_t n = a->len - at - 1;
     if (n > 0) {
         memmove(a->data + at, a->data + at + 1, (size_t)n * sizeof(int64_t));
-        memmove(a->marks + at, a->marks + at + 1, (size_t)n);
+        if (a->marks) memmove(a->marks + at, a->marks + at + 1, (size_t)n);
     }
     a->len--;
-    a->marks[a->len] = 0;
+    mark_put(a, a->len, 0);
 }
 
 // A key removed: its key and value drop, the rest keep their
@@ -2764,10 +3850,20 @@ static void* map_clone(AvraMap* m) {
     return c;
 }
 
-// The clone a place opens — by the box's kind.
+// Whether a box is the binary's own empty literal: laid out static, holding nothing.
+__attribute__((unused)) static int empty_literal(void* p, const Header* h) {
+    if (h == NULL || !box_is_static(h)) return 0;
+    if (KIND_SHAPE(avra_kind(h)) != KIND_MAP) return ((AvraArray*)p)->len == 0;
+    AvraArray* keys = ((AvraMap*)p)->keys;
+    return keys == NULL || keys->len == 0;
+}
+
+// The clone a place opens — by the box's kind, counted once under the Avra fn that opened it: an open
+// of an empty literal apart from a copy.
 static void* box_clone(void* p) {
-    CENSUS(note_copy(AVRA_CALLER()));
     Header* h = hdr(p);
+    CENSUS(void* site = g_clone_site ? g_clone_site : AVRA_CALLER());
+    CENSUS(if (empty_literal(p, h)) note_empty_open(site); else note_copy(site));
     return (h && KIND_SHAPE(avra_kind(h)) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 
@@ -2844,7 +3940,7 @@ int64_t avra_array_pop(void* arr) {
     AvraArray* a = (AvraArray*)arr;
     if (a->len == 0) avra_trap("pop on an empty list");
     a->len--;
-    if (a->marks[a->len] & MARK_OWNED) avra_trap("a managed slot popped as a scalar");
+    if (avra_mark_at(a, a->len) & MARK_OWNED) avra_trap("a managed slot popped as a scalar");
     return a->data[a->len];
 }
 
@@ -2853,7 +3949,7 @@ void* avra_array_pop_owned(void* arr) {
     if (a->len == 0) avra_trap("pop on an empty list");
     a->len--;
     void* v = (void*)(uintptr_t)a->data[a->len];
-    if (a->marks[a->len] & MARK_OWNED) {
+    if (avra_mark_at(a, a->len) & MARK_OWNED) {
         a->marks[a->len] = 0;
     } else {
         avra_rc_retain(v);
@@ -2862,38 +3958,55 @@ void* avra_array_pop_owned(void* arr) {
 }
 
 // `src`'s slots from lo up to hi appended to `out`, owned ones
-// retained — a copy holds its own references.
+// retained — a copy holds its own references. A packed source's cells
+// are words alone, copied as words.
 static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
+    CENSUS(note_appended(hi - lo));
+    if (avra_packed(src)) {
+        for (int64_t i = lo; i < hi; i++) avra_array_push(out, src->data[i]);
+        return;
+    }
     for (int64_t i = lo; i < hi; i++) {
         if (src->marks[i] & MARK_OWNED) {
             avra_array_push_owned(out, (void*)(uintptr_t)src->data[i]);
         } else {
             avra_array_push(out, src->data[i]);
-            ((AvraArray*)out)->marks[((AvraArray*)out)->len - 1] = src->marks[i];
+            mark_put((AvraArray*)out, ((AvraArray*)out)->len - 1, src->marks[i]);
         }
     }
 }
 
-// A fresh list: `a`'s slots, then `b`'s. Owned.
+// Whether a list made from `a`'s and `b`'s cells is packed: a packed
+// list is made only for a scalar element, so either source being packed
+// says the element is one.
+static int words_of(const AvraArray* a, const AvraArray* b) {
+    return avra_packed(a) || avra_packed(b);
+}
+
+// `a`'s slots, then `b`'s: a fresh list, or the empty list when both are empty. Owned.
 void* avra_array_concat(void* a, void* b) {
+    if (((AvraArray*)a)->len + ((AvraArray*)b)->len == 0) return words_of((AvraArray*)a, (AvraArray*)b) ? avra_array_empty_words() : empty_list();
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     CENSUS(note_copy(AVRA_CALLER()));
     void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
     g_clone_site = site;
-    void* out = avra_array_new();
+    void* out = array_made(0, site, words_of((AvraArray*)a, (AvraArray*)b));
     g_clone_site = NULL;
     array_append(out, (AvraArray*)a, 0, ((AvraArray*)a)->len);
     array_append(out, (AvraArray*)b, 0, ((AvraArray*)b)->len);
     return out;
 }
 
-// A fresh list of the slots from lo up to hi, clamped to the list;
-// nothing when lo is not below hi. Owned.
+// The slots from lo up to hi, clamped to the list: a fresh list, or
+// the empty list when lo is not below hi. Owned.
 void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
-    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : AVRA_CALLER());
-    if (lo < hi) array_append(out, a, lo, hi);
+    if (lo >= hi) return avra_packed(a) ? avra_array_empty_words() : empty_list();
+    void* out = array_made(hi - lo, g_clone_site ? g_clone_site : AVRA_CALLER(), avra_packed(a));
+    array_append(out, a, lo, hi);
     return out;
 }
 
@@ -2917,21 +4030,87 @@ void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
     if (hi < lo) hi = lo;
-    for (int64_t i = 0; i < a->len; i++) {
-        if ((i < lo || i >= hi) && (a->marks[i] & MARK_OWNED)) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    if (!avra_packed(a)) {
+        for (int64_t i = 0; i < a->len; i++) {
+            if ((i < lo || i >= hi) && (a->marks[i] & MARK_OWNED)) avra_rc_release((void*)(uintptr_t)a->data[i]);
+        }
     }
     int64_t n = hi - lo;
     if (lo > 0) {
         memmove(a->data, a->data + lo, (size_t)n * sizeof(int64_t));
-        memmove(a->marks, a->marks + lo, (size_t)n);
+        if (a->marks) memmove(a->marks, a->marks + lo, (size_t)n);
     }
-    memset(a->marks + n, 0, (size_t)(a->len - n));
+    if (a->marks) memset(a->marks + n, 0, (size_t)(a->len - n));
     a->len = n;
     return arr;
 }
 
+// ── Strided lists ───────────────────────────────────────────────
+// A list whose element is several words laid in place, `k` a cell: the rows that answer in
+// ELEMENTS take `k` from the site, which knows its element type; every other row moves words.
+
+// THE GUARD'S STRIDE CHECK: a box read at two strides is a defect — the site and the box disagree
+// on what an element is. The guard keeps every freed box, so no address is reused while it runs and
+// the first stride a box is read at is its own for the whole run.
+#define STRIDE_SEEN (1 << 16)
+static struct { const void* box; int64_t k; } g_stride_seen[STRIDE_SEEN];
+
+__attribute__((noinline, cold))
+void avra_stride_checked(void* arr, int64_t k) {
+    AvraArray* a = (AvraArray*)arr;
+    if (k < 1 || a->len % k != 0) avra_trap("defect: a strided list holds a part of an element"); // LICENSED traps.defect: every write of a strided list writes whole elements
+    uint64_t h = ((uint64_t)(uintptr_t)arr >> 4) * 0x9E3779B97F4A7C15ull;
+    for (int64_t n = 0; n < STRIDE_SEEN; n++) {
+        int64_t at = (int64_t)((h + (uint64_t)n) & (STRIDE_SEEN - 1));
+        if (g_stride_seen[at].box == arr) {
+            if (g_stride_seen[at].k != k) avra_trap("defect: a strided list read at two strides"); // LICENSED traps.defect: a site's stride is its element type's
+            return;
+        }
+        if (g_stride_seen[at].box == NULL) {
+            g_stride_seen[at].box = arr;
+            g_stride_seen[at].k = k;
+            return;
+        }
+    }
+}
+
+// Where the last element's words begin, the list as it was: a pop reads them, then takes the words
+// off. An empty list traps as a pop of it would.
+int64_t avra_stride_last(void* arr, int64_t k) {
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    if (a->len < k) avra_trap("pop on an empty list");
+    return a->len - k;
+}
+
+// The elements from lo up to hi, clamped in ELEMENTS before they are words, so no bound a program
+// writes overflows the multiply.
+static void stride_clamped(void* arr, int64_t* lo, int64_t* hi, int64_t k) {
+    int64_t n = ((AvraArray*)arr)->len / k;
+    if (*lo < 0) *lo = 0;
+    if (*lo > n) *lo = n;
+    if (*hi > n) *hi = n;
+    if (*hi < *lo) *hi = *lo;
+}
+
+void* avra_stride_slice(void* arr, int64_t lo, int64_t hi, int64_t k) {
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    stride_clamped(arr, &lo, &hi, k);
+    g_clone_site = g_clone_site ? g_clone_site : AVRA_CALLER();
+    void* out = avra_array_slice(arr, lo * k, hi * k);
+    g_clone_site = NULL;
+    return out;
+}
+
+void* avra_stride_slice_reusing(void* arr, int64_t lo, int64_t hi, int64_t k) {
+    if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
+    stride_clamped(arr, &lo, &hi, k);
+    return avra_array_slice_reusing(arr, lo * k, hi * k);
+}
+
 // `a`'s slots then `b`'s, onto `a` when it is held alone.
 void* avra_array_concat_reusing(void* a, void* b) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     if (a == b || !sole_array(a)) {
         g_clone_site = AVRA_CALLER();
         void* out = avra_array_concat(a, b);
@@ -2948,6 +4127,7 @@ void* avra_array_concat_reusing(void* a, void* b) {
 // `src`'s slots appended to `dst`, owned ones retained; `dst` is
 // grown once, for all of them.
 void avra_array_extend(void* dst, void* src) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* s = (AvraArray*)src;
     avra_array_reserve(dst, s->len);
     array_append(dst, s, 0, s->len);
@@ -3133,6 +4313,50 @@ const char* avra_bytes_with_room(int64_t n) {
     return b;
 }
 
+// THE BYTES A CELL HOLDS, GROWN BY `m` OCTETS, answering where the new
+// octets go. A cell that holds its bytes alone grows them in place, so a
+// builder appending to one cell copies nothing until its room is spent;
+// bytes the cell shares, or does not own, are copied first, and the cell
+// then owns the copy and lets the old go. Nothing else changes: whoever
+// shared the old bytes still reads them as they were.
+static char* cell_bytes_grown(void* cell, size_t m) {
+    avra_box_touch(cell);
+    AvraArray* a = (AvraArray*)cell;
+    char* b = (char*)(uintptr_t)a->data[0];
+    size_t n = bytes_len(b);
+    if ((avra_mark_at(a, 0) & MARK_OWNED) && sole_sized(b)) {
+        char* out = sized_grown(b, n + m);
+        a->data[0] = (int64_t)(uintptr_t)out;
+        return out;
+    }
+    char* out = sized_grown((char*)bytes_owned(b, n), n + m);
+    if (avra_mark_at(a, 0) & MARK_OWNED) avra_rc_release(b);
+    a->data[0] = (int64_t)(uintptr_t)out;
+    mark_put(a, 0, MARK_OWNED);
+    return out;
+}
+
+// `width` octets of `word`, the most significant first, appended to the
+// bytes `cell` holds. A word is one to eight octets.
+void avra_cell_bytes_word(void* cell, int64_t word, int64_t width) {
+    if (width < 1 || width > 8) avra_trap("a word appends one to eight octets");
+    size_t n = bytes_len((const char*)(uintptr_t)((AvraArray*)cell)->data[0]);
+    char* out = cell_bytes_grown(cell, (size_t)width) + n;
+    for (int64_t k = 0; k < width; k++) out[k] = (char)(((uint64_t)word >> (8 * (width - 1 - k))) & 255);
+}
+
+// The octets of `run` appended to the bytes `cell` holds; a run that is
+// those bytes themselves appends what they were.
+void avra_cell_bytes_run(void* cell, const char* run) {
+    size_t m = bytes_len(run);
+    if (m == 0) return;
+    const char* held = (const char*)(uintptr_t)((AvraArray*)cell)->data[0];
+    size_t n = bytes_len(held);
+    int itself = run == held;
+    char* base = cell_bytes_grown(cell, m);
+    memcpy(base + n, itself ? base : run, m);
+}
+
 int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
 
 // Equality is the reason the kind exists: lengths, then every byte.
@@ -3143,11 +4367,6 @@ int64_t avra_bytes_eq(const char* a, const char* b) {
 }
 
 // One octet, 0..255. A bad index traps: -1 is not a byte.
-int64_t avra_bytes_at(const char* b, int64_t i) {
-    int64_t n = (int64_t)bytes_len(b);
-    if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
-    return (unsigned char)b[i];
-}
 
 // The octets from lo up to hi, owned. Bounds are a precondition: a
 // slice traps and never clamps, because a short answer parses.
@@ -3511,9 +4730,10 @@ const char* avra_mmap_slice(void* h, int64_t lo, int64_t hi) {
 int64_t avra_mmap_word_at(void* h, int64_t i) {
     AvraMmap* m = mmap_handle(h);
     if (i < 0 || i + 8 > m->len) avra_trap_bounds(i < 0 ? i : m->len, m->len);
-    uint64_t w = 0;
-    for (int j = 0; j < 8; j++) w = (w << 8) | (unsigned char)m->base[i + j];
-    return (int64_t)w;
+    // One unaligned load, read big-endian: the word the eight octets spell, first octet highest.
+    uint64_t w;
+    memcpy(&w, m->base + i, sizeof w);
+    return (int64_t)__builtin_bswap64(w);
 }
 
 // Unmaps and frees the handle. Using `h`, or closing it, again after
@@ -3691,6 +4911,302 @@ void avra_task_slot_set(int64_t key, void* v) {
 }
 
 int64_t avra_task_id(void) { return avra_task_local->id; }
+
+// THE CONTEXTS A TASK RUNS UNDER: one frame in its context slot, never
+// written once made — the frame it replaced first, then pairs of a
+// context's key and the cell holding the value a set gave it. A set
+// makes the next frame; the end of the set's block takes it back to the
+// one it replaced. An empty slot is the frame where nothing is set.
+// `avra_ctx_now` is the running task's frame, read by a load where code
+// asks whether a frame is the one in force; the slot owns the frame, and
+// a switch loads the next task's.
+void* avra_ctx_now = NULL;
+
+// The running task's frame made `frame`, the slot taking `frame`'s
+// reference; the one it replaces released.
+static void ctx_made(void* frame) {
+    void* was = avra_task_local->slot[AVRA_SLOT_CTX];
+    avra_task_local->slot[AVRA_SLOT_CTX] = frame;
+    avra_ctx_now = frame;
+    avra_rc_release(was);
+}
+
+// The cell the running task's frame holds for `key`, or NULL where
+// nothing set it.
+void* avra_ctx_read(int64_t key) {
+    AvraArray* frame = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
+    if (!frame) return NULL;
+    for (int64_t i = 1; i < frame->len; i += 2) {
+        if (frame->data[i] == key) return slot_retained((void*)(uintptr_t)frame->data[i + 1]);
+    }
+    return NULL;
+}
+
+// A frame over `before`, holding `pairs`' pairs but the one of `skip`
+// (none where `skip` is 0), then `key` holding `cell` where `cell` isn't
+// NULL.
+static void* ctx_over(void* before, AvraArray* pairs, int64_t skip, int64_t key, void* cell) {
+    int64_t n = pairs ? pairs->len : 1;
+    void* next = avra_array_sized(n + 2);
+    if (before) avra_array_push_owned(next, before);
+    else avra_array_push(next, 0);
+    for (int64_t i = 1; i < n; i += 2) {
+        if (skip && pairs->data[i] == skip) continue;
+        avra_array_push(next, pairs->data[i]);
+        avra_array_push_owned(next, (void*)(uintptr_t)pairs->data[i + 1]);
+    }
+    if (cell) {
+        avra_array_push(next, key);
+        avra_array_push_owned(next, cell);
+    }
+    return next;
+}
+
+// The running task's frame with `key` holding `cell`, made current.
+void avra_ctx_set(int64_t key, void* cell) {
+    void* old = avra_task_local->slot[AVRA_SLOT_CTX];
+    ctx_made(ctx_over(old, (AvraArray*)old, key, key, cell));
+}
+
+// The frame the running task's frame replaced made current again.
+void avra_ctx_back(void) {
+    AvraArray* now = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
+    if (!now) return;
+    void* before = (void*)(uintptr_t)now->data[0];
+    avra_rc_retain(before);
+    ctx_made(before);
+}
+
+// The running task's frame, its reference the caller's: what a body that
+// runs later is made under.
+void* avra_ctx_frame(void) { return avra_ctx_now ? slot_retained(avra_ctx_now) : NULL; }
+
+// Whether the frame `f` holds a cell for `key`.
+static int ctx_holds(AvraArray* f, int64_t key) {
+    if (!f) return 0;
+    for (int64_t i = 1; i + 1 < f->len; i += 2) {
+        if (f->data[i] == key) return 1;
+    }
+    return 0;
+}
+
+// The frame `under` replaced by one holding the pairs of `over` laid over
+// its own: each key `over` sets holds `over`'s cell, every other key
+// `under`'s, and `under` is the frame its back puts back.
+static void* ctx_laid(void* under, AvraArray* over) {
+    AvraArray* u = (AvraArray*)under;
+    void* next = avra_array_sized((u ? u->len : 1) + (over ? over->len : 1));
+    if (under) avra_array_push_owned(next, under);
+    else avra_array_push(next, 0);
+    for (int64_t i = 1; u && i + 1 < u->len; i += 2) {
+        if (ctx_holds(over, u->data[i])) continue;
+        avra_array_push(next, u->data[i]);
+        avra_array_push_owned(next, (void*)(uintptr_t)u->data[i + 1]);
+    }
+    for (int64_t i = 1; over && i + 1 < over->len; i += 2) {
+        avra_array_push(next, over->data[i]);
+        avra_array_push_owned(next, (void*)(uintptr_t)over->data[i + 1]);
+    }
+    return next;
+}
+
+// A body made under `frame` entered: where `frame` is the one in force,
+// nothing changes and the answer is 0; else the frame made current holds
+// `frame`'s contexts laid over the ones in force, so a context `frame`
+// sets reads as it was made and any other as where the body runs, and the
+// end of the body takes it back as a set's end does; the answer is 1.
+int64_t avra_ctx_enter(void* frame) {
+    if (frame == avra_ctx_now) return 0;
+    void* old = avra_task_local->slot[AVRA_SLOT_CTX];
+    // Entered under the very frame `frame` was set over, the frame laid is
+    // `frame` itself: its first slot is the one in force, and it holds every
+    // context of that one it doesn't set. It is made current as it stands.
+    AvraArray* f = (AvraArray*)frame;
+    if (f && f->len > 0 && (void*)(uintptr_t)f->data[0] == old) {
+        avra_rc_retain(frame);
+        ctx_made(frame);
+        return 1;
+    }
+    ctx_made(ctx_laid(old, f));
+    return 1;
+}
+
+// The frame in force pushed onto `box`, marked as the box's frame: the
+// cell a reframe replaces. The box holds a reference to it.
+void avra_ctx_frame_pushed(void* box) {
+    AvraArray* a = (AvraArray*)box;
+    if (avra_ctx_now) avra_array_push_owned(box, avra_ctx_now);
+    else avra_array_push(box, 0);
+    if (!avra_packed(a)) a->marks[a->len - 1] |= MARK_FRAME;
+}
+
+// The box `box`, whose frame is its slot `at`, made under `frame` instead:
+// the same box where that slot holds `frame` already, or isn't a frame —
+// the box has no slot `at`, or that slot isn't marked as its frame; else a
+// copy, `frame` in that slot, marked, and the rest its own. The caller
+// holds a reference to what it answers.
+void* avra_ctx_reframed(void* box, int64_t at, void* frame) {
+    AvraArray* a = (AvraArray*)box;
+    if (at < 0 || a->len <= at || avra_packed(a) || !(a->marks[at] & MARK_FRAME)) return slot_retained(box);
+    if ((void*)(uintptr_t)a->data[at] == frame) return slot_retained(box);
+    void* copy = avra_array_sized(a->len);
+    for (int64_t i = 0; i < a->len; i++) {
+        if (i == at) {
+            if (frame) avra_array_push_owned(copy, frame);
+            else avra_array_push(copy, 0);
+            ((AvraArray*)copy)->marks[i] |= MARK_FRAME;
+            continue;
+        }
+        if (a->marks[i] & MARK_OWNED) avra_array_push_owned(copy, (void*)(uintptr_t)a->data[i]);
+        else avra_array_push(copy, a->data[i]);
+        ((AvraArray*)copy)->marks[i] = a->marks[i];
+    }
+    return copy;
+}
+
+// `frame` current, the one it replaces released: what a guard entered
+// under, put back where it catches.
+static void ctx_restored(void* frame) {
+    avra_rc_retain(frame);
+    ctx_made(frame);
+}
+
+// WHAT A RUNNING QUERY HEARS OF CONTEXTS. A context read inside a query
+// body is one of the answer's reads, as a Db read is: the answer stands
+// while every context it read holds what it held. The running task's
+// slot holds a stack of recordings, one per query open on it, each a
+// list of triples — a context's key, how its value is told apart, and
+// the word that tells it — and `avra_ctx_heard_now` is that stack, NULL
+// where no query is open: the one word a context read tests. Every
+// other cost is the cold path's, out of line.
+void* avra_ctx_heard_now = NULL;
+
+// How a context's value is told apart: by its one word (a number, a
+// truth, a word enum), by its text, or not at all — an answer that read
+// one of those is kept by no cell. A default read is told apart from
+// every set, the default being the same value every time.
+enum { CTX_WORD = 0, CTX_TEXT = 1, CTX_UNTOLD = 2, CTX_DEFAULT = 3 };
+
+// What tells the value `cell` holds apart, as `kind` tells it.
+static int64_t ctx_word(int64_t kind, void* cell) {
+    if (!cell) return 0;
+    int64_t v = ((AvraArray*)cell)->data[0];
+    if (kind == CTX_TEXT) return v ? (int64_t)avra_text_hash((const char*)(uintptr_t)v) : 0;
+    return v;
+}
+
+// The stack of recordings the running task holds, made where `make`.
+static AvraArray* ctx_heard_stack(int make) {
+    AvraArray* st = (AvraArray*)avra_task_local->slot[AVRA_SLOT_HEARD];
+    if (st || !make) return st;
+    st = (AvraArray*)avra_array_sized(2);
+    avra_task_local->slot[AVRA_SLOT_HEARD] = st;
+    return st;
+}
+
+// The recording at `at` of the stack `st`, made where none was heard into yet.
+static AvraArray* ctx_recording(AvraArray* st, int64_t at) {
+    AvraArray* r = (AvraArray*)(uintptr_t)st->data[at];
+    if (r) return r;
+    r = (AvraArray*)avra_array_sized(6);
+    st->data[at] = (int64_t)(uintptr_t)r;
+    if (!avra_packed(st)) st->marks[at] |= MARK_OWNED;
+    return r;
+}
+
+// The cell the running task's frame holds for `key`, as a word, 0 where
+// nothing set it: what tells two places apart by the set in force at
+// each, with no reference taken and no value read.
+int64_t avra_ctx_entry(int64_t key) {
+    AvraArray* frame = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
+    for (int64_t i = 1; frame && i + 1 < frame->len; i += 2) {
+        if (frame->data[i] == key) return frame->data[i + 1];
+    }
+    return 0;
+}
+
+// The word a task switched to reads: its stack where a query is open on it, else NULL.
+void* avra_ctx_heard_of(void** slots) {
+    AvraArray* st = (AvraArray*)slots[AVRA_SLOT_HEARD];
+    return st && st->len > 0 ? st : NULL;
+}
+
+// THE COLD PATH: a context read inside a query body, its key `key`, its
+// value told apart as `kind`, the cell a set gave it or NULL for its
+// default — filed on the innermost recording, made at its first read.
+__attribute__((noinline, cold))
+void avra_ctx_heard(int64_t key, int64_t kind, void* cell) {
+    AvraArray* st = ctx_heard_stack(0);
+    if (!st || st->len == 0) return;
+    AvraArray* top = ctx_recording(st, st->len - 1);
+    int64_t k = cell ? kind : CTX_DEFAULT;
+    avra_array_push(top, key);
+    avra_array_push(top, k);
+    avra_array_push(top, ctx_word(k, cell));
+}
+
+// A query body about to run: a recording opened over the ones open — an
+// empty place, made into a list only where the body reads a context.
+void avra_ctx_listen(void) {
+    AvraArray* st = ctx_heard_stack(1);
+    avra_array_push(st, 0);
+    avra_ctx_heard_now = st;
+}
+
+// The body ran: its recording closed and answered, the caller's own, NULL
+// where it heard nothing; what it heard is heard by the query open around
+// it too, which reads this one's answer.
+void* avra_ctx_listened(void) {
+    AvraArray* st = ctx_heard_stack(0);
+    if (!st || st->len == 0) return NULL;
+    st->len -= 1;
+    AvraArray* heard = (AvraArray*)(uintptr_t)st->data[st->len];
+    st->data[st->len] = 0;
+    if (!avra_packed(st)) st->marks[st->len] = 0;
+    if (st->len > 0) {
+        if (heard) {
+            AvraArray* outer = ctx_recording(st, st->len - 1);
+            for (int64_t i = 0; i < heard->len; i++) avra_array_push(outer, heard->data[i]);
+        }
+    } else {
+        // No query is open on the task: the word reads NULL, and the stack stays for the next.
+        avra_ctx_heard_now = NULL;
+    }
+    return heard;
+}
+
+// A recording no cell keeps any longer, let go.
+void avra_ctx_heard_drop(void* heard) { avra_rc_release(heard); }
+
+// An answer reused inside a query body: what it heard is heard again by
+// the query open, which stands on it as it stands on the answer.
+void avra_ctx_reheard(void* heard) {
+    AvraArray* h = (AvraArray*)heard;
+    AvraArray* st = ctx_heard_stack(0);
+    if (!h || !st || st->len == 0) return;
+    AvraArray* top = ctx_recording(st, st->len - 1);
+    for (int64_t i = 0; i < h->len; i++) avra_array_push(top, h->data[i]);
+}
+
+// Whether every context `heard` records holds now, in the frame in force,
+// what it held when it was heard: an answer that read one told apart by
+// nothing never does.
+int64_t avra_ctx_holds(void* heard) {
+    AvraArray* h = (AvraArray*)heard;
+    if (!h) return 1;
+    AvraArray* frame = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
+    for (int64_t i = 0; i + 2 < h->len; i += 3) {
+        int64_t key = h->data[i], kind = h->data[i + 1], word = h->data[i + 2];
+        if (kind == CTX_UNTOLD) return 0;
+        void* cell = NULL;
+        for (int64_t j = 1; frame && j + 1 < frame->len; j += 2) {
+            if (frame->data[j] == key) { cell = (void*)(uintptr_t)frame->data[j + 1]; break; }
+        }
+        if (kind == CTX_DEFAULT) { if (cell) return 0; continue; }
+        if (!cell || ctx_word(kind, cell) != word) return 0;
+    }
+    return 1;
+}
 
 int64_t avra_fd_read(int64_t fd, int64_t max) {
     if (__builtin_expect(max < 0, 0)) return -EINVAL;
@@ -3872,7 +5388,7 @@ void avra_fd_exit_writes(int64_t fd, const char* bytes) {
 static void push_fresh_text(void* arr, const char* s, size_t n) {
     avra_array_push(arr, (int64_t)(uintptr_t)str_owned(s, n));
     AvraArray* a = (AvraArray*)arr;
-    a->marks[a->len - 1] = MARK_OWNED;
+    mark_put(a, a->len - 1, MARK_OWNED);
 }
 
 const char* avra_str_substring(const char* s, int64_t lo, int64_t hi) {
@@ -3938,6 +5454,180 @@ int64_t avra_str_char_code(const char* s, int64_t i) {
     if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
     return (unsigned char)s[i];
 }
+
+// THE SAVED LAYOUT'S WRITER, held in C: an answer's octets grown in one buffer and the slots
+// its open nodes hold on one stack of words, two a slot (what it holds, then its number or the
+// child's position). A node is written whole in one call: its label, its size codes, its slots
+// big-endian at their widths, byte for byte as `saved_layout.av`'s reader reads them. A writer
+// outlives the answers it writes: `closed` ends an answer, its octets are adopted from
+// `octets_at`, and `emptied` readies it for the next.
+typedef struct {
+    unsigned char* buf; size_t len, cap;
+    int64_t* slots; size_t height, slot_cap;
+    int64_t open_list;
+} SavedWriter;
+
+enum { SW_NUMBER = 0, SW_CHILD = 1, SW_NOTHING = 2, SW_LIST_MARK = 3 };
+
+static void sw_room(SavedWriter* w, size_t more) {
+    if (w->len + more <= w->cap) return;
+    size_t cap = w->cap ? w->cap : 256;
+    while (cap < w->len + more) cap *= 2;
+    w->buf = realloc(w->buf, cap);
+    if (!w->buf) avra_trap("a saved answer's writer could not grow"); // LICENSED traps.process_limit: the allocator ran out of memory
+    w->cap = cap;
+}
+
+static void sw_big(SavedWriter* w, uint64_t value, int width) {
+    sw_room(w, (size_t)width);
+    for (int i = width - 1; i >= 0; i--) w->buf[w->len++] = (unsigned char)(value >> (8 * i));
+}
+
+static int sw_width(int64_t v) {
+    if (v < 0) return 8;
+    if (v < 256) return 1;
+    if (v < 65536) return 2;
+    if (v < 4294967296LL) return 4;
+    return 8;
+}
+
+static int sw_code(int width) { return width == 1 ? 0 : width == 2 ? 1 : width == 4 ? 2 : 3; }
+
+static int64_t sw_zigzag(int64_t v) { return (int64_t)(((uint64_t)v << 1) ^ (uint64_t)(v >> 63)); }
+
+static int64_t sw_value(const SavedWriter* w, int64_t start, size_t at) {
+    int64_t held = w->slots[at];
+    if (held == SW_NUMBER) return sw_zigzag(w->slots[at + 1]);
+    return held == SW_CHILD ? start - w->slots[at + 1] : 0;
+}
+
+static void sw_label(SavedWriter* w, int width, int64_t variant, int64_t length) {
+    int64_t vb = variant < 7 ? variant : 7, lb = length < 7 ? length : 7;
+    sw_big(w, (uint64_t)((sw_code(width) << 6) | (vb << 3) | lb), 1);
+    if (variant >= 7) sw_big(w, (uint64_t)variant, 2);
+    if (length >= 7) sw_big(w, (uint64_t)length, 4);
+}
+
+void* avra_sw_new(int64_t room) {
+    SavedWriter* w = calloc(1, sizeof *w);
+    if (!w) avra_trap("a saved answer's writer could not be made"); // LICENSED traps.process_limit: the allocator ran out of memory
+    sw_room(w, room > 0 ? (size_t)room : 256);
+    return w;
+}
+
+int64_t avra_sw_length(void* h) { return (int64_t)((SavedWriter*)h)->len; }
+
+void avra_sw_push(void* h, int64_t held, int64_t word) {
+    SavedWriter* w = h;
+    if (w->height + 2 > w->slot_cap) {
+        size_t cap = w->slot_cap ? w->slot_cap * 2 : 64;
+        w->slots = realloc(w->slots, cap * sizeof *w->slots);
+        if (!w->slots) avra_trap("a saved answer's writer could not grow"); // LICENSED traps.process_limit: the allocator ran out of memory
+        w->slot_cap = cap;
+    }
+    w->slots[w->height++] = held;
+    w->slots[w->height++] = word;
+}
+
+int64_t avra_sw_record(void* h, int64_t variant, int64_t count) {
+    SavedWriter* w = h;
+    size_t from = w->height - 2 * (size_t)count;
+    w->height = from;
+    int64_t start = (int64_t)w->len;
+    sw_label(w, 1, variant, count);
+    for (int64_t first = 0; first < count; first += 4) {
+        int codes = 0;
+        for (int64_t slot = first; slot < first + 4; slot++)
+            codes = (codes << 2) | (slot < count ? sw_code(sw_width(sw_value(w, start, from + 2 * (size_t)slot))) : 0);
+        sw_big(w, (uint64_t)codes, 1);
+    }
+    for (int64_t slot = 0; slot < count; slot++) {
+        int64_t v = sw_value(w, start, from + 2 * (size_t)slot);
+        sw_big(w, (uint64_t)v, sw_width(v));
+    }
+    return start;
+}
+
+void avra_sw_list_open(void* h) {
+    SavedWriter* w = h;
+    avra_sw_push(w, SW_LIST_MARK, w->open_list);
+    w->open_list = (int64_t)w->height;
+}
+
+int64_t avra_sw_list_close(void* h) {
+    SavedWriter* w = h;
+    size_t from = (size_t)w->open_list;
+    int64_t count = (int64_t)(w->height - from) / 2;
+    w->open_list = w->slots[from - 1];
+    w->height = from - 2;
+    int64_t start = (int64_t)w->len;
+    int width = 1;
+    for (int64_t slot = 0; slot < count; slot++) {
+        int sw = sw_width(sw_value(w, start, from + 2 * (size_t)slot));
+        if (sw > width) width = sw;
+    }
+    sw_label(w, width, 0, count);
+    for (int64_t slot = 0; slot < count; slot++) sw_big(w, (uint64_t)sw_value(w, start, from + 2 * (size_t)slot), width);
+    return start;
+}
+
+void avra_sw_label(void* h, int64_t width, int64_t variant, int64_t length) { sw_label(h, (int)width, variant, length); }
+
+void avra_sw_big(void* h, int64_t value, int64_t width) { sw_big(h, (uint64_t)value, (int)width); }
+
+static int64_t sw_run(SavedWriter* w, const char* octets, size_t n) {
+    int64_t start = (int64_t)w->len;
+    sw_label(w, 1, 0, (int64_t)n);
+    sw_room(w, n);
+    memcpy(w->buf + w->len, octets, n);
+    w->len += n;
+    return start;
+}
+
+int64_t avra_sw_octets(void* h, const char* b) { return sw_run(h, b, bytes_len(b)); }
+
+int64_t avra_sw_text(void* h, const char* s) { return sw_run(h, s, str_len(s)); }
+
+int64_t avra_sw_closed(void* h, int64_t root) {
+    SavedWriter* w = h;
+    sw_big(w, (uint64_t)((int64_t)w->len + 8 - root), 8);
+    return (int64_t)w->len;
+}
+
+void* avra_sw_octets_at(void* h) { return ((SavedWriter*)h)->buf; }
+
+void avra_sw_emptied(void* h) {
+    SavedWriter* w = h;
+    w->len = 0;
+    w->height = 0;
+    w->open_list = 0;
+}
+
+// A WHOLE VALUE FOLDED INTO ONE LANE OF A KEY, in one call: its bytes eight to a
+// big-endian word, the tail a byte to a word, then its length, each word folded as
+// `KeyLane.word` folds it (`h ^ w * prime`, rotated left 29, times `prime`). A text
+// and a `Bytes` value share the header, so one loop serves both rows.
+static int64_t lane_folded(int64_t h, int64_t prime, const char* s, size_t n) {
+    uint64_t x = (uint64_t)h, p = (uint64_t)prime;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, s + i, 8);
+        w = __builtin_bswap64(w);
+        uint64_t m = x ^ (w * p);
+        x = ((m << 29) | (m >> 35)) * p;
+    }
+    for (; i < n; i++) {
+        uint64_t m = x ^ ((uint64_t)(unsigned char)s[i] * p);
+        x = ((m << 29) | (m >> 35)) * p;
+    }
+    uint64_t m = x ^ ((uint64_t)n * p);
+    return (int64_t)(((m << 29) | (m >> 35)) * p);
+}
+
+int64_t avra_lane_text(int64_t h, int64_t prime, const char* s) { return lane_folded(h, prime, s, str_len(s)); }
+
+int64_t avra_lane_octets(int64_t h, int64_t prime, const char* b) { return lane_folded(h, prime, b, bytes_len(b)); }
 
 // EIGHT BYTES AS ONE BIG-ENDIAN WORD — the eight `avra_str_char_code` calls a
 // digest word costs, made one. It reads the SAME bytes through the SAME header,
@@ -4084,13 +5774,17 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 #if !defined(__wasm32__)
 // A child's cwd bound through a file action: POSIX-2024's name where
 // the SDK has it (macOS 26), the `_np` spelling before (Darwin
-// 10.15, glibc 2.29); elsewhere a cwd is refused as unsupported.
+// 10.15, glibc 2.29); elsewhere — iOS among them — a cwd is refused
+// as unsupported.
 #if defined(__APPLE__)
 #include <Availability.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir
 #else
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
 #endif
 #elif defined(__GLIBC__)
 #if __GLIBC_PREREQ(2, 29)
@@ -4098,6 +5792,18 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 #endif
 #endif
 extern char** environ;
+
+// The cwd `dir` bound to a child's file actions: nonzero where the
+// platform binds none.
+static int cwd_bound(posix_spawn_file_actions_t* acts, const char* dir) {
+#if defined(AVRA_ADDCHDIR)
+    return AVRA_ADDCHDIR(acts, dir);
+#else
+    (void)acts;
+    (void)dir;
+    return -1;
+#endif
+}
 #endif
 #include <dirent.h>
 #include <time.h>
@@ -4522,6 +6228,14 @@ void* avra_type_named(const char* name) {
     return NULL;
 }
 
+/* `avra_fn_declared` is answered by the compiler's declaration table too,
+   reached only by the interpreter's arm. */
+void* avra_fn_declared(const char* key) {
+    (void)key;
+    avra_trap("`decl` reads a declaration at compile time — this program reached it at run time");
+    return NULL;
+}
+
 static int by_text(const void* a, const void* b) {
     return strcmp((const char*)(uintptr_t)*(const int64_t*)a, (const char*)(uintptr_t)*(const int64_t*)b);
 }
@@ -4633,6 +6347,7 @@ const char* avra_errno_text(int64_t err) {
 int64_t avra_spawn_status(const char* prog, void* args) { return 127; }
 int64_t avra_spawn_in(const char* dir, const char* prog, void* args) { return 127; }
 const char* avra_self_dir(void) { return str_static(""); }
+const char* avra_self_path(void) { return str_static(""); }
 int64_t avra_exec_self(void* args) { return 127; }
 
 #else
@@ -4656,6 +6371,7 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     // a buffered stdout is flushed at the seam, or a pipe reorders
     fflush(NULL);
     pid_t pid;
+    avra_mem_settle();
     int started = posix_spawnp(&pid, prog, NULL, NULL, argv, environ);
     free(argv);
     if (started != 0) return 127;
@@ -4684,8 +6400,9 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
     fflush(NULL);
     posix_spawn_file_actions_t acts;
     if (posix_spawn_file_actions_init(&acts) != 0) { free(argv); return 127; }
-    if (AVRA_ADDCHDIR(&acts, dir) != 0) { posix_spawn_file_actions_destroy(&acts); free(argv); return 127; }
+    if (cwd_bound(&acts, dir) != 0) { posix_spawn_file_actions_destroy(&acts); free(argv); return 127; }
     pid_t pid;
+    avra_mem_settle();
     int started = posix_spawnp(&pid, prog, &acts, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&acts);
     free(argv);
@@ -4704,14 +6421,32 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
 // light one a fresh process. Answers only when it cannot: 127.
 static int self_path(char* buf, size_t cap) {
 #ifdef __APPLE__
-    uint32_t n = (uint32_t)cap;
-    return _NSGetExecutablePath(buf, &n) == 0;
+    // the path the image was started by, which may be a link: resolved, as /proc/self/exe is, so
+    // the file named is the image's own whatever led to it
+    char started[4096];
+    uint32_t n = (uint32_t)sizeof started;
+    if (_NSGetExecutablePath(started, &n) != 0) return 0;
+    char resolved[PATH_MAX];
+    if (!realpath(started, resolved) || strlen(resolved) >= cap) return 0;
+    strcpy(buf, resolved);
+    return 1;
 #else
     ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
     if (n < 0) return 0;
     buf[n] = 0;
     return 1;
 #endif
+}
+
+// The file this image was started from, its links resolved — immortal, minted once; "" where the
+// host can't say.
+const char* avra_self_path(void) {
+    static const char* path = NULL;
+    if (path) return path;
+    char self[4096];
+    if (!self_path(self, sizeof self)) return str_static("");
+    path = str_static(self);
+    return path;
 }
 
 // The directory this image stands in — immortal, minted once.
@@ -4822,11 +6557,75 @@ const char* avra_capture_end(void) {
 
 #endif
 
+// WHAT A CORE FORGETS: the descriptors the process's leave-behind and its
+// capture name belong to the process that armed them, and a core closes
+// every descriptor it was not given, so each number goes before the close
+// frees it for the core's own files. A wasm module has no leave-behind and
+// no terminal, so it forgets its capture alone.
+void avra_descriptors_forgotten(void) {
+#if !defined(__wasm32__)
+    g_leave_fd = -1;
+    g_leave_len = 0;
+    g_tty_fd = -1;
+    g_tty_saved = 0;
+#endif
+    g_cap_file = -1;
+    g_cap_saved = -1;
+}
+
 // THE ROWS CLAIM THE RUNTIME. `runtime/avra_rt.h` is generated from
 // `rt_sigs()` and asserts, in the C compiler, that every body answers
 // the width its row names and takes the seats it names — the bodies
 // above, and the other objects' through their headers, which their
 // own definitions must match. Included LAST, so all are declared.
+#include "avra_unwind.h"
 #include "avra_fiber.h"
 #include "avra_cores.h"
 #include "avra_rt.h"
+
+// ── The frames an unwind passed ──────────────────────────────────
+
+static AvraUnwind g_main_unwind;
+AvraUnwind* (*avra_unwind_running)(void) = 0;
+
+AvraUnwind* avra_unwind_main(void) { return &g_main_unwind; }
+
+static AvraUnwind* running_unwind(void) { return avra_unwind_running ? avra_unwind_running() : &g_main_unwind; }
+
+void avra_unwind_clear(void) { memset(running_unwind(), 0, sizeof(AvraUnwind)); }
+
+// One frame the unwind passed: appended, or — full — the middle dropped
+// and counted, the newest kept in the last slot.
+void avra_unwind_push(void* frame) {
+    AvraUnwind* held = running_unwind();
+    if (held->n < AVRA_UNWIND_CAP) {
+        held->frames[held->n++] = (int64_t)(uintptr_t)frame;
+        return;
+    }
+    memmove(
+        &held->frames[AVRA_UNWIND_CAP / 2],
+        &held->frames[AVRA_UNWIND_CAP / 2 + 1],
+        (AVRA_UNWIND_CAP / 2 - 1) * sizeof(int64_t));
+    held->frames[AVRA_UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;
+    held->dropped = held->dropped + 1;
+}
+
+int64_t avra_unwind_count(void) { return running_unwind()->n; }
+
+void* avra_unwind_at(int64_t i) {
+    AvraUnwind* held = running_unwind();
+    if (i < 0 || i >= held->n) return NULL;
+    return (void*)(uintptr_t)held->frames[i];
+}
+
+// How many frames a full list has dropped; the landing says so.
+int64_t avra_unwind_dropped(void) { return running_unwind()->dropped; }
+
+// ── The shield a cold exit raises ─────────────────────────────────
+
+void (*avra_shield_entered)(void) = 0;
+void (*avra_shield_left)(void) = 0;
+
+void avra_fiber_shield_enter(void) { if (avra_shield_entered) avra_shield_entered(); }
+
+void avra_fiber_shield_leave(void) { if (avra_shield_left) avra_shield_left(); }

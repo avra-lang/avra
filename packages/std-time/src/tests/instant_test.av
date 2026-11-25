@@ -1,7 +1,7 @@
 // Instants: the epoch is zero nanoseconds, ISO-8601 round-trips across
 // the range, a malformed text is absent, and Duration arithmetic is exact
 // where it says so and floors where it says so.
-use @std.time.{epoch, parse_iso, ms, secs}
+use @std.time.{epoch, parse_iso, ms, nanos, secs}
 
 spec "std/time — instants" {
     given "the epoch" {
@@ -64,6 +64,11 @@ spec "std/time — instants" {
         }
     }
     given "the range edges" {
+        then "a nanosecond span is the count it was given, at either end of the int range" {
+            nanos(7).ns == 7 &&
+                nanos(9223372036854775807).ns == 9223372036854775807 &&
+                nanos(0 - 9223372036854775807 - 1).ns == 0 - 9223372036854775807 - 1
+        }
         then "the largest millisecond span holds" {
             ms(9223372036854).ns == 9223372036854000000
         }
@@ -75,6 +80,17 @@ spec "std/time — instants" {
         }
         then "the instant at the range's start is the smallest nanosecond" {
             parse_iso("1677-09-21T00:12:43.145224192Z")!.ns == 0 - 9223372036854775807 - 1
+        }
+        then "a held move past the range's end stops at its last instant" {
+            parse_iso("2262-04-11T23:47:16.854775807Z")!.plus_held(ms(1)).ns == 9223372036854775807 &&
+                epoch().plus_held(ms(9223372036854)).plus_held(ms(9223372036854)).ns == 9223372036854775807
+        }
+        then "a held move past the range's start stops at its first instant" {
+            parse_iso("1677-09-21T00:12:43.145224192Z")!.plus_held(ms(-1)).ns == 0 - 9223372036854775807 - 1
+        }
+        then "a held move inside the range is a plain move" {
+            epoch().plus_held(ms(-2)).ns == epoch().plus(ms(-2)).ns &&
+                parse_iso("2262-04-11T23:47:16.854775807Z")!.plus_held(ms(-1)).ns == 9223372036853775807
         }
         then "the epoch's neighbour is one nanosecond before it" {
             parse_iso("1969-12-31T23:59:59.999999999Z")!.minus(epoch()).ns == 0 - 1

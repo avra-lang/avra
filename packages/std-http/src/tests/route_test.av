@@ -15,6 +15,7 @@ use @std.http.route.{
     route_faults,
     RouteFault,
     get,
+    prefixed,
 }
 
 grammar Idea = "/ideas/{id}"
@@ -29,8 +30,15 @@ fn serve_static(q: Request<Static>) -> Response { text(200, "static " + q.params
 fn serve_png(q: Request<Png>) -> Response { text(200, "png " + q.params.path) }
 fn serve_word(_q: Request<Unrouted>) -> Response { text(200, "word") }
 
-fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static) }
-fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse(t), serve_png) }
+fn r_static() -> Route {
+    tailed<Static>(
+        Method.Get,
+        "/static/{path...}",
+        (t: Bytes) -> Static.parse_octets(t),
+        serve_static,
+    )
+}
+fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse_octets(t), serve_png) }
 
 /// The words of a table's fault variants, one per fault.
 fn kinds(rows: List<Route>) -> List<string> {
@@ -45,6 +53,29 @@ fn kind_of(f: RouteFault) -> string {
     }
 }
 
+/// One path under three methods, written in no order.
+fn many_methods() -> List<Route> {
+    [
+        fixed(Method.Delete, "/p", serve_word),
+        fixed(Method.Post, "/p", serve_word),
+        fixed(Method.Get, "/p", serve_word),
+    ]
+}
+
+fn reversed_rows(rows: List<Route>) -> List<Route> { [rows[rows.length - 1 - i] for i in 0..rows.length] }
+
+/// A group at `/api`: a GET beneath it and a POST at its root.
+fn under_api() -> List<Route> {
+    prefixed("/api", [fixed(Method.Get, "/x", serve_word), fixed(Method.Post, "/", serve_word)])
+}
+
+/// The status and the `allow` field a table answers for a target.
+fn refused_as(rows: List<Route>, line: string) -> string {
+    let q? = asked(line) else { return "unframed" }
+    let r = dispatch(compiled(rows), q)
+    "${r.status} ${r.header("allow") ?? ""}"
+}
+
 /// What a table of these routes answers for a target.
 fn answer_of(rows: List<Route>, line: string) -> string {
     let q? = asked(line) else { return "unframed" }
@@ -54,11 +85,11 @@ fn answer_of(rows: List<Route>, line: string) -> string {
 
 fn routes() -> List<Route> {
     [
-        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse_octets(t), serve_idea),
         routed<Search>(
             Method.Get,
             "/search/{term}/{page}",
-            (t: Bytes) -> Search.parse(t),
+            (t: Bytes) -> Search.parse_octets(t),
             serve_search,
         ),
     ]
@@ -76,10 +107,7 @@ fn wide_first() -> List<Route> {
 }
 
 /// The same four, written tightest first.
-fn tight_first() -> List<Route> {
-    let rows = wide_first()
-    [rows[rows.length - 1 - i] for i in 0..rows.length]
-}
+fn tight_first() -> List<Route> { reversed_rows(wide_first()) }
 
 /// The status and body a target earns, or "unframed" when the framer
 /// refused the line before the router ever saw it.
@@ -106,7 +134,7 @@ spec "@std.http route" {
             answered("GET /ideas/ HTTP/1.1") == "200 idea "
         }
         then "the method is part of the match" {
-            answered("POST /ideas/7 HTTP/1.1") == "404 "
+            answered("POST /ideas/7 HTTP/1.1") == "405 "
         }
         then "a HEAD no HEAD route answers is answered by its GET route" {
             answered("HEAD /ideas/7 HTTP/1.1") == "200 idea 7"
@@ -116,9 +144,70 @@ spec "@std.http route" {
             answer_of(routes().concat([head]), "HEAD /ideas/7 HTTP/1.1") == "200 head" &&
                 answer_of([head].concat(routes()), "HEAD /ideas/7 HTTP/1.1") == "200 head"
         }
-        then "a HEAD with no GET route beside it is still a 404" {
-            answered("HEAD /nowhere HTTP/1.1") == "404 " &&
-                answer_of([fixed(Method.Post, "/p", serve_word)], "HEAD /p HTTP/1.1") == "404 "
+        then "a HEAD of a path no route reads is still a 404" {
+            answered("HEAD /nowhere HTTP/1.1") == "404 "
+        }
+        then "a HEAD with no GET route beside it is refused like any method" {
+            refused_as([fixed(Method.Post, "/p", serve_word)], "HEAD /p HTTP/1.1") == "405 POST"
+        }
+    }
+    given "a target only another method's route reads" {
+        then "it is a 405 whose Allow names that method, HEAD beside GET" {
+            refused_as(routes(), "POST /ideas/7 HTTP/1.1") == "405 GET, HEAD"
+        }
+        then "Allow lists every method the path takes in one order, however the table is written" {
+            refused_as(many_methods(), "PUT /p HTTP/1.1") == "405 GET, HEAD, POST, DELETE" &&
+                refused_as(reversed_rows(many_methods()), "PUT /p HTTP/1.1") == "405 GET, HEAD, POST, DELETE"
+        }
+        then "a HEAD route beside its GET is named once" {
+            let head = fixed(Method.Head, "/p", serve_word)
+            refused_as(many_methods().concat([head]), "PUT /p HTTP/1.1") == "405 GET, HEAD, POST, DELETE"
+        }
+        then "a HEAD route alone does not name GET" {
+            refused_as([fixed(Method.Head, "/p", serve_word)], "GET /p HTTP/1.1") == "405 HEAD"
+        }
+        then "a path no route reads is a 404 with no Allow" {
+            refused_as(routes(), "POST /nowhere HTTP/1.1") == "404 " &&
+                refused_as(many_methods(), "PUT /p/x HTTP/1.1") == "404 " &&
+                refused_as(many_methods(), "PUT /q HTTP/1.1") == "404 "
+        }
+        then "a route whose reader refuses the target lends no method" {
+            refused_as(
+                    [get "/pages/{n: int}" { req -> "page ${req.params.n}" }],
+                    "POST /pages/two HTTP/1.1",
+                ) == "404 " &&
+                refused_as(
+                    [get "/pages/{n: int}" { req -> "page ${req.params.n}" }],
+                    "POST /pages/2 HTTP/1.1",
+                ) == "405 GET, HEAD"
+        }
+        then "a method the handler answers is its answer, whatever the other routes take" {
+            answer_of(many_methods(), "POST /p HTTP/1.1") == "200 word"
+        }
+        then "an OPTIONS of a routed path is refused by the same law" {
+            refused_as(routes(), "OPTIONS /ideas/7 HTTP/1.1") == "405 GET, HEAD"
+        }
+        then "a target that names no resource is still a 404" {
+            refused_as(routes(), "OPTIONS * HTTP/1.1") == "404 "
+        }
+        then "a rest-taker lends its method at every depth it reads" {
+            refused_as([r_static()], "POST /static/css/app.css HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as([r_png()], "POST /img/a/b.gif HTTP/1.1") == "404 "
+        }
+    }
+    given "routes under a prefix" {
+        then "a route beneath it lends its method beneath it alone" {
+            refused_as(under_api(), "POST /api/x HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as(under_api(), "POST /x HTTP/1.1") == "404 " &&
+                refused_as(under_api(), "POST /apix HTTP/1.1") == "404 "
+        }
+        then "the group's root door lends its method at the prefix, and not past a slash" {
+            refused_as(under_api(), "GET /api HTTP/1.1") == "405 POST" &&
+                refused_as(under_api(), "GET /api/ HTTP/1.1") == "404 "
+        }
+        then "a prefix under a prefix reads the same" {
+            refused_as(prefixed("/v1", under_api()), "POST /v1/api/x HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as(prefixed("/v1", under_api()), "GET /v1/api HTTP/1.1") == "405 POST"
         }
     }
     given "a handler's own 404" {
@@ -130,7 +219,7 @@ spec "@std.http route" {
                         routed<Idea>(
                             Method.Get,
                             "/ideas/{id}",
-                            (t: Bytes) -> Idea.parse(t),
+                            (t: Bytes) -> Idea.parse_octets(t),
                             serve_gone,
                         ),
                     ],
@@ -146,13 +235,13 @@ spec "@std.http route" {
                         routed<Search>(
                             Method.Get,
                             "/search/{term}/{page}",
-                            (t: Bytes) -> Search.parse(t),
+                            (t: Bytes) -> Search.parse_octets(t),
                             serve_search,
                         ),
                         routed<Idea>(
                             Method.Get,
                             "/ideas/{id}",
-                            (t: Bytes) -> Idea.parse(t),
+                            (t: Bytes) -> Idea.parse_octets(t),
                             serve_idea,
                         ),
                     ],
@@ -167,11 +256,16 @@ spec "@std.http route" {
         then "two routes of one shape are named, later first" {
             faults(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Get,
                         "/ideas/{slug}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -181,11 +275,16 @@ spec "@std.http route" {
         then "the refusal names both patterns and says which is unreachable" {
             let found = faults(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Get,
                         "/ideas/{slug}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -198,11 +297,16 @@ spec "@std.http route" {
         then "one shape under two methods is two routes, not a conflict" {
             faults(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Post,
                         "/ideas/{id}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -284,7 +388,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/files",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -296,7 +400,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/{path}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -309,7 +413,7 @@ spec "@std.http route" {
                     routed<Static>(
                         Method.Get,
                         "/static/{path...}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -324,7 +428,7 @@ spec "@std.http route" {
                     routed<Search>(
                         Method.Get,
                         "/search/{term...}/{page}",
-                        (t: Bytes) -> Search.parse(t),
+                        (t: Bytes) -> Search.parse_octets(t),
                         serve_search,
                     ),
                 ],
@@ -341,7 +445,7 @@ spec "@std.http route" {
                     routed<Search>(
                         Method.Get,
                         "/static/{term}/{page}",
-                        (t: Bytes) -> Search.parse(t),
+                        (t: Bytes) -> Search.parse_octets(t),
                         serve_search,
                     ),
                 ],
@@ -354,7 +458,12 @@ spec "@std.http route" {
         then "NO ROUTE OF FIXED WIDTH CAN SHADOW A REST-TAKER — there is always a deeper target" {
             faults(
                 [
-                    routed<Idea>(Method.Get, "/static/{x}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/static/{x}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     r_static(),
                 ],
             )
@@ -370,7 +479,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/{rest...}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -383,11 +492,16 @@ spec "@std.http route" {
         then "two routes of one specificity over one set of targets are an Overlap" {
             kinds(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Get,
                         "/ideas/{slug}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -400,7 +514,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/files",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -413,7 +527,7 @@ spec "@std.http route" {
                     routed<Static>(
                         Method.Get,
                         "/static/{path...}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],

@@ -1,8 +1,7 @@
 // The RED TEAM's permanent record for records (see
 // .claude/skills/red-team). Every program here was written to break
 // the feature, not to use it.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refusals, refused_with}
+use @std.avrac.testing.{shown, refusals, refused_with, judged}
 
 /// THE subject under attack: the smallest record there is.
 fn p1() -> string {
@@ -17,7 +16,7 @@ fn p1_bound() -> string {
 spec "features/structs (adversarial)" {
     given "the slot law vs the name law" {
         then "an unknown FIELD type names the NAME, not the slot law" {
-            let a = analyze_source("type P = { x: Foo }\nlet q = P { x: 1 }\nq.x")
+            let a = judged("type P = { x: Foo }\nlet q = P { x: 1 }\nq.x")
             a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
         }
     }
@@ -28,7 +27,7 @@ spec "features/structs (adversarial)" {
         // answered `false` for two IDENTICAL records — an engine
         // divergence and a silently wrong native answer.
         then "a record of two fields refuses equality, and says to compare a field" {
-            let a = analyze_source(
+            let a = judged(
                 "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\na == b",
             )
             a.diagnostics.length == 1 &&
@@ -93,7 +92,7 @@ spec "features/structs (adversarial)" {
             ) == "11"
         }
         then "a record declared inside a block refuses AT the declaration" {
-            let a = analyze_source("fn f() -> int {\n    ${p1()}    1\n}\nf()")
+            let a = judged("fn f() -> int {\n    ${p1()}    1\n}\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("type declarations live at the top level")
         }

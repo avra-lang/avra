@@ -2,7 +2,7 @@
 //! Five categories take the variant's one payload; the map and the
 //! hole-bearing body take their payloads and build a record. A feature
 //! reads a payload through these methods instead of matching a variant.
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Decls}
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Decls, beside}
 
 /// The five single-payload categories: variant -> accessor.
 fn accessor(name: string) -> string? {
@@ -21,14 +21,7 @@ trait ValueProtocol {
     static fn derive(t: MetaType) -> List<Directive> {
         let methods = [projection_of(v) for v in t.variants if accessor(v.name) != null]
             .concat([entries_of_method(), body_of_method()])
-        [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote { impl ${t} { ${methods} } },
-            },
-        ]
+        [beside(t, quote { impl ${t} { ${methods} } })]
     }
 }
 

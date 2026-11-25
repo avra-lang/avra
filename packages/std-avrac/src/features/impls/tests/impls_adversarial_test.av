@@ -2,8 +2,7 @@
 // every method, never written in a parameter list — and every
 // wrong placement refuses ONCE, in its own words (ROADMAP: the
 // inout receiver, S0).
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with, refusals}
+use @std.avrac.testing.{shown, refused_with, refusals, judged}
 
 /// A capability record: its callee lives in a FIELD whose `mut` seat
 /// writes the argument. `word` is the receiver's marker.
@@ -22,14 +21,14 @@ spec "features/impls adversarial" {
         then "a `mut fn` writing only through a fn field is not called idle" {
             // the COUNT is pinned with the absence: without it the
             // case passes just as well when nothing was analysed
-            let a = analyze_source(fn_field_server("mut fn"))
+            let a = judged(fn_field_server("mut fn"))
             a.diagnostics.length == 1 && !a.report().contains("never writes through `self`")
         }
         then "without `mut fn` the write is still SEEN, never silent" {
             refused_with(fn_field_server("fn"), "`s` is not `mut` — `turn` writes through it")
         }
         then "a concat chained on a concat reads its receiver and writes nothing" {
-            let a = analyze_source(
+            let a = judged(
                 "type N = { a: List<string>, b: List<string>, c: List<string> }\nimpl N {\n    fn two() -> List<string> { self.a.concat(self.b).concat(self.c) }\n}\nlet n = N { a: [\"x\"], b: [\"y\"], c: [\"z\"] }\nn.two().length",
             )
             a.diagnostics.length == 0
@@ -93,7 +92,7 @@ spec "features/impls adversarial" {
     }
     given "the keyword as a name" {
         then "a let named `self` refuses the name, and its read names no receiver" {
-            let a = analyze_source("let self = 1\nself")
+            let a = judged("let self = 1\nself")
             a.diagnostics.length == 2 &&
                 a.report().contains("`self` is a keyword") &&
                 a.report().contains("names a method's receiver")
@@ -210,22 +209,20 @@ spec "features/impls adversarial" {
                 "argument 1 of `f` wants `int`, found `C`",
             )
         }
-        then "a generic `mut fn` meets the generic-method law, not a hole" {
-            refused_with(
-                "type C = { n: int }\nimpl C {\n    mut fn f<T>(x: T) -> int { 1 }\n}\n2",
-                "`f` is generic — generic methods are recorded, not landed",
-            )
+        then "a generic `mut fn` is called as a method" {
+            shown(
+                "type C = { n: int }\nimpl C {\n    mut fn f<T>(x: T) -> int { self.n }\n}\nmut c = C { n: 1 }\nc.f(3)",
+            ) == "1"
         }
-        then "a refused generic method whose body READS its seat still speaks" {
-            refused_with(
-                "trait Tr {\n    fn m() -> int\n}\ntype C = { n: int }\nimpl C {\n    fn f<T: Tr>(x: T) -> int { x.m() }\n}\n2",
-                "`f` is generic — generic methods are recorded, not landed",
-            )
+        then "a generic method's bounded seat reads through its bound" {
+            shown(
+                "trait Tr {\n    fn m() -> int\n}\ntype D = { k: int }\nimpl Tr for D {\n    fn m() -> int { self.k }\n}\ntype C = { n: int }\nimpl C {\n    fn f<T: Tr>(x: T) -> int { x.m() }\n}\nC { n: 1 }.f(D { k: 7 })",
+            ) == "7"
         }
-        then "a refused generic method's UNBOUNDED seat read speaks too" {
+        then "a generic method's UNBOUNDED seat read is refused" {
             refused_with(
                 "type C = { n: int }\nimpl C {\n    fn f<T>(x: T) -> int { x.m() }\n}\n2",
-                "`f` is generic — generic methods are recorded, not landed",
+                "`T` has no known methods",
             )
         }
         then "an impl inside a fn body lives at the top level" {
@@ -287,7 +284,7 @@ spec "features/impls adversarial" {
             )
         }
         then "the receiver captured in a lambda is a copy, named as `self`" {
-            let a = analyze_source(
+            let a = judged(
                 "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn later() { let f = () -> self.bump()\n        f() }\n}\nmut c = C { n: 1 }\nc.later()\nc.n",
             )
             a.clean() &&
@@ -326,7 +323,7 @@ spec "features/impls adversarial" {
             )
         }
         then "a method that only recurses on self is not writing" {
-            let a = analyze_source(
+            let a = judged(
                 "type C = { n: int }\nimpl C {\n    fn spin(k: int) { if k > 0 { self.spin(k - 1) } }\n}\nlet c = C { n: 1 }\nc.spin(3)\nc.n",
             )
             a.diagnostics.is_empty() && a.ran() == "1"

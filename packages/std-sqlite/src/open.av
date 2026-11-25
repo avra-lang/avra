@@ -28,6 +28,40 @@ use stmt.{Stmt}
 /// (another connection holds a lock) leaves the file as it was and the open succeeds: ask `journal` which holds.
 export enum Journal { Keep, Wal, Rollback }
 
+/// What a commit that answered survives. The level is the CONNECTION's, never the file's: every connection is
+/// set to one as it opens and again whenever its handle is reopened, so none commits at a level nobody asked for.
+export enum Durability {
+    /// Every commit is synced to the disk before it answers: it survives the process dying and the power
+    /// going. A sync hands the data to the drive; on Apple platforms it does not wait for the drive to write
+    /// it down, and `Flushed` does.
+    Synced
+    /// A commit rides the write-ahead log to the next checkpoint's sync: it survives the process dying, a
+    /// power cut may forget the last commits, and the file stays whole either way. It asks a file kept in a
+    /// write-ahead log; over a rollback journal a power cut could tear the file, so it is refused there.
+    Eased
+    /// `Synced`, and the drive is told to empty its own cache at every sync: a commit survives a power cut on
+    /// a drive that answers a sync before the data is down. Apple platforms honor it, at tens of milliseconds
+    /// a commit; elsewhere a sync already waits and this is `Synced`.
+    Flushed
+}
+
+impl Durability {
+    /// The number SQLite answers `PRAGMA synchronous` as under this level.
+    fn synchronous() -> int {
+        match self { .Synced or .Flushed -> 2, .Eased -> 1 }
+    }
+
+    /// Whether the level asks a file kept in a write-ahead log.
+    fn logged() -> bool {
+        match self { .Synced or .Flushed -> false, .Eased -> true }
+    }
+
+    /// Whether the drive is told to empty its cache at a sync.
+    fn flushes() -> bool {
+        match self { .Synced or .Eased -> false, .Flushed -> true }
+    }
+}
+
 /// How the file is opened. THREE MODES AND NO `create` FIELD, because
 /// the header allows exactly three flag combinations and a fourth
 /// cannot be spelled here.
@@ -82,6 +116,8 @@ export type OpenConfig = {
     busy: int = 5000,
     /// The journal the file is kept in; see `Journal`. Applies to a file this connection may write.
     journal: Journal = .Keep,
+    /// What an answered commit survives; see `Durability`. `Eased` asks a write-ahead log.
+    durability: Durability = .Synced,
 }
 
 impl OpenConfig {
@@ -297,8 +333,8 @@ export type Db = {
     home: Cell<Home>,
 }
 
-/// The registry epoch, file, flags and lock wait a connection was opened with.
-type Home = { epoch: int, path: string, flags: int, busy: int }
+/// The registry epoch, file, flags and lock wait a connection was opened with, and the durability it commits at.
+type Home = { epoch: int, path: string, flags: int, busy: int, durability: Durability }
 
 /// Every connection is registered when opened and forgotten when closed. Before the cores fork the registry
 /// refuses a held transaction, closes every file-backed one and bumps the epoch (`sqlite_sentinel.c`).
@@ -364,10 +400,7 @@ impl Db {
             return 0
         }
         avra_sqlite_closed(handle!)
-        for c in self.cache.get() {
-            let _ = c.stmt.finalize()
-        }
-        self.cache.set([])
+        self.forget()
         self.raw.set(null)
         sqlite3_close_v2(handle)
     }
@@ -412,6 +445,23 @@ impl Db {
         v.text()
     }
 
+    /// The level commits are synced at right now, by SQLite's own number: 0 off, 1 normal, 2 full, 3 extra.
+    fn synchronous() -> Result<int, SqlError> {
+        let v = self.scalar(sql("PRAGMA synchronous"))?
+        v.int()
+    }
+
+    /// The durability this connection was last set to, at its open or by `commit_as`.
+    fn durability() -> Durability { self.home.get().durability }
+
+    /// Commit as `d` from here on. A transaction commits at the level it began under, so inside one a level
+    /// that is not already in force is refused; `Eased` over a file with no write-ahead log is refused.
+    fn commit_as(d: Durability) -> Result<int, SqlError> {
+        let _ = barred(self.closed_fault())?
+        let _ = barred(pressed(self, d))?
+        0
+    }
+
     /// The handle this process may use: the one it opened, or one fresh on the same file when the cores'
     /// fork closed it (each process, parent and core alike, reopens on first use, so no process-wide
     /// state of SQLite's reaches a child). The statements cached on the closed handle were finalized with
@@ -431,8 +481,11 @@ impl Db {
         avra_sqlite_opened(handle!)
         self.cache.set([])
         self.raw.set(handle)
-        self.home.set(home with { epoch: avra_sqlite_epoch() })
-        let _ = patient(self, home.busy)
+        self.home.set(home with { epoch: avra_sqlite_epoch(), durability: Durability.Synced })
+        if patient(self, home.busy) ?? pressed(self, home.durability) != null {
+            let _ = self.close()
+            return null
+        }
         handle
     }
 
@@ -446,6 +499,14 @@ impl Db {
             if c.text == text { return c.stmt }
         }
         null
+    }
+
+    /// Every kept statement finalized, and none kept.
+    fn forget() {
+        for c in self.cache.get() {
+            let _ = c.stmt.finalize()
+        }
+        self.cache.set([])
     }
 
     /// `stmt` kept under `text`, so the next call for the same text
@@ -476,7 +537,16 @@ fn opened(c: OpenConfig) -> Result<Db, SqlError> {
     avra_sqlite_opened(handle!)
     let db = Db {
         raw: Cell.new(handle),
-        home: Cell.new(Home { epoch: avra_sqlite_epoch(), path: path, flags: flags, busy: c.busy }),
+        home: Cell
+            .new(
+                Home {
+                    epoch: avra_sqlite_epoch(),
+                    path: path,
+                    flags: flags,
+                    busy: c.busy,
+                    durability: Durability.Synced,
+                },
+            ),
     }
     let fault: SqlError? = patient(db, c.busy) ?? unreadable(db)
     if fault != null {
@@ -484,7 +554,11 @@ fn opened(c: OpenConfig) -> Result<Db, SqlError> {
         fail fault!
     }
     let _ = journaled(db, c)
-    db
+    let unset: SqlError? = pressed(db, c.durability)
+    db.forget()
+    if unset == null { return db }
+    let _ = db.close()
+    fail unset!
 }
 
 /// How long a core's connection waits on a lock another core holds: the
@@ -501,6 +575,60 @@ fn journaled(db: Db, c: OpenConfig) -> SqlError? {
     if c.path == ":memory:" || c.mode is .ReadOnly { return null }
     let word = match c.journal { .Keep -> { return null }, .Wal -> "wal", .Rollback -> "delete" }
     match db.prepare("PRAGMA journal_mode = ${word}") { .Ok(s) -> ran(s), .Err(e) -> e }
+}
+
+/// The connection set to commit as `d`, and the level remembered so a reopened handle is set again. The sync
+/// level is always stated, never left to the library's default; the drive's flush is restated only when it
+/// changes. Answers the refusal when `d` cannot hold here, or SQLite's own failure.
+fn pressed(db: Db, d: Durability) -> SqlError? {
+    let from = db.home.get().durability
+    let fault: SqlError? = unlogged(db, d) ?? if db.in_transaction() {
+        unheld(db, from, d)
+    } else {
+        set(db, synchronous_as(d)) ?? reflushed(db, from, d)
+    }
+    if fault == null { db.home.set(db.home.get() with { durability: d }) }
+    fault
+}
+
+/// The refusal of `Eased` over a file with no write-ahead log. A private in-memory database has no file.
+fn unlogged(db: Db, d: Durability) -> SqlError? {
+    if !d.logged() || db.in_memory() { return null }
+    match db.journal() {
+        .Ok(word) -> if word == "wal" { null } else { eased_unlogged(word) },
+        .Err(e) -> e,
+    }
+}
+
+/// The refusal of a level that is not already in force, asked while a transaction is open: SQLite sets none
+/// inside one.
+fn unheld(db: Db, from: Durability, d: Durability) -> SqlError? {
+    match db.synchronous() {
+        .Ok(found) -> if found == d.synchronous() && from.flushes() == d.flushes() {
+            null
+        } else {
+            level_mid_transaction(d, found)
+        },
+        .Err(e) -> e,
+    }
+}
+
+fn synchronous_as(d: Durability) -> string {
+    match d {
+        .Synced or .Flushed -> "PRAGMA synchronous = FULL",
+        .Eased -> "PRAGMA synchronous = NORMAL",
+    }
+}
+
+/// The drive's flush turned on or off where `to` differs from `from` in it.
+fn reflushed(db: Db, from: Durability, to: Durability) -> SqlError? {
+    if from.flushes() == to.flushes() { return null }
+    set(db, if to.flushes() { "PRAGMA fullfsync = 1" } else { "PRAGMA fullfsync = 0" })
+}
+
+/// A setting statement run on the connection's kept statements.
+fn set(db: Db, text: string) -> SqlError? {
+    match db.run(sql(text)) { .Ok(_) -> null, .Err(e) -> e }
 }
 
 /// T127 CLOSED: the one trivial statement that tells a database from a
@@ -542,6 +670,22 @@ fn closing(handle: ptr?, rc: int) -> SqlError {
         message: sqlite3_errstr(rc),
         sql: null,
     }
+}
+
+fn eased_unlogged(journal: string) -> SqlError {
+    SqlError
+        .refused(
+            Cause.Unlogged,
+            "an eased commit asks a file kept in a write-ahead log, and this one's journal is `${journal}` — open it with `Journal.Wal`",
+        )
+}
+
+fn level_mid_transaction(d: Durability, found: int) -> SqlError {
+    SqlError
+        .refused(
+            Cause.TransactionOpen,
+            "a transaction commits at the level it began under: this connection is at sync level ${found} and was asked for ${d.synchronous()} — set the durability before the transaction begins",
+        )
 }
 
 const memory_foreign: SqlError = SqlError

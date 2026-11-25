@@ -1,8 +1,8 @@
 // A data component — no `expand` — is a record its instance builds:
 // the head by position, `key: value` settings by name, and the body's
 // other statements `collect`ed into its one `List` field.
+use @std.avrac.testing.held.{Judged}
 use @std.avrac.testing.{provided, answered, Module, refused_with, refused_in}
-use @std.avrac.compiler.{Program}
 
 /// The provider: a row with a head, a grid of rows named at its
 /// statement, a nameable secret, and a card of mixed views.
@@ -10,7 +10,7 @@ fn ui() -> string {
     "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component field(label: string) {}\n\nexport component button(label: string) {}\n\nexport component form {\n    fields: List<field> = []\n    buttons: List<button> = []\n}\n\nexport component panel {\n    rows: List<row> = []\n    notes: List<string> = []\n}\n\nexport component hook {\n    run: fn(int) -> int\n}\n\nexport component chain {\n    hooks: List<hook> = []\n    rows: List<row> = []\n}\n"
 }
 
-fn built(main: string) -> Program {
+fn built(main: string) -> Judged {
     provided(
         "use @x.c.{row, grid, secret, note, badge, card, vault, split, field, button, form, panel, hook, chain}\n" +
             main,
@@ -35,7 +35,7 @@ spec "features/components — a record's instance" {
         then "the body's statements are its children, loops and branches included" {
             answered(
                 built(
-                    "let orders = [3, 4, 5]\ngrid report {\n    for o in orders {\n        if o != 4 { row o }\n    }\n    row 99\n}\n[\"\${r.id}\" for r in report.rows].join(\",\")",
+                    "const orders = [3, 4, 5]\ngrid report {\n    for o in orders {\n        if o != 4 { row o }\n    }\n    row 99\n}\n[\"\${r.id}\" for r in report.rows].join(\",\")",
                 ),
             ) == "3,5,99"
         }
@@ -68,7 +68,7 @@ spec "features/components — a record's instance" {
         then "a comprehension child spreads its rows into the slot" {
             answered(
                 built(
-                    "let orders = [3, 4, 5]\ngrid g {\n    [row o for o in orders if o != 4]\n    row 9\n}\ng.rows.length",
+                    "const orders = [3, 4, 5]\ngrid g {\n    [row o for o in orders if o != 4]\n    row 9\n}\ng.rows.length",
                 ),
             ) == "3"
         }
@@ -170,7 +170,7 @@ spec "features/components — a record's instance" {
             )
         }
     }
-    given "an exported instance is a declaration" {
+    given "a named instance is a declaration" {
         then "another module imports it by name, built once and holding behaviour" {
             let decks = Module {
                 name: "decks",
@@ -184,8 +184,14 @@ spec "features/components — a record's instance" {
                 ),
             ) == "hi #0 #1 report 1"
         }
-        then "one not exported stays the statement it was written as" {
-            answered(built("let base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id")) == "5"
+        then "one not exported is its file's own declaration, built from declarations" {
+            answered(built("const base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id")) == "5"
+        }
+        then "its build reads no run-time binding of the top level, offered a `const`" {
+            refused_in(
+                built("let base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id"),
+                "`base` is a run-time binding of the top level",
+            )
         }
         then "a const holding behaviour is refused with the way to build it" {
             refused_with(
@@ -194,13 +200,5 @@ spec "features/components — a record's instance" {
             )
         }
     }
-    given "visible magic" {
-        then "`expand` notes the record literal each instance became" {
-            let p = built("grid report {\n    title: \"Orders\"\n    row 1\n}\nreport.title")
-            let shown = p.expanded_source(p.ws.file_id("/w/src/main.av"))
-            shown.contains("grid report {") &&
-                shown.contains("name: \"report\",") &&
-                shown.contains("rows: collect {")
-        }
-    }
+    given "visible magic" {}
 }

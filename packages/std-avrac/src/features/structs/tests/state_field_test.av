@@ -1,8 +1,7 @@
 // `state` on a record FIELD: the slot holds a Cell, a read answers the
 // value it holds, and a write lands in the cell's one slot — no Cell
 // ever reaches the reader.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, judged}
 
 /// A record with one plain field and one place.
 const counter = "type Counter = {\n    plain: int = 0\n    state n: int = 0\n}\n"
@@ -42,6 +41,11 @@ spec "structs — a state field" {
                 "${counter}let c = Counter { }\nlet d = c with { plain: 4 }\nd.n = 9\n\"\${c.n} \${d.plain} \${c.plain}\"",
             ) == "9 4 0"
         }
+        then "a copy that writes the field holds its own cell, which a write through the other misses" {
+            shown(
+                "${counter}let c = Counter { n: 2 }\nlet d = c with { n: 4, plain: 1 }\nc.n = 7\nd.n = d.n + 1\n\"\${c.n} \${d.n} \${d.plain}\"",
+            ) == "7 5 1"
+        }
         then "an element of a state list is assigned through a parameter" {
             shown(
                 "type Bag = {\n    state xs: List<int> = []\n}\nfn first(b: Bag) { b.xs[0] = 9 }\nlet b = Bag { xs: [1, 2] }\nfirst(b)\nb.xs[0] + b.xs[1]",
@@ -53,7 +57,7 @@ spec "structs — a state field" {
             ) == "12"
         }
         then "a method that writes only its state writes no receiver" {
-            analyze_source(
+            judged(
                 "${counter}impl Counter {\n    fn bump() { self.n = self.n + 1 }\n}\nlet c = Counter { }\nc.bump()\nc.n",
             )
                 .diagnostics

@@ -12,9 +12,15 @@ use realize.html.tags.{HtmlAttr}
 use realize.html.element.{Element, lowered}
 use realize.html.writer.{HtmlOp, Head, Takeover, document, page_source, source, takeover_source}
 use realize.html.print.{print_of}
-use realize.html.css.{CssRule, CssVar, distinct_rules, page_sheet, rules_of}
-use tree.lists.{flatten}
-use style.theme.{Theme}
+use realize.html.css.{
+    CssRule,
+    CssVar,
+    PageDrawn,
+    distinct_rules,
+    page_drawn,
+    page_sheet_of,
+    rules_of,
+}
 use env.{Env}
 
 // ── the page ────────────────────────────────────────────────────
@@ -85,8 +91,8 @@ fn vars_rule(at: int, vars: List<CssVar>) -> string {
 /// A tree's sheet: the atomic rules and the theme, then the rule that writes
 /// each element's custom properties. The sheet is the one place a value
 /// lives, so no element carries a `style` attribute.
-fn sheet_of(root: Node, theme: Theme, alternates: List<Theme>, d: Drawn) -> string {
-    [page_sheet(distinct_rules(rules_of(root)), theme, alternates)]
+fn sheet_of(p: PageDrawn, d: Drawn) -> string {
+    [page_sheet_of(distinct_rules(rules_of(p.root)), p)]
         .concat([vars_rule(i, vs) for i, vs in d.vars])
         .join("\n")
 }
@@ -95,16 +101,15 @@ fn sheet_of(root: Node, theme: Theme, alternates: List<Theme>, d: Drawn) -> stri
 export fn fragment(root: Node) -> string { source(drawn(root).ops) }
 
 /// The finished document for one tree: its one stylesheet, then its body.
-export fn render(root: Node, env: Env) -> string {
-    let d = drawn(root)
-    document(sheet_of(root, env.theme, [], d), null, d.ops)
+export fn render(root: Node, _env: Env) -> string {
+    let p = page_drawn(root)
+    let d = drawn(p.root)
+    document(sheet_of(p, d), null, d.ops)
 }
 
-/// What a whole page says about itself. `alternates` are the themes the
-/// reader's own settings may choose over the environment's, each under
-/// the media query its mode names. A `nonce` marks the page's one `style`
-/// element, for a policy that allows styles by nonce alone.
-export type Page = { title: string, env: Env = Env {}, alternates: List<Theme> = [], nonce: string? = null }
+/// What a whole page says about itself. A `nonce` marks the page's one
+/// `style` element, for a policy that allows styles by nonce alone.
+export type Page = { title: string, env: Env = Env {}, nonce: string? = null }
 
 /// What a page's head says: its title and the environment's words.
 fn head_of(p: Page) -> Head { Head { title: p.title, locale: p.env.locale, direction: p.env.direction } }
@@ -112,19 +117,21 @@ fn head_of(p: Page) -> Head { Head { title: p.title, locale: p.env.locale, direc
 /// A complete document with no script: the page's head, its one
 /// stylesheet, then the tree.
 export fn page(p: Page, root: Node) -> string {
-    let d = drawn(root)
-    page_source(head_of(p), sheet_of(root, p.env.theme, p.alternates, d), p.nonce, d.ops)
+    let drawn_in = page_drawn(root)
+    let d = drawn(drawn_in.root)
+    page_source(head_of(p), sheet_of(drawn_in, d), p.nonce, d.ops)
 }
 
 /// A page a module can ADOPT: the tree as HTML, the sheet the live page
 /// draws for it, and the print both are folded to.
 export type Hydration = { html: string, css: string, print: int }
 
-/// The server's first frame for `root` under `theme`: what a page holds
+/// The server's first frame for `root`, in the theme it carries: what a page holds
 /// before its module runs and what the module checks itself against.
-export fn hydration(root: Node, theme: Theme) -> Hydration {
-    let run = lowered(root)
-    let css = page_sheet(distinct_rules(rules_of(root)), theme, [])
+export fn hydration(root: Node) -> Hydration {
+    let p = page_drawn(root)
+    let run = lowered(p.root)
+    let css = page_sheet_of(distinct_rules(rules_of(p.root)), p)
     Hydration { html: source(run_ops(run)), css: css, print: print_of(run, css) }
 }
 
@@ -133,8 +140,9 @@ export fn hydration(root: Node, theme: Theme) -> Hydration {
 /// print the module checks itself against. `host` is where the host's
 /// scripts (`bootstrap.js`, `wasi.js`) are served.
 export fn takeover(p: Page, root: Node, module: string, host: string, state: string = "") -> string {
-    let run = lowered(root)
-    let css = page_sheet(distinct_rules(rules_of(root)), p.env.theme, [])
+    let drawn_in = page_drawn(root)
+    let run = lowered(drawn_in.root)
+    let css = page_sheet_of(distinct_rules(rules_of(drawn_in.root)), drawn_in)
     takeover_source(
         head_of(p),
         css,

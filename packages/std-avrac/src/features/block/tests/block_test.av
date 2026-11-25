@@ -2,8 +2,7 @@
 // scope and shadow inside braces (multi-line expressions arrive
 // free — braces swallow their BREAKs), block memory releases
 // inside while the yield escapes, and nested fns refuse politely.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, ir_of}
+use @std.avrac.testing.{shown, ir_of, judged}
 use compiler.backend.{render_ir}
 
 spec "features/block" {
@@ -27,19 +26,19 @@ spec "features/block" {
     }
     given "wrong shapes" {
         then "a block without a value is void — a declared return refuses it" {
-            let a = analyze_source("fn f() -> int {\n    let x = 1\n}\nf()")
+            let a = judged("fn f() -> int {\n    let x = 1\n}\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("the body answers `void` but `f` declares `int`")
         }
         then "fn declarations live at the top level" {
-            let a = analyze_source("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()")
+            let a = judged("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("fn declarations live at the top level")
         }
     }
     given "the scopes in the IR, as `avra ir` prints it" {
         then "block strings release inside; the yield is adopted outward" {
-            let expected = """fn tag() -> string
+            let expected = """fn alone/src/main.av.tag() -> box text
 scope application {
   scope application {
     r0 = str "was"
@@ -56,7 +55,7 @@ scope application {
 ret r5
 
 scope application {
-  r0 = call tag()
+  r0 = call alone/src/main.av.tag()
   call avra_puts(r0)
   release r0
 }

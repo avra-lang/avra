@@ -7,7 +7,7 @@
 //! (`owed_root`, read by the typing law).
 use core.{StmtId, ExprId, DeclId, Binding, same_expr}
 use features.{ResolveCx, FileView, NameFacts, shares_place}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, Voice, said_as}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 
 export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
@@ -76,7 +76,7 @@ fn root_refusal(view: FileView, names: NameFacts, t: ExprId, r: ExprId, b: Bindi
 /// A root as a refusal names it: its own word, `self` for a receiver.
 fn root_word(view: FileView, r: ExprId) -> string {
     let step? = view.store.place_step(r) else { return "this name" }
-    match step { .Root(name) -> name.of, _ -> "this name" }
+    match step { .Root(name) -> name.text(), _ -> "this name" }
 }
 
 /// A declaration is never a place: a fn and a const each refuse in
@@ -96,109 +96,124 @@ fn mut_copy_help(n: string) -> string {
     "bind a `mut` copy to change — `mut k = ${n}`"
 }
 
-fn not_a_place(at: Loc?) -> Diag {
-    refusal(
-        "resolve.place",
-        at,
-        "a mutation lands on a place — a name, a field, or an index",
-        assigned_here,
-        "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding",
-    )
+fn not_a_place(at: Loc?) -> Diag { said_as("resolve.place", at, not_a_place_said()) }
+
+/// The words `not_a_place` says.
+export fn not_a_place_said() -> Voice {
+    Voice {
+        message: "a mutation lands on a place — a name, a field, or an index",
+        label: assigned_here,
+        help: "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding",
+    }
 }
 
 /// A `mut` seat is a place the CALLEE writes through, never a place
 /// it replaces: the caller keeps the binding, so a seat is written
 /// ALONG A PATH into it, never assigned whole. `Cell<T>` is the
 /// door for a value a callee needs to REPLACE outright.
-fn seat_whole(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is a `mut` seat — a seat is written along a path, never replaced whole",
-        assigned_here,
-        "wrap the value in a `Cell<T>` and `.set(…)` it, write a path under it (`${n}.field = …`), or answer the new value",
-    )
+fn seat_whole(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, seat_whole_said(n)) }
+
+/// The words `seat_whole` says.
+export fn seat_whole_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is a `mut` seat — a seat is written along a path, never replaced whole",
+        label: assigned_here,
+        help: "wrap the value in a `Cell<T>` and `.set(…)` it, write a path under it (`${n}.field = …`), or answer the new value",
+    }
 }
 
-fn immutable_receiver(at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`self` is the receiver — it is not assigned",
-        assigned_here,
-        "assign a field of it — `self.<field> = …`",
-    )
+fn immutable_receiver(at: Loc?) -> Diag { said_as("resolve.immutable", at, immutable_receiver_said()) }
+
+/// The words `immutable_receiver` says.
+export fn immutable_receiver_said() -> Voice {
+    Voice {
+        message: "`self` is the receiver — it is not assigned",
+        label: assigned_here,
+        help: "assign a field of it — `self.<field> = …`",
+    }
 }
 
-fn immutable_param(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is a parameter — parameters are immutable",
-        assigned_here,
-        "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place",
-    )
+fn immutable_param(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, immutable_param_said(n)) }
+
+/// The words `immutable_param` says.
+export fn immutable_param_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is a parameter — parameters are immutable",
+        label: assigned_here,
+        help: "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place",
+    }
 }
 
-fn immutable_bind(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is a pattern's bind — it names the matched value, it is not assigned",
-        assigned_here,
-        mut_copy_help(n),
-    )
+fn immutable_bind(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, immutable_bind_said(n)) }
+
+/// The words `immutable_bind` says.
+export fn immutable_bind_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is a pattern's bind — it names the matched value, it is not assigned",
+        label: assigned_here,
+        help: mut_copy_help(n),
+    }
 }
 
-fn captured_copy(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is captured by value — a lambda cannot assign to it",
-        assigned_here,
-        "a capture is a copy: a member a lambda writes is a place — declare it `state` — or bind a `mut` inside the lambda, or answer the new value and let the caller keep it",
-    )
+fn captured_copy(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, captured_copy_said(n)) }
+
+/// The words `captured_copy` says.
+export fn captured_copy_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is captured by value — a lambda cannot assign to it",
+        label: assigned_here,
+        help: "a capture is a copy: a member a lambda writes is a place — declare it `state` — or bind a `mut` inside the lambda, or answer the new value and let the caller keep it",
+    }
 }
 
-fn not_a_fn_place(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is a fn — it is not assigned",
-        assigned_here,
-        "bind a fn value to change it — `mut g = ${n}`",
-    )
+fn not_a_fn_place(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, not_a_fn_place_said(n)) }
+
+/// The words `not_a_fn_place` says.
+export fn not_a_fn_place_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is a fn — it is not assigned",
+        label: assigned_here,
+        help: "bind a fn value to change it — `mut g = ${n}`",
+    }
 }
 
-fn immutable_index(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is a loop index — it counts, it is not assigned",
-        assigned_here,
-        mut_copy_help(n),
-    )
+fn immutable_index(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, immutable_index_said(n)) }
+
+/// The words `immutable_index` says.
+export fn immutable_index_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is a loop index — it counts, it is not assigned",
+        label: assigned_here,
+        help: mut_copy_help(n),
+    }
 }
 
-fn immutable_const(n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is a const — the compiler settled it, it is not assigned",
-        assigned_here,
-        "bind a `mut` copy to change it — `mut k = ${n}`",
-    )
+fn immutable_const(n: string, at: Loc?) -> Diag { said_as("resolve.immutable", at, immutable_const_said(n)) }
+
+/// The words `immutable_const` says.
+export fn immutable_const_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is a const — the compiler settled it, it is not assigned",
+        label: assigned_here,
+        help: "bind a `mut` copy to change it — `mut k = ${n}`",
+    }
 }
 
 fn not_mut(view: FileView, s: StmtId, n: string, at: Loc?) -> Diag {
-    refusal(
-        "resolve.immutable",
-        at,
-        "`${n}` is not `mut`",
-        assigned_here,
-        "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`",
-    ) with { suggestions: mut_keyword(view, s, n) }
+    said_as("resolve.immutable", at, not_mut_said(n)) with { suggestions: mut_keyword(view, s, n) }
 }
+
+/// The words `not_mut` says.
+export fn not_mut_said(n: string) -> Voice {
+    Voice {
+        message: "`${n}` is not `mut`",
+        label: assigned_here,
+        help: "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`",
+    }
+}
+
+/// The edit `not_mut` offers: what it says.
+export fn mut_keyword_said(n: string) -> string { "declare `${n}` with `mut` — `mut ${n} = …`" }
 
 /// `let` → `mut`: the one edit that makes a plain `let` a place. A
 /// `let` statement's span opens on its keyword.
@@ -208,7 +223,7 @@ fn mut_keyword(view: FileView, s: StmtId, n: string) -> List<Suggestion> {
         .Let(_, _, _) -> [
             Suggestion {
                 confidence: Confidence.High,
-                description: "declare `${n}` with `mut` — `mut ${n} = …`",
+                description: mut_keyword_said(n),
                 edits: [Edit { loc: at with { hi: at.lo + 3 }, replacement: "mut" }],
             },
         ],

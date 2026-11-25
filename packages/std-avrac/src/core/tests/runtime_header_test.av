@@ -2,7 +2,7 @@
 // currency. The C compiler holds the claim; these hold its SHAPE, so
 // a row that stops being asserted fails here rather than passing
 // silently in a header nobody reads.
-use @std.avrac.core.{rt_sigs, RtSig, RtKind, RtHost, runtime_header, row_claim}
+use @std.avrac.core.{cell_marks, rt_sigs, RtSig, RtKind, RtHost, runtime_header, row_claim}
 
 /// A row's claim is present when its call stands inside an assertion —
 /// compared to a named C type, or asked for its pointer shape.
@@ -22,8 +22,12 @@ spec "core/runtime_header" {
             let h = runtime_header()
             rt_sigs().all(claimed(h, it))
         }
-        then "one assertion per row, and no more" {
-            runtime_header().split("_Static_assert").length == rt_sigs().length + 1
+        then "one assertion per row and per cell mark, and no more" {
+            runtime_header().split("_Static_assert").length == rt_sigs().length + cell_marks().length + 1
+        }
+        then "every cell mark claims the bit runtime/avra_box.h gives it" {
+            let h = runtime_header()
+            cell_marks().all((m) -> h.contains("_Static_assert(${m.name} == ${m.bit},"))
         }
     }
     given "an answer whose kind names a C type" {

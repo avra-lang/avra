@@ -21,15 +21,52 @@
 void avra_trap(const char* msg);
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <time.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include "../runtime/avra_box.h"
 #include "../build/avra_hot.inc"
 
 // ── Context / Module / Builder ──
 
+// ── The emit's own clock (`AVRA_EMIT_TIMES=1`) ──
+// Per build: the CPU the program's thread spends building modules, the wall it
+// waits for a worker's room, and each worker's CPU in the optimizer and the code
+// generator; said when `avra_llvm_objects_unwritten` has waited for them all.
+typedef struct EmitClock {
+    int on, modules;
+    long fns, instrs;
+    double built, waited, passes, codegen, first, last;
+} EmitClock;
+static EmitClock emit_clock = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static _Thread_local double module_opened = -1;
+static pthread_mutex_t emit_mu;
+
+static double clock_seconds(clockid_t id) {
+    struct timespec t;
+    clock_gettime(id, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
+
+static int emit_timed(void) {
+    if (emit_clock.on < 0) { const char* v = getenv("AVRA_EMIT_TIMES"); emit_clock.on = v != NULL && strcmp(v, "1") == 0; }
+    return emit_clock.on;
+}
+
 LLVMContextRef avra_llvm_context_create(void) {
+    if (emit_timed()) module_opened = clock_seconds(CLOCK_THREAD_CPUTIME_ID);
     return LLVMContextCreate();
+}
+
+// The values of a module no one reads as text keep no names: an object never
+// carries them, and naming every value costs the building and the code
+// generator alike.
+void avra_llvm_context_unnamed(LLVMContextRef ctx) {
+    LLVMContextSetDiscardValueNames(ctx, 1);
 }
 
 void avra_llvm_context_dispose(LLVMContextRef ctx) {
@@ -290,6 +327,15 @@ LLVMValueRef avra_llvm_add_function(LLVMModuleRef m, const char* name, LLVMTypeR
         LLVMAttributeRef fp = LLVMCreateStringAttribute(LLVMGetModuleContext(m), "frame-pointer", 13, "all", 3);
         LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, fp);
     }
+    // A TRUTH IS ANSWERED ZERO-EXTENDED, as C answers a `bool`: the x86 fast
+    // instruction selector returns an `i1` only so, and otherwise hands the
+    // whole return to the slow one. No runtime row answers a truth, so no C
+    // signature moves.
+    if (LLVMGetReturnType(fn_type) == LLVMInt1TypeInContext(LLVMGetModuleContext(m))) {
+        LLVMContextRef ctx = LLVMGetModuleContext(m);
+        unsigned kind = LLVMGetEnumAttributeKindForName("zeroext", 7);
+        LLVMAddAttributeAtIndex(fn, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(ctx, kind, 0));
+    }
     return fn;
 }
 
@@ -376,14 +422,76 @@ static int target_is_macho(const char* triple) {
 // segment beside the section. A row is a global the module uniqued from
 // SITE_ROW (`avra.site`, `avra.site.1`, …) — no program symbol is spelled
 // so, every one of those starting `av_`.
+static void sites_registered(LLVMModuleRef m);
+
 static void sites_placed(LLVMModuleRef m, const char* triple) {
     const char* section = target_is_macho(triple) ? AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION : AVRA_SITES_ELF_SECTION;
     size_t n = strlen(SITE_ROW);
+    int any = 0;
     for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) {
         size_t len = 0;
         const char* name = LLVMGetValueName2(g, &len);
-        if (len >= n && strncmp(name, SITE_ROW, n) == 0 && (len == n || name[n] == '.')) LLVMSetSection(g, section);
+        if (len >= n && strncmp(name, SITE_ROW, n) == 0 && (len == n || name[n] == '.')) {
+            LLVMSetSection(g, section);
+            any = 1;
+        }
     }
+    if (any && !target_is_macho(triple)) sites_registered(m);
+}
+
+// AN OBJECT THAT CARRIES SITE ROWS HANDS ITS IMAGE'S TABLE TO THE SCHEDULER AS
+// THE IMAGE LOADS. A section's bounds name only the image they are linked into,
+// and a program linked in layers is several images: so a constructor, reading
+// the bounds its own image's link defines (hidden, weak), calls the
+// scheduler's `avra_sites_register` — weak too, so an image the scheduler is
+// not linked beside registers nothing. Each object of one image registers the
+// same table; the scheduler keeps it once.
+static void sites_registered(LLVMModuleRef m) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    if (LLVMGetNamedFunction(m, "avra.sites.registered")) return;
+    LLVMValueRef bound[2];
+    const char* names[2] = { "__start_" AVRA_SITES_ELF_SECTION, "__stop_" AVRA_SITES_ELF_SECTION };
+    for (int i = 0; i < 2; i++) {
+        LLVMValueRef g = LLVMGetNamedGlobal(m, names[i]);
+        if (!g) g = LLVMAddGlobal(m, i64, names[i]);
+        LLVMSetLinkage(g, LLVMExternalWeakLinkage);
+        LLVMSetVisibility(g, LLVMHiddenVisibility);
+        bound[i] = g;
+    }
+    LLVMTypeRef seats[2] = { ptr, i64 };
+    LLVMTypeRef reg_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), seats, 2, 0);
+    LLVMValueRef reg = LLVMGetNamedFunction(m, "avra_sites_register");
+    if (!reg) reg = LLVMAddFunction(m, "avra_sites_register", reg_ty);
+    LLVMSetLinkage(reg, LLVMExternalWeakLinkage);
+    LLVMValueRef fn = LLVMAddFunction(m, "avra.sites.registered", LLVMFunctionType(LLVMVoidTypeInContext(ctx), NULL, 0, 0));
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+    LLVMBuilderRef b = LLVMCreateBuilderInContext(ctx);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMBasicBlockRef call = LLVMAppendBasicBlockInContext(ctx, fn, "call");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(ctx, fn, "done");
+    LLVMPositionBuilderAtEnd(b, entry);
+    LLVMValueRef has_rows = LLVMBuildICmp(b, LLVMIntNE, bound[0], LLVMConstNull(ptr), "rows");
+    LLVMValueRef has_reg = LLVMBuildICmp(b, LLVMIntNE, reg, LLVMConstNull(ptr), "reg");
+    LLVMBuildCondBr(b, LLVMBuildAnd(b, has_rows, has_reg, "both"), call, done);
+    LLVMPositionBuilderAtEnd(b, call);
+    LLVMValueRef bytes = LLVMBuildSub(b, LLVMBuildPtrToInt(b, bound[1], i64, "stop"), LLVMBuildPtrToInt(b, bound[0], i64, "start"), "bytes");
+    LLVMValueRef args[2] = { bound[0], LLVMBuildUDiv(b, bytes, LLVMConstInt(i64, sizeof(AvraSiteRow), 0), "rows") };
+    LLVMBuildCall2(b, reg_ty, reg, args, 2, "");
+    LLVMBuildBr(b, done);
+    LLVMPositionBuilderAtEnd(b, done);
+    LLVMBuildRetVoid(b);
+    LLVMDisposeBuilder(b);
+    // `.init_array`, which the loader runs however the image was linked: `llvm.global_ctors` is
+    // emitted as `.ctors` here, run only by the crt files a compiler driver's link adds, and a
+    // layer is linked without them.
+    LLVMValueRef init = LLVMAddGlobal(m, ptr, "avra.sites.init");
+    LLVMSetInitializer(init, fn);
+    LLVMSetLinkage(init, LLVMPrivateLinkage);
+    LLVMSetSection(init, ".init_array");
+    LLVMSetAlignment(init, 8);
+    kept_whole(m, init);
 }
 
 // Whether this build counts the boxes runtime rows mint, by type:
@@ -391,6 +499,15 @@ static void sites_placed(LLVMModuleRef m, const char* triple) {
 int64_t avra_llvm_census_types(void) {
     const char* v = getenv("AVRA_CENSUS_TYPES");
     return v && *v && strcmp(v, "0") != 0;
+}
+
+static int stores_tracked(void) { return getenv("FORGE_TRACK_STORES") != NULL; }
+
+// THE WAYS THIS PROCESS EMITS THAT ITS ENVIRONMENT CHOOSES, one bit each: frame pointers kept, boxes
+// counted by type, stores tracked. Each makes another object of the same code, so an object's key
+// holds them all (the build's `objects_salt`); read where each is read, so the key and the code agree.
+int64_t avra_llvm_emit_modes(void) {
+    return (int64_t)frame_pointers_wanted() | (avra_llvm_census_types() << 1) | ((int64_t)stores_tracked() << 2);
 }
 
 // A call to the census's box counter naming what was minted; `label`
@@ -402,6 +519,18 @@ void avra_llvm_build_census_box(LLVMBuilderRef b, LLVMModuleRef m, const char* l
     LLVMValueRef fn = LLVMGetNamedFunction(m, "avra_census_box");
     if (!fn) fn = LLVMAddFunction(m, "avra_census_box", fty);
     LLVMValueRef text = LLVMBuildGlobalStringPtr(b, label, "census.box");
+    LLVMBuildCall2(b, fty, fn, &text, 1, "");
+}
+
+// A call to the census's row counter naming the runtime row the next call reaches; `label` becomes a
+// private C string in `m`, read only by that counter.
+void avra_llvm_build_census_row(LLVMBuilderRef b, LLVMModuleRef m, const char* label) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr, 1, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(m, "avra_census_row");
+    if (!fn) fn = LLVMAddFunction(m, "avra_census_row", fty);
+    LLVMValueRef text = LLVMBuildGlobalStringPtr(b, label, "census.row");
     LLVMBuildCall2(b, fty, fn, &text, 1, "");
 }
 
@@ -504,6 +633,14 @@ LLVMValueRef avra_llvm_build_fcmp(LLVMBuilderRef b, int pred, LLVMValueRef l, LL
 
 LLVMValueRef avra_llvm_build_xor(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
     return LLVMBuildXor(b, lhs, rhs, name);
+}
+
+LLVMValueRef avra_llvm_build_shl(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
+    return LLVMBuildShl(b, lhs, rhs, name);
+}
+
+LLVMValueRef avra_llvm_build_ashr(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
+    return LLVMBuildAShr(b, lhs, rhs, name);
 }
 
 LLVMValueRef avra_llvm_build_not(LLVMBuilderRef b, LLVMValueRef val, const char* name) {
@@ -694,7 +831,7 @@ LLVMValueRef avra_llvm_build_load_atomic(LLVMBuilderRef b, LLVMTypeRef ty, LLVMV
 // Emit a CALL to avra_track_store_i64/ptr that logs and performs the store.
 // Falls back to raw store if the tracking function isn't available.
 static LLVMValueRef tracked_store_or_raw(LLVMBuilderRef b, LLVMValueRef val, LLVMValueRef ptr_val) {
-    if (!getenv("FORGE_TRACK_STORES")) {
+    if (!stores_tracked()) {
         LLVMValueRef store = LLVMBuildStore(b, val, ptr_val);
         LLVMSetAlignment(store, 8);
         return store;
@@ -800,22 +937,22 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
 }
 
 // ONE GLOBAL PER DISTINCT TEXT where only its ADDRESS is read. The name is the
-// bytes in hex, so distinct text never collides and identical text is ONE box;
-// the name is stripped from the artifact, so its length costs nothing a program
-// downloads. A `.Octets` BOX is NOT interned — its siblings reference it BY the
-// static's own name, so that name must stand.
+// text's length and a 128-bit digest (two independently seeded FNV-1a folds), so
+// identical text is ONE box and the name's size is fixed whatever the text's — the
+// linker caps a symbol's length. The name is stripped from the artifact. A
+// `.Octets` BOX is NOT interned — its siblings reference it BY the static's own
+// name, so that name must stand.
+static uint64_t fold64(const char* s, size_t n, uint64_t h, uint64_t prime) {
+    for (size_t i = 0; i < n; i++) h = (h ^ (unsigned char)s[i]) * prime;
+    return h;
+}
+
 LLVMValueRef avra_llvm_intern_text(LLVMModuleRef m, const char* s, int64_t len) {
     size_t n = (size_t)(len > 0 ? len : 0);
-    char* name = (char*)malloc(6 + n * 2 + 1);
-    if (!name) avra_trap("compiler defect: no room for an interned text name");
-    memcpy(name, ".istr.", 6);
-    static const char hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < n; i++) {
-        unsigned char b = (unsigned char)s[i];
-        name[6 + i * 2] = hex[b >> 4];
-        name[7 + i * 2] = hex[b & 15];
-    }
-    name[6 + n * 2] = 0;
+    char name[6 + 16 + 32 + 1];
+    snprintf(name, sizeof name, ".istr.%016llx%016llx%016llx", (unsigned long long)n,
+             (unsigned long long)fold64(s, n, 0xcbf29ce484222325ULL, 0x100000001b3ULL),
+             (unsigned long long)fold64(s, n, 0x84222325cbf29ce4ULL, 0x1000193a5c3b7ULL));
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMValueRef g = LLVMGetNamedGlobal(m, name);
     LLVMValueRef payload;
@@ -825,7 +962,6 @@ LLVMValueRef avra_llvm_intern_text(LLVMModuleRef m, const char* s, int64_t len) 
     } else {
         payload = avra_llvm_global_text(m, s, len, name);
     }
-    free(name);
     return payload;
 }
 
@@ -936,10 +1072,40 @@ LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRe
     return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
 }
 
-// The payload address of a headered global already laid out.
+// A headered global another module lays out, declared here so a read
+// finds it by name; its payload stands 16 bytes in, as every one's does.
+// A static's name is a logical one, so a global modules share wears it as
+// the linker's (`avra_mangle_symbol`), as a fn's does.
+void avra_llvm_static_declared(LLVMModuleRef m, const char* name) {
+    char* linked = avra_mangle_symbol(name);
+    if (!LLVMGetNamedGlobal(m, linked)) {
+        LLVMValueRef g = LLVMAddGlobal(m, LLVMInt8TypeInContext(LLVMGetModuleContext(m)), linked);
+        LLVMSetLinkage(g, LLVMExternalLinkage);
+    }
+    free(linked);
+}
+
+// A headered global laid out here, made the other modules' to read under
+// the linker's name for it.
+void avra_llvm_static_shared(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (!g) { avra_trap("compiler defect: a shared static names no data"); }
+    char* linked = avra_mangle_symbol(name);
+    LLVMSetValueName2(g, linked, strlen(linked));
+    LLVMSetLinkage(g, LLVMExternalLinkage);
+    free(linked);
+}
+
+// The payload address of a headered global already laid out, or of one
+// another module lays out (`avra_llvm_static_declared`).
 LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (!g) {
+        char* linked = avra_mangle_symbol(name);
+        g = LLVMGetNamedGlobal(m, linked);
+        free(linked);
+    }
     if (!g) { avra_trap("compiler defect: a static read names no data"); }
     LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(ctx), 16, 0);
     return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
@@ -1129,6 +1295,42 @@ int64_t avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
     return 0;
 }
 
+// A FILE WRITTEN WHOLE, OR WHY NOT IN WORDS: `bytes` written to `tmp` and
+// flushed; a disk that fills mid-write is named — the file it was writing,
+// how many of its bytes did not reach it, and what the disk had free —
+// never left to the stream's own fatal error, which says no path at all.
+static int file_put(const char* tmp, const char* path, const char* bytes, size_t n) {
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "avra: %s couldn't be written — %s\n", path, strerror(errno));
+        return 1;
+    }
+    size_t done = 0;
+    int err = 0;
+    while (done < n) {
+        ssize_t w = write(fd, bytes + done, n - done);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            err = errno;
+            break;
+        }
+        done += (size_t)w;
+    }
+    if (!err && fsync(fd) != 0 && errno != EINVAL) err = errno;
+    if (close(fd) != 0 && !err) err = errno;
+    if (!err) return 0;
+    if (err == ENOSPC || err == EDQUOT) {
+        struct statvfs fs;
+        long long left = statvfs(tmp, &fs) == 0 ? (long long)fs.f_bavail * (long long)fs.f_frsize : -1;
+        fprintf(stderr, "avra: the disk is full: %s needed %zu bytes and %zu of them could not be written (%lld bytes free there)\n",
+            path, n, n - done, left);
+    } else {
+        fprintf(stderr, "avra: %s couldn't be written — %s\n", path, strerror(err));
+    }
+    remove(tmp);
+    return 1;
+}
+
 // THE SAME MODULE, AS BITCODE: what clang parses far faster than text, and what the
 // build path hands it. Atomic the same way — a temp, then rename.
 int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
@@ -1137,10 +1339,10 @@ int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
             >= (int)sizeof(tmp)) {
         return 1;
     }
-    if (LLVMWriteBitcodeToFile(m, tmp) != 0) {
-        remove(tmp);
-        return 1;
-    }
+    LLVMMemoryBufferRef held = LLVMWriteBitcodeToMemoryBuffer(m);
+    int bad = file_put(tmp, path, LLVMGetBufferStart(held), LLVMGetBufferSize(held));
+    LLVMDisposeMemoryBuffer(held);
+    if (bad) return 1;
     if (rename(tmp, path) != 0) {
         remove(tmp);
         return 1;
@@ -1434,8 +1636,10 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
         // Equal exit tails merge before the pipeline hoists them: an unwinding
         // call (`invoke`) keeps each tail apart until its callee is known
         // nounwind, and the default order hoists first.
+        double t0 = emit_timed() ? clock_seconds(CLOCK_THREAD_CPUTIME_ID) : 0;
         LLVMErrorRef ran = LLVMRunPasses(m, "cgscc(function-attrs),function(simplifycfg<sink-common-insts>)", tm, opts);
         if (!ran) ran = LLVMRunPasses(m, passes, tm, opts);
+        if (emit_timed()) { double t = clock_seconds(CLOCK_THREAD_CPUTIME_ID) - t0; pthread_mutex_lock(&emit_mu); emit_clock.passes += t; pthread_mutex_unlock(&emit_mu); }
         LLVMDisposePassBuilderOptions(opts);
         if (ran) {
             char* why = LLVMGetErrorMessage(ran);
@@ -1446,11 +1650,38 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
     }
     // wasm-ld garbage-collects functions itself; the ELF section discipline
     // is the host linker's and names sections wasm has no use for.
+    // AT LEVEL 0 A SWITCH IS A TREE OF COMPARES: the fast instruction selector
+    // selects no `switch`, and handing each one to the slow selector costs more
+    // than the compares do.
+    if (level == 0) {
+        LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+        LLVMErrorRef ran = LLVMRunPasses(m, "lower-switch", tm, opts);
+        LLVMDisposePassBuilderOptions(opts);
+        if (ran) {
+            char* why = LLVMGetErrorMessage(ran);
+            fprintf(stderr, "avra: the switches could not be lowered — %s\n", why);
+            LLVMDisposeErrorMessage(why);
+            failed = 1;
+        }
+    }
     if (!failed && !off_host) sectioned_by_definition(m);
-    if (!failed && LLVMTargetMachineEmitToFile(tm, m, tmp, LLVMObjectFile, &error)) {
+    double g0 = emit_timed() ? clock_seconds(CLOCK_THREAD_CPUTIME_ID) : 0;
+    LLVMMemoryBufferRef object = NULL;
+    if (!failed && LLVMTargetMachineEmitToMemoryBuffer(tm, m, LLVMObjectFile, &error, &object)) {
         fprintf(stderr, "avra: no object for %s — %s\n", path, error ? error : "");
         if (error) LLVMDisposeMessage(error);
         failed = 1;
+    }
+    if (object) {
+        if (!failed) failed = file_put(tmp, path, LLVMGetBufferStart(object), LLVMGetBufferSize(object));
+        LLVMDisposeMemoryBuffer(object);
+    }
+    if (emit_timed()) {
+        double t = clock_seconds(CLOCK_THREAD_CPUTIME_ID) - g0;
+        pthread_mutex_lock(&emit_mu);
+        emit_clock.codegen += t;
+        emit_clock.last = clock_seconds(CLOCK_MONOTONIC);
+        pthread_mutex_unlock(&emit_mu);
     }
     LLVMDisposeTargetData(layout);
     LLVMDisposeTargetMachine(tm);
@@ -1465,6 +1696,26 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
 // with it. LLVM is safe a context a thread, and a module here has a context of
 // its own. The queue is BOUNDED: a builder that outruns the workers waits, so
 // the modules alive are the workers' and a few more.
+
+// A module handed over: counted, and the program thread's CPU since its context opened.
+static void module_handed(LLVMModuleRef m) {
+    long fns = 0, instrs = 0;
+    for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) {
+        if (LLVMIsDeclaration(f)) continue;
+        fns++;
+        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(f); bb; bb = LLVMGetNextBasicBlock(bb))
+            for (LLVMValueRef i = LLVMGetFirstInstruction(bb); i; i = LLVMGetNextInstruction(i)) instrs++;
+    }
+    double now = clock_seconds(CLOCK_THREAD_CPUTIME_ID);
+    pthread_mutex_lock(&emit_mu);
+    if (emit_clock.modules == 0) emit_clock.first = clock_seconds(CLOCK_MONOTONIC);
+    emit_clock.modules++;
+    emit_clock.fns += fns;
+    emit_clock.instrs += instrs;
+    if (module_opened >= 0) emit_clock.built += now - module_opened;
+    pthread_mutex_unlock(&emit_mu);
+    module_opened = -1;
+}
 
 typedef struct EmitJob { LLVMModuleRef m; LLVMContextRef lc; char* path; int64_t level; char* target; struct EmitJob* next; } EmitJob;
 
@@ -1502,6 +1753,23 @@ static void* emit_worker(void* unused) {
     return NULL;
 }
 
+// A FORKED PROCESS HAS NO WORKERS: the threads stay behind in the parent, so the child's queue
+// starts empty and its first hand-off starts its own. The lock is held across the fork, so neither
+// side sees the queue half-changed.
+static void emit_fork_prepared(void) { pthread_mutex_lock(&emit_mu); }
+static void emit_fork_parent(void) { pthread_mutex_unlock(&emit_mu); }
+static void emit_fork_child(void) {
+    emit_head = emit_tail = NULL;
+    emit_queued = emit_active = emit_workers = emit_failed = 0;
+    pthread_mutex_init(&emit_mu, NULL);
+    pthread_cond_init(&emit_work, NULL);
+    pthread_cond_init(&emit_room, NULL);
+    pthread_cond_init(&emit_idle, NULL);
+}
+
+__attribute__((constructor))
+static void emit_fork_ready(void) { pthread_atfork(emit_fork_prepared, emit_fork_parent, emit_fork_child); }
+
 // THE MODULE AND ITS CONTEXT ARE THE WORKERS' FROM HERE: the caller touches
 // neither again. `workers` is how many may run at once, heard the first time.
 // Answers 0, or 1 when the module could not be handed over — it is disposed
@@ -1524,6 +1792,8 @@ int64_t avra_llvm_emit_object_later_targeted(LLVMModuleRef m, LLVMContextRef lc,
     char* held = (j && target && *target) ? strdup(target) : NULL;
     if (!kept || (target && *target && !held)) { free(kept); free(held); free(j); LLVMContextDispose(lc); return 1; }
     *j = (EmitJob){ m, lc, kept, level, held, NULL };
+    if (emit_timed()) module_handed(m);
+    double w0 = emit_timed() ? clock_seconds(CLOCK_MONOTONIC) : 0;
     pthread_mutex_lock(&emit_mu);
     while (emit_workers < workers) {
         pthread_t t;
@@ -1541,6 +1811,7 @@ int64_t avra_llvm_emit_object_later_targeted(LLVMModuleRef m, LLVMContextRef lc,
         return bad;
     }
     while (emit_queued >= 2 * emit_workers) pthread_cond_wait(&emit_room, &emit_mu);
+    if (emit_timed()) emit_clock.waited += clock_seconds(CLOCK_MONOTONIC) - w0;
     if (emit_tail) emit_tail->next = j; else emit_head = j;
     emit_tail = j;
     emit_queued++;
@@ -1556,6 +1827,11 @@ int64_t avra_llvm_objects_unwritten(void) {
     while (emit_head || emit_active) pthread_cond_wait(&emit_idle, &emit_mu);
     int64_t failed = emit_failed;
     emit_failed = 0;
+    if (emit_timed() && emit_clock.modules > 0) {
+        fprintf(stderr, "emit: %d module(s), %ld fn(s), %ld instruction(s); built %.2fs CPU, waited for a worker %.2fs; workers: passes %.2fs CPU, codegen %.2fs CPU; first hand-off to last object %.2fs\n",
+            emit_clock.modules, emit_clock.fns, emit_clock.instrs, emit_clock.built, emit_clock.waited, emit_clock.passes, emit_clock.codegen, emit_clock.last - emit_clock.first);
+        emit_clock = (EmitClock){ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    }
     pthread_mutex_unlock(&emit_mu);
     return failed;
 }
@@ -1647,4 +1923,30 @@ LLVMValueRef avra_llvm_cast_to_type(LLVMBuilderRef b, LLVMValueRef val, LLVMType
         return LLVMBuildIntToPtr(b, i, expected, "cast");
     }
     return val;
+}
+
+// ── What a link's output needs of its disk ──
+// The bytes free to this process on the file system holding `path`, or -1 where it can't be asked.
+int64_t avra_disk_free_bytes(const char* path) {
+    struct statvfs v;
+    if (statvfs(path, &v) != 0) return -1;
+    return (int64_t)v.f_bavail * (int64_t)v.f_frsize;
+}
+
+// The size of the file at `path`, or 0 where none stands.
+int64_t avra_file_bytes(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (int64_t)st.st_size : 0;
+}
+
+// THE FILE `from` PLACED AT `to` WITHOUT A BYTE WRITTEN: linked beside `to`, then renamed onto it, so
+// `to` is the old file or the new and never half of one. 0, or -errno where the two stand on file
+// systems a link can't join (the caller copies then).
+int64_t avra_file_placed(const char* from, const char* to) {
+    char tmp[4096];
+    if (snprintf(tmp, sizeof(tmp), "%s.placing.%d", to, (int)getpid()) >= (int)sizeof(tmp)) return -ENAMETOOLONG;
+    unlink(tmp);
+    if (link(from, tmp) != 0) return -errno;
+    if (rename(tmp, to) != 0) { int e = errno; unlink(tmp); return -e; }
+    return 0;
 }

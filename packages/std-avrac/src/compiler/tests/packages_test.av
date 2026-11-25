@@ -1,12 +1,10 @@
 // Packages over an in-memory host: a root manifest names a path
 // dependency, `use @scope.name.a.{x}` reaches its module, the graph's
-// laws refuse in their own words, and the entry is the manifest's.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{Program}
+// laws refuse in their own words. The entry a manifest names is the
+// CLI's to find (cli/src/commands/tests/entry_bin_test.av).
+use @std.avrac.testing.held.{Held, Judged, held_at}
 use @std.avrac.diagnostics.{suggested}
 use diagnostics.{Diag}
-use compiler.{Workspace}
-use compiler.host.{memory_host}
 
 /// A program (`app`) with a vendored dependency (`@acme/greet`)
 /// that itself depends on a second one (`@acme/words`), and a
@@ -37,28 +35,36 @@ fn names() -> List<string> {
     ]
 }
 
-fn workspace() -> Workspace {
-    test_workspace(memory_host(files(), names()), "/w")
+fn workspace() -> Held { held_at(only_listed(files(), names()), "/w") }
+
+/// The files among `fs` a host lists by `listing`: what the program can see.
+fn only_listed(fs: Map<string, string>, listing: List<string>) -> Map<string, string> {
+    mut held: Map<string, string> = {}
+    for path in listing { held.set(path, fs.get(path) ?? "") }
+    held
 }
 
+/// The same package as the old workspace reads it, for what only it answers: a file's module
+/// name, the root's files, the manifest's entry.
+
 /// The package with one file replaced.
-fn with_file(path: string, text: string) -> Workspace {
+fn with_file(path: string, text: string) -> Held {
     mut fs = files()
     fs.set(path, text)
-    test_workspace(memory_host(fs, names()), "/w")
+    held_at(only_listed(fs, names()), "/w")
 }
 
 /// The package with two files replaced or added.
 /// The program's printed value, or its refusal.
-fn answered(p: Program) -> string {
+fn answered(p: Judged) -> string {
     match p.run() { .Ok(v) -> v, .Err(why) -> why }
 }
 
-fn with_two(p1: string, t1: string, p2: string, t2: string) -> Workspace {
+fn with_two(p1: string, t1: string, p2: string, t2: string) -> Held {
     mut fs = files()
     fs.set(p1, t1)
     fs.set(p2, t2)
-    test_workspace(memory_host(fs, names().concat([p1, p2])), "/w")
+    held_at(only_listed(fs, names().concat([p1, p2])), "/w")
 }
 
 fn both_deps() -> string {
@@ -71,27 +77,27 @@ fn root_manifest(deps: string) -> string {
     "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n${deps}\n"
 }
 
-fn ran(ws: Workspace) -> string? {
-    match ws.program("/w/src/main.av").run() { .Ok(text) -> text, .Err(_) -> null }
+fn ran(ws: Held) -> string? {
+    match ws.judged_at("/w/src/main.av").run() { .Ok(text) -> text, .Err(_) -> null }
 }
 
 /// The root file's ONE diagnostic.
-fn main_diag(ws: Workspace) -> Diag? {
-    let a = ws.analyze_file("/w/src/main.av")
+fn main_diag(ws: Held) -> Diag? {
+    let a = ws.judged_at("/w/src/main.av")
     if a.diagnostics.length != 1 { return null }
     a.diagnostics[0]
 }
 
 /// The root file's structured fixes as text; empty without a
 /// diagnostic.
-fn fixes(ws: Workspace) -> List<string> {
+fn fixes(ws: Held) -> List<string> {
     let d? = main_diag(ws) else { return [] }
     suggested(d)
 }
 
 /// The root reaching `@acme/greet` under the named dependency section,
 /// with greet depending BACK on the root.
-fn back_edge(section: string) -> Workspace {
+fn back_edge(section: string) -> Held {
     with_two(
         "/w/avra.toml",
         "[package]\nname = \"@acme/app\"\nversion = \"0.1.0\"\n\n[${section}]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n",
@@ -101,9 +107,9 @@ fn back_edge(section: string) -> Workspace {
 }
 
 /// The packages' ONE voice, saying this.
-fn package_voice(ws: Workspace, saying: string) -> bool {
-    let p = ws.program("/w/src/main.av")
-    p.voices.length == 1 && p.rendered(p.voices).contains(saying)
+fn package_voice(ws: Held, saying: string) -> bool {
+    let p = ws.judged_at("/w/src/main.av")
+    p.diagnostics.length == 1 && p.rendered(p.diagnostics).contains(saying)
 }
 
 spec "compiler/packages" {
@@ -123,14 +129,14 @@ spec "compiler/packages" {
             ) == "84"
         }
         then "a dependency file's module carries its package" {
-            let ws = workspace()
-            ws.module_of("/w/vendor/greet/src/greet.av") == "@acme.greet" &&
-                ws.module_of("/w/vendor/greet/src/deep/x.av") == "@acme.greet.deep" &&
-                ws.module_of("/w/src/main.av") == ""
+            let fns = workspace().judged_at("/w/src/main.av").lowered().fns
+            fns.any(it.name.starts_with("@acme/greet/")) &&
+                fns.any(it.name.starts_with("@acme/words/"))
         }
         then "a nested package is not a module of the package above it" {
             let kind: string? = main_diag(with_file("/w/src/main.av", "use tools.src.t.{t}\n1\n"))?.kind
-            workspace().root_files().length == 1 && kind == "resolve.no_module"
+            let own = [p for p in workspace().judged_at("/w/src/main.av").source_paths() if p.starts_with("/w/src/")]
+            own.length == 1 && own[0] == "/w/src/main.av" && kind == "resolve.no_module"
         }
     }
     given "a package sees only what its manifest declares" {
@@ -160,7 +166,7 @@ spec "compiler/packages" {
                 "use @acme.greet.{greet}\nuse @acme.words.{word}\ngreet(1) + word()\n",
             )
             let out: string? = ran(ws)
-            ws.program("/w/src/main.av").voices.is_empty() && out == "81"
+            ws.judged_at("/w/src/main.av").diagnostics.is_empty() && out == "81"
         }
     }
     given "the graph's laws" {
@@ -174,7 +180,7 @@ spec "compiler/packages" {
             )
         }
         then "a dev dependency closes no cycle through the package it tests" {
-            back_edge("dev-dependencies").program("/w/src/main.av").voices.is_empty()
+            back_edge("dev-dependencies").judged_at("/w/src/main.av").diagnostics.is_empty()
         }
         then "the same edge as a library dependency refuses" {
             package_voice(
@@ -216,24 +222,15 @@ spec "compiler/packages" {
         }
     }
     given "the entry and the warnings" {
-        then "the entry is `[bin]`, else src/main.av" {
-            let plain: string? = workspace().entry_of()
-            let binned: string? = with_file(
-                "/w/avra.toml",
-                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/app.av\"\n",
-            )
-                .entry_of()
-            plain == "/w/src/main.av" && binned == "/w/src/app.av"
-        }
         then "an unknown section warns and never blocks" {
             let p = with_file(
                 "/w/avra.toml",
                 root_manifest("\"@acme/greet\" = { path = \"vendor/greet\" }") +
                     "\n[grants]\nnetwork = []\n",
             )
-                .program("/w/src/main.av")
-            p.voices.length == 1 &&
-                p.voices[0].severity is .Warning &&
+                .judged_at("/w/src/main.av")
+            p.diagnostics.length == 1 &&
+                p.diagnostics[0].severity is .Warning &&
                 p.clean() &&
                 p.report().contains("warning[manifest.unknown_section]")
         }
@@ -246,7 +243,7 @@ spec "compiler/packages" {
                 "/w/src/main.av",
                 "use @acme.greet.{make}\ntype P = { v: int }\nimpl P {\n    fn who() -> int {\n        1\n    }\n}\nlet mine = P { v: 0 }\nlet theirs = make()\n\"\${mine.who()} \${theirs.who()}\"\n",
             )
-            answered(ws.program("/w/src/main.av")) == "1 2"
+            answered(ws.judged_at("/w/src/main.av")) == "1 2"
         }
     }
     given "[lifted] budgets" {
@@ -257,7 +254,7 @@ spec "compiler/packages" {
                 "/w/src/main.av",
                 "fn spin() -> int {\n    mut i = 0\n    while i < 1000 { i = i + 1 }\n    i\n}\nconst N = spin()\nN\n",
             )
-            let report = answered(ws.program("/w/src/main.av"))
+            let report = answered(ws.judged_at("/w/src/main.av"))
             report.contains("error[const.budget]") &&
                 report.contains("took more than 500 steps") &&
                 report.contains("raise `[lifted] steps")
@@ -269,7 +266,7 @@ spec "compiler/packages" {
                 "/w/src/main.av",
                 "fn heavy() -> List<int> {\n    [i for i in 0..300000]\n}\nconst H = heavy()\nH.length\n",
             )
-            let report = answered(ws.program("/w/src/main.av"))
+            let report = answered(ws.judged_at("/w/src/main.av"))
             report.contains("error[const.budget]") &&
                 report.contains("held more than 1048576 bytes")
         }
@@ -280,13 +277,13 @@ spec "compiler/packages" {
                 "/w/src/main.av",
                 "fn spin() -> int {\n    mut i = 0\n    while i < 1000 { i = i + 1 }\n    i\n}\nconst N = spin()\nN\n",
             )
-            answered(ws.program("/w/src/main.av")) == "1000"
+            answered(ws.judged_at("/w/src/main.av")) == "1000"
         }
     }
     given "every reached file is analysed, however deep the chain" {
         then "a four-package dependency chain lands every link in the program's own files" {
-            let ws = test_workspace(memory_host(chain_files(), chain_names()), "/w")
-            let paths = [a.view.source.file for a in ws.program("/w/src/main.av").files]
+            let ws = held_at(only_listed(chain_files(), chain_names()), "/w")
+            let paths = ws.judged_at("/w/src/main.av").source_paths()
             paths.length == 5 &&
                 paths.any(it == "/w/vendor/p3/src/p3.av") &&
                 paths.any(it == "/w/vendor/p4/src/p4.av")

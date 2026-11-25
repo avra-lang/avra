@@ -7,11 +7,13 @@
 //! A host applies patches and holds no tree of its own: every decision —
 //! what moved, what is a property, what an event says — is made here.
 use @std.meta.{derive}
-use tree.identity.{NodeId}
+use tree.identity.{NodeId, StepTable, same_step}
 use tree.node.{Action, Handler, Said}
 use tree.codes.{Codes, Coded}
-use tree.seats.{Seat, row_at, web_word}
+use tree.seats.{Seat, row_at}
+use tree.trap.{trapped}
 use realize.html.css.{CssVar}
+use realize.html.delivery.{on_web, web_event}
 use realize.html.element.{Element, Tagged, Worded}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 
@@ -88,7 +90,7 @@ export fn held_says(value: Held) -> Says {
 /// The door the page's own answer to an event shuts: a dialog dismissed
 /// is closed by the page before the program hears of it.
 fn shut_by(seat: Seat) -> HtmlAttrName? {
-    let web? = row_at(seat).web else { return null }
+    let web? = web_event(seat) else { return null }
     match web { .Cancel -> .Open, _ -> null }
 }
 
@@ -106,12 +108,14 @@ fn read_from(s: Says) -> HtmlAttrName? {
 /// How the page hears an action.
 export fn listening_of(a: Action) -> Listening {
     let told = says(a.handler)
+    let web = on_web(a.seat)
+    if web.by == null { trapped(unlistened(a.seat)) }
     Listening {
         action: a,
-        event: web_word(a.seat),
+        event: web.by!.word(),
         says: told,
         reads: read_from(told),
-        prevents: row_at(a.seat).prevent,
+        prevents: web.prevent,
         shuts: shut_by(a.seat),
     }
 }
@@ -235,15 +239,11 @@ impl Stands {
 }
 
 /// Each element's place in a run, by its seat.
-fn places(run: List<Element>) -> Map<string, int> {
-    mut at: Map<string, int> = {}
-    for j, e in run { at.set(e.seat(), j) }
-    at
-}
+fn places(run: List<Element>) -> StepTable { StepTable.of([e.seat() for e in run]) }
 
 /// `e` against whichever element of `old` stands at its seat.
-fn found(old: List<Element>, at: Map<string, int>, e: Element) -> Stands {
-    let j? = at.get(e.seat()) else { return Stands.Made(e) }
+fn found(old: List<Element>, at: StepTable, e: Element) -> Stands {
+    let j? = at.find(e.seat()) else { return Stands.Made(e) }
     standing_at(old[j], j, e)
 }
 
@@ -251,7 +251,7 @@ fn found(old: List<Element>, at: Map<string, int>, e: Element) -> Stands {
 fn pair_off(old: List<Element>, new: List<Element>) -> bool {
     if old.length != new.length { return false }
     for j, e in new {
-        if old[j].seat() != e.seat() { return false }
+        if !same_step(old[j].seat(), e.seat()) { return false }
     }
     true
 }
@@ -478,4 +478,9 @@ export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>, next:
     let at = Differ { heard: heard }
     let drawn = at.siblings(null, old, new, next)
     Diffed { patches: at.said.get().concat(at.after.get()), page: drawn.page, next: drawn.next }
+}
+
+fn unlistened(seat: Seat) -> string {
+    let row = row_at(seat)
+    "a page listens only for an event it delivers, and its table delivers no `${row.owner}.${row.event}`"
 }

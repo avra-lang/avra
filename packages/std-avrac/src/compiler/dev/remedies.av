@@ -13,6 +13,7 @@ use core.{flatten}
 use diagnostics.{new_source_file, spliced, Diag}
 use @std.errors.{Suggestion}
 use compiler.{avra}
+use testing.held.{entry_of, held_alone}
 
 /// What an applied remedy must come to — `becomes`.
 export enum Then {
@@ -45,6 +46,19 @@ export fn rows() -> List<RemedyRow> {
             applied: Witness
                 .Source(
                     "extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.method",
+            says: "has no method `totl`",
+            refused: Witness
+                .Source(
+                    "type Cart = { n: int }\nimpl Cart {\n    fn total() -> int { self.n }\n}\nCart { n: 1 }.totl()",
+                ),
+            applied: Witness
+                .Source(
+                    "type Cart = { n: int }\nimpl Cart {\n    fn total() -> int { self.n }\n}\nCart { n: 1 }.total()",
                 ),
             becomes: Then.Clean,
         },
@@ -93,6 +107,20 @@ export fn rows() -> List<RemedyRow> {
             says: "`mut fn` marks a method that writes its receiver",
             refused: Witness.Source("mut fn f() -> int { 1 }\nf()"),
             applied: Witness.Source(plain_f),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.fraction_pattern",
+            says: "is no integer",
+            refused: Witness.Source("let x = 1.5\nmatch x {\n    1.5 -> 1\n    _ -> 0\n}"),
+            applied: Witness.Source("let x = 1.5\nmatch x {\n    v if v == 1.5 -> 1\n    _ -> 0\n}"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.mixed_bitwise",
+            says: "have no agreed order",
+            refused: Witness.Source("let a = 1\nlet b = 2\na | b & 3"),
+            applied: Witness.Source("let a = 1\nlet b = 2\n(a | b) & 3"),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -373,7 +401,7 @@ export fn rows() -> List<RemedyRow> {
             applied: with_meta(
                 "use @std.meta.{derive, Type, Directive}\ntrait X {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n@derive(X)\ntype T = { x: int }\n0",
             ),
-            becomes: Then.Draws("annotation.seats"),
+            becomes: Then.Clean,
         },
         RemedyRow {
             kind: "flow.yield",
@@ -481,6 +509,17 @@ export fn rows() -> List<RemedyRow> {
             refused: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
             applied: with_meta(
                 "use @std.meta.{code_hash}\nfn answer() -> int { 1 }\nlet h = code_hash(answer)\n0",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.marks_named",
+            says: "asks after a declared fn, named where it is called",
+            refused: with_meta(
+                "use @std.meta.{marks, Annotation}\nfn rule(a: Annotation) -> bool { marks(a, \"secret\") }\n0",
+            ),
+            applied: with_meta(
+                "use @std.meta.{marks, Annotation}\nfn secret(v: string) -> string { v }\nfn rule(a: Annotation) -> bool { marks(a, secret) }\n0",
             ),
             becomes: Then.Clean,
         },
@@ -602,6 +641,13 @@ export fn rows() -> List<RemedyRow> {
             says: "is `true` or `false`",
             refused: manifest(app_manifest + "\n[link]\ndynamic_symbols = \"yes\"\n"),
             applied: manifest(app_manifest + "\n[link]\ndynamic_symbols = true\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.link_name",
+            says: "is one library's name",
+            refused: manifest(app_manifest + "\n[link]\nshared = true\n"),
+            applied: manifest(app_manifest + "\n[link]\nshared = \"LLVM\"\n"),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -747,16 +793,16 @@ export fn unsound_fixes(runs: List<Shown>) -> List<string> {
 fn unsound(s: Shown) -> bool {
     let text = match s.witness {
         .Source(t) -> t,
-        .Package(_) or .Built(_) or .Absent or .Beyond(_) -> "",
+        .Package(_) or .Built(_) or .Unread(_, _) or .Absent or .Beyond(_) -> "",
     }
     if text.is_empty() { return false }
-    let drawn = [d for d in avra().analyze(new_source_file("witness.av", text)).diagnostics if d.kind == s.code.kind]
+    let drawn = [d for d in held_alone(text).judged(entry_of("alone")).diagnostics if d.kind == s.code.kind]
     [spliced_fails(s.code.kind, text, d, sg) for d in drawn for sg in d.suggestions].any(it)
 }
 
 fn spliced_fails(kind: string, text: string, d: Diag, sg: Suggestion) -> bool {
     let after? = spliced(text, sg.edits) else { return true }
-    let out = avra().check(new_source_file("witness.av", after))
+    let out = held_alone(after).judged(entry_of("alone")).report()
     unreadable(out) || out.contains("[${kind}]: ${d.message}")
 }
 

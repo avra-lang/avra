@@ -6,9 +6,11 @@
 //! thousand cases in seconds instead of an hour.
 use core.{Ins, Reg, TypeId, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row, counted, FileId}
 use compiler.lower.{Body}
+use @std.relation.{codec}
 
 /// One case as the entry needs it: the symbol that runs it and the
 /// line its verdict prints.
+@codec
 export type CaseCall = { symbol: string, label: string }
 
 /// The host fns the test binary declares: the status it leaves by, the
@@ -123,17 +125,6 @@ fn legs_of(pr: ProgramCall) -> string {
     if pr.evaluated { "eval == native" } else { "native" }
 }
 
-/// A BUILD'S ENTRY: the program's own top level, called. A file's top level is
-/// a body of its object like any other, so the entry's module is this call and
-/// what no file owns.
-export fn runner_entry(types: TypeRegistry, symbol: string) -> ProgramMain {
-    mut e = new_entry(types)
-    let _ = e.called(symbol, e.types.type(int))
-    e.give(Ins.ScopeExit(null))
-    e.give(Ins.Ret(0))
-    e.built()
-}
-
 /// The suite's own line: `N/M tests passed`, printed by the binary
 /// that ran them — the runner reads a VERDICT from the exit code,
 /// never a number it could truncate.
@@ -150,9 +141,9 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
     // `text` and `line` are each a fresh owned string this hand-built
     // entry minted and the memory pass never walks — release both
     // once their one use (the concat, then the print) has read them.
-    e.give(Ins.Release(text))
+    e.give(Ins.Release([text]))
     e.give(Ins.CallRtVoid("avra_puts", [line]))
-    e.give(Ins.Release(line))
+    e.give(Ins.Release([line]))
 }
 
 /// One case: run as a task under its schedules, judged, and counted
@@ -180,22 +171,6 @@ fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
 /// nothing else has interned even `int` — so the module is emitted over these.
 /// `verdict` is the type a case answers, as this registry knows it.
 export type ProgramMain = { body: Body, types: TypeRegistry, verdict: TypeId }
-
-impl ProgramMain {
-    /// A CASE AS A DECLARATION ALONE, in the file that holds its body. A held
-    /// module nobody read is never minted, so nothing else declares its cases.
-    fn case_stub(c: CaseCall, file: FileId) -> Body {
-        Body {
-            name: c.symbol,
-            params: [],
-            ret: self.verdict,
-            gives: null,
-            ins: [],
-            reg_types: [],
-            file: file,
-        }
-    }
-}
 
 /// A body under construction: registers minted in instruction order,
 /// which is the law every consumer reads back.

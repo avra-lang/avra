@@ -1,91 +1,143 @@
-// The in-memory home's laws, one given at a time.
-use @std.queue.{open_queue, key, Terms, Dead, release, bury, Overflow, Order}
-use @std.task.{unbounded_channel}
+// The memory home, held to the laws every home keeps.
+use @std.queue.{HomeError, Memory, Order, Overflow, Queue, Terms, key, memory_of, open_queue}
 use @std.time.{ms}
+use tests.support.laws.{broken, broken_of, laws}
+use tests.support.delays.{delay_laws}
 
-fn terms(lease: int) -> Terms {
-    Terms {
-        capacity: 4,
-        lease: ms(lease),
-        retries: 3,
-        dead: "failed",
-        overflow: Overflow.park,
-        order: Order.fifo,
+fn memory(t: Terms) -> Result<Queue<int>, HomeError> {
+    open_queue<int>("jobs", t)
+}
+
+/// A memory home of room for `capacity` under `order`.
+fn roomy(capacity: int, order: Order, overflow: Overflow) -> Memory<int> {
+    memory_of<int>(
+        Terms {
+            capacity: capacity,
+            lease: ms(60000),
+            retries: 3,
+            dead: "failed",
+            overflow: overflow,
+            order: order,
+        },
+    )
+}
+
+/// Send `n` items, item `i` under the key `i % keys`.
+fn filled(m: Memory<int>, n: int, keys: int) {
+    for i in 0..n { let _ = m.send(i, key("k${i % keys}")) }
+}
+
+/// Take in batches of `batch`, acking each batch newest first, until
+/// the home is empty. Answers how many items came out, or -1 once a
+/// key's items came out of send order.
+fn emptied(m: Memory<int>, batch: int) -> int {
+    mut last: Map<string, int> = {}
+    mut done = 0
+    mut held = m.taken(batch)
+    while !held.is_empty() {
+        for d in held {
+            if d.item <= last.get(d.key.text) ?? 0 - 1 { return 0 - 1 }
+            last.set(d.key.text, d.item)
+        }
+        for i in 0..held.length { if m.ack(held[held.length - 1 - i]) { done = done + 1 } }
+        held = m.taken(batch)
     }
+    done
 }
 
 spec "std/queue" {
-    given "a queue" {
-        then "is empty until something is sent" {
-            let q = open_queue<int>("jobs", terms(60000))
-            q.take() == null && q.depth() == 0
+    given "the laws" {
+        then "are twenty-five" {
+            laws().length == 25
         }
-        then "sends in order and counts what it holds" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let _ = q.send(1, key("a"))
-            let _ = q.send(2, key("b"))
-            let d = q.take()
-            d!.item == 1 && q.depth() == 2
+    }
+    given "the memory home" {
+        then "keeps every law" {
+            broken(memory).join("; ") == ""
         }
-        then "acks what a handler settled" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let _ = q.send(1, key("a"))
-            let d = q.take()
-            let _ = q.began(d!)
-            q.ack(d!) && q.depth() == 0
-        }
-        then "counts handler starts across attempts" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let dead = unbounded_channel<Dead<int, int>>()
-            let _ = q.send(1, key("a"))
-            let first = q.take()
-            let _ = q.began(first!)
-            let _ = release(q, first!, 9, dead.sink)
-            q.take()!.attempt == 1
-        }
-        then "refuses a begun from before a redelivery" {
-            let q = open_queue<int>("jobs", terms(0))
-            let _ = q.send(1, key("a"))
-            let first = q.take()
-            let _ = q.take()
-            !q.began(first!)
-        }
-        then "refuses an ack for a settled delivery" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let _ = q.send(1, key("a"))
-            let d = q.take()
-            let _ = q.ack(d!)
-            !q.ack(d!)
-        }
-        then "refuses an ack from before a redelivery" {
-            let q = open_queue<int>("jobs", terms(0))
-            let _ = q.send(1, key("a"))
-            let first = q.take()
-            let second = q.take()
-            !q.ack(first!) && q.ack(second!)
-        }
-        then "redelivers a released item with a new epoch" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let dead = unbounded_channel<Dead<int, int>>()
-            let _ = q.send(1, key("a"))
-            let first = q.take()
-            let _ = q.began(first!)
-            let _ = release(q, first!, 9, dead.sink)
-            let second = q.take()
-            second!.epoch == first!.epoch + 1 && q.depth() == 1
-        }
-        then "a bury leaves the queue and reaches the letter" {
-            let q = open_queue<int>("jobs", terms(60000))
-            let dead = unbounded_channel<Dead<int, int>>()
-            let _ = q.send(1, key("a"))
-            let d = q.take()
-            let _ = bury(q, d!, 9, dead.sink)
-            q.depth() == 0 && dead.source.taken()!.error == 9
+        then "keeps every law of a delayed send" {
+            broken_of(delay_laws(), memory).join("; ") == ""
         }
     }
     given "a key" {
         then "is data and takes a subkey" {
             key("order").at("fee").text == "order/fee"
+        }
+    }
+    given "a memory home under by_key" {
+        then "hands every item out once, each key in send order" {
+            let m = roomy(100000, Order.by_key, Overflow.fail)
+            filled(m, 3000, 7)
+            emptied(m, 5) == 3000 && m.depth() == 0
+        }
+        then "forgets the keys and entries it no longer needs" {
+            let m = roomy(100000, Order.by_key, Overflow.fail)
+            filled(m, 3000, 3000)
+            emptied(m, 64) == 3000 &&
+                m.lanes.get().length <= 200 &&
+                m.wakes.length() <= 4 * 64 + 32 &&
+                m.order.length() <= 40
+        }
+        then "keeps the order short while a key's next item waits at its head" {
+            let m = roomy(100000, Order.by_key, Overflow.fail)
+            filled(m, 2, 1)
+            let first = m.take()
+            for i in 0..500 {
+                let _ = m.send(i, key("other"))
+                let d = m.take()
+                if d != null { let _ = m.ack(d!) }
+            }
+            first != null && m.depth() == 2 && m.order.length() <= 40 && m.live.get().length <= 40
+        }
+    }
+    given "a memory home of ten thousand waiting" {
+        then "a send, a take and an ack step over no other item under fifo" {
+            let m = roomy(100000, Order.fifo, Overflow.fail)
+            filled(m, 10000, 10000)
+            let before = m.steps()
+            for i in 0..100 {
+                let _ = m.send(i, key("more"))
+                let d = m.take()
+                if d != null { let _ = m.ack(d!) }
+            }
+            m.steps() - before == 0 && m.depth() == 10000
+        }
+        then "a take steps over one offer and nothing else under by_key" {
+            let m = roomy(100000, Order.by_key, Overflow.fail)
+            filled(m, 10000, 10000)
+            let before = m.steps()
+            for i in 0..100 {
+                let _ = m.send(i, key("more${i}"))
+                let d = m.take()
+                if d != null { let _ = m.ack(d!) }
+            }
+            m.steps() - before == 100 && m.depth() == 10000
+        }
+        then "emptied by sixty-fours, steps under eight times an item" {
+            let m = roomy(100000, Order.by_key, Overflow.fail)
+            filled(m, 10000, 10000)
+            emptied(m, 64) == 10000 && m.steps() <= 8 * 10000
+        }
+        then "a send into a full home under latest steps over no other item" {
+            let m = roomy(10000, Order.fifo, Overflow.latest)
+            filled(m, 10000, 5000)
+            let before = m.steps()
+            for i in 0..100 { let _ = m.send(i, key("k${i * 37 % 5000}")) }
+            m.steps() - before <= 200 && m.depth() == 10000
+        }
+    }
+    given "a memory home that is full" {
+        then "keeps one item a key under latest, the newest" {
+            let m = roomy(2, Order.fifo, Overflow.latest)
+            for i in 0..100 { let _ = m.send(i, key("k${i % 2}")) }
+            let a = m.take()
+            let _ = m.ack(a!)
+            a!.item == 98 && m.take()?.item == 99 && m.depth() == 1
+        }
+        then "gives up its oldest under drop_oldest" {
+            let m = roomy(3, Order.fifo, Overflow.drop_oldest)
+            filled(m, 10, 10)
+            m.take()?.item == 7 && m.depth() == 3
         }
     }
 }

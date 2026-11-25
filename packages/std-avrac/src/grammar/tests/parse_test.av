@@ -17,7 +17,7 @@ primary = "not" "(" inner:primary ")" @expect(")", "expected ')' to close not(..
         | name:NAME -> build_prim_name(name)
         | text:STRING -> build_lit(text)
         | "(" inner:alt ")" @expect(")", "expected ')' to close the group") -> build_group(inner)
-build = name:NAME ( "." variant:NAME )? ( lp:"(" ( args:build_arg ( "," args:build_arg )* ","? )? ")" @expect(")", "expected ')' to close the argument list") )? -> build_build(name, variant, lp, args)
+build = name:NAME ( "." variant:NAME )? ( lp:"(" ( args:build_arg ( "," args:build_arg )* ","? )? ")" @expect(")", "expected ')' to close the argument list") )? ( "by" by:NAME )? -> build_build(name, variant, lp, args, by)
 build_arg = name:NAME ( "=" term:term )? -> build_arg(name, term)
 term = b:build -> term_build(b) | t:NUMBER -> term_text(t) | t:STRING -> term_text(t) | "[" ( items:term ( "," items:term )* ","? )? "]" @expect("]", "expected ']' to close the list") -> term_list(items)
 annot = "@expect" "(" token:STRING "," msg:STRING ")" @expect(")", "expected ')' to close @expect") -> build_expect(token, msg)
@@ -25,10 +25,11 @@ annot = "@expect" "(" token:STRING "," msg:STRING ")" @expect(")", "expected ')'
       | "@head" "(" label:NAME ")" @expect(")", "expected ')' to close @head") -> build_head(label)
       | "@trailer" "(" label:NAME ")" @expect(")", "expected ')' to close @trailer") -> build_trailer(label)
       | "@fold" "(" label:NAME ")" @expect(")", "expected ')' to close @fold") -> build_fold(label)
+      | "@alias" -> build_alias()
       | "@operators" "{" tiers:tier+ "}" @expect("}", "expected '}' to close @operators") -> build_operators(tiers)
 tier = assoc:assoc words:word+ ( "->" build:build )? suffixes:suffix_arm* -> build_tier(assoc, words, build, suffixes)
 suffix_arm = "suffix" word:STRING rule:NAME ( "->" build:build )? -> build_suffix(word, rule, build)
-assoc = "left" -> build_assoc_left() | "none" -> build_assoc_single() | "unmixed" "(" refusal:NAME ")" @expect(")", "expected ')' to close unmixed") -> build_assoc_unmixed(refusal)
+assoc = "left" -> build_assoc_left() | "none" -> build_assoc_single()
 word = tokens:STRING -> build_word(tokens) | "(" tokens:STRING+ ")" @expect(")", "expected ')' to close the operator") -> build_word(tokens)
 """
 }
@@ -40,6 +41,17 @@ spec "grammar/parse" {
             p.diagnostics.is_empty() &&
                 p.built != null &&
                 render_grammar(p.built!) == render_grammar(grammar_of_grammars)
+        }
+    }
+    given "an alias branch" {
+        then "reads back marked, and renders as written" {
+            let p = parse_grammar("a = \"x\" -> E.A @alias | \"y\" -> E.A")
+            let g? = p.built else { return false }
+            let branches = g.rules[0].body.branches
+            p.diagnostics.is_empty() &&
+                branches[0].aliased &&
+                !branches[1].aliased &&
+                render_grammar(g).contains("@alias")
         }
     }
     given "parse_grammar's outcome contract" {

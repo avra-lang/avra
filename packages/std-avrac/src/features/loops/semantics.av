@@ -3,7 +3,7 @@
 //! check.av for the typing laws, lower.av — the MEANING — for the
 //! brackets.
 use core.{StmtId, ExprId, Reg, SyntaxArena}
-use core.stmt.{While, For, ForEach, Jump}
+use core.stmt.{While, ForEach, Jump}
 use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, NameFacts, nothing}
 
 impl StmtSemantics for While {
@@ -25,35 +25,6 @@ impl StmtSemantics for While {
         match cx.view.store.stmt(s) {
             .While(cond, stmts) -> {
                 lower_while(cx, s, cond, stmts)
-                null
-            },
-            _ -> null,
-        }
-    }
-}
-
-impl StmtSemantics for For {
-    /// The bounds resolve OUTSIDE the binding (a range never sees
-    /// its own counter); cond and step resolve inside it.
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        match cx.view.store.stmt(s) {
-            .For(_, from, to, cond, step, stmts) -> {
-                cx.walk(from)
-                cx.walk(to)
-                cx.bound_scope(s, [cond, step], stmts)
-            },
-            _ -> nothing(),
-        }
-    }
-
-    fn type_stmt(mut cx: TypeCx, s: StmtId) {
-        check_for(cx, s)
-    }
-
-    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
-        match cx.view.store.stmt(s) {
-            .For(_, from, _, cond, step, stmts) -> {
-                lower_for(cx, s, from, cond, step, stmts)
                 null
             },
             _ -> null,
@@ -127,5 +98,5 @@ fn label_loop(names: NameFacts, store: SyntaxArena, label: ExprId) -> StmtId? {
 /// Whether the statement is a `for`, which a label may name.
 fn is_for(store: SyntaxArena, s: StmtId) -> bool {
     // a feature matching its own variants
-    match store.stmt(s) { .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) -> true, rest -> false }
+    match store.stmt(s) { .ForEach(_, _, _, _) -> true, rest -> false }
 }

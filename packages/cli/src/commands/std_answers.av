@@ -1,0 +1,225 @@
+//! THE TOOLCHAIN'S STD ANSWERS: an installed toolchain ships, beside its std, the packs its own
+//! binary kept over that std (`make install`), so a program's first build works out none of std.
+//! They are laid into the machine's store once per binary with the kept files naming every question
+//! in them (layered_store's shared save writes one), each file published whole, so a reader sees a
+//! pack or none and the store's compaction keeps them whenever it runs; a binary of another print never reads them, and every answer is held to the
+//! inputs it read wherever it was kept. A machine store that can't take them, or can't stand at
+//! all, is said once, and the build works without it.
+//! BESIDE THEM, THE INSTALL'S VERDICT: each std file its own check found nothing refusing, by its
+//! digest. A file's refusals read what it uses, so the verdict stands only whole: while every file it
+//! names stands on the toolchain's std with its digest, unpinned, and its packages hold no other
+//! file, those files are asked no law; one edited, added or pinned, and every std file is judged as
+//! any dependency is.
+//! A CHECKOUT IS A TOOLCHAIN TOO: `make avra` makes its binary's answers over the checkout's own std
+//! with the same writer (`tools/std_answers.sh`), beside the binary in `build/answers`.
+use @std.avrac.compiler.{
+    ProgramFile,
+    avra_fact_definitions,
+    dependent_worked,
+    program_files,
+    spelled_file,
+}
+use @std.avrac.core.{digest_of}
+use @std.io.{
+    IoError,
+    append_bytes,
+    drafted,
+    env,
+    exists,
+    link,
+    make_dirs,
+    read_bytes,
+    read_text,
+    remove,
+}
+use @std.path.{joined_path}
+use @std.program.address.{SourceFileAddress}
+use @std.program.disk_store.{packs_answering}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.saved_query.{definitions_of}
+use @std.program.source_facts.{source_text}
+
+/// What names a binary's mark in the machine's store: its std answers were laid in.
+const MARK: string = "std-answers-"
+
+/// Where the toolchain keeps its std answers, beside the std this binary reads: a checkout's in
+/// `build/answers` over its `packages`, an install's in `<prefix>/lib/avra/answers` over its
+/// `lib/avra/std`; none for a std found further above.
+fn shipped_answers() -> string? {
+    let std? = std_root() else { return null }
+    let roots = std_roots()
+    let beside = toolchain_files(["answers", "../lib/avra/answers"])
+    when {
+        std == roots[0] -> beside[0]
+        std == roots[1] -> beside[1]
+        _ -> null
+    }
+}
+
+/// Whether the machine's store at `directory` stands for this process: made where it isn't, said
+/// once where it can't be.
+fn machine_store_stands(directory: string) -> bool {
+    match make_dirs(directory) {
+        .Ok(_) -> true,
+        .Err(e) -> {
+            said_once(store_unusable(directory, e))
+            false
+        },
+    }
+}
+
+/// The toolchain's std answers for the binary printed `print`, laid into the machine's store at
+/// `directory` once: each pack it ships that the store lacks, then the mark that they were.
+fn std_answers_laid(directory: string, print: string) {
+    let mark = joined_path(directory, "${MARK}${print}")
+    // a mark stands for packs the store still holds: once its eviction took them, they're laid in again
+    if exists(mark) && !packs_answering(directory, print).is_empty() { return }
+    marks_swept(directory)
+    let shipped? = shipped_answers() else { return }
+    let packs = packs_answering(shipped, print)
+    if packs.is_empty() { return }
+    // the kept files naming every question in them, so the store's compaction keeps what they answer
+    let kept = [n for n in names_at(shipped) ?? [] if n.starts_with("kept-${print}.")]
+    for name in packs.concat(kept) {
+        match pack_laid(joined_path(shipped, name), joined_path(directory, name)) {
+            .Ok(_) -> {},
+            .Err(e) -> {
+                said_once(answers_unlaid(directory, e))
+                return
+            },
+        }
+    }
+    let _ = file_laid(mark, "".bytes())
+}
+
+/// Each mark in the machine's store at `directory` whose binary's packs the store no longer holds,
+/// removed: the store keeps the packs of a bounded few binaries, and their marks with them.
+fn marks_swept(directory: string) {
+    for name in names_at(directory) ?? [] {
+        if !name.starts_with(MARK) { continue }
+        if packs_answering(directory, name.substring(MARK.length, name.length)).is_empty() {
+            let _ = remove(joined_path(directory, name))
+        }
+    }
+}
+
+/// The pack at `from` laid at `to`, unless one stands there: by a second name where it can be.
+fn pack_laid(from: string, to: string) -> Result<string, IoError> {
+    if exists(to) { return .Ok(to) }
+    // a pack is named by its octets and never written again, so a second name for it is exact and
+    // costs no copy; across volumes, or where another process laid it first, the bytes are copied
+    match link(from, to) {
+        .Ok(_) -> .Ok(to),
+        .Err(_) -> if exists(to) { .Ok(to) } else { file_laid(to, read_bytes(from)?) },
+    }
+}
+
+/// `bytes` published whole at `to`: a reader sees the file or none.
+fn file_laid(to: string, bytes: Bytes) -> Result<string, IoError> {
+    let draft = drafted(to)?
+    match draft.write(bytes) {
+        .Ok(_) -> draft.published(to),
+        .Err(e) -> {
+            draft.dropped()
+            .Err(e)
+        },
+    }
+}
+
+/// Whether this process has said why it works without the machine's store.
+once fn said_store() -> Cell<bool> { Cell.new(false) }
+
+/// `words` on stderr, the first time this process says why the machine's store doesn't serve it.
+fn said_once(words: string) {
+    if said_store().get() { return }
+    said_store().set(true)
+    eprintln("avra: ${words}")
+}
+
+fn store_unusable(directory: string, e: IoError) -> string {
+    "the machine's store at ${directory} can't stand (${e.describe().message}), so this build shares nothing across packages"
+}
+
+fn answers_unlaid(directory: string, e: IoError) -> string {
+    "the toolchain's std answers couldn't be laid in ${directory} (${e.describe().message}), so this build works std out itself"
+}
+
+/// Where the toolchain keeps its verdict on its std, for the binary printed `print`.
+fn verdict_at(dir: string, print: string) -> string { joined_path(dir, "verdict-${print}") }
+
+/// The std files of the program on `disk` the toolchain's verdict vouches for, each as `spelled_file`
+/// names it: every file it names, where all of them stand on the toolchain's std, unpinned, with the
+/// text it judged, and the program reads no other file of their packages; else none.
+fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
+    let shipped? = shipped_answers() else { return [] }
+    let print? = own_print() else { return [] }
+    let verdict = read_text(verdict_at(shipped, print)) catch ""
+    let lines = [line for line in verdict.split("\n") if !line.is_empty()]
+    let judged = [vouched_line(engine, disk, line) for line in lines]
+    if judged.is_empty() || judged.any(it == null) { return [] }
+    mut named: Map<string, bool> = {}
+    mut packages: Map<string, bool> = {}
+    for f in judged {
+        named.set("${f!.package_name}\t${f!.path_in_package}", true)
+        packages.set(f!.package_name, true)
+    }
+    let unjudged = program_files(engine, disk.name)
+        .any(
+            (f) -> packages.has(f.package_name) &&
+                !named.has("${f.package_name}\t${f.path_in_package}"),
+        )
+    if unjudged { [] } else { [spelled_file(f!) for f in judged] }
+}
+
+/// The file a verdict's line names, where it stands on the toolchain's std as the verdict judged it.
+fn vouched_line(engine: QueryEngine, disk: Disk, line: string) -> SourceFileAddress? {
+    let parts = line.split("\t")
+    if parts.length != 3 || !parts[0].starts_with("@std/") || disk.deps.has(parts[0]) { return null }
+    let file = SourceFileAddress { package_name: parts[0], path_in_package: parts[1] }
+    let text? = source_text(engine, file) else { return null }
+    if digest_of(text) == parts[2] { file } else { null }
+}
+
+/// THE INSTALL'S VERDICT, written where `AVRA_VERDICT_DIR` asks: each of `own`, the files of a std
+/// package its check found nothing refusing in, by its digest.
+fn verdict_kept(engine: QueryEngine, own: List<ProgramFile>) {
+    // LICENSED input.debug_flag: where an install keeps its verdict is the install's, never an input of what is found
+    let dir? = env("AVRA_VERDICT_DIR") else { return }
+    let print? = own_print() else { return }
+    let lines = [line! for h in own for line in [verdict_line(engine, h.file)] if line != null]
+    let _ = append_bytes(verdict_at(dir, print), lines.join("").bytes())
+}
+
+/// The verdict's line for `file`: its package, its path, its text's digest.
+fn verdict_line(engine: QueryEngine, file: SourceFileAddress) -> string? {
+    let text? = source_text(engine, file) else { return null }
+    "${file.package_name}\t${file.path_in_package}\t${digest_of(text)}\n"
+}
+
+/// `avra cache dependents <dir>`: WHAT A PROGRAM OVER THE PACKAGE AT `dir` READS OF IT, worked out and
+/// kept: every body of its own files lowered and every name they declare, its laws asked of none — so
+/// a store filled so holds what a dependent asks and nothing only the package's own check does.
+fn dependents_worked(dir: string) -> int {
+    let disk? = disk_at(dir, "") else { return std_unfound() }
+    disk.entered()
+    let store = program_store_at(joined_path(disk.root, ".avra-cache/tapes"))
+    let engine = query_engine(
+        store,
+        avra_fact_definitions().concat(definitions_of(listed_build_facts)),
+    )
+    let lowered = [dependent_worked(engine, f) for f in program_files(engine, disk.name) if f.package_name == disk.name]
+    engine.frontier_kept()
+    match store.saved() {
+        .Ok(_) -> {
+            println(
+                "avra cache dependents: ${lowered.length} files, ${lowered.fold(0, (sum, n) -> sum + n)} bodies lowered",
+            )
+            0
+        },
+        .Err(e) -> {
+            eprintln("avra cache dependents: not kept: ${e.describe().message}")
+            1
+        },
+    }
+}

@@ -1,0 +1,200 @@
+// WHAT A STORE HOLDS IS NEVER TRUSTED TO END: kept records and frontiers are read back from disk,
+// written by an earlier process — or by another binary — and a walk over them ends whatever they
+// hold. Each case plants a cycle no engine would write, then a fresh process asks over it: it ends,
+// and answers what the world holds now.
+use @std.io.{make_dirs, write_bytes}
+use @std.text.{parse_int}
+use @std.time.{stamp}
+use answer_record.{ContentHash, RecordedRead, answer_record, content_hash, question}
+use disk_store.{disk_store_at, frontier_file_path}
+use frontier.{FrontierEntry, FrontierKind, base_file}
+use sorted.{sorted_by}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+
+/// What `name` answers about `argument`, asked as this binary asks it.
+fn asked(e: QueryEngine, name: string, argument: string) -> string {
+    e
+        .answer_to(question(name, e.definitions.get().get(name)!.code_hash, argument.bytes()))
+        .copied()
+        .text() ?? ""
+}
+
+/// `text` reads the world; `length` counts a path's text; `parity` says whether that is even. Every
+/// query's code is `code`.
+fn binary(world: Map<string, string>, code: string) -> List<QueryDefinition> {
+    let held = Cell.new(world)
+    [
+        QueryDefinition {
+            query_name: "text",
+            code_hash: code,
+            is_input: true,
+            compute: (_e, a) -> (held.get().get(a.text() ?? "") ?? "").bytes(),
+        },
+        QueryDefinition {
+            query_name: "length",
+            code_hash: code,
+            is_input: false,
+            compute: (e, a) -> "${asked(e, "text", a.text() ?? "").length}".bytes(),
+        },
+        QueryDefinition {
+            query_name: "parity",
+            code_hash: code,
+            is_input: false,
+            compute: parity_of,
+        },
+    ]
+}
+
+fn parity_of(e: QueryEngine, a: Bytes) -> Bytes {
+    let n = parse_int(asked(e, "length", a.text() ?? "")) ?? 0
+    if n % 2 == 0 { "even" } else { "odd" }.bytes()
+}
+
+fn world_of(a: string) -> Map<string, string> {
+    let w: Map<string, string> = {"a": a}
+    w
+}
+
+fn fresh(label: string) -> string { "/tmp/avra-stored-cycles/${stamp()}-${label}" }
+
+/// One whole process of `binary` over the store at `directory`: asks `name` of `a`, leaves its
+/// frontier, publishes, and answers.
+fn ran(directory: string, binary: List<QueryDefinition>, name: string) -> string {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, binary)
+    let answer = asked(engine, name, "a")
+    engine.frontier_kept()
+    let _ = store.saved()
+    answer
+}
+
+fn known_as(name: string, code: string) -> ContentHash { question(name, code, "a".bytes()).known_as }
+
+/// Two kept records that read each other — `length` of `a` reading `parity` of `a`, and `parity`
+/// reading `length` — each seeing an answer nothing holds, kept in `directory` and published.
+fn records_read_each_other(directory: string) {
+    let store = disk_store_at(directory)
+    let _ = query_engine(store, binary(world_of("abc"), "c1"))
+    let seen = content_hash("seen".bytes())
+    let length = question("length", "c1", "a".bytes())
+    let parity = question("parity", "c1", "a".bytes())
+    store
+        .keep_record(
+            length,
+            answer_record(
+                content_hash("7".bytes()),
+                [RecordedRead { question: parity.known_as, whole_answer: seen, part: null }],
+            ),
+        )
+    store
+        .keep_record(
+            parity,
+            answer_record(
+                content_hash("even".bytes()),
+                [RecordedRead { question: length.known_as, whole_answer: seen, part: null }],
+            ),
+        )
+    let _ = store.saved()
+}
+
+/// A frontier for the binary of `code` in `directory` whose reads close a cycle: `length` reads
+/// `parity`, `parity` reads `length`, and both read the input `text`, each answer one nothing holds.
+fn cyclic_frontier(directory: string, code: string) {
+    let _ = make_dirs(directory) catch ""
+    let text = known_as("text", code)
+    let length = known_as("length", code)
+    let parity = known_as("parity", code)
+    let order = sorted_by([text, length, parity], (x, y) -> x.comes_before(y))
+    let at = (q: ContentHash) -> [i for i, o in order if o.same_as(q)].first() ?? 0
+    let reads_of = (q: ContentHash) -> when {
+        q.same_as(length) -> [at(parity), at(text)]
+        q.same_as(parity) -> [at(length), at(text)]
+        _ -> []
+    }
+    let entries = [FrontierEntry {
+        question: q,
+        answer: content_hash("nothing holds this".bytes()),
+        reads: reads_of(q),
+        input: q.same_as(text),
+        root: !q.same_as(text),
+    } for q in order]
+    let base = base_file(entries, [], 1)
+    let print = query_engine(disk_store_at("/dev/null/none"), binary(world_of(""), code)).print()
+    let _ = write_bytes(
+        frontier_file_path(directory, print, FrontierKind.Base, base.id),
+        base.runs.bytes(),
+    )
+}
+
+/// A frontier for the binary of `c1` in `directory` that a root stops reading a wide part of:
+/// `parity` of `a` reads `length` of `a` and `n` more places, and each of those reads every one
+/// written after it — a walk from where `parity`'s reads are cut that counts each place's readers
+/// one walk up at a time does work beyond any power of the frontier it would want to spend. The wide
+/// places are stale where the frontier was written, so no reader of theirs stood before.
+fn wide_frontier(directory: string, n: int) {
+    let _ = make_dirs(directory) catch ""
+    let text = known_as("text", "c1")
+    let length = known_as("length", "c1")
+    let parity = known_as("parity", "c1")
+    let wide = [question("length", "c1", "p${i}".bytes()).known_as for i in 0..n]
+    let order = sorted_by([text, length, parity].concat(wide), (x, y) -> x.comes_before(y))
+    let place = (q: ContentHash) -> [i for i, o in order if o.same_as(q)].first() ?? 0
+    let after = (q: ContentHash) -> [place(w) for i, w in wide if i > [j for j, v in wide if v.same_as(q)].first() ?? n]
+    let reads_of = (q: ContentHash) -> when {
+        q.same_as(parity) -> [place(length)].concat([place(w) for w in wide])
+        q.same_as(length) -> [place(text)]
+        q.same_as(text) -> []
+        _ -> after(q)
+    }
+    let entries = [FrontierEntry {
+        question: q,
+        answer: content_hash("nothing holds this".bytes()),
+        reads: reads_of(q),
+        input: q.same_as(text),
+        root: q.same_as(parity),
+    } for q in order]
+    let base = base_file(entries, [place(w) for w in wide], 1)
+    let print = query_engine(disk_store_at("/dev/null/none"), binary(world_of(""), "c1")).print()
+    let _ = write_bytes(
+        frontier_file_path(directory, print, FrontierKind.Base, base.id),
+        base.runs.bytes(),
+    )
+}
+
+spec "a store's cycles end" {
+    given "kept records that read each other" {
+        then "a fresh process asks over them and answers what the world holds" {
+            let directory = fresh("records")
+            records_read_each_other(directory)
+            ran(directory, binary(world_of("abc"), "c1"), "parity") == "odd"
+        }
+    }
+    given "a frontier whose reads close a cycle, the world moved under it" {
+        then "the process walks it, ends, and answers what the world holds" {
+            let directory = fresh("frontier")
+            cyclic_frontier(directory, "c1")
+            ran(directory, binary(world_of("abcd"), "c1"), "parity") == "even"
+        }
+        then "and the next process, over what that one left, answers the same" {
+            let directory = fresh("frontier-again")
+            cyclic_frontier(directory, "c1")
+            let _ = ran(directory, binary(world_of("abcd"), "c1"), "parity")
+            ran(directory, binary(world_of("abcde"), "c1"), "parity") == "odd"
+        }
+    }
+    given "a frontier a root stops reading a wide part of" {
+        then "the walk from the cut is bounded: the process ends and answers what the world holds" {
+            let directory = fresh("wide")
+            wide_frontier(directory, 600)
+            ran(directory, binary(world_of("abcd"), "c1"), "parity") == "even"
+        }
+    }
+    given "a cyclic frontier another binary left" {
+        then "it is never read: the process answers what the world holds" {
+            let directory = fresh("foreign")
+            cyclic_frontier(directory, "c2")
+            ran(directory, binary(world_of("abc"), "c1"), "parity") == "odd"
+        }
+    }
+}
+

@@ -6,16 +6,12 @@
 //! node the workspace resolves before any file's names do; `export`
 //! is a prefix that marks the declaration it heads — no node of its
 //! own.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use features.modules.{unused_import}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn modules() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name          | build
-        "export_stmt" | build_export
-    }
     let codes = table<DiagCode> {
         kind                              | summary
         "resolve.no_module"               | "a `use` names a module the package does not have"
@@ -33,6 +29,10 @@ export fn modules() -> LanguageFeature {
         "resolve.reexport_cycle"          | "a re-export never closes a package cycle"
         "resolve.nested_use"              | "use lines live at the top level"
         "resolve.package_form"            | "a package is `@scope.name` — two segments"
+        "source.missing"                  | "a source the package lists stands there"
+        "source.not_text"                 | "a source is UTF-8 text"
+        "source.refused"                  | "a source is one the host gives to read"
+        "source.dangling"                 | "a source's link leads to a file"
         "manifest.no_package"             | "a manifest declares `[package]`"
         "manifest.no_name"                | "`[package]` names the package"
         "manifest.no_version"             | "`[package]` gives a version"
@@ -41,6 +41,7 @@ export fn modules() -> LanguageFeature {
         "manifest.lib_name"               | "a `[lib] name` is the stem its package's name derives"
         "manifest.no_target"              | "running a package needs a `[bin]` or `src/main.av`"
         "manifest.no_source"              | "checking a root needs a `src/` directory or a program file directly in it"
+        "manifest.no_manifest"            | "checking a directory needs it to be a package's root, the one its `avra.toml` stands in"
         "manifest.self_dependency"        | "a package does not depend on itself"
         "manifest.bad_path"               | "a path dependency points at a package directory"
         "manifest.bad_opt_level"          | "`opt_level` is 0–3, s or z"
@@ -53,6 +54,7 @@ export fn modules() -> LanguageFeature {
         "manifest.prelude_floor"          | "the prelude depends on nothing"
         "manifest.link_option"            | "a `[link]` row names an object, a directory or a library — the option letter is the compiler's to write"
         "manifest.link_flag"              | "a `[link]` flag is `true` or `false`"
+        "manifest.link_name"              | "a `[link]` name row is one library's name, a word"
         "manifest.borrowed_raw"           | "`[link.raw]` is the program's own — a dependency names what it needs, never how to link it"
         "manifest.unset_link_variable"    | "a `[link]` word's variable is set wherever the hole is not the whole word"
         "manifest.bad_budget"             | "a `[lifted]` row is a count of at least 1 — `steps` in instructions, `memory` in MiB"
@@ -66,10 +68,9 @@ export fn modules() -> LanguageFeature {
     }
     LanguageFeature modules {
         gram: grammar {
-            stmt = "use" ( path:PKG | path:NAME ) ( "." path:NAME )* "." "{" BREAK? items:use_item ( ( "," | BREAK ) BREAK? items:use_item )* ","? BREAK? "}" END @recover(sync_to: "END") -> Stmt.Use | "export" d:stmt -> export_stmt(d)
+            stmt = "use" ( path:PKG | path:NAME ) ( "." path:NAME )* "." "{" BREAK? items:use_item ( ( "," | BREAK ) BREAK? items:use_item )* ","? BREAK? "}" END @recover(sync_to: "END") -> Stmt.Use | "export" decl:stmt -> Stmt.FnDecl by exported_written
             use_item = name:NAME ( "as" rename:NAME )? -> Record.UseItem
         }
-        builders: rows
         diags: codes
     }
     modules

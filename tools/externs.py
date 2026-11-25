@@ -309,8 +309,14 @@ def declaring_sources():
     # report their problems as main's. A hand-kept list that has been
     # wrong three times is still the right shape when the alternative
     # reads someone else's tree.
+    # AND NOT THE REFUSAL SUITE'S CASES. `tools/program-refusals/<case>/`
+    # holds programs the COMPILER is judged on — a declaration there is a
+    # case, wrong on purpose where the case is a refusal, and never linked
+    # against a C body; `tools/witness_program_refusal.sh` is what holds it.
+    cases = os.path.join(ROOT, "tools", "program-refusals") + os.sep
     return sorted(glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True)
-                  + glob.glob(os.path.join(ROOT, "tools/**/*.av"), recursive=True)
+                  + [p for p in glob.glob(os.path.join(ROOT, "tools/**/*.av"), recursive=True)
+                     if not p.startswith(cases)]
                   + glob.glob(os.path.join(ROOT, "tools/*.sh")))
 
 # AN `extern fn` WITH A BODY IS NO WALL. It is a HOST FN: Avra defines the
@@ -1419,25 +1425,88 @@ def text_taking_externs():
     return out
 
 
+def calls_in(body):
+    """Each call a C body makes: the callee and its argument text."""
+    out = []
+    for m in re.finditer(r"\b([a-z_0-9]+)\s*\(", body):
+        depth, i = 1, m.end()
+        while i < len(body) and depth:
+            depth += (body[i] == "(") - (body[i] == ")")
+            i += 1
+        out.append((m.group(1), body[m.end():i - 1]))
+    return out
+
+
+def text_params(params):
+    """The names of a C prototype's `char` pointer seats."""
+    return {m.group(1) for m in re.finditer(r"char\s*\*\s*(\w+)", params)}
+
+
+def terminators_in(src, takes_text):
+    """Each fn of the C text `src` named in `takes_text` that hands its
+    text to a call ending at the first NUL, by name, with those calls:
+    in its own body, or in a body of the same text it hands its text
+    to, however deep — a row whose text reaches `open` through a helper
+    ends there as surely as one that calls it."""
+    bodies = {}
+    for m in re.finditer(r"^[A-Za-z_][\w \*]*?\b([a-z_0-9]+)\s*\(([^)]*)\)\s*\{", src, re.M):
+        start, depth, i = m.end(), 1, m.end()
+        while i < len(src) and depth:
+            depth += (src[i] == "{") - (src[i] == "}")
+            i += 1
+        bodies[m.group(1)] = (m.group(2), src[start:i])
+    out = {}
+    for name, (params, _) in bodies.items():
+        if name not in takes_text or "char" not in params:
+            continue
+        calls, seen, todo = set(), {name}, [name]
+        while todo:
+            held, body = text_params(bodies[todo[-1]][0]), bodies[todo.pop()][1]
+            calls |= set(TERMINATES.findall(body))
+            for callee, args in calls_in(body):
+                hands = any(re.search(rf"\b{re.escape(t)}\b", args) for t in held)
+                if hands and callee in bodies and callee not in seen:
+                    seen.add(callee)
+                    todo.append(callee)
+        if calls:
+            out[name] = sorted(calls)
+    return out
+
+
 def terminating_bodies(sources):
     """Every extern taking text whose C body hands it to a call that
     ends at the first NUL, by name."""
     takes_text = text_taking_externs()
     out = {}
     for rel in sources:
-        src = open(os.path.join(ROOT, rel)).read()
-        for m in re.finditer(r"^[A-Za-z_][\w \*]*?\b([a-z_0-9]+)\s*\(([^)]*)\)\s*\{", src, re.M):
-            name = m.group(1)
-            if name not in takes_text or "char" not in m.group(2):
-                continue
-            start, depth, i = m.end(), 1, m.end()
-            while i < len(src) and depth:
-                depth += (src[i] == "{") - (src[i] == "}")
-                i += 1
-            calls = sorted(set(TERMINATES.findall(src[start:i])))
-            if calls:
-                out[name] = calls
+        out.update(terminators_in(open(os.path.join(ROOT, rel)).read(), takes_text))
     return out
+
+
+# THE TERMINATOR RULE'S OWN CASES: text handed to a helper that opens
+# it ends there; a helper handed none of the text does not make its
+# caller end its text, whatever the helper calls.
+TERMINATOR_FIXTURE = """
+static int claimed(const char* temp) { char buf[64]; snprintf(buf, 64, "%s", temp); return open(buf, 0); }
+static int debugging(void) { return getenv("DEBUG") != NULL; }
+int64_t row_direct(const char* path) { return open(path, 0); }
+int64_t row_through(const char* path) { return claimed(path); }
+int64_t row_beside(const char* path, int64_t n) { if (debugging()) n++; return (int64_t)strlen(path) + n; }
+"""
+
+TERMINATOR_CASES = [
+    ("row_direct", True),
+    ("row_through", True),
+    ("row_beside", False),
+]
+
+
+def terminator_self_test():
+    found = terminators_in(TERMINATOR_FIXTURE, {n for n, _ in TERMINATOR_CASES})
+    bad = [(n, w) for n, w in TERMINATOR_CASES if (n in found) != w]
+    for name, want in bad:
+        print(f"externs: SELF-TEST — `{name}` should {'end' if want else 'not end'} its text at a terminator")
+    return len(bad)
 
 
 def recorded_terminators():
@@ -1577,7 +1646,7 @@ def inert_self_test():
     return 0
 
 def main():
-    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + split_self_test() + keep_self_test() + inert_self_test() + host_self_test():
+    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + split_self_test() + keep_self_test() + inert_self_test() + host_self_test() + terminator_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -1751,7 +1820,7 @@ def main():
         print(f"externs: {len(strayed) + len(gone)} row(s) disagree with tools/terminated.allow — a crossing joined or left the set")
         return 1
     print(f"externs: {len(recorded)} extern(s) end their text at a terminator, each recorded with its door")
-    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES) + len(HOST_CASES)} of the keeper's own cases hold")
+    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES) + len(HOST_CASES) + len(TERMINATOR_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())

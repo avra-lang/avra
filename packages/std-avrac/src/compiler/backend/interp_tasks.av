@@ -5,6 +5,23 @@
 //! PARKING and the run loop saves the task at that very instruction, so
 //! the row runs again when its task resumes and answers then.
 
+use @std.relation.stable.{text_hash}
+
+/// The slot of a task's four that holds its frame of contexts (runtime/avra_runtime.h's
+/// `AVRA_SLOT_CTX`).
+const ctx_slot = 2
+
+/// The slot that holds the task's recordings of what its open queries hear of contexts
+/// (`AVRA_SLOT_HEARD`).
+const heard_slot = 3
+
+/// How a running query tells a context's value apart, as the runtime does: by its word, its text, or
+/// not at all; a default read apart from every set.
+const heard_word = 0
+const heard_text = 1
+const heard_untold = 2
+const heard_default = 3
+
 extern fn avra_vtask_new_at(site: int, id: int) -> int
 extern fn avra_vtask_free(t: int)
 extern fn avra_vtask_end(t: int)
@@ -834,6 +851,278 @@ impl Machine {
         Val.I(0)
     }
 
+    /// The running task's frame of contexts: the null pointer where nothing is set, or no task stands
+    /// yet.
+    fn ctx_frame() -> Val {
+        if self.running < 0 { return Val.N }
+        self.tasks[self.running].slots[ctx_slot]
+    }
+
+    /// `avra_ctx_read`: the cell the running task's frame holds for the key, or the null pointer
+    /// where nothing set it.
+    fn ctx_read_val(vals: List<Val>) -> Val {
+        let key = self.whole(vals[0])
+        let id? = array_id(self.ctx_frame()) else { return Val.N }
+        let held = self.arrays[id]
+        mut at = 1
+        while at + 1 < held.length {
+            if self.whole(held[at]) == key {
+                self.retains(held[at + 1])
+                return held[at + 1]
+            }
+            at = at + 2
+        }
+        Val.N
+    }
+
+    /// `avra_ctx_set`: the running task's frame with the key holding the cell, made current. The
+    /// frame it replaced is the new one's first slot, which takes the reference the task held.
+    fn ctx_set_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key = self.whole(vals[0])
+        let old = self.ctx_frame()
+        mut kept: List<Val> = []
+        let id = array_id(old)
+        if id != null {
+            let held = self.arrays[id!]
+            mut at = 1
+            while at + 1 < held.length {
+                if self.whole(held[at]) != key {
+                    self.retains(held[at + 1])
+                    kept = kept.concat([held[at], held[at + 1]])
+                }
+                at = at + 2
+            }
+        }
+        self.retains(vals[1])
+        let next = self.fresh_array([old].concat(kept).concat([Val.I(key), vals[1]]))
+        self.tasks[self.running].slots.set(ctx_slot, next)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_back`: the frame the running task's frame replaced made current again.
+    fn ctx_back_val() -> Val {
+        self.rooted()
+        let now = self.ctx_frame()
+        let id? = array_id(now) else { return Val.I(0) }
+        let before = self.arrays[id].first() ?? Val.N
+        self.retains(before)
+        self.tasks[self.running].slots.set(ctx_slot, before)
+        self.releases_val(now)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_frame`: the frame in force, the caller's reference to it its own.
+    fn ctx_frame_val() -> Val {
+        let now = self.ctx_frame()
+        self.retains(now)
+        now
+    }
+
+    /// `avra_ctx_enter`: a body made under the frame `vals[0]` entered. Where it is the one in force
+    /// nothing changes and the answer is 0; else the frame made current holds its contexts laid over
+    /// the ones in force, which stand under it for the body's end to put back, and the answer is 1.
+    fn ctx_enter_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let now = self.ctx_frame()
+        if array_id(vals[0]) == array_id(now) { return Val.I(0) }
+        let made = self.frame_pairs(vals[0])
+        let running = [p for p in self.frame_pairs(now) if !made.any((m) -> self.whole(m.key) == self.whole(p.key))]
+        mut words: List<Val> = [now]
+        for p in running.concat(made) {
+            self.retains(p.cell)
+            words = words.concat([p.key, p.cell])
+        }
+        let next = self.fresh_array(words)
+        self.tasks[self.running].slots.set(ctx_slot, next)
+        Val.I(1)
+    }
+
+    /// The key and cell pairs the frame `frame` holds, in order; none for no frame.
+    fn frame_pairs(frame: Val) -> List<FramePair> {
+        let id? = array_id(frame) else { return [] }
+        let held = self.arrays[id]
+        [FramePair { key: held[at], cell: held[at + 1] } for at in 0..held.length if at % 2 == 1 && at + 1 < held.length]
+    }
+
+    /// `avra_ctx_frame_pushed`: the frame in force pushed onto the box `vals[0]`, its cell marked as
+    /// the box's frame.
+    fn ctx_frame_pushed_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("a frame pushed onto no box") }
+        let now = self.ctx_frame()
+        self.retains(now)
+        self.arrays[id].push(now)
+        self.frame_cells.set(vals[0].handle(), self.arrays[id].length - 1)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_reframed`: the box `vals[0]`, whose frame is its slot `vals[1]`, made under the frame
+    /// `vals[2]` instead — the same box where that slot holds it, or isn't the cell marked as its
+    /// frame, else a copy holding it there, marked, and the rest its own.
+    fn ctx_reframed_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("a box to reframe that is no box") }
+        let held = self.arrays[id]
+        let at = self.whole(vals[1])
+        if at < 0 ||
+            self.frame_cells.get(vals[0].handle()) != at ||
+            array_id(held[at]) == array_id(vals[2]) {
+            self.retains(vals[0])
+            return vals[0]
+        }
+        let made = [if j == at { vals[2] } else { v } for j, v in held]
+        for v in made { self.retains(v) }
+        let copy = self.fresh_array(made)
+        self.frame_cells.set(copy.handle(), at)
+        copy
+    }
+
+    /// The task's stack of recordings, absent where no query is open on it.
+    fn heard_stack() -> int? {
+        let id? = array_id(self.heard_held()) else { return null }
+        if self.arrays[id].is_empty() { null } else { id }
+    }
+
+    /// Where the running task's recordings stand: its slot, or the machine's own while no task does.
+    fn heard_held() -> Val {
+        if self.running < 0 { return self.loose_heard }
+        self.tasks[self.running].slots[heard_slot]
+    }
+
+    /// The running task's recordings made `v`.
+    fn heard_made(v: Val) {
+        if self.running < 0 {
+            self.loose_heard = v
+            return
+        }
+        self.tasks[self.running].slots.set(heard_slot, v)
+    }
+
+    /// The word a context read tests: whether a query is open on the running task.
+    fn ctx_heard_now() -> Val { Val.I(if self.heard_stack() == null { 0 } else { 1 }) }
+
+    /// What tells the value a cell holds apart, as `kind` tells it.
+    fn heard_word_of(kind: int, cell: Val) -> int {
+        let id? = array_id(cell) else { return 0 }
+        let v = self.arrays[id].first() ?? Val.N
+        match v {
+            .I(n) -> n,
+            .F(bits) -> bits,
+            .B(b) -> if b { 1 } else { 0 },
+            .S(t) -> if kind == heard_text { text_hash(t) } else { 0 },
+            _ -> 0,
+        }
+    }
+
+    /// The innermost recording of the stack `st`, made at its first read.
+    fn recording_at(st: int, at: int) -> int {
+        let made = array_id(self.arrays[st][at])
+        if made != null { return made! }
+        let fresh = self.fresh_array([])
+        self.arrays[st].set(at, fresh)
+        array_id(fresh)!
+    }
+
+    /// `avra_ctx_entry`: the cell the frame in force holds for the key, as the word its handle is; 0
+    /// where nothing set it.
+    fn ctx_entry_val(vals: List<Val>) -> Val {
+        let id? = array_id(self.frame_cell(self.whole(vals[0]))) else { return Val.I(0) }
+        Val.I(id + 1)
+    }
+
+    /// `avra_ctx_heard`: a context read inside a query body filed on the innermost recording.
+    fn ctx_heard_val(vals: List<Val>) -> Val {
+        let st? = self.heard_stack() else { return Val.I(0) }
+        let top = self.recording_at(st, self.arrays[st].length - 1)
+        let key = self.whole(vals[0])
+        let kind = if array_id(vals[2]) == null { heard_default } else { self.whole(vals[1]) }
+        self.arrays[top].push(Val.I(key))
+        self.arrays[top].push(Val.I(kind))
+        self.arrays[top].push(Val.I(self.heard_word_of(kind, vals[2])))
+        Val.I(0)
+    }
+
+    /// `avra_ctx_listen`: a recording opened over the ones open on the running task, an empty place
+    /// until the body reads a context.
+    fn ctx_listen_val() -> Val {
+        let id = array_id(self.heard_held())
+        if id == null {
+            self.heard_made(self.fresh_array([Val.N]))
+        } else {
+            self.arrays[id!].push(Val.N)
+        }
+        Val.I(0)
+    }
+
+    /// `avra_ctx_listened`: the innermost recording closed and answered, the null pointer where it
+    /// heard nothing; what it heard heard by the recording open around it too.
+    fn ctx_listened_val() -> Val {
+        let st? = self.heard_stack() else { return Val.N }
+        let held = self.arrays[st]
+        let heard = held.last() ?? Val.N
+        self.arrays.set(st, held.slice(0, held.length - 1))
+        // The recording is the caller's from here, held as an uncounted `ptr` until it lets it go
+        // (`avra_ctx_heard_drop`): one count of its own keeps it, as the runtime's reference does.
+        self.retains(heard)
+        if self.arrays[st].is_empty() { return heard }
+        let mine? = array_id(heard) else { return heard }
+        let outer = self.recording_at(st, self.arrays[st].length - 1)
+        self.arrays.set(outer, self.arrays[outer].concat(self.arrays[mine]))
+        heard
+    }
+
+    /// `avra_ctx_reheard`: an answer reused inside a query body, what it heard heard again by the
+    /// query open.
+    fn ctx_reheard_val(vals: List<Val>) -> Val {
+        let h? = array_id(vals[0]) else { return Val.I(0) }
+        let st? = self.heard_stack() else { return Val.I(0) }
+        let top = self.recording_at(st, self.arrays[st].length - 1)
+        self.arrays.set(top, self.arrays[top].concat(self.arrays[h]))
+        Val.I(0)
+    }
+
+    /// `avra_ctx_holds`: whether every context a recording heard holds in the frame in force what it
+    /// held when it was heard.
+    fn ctx_holds_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return Val.I(1) }
+        let h = self.arrays[id]
+        mut at = 0
+        while at + 2 < h.length {
+            let key = self.whole(h[at])
+            let kind = self.whole(h[at + 1])
+            if kind == heard_untold { return Val.I(0) }
+            let cell = self.frame_cell(key)
+            if kind == heard_default {
+                if array_id(cell) != null { return Val.I(0) }
+            } else {
+                if array_id(cell) == null || self.heard_word_of(kind, cell) != self.whole(h[at + 2]) { return Val.I(0) }
+            }
+            at = at + 3
+        }
+        Val.I(1)
+    }
+
+    /// The cell the frame in force holds for `key`, borrowed; the null pointer where nothing set it.
+    fn frame_cell(key: int) -> Val {
+        let id? = array_id(self.ctx_frame()) else { return Val.N }
+        let held = self.arrays[id]
+        mut at = 1
+        while at + 1 < held.length {
+            if self.whole(held[at]) == key { return held[at + 1] }
+            at = at + 2
+        }
+        Val.N
+    }
+
+    /// `frame` the running task's frame, the one it replaces released: what a guard was entered
+    /// under, put back where it catches.
+    fn ctx_restored(frame: Val) {
+        if self.running < 0 { return }
+        let now = self.ctx_frame()
+        self.retains(frame)
+        self.tasks[self.running].slots.set(ctx_slot, frame)
+        self.releases_val(now)
+    }
+
     fn task_id_val() -> Val {
         Val.I(if self.running < 0 { 0 } else { self.tasks[self.running].id })
     }
@@ -896,3 +1185,6 @@ impl Machine {
 fn all_waiting() -> string {
     "every task is waiting — deadlock"
 }
+
+/// A context a frame holds: its key, and the cell it holds for it.
+type FramePair = { key: Val, cell: Val }

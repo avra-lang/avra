@@ -4,10 +4,10 @@
 //! file and fetch bytes under the query's durable name — which already holds its
 //! code hash — and its arguments' hash, in the store the workspace attaches.
 //! A workspace with no store attached keeps nothing and finds nothing.
-use @std.relation.{input}
+use @std.relation.{input, query_known, query_known_db}
 use @std.relation.db.{Db as RelDb, Durable}
 use compiler.store.{Store, Stored, node_key}
-use core.digest.{hex, unhex}
+use core.{joined}
 
 /// A source file's text as a query reads it. The workspace stages every text a
 /// query is asked about (`stage_text`) before asking, so a record names the text
@@ -18,20 +18,12 @@ export fn file_text(_db: RelDb, _path: string) -> string {
     ""
 }
 
-impl Workspace {
-    /// A source's text staged as the relation Db's `file_text` input — what a query that
-    /// reads the file is asked of, so its record names the text by its hash.
-    fn stage_text(path: string) { set_file_text(self.decls.rows_db.get(), path, self.listed_text(path)) }
-}
-
-/// The door a workspace's relation Db keeps its answers through: `slot` is the
-/// store the workspace attaches when it opens one.
-// LICENSED compiler.free_state_verb: a CONSTRUCTOR — the store's slot in, the hooks out.
-export fn answer_hooks(slot: Cell<Store?>) -> Durable {
-    Durable {
-        answer: (query: string, args: int) -> kept_answer(slot, query, args),
-        keep: (query: string, args: int, record: Bytes) -> keep_answer(slot, query, args, record),
-    }
+/// The words the workspace's language reserves, space-joined, as a query reads them: what a
+/// lex of a source answers stands on the language it was lexed in, never the process's.
+@input
+export fn language_words(_db: RelDb, _of: string) -> string {
+    avra_trap("defect: a language's words were read before the workspace staged them")
+    ""
 }
 
 /// The key an answer is filed under: the query's durable name and its arguments' hash.
@@ -39,11 +31,10 @@ fn answer_key(query: string, args: int) -> string { node_key(Stored.Answer, [que
 
 fn kept_answer(slot: Cell<Store?>, query: string, args: int) -> Bytes? {
     let store? = slot.get() else { return null }
-    let text? = store.get(Stored.Answer, answer_key(query, args)) else { return null }
-    unhex(text)
+    store.get_octets(Stored.Answer, answer_key(query, args))
 }
 
-fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
-    let store? = slot.get() else { return }
-    let _ = store.keep(Stored.Answer, answer_key(query, args), hex(record), [])
-}
+/// A lasting query over the Db alone, opened by its `_known` door.
+type KnownOverDb = { open: fn(RelDb) -> void }
+
+collect known_over_db: List<KnownOverDb> = @query_known_db in package as KnownOverDb { open: it } by it.name

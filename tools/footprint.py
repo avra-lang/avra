@@ -10,7 +10,9 @@ binaries, and prints what the smallest programs weigh.
   read from the archive the programs link, never from a list of names.
   WHAT A TASK CARRIES (TASK_STATE) wears the scheduler's prefix and is the
   core runtime's by design: main's own slots and id, read where no
-  scheduler is linked. Any OTHER scheduler-named global outside the
+  scheduler is linked; the shield a cold exit raises, which shields
+  nothing until a scheduler names its own; and the task stack an
+  unoptimised binary asks for, which a scheduler reads once linked. Any OTHER scheduler-named global outside the
   scheduler members is refused, so a moved fn or a new object asks here.
   THE SIZE is the stripped file and its code, per platform, against
   tools/footprint.baseline. The cap is RELATIVE (CEILING): a tenth of the
@@ -35,7 +37,16 @@ FIXTURES = os.path.join(ROOT, "tools", "footprint")
 BASELINE = os.environ.get("FOOTPRINT_BASELINE", os.path.join(ROOT, "tools", "footprint.baseline"))
 SCHEDULER = ("avra_fiber.o", "avra_cores.o", "avra_tick.o")
 SCHEDULER_NAMED = re.compile(r"avra_(fiber|wait_|gate_|vgate_|vtask|task_|tasks_|sched_|cores|tick)")
-TASK_STATE = {"avra_task_slot", "avra_task_slot_set", "avra_task_id", "avra_task_local"}
+TASK_STATE = {
+    "avra_task_slot",
+    "avra_task_slot_set",
+    "avra_task_id",
+    "avra_task_local",
+    "avra_fiber_shield_enter",
+    "avra_fiber_shield_leave",
+    "avra_task_stack_bytes",
+    "avra_task_stack_unoptimised",
+}
 # Programs that spawn nothing, and the one that must be refused.
 # A call through a fn VALUE may be any fn and links nothing: beside a
 # `while` or a `defer` it must not bring the scheduler in.
@@ -173,10 +184,11 @@ def stripped_size(binary):
 
 
 def built(avra, name, work):
-    """A fixture built in `work` -> (binary, its IR), or the build's own words."""
+    """A fixture built in `work` as it ships, `--release` -> (binary, its IR), or the build's own words.
+    A footprint is the shipped binary's: a dev build is a loader over layers, whose symbols it never holds."""
     at = os.path.join(work, name)
     shutil.copytree(os.path.join(FIXTURES, name), at, ignore=shutil.ignore_patterns("main", ".avra-cache"))
-    made = ran(avra, "build", at)
+    made = ran(avra, "build", "--release", at)
     binary = os.path.join(at, "src", "main")
     if made.returncode != 0 or not os.path.isfile(binary):
         return None, (made.stdout + made.stderr).strip()

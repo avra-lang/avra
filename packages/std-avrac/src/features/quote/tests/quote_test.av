@@ -1,23 +1,21 @@
 // A quote is `Code`: its runs remember the file that wrote them, a
 // hole's text resolves where it is spliced, and a template's own
 // names resolve in the file that wrote the quote — origin hygiene.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{parse_source, Program}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.compiler.{parse_source}
 use @std.avrac.testing.{
     vendored_meta,
     vendored_meta_as,
-    vendored_meta_paths,
     real_meta_source,
     said,
     refused_n,
     refused_in,
 }
-use compiler.host.{memory_host}
 use compiler.format.{render_source}
 
 /// A program with `@std/meta` and a PROVIDER package (`@x/prov`) whose
 /// templates the program's annotations run.
-fn packaged(main: string, prov: string) -> Program {
+fn packaged(main: string, prov: string) -> Judged {
     let files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
@@ -26,27 +24,15 @@ fn packaged(main: string, prov: string) -> Program {
             "/w/vendor/prov/src/prov.av": prov,
         },
     )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/prov/avra.toml",
-                "/w/vendor/prov/src/prov.av",
-            ]
-                .concat(vendored_meta_paths()),
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
 /// The same program under an `@std/meta` THIS COMPILER WAS NOT BUILT
 /// AGAINST: every template wrapper names its node field `blob`, so
 /// the shapes the crossing reads by slot have moved. Built from the
 /// real source, one thing changed.
-fn packaged_under(main: string, prov: string, meta: string) -> Program {
+fn packaged_under(main: string, prov: string, meta: string) -> Judged {
     let files = vendored_meta_as(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
@@ -56,20 +42,8 @@ fn packaged_under(main: string, prov: string, meta: string) -> Program {
         },
         meta,
     )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/prov/avra.toml",
-                "/w/vendor/prov/src/prov.av",
-            ]
-                .concat(vendored_meta_paths()),
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
 /// `@std/meta` with the template wrappers' one field RENAMED — the
@@ -79,20 +53,20 @@ fn renamed_node_field() -> string {
 }
 
 /// A program WITHOUT `@std/meta` — where a quote has no `Code` to answer.
-fn meta_less(main: string) -> Program {
+fn meta_less(main: string) -> Judged {
     let files = {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
         "/w/src/main.av": main,
     }
-    let ws = test_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av"]), "/w")
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
-fn report(p: Program) -> string {
-    match p.check() { .Ok(warned) -> warned, .Err(words) -> words }
+fn report(p: Judged) -> string {
+    match p.checked() { .Ok(warned) -> warned, .Err(words) -> words }
 }
 
-fn clean(p: Program) -> bool { p.check() is .Ok }
+fn clean(p: Judged) -> bool { p.checked() is .Ok }
 
 /// The provider: a trait whose template names this file's PRIVATE
 /// helper unqualified, and an annotation that splices the user's code
@@ -115,7 +89,28 @@ fn canonical(source: string) -> string {
     render_source(parsed.store, parsed.stmts)
 }
 
+/// A provider whose derive hands back a template naming a file no program reads.
+fn nowhere_provider() -> string {
+    "use @std.meta.{Type, Directive, template, as_decls}\n" +
+        "export trait Nowhere {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: as_decls(template(\"@x/gone:src/gone.av\", 0, [\"fn gone() {}\"], [])) }]\n" +
+        "    }\n" +
+        "}\n"
+}
+
 spec "features/quote — a quote is `Code`" {
+    given "a template naming a file no program reads" {
+        then "speaks a defect naming the template, never copies nothing in silence" {
+            refused_in(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{Nowhere}\n@derive(Nowhere)\ntype P = { x: int }\n",
+                    nowhere_provider(),
+                ),
+                "the template at offset 0 of `@x/gone:src/gone.av` names a file this program does not read",
+            )
+        }
+    }
     given "the hole law" {
         then "text, a scalar, a named meta value and `Code` all splice" {
             clean(
@@ -161,20 +156,6 @@ spec "features/quote — a quote is `Code`" {
                 "`x` is bound through a hole, so a template reads it through the hole, never by its written name",
                 1,
             )
-        }
-        then "`avra expand` names the template beside the annotation that asked" {
-            let p = packaged(loud_program(), provider())
-            p
-                .expanded_source(p.ws.file_id("/w/src/main.av"))
-                .contains("// from @derive on Point — template /w/vendor/prov/src/prov.av:7")
-        }
-        then "the user's code is spliced as written" {
-            let p = packaged(wrapped_program(), provider())
-            p
-                .expanded_source(p.ws.file_id("/w/src/main.av"))
-                .contains(
-                    "fn go_wrapped() -> int {\n    let tmp = 1\n    let picked = tmp\n    picked() + tmp\n}",
-                )
         }
         then "a name a template does not know refuses in the template's own file" {
             let p = packaged(
@@ -232,6 +213,15 @@ spec "features/quote — a quote is `Code`" {
                 provider(),
             )
                 .run() { .Ok(out) -> out == "6", .Err(_) -> false }
+        }
+    }
+    given "a template's written types — a `let` annotation in an imported component's quote" {
+        then "names the type where the template's file stands, not where it lands" {
+            let prov = "use @std.meta.{Code}\nexport type Span = { n: int }\nexport fn span(n: int) -> Span { Span { n: n } }\nexport component limited(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            {\n                let limit: Span = \${self.limit}\n                \${self.body} + limit.n\n            }\n        }\n    }\n}\n"
+            match packaged("use @x.prov.{limited, span}\nlimited span(3) { 4 }", prov).run() {
+                .Ok(out) -> out == "7",
+                .Err(_) -> false,
+            }
         }
     }
 }

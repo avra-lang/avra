@@ -19,7 +19,7 @@ use core.{
     counted,
 }
 use core.{SeatMark, plain_mark}
-use diagnostics.{refusal, warning}
+use diagnostics.{Severity, Voice, said_as, warning}
 use features.{
     TypeCx,
     FnSig,
@@ -75,31 +75,14 @@ impl TypeCx {
         let parts: FnParts? = self.view.store.fn_parts(f)
         let written = written_seats(self.keywords, parts?.params ?? [])
         for pp in written {
-            if pp.promises.state { self.state_seat_on_a_method(f, pp.name.of) }
+            if pp.promises.state { self.state_seat_on_a_method(f, pp.name.text()) }
         }
         let marks = [pp.promises for pp in written]
         self.view.decls.record_seats(d, receiver.concat(marks))
         if self.view.store.is_mutating(f) { self.view.decls.record_declared_writing(d) }
     }
 
-    fn state_seat_on_a_method(f: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.state_seat",
-                    self.stmt_loc(f),
-                    "`state ${name}` is a free fn's seat — a method has no caller's cell to reach",
-                    "declared here",
-                    "move `${name}` onto the free fn the method runs inside",
-                ),
-            )
-    }
-
-    /// The written params, annotated — a trait sig's whole seat
-    /// list, and what a method's sig appends to its receiver.
-    fn annotated_params(f: StmtId, fp: FnParts) -> List<TypeId> {
-        [self.annotated(f, pp.ty) for pp in written_seats(self.keywords, fp.params)]
-    }
+    fn state_seat_on_a_method(f: StmtId, name: string) { self.emit(said_as("type.state_seat", self.stmt_loc(f), method_state_seat(name))) }
 
     /// A trait by name: in the namespace of the file that WROTE the type
     /// being read, then where the code lands.
@@ -201,7 +184,7 @@ impl TypeCx {
         mut seals = false
         for f in parts.fns { if self.writes_receiver(f) { seals = true } }
         if seals {
-            self.view.types.unflatten(self.impl_self_type(d))
+            self.view.decls.sealed(self.impl_self_type(d))
         }
         for f in parts.fns {
             let m = self.decl_of(f)
@@ -522,121 +505,45 @@ impl TypeCx {
     fn member_twice(f: StmtId, contract: DeclId, name: string) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.trait_member",
                     self.stmt_loc(f),
-                    "`${self.view.decls.decl(contract).name}.${name}` is declared twice",
-                    "declared again here",
-                    "a trait names each member once — drop or rename one",
+                    trait_member_twice(self.view.decls.decl(contract).name, name),
                 ),
             )
     }
 
     fn no_such_target(s: StmtId, target: string) {
-        self
-            .emit(
-                refusal(
-                    "type.impl",
-                    self.stmt_loc(s),
-                    "`impl ${target}` serves no declared type",
-                    "this impl",
-                    "declare `${target}` first — `type` or `enum`",
-                ),
-            )
+        self.emit(said_as("type.impl", self.stmt_loc(s), serves_nothing(target)))
     }
 
     fn alias_target(s: StmtId, target: string, d: DeclId) {
         let of = self.view.types.name_of(self.view.decls.alias_of(d) ?? self.error_type)
-        self
-            .emit(
-                refusal(
-                    "type.impl",
-                    self.stmt_loc(s),
-                    "`impl ${target}` is written on an alias — `${target}` names `${of}`",
-                    "this impl",
-                    "write the impl on the type itself: `impl ${of}`",
-                ),
-            )
+        self.emit(said_as("type.impl", self.stmt_loc(s), impl_on_alias(target, of)))
     }
 
     fn concrete_target(s: StmtId, of: string, target: string, params: List<string>) {
         let written = params.join(", ")
         self
-            .emit(
-                refusal(
-                    "type.impl",
-                    self.stmt_loc(s),
-                    "`impl ${of} for ${target}<...>` names a specific instantiation — a trait impl lands for the WHOLE generic",
-                    "this impl",
-                    "write `impl ${of} for ${target}<${written}>`",
-                ),
-            )
+            .emit(said_as("type.impl", self.stmt_loc(s), impl_of_instantiation(of, target, written)))
     }
 
     fn no_such_trait(s: StmtId, of: string) {
-        self
-            .speak_unread(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`impl ${of} for` names no trait",
-                    "this impl",
-                    "declare it — `trait ${of} { … }`",
-                ),
-                of,
-            )
+        self.speak_unread(said_as("type.trait", self.stmt_loc(s), impl_no_trait(of)), of)
     }
 
-    fn beyond_the_trait(f: StmtId, of: string, target: string, mn: string) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(f),
-                    "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods",
-                    "declared here",
-                    "move it to a separate `impl ${target} { … }` block",
-                ),
-            )
-    }
+    fn beyond_the_trait(f: StmtId, of: string, target: string, mn: string) { self.emit(said_as("type.trait", self.stmt_loc(f), beyond_trait(mn, of, target))) }
 
     fn unanswered(s: StmtId, of: string, target: string, mn: string) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`impl ${of} for ${target}` must answer `${mn}`",
-                    "this impl",
-                    "add `fn ${mn}(self, …)`",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), impl_unanswered(of, target, mn)))
     }
 
     fn trait_args_miscounted(s: StmtId, of: string, takes: int, gave: int) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`${of}` takes ${counted(takes, "type argument")}, and this impl gives ${gave}",
-                    "this impl",
-                    "an impl names its trait at every parameter the trait declares",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), impl_miscounts_trait(of, takes, gave)))
     }
 
     fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`${target}.${mn}` does not wear `${of}.${mn}`'s signature",
-                    "this impl",
-                    "match the trait's parameters and return exactly",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), signature_unworn(of, target, mn)))
     }
 
     /// THE SEATS' CONTRACT: a `mut` seat the body never writes
@@ -646,33 +553,25 @@ impl TypeCx {
     fn seat_contract(x: Decl, base: int) {
         let params = written_seats(self.keywords, self.view.store.fn_parts(x.stmt)?.params ?? [])
         for j, pp in params {
-            if pp.promises.mutable && !self.view.decls.seat_written(x.id, base + j) { self.seat_never_written(x, pp.name.of) }
+            if pp.promises.mutable && !self.view.decls.seat_written(x.id, base + j) { self.seat_never_written(x, pp.name.text()) }
         }
     }
 
     fn seat_never_written(x: Decl, seat: string) {
         self
             .emit(
-                warning(
+                said_as(
                     "type.seat_unused",
                     self.stmt_loc(x.stmt),
-                    "`${seat}` is a `mut` seat — `${x.name}` never writes through it",
-                    "declared `mut`",
-                    "drop `mut`: the caller then hands a value",
-                ),
+                    unwritten_seat_said(seat, x.name),
+                ) with { severity: Severity.Warning },
             )
     }
 
     fn never_writes(x: Decl) {
         self
             .emit(
-                warning(
-                    "type.mut_fn_unused",
-                    self.stmt_loc(x.stmt),
-                    "`mut fn` — `${x.name}` never writes through `self`",
-                    "declared `mut`",
-                    "drop `mut`: the compiler infers a writing method",
-                ),
+                said_as("type.mut_fn_unused", self.stmt_loc(x.stmt), self_unwritten(x.name)) with { severity: Severity.Warning },
             )
     }
 
@@ -680,12 +579,10 @@ impl TypeCx {
         let root: ExprId? = self.view.decls.decl(d).root
         self
             .emit(
-                refusal(
+                said_as(
                     "type.trait_member",
                     if root == null { self.stmt_loc(self.view.decls.decl(d).stmt) } else { self.loc_of(root!) },
-                    "`${self.view.decls.decl(d).name}`'s default is `${of}.${name}`'s — an impl's method takes its trait's",
-                    "a second default",
-                    "drop this default: `${of}.${name}` writes the seat's for every impl",
+                    default_is_the_traits(self.view.decls.decl(d).name, of, name),
                 ),
             )
     }
@@ -693,77 +590,32 @@ impl TypeCx {
     fn writes_under_plain_sig(x: Decl, of: string) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.contract_write",
                     self.stmt_loc(x.stmt),
-                    "`${x.name}` writes through `self`, but `${of}.${x.name}` declares no `mut`",
-                    "writes here",
-                    "declare `mut fn ${x.name}(…)` in the trait — the contract decides for every signatory",
+                    plain_contract_written(x.name, of),
                 ),
             )
     }
 
-    fn generic_method(f: StmtId, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.impl",
-                    self.stmt_loc(f),
-                    "`${name}` is generic — generic methods are recorded, not landed",
-                    "this method",
-                    "declare it as a free fn — `fn ${name}<T>(…)` — and pass the receiver as its first parameter",
-                ),
-            )
-    }
+    fn generic_method(f: StmtId, name: string) { self.emit(said_as("type.impl", self.stmt_loc(f), generic_method_said(name))) }
 
     fn static_names_a_variant(f: StmtId, tname: string, name: string) {
         self
-            .emit(
-                refusal(
-                    "type.static_name",
-                    self.stmt_loc(f),
-                    "`${tname}.${name}` is already a variant — a `static fn` of that name is uncallable",
-                    "declared here",
-                    "rename the `static fn`: a variant wins the spelling `${tname}.${name}`",
-                ),
-            )
+            .emit(said_as("type.static_name", self.stmt_loc(f), static_shadows_variant(tname, name)))
     }
 
-    fn builtin_inherent(s: StmtId, target: string) {
-        self
-            .emit(
-                refusal(
-                    "type.orphan",
-                    self.stmt_loc(s),
-                    "`${target}` is the language's own type — a package adds to it only by implementing its own trait",
-                    "this impl",
-                    "declare a trait here and write `impl YourTrait for ${target}`, or write a free fn",
-                ),
-            )
-    }
+    fn builtin_inherent(s: StmtId, target: string) { self.emit(said_as("type.orphan", self.stmt_loc(s), inherent_on_builtin(target))) }
 
-    fn builtin_foreign(s: StmtId, of: string, target: string) {
-        self
-            .emit(
-                refusal(
-                    "type.orphan",
-                    self.stmt_loc(s),
-                    "`impl ${of} for ${target}` belongs in `${of}`'s package — `${target}` is the language's, so only the trait's package may implement it",
-                    "this impl",
-                    "an impl on a builtin type lives with its trait",
-                ),
-            )
-    }
+    fn builtin_foreign(s: StmtId, of: string, target: string) { self.emit(said_as("type.orphan", self.stmt_loc(s), foreign_trait_on_builtin(of, target))) }
 
     fn builtin_renamed(f: StmtId, target: string, name: string) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.builtin_name",
                     self.stmt_loc(f),
-                    "`${target}` already answers `${name}` — an impl on a builtin type adds names, it never changes one",
-                    "this method",
-                    "rename the trait's method",
+                    builtin_answers_already(target, name),
                 ),
             )
     }
@@ -771,19 +623,17 @@ impl TypeCx {
     fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.orphan",
                     self.stmt_loc(s),
-                    "`impl ${heading}` belongs in ${package_word(owner)}, where `${target}` is declared",
-                    "this impl",
-                    "an impl lives in its type's package — or in its trait's, when the trait is this package's",
+                    impl_away_from_type(heading, target, owner),
                 ),
             )
     }
 }
 
 /// An impl block's heading as written — `T`, or `Tr for T`.
-fn impl_heading(of: string?, target: string) -> string {
+export fn impl_heading(of: string?, target: string) -> string {
     if of == null { return target }
     "${of!} for ${target}"
 }
@@ -791,3 +641,184 @@ fn impl_heading(of: string?, target: string) -> string {
 /// A trait at the arguments one impl gives it: `Self` first, then the
 /// trait's own parameters, by ordinal.
 type TraitAt = { decl: DeclId, args: List<TypeId> }
+
+/// An impl written on the alias `target`, which names `of`.
+export fn impl_on_alias(target: string, of: string) -> Voice {
+    Voice {
+        message: "`impl ${target}` is written on an alias — `${target}` names `${of}`",
+        label: "this impl",
+        help: "write the impl on the type itself: `impl ${of}`",
+    }
+}
+
+/// A trait impl naming one instantiation of the generic `target`, whose parameters are `written`.
+export fn impl_of_instantiation(of: string, target: string, written: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}<...>` names a specific instantiation — a trait impl lands for the WHOLE generic",
+        label: "this impl",
+        help: "write `impl ${of} for ${target}<${written}>`",
+    }
+}
+
+/// An impl of `of` for `target` that answers no `mn`.
+export fn impl_unanswered(of: string, target: string, mn: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}` must answer `${mn}`",
+        label: "this impl",
+        help: "add `fn ${mn}(self, …)`",
+    }
+}
+
+/// An impl naming the trait `of`, which takes `takes` type arguments, at `gave`.
+export fn impl_miscounts_trait(of: string, takes: int, gave: int) -> Voice {
+    Voice {
+        message: "`${of}` takes ${counted(takes, "type argument")}, and this impl gives ${gave}",
+        label: "this impl",
+        help: "an impl names its trait at every parameter the trait declares",
+    }
+}
+
+/// `target`'s method `mn`, whose signature isn't the one `of` declares for it.
+export fn signature_unworn(of: string, target: string, mn: string) -> Voice {
+    Voice {
+        message: "`${target}.${mn}` does not wear `${of}.${mn}`'s signature",
+        label: "this impl",
+        help: "match the trait's parameters and return exactly",
+    }
+}
+
+/// The seat `seat` of an impl's method `name` writing a default its trait `of` writes already.
+export fn default_is_the_traits(seat: string, of: string, name: string) -> Voice {
+    Voice {
+        message: "`${seat}`'s default is `${of}.${name}`'s — an impl's method takes its trait's",
+        label: "a second default",
+        help: "drop this default: `${of}.${name}` writes the seat's for every impl",
+    }
+}
+
+/// A `mut` seat the fn `name` never writes through.
+export fn unwritten_seat_said(seat: string, name: string) -> Voice {
+    Voice {
+        message: "`${seat}` is a `mut` seat — `${name}` never writes through it",
+        label: "declared `mut`",
+        help: "drop `mut`: the caller then hands a value",
+    }
+}
+
+/// A `mut fn` method `name` that never writes through `self`.
+export fn self_unwritten(name: string) -> Voice {
+    Voice {
+        message: "`mut fn` — `${name}` never writes through `self`",
+        label: "declared `mut`",
+        help: "drop `mut`: the compiler infers a writing method",
+    }
+}
+
+/// The method `name`, which declares type parameters of its own: an impl lands no generic method.
+export fn generic_method_said(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is generic — generic methods are recorded, not landed",
+        label: "this method",
+        help: "declare it as a free fn — `fn ${name}<T>(…)` — and pass the receiver as its first parameter",
+    }
+}
+
+/// An impl whose target names no declared type.
+export fn serves_nothing(target: string) -> Voice {
+    Voice {
+        message: "`impl ${target}` serves no declared type",
+        label: "this impl",
+        help: "declare `${target}` first — `type` or `enum`",
+    }
+}
+
+/// A trait `owner` naming its member `name` a second time.
+export fn trait_member_twice(owner: string, name: string) -> Voice {
+    Voice {
+        message: "`${owner}.${name}` is declared twice",
+        label: "declared again here",
+        help: "a trait names each member once — drop or rename one",
+    }
+}
+
+/// A `static fn` `name` on the enum `owner`, which has a variant of that name.
+export fn static_shadows_variant(owner: string, name: string) -> Voice {
+    Voice {
+        message: "`${owner}.${name}` is already a variant — a `static fn` of that name is uncallable",
+        label: "declared here",
+        help: "rename the `static fn`: a variant wins the spelling `${owner}.${name}`",
+    }
+}
+
+/// An impl of no trait on `target`, a type the language owns.
+export fn inherent_on_builtin(target: string) -> Voice {
+    Voice {
+        message: "`${target}` is the language's own type — a package adds to it only by implementing its own trait",
+        label: "this impl",
+        help: "declare a trait here and write `impl YourTrait for ${target}`, or write a free fn",
+    }
+}
+
+/// The method `name` an impl of the trait `of` gives, writing through `self` where the trait declares
+/// no `mut`.
+export fn plain_contract_written(name: string, of: string) -> Voice {
+    Voice {
+        message: "`${name}` writes through `self`, but `${of}.${name}` declares no `mut`",
+        label: "writes here",
+        help: "declare `mut fn ${name}(…)` in the trait — the contract decides for every signatory",
+    }
+}
+
+/// A method `name` an impl writes on `target`, a type the language owns that already answers it.
+export fn builtin_answers_already(target: string, name: string) -> Voice {
+    Voice {
+        message: "`${target}` already answers `${name}` — an impl on a builtin type adds names, it never changes one",
+        label: "this method",
+        help: "rename the trait's method",
+    }
+}
+
+/// An impl of `of`, a trait another package declares, on `target`, a type the language owns.
+export fn foreign_trait_on_builtin(of: string, target: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}` belongs in `${of}`'s package — `${target}` is the language's, so only the trait's package may implement it",
+        label: "this impl",
+        help: "an impl on a builtin type lives with its trait",
+    }
+}
+
+/// An impl headed `heading` written outside `owner`, the package that declares its type `target`.
+export fn impl_away_from_type(heading: string, target: string, owner: string) -> Voice {
+    Voice {
+        message: "`impl ${heading}` belongs in ${package_word(owner)}, where `${target}` is declared",
+        label: "this impl",
+        help: "an impl lives in its type's package — or in its trait's, when the trait is this package's",
+    }
+}
+
+/// A method `name` an impl of the trait `of` for `target` writes that the trait doesn't declare.
+export fn beyond_trait(name: string, of: string, target: string) -> Voice {
+    Voice {
+        message: "`${name}` is not part of `${of}` — an impl-for holds only the trait's methods",
+        label: "declared here",
+        help: "move it to a separate `impl ${target} { … }` block",
+    }
+}
+
+/// A method declaring the `state` seat `name`, which only a free fn's caller has a cell for.
+export fn method_state_seat(name: string) -> Voice {
+    Voice {
+        message: "`state ${name}` is a free fn's seat — a method has no caller's cell to reach",
+        label: "declared here",
+        help: "move `${name}` onto the free fn the method runs inside",
+    }
+}
+
+/// An impl-for of `of`, which names no trait.
+export fn impl_no_trait(of: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for` names no trait",
+        label: "this impl",
+        help: "declare it — `trait ${of} { … }`",
+    }
+}

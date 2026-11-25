@@ -8,7 +8,7 @@ use @std.errors.{Error, ErrorInfo, info}
 use @std.sqlite.{Db, Row, SqlValue, sql}
 use @std.sqlite.error.{SqlError}
 use @std.time.{now_ms}
-use migrate.{Plan, Renamed, diff, refusals, statements}
+use migrate.{Plan, Renamed, diff, made_sql, refusals, statements}
 use shape.{Shape, quoted, shape_read, shape_text}
 
 /// Why a table was not migrated.
@@ -95,9 +95,20 @@ export fn claim_table(db: Db, name: string, owner: string, declared_at: string, 
                 )?
         }
     }
-    let made = db.run(sql(create_sql(read.name, read.columns)))?
-    let _ = counted(db, read.name)?
-    .Ok(made)
+    if (db.scalar(sql(table_probe_sql(), [.Text(read.name)]))?).int()? == 0 {
+        let _ = built(db, read)?
+    }
+    counted(db, read.name)
+}
+
+/// A table that is not there, made whole: the table, then its several-column
+/// keys. One that is there is the migration's to change.
+fn built(db: Db, s: Shape) -> Result<int, SqlError> {
+    // LICENSED loops.push_loop: each statement runs once, in order, and the first refusal stops them
+    for text in made_sql(s) {
+        let _ = db.run(sql(text))?
+    }
+    .Ok(0)
 }
 
 /// THE DATABASE'S COMMIT COUNTER, one row every write to a model's table moves:
@@ -263,15 +274,7 @@ fn written(db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
     for s in statements(plan) {
         let _ = lifted(db.run(sql(s)))?
     }
-    let _ = lifted(
-        db
-            .run(
-                sql(
-                    restamp_sql(),
-                    [.Text(shape_text(declared.name, declared.columns)), .Text(declared.name)],
-                ),
-            ),
-    )?
+    let _ = lifted(db.run(sql(restamp_sql(), [.Text(shape_text(declared)), .Text(declared.name)])))?
     checked(db, declared.name)
 }
 
@@ -307,6 +310,8 @@ fn bump_sql(on: string, kind: string) -> string {
 
 /// `name` as an SQL text literal.
 fn literal_text(name: string) -> string { "'${name.replace("'", "''")}'" }
+
+fn table_probe_sql() -> string { "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?" }
 
 fn registry_sql() -> string {
     "CREATE TABLE IF NOT EXISTS \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT, \"owner\" TEXT)"

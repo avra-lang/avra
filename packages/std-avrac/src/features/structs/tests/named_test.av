@@ -2,8 +2,7 @@
 // type over a shape — never an alias. A literal fills it, `N(value)`
 // converts, every READ forwards to the shape, and every SEAT keeps
 // the name.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with, refusals}
+use @std.avrac.testing.{shown, refused_with, refusals, judged}
 
 /// The smallest name there is, and a list one — shared with the
 /// adversarial file (one directory is one module).
@@ -136,7 +135,7 @@ spec "features/structs (named types)" {
             refused_with("let n = 5\nn.of", "no property `of` on `int`")
         }
         then "a name standing over nothing says what `of` reads" {
-            let a = analyze_source("type X = X\nlet x: X = 1\nx.of")
+            let a = judged("type X = X\nlet x: X = 1\nx.of")
             a.diagnostics.length == 3 &&
                 a.report().contains("`.of` reads a named type's shape, this is `X`")
         }
@@ -158,7 +157,7 @@ spec "features/structs (named types)" {
             )
         }
         then "the mixing refusal offers the conversion" {
-            let a = analyze_source("${uid()}let a: UserId = 2\nlet n = 1\na + n")
+            let a = judged("${uid()}let a: UserId = 2\nlet n = 1\na + n")
             a.diagnostics.length == 1 && a.report().contains("write `UserId(n)`")
         }
     }
@@ -200,7 +199,7 @@ spec "features/structs (named types)" {
             )
         }
         then "a name over another shape hears no wrap" {
-            refusals(crossed()) == 1 && !analyze_source(crossed()).report().contains("write `")
+            refusals(crossed()) == 1 && !judged(crossed()).report().contains("write `")
         }
         then "a named field refuses a bare value" {
             refused_with(

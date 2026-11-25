@@ -127,6 +127,13 @@ fn lower_cancel(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.hollow_of(cx.type_at(mc.e))
 }
 
+fn lower_filed(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.wait_task(cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+fn lower_since(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.task_since(cx.shape_at(mc.e), cx.reg_of(mc.subject)) }
+
 fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.grown_box(cx.shape_at(mc.e), cx.box_size(4), [])
 }
@@ -284,15 +291,3 @@ fn open_chan(cx: LowerCx, e: ExprId, chan_ty: TypeId, elem: TypeId, cap_reg: Reg
     cx.call_decl(chan_ty, cx.wanted(d, Sub { target: d, args: [elem], consts: [] }), [cap_reg])
 }
 
-impl LowerCx {
-    /// The producer's block ended: close its sink, so the reader's
-    /// `next` sees the channel end. Nobody closes a `produce` by hand.
-    mut fn close_produced(sink_ty: TypeId) {
-        let sink? = self.producer_sink else { return }
-        let sig? = self.fields_of(sink_ty) else { return }
-        let slot? = sig.slot_of("close") else { return }
-        let close = self.field_named(sink, sink_ty, "close", sig.types[slot])
-        let code = self.slot_read(close, 0, null)
-        let _ = self.call_ptr(self.type(void), code, [close])
-    }
-}

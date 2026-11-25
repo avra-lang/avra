@@ -111,3 +111,74 @@ spec "avra fmt --check — a refused file is never certified canonical" {
         }
     }
 }
+
+/// A fn seat that writes no answer, in a parameter and in a field.
+fn answerless_seat() -> string {
+    "fn run(act: fn()) {\n    act()\n}\n\ntype T = { on: fn(), g: fn(int) }\n\nfn h(k: fn() -> int) -> int { k() }\n"
+}
+
+/// A call written as a name, and as a field read, with a trailing block and no parentheses.
+fn bare_headed_block() -> string {
+    "type B = { n: int }\n\nimpl B {\n    fn each(f: fn(int) -> int) -> int { f(self.n) }\n}\n\nfn handle(f: fn(int) -> int) -> int { f(1) }\n\nlet a = handle { x -> x + 1 }\nlet b = B { n: 1 }.each { it + 1 }\nlet c = handle() { x -> x }\n\"\${a} \${b} \${c}\"\n"
+}
+
+/// Whether `--write` accepts the canonical `text` and leaves it byte for byte: `fmt(x) == x`.
+fn stands_written(name: string, text: string) -> bool {
+    let path = fmt_fixture(name, text)
+    match fmt_ran(["fmt", "--write", path]) {
+        .Ok(o) -> exit_is_zero(o.exit) &&
+            o.out.stdout.contains("1 examined, 0 written, 0 refused") &&
+            on_disk(path) == text,
+        .Err(_) -> false,
+    }
+}
+
+/// A pipe stage that takes a trailing block: its head bare, called with nothing, and called with a seat.
+fn piped_block() -> string {
+    "fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }\n\nfn each_by(xs: List<int>, k: int, f: fn(int) -> int) -> List<int> { [f(x) + k for x in xs] }\n\nlet xs = [1, 2]\nlet a = xs |>\n    each {\n        it + 1\n    }\nlet b = xs |>\n    each() {\n        it + 1\n    }\nlet c = xs |>\n    each_by(2) { v ->\n        v + 1\n    }\n\"\${a.length} \${b.length} \${c.length}\"\n"
+}
+
+spec "avra fmt — what is written is what is printed" {
+    given "a fn seat that writes no answer" {
+        then "no arrow is printed for it: the file stands, byte for byte" { stands_written("fmt_answerless_seat", answerless_seat()) }
+    }
+    given "a call whose only argument is its trailing block, written with no parentheses" {
+        then "no parentheses are printed for it, and the ones written stay" { stands_written("fmt_bare_headed_block", bare_headed_block()) }
+    }
+    given "a pipe stage that takes a trailing block" {
+        then "its head prints as written: bare, called with nothing, called with a seat" { stands_written("fmt_piped_block", piped_block()) }
+    }
+}
+
+/// A run hole spread into a record literal inside a quote, its list too long for a line.
+fn spread_hole() -> string {
+    "fn draft_row(t: Type) -> Code {\n    quote { \${t} { ..\${[assigned_init(f) for f in t.fields if assigned(f)].concat([drafted_init(f) for f in drafted_fields(t)])} } }\n}\n"
+}
+
+spec "avra fmt — a quote's hole stands on one line, and --check says what --write does" {
+    given "a run hole spread into a record literal, its list too long for a line" {
+        then "--check finds it canonical, nothing differing or refused" {
+            let path = fmt_fixture("fmt_spread_check", spread_hole())
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> exit_is_zero(o.exit) && o.out.stdout.contains("1 examined, 0 differing, 0 refused"),
+                .Err(_) -> false,
+            }
+        }
+        then "--write accepts it and leaves it byte for byte: fmt(x) == x" { stands_written("fmt_spread_write", spread_hole()) }
+        then "laid out otherwise, --check says it differs and --write writes it back, neither refusing" {
+            let loose = spread_hole().replace("assigned_init(f) for", "assigned_init(f)   for")
+            let checked = fmt_fixture("fmt_spread_loose_check", loose)
+            let written = fmt_fixture("fmt_spread_loose_write", loose)
+            match fmt_ran(["fmt", "--check", checked]) {
+                .Ok(c) -> c.out.stdout.contains("1 examined, 1 differing, 0 refused") &&
+                    match fmt_ran(["fmt", "--write", written]) {
+                        .Ok(w) -> exit_is_zero(w.exit) &&
+                            w.out.stdout.contains("1 examined, 1 written, 0 refused") &&
+                            on_disk(written) == spread_hole(),
+                        .Err(_) -> false,
+                    },
+                .Err(_) -> false,
+            }
+        }
+    }
+}
