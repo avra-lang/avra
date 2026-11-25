@@ -1,0 +1,151 @@
+// domain: Nethermoor Cheese Affinage Cellar
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+fn span_ordered(s: Span) -> Result<Span, string> {
+    if s.starts_ms != null && s.ends_ms != null && s.ends_ms! <= s.starts_ms! {
+        fail "a known end must be later than the start"
+    }
+    s
+}
+
+/// Embedded half-open stretch [starts_ms, ends_ms) in UTC Unix milliseconds.
+/// An unrecorded start or end means the cellar has not fixed that edge, not
+/// that the stretch is unbounded.
+@model
+@span_ordered
+export type Span = {
+    starts_ms: int?,
+    ends_ms: int?,
+}
+
+/// Embedded price: a whole number of minor currency units (such as cents)
+/// and the three-letter code of the currency they are counted in. It states
+/// no tax treatment and no payment status.
+@model
+export type Price = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// A cellar hand who turns, washes and judges the maturing cheeses. The
+/// display name is not unique; the badge code is. An unrecorded specialty
+/// means none has been declared, not that the person is a generalist.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "badge_code", path: ["badge_code"], normalization: .AsciiLowerTrim }],
+    label: ["display_name"],
+    absences: [AbsenceBinding { path: ["specialty"], code: "specialty_undeclared" }],
+} })
+export type Affineur = {
+    @length(min: 1, max: 128) display_name: string,
+    @length(min: 1, max: 16) badge_code: string,
+    @length(min: 1, max: 64) specialty: string?,
+}
+
+/// A ripening room such as the limestone vault or the brine corridor. An
+/// unrecorded humidity means no hygrometer reading was taken, not that the
+/// room is dry.
+@model(quote { Semantics {
+    label: ["room_label"],
+    absences: [AbsenceBinding { path: ["humidity_pct"], code: "no_hygrometer_reading" }],
+} })
+export type Cave = {
+    @length(min: 1, max: 128) room_label: string,
+    humidity_pct: int?,
+}
+
+/// A farm dairy that makes young cheeses and sends them to the cellar. Dairy
+/// names are not unique; the dairy reference is. An unrecorded herd note
+/// means nobody described the herd, not that the dairy keeps no animals.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "dairy_ref", path: ["dairy_ref"], normalization: .Trim }],
+    label: ["dairy_label"],
+    absences: [AbsenceBinding { path: ["herd_note"], code: "herd_not_described" }],
+} })
+export type Dairy = {
+    @length(min: 1, max: 256) dairy_label: string,
+    @length(min: 1, max: 32) dairy_ref: string,
+    @length(min: 1, max: 256) herd_note: string?,
+}
+
+/// One whole cheese wheel under maturation. made_by is the dairy that
+/// produced the curd; finished_by is the dairy that gave the final wash
+/// and rind, and the two may be the same. weight_grams is a constant
+/// quantity in grams. made_on is an ISO date and weighed_at is UTC Unix
+/// milliseconds. An unrecorded rind remark means no rind inspection was
+/// written down.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["weight_grams"], unit: UnitBinding.Constant("gram") }],
+    times: [
+        TimeBinding { path: ["made_on"], encoding: .IsoDate },
+        TimeBinding { path: ["weighed_at"], encoding: .UnixMillis },
+    ],
+    absences: [AbsenceBinding { path: ["rind_remark"], code: "rind_not_inspected" }],
+    label: ["wheel_tag"],
+} })
+export type Wheel = {
+    @length(min: 1, max: 64) wheel_tag: string,
+    made_by: Ref<Dairy>,
+    finished_by: Ref<Dairy>,
+    weight_grams: int,
+    made_on: string,
+    weighed_at: int?,
+    @length(min: 1, max: 512) rind_remark: string?,
+}
+
+/// One cellar hand's task in one room over a stretch of time. task names
+/// the kind of care; the tenure is half-open. A hand with two tasks at once
+/// has two records. This does not assert seniority or pay.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["hand"], to: ["room"], label: ["task"],
+        phrasing: "{from} does {label} care in {to}",
+        labels: [
+            RelationLabel { value: "turning", forward: ["turns wheels in"], broader: ["handling"] },
+            RelationLabel { value: "brushing", forward: ["brushes rinds in"], broader: ["handling"] },
+            RelationLabel { value: "handling", forward: ["handles wheels in"], reverse: ["has wheels handled by"] },
+            RelationLabel { value: "tasting", forward: ["samples cheeses in"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "starts_ms"], until: ["tenure", "ends_ms"] },
+} })
+export type RoomTask = {
+    hand: Ref<Affineur>,
+    room: Ref<Cave>,
+    @one_of(["turning", "brushing", "handling", "tasting"]) task: string,
+    tenure: Span,
+}
+
+/// A sale of cut portions from one wheel, counted in a portion kind, with
+/// the agreed price. An unrecorded buyer remark means none was taken.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["portion_count"], unit: UnitBinding.Field(["portion_kind"]) },
+        QuantityBinding { amount: ["agreed_price", "minor_units"], unit: UnitBinding.Field(["agreed_price", "currency_code"]), decimal_places: 2 },
+    ],
+    absences: [AbsenceBinding { path: ["buyer_remark"], code: "no_remark_taken" }],
+} })
+export type PortionSale = {
+    wheel: Ref<Wheel>,
+    portion_count: int,
+    @one_of(["wedge", "quarter", "half", "whole"]) portion_kind: string,
+    agreed_price: Price,
+    @length(min: 1, max: 512) buyer_remark: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

@@ -1,0 +1,147 @@
+// domain: Wickerby Narrowboat Hire Wharf
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// An amount of money in minor currency units (hundredths) with its currency
+/// code. An unrecorded Money value on a parent model means no charge was
+/// agreed, not a charge of zero.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["minor_units"], unit: .Field(["currency"]), decimal_places: 2 }],
+} })
+export type Money = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A half-open span [opens_ms, closes_ms) in UTC Unix milliseconds. An
+/// unrecorded bound means the bound was never stated, not that the span is
+/// unbounded in that direction.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+export type Tenure = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A person or party who hires boats from the wharf. Names are not unique.
+/// An unrecorded phone or email means the customer was not asked, or declined
+/// to give one; it does not mean they have none.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [
+        AbsenceBinding { path: ["phone"], code: "not_given" },
+        AbsenceBinding { path: ["email"], code: "declined_to_give" },
+    ],
+} })
+export type Customer = {
+    @length(min: 1, max: 256) name: string,
+    @length(min: 1, max: 64) phone: string?,
+    @length(min: 3, max: 256) email: string?,
+}
+
+/// A member of wharf staff: a yard hand, engineer or briefing skipper. An
+/// unrecorded mobile number means the staff member keeps none on file.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["mobile"], code: "not_on_file" }],
+} })
+export type Staff = {
+    @length(min: 1, max: 256) name: string,
+    @length(min: 1, max: 64) mobile: string?,
+}
+
+/// One hireable narrowboat in the fleet, told apart by its painted name.
+/// length_cm is the overall length in centimetres. An unrecorded berth count
+/// means it was never counted, not that the boat sleeps nobody.
+@model(quote { Semantics {
+    label: ["boat_name"],
+    quantities: [QuantityBinding { amount: ["length_cm"], unit: .Constant("centimetre") }],
+    absences: [AbsenceBinding { path: ["berths"], code: "not_counted" }],
+} })
+export type Narrowboat = {
+    @length(min: 1, max: 128) boat_name: string,
+    length_cm: int,
+    berths: int?,
+}
+
+/// A hire of one narrowboat by one customer, starting on an ISO date and
+/// lasting a number of nights. The deposit is held until return. An
+/// unrecorded deposit means none was taken at booking; an unrecorded
+/// cancellation reason on a cancelled booking means the customer gave none.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["nights"], unit: .Constant("night") }],
+    times: [TimeBinding { path: ["starts_on"], encoding: .IsoDate }],
+    absences: [
+        AbsenceBinding { path: ["deposit"], code: "waived_at_booking" },
+        AbsenceBinding { path: ["cancellation_reason"], code: "none_given" },
+    ],
+} })
+export type Booking = {
+    boat: Ref<Narrowboat>,
+    hirer: Ref<Customer>,
+    starts_on: string,
+    nights: int,
+    deposit: Money?,
+    cancelled: bool = false,
+    cancellation_reason: string?,
+}
+
+/// A staff member's role aboard or around one narrowboat during a tenure,
+/// such as the skipper of a delivery run or the engineer of a refit. A
+/// tenure bound left unrecorded was not stated; it is not evidence that the
+/// role lasted forever.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["boat"], label: ["role"],
+        phrasing: "{from} serves as {label} for {to}",
+        labels: [
+            RelationLabel { value: "skipper", forward: ["skipper"], broader: ["crew"] },
+            RelationLabel { value: "deckhand", forward: ["deckhand", "bow hand"], broader: ["crew"] },
+            RelationLabel { value: "crew", forward: ["crew"] },
+            RelationLabel { value: "engineer", forward: ["engineer", "mechanic"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "opens_ms"], until: ["tenure", "closes_ms"] },
+} })
+export type CrewAssignment = {
+    member: Ref<Staff>,
+    @one_of(["skipper", "deckhand", "crew", "engineer"]) role: string,
+    boat: Ref<Narrowboat>,
+    tenure: Tenure,
+}
+
+/// A hull and engine inspection of one narrowboat at an instant in UTC Unix
+/// milliseconds. `inspector` carried out the check and `examiner` countersigned
+/// it; they may be the same person. An unrecorded examiner means no
+/// countersignature was required; an unrecorded hull thickness means the
+/// gauge reading was not taken.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["hull_thickness_mm"], unit: .Constant("millimetre") }],
+    times: [TimeBinding { path: ["inspected_at"], encoding: .UnixMillis }],
+    absences: [
+        AbsenceBinding { path: ["examiner"], code: "not_required" },
+        AbsenceBinding { path: ["hull_thickness_mm"], code: "gauge_not_taken" },
+    ],
+} })
+export type Inspection = {
+    boat: Ref<Narrowboat>,
+    inspector: Ref<Staff>,
+    examiner: Ref<Staff>?,
+    inspected_at: int,
+    hull_thickness_mm: int?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

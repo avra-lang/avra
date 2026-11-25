@@ -1,0 +1,142 @@
+// domain: Lockhart Wharf Narrowboat Hire
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of, email}
+
+/// An amount of money in minor units (pence, cents) with its currency code.
+/// Embedded in other records. The amount is never a decimal and the currency
+/// is never inferred from the wharf or the hirer.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["amount_minor"], unit: UnitBinding.Field(["currency"]), decimal_places: 2 },
+] } })
+export type Money = {
+    amount_minor: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// Embedded valid-time bounds, half-open [from_ms, until_ms) in UTC Unix
+/// milliseconds. A missing from_ms means the start was not recorded; a
+/// missing until_ms means no end is known yet, not that it lasts forever.
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"], until: ["until_ms"] } } })
+export type Interval = {
+    from_ms: int?,
+    until_ms: int?,
+}
+
+/// A person who helms, crews or hires boats from the wharf. The name is a
+/// label for mentioning them, not a unique key. An unrecorded email means
+/// no address was given; an unrecorded phone means none was given.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [
+        AbsenceBinding { path: ["email"], code: "declined_to_give" },
+        AbsenceBinding { path: ["phone"], code: "declined_to_give" },
+    ],
+} })
+export type Skipper = {
+    @length(min: 1, max: 200) name: string,
+    @email email: string?,
+    @length(min: 5, max: 32) phone: string?,
+}
+
+/// A mooring wharf or lock-side landing where boats are picked up or
+/// returned. The name is the label used to mention it. An unrecorded
+/// lock_count means the number of locks to the next wharf was never counted.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["lock_count"], code: "not_surveyed" }],
+} })
+export type Wharf = {
+    @length(min: 1, max: 200) name: string,
+    mooring_slots: int,
+    lock_count: int?,
+}
+
+/// One narrowboat in the hire fleet. hull_length_cm is the overall length in
+/// centimetres. last_survey_ms is the UTC Unix millisecond time of the last
+/// hull survey; unrecorded means no survey has been done since purchase.
+/// An unrecorded berths value means the layout was never counted.
+@model(quote { Semantics {
+    label: ["name"],
+    quantities: [
+        QuantityBinding { amount: ["hull_length_cm"], unit: UnitBinding.Constant("cm") },
+    ],
+    times: [TimeBinding { path: ["last_survey_ms"], encoding: TimeEncoding.UnixMillis }],
+    absences: [
+        AbsenceBinding { path: ["last_survey_ms"], code: "never_surveyed" },
+        AbsenceBinding { path: ["berths"], code: "layout_unknown" },
+    ],
+} })
+export type Boat = {
+    @length(min: 1, max: 200) name: string,
+    hull_length_cm: int,
+    berths: int?,
+    last_survey_ms: int?,
+}
+
+/// A skipper holding a role on a boat during an interval, such as helm or
+/// deckhand. The role is a closed label; a posting says nothing about
+/// who owns the boat. An open-ended interval means no end is known.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["skipper"], to: ["boat"], label: ["role"],
+        phrasing: "{from} serves as {label} on {to}",
+        labels: [
+            RelationLabel { value: "helm", forward: ["head helm", "helm"], broader: ["crew"] },
+            RelationLabel { value: "deckhand", forward: ["deckhand", "lock hand"], broader: ["crew"] },
+            RelationLabel { value: "trainee", forward: ["trainee"], broader: ["crew"] },
+            RelationLabel { value: "crew", forward: ["crew member"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["during", "from_ms"], until: ["during", "until_ms"] },
+} })
+export type CrewPosting = {
+    skipper: Ref<Skipper>,
+    boat: Ref<Boat>,
+    @one_of(["helm", "deckhand", "trainee", "crew"]) role: string,
+    during: Interval,
+}
+
+/// One hire of a boat by a hirer. pickup_wharf is where the hirer takes the
+/// boat; collection_wharf is where the company recovers it if that differs.
+/// An unrecorded collection_wharf means the boat is returned to the pickup
+/// wharf; an unrecorded ended_ms means the boat is still out; an unrecorded
+/// deposit means none was taken. nights is a count of nights hired.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["nights"], unit: UnitBinding.Constant("night") }],
+    times: [
+        TimeBinding { path: ["started_ms"], encoding: TimeEncoding.UnixMillis },
+        TimeBinding { path: ["ended_ms"], encoding: TimeEncoding.UnixMillis },
+    ],
+    absences: [
+        AbsenceBinding { path: ["ended_ms"], code: "boat_still_out" },
+        AbsenceBinding { path: ["collection_wharf"], code: "returned_to_pickup" },
+        AbsenceBinding { path: ["deposit"], code: "none_taken" },
+    ],
+} })
+export type Hire = {
+    boat: Ref<Boat>,
+    hirer: Ref<Skipper>,
+    pickup_wharf: Ref<Wharf>,
+    collection_wharf: Ref<Wharf>?,
+    nights: int,
+    started_ms: int,
+    ended_ms: int?,
+    charge: Money,
+    deposit: Money?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

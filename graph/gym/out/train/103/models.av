@@ -1,0 +1,143 @@
+// domain: Fennelcote Cheese Cave Affinage
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, email, one_of}
+
+fn ordered_window(w: RipeningWindow) -> Result<RipeningWindow, string> {
+    if w.entered_ms != null && w.withdrawn_ms != null && w.withdrawn_ms! <= w.entered_ms! {
+        fail "a known withdrawal must come after the entry"
+    }
+    w
+}
+
+/// An embedded stretch of ripening time in UTC Unix milliseconds, half-open
+/// [entered_ms, withdrawn_ms). An unrecorded bound means the cave log did
+/// not note it, not that the stay is still going or began before the log.
+@model(quote { Semantics { validity: ValidityBinding { from: ["entered_ms"], until: ["withdrawn_ms"] } } })
+@ordered_window
+export type RipeningWindow = {
+    entered_ms: int?,
+    withdrawn_ms: int?,
+}
+
+/// An embedded price: a whole number of minor currency units with the
+/// currency code it is quoted in. It is never a record of its own, and a
+/// zero price is a giveaway, not a missing price.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["minor_units"], unit: .Field(["currency"]) }] } })
+export type Price = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A cheese ripener who tends the caves. A display name is not a unique
+/// key; the work email, when recorded, is. An unrecorded email means the
+/// ripener has given no address.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "fennelcote_ripener_email", path: ["work_email"], normalization: .AsciiLowerTrim }],
+    label: ["display_name"],
+    absences: [AbsenceBinding { path: ["work_email"], code: "no_address_given" }],
+} })
+export type Ripener = {
+    @length(min: 1, max: 200) display_name: string,
+    @email work_email: string?,
+}
+
+/// A ripening cave, mentioned by the name chalked on its door. An
+/// unrecorded humidity_pct means no hygrometer reading was taken, not that
+/// the cave is dry.
+@model(quote { Semantics {
+    label: ["door_name"],
+    absences: [AbsenceBinding { path: ["humidity_pct"], code: "hygrometer_unread" }],
+} })
+export type Cave = {
+    @length(min: 1, max: 100) door_name: string,
+    humidity_pct: int?,
+}
+
+/// One batch of cheese wheels laid down together. `curator` is the ripener
+/// who answers for the batch and `keeper` the ripener who does the daily
+/// turning and washing; they may be the same person. wheels is the count
+/// laid down, and the weight is measured at the unit it carries. An
+/// unrecorded first_tasted_at means no wheel has been tasted yet; an
+/// unrecorded rind_note means nobody described the rind.
+@model(quote { Semantics {
+    label: ["batch_code"],
+    identities: [IdentityBinding { namespace: "cheese_batch_code", path: ["batch_code"], normalization: .Trim }],
+    quantities: [
+        QuantityBinding { amount: ["wheels"], unit: .Constant("wheel") },
+        QuantityBinding { amount: ["weight_amount"], unit: .Field(["weight_unit"]), decimal_places: 1 },
+    ],
+    times: [
+        TimeBinding { path: ["made_on"], encoding: .IsoDate },
+        TimeBinding { path: ["first_tasted_at"], encoding: .IsoInstant },
+    ],
+    absences: [
+        AbsenceBinding { path: ["first_tasted_at"], code: "not_yet_tasted" },
+        AbsenceBinding { path: ["rind_note"], code: "rind_undescribed" },
+    ],
+} })
+export type CheeseBatch = {
+    @length(min: 1, max: 64) batch_code: string,
+    @length(min: 1, max: 100) style: string,
+    curator: Ref<Ripener>,
+    keeper: Ref<Ripener>,
+    wheels: int,
+    weight_amount: int,
+    @one_of(["g", "kg"]) weight_unit: string,
+    made_on: string,
+    first_tasted_at: string?,
+    rind_note: string?,
+}
+
+/// A batch placed in a cave for a stretch of time. The phase says what the
+/// cave is doing for it. A window bound left unrecorded is unknown, not
+/// open-ended.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["batch"], to: ["cave"], label: ["phase"],
+        phrasing: "{from} is in {to} for {label}",
+        labels: [
+            RelationLabel { value: "drying", forward: ["drying in"], reverse: ["is drying out"] },
+            RelationLabel { value: "washing", forward: ["rind-washed in"], reverse: ["is washing the rind of"] },
+            RelationLabel { value: "maturing", forward: ["maturing in"], reverse: ["is maturing"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "entered_ms"], until: ["window", "withdrawn_ms"] },
+} })
+export type CaveStay = {
+    batch: Ref<CheeseBatch>,
+    cave: Ref<Cave>,
+    @one_of(["drying", "washing", "maturing"]) phase: string,
+    window: RipeningWindow,
+}
+
+/// The counter sale of part of one batch. The price is the total taken, in
+/// the currency it carries. A receipt number restarts each season, so it
+/// is not a key.
+@model(quote { Semantics {
+    label: ["receipt_no"],
+    times: [TimeBinding { path: ["sold_on"], encoding: .IsoDate }],
+    quantities: [QuantityBinding { amount: ["price", "minor_units"], unit: .Field(["price", "currency"]), decimal_places: 2 }],
+} })
+export type CounterSale = {
+    @length(min: 1, max: 64) receipt_no: string,
+    batch: Ref<CheeseBatch>,
+    price: Price,
+    sold_on: string,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

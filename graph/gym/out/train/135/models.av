@@ -1,0 +1,180 @@
+// domain: Tarnside Vintage Tramway Preservation Society
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+fn chronological(v: Validity) -> Result<Validity, string> {
+    if v.from_ms != null && v.until_ms != null && v.until_ms! <= v.from_ms! {
+        fail "a known validity end must be later than its start"
+    }
+    v
+}
+
+/// Embedded valid-time bounds for a tramway relationship, half-open
+/// [from_ms, until_ms) in UTC Unix milliseconds. An unrecorded bound means
+/// the society's minute books do not say; it is not evidence that the
+/// relationship held forever or began at the society's founding.
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"], until: ["until_ms"] } } })
+@chronological
+export type Validity = {
+    from_ms: int?,
+    until_ms: int?,
+}
+
+/// An embedded sum of money in minor units (pence, cents) with its currency
+/// code. An unrecorded Money is never zero; the figure simply was not stated.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["minor_units"], unit: UnitBinding.Field(["currency"]), decimal_places: 2 },
+] } })
+export type Money = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A volunteer or subscribing member of the society. The display name is
+/// not unique; the membership number is. An unrecorded phone number means
+/// the member declined to give one, not that they have none.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "membership", path: ["membership_no"], normalization: .AsciiLowerTrim }],
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["phone"], code: "withheld_by_member" }],
+} })
+export type Member = {
+    @length(min: 1, max: 128) name: string,
+    @length(min: 1, max: 32) membership_no: string,
+    @length(min: 1, max: 32) phone: string?,
+}
+
+/// A running or restorable tramcar in the society's collection. The fleet
+/// number identifies it; the livery name is only how people mention it.
+/// An unrecorded build date means the builder's records are lost, and an
+/// unrecorded withdrawal reason means the car is still in service.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "fleet", path: ["fleet_no"], normalization: .Trim }],
+    label: ["livery_name"],
+    quantities: [QuantityBinding { amount: ["gauge_mm"], unit: UnitBinding.Constant("mm") }],
+    times: [TimeBinding { path: ["built_on"], encoding: .IsoDate }],
+    absences: [
+        AbsenceBinding { path: ["built_on"], code: "builder_records_lost" },
+        AbsenceBinding { path: ["withdrawal_reason"], code: "still_in_service" },
+    ],
+} })
+export type Tram = {
+    @length(min: 1, max: 32) fleet_no: string,
+    @length(min: 1, max: 128) livery_name: string,
+    gauge_mm: int,
+    built_on: string?,
+    withdrawal_reason: string?,
+}
+
+/// A shed, yard or museum hall where cars are stored or worked on. Names
+/// repeat across sites, so the name is a mention, not a key.
+@model(quote { Semantics { label: ["site_name"] } })
+export type Depot = {
+    @length(min: 1, max: 128) site_name: string,
+}
+
+/// Where a tramcar is kept during a validity interval. A record says the
+/// car was stored there in that role; a missing bound is an unknown date,
+/// and no record for a car says nothing about where it was.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["tram"], to: ["depot"], label: ["role"],
+        phrasing: "{from} is {label} at {to}",
+        labels: [
+            RelationLabel { value: "home", forward: ["based", "housed"], reverse: ["home to"] },
+            RelationLabel { value: "visiting", forward: ["on loan", "visiting"], reverse: ["hosting"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] },
+} })
+export type TramAssignment = {
+    tram: Ref<Tram>,
+    depot: Ref<Depot>,
+    @one_of(["home", "visiting"]) role: string,
+    validity: Validity,
+}
+
+/// A member's licence to drive a particular car, granted by the society's
+/// training officer. It is a driving grant only; conducting is recorded in
+/// TramEndorsement. An unrecorded bound is an unknown date, not a lifetime grant.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["tram"], label: ["standing"],
+        phrasing: "{from} is {label} to drive {to}",
+        labels: [
+            RelationLabel { value: "licensed", forward: ["licensed"], reverse: ["driven by licensed"] },
+            RelationLabel { value: "authorised", forward: ["authorised"], reverse: ["driven by authorised"], broader: ["licensed"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] },
+} })
+export type TramQualification = {
+    member: Ref<Member>,
+    tram: Ref<Tram>,
+    @one_of(["licensed", "authorised"]) standing: string,
+    validity: Validity,
+}
+
+/// A member's sign-off to work aboard a particular car as conductor or
+/// guard, separate from the driving grant in TramQualification. An
+/// unrecorded bound is an unknown date, not an open-ended sign-off.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["tram"], label: ["sign_off"],
+        phrasing: "{from} is {label} to crew {to}",
+        labels: [
+            RelationLabel { value: "certified", forward: ["certified"], reverse: ["crewed by certified"] },
+            RelationLabel { value: "approved", forward: ["approved"], reverse: ["crewed by approved"], broader: ["certified"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] },
+} })
+export type TramEndorsement = {
+    member: Ref<Member>,
+    tram: Ref<Tram>,
+    @one_of(["certified", "approved"]) sign_off: string,
+    validity: Validity,
+}
+
+/// One safety inspection of a tramcar. The inspector carried out the
+/// examination and the assessor countersigned it; they may be the same
+/// person only if the society's rules allowed it that day. An unrecorded
+/// verdict means the report was lost, not that the car passed.
+@model(quote { Semantics {
+    times: [TimeBinding { path: ["inspected_at"], encoding: .UnixMillis }],
+    absences: [AbsenceBinding { path: ["verdict"], code: "report_lost" }],
+} })
+export type TramInspection = {
+    tram: Ref<Tram>,
+    inspector: Ref<Member>,
+    assessor: Ref<Member>,
+    inspected_at: int,
+    @one_of(["pass", "pass_with_notes", "fail"]) verdict: string?,
+}
+
+/// A funded restoration job on one tramcar. The cost is what the society
+/// paid; an unrecorded cost means the invoice was never filed, not that
+/// the work was free.
+@model(quote { Semantics { label: ["title"] } })
+export type RestorationJob = {
+    @length(min: 1, max: 256) title: string,
+    tram: Ref<Tram>,
+    cost: Money?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

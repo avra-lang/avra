@@ -1,0 +1,150 @@
+// domain: Mossgate Cheese Affinage Cellar
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// An amount of money in minor units (hundredths) with its ISO currency code.
+/// Embedded in other records; it never stands alone.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["minor_units"], unit: .Field(["currency"]), decimal_places: 2 }],
+} })
+export type Price = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// An embedded half-open interval in UTC Unix milliseconds. A null bound is
+/// an unspecified edge, not evidence that the interval is endless.
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"], until: ["until_ms"] } } })
+export type Stretch = {
+    from_ms: int?,
+    until_ms: int?,
+}
+
+/// A cheesemaker whose milk and curd arrive at the cellar. The name is shown
+/// to tell producers apart but is not a unique key.
+@model(quote { Semantics { label: ["name"] } })
+export type Dairy = {
+    @length(min: 1, max: 200) name: string,
+    region: string?,
+}
+
+/// A member of cellar staff who turns, washes and tastes wheels. An
+/// unrecorded phone means the person never gave one (declared reason code
+/// withheld_by_person), not that they have none.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["phone"], code: "withheld_by_person" }],
+} })
+export type Affineur = {
+    @length(min: 1, max: 200) name: string,
+    @length(min: 3, max: 40) phone: string?,
+}
+
+/// A ripening chamber in the cellar. An unrecorded humidity target means
+/// the chamber has no setpoint on file (reason code never_calibrated).
+@model(quote { Semantics {
+    label: ["name"],
+    quantities: [QuantityBinding { amount: ["humidity_target"], unit: .Constant("percent"), decimal_places: 1 }],
+    absences: [AbsenceBinding { path: ["humidity_target"], code: "never_calibrated" }],
+} })
+export type Cave = {
+    @length(min: 1, max: 100) name: string,
+    humidity_target: float?,
+}
+
+/// A named cheese style from one dairy, such as a washed-rind tomme. It
+/// describes the recipe, not any physical wheel.
+@model(quote { Semantics { label: ["name"] } })
+export type Cheese = {
+    @length(min: 1, max: 200) name: string,
+    dairy: Ref<Dairy>,
+    @one_of(["fresh", "soft", "semi_hard", "hard", "blue"]) style: string,
+}
+
+/// One physical wheel received for ageing. ripening_cave is where it is
+/// being aged now; maturing_cave is where it is planned to finish. An
+/// unrecorded maturing_cave means no plan was made (reason code
+/// not_yet_planned); an unrecorded weight means it was never weighed.
+@model(quote { Semantics {
+    label: ["lot_code"],
+    times: [TimeBinding { path: ["made_on"], encoding: .IsoDate }],
+    quantities: [QuantityBinding { amount: ["weight_grams"], unit: .Constant("gram"), decimal_places: 0 }],
+    absences: [
+        AbsenceBinding { path: ["maturing_cave"], code: "not_yet_planned" },
+        AbsenceBinding { path: ["weight_grams"], code: "never_weighed" },
+    ],
+} })
+export type Wheel = {
+    @length(min: 1, max: 60) lot_code: string,
+    cheese: Ref<Cheese>,
+    made_on: string,
+    ripening_cave: Ref<Cave>,
+    maturing_cave: Ref<Cave>?,
+    weight_grams: int?,
+}
+
+/// A staff member's care duty over one wheel during an interval. The task
+/// label states the duty. A null end of the interval means the duty has no
+/// recorded end, not that it lasts forever.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["affineur"], to: ["wheel"], label: ["task"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "turns", forward: ["turns"], reverse: ["is turned by"] },
+            RelationLabel { value: "washes", forward: ["washes"], reverse: ["is washed by"] },
+            RelationLabel { value: "brushes", forward: ["brushes"], reverse: ["is brushed by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "from_ms"], until: ["span", "until_ms"] },
+} })
+export type CareDuty = {
+    affineur: Ref<Affineur>,
+    wheel: Ref<Wheel>,
+    @one_of(["turns", "washes", "brushes"]) task: string,
+    span: Stretch,
+}
+
+/// A tasting of one wheel by one staff member. An unrecorded note means the
+/// taster left none (reason code left_blank), not that the wheel was bland.
+@model(quote { Semantics {
+    times: [TimeBinding { path: ["tasted_at"], encoding: .UnixMillis }],
+    quantities: [QuantityBinding { amount: ["rind_mm"], unit: .Constant("millimetre"), decimal_places: 1 }],
+    absences: [AbsenceBinding { path: ["note"], code: "left_blank" }],
+} })
+export type Tasting = {
+    wheel: Ref<Wheel>,
+    taster: Ref<Affineur>,
+    tasted_at: int,
+    rind_mm: float,
+    note: string?,
+}
+
+/// The sale of one wheel to a buyer; the buyer is free text and not a key.
+/// The price is the agreed total for the whole wheel.
+@model(quote { Semantics {
+    times: [TimeBinding { path: ["sold_at"], encoding: .IsoInstant }],
+    quantities: [QuantityBinding { amount: ["price", "minor_units"], unit: .Field(["price", "currency"]), decimal_places: 2 }],
+} })
+export type Sale = {
+    wheel: Ref<Wheel>,
+    @length(min: 1, max: 200) buyer: string,
+    price: Price,
+    sold_at: string,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

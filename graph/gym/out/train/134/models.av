@@ -1,0 +1,177 @@
+// domain: Wexcombe Letterpress Print Shop
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A price in minor units with its ISO currency code.
+/// Embedded in other records; it has no identity of its own.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["amount_minor"], unit: .Field(["iso_currency"]) }],
+} })
+export type Charge = {
+    amount_minor: int,
+    @one_of(["GBP", "EUR", "USD"]) iso_currency: string,
+}
+
+fn window_ordered(w: Tenure) -> Result<Tenure, string> {
+    if w.opens_ms != null && w.closes_ms != null && w.closes_ms! <= w.opens_ms! {
+        fail "a known closing instant must be later than the opening"
+    }
+    w
+}
+
+/// Embedded half-open interval [opens_ms, closes_ms) in UTC Unix milliseconds.
+/// An unrecorded bound means that side is unspecified, not that the record
+/// held without limit.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+@window_ordered
+export type Tenure = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A compositor, pressman or binder working in the shop. Names are not
+/// unique; the work email, when recorded, identifies them.
+/// An unrecorded work email means the worker has no shop mailbox.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "shop_mailbox", path: ["work_email"], normalization: .AsciiLowerTrim }],
+    label: ["display_name"],
+    absences: [AbsenceBinding { path: ["work_email"], code: "no_shop_mailbox" }],
+} })
+export type Craftsperson = {
+    @length(min: 1, max: 200) display_name: string,
+    work_email: string?,
+}
+
+/// A customer who orders printed work. Names are not unique keys.
+@model(quote { Semantics { label: ["trading_name"] } })
+export type Patron = {
+    @length(min: 1, max: 200) trading_name: string,
+}
+
+/// A cast or wood typeface held in the shop's cases. A record is one face
+/// in one size. An unrecorded foundry means the maker is unknown;
+/// an unrecorded sorts count means the case has never been tallied.
+@model(quote { Semantics {
+    label: ["face_name"],
+    quantities: [
+        QuantityBinding { amount: ["body_points"], unit: .Constant("points") },
+        QuantityBinding { amount: ["sorts_count"], unit: .Constant("sorts") },
+    ],
+    absences: [
+        AbsenceBinding { path: ["foundry"], code: "maker_unknown" },
+        AbsenceBinding { path: ["sorts_count"], code: "case_never_tallied" },
+    ],
+} })
+export type Typeface = {
+    @length(min: 1, max: 150) face_name: string,
+    body_points: int,
+    foundry: string?,
+    sorts_count: int?,
+}
+
+/// A press in the shop. The plate number is the maker's stamped number.
+/// An unrecorded service date means the press has never been serviced
+/// since the shop acquired it.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "plate_number", path: ["plate_no"], normalization: .Trim }],
+    label: ["press_name"],
+    quantities: [QuantityBinding { amount: ["platen_width_mm"], unit: .Constant("millimetres") }],
+    times: [TimeBinding { path: ["last_serviced_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["last_serviced_on"], code: "never_serviced" }],
+} })
+export type Press = {
+    @length(min: 1, max: 100) press_name: string,
+    plate_no: string,
+    platen_width_mm: int,
+    last_serviced_on: string?,
+}
+
+/// A paid print job. due_on and withdrawn_on are ISO dates; placed_at is
+/// UTC Unix milliseconds. ordered_by is the patron who commissioned it;
+/// requested_by is the individual patron-side requester when that differs.
+/// An unrecorded requested_by means the ordering patron asked directly.
+/// An unrecorded withdrawn_on means the job was not withdrawn.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "job_ticket", path: ["ticket_ref"], normalization: .AsciiLowerTrim }],
+    label: ["ticket_ref"],
+    times: [
+        TimeBinding { path: ["placed_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["due_on"], encoding: .IsoDate },
+        TimeBinding { path: ["withdrawn_on"], encoding: .IsoDate },
+    ],
+    quantities: [QuantityBinding { amount: ["copies"], unit: .Constant("copies") }],
+    absences: [
+        AbsenceBinding { path: ["requested_by"], code: "ordered_directly" },
+        AbsenceBinding { path: ["withdrawn_on"], code: "not_withdrawn" },
+    ],
+} })
+export type PrintJob = {
+    ticket_ref: string,
+    ordered_by: Ref<Patron>,
+    requested_by: Ref<Patron>?,
+    press: Ref<Press>,
+    placed_at: int,
+    due_on: string,
+    withdrawn_on: string?,
+    copies: int,
+    quoted_price: Charge,
+}
+
+/// A craftsperson's record of setting or composing type in a typeface over
+/// a tenure. "set" and "composed" are the sanctioned wordings; distinct from
+/// ProofingTrial, which concerns test impressions only.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["worker"], to: ["face"], label: ["manner"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "set", forward: ["set", "hand-set"] },
+            RelationLabel { value: "composed", forward: ["composed", "made up"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "opens_ms"], until: ["tenure", "closes_ms"] },
+} })
+export type SettingRecord = {
+    worker: Ref<Craftsperson>,
+    face: Ref<Typeface>,
+    @one_of(["set", "composed"]) manner: string,
+    tenure: Tenure,
+}
+
+/// A craftsperson's record of trying out or testing a typeface on proof
+/// sheets over a tenure. "tried" and "trialled" are near synonyms of the
+/// setting wordings but concern test impressions, not finished work.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["worker"], to: ["face"], label: ["manner"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "tried", forward: ["tried", "pulled a proof of"] },
+            RelationLabel { value: "trialled", forward: ["trialled", "test-printed"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "opens_ms"], until: ["tenure", "closes_ms"] },
+} })
+export type ProofingTrial = {
+    worker: Ref<Craftsperson>,
+    face: Ref<Typeface>,
+    @one_of(["tried", "trialled"]) manner: string,
+    tenure: Tenure,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

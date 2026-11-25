@@ -1,0 +1,147 @@
+// domain: Wrenmoor Bell Ringers' Tower Society
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of, items, range}
+
+/// An amount of money in pence-style minor units with its ISO currency code.
+/// A record means one sum as charged or paid; it is never a running balance.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["minor_units"], unit: UnitBinding.Field(["iso_code"]), decimal_places: 2 },
+] } })
+export type Fee = {
+    minor_units: int,
+    @length(min: 3, max: 3) iso_code: string,
+}
+
+fn forward_only(t: Tenure) -> Result<Tenure, string> {
+    if t.began_ms != null && t.ceased_ms != null && t.ceased_ms! <= t.began_ms! {
+        fail "a known tenure end must be later than its beginning"
+    }
+    t
+}
+
+/// Embedded half-open interval [began_ms, ceased_ms) in UTC Unix milliseconds
+/// during which a band post was held. An unrecorded beginning or end is an
+/// unspecified bound, not evidence that the post was held without limit.
+@model(quote { Semantics { validity: ValidityBinding { from: ["began_ms"], until: ["ceased_ms"] } } })
+@forward_only
+export type Tenure = {
+    began_ms: int?,
+    ceased_ms: int?,
+}
+
+/// A member of the society who rings bells. Full names are not unique keys;
+/// an unrecorded email means the ringer offered none.
+@model(quote { Semantics {
+    label: ["full_name"],
+    identities: [IdentityBinding { namespace: "society_number", path: ["society_no"], normalization: .AsciiLowerTrim }],
+    absences: [AbsenceBinding { path: ["email_address"], code: "not_offered" }],
+} })
+export type Ringer = {
+    @length(min: 1, max: 256) full_name: string,
+    @length(min: 1, max: 32) society_no: string,
+    @length(min: 3, max: 256) email_address: string?,
+}
+
+/// A church or bell tower with a ring of bells, cited by its dedication.
+/// An unrecorded tenor weight means the heaviest bell has not been weighed.
+@model(quote { Semantics {
+    label: ["dedication"],
+    absences: [AbsenceBinding { path: ["tenor_kg"], code: "not_weighed" }],
+    quantities: [QuantityBinding { amount: ["tenor_kg"], unit: UnitBinding.Constant("kilogram"), decimal_places: 0 }],
+} })
+export type Tower = {
+    @length(min: 1, max: 256) dedication: string,
+    @range(lo: 3, hi: 16) bell_count: int,
+    tenor_kg: int?,
+}
+
+/// A named method of change ringing, such as a plain-bob or surprise
+/// method, cited by its method name in peal records.
+@model(quote { Semantics { label: ["method_name"] } })
+export type RingingMethod = {
+    @length(min: 1, max: 128) method_name: string,
+    @one_of(["plain", "treble_dodging", "surprise", "delight"]) class_of_method: string,
+}
+
+/// One peal or quarter peal rung at a tower. conductor called the changes;
+/// leader is whoever organised the band when that was someone else. An
+/// unrecorded leader means the conductor also led; an unrecorded remark means
+/// nothing notable was written down.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["duration_minutes"], unit: UnitBinding.Constant("minute"), decimal_places: 0 },
+        QuantityBinding { amount: ["booking_fee", "minor_units"], unit: UnitBinding.Field(["booking_fee", "iso_code"]), decimal_places: 2 },
+    ],
+    times: [TimeBinding { path: ["rung_on"], encoding: .IsoDate }],
+    absences: [
+        AbsenceBinding { path: ["leader"], code: "same_as_conductor" },
+        AbsenceBinding { path: ["remark"], code: "nothing_noted" },
+    ],
+} })
+export type Peal = {
+    tower: Ref<Tower>,
+    method: Ref<RingingMethod>,
+    conductor: Ref<Ringer>,
+    leader: Ref<Ringer>?,
+    rung_on: string,
+    duration_minutes: int,
+    booking_fee: Fee,
+    @length(min: 1, max: 1024) remark: string?,
+}
+
+/// A ringer's post in the band of a tower over a tenure. The reading is
+/// "{ringer} serves as {post} at {tower}". An unrecorded tenure bound is
+/// unspecified, not a claim that the post is open-ended.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["ringer"], to: ["tower"], label: ["post"],
+        phrasing: "{from} serves as {label} at {to}",
+        labels: [
+            RelationLabel { value: "band_member", forward: ["band member of", "rings at"], reverse: ["has in its band"] },
+            RelationLabel { value: "tower_captain", forward: ["captain of"], reverse: ["is captained by"], broader: ["band_member"] },
+            RelationLabel { value: "steeple_keeper", forward: ["keeper of the keys at"], reverse: ["keys are kept by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "began_ms"], until: ["tenure", "ceased_ms"] },
+} })
+export type BandPost = {
+    ringer: Ref<Ringer>,
+    tower: Ref<Tower>,
+    @one_of(["band_member", "tower_captain", "steeple_keeper"]) post: string,
+    tenure: Tenure,
+}
+
+/// One ringer's attendance at a weekly practice night at a tower. An
+/// unrecorded coaching note means no coaching was given that night.
+@model(quote { Semantics {
+    times: [TimeBinding { path: ["arrived_at"], encoding: .UnixMillis }],
+    quantities: [
+        QuantityBinding { amount: ["rung_for"], unit: UnitBinding.Field(["rung_for_unit"]), decimal_places: 0 },
+    ],
+    absences: [AbsenceBinding { path: ["coaching_note"], code: "no_coaching" }],
+} })
+export type PracticeVisit = {
+    ringer: Ref<Ringer>,
+    tower: Ref<Tower>,
+    arrived_at: int,
+    rung_for: int,
+    @one_of(["minute", "hour"]) rung_for_unit: string,
+    @length(min: 1, max: 1024) coaching_note: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

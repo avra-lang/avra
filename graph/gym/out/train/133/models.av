@@ -1,0 +1,168 @@
+// domain: Fernside Falconry Display Centre
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, email, one_of}
+
+fn ordered_span(s: ActiveSpan) -> Result<ActiveSpan, string> {
+    if s.opens_ms != null && s.closes_ms != null && s.closes_ms! <= s.opens_ms! {
+        fail "a known closing instant must be later than the opening instant"
+    }
+    s
+}
+
+/// Embedded valid-time bounds of a handling arrangement, half-open
+/// [opens_ms, closes_ms) in UTC Unix milliseconds. A null bound is an
+/// unspecified bound, not evidence that the arrangement held for all time.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+@ordered_span
+export type ActiveSpan = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// Embedded sum of money in the smallest unit of its currency, such as
+/// pence. It is a charged or quoted sum, never a rounded display figure.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["minor_units"], unit: .Field(["currency_code"]), decimal_places: 2 }] } })
+export type Price = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// A falconer employed or volunteering at the centre. A name is not a
+/// unique key. An unrecorded email means the falconer withheld it, not
+/// that they have none.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["email"], code: "withheld_by_person" }],
+} })
+export type Falconer = {
+    @length(min: 1, max: 256) name: string,
+    @email email: string?,
+}
+
+/// A bird of prey kept by the centre. Its call name is not a unique key.
+/// An unrecorded ring code means the bird has not yet been fitted with a
+/// leg ring, not that the code was lost. Weight is the last weigh-in in
+/// grams.
+@model(quote { Semantics {
+    label: ["call_name"],
+    quantities: [QuantityBinding { amount: ["weight_g"], unit: .Constant("g") }],
+    absences: [AbsenceBinding { path: ["ring_code"], code: "not_yet_ringed" }],
+} })
+export type Raptor = {
+    @length(min: 1, max: 128) call_name: string,
+    @length(min: 1, max: 128) species: string,
+    weight_g: int,
+    @length(min: 1, max: 64) ring_code: string?,
+}
+
+/// A place where the centre gives a flying display, such as a lawn or a
+/// visiting school field. Its name is not a unique key. An unrecorded
+/// county means the ground is outside the counties the centre tracks.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["county"], code: "outside_tracked_counties" }],
+} })
+export type Arena = {
+    @length(min: 1, max: 256) name: string,
+    @length(min: 1, max: 128) county: string?,
+}
+
+/// One scheduled flying display at an arena. The lead handler answers for
+/// the audience; the chief handler answers for the safety of the birds.
+/// The same falconer may hold both roles. An unrecorded cancellation
+/// reason means the display went ahead as planned.
+@model(quote { Semantics {
+    label: ["display_ref"],
+    quantities: [
+        QuantityBinding { amount: ["ticket_price", "minor_units"], unit: .Field(["ticket_price", "currency_code"]), decimal_places: 2 },
+        QuantityBinding { amount: ["expected_crowd"], unit: .Constant("people") },
+    ],
+    times: [
+        TimeBinding { path: ["display_date"], encoding: .IsoDate },
+        TimeBinding { path: ["scheduled_at"], encoding: .UnixMillis },
+    ],
+    absences: [AbsenceBinding { path: ["cancellation_note"], code: "display_went_ahead" }],
+} })
+export type FlyingDisplay = {
+    @length(min: 1, max: 64) display_ref: string,
+    arena: Ref<Arena>,
+    lead_handler: Ref<Falconer>,
+    chief_handler: Ref<Falconer>,
+    ticket_price: Price,
+    expected_crowd: int,
+    display_date: string,
+    scheduled_at: int,
+    @length(min: 1, max: 512) cancellation_note: string?,
+}
+
+/// Food given to one raptor at one feeding. The unit travels with the
+/// amount; an amount alone is not a quantity.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["amount"], unit: .Field(["unit"]), decimal_places: 1 }],
+    times: [TimeBinding { path: ["fed_at"], encoding: .IsoInstant }],
+} })
+export type Feeding = {
+    raptor: Ref<Raptor>,
+    @length(min: 1, max: 128) food: string,
+    amount: float,
+    @one_of(["g", "kg", "pieces"]) unit: string,
+    fed_at: string,
+}
+
+/// A falconer schooling a raptor in flight over an interval. Schooling is
+/// the structured conditioning of a bird to fly to the glove or lure. It
+/// does not assert that the bird passed any assessment.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["falconer"], to: ["raptor"], label: ["kind"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "schools", forward: ["schools", "conditions"], reverse: ["is schooled by"] },
+            RelationLabel { value: "lures", forward: ["lure-trains", "flies to the lure"], reverse: ["is lure-trained by"], broader: ["schools"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_ms"], until: ["span", "closes_ms"] },
+} })
+export type RaptorSchooling = {
+    falconer: Ref<Falconer>,
+    @one_of(["schools", "lures"]) kind: string,
+    raptor: Ref<Raptor>,
+    span: ActiveSpan,
+}
+
+/// A falconer looking after the daily health and comfort of a raptor over
+/// an interval. Care is feeding, cleaning and checking, and is a different
+/// record from schooling the same bird.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["falconer"], to: ["raptor"], label: ["kind"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "tends", forward: ["tends", "looks after"], reverse: ["is tended by"] },
+            RelationLabel { value: "nurses", forward: ["nurses", "treats"], reverse: ["is nursed by"], broader: ["tends"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_ms"], until: ["span", "closes_ms"] },
+} })
+export type RaptorCare = {
+    falconer: Ref<Falconer>,
+    @one_of(["tends", "nurses"]) kind: string,
+    raptor: Ref<Raptor>,
+    span: ActiveSpan,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

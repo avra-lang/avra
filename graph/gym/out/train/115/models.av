@@ -1,0 +1,181 @@
+// domain: Ingleby Cheese Maturing Cellar
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of, items}
+
+/// A price in minor units with its currency code. Embedded in other records,
+/// never held alone. The currency is always stated with the amount; a zero
+/// amount is a real price of nothing, not an unknown price.
+@model
+export type Tariff = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A place inside the cellar, written as the cellar hands wrote it. Embedded
+/// only. A blank rack tier means the spot is on the floor, not that it was
+/// forgotten.
+@model
+export type Niche = {
+    @length(min: 1, max: 24) gallery: string,
+    @length(min: 1, max: 24) bay: string,
+    @length(min: 1, max: 8) rack_tier: string?,
+}
+
+/// A dairy farm that makes or sells curd and young cheese to the cellar. A
+/// record is one farm; the farm name is not a unique key. An unrecorded
+/// valley means the farm gave no location, and an unrecorded herd size means
+/// nobody counted.
+@model(quote { Semantics { label: ["farm_name"] } })
+export type Farmstead = {
+    @length(min: 1, max: 96) farm_name: string,
+    @length(min: 1, max: 64) valley: string?,
+    herd_size: int?,
+}
+
+/// A person who tends cheeses in the cellar. A record is one cellar hand;
+/// the handle is what colleagues call them. An unrecorded licence tier means
+/// the hand holds no tasting licence, not that it is unknown.
+@model(quote { Semantics { label: ["handle"] } })
+export type CellarHand = {
+    @length(min: 1, max: 64) handle: string,
+    @one_of(["apprentice", "grader", "head_grader"]) licence_tier: string?,
+}
+
+/// One chamber of the cellar with its own climate. A record is one chamber.
+/// The target temperature is in degrees Celsius; unrecorded means the
+/// chamber runs unregulated.
+@model(quote { Semantics {
+    label: ["chamber_name"],
+    quantities: [QuantityBinding { amount: ["target_celsius"], unit: .Constant("celsius"), decimal_places: 1 }],
+    absences: [AbsenceBinding { path: ["target_celsius"], code: "unregulated_chamber" }],
+} })
+export type Chamber = {
+    @length(min: 1, max: 64) chamber_name: string,
+    target_celsius: float?,
+}
+
+/// One make of cheese, tracked as a lot from arrival until the last wheel
+/// leaves. maker is the farm that pressed the curd; broker is the farm that
+/// delivered it to the cellar, which may be the same farm. An unrecorded
+/// broker means the maker delivered it. pressed_on is an ISO date;
+/// received_ms is Unix milliseconds. dispatched_on is the ISO date the last
+/// wheel left; unrecorded means wheels remain. lot_kilograms is the arrival
+/// weight; unrecorded means it was never weighed. Unrecorded purchase cost
+/// means the lot was a gift or a trade.
+@model(quote { Semantics {
+    label: ["lot_code"],
+    times: [
+        TimeBinding { path: ["pressed_on"], encoding: .IsoDate },
+        TimeBinding { path: ["received_ms"], encoding: .UnixMillis },
+        TimeBinding { path: ["dispatched_on"], encoding: .IsoDate },
+    ],
+    quantities: [QuantityBinding { amount: ["lot_kilograms"], unit: .Constant("kilogram"), decimal_places: 2 }],
+    absences: [
+        AbsenceBinding { path: ["dispatched_on"], code: "wheels_remaining" },
+        AbsenceBinding { path: ["lot_kilograms"], code: "never_weighed" },
+        AbsenceBinding { path: ["purchase_cost"], code: "gift_or_trade" },
+    ],
+} })
+export type CheeseLot = {
+    @length(min: 1, max: 32) lot_code: string,
+    maker: Ref<Farmstead>,
+    broker: Ref<Farmstead>?,
+    pressed_on: string,
+    received_ms: int,
+    dispatched_on: string?,
+    lot_kilograms: float?,
+    purchase_cost: Tariff?,
+}
+
+/// A cellar hand performing a kind of rind care on a lot over a stretch of
+/// time. A record is one stint of that care, not all care of the lot. Times
+/// are half-open Unix milliseconds. An unrecorded start means the care began
+/// before the lot was logged, and an unrecorded end means it continues.
+/// Brine strength is the percent salt in the wash; unrecorded means a dry
+/// treatment with no wash.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["hand"], to: ["lot"], label: ["treatment"],
+        phrasing: "{from} does {label} on {to}",
+        labels: [
+            RelationLabel { value: "wash", forward: ["brine washing", "washes"], reverse: ["washed by"] },
+            RelationLabel { value: "turn", forward: ["turning", "flips"], reverse: ["turned by"] },
+            RelationLabel { value: "smear", forward: ["smear ripening"], reverse: ["smeared by"], broader: ["wash"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["begins_ms"], until: ["ceases_ms"] },
+    quantities: [QuantityBinding { amount: ["brine_strength"], unit: .Constant("percent"), decimal_places: 1 }],
+    absences: [
+        AbsenceBinding { path: ["begins_ms"], code: "before_logging" },
+        AbsenceBinding { path: ["ceases_ms"], code: "care_continues" },
+        AbsenceBinding { path: ["brine_strength"], code: "dry_treatment" },
+    ],
+} })
+export type RindCare = {
+    hand: Ref<CellarHand>,
+    lot: Ref<CheeseLot>,
+    @one_of(["wash", "turn", "smear"]) treatment: string,
+    begins_ms: int?,
+    ceases_ms: int?,
+    brine_strength: float?,
+}
+
+/// A lot lying in a chamber at a niche over a stretch of time. A record is
+/// one stay in one chamber. Times are half-open Unix milliseconds; an
+/// unrecorded end means the lot is still there. An unrecorded niche means it
+/// was stacked loose in the chamber.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["lot"], to: ["chamber"], label: ["stay_kind"],
+        phrasing: "{from} is {label} in {to}",
+        labels: [
+            RelationLabel { value: "ripening", forward: ["ripening"], reverse: ["ripens lot"] },
+            RelationLabel { value: "quarantine", forward: ["held in quarantine"], reverse: ["quarantines lot"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["entered_ms"], until: ["left_ms"] },
+    absences: [
+        AbsenceBinding { path: ["left_ms"], code: "still_in_chamber" },
+        AbsenceBinding { path: ["spot"], code: "stacked_loose" },
+    ],
+} })
+export type ChamberStay = {
+    lot: Ref<CheeseLot>,
+    chamber: Ref<Chamber>,
+    @one_of(["ripening", "quarantine"]) stay_kind: string,
+    entered_ms: int,
+    left_ms: int?,
+    spot: Niche?,
+}
+
+/// A sale of part of a lot to a buyer. A record is one invoice line. The
+/// amount is measured in the stated unit, such as kilogram or wheel.
+/// agreed_price is for the whole line; unrecorded means the line was
+/// donated to a tasting, not that the price is unknown.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["amount"], unit: .Field(["amount_unit"]), decimal_places: 2 }],
+    absences: [AbsenceBinding { path: ["agreed_price"], code: "tasting_donation" }],
+} })
+export type SaleLine = {
+    lot: Ref<CheeseLot>,
+    @length(min: 1, max: 96) buyer_name: string,
+    amount: float,
+    @one_of(["kilogram", "wheel", "wedge"]) amount_unit: string,
+    agreed_price: Tariff?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

@@ -1,0 +1,166 @@
+// domain: Heronsgate Allotment Society
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, email, one_of}
+
+/// A sum of money in minor units (pence, cents) with its currency code.
+/// Embedded in other records; a sum without a recorded currency is invalid.
+@model
+export type Levy = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// Half-open interval [opens_ms, closes_ms) in UTC Unix milliseconds.
+/// An unrecorded opening or closing is an unspecified bound, not proof that
+/// the arrangement held for all time.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+export type Season = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A walled or fenced allotment ground divided into plots.
+/// The name is how the ground is mentioned; it is not a unique key.
+/// An unrecorded lane means the ground has no named access lane.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["lane"], code: "no_named_lane" }],
+} })
+export type Ground = {
+    @length(min: 1, max: 200) name: string,
+    lane: string?,
+}
+
+/// A member of the society who may work, mind or dispute plots.
+/// An unrecorded email means the member is reached by the noticeboard only;
+/// an unrecorded diet note means nothing was declared.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "member_email", path: ["email"], normalization: .AsciiLowerTrim }],
+    label: ["full_name"],
+    absences: [
+        AbsenceBinding { path: ["email"], code: "noticeboard_only" },
+        AbsenceBinding { path: ["diet_note"], code: "nothing_declared" },
+    ],
+} })
+export type Member = {
+    @length(min: 1, max: 200) full_name: string,
+    @email email: string?,
+    @length(min: 1, max: 300) diet_note: string?,
+}
+
+/// A marked parcel of cultivable land within a ground, in square metres.
+/// The designation (such as "North 14") is how the plot is mentioned, not a
+/// unique key. An unrecorded soil_report means no survey has been made.
+@model(quote { Semantics {
+    label: ["designation"],
+    quantities: [QuantityBinding { amount: ["area_sqm"], unit: .Constant("square_metre") }],
+    absences: [AbsenceBinding { path: ["soil_report"], code: "never_surveyed" }],
+} })
+export type Parcel = {
+    ground: Ref<Ground>,
+    @length(min: 1, max: 100) designation: string,
+    area_sqm: int,
+    soil_report: string?,
+}
+
+/// A member renting a parcel during a season.
+/// For "Ines is a tenant of North 14", from=Ines, to=North 14, kind=tenant.
+/// A cotenant shares the rent and the work. An unrecorded closing does not
+/// say the tenancy was endless.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["parcel"], label: ["kind"],
+        phrasing: "{from} is {label} of {to}",
+        labels: [
+            RelationLabel { value: "tenant", forward: ["tenant", "leaseholder"], reverse: ["rented to"] },
+            RelationLabel { value: "cotenant", forward: ["cotenant", "plot sharer"], broader: ["tenant"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["season", "opens_ms"], until: ["season", "closes_ms"] },
+} })
+export type ParcelTenancy = {
+    member: Ref<Member>,
+    parcel: Ref<Parcel>,
+    @one_of(["tenant", "cotenant"]) kind: string,
+    season: Season,
+}
+
+/// A member who minds a parcel on behalf of its tenant, with no lease.
+/// Joins the same member and parcel as ParcelTenancy but confers no rent
+/// liability. caretaker and warden are near-synonyms; warden is the
+/// short-term, holiday-cover form.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["parcel"], label: ["duty"],
+        phrasing: "{from} serves as {label} for {to}",
+        labels: [
+            RelationLabel { value: "caretaker", forward: ["caretaker", "minder"] },
+            RelationLabel { value: "warden", forward: ["warden", "cover keeper"], broader: ["caretaker"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["season", "opens_ms"], until: ["season", "closes_ms"] },
+} })
+export type ParcelMinding = {
+    member: Ref<Member>,
+    parcel: Ref<Parcel>,
+    @one_of(["caretaker", "warden"]) duty: string,
+    season: Season,
+}
+
+/// A standpipe reading of water drawn in litres, taken at an instant in UTC.
+/// An unrecorded reader means the tap log was signed anonymously.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["litres_drawn"], unit: .Constant("litre") }],
+    times: [TimeBinding { path: ["read_at"], encoding: .IsoInstant }],
+    absences: [AbsenceBinding { path: ["reader"], code: "signed_anonymously" }],
+} })
+export type TapReading = {
+    ground: Ref<Ground>,
+    litres_drawn: int,
+    read_at: string,
+    reader: Ref<Member>?,
+}
+
+/// A complaint about a shared boundary between parcels.
+/// complainant is the member who brought it; claimant is the member asserting
+/// ownership of the disputed strip. An unrecorded claimant means no one has
+/// claimed the strip. The fee carries its own currency. An unrecorded
+/// settled_on (an ISO calendar date) means the dispute is still open; an
+/// unrecorded fee_paid_ms means the fee is outstanding, not that the time is lost.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["fee", "minor_units"], unit: .Field(["fee", "currency"]), decimal_places: 2 }],
+    times: [
+        TimeBinding { path: ["settled_on"], encoding: .IsoDate },
+        TimeBinding { path: ["fee_paid_ms"], encoding: .UnixMillis },
+    ],
+    absences: [
+        AbsenceBinding { path: ["claimant"], code: "strip_unclaimed" },
+        AbsenceBinding { path: ["settled_on"], code: "still_open" },
+        AbsenceBinding { path: ["fee_paid_ms"], code: "fee_outstanding" },
+    ],
+} })
+export type BoundaryDispute = {
+    complainant: Ref<Member>,
+    claimant: Ref<Member>?,
+    parcel: Ref<Parcel>,
+    fee: Levy,
+    settled_on: string?,
+    fee_paid_ms: int?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

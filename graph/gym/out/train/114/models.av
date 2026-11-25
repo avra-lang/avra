@@ -1,0 +1,128 @@
+// domain: Eelgrass Bay Seal Rehabilitation Centre
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// A measurement taken at the centre: a number and the unit it was read in.
+/// The unit is always recorded together with the number.
+@model
+export type Reading = {
+    value: float,
+    @one_of(["kg", "g", "lb"]) uom: string,
+}
+
+/// Embedded period, half-open [opens_at, closes_at) in UTC Unix milliseconds.
+/// An unrecorded bound is unspecified, not unbounded.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_at"], until: ["closes_at"] } } })
+export type Window = {
+    opens_at: int?,
+    closes_at: int?,
+}
+
+/// A rota volunteer, husbandry technician or visiting vet. A callsign is not
+/// unique; the badge number is. An unrecorded pager means none was issued.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "badge", path: ["badge_no"], normalization: .AsciiLowerTrim }],
+    absences: [AbsenceBinding { path: ["pager"], code: "no_pager_issued" }],
+    label: ["callsign"],
+} })
+export type Carer = {
+    @length(min: 1, max: 120) callsign: string,
+    @length(min: 1, max: 40) badge_no: string,
+    @length(min: 1, max: 40) pager: string?,
+}
+
+/// A rehabilitation pool or pen. An unrecorded capacity means the volume was
+/// never surveyed, not that the pool is empty.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["capacity_litres"], unit: .Constant("litres"), decimal_places: 0 }],
+    absences: [AbsenceBinding { path: ["capacity_litres"], code: "volume_unsurveyed" }],
+    label: ["pool_label"],
+} })
+export type RehabPool = {
+    @length(min: 1, max: 80) pool_label: string,
+    capacity_litres: float?,
+}
+
+/// One stranded seal pup taken in. intake_on is an ISO date; released_at is
+/// when it went back to sea. An unrecorded released_at means it is still in
+/// care. finder first reported it; discoverer is a second person who was
+/// there at the cove. An unrecorded discoverer means nobody else was present.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["intake_weight", "value"], unit: .Field(["intake_weight", "uom"]), decimal_places: 2 }],
+    times: [
+        TimeBinding { path: ["intake_on"], encoding: .IsoDate },
+        TimeBinding { path: ["released_at"], encoding: .UnixMillis },
+    ],
+    absences: [
+        AbsenceBinding { path: ["released_at"], code: "still_in_care" },
+        AbsenceBinding { path: ["discoverer"], code: "found_alone" },
+    ],
+    label: ["tag_code"],
+} })
+export type SealPup = {
+    @length(min: 1, max: 40) tag_code: string,
+    @one_of(["grey", "harbour", "unidentified"]) species: string,
+    finder: Ref<Carer>,
+    discoverer: Ref<Carer>?,
+    intake_weight: Reading,
+    intake_on: string,
+    released_at: int?,
+}
+
+/// A pup lodged in a pool for a period as part of normal recovery. The label
+/// says how it lodges; the window says when. It says nothing about
+/// medical confinement.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["pup"], to: ["pool"], label: ["lodging"],
+        phrasing: "{from} is {label} {to}",
+        labels: [
+            RelationLabel { value: "housed", forward: ["housed in", "kept in"] },
+            RelationLabel { value: "weaning", forward: ["weaning in", "fed-out in"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "opens_at"], until: ["window", "closes_at"] },
+} })
+export type PoolStay = {
+    pup: Ref<SealPup>,
+    pool: Ref<RehabPool>,
+    @one_of(["housed", "weaning"]) lodging: string,
+    window: Window,
+}
+
+/// A pup held apart in a pool under veterinary restriction, as opposed to
+/// ordinary lodging. Confinement and lodging are separate records.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["pup"], to: ["pool"], label: ["restriction"],
+        phrasing: "{from} is {label} {to}",
+        labels: [
+            RelationLabel { value: "quarantined", forward: ["quarantined in", "isolated in"] },
+            RelationLabel { value: "observed", forward: ["under watch in", "monitored in"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "opens_at"], until: ["window", "closes_at"] },
+} })
+export type PoolConfinement = {
+    pup: Ref<SealPup>,
+    pool: Ref<RehabPool>,
+    @one_of(["quarantined", "observed"]) restriction: string,
+    window: Window,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

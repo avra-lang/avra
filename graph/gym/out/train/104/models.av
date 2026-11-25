@@ -1,0 +1,190 @@
+// domain: Mossgate Clock Repair Workshop
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of, email}
+
+fn span_ordered(s: HeldSpan) -> Result<HeldSpan, string> {
+    if s.began_ms != null && s.ceased_ms != null && s.ceased_ms! <= s.began_ms! {
+        fail "a known ending instant must be later than the beginning instant"
+    }
+    s
+}
+
+/// Embedded half-open interval [began_ms, ceased_ms) in UTC Unix milliseconds
+/// during which a workshop arrangement held. An unrecorded beginning or
+/// ending means that bound was not stated, not that the arrangement was
+/// timeless.
+@model(quote { Semantics { validity: ValidityBinding { from: ["began_ms"], until: ["ceased_ms"] } } })
+@span_ordered
+export type HeldSpan = {
+    began_ms: int?,
+    ceased_ms: int?,
+}
+
+/// Embedded linear measurement of a timepiece part, such as a case width.
+/// The unit is always stated beside the number, for example "mm".
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["reading"], unit: .Field(["unit"]), decimal_places: 1 }] } })
+export type Gauge = {
+    reading: float,
+    @one_of(["mm", "cm", "in"]) unit: string,
+}
+
+/// Embedded sum of money in minor currency units, such as pence, with the
+/// ISO currency code that gives the units their meaning.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["pence"], unit: .Field(["iso"]) }] } })
+export type Price = {
+    pence: int,
+    @length(min: 3, max: 3) iso: string,
+}
+
+/// A bench horologist who repairs and appraises clocks and watches. A
+/// display name is how colleagues mention them, not a unique key; the bench
+/// code is. An unrecorded email means no address was given, not that none
+/// exists.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "bench_code", path: ["bench_code"], normalization: .AsciiLowerTrim }],
+    label: ["display_name"],
+    absences: [AbsenceBinding { path: ["email"], code: "not_given" }],
+} })
+export type Horologist = {
+    @length(min: 1, max: 128) display_name: string,
+    @length(min: 2, max: 16) bench_code: string,
+    @email email: string?,
+}
+
+/// A person or institution that brings timepieces to the workshop. Names
+/// repeat across patrons and are not keys. An unrecorded phone means the
+/// patron declined to leave one, not that they have none.
+@model(quote { Semantics {
+    label: ["patron_name"],
+    absences: [AbsenceBinding { path: ["phone"], code: "declined" }],
+} })
+export type Patron = {
+    @length(min: 1, max: 256) patron_name: string,
+    @length(min: 5, max: 32) phone: string?,
+}
+
+/// A distinct clock or watch held for work. The description is how it is
+/// mentioned, not a unique key. An unrecorded serial means none was found
+/// on the movement; an unrecorded case width means it was not measured.
+@model(quote { Semantics {
+    label: ["description"],
+    quantities: [QuantityBinding { amount: ["case_width", "reading"], unit: .Field(["case_width", "unit"]), decimal_places: 1 }],
+    absences: [
+        AbsenceBinding { path: ["serial"], code: "none_found" },
+        AbsenceBinding { path: ["case_width"], code: "not_measured" },
+    ],
+} })
+export type Timepiece = {
+    @length(min: 1, max: 512) description: string,
+    serial: string?,
+    case_width: Gauge?,
+    owner: Ref<Patron>,
+}
+
+/// A stocked replacement part such as a mainspring or a crystal. The part
+/// name is a label, not a key. An unrecorded maker means the origin of the
+/// stock was not logged.
+@model(quote { Semantics {
+    label: ["part_name"],
+    absences: [AbsenceBinding { path: ["maker"], code: "origin_unlogged" }],
+} })
+export type SparePart = {
+    @length(min: 1, max: 128) part_name: string,
+    maker: string?,
+}
+
+/// One job of work agreed for a timepiece. The docket number identifies it.
+/// `payer` is the party billed; `enquirer` is who first asked for the work,
+/// and is unrecorded when it was the payer. An unrecorded promised date
+/// means no deadline was agreed, never an open-ended obligation. taken_in_on
+/// is an ISO date; the estimate is in the stated currency.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "docket", path: ["docket_no"], normalization: .AsciiLowerTrim }],
+    label: ["docket_no"],
+    times: [
+        TimeBinding { path: ["taken_in_on"], encoding: .IsoDate },
+        TimeBinding { path: ["promised_on"], encoding: .IsoDate },
+    ],
+    quantities: [QuantityBinding { amount: ["estimate", "pence"], unit: .Field(["estimate", "iso"]) }],
+    absences: [
+        AbsenceBinding { path: ["promised_on"], code: "no_deadline_agreed" },
+        AbsenceBinding { path: ["enquirer"], code: "same_as_payer" },
+    ],
+} })
+export type RepairOrder = {
+    @length(min: 3, max: 32) docket_no: string,
+    timepiece: Ref<Timepiece>,
+    payer: Ref<Patron>,
+    enquirer: Ref<Patron>?,
+    taken_in_on: string,
+    promised_on: string?,
+    estimate: Price,
+}
+
+/// Spare parts fitted under a repair order, counted in whole pieces. The
+/// count is what was actually fitted, not what was planned.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["fitted_count"], unit: .Constant("piece") }] } })
+export type PartFitting = {
+    order: Ref<RepairOrder>,
+    part: Ref<SparePart>,
+    fitted_count: int,
+}
+
+/// A horologist physically working on a timepiece over an interval: the
+/// kind says whether they serviced or overhauled it. Sister of
+/// HorologistTimepieceAppraisal, which covers judging without touching.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["horologist"], to: ["timepiece"], label: ["kind"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "serviced", forward: ["serviced", "tuned up"], reverse: ["serviced by", "tuned up by"] },
+            RelationLabel { value: "overhauled", forward: ["overhauled", "stripped down"], reverse: ["overhauled by", "stripped down by"], broader: ["serviced"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["period", "began_ms"], until: ["period", "ceased_ms"] },
+} })
+export type HorologistTimepieceRepair = {
+    horologist: Ref<Horologist>,
+    @one_of(["serviced", "overhauled"]) kind: string,
+    timepiece: Ref<Timepiece>,
+    period: HeldSpan,
+}
+
+/// A horologist judging the condition or worth of a timepiece over an
+/// interval without altering it: appraised or assessed. Sister of
+/// HorologistTimepieceRepair, which covers hands-on work.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["horologist"], to: ["timepiece"], label: ["kind"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "appraised", forward: ["appraised", "valued"], reverse: ["appraised by", "valued by"] },
+            RelationLabel { value: "assessed", forward: ["assessed", "surveyed"], reverse: ["assessed by", "surveyed by"], broader: ["appraised"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["period", "began_ms"], until: ["period", "ceased_ms"] },
+} })
+export type HorologistTimepieceAppraisal = {
+    horologist: Ref<Horologist>,
+    @one_of(["appraised", "assessed"]) kind: string,
+    timepiece: Ref<Timepiece>,
+    period: HeldSpan,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

@@ -1,0 +1,145 @@
+// domain: Bellwether Sheepdog Trials Society
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// A prize sum in minor units (for example cents) with its currency code.
+/// Embedded in other records; it is never a record on its own.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["minor_units"], unit: .Field(["currency_code"]), decimal_places: 2 },
+    ],
+} })
+export type PrizeSum = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// A span of time in UTC Unix milliseconds, half-open [opens_ms, closes_ms).
+/// An unrecorded bound means that bound is unspecified, not that the span is
+/// endless or empty.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+export type PartnershipSpan = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A person who handles, owns or breeds sheepdogs in the society's trials.
+/// A display name is not unique; the handler card number is. An unrecorded
+/// email means the handler did not offer one, not that they have none.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "handler_card", path: ["card_no"], normalization: .AsciiLowerTrim }],
+    absences: [AbsenceBinding { path: ["email_address"], code: "not_offered" }],
+    label: ["display_name"],
+} })
+export type Handler = {
+    @length(min: 1, max: 160) display_name: string,
+    @length(min: 1, max: 32) card_no: string,
+    @length(min: 3, max: 120) email_address: string?,
+}
+
+/// A sheepdog registered with the society. A record is the animal, not any
+/// partnership or run. An unrecorded microchip code means the dog is not
+/// chipped, not that the code was lost.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "kennel_reg", path: ["reg_no"], normalization: .AsciiLowerTrim }],
+    quantities: [
+        QuantityBinding { amount: ["weight_kg"], unit: .Constant("kilogram") },
+    ],
+    absences: [AbsenceBinding { path: ["microchip_code"], code: "not_chipped" }],
+    label: ["registered_name"],
+} })
+export type Dog = {
+    @length(min: 1, max: 160) registered_name: string,
+    @length(min: 1, max: 32) reg_no: string,
+    weight_kg: int,
+    @length(min: 8, max: 20) microchip_code: string?,
+}
+
+/// A handler's standing tie to a dog over a span: owning it, handling it in
+/// the arena or having bred it. A record does not say the pair ever ran
+/// together. An unrecorded lapse note means the tie ended without comment.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["handler"], to: ["dog"], label: ["role"],
+        phrasing: "{from} acts as {label} for {to}",
+        labels: [
+            RelationLabel { value: "owner", forward: ["owner of", "owns"], reverse: ["is owned by"] },
+            RelationLabel { value: "handler", forward: ["handles", "runs"], reverse: ["is run by"] },
+            RelationLabel { value: "breeder", forward: ["breeder of", "bred"], reverse: ["was bred by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_ms"], until: ["span", "closes_ms"] },
+    times: [TimeBinding { path: ["agreed_at"], encoding: .IsoInstant }],
+    absences: [AbsenceBinding { path: ["lapse_note"], code: "ended_without_comment" }],
+} })
+export type DogPartnership = {
+    handler: Ref<Handler>,
+    dog: Ref<Dog>,
+    @one_of(["owner", "handler", "breeder"]) role: string,
+    span: PartnershipSpan,
+    agreed_at: string,
+    @length(min: 1, max: 300) lapse_note: string?,
+}
+
+/// One day of sheepdog trial on a named field. The judge signs the final
+/// order; the adjudicator rules on disputes about the course. They may be the
+/// same handler. An unrecorded weather note means conditions were unremarkable,
+/// not that nobody looked.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "trial_code", path: ["trial_code"], normalization: .AsciiLowerTrim }],
+    quantities: [
+        QuantityBinding { amount: ["course_length_m"], unit: .Constant("metre") },
+        QuantityBinding { amount: ["prize_pool", "minor_units"], unit: .Field(["prize_pool", "currency_code"]), decimal_places: 2 },
+    ],
+    times: [TimeBinding { path: ["held_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["weather_note"], code: "unremarkable_conditions" }],
+    label: ["trial_name"],
+} })
+export type Trial = {
+    @length(min: 1, max: 160) trial_name: string,
+    @length(min: 1, max: 32) trial_code: string,
+    judge: Ref<Handler>,
+    adjudicator: Ref<Handler>,
+    course_length_m: int,
+    prize_pool: PrizeSum,
+    held_on: string,
+    @length(min: 1, max: 300) weather_note: string?,
+}
+
+/// A single timed run of one dog and handler through a trial course. A
+/// record is the run, whether or not it finished. An unrecorded
+/// disqualification reason means the run was clean, not that it went unjudged.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["run_seconds"], unit: .Constant("second") },
+        QuantityBinding { amount: ["points_scored"], unit: .Constant("point") },
+    ],
+    times: [TimeBinding { path: ["started_ms"], encoding: .UnixMillis }],
+    absences: [AbsenceBinding { path: ["disqualification_reason"], code: "clean_run" }],
+} })
+export type TrialRun = {
+    trial: Ref<Trial>,
+    dog: Ref<Dog>,
+    handler: Ref<Handler>,
+    run_seconds: int,
+    points_scored: int,
+    started_ms: int,
+    @length(min: 1, max: 300) disqualification_reason: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

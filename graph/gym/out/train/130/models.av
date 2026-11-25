@@ -1,0 +1,150 @@
+// domain: Kestrelbank Food Bank Hub
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A monetary value in minor units with its ISO currency code. Embedded in
+/// consignments; never a standalone record. Both parts are always present,
+/// so there is no unrecorded value here.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["minor_units"], unit: UnitBinding.Field(["currency_code"]) }],
+} })
+export type Worth = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// Embedded valid-time bounds, half-open [starts_ms, ends_ms) in UTC Unix
+/// milliseconds. An unrecorded bound means the rota gave no date for that
+/// end, not that the arrangement was unlimited.
+@model(quote { Semantics { validity: ValidityBinding { from: ["starts_ms"], until: ["ends_ms"] } } })
+export type Tenure = {
+    starts_ms: int?,
+    ends_ms: int?,
+}
+
+/// A person who helps run the food bank. The name is how the rota mentions
+/// them; it is not a unique key. An unrecorded mobile means they gave no
+/// number, not that they have none.
+@model(quote { Semantics {
+    label: ["name"],
+    times: [TimeBinding { path: ["enrolled_on"], encoding: TimeEncoding.IsoDate }],
+    absences: [AbsenceBinding { path: ["mobile"], code: "withheld_by_person" }],
+} })
+export type Volunteer = {
+    @length(min: 1, max: 128) name: string,
+    @length(min: 1, max: 32) mobile: string?,
+    enrolled_on: string,
+}
+
+/// A distribution depot. coordinator is the volunteer formally answerable
+/// for the depot; supervisor is the volunteer who runs it on the floor each
+/// session. They may be the same person. An unrecorded coordinator or
+/// supervisor means none has been appointed. An unrecorded opened year means
+/// the depot's founding is undocumented.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["opened_year"], code: "founding_undocumented" }],
+} })
+export type Depot = {
+    @length(min: 1, max: 128) name: string,
+    opened_year: int?,
+    coordinator: Ref<Volunteer>?,
+    supervisor: Ref<Volunteer>?,
+}
+
+/// A business, school or household that gives goods to the food bank. The
+/// name is how a delivery note mentions them; it is not a unique key.
+@model(quote { Semantics { label: ["name"] } })
+export type Donor = {
+    @length(min: 1, max: 128) name: string,
+}
+
+/// One delivery of donated goods from a donor to a depot. weight_kg is the
+/// weighed total; unrecorded means it was not weighed. received_on is the
+/// ISO date of arrival; unrecorded means the delivery is expected but has
+/// not arrived. best_before is an ISO date; unrecorded means the goods carry
+/// no date (for example, loose produce). declared_worth is the donor's
+/// stated value.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["declared_worth", "minor_units"], unit: UnitBinding.Field(["declared_worth", "currency_code"]) },
+        QuantityBinding { amount: ["weight_kg"], unit: UnitBinding.Constant("kilogram") },
+    ],
+    times: [
+        TimeBinding { path: ["received_on"], encoding: TimeEncoding.IsoDate },
+        TimeBinding { path: ["best_before"], encoding: TimeEncoding.IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["received_on"], code: "not_yet_arrived" },
+        AbsenceBinding { path: ["weight_kg"], code: "not_weighed" },
+        AbsenceBinding { path: ["best_before"], code: "undated_goods" },
+    ],
+} })
+export type Consignment = {
+    donor: Ref<Donor>,
+    depot: Ref<Depot>,
+    declared_worth: Worth,
+    received_on: string?,
+    best_before: string?,
+    weight_kg: int?,
+}
+
+/// A volunteer's shelf work at a depot during the validity interval: they
+/// stock or shelve goods already on site. This is shelf work; topping up
+/// from storage is DepotTopUp. An unrecorded bound is an unspecified date,
+/// not an open-ended duty.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["volunteer"], to: ["depot"], label: ["task"],
+        phrasing: "{from} {label} at {to}",
+        labels: [
+            RelationLabel { value: "stocks", forward: ["stocks"], reverse: ["is stocked by"] },
+            RelationLabel { value: "shelves", forward: ["shelves"], reverse: ["is shelved by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "starts_ms"], until: ["tenure", "ends_ms"] },
+} })
+export type DepotShelving = {
+    volunteer: Ref<Volunteer>,
+    @one_of(["stocks", "shelves"]) task: string,
+    depot: Ref<Depot>,
+    tenure: Tenure,
+}
+
+/// A volunteer's top-up work at a depot during the validity interval: they
+/// bring more goods from storage when shelves run low. Not shelf work; see
+/// DepotShelving. An unrecorded bound is an unspecified date, not an
+/// indefinite duty.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["volunteer"], to: ["depot"], label: ["task"],
+        phrasing: "{from} {label} at {to}",
+        labels: [
+            RelationLabel { value: "restocks", forward: ["restocks"], reverse: ["is restocked by"] },
+            RelationLabel { value: "replenishes", forward: ["replenishes"], reverse: ["is replenished by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "starts_ms"], until: ["tenure", "ends_ms"] },
+} })
+export type DepotTopUp = {
+    volunteer: Ref<Volunteer>,
+    @one_of(["restocks", "replenishes"]) task: string,
+    depot: Ref<Depot>,
+    tenure: Tenure,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

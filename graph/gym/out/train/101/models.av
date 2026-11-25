@@ -1,0 +1,172 @@
+// domain: Wharfside Narrowboat Hire
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, email, one_of}
+
+fn forward_in_time(s: ActiveSpan) -> Result<ActiveSpan, string> {
+    if s.opens_ms != null && s.closes_ms != null && s.closes_ms! <= s.opens_ms! {
+        fail "a known closing instant must be later than its opening"
+    }
+    s
+}
+
+/// A half-open span [opens_ms, closes_ms) in UTC Unix milliseconds, embedded
+/// in records that hold for a while. An unrecorded opening or closing means
+/// that bound was not stated, not that the record held for all time.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+@forward_in_time
+export type ActiveSpan = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A sum of money in minor units (pence) with its ISO currency code, embedded
+/// in hires and repairs. It is a recorded figure, never an estimate.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["minor_units"], unit: UnitBinding.Field(["currency"]), decimal_places: 2 }] } })
+export type Charge = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A person who hires boats. The name is not unique; the email identifies.
+/// An unrecorded email means the customer booked by phone or in person and
+/// gave none. An unrecorded licence note means none was asked for.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "customer_email", path: ["email"], normalization: .AsciiLowerTrim }],
+    label: ["name"],
+    absences: [
+        AbsenceBinding { path: ["email"], code: "booked_offline" },
+        AbsenceBinding { path: ["helm_experience"], code: "not_asked" },
+    ],
+} })
+export type Customer = {
+    @length(min: 1, max: 200) name: string,
+    @email email: string?,
+    @length(min: 1, max: 400) helm_experience: string?,
+}
+
+/// A member of the yard and wharf crew. The name is not a unique key.
+@model(quote { Semantics { label: ["name"] } })
+export type CrewMember = {
+    @length(min: 1, max: 200) name: string,
+}
+
+/// A hire base or mooring where boats are collected and handed back.
+/// An unrecorded water point note means it has not been surveyed.
+@model(quote { Semantics {
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["water_point_note"], code: "not_surveyed" }],
+} })
+export type Wharf = {
+    @length(min: 1, max: 200) name: string,
+    @length(min: 1, max: 400) water_point_note: string?,
+}
+
+/// One narrowboat in the fleet. length_cm is the hull length in centimetres.
+/// An unrecorded last blacking date means the hull has no recorded blacking.
+@model(quote { Semantics {
+    label: ["name"],
+    quantities: [
+        QuantityBinding { amount: ["length_cm"], unit: UnitBinding.Constant("centimetre") },
+        QuantityBinding { amount: ["berths"], unit: UnitBinding.Constant("berth") },
+    ],
+    times: [TimeBinding { path: ["last_blacked_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["last_blacked_on"], code: "never_recorded" }],
+} })
+export type Boat = {
+    @length(min: 1, max: 120) name: string,
+    length_cm: int,
+    berths: int,
+    last_blacked_on: string?,
+}
+
+/// A crew member's duty at a wharf over a span. The duty is the closed label;
+/// a closed span means the duty ended there. An unrecorded span bound is
+/// unspecified, not proof the duty ran forever.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["crew"], to: ["wharf"], label: ["duty"],
+        phrasing: "{from} serves as {label} at {to}",
+        labels: [
+            RelationLabel { value: "duty_manager", forward: ["duty manager", "wharf manager"] },
+            RelationLabel { value: "lock_handler", forward: ["lock handler", "lock keeper"], broader: ["deckhand"] },
+            RelationLabel { value: "hull_cleaner", forward: ["hull cleaner"], broader: ["deckhand"] },
+            RelationLabel { value: "deckhand", forward: ["deckhand"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_ms"], until: ["span", "closes_ms"] },
+} })
+export type WharfDuty = {
+    crew: Ref<CrewMember>,
+    wharf: Ref<Wharf>,
+    @one_of(["duty_manager", "lock_handler", "hull_cleaner", "deckhand"]) duty: string,
+    span: ActiveSpan,
+}
+
+/// One hire of one boat. `hirer` is who signed and paid; `renter` is who is
+/// named as responsible on the insurance form, often the same person.
+/// An unrecorded return time means the boat is not yet back. An unrecorded
+/// damage note means no inspection has been made, not that none was found.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["nights"], unit: UnitBinding.Constant("night") },
+        QuantityBinding { amount: ["deposit", "minor_units"], unit: UnitBinding.Field(["deposit", "currency"]), decimal_places: 2 },
+        QuantityBinding { amount: ["nightly_rate", "minor_units"], unit: UnitBinding.Field(["nightly_rate", "currency"]), decimal_places: 2 },
+    ],
+    times: [
+        TimeBinding { path: ["collected_ms"], encoding: .UnixMillis },
+        TimeBinding { path: ["due_back_ms"], encoding: .UnixMillis },
+        TimeBinding { path: ["returned_ms"], encoding: .UnixMillis },
+        TimeBinding { path: ["booked_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["returned_ms"], code: "still_afloat" },
+        AbsenceBinding { path: ["damage_note"], code: "not_inspected" },
+    ],
+} })
+export type Hire = {
+    boat: Ref<Boat>,
+    hirer: Ref<Customer>,
+    renter: Ref<Customer>,
+    collect_wharf: Ref<Wharf>,
+    nights: int,
+    deposit: Charge,
+    nightly_rate: Charge,
+    booked_on: string,
+    collected_ms: int,
+    due_back_ms: int,
+    returned_ms: int?,
+    @length(min: 1, max: 1000) damage_note: string?,
+}
+
+/// A diesel top-up for one boat. `litres` is the volume taken on, in the unit
+/// named by `unit`. An unrecorded pump reading means the slip had no meter.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["litres"], unit: UnitBinding.Field(["unit"]), decimal_places: 1 }],
+    times: [TimeBinding { path: ["filled_at"], encoding: .IsoInstant }],
+    absences: [AbsenceBinding { path: ["pump_reading"], code: "no_meter" }],
+} })
+export type FuelFill = {
+    boat: Ref<Boat>,
+    wharf: Ref<Wharf>,
+    litres: float,
+    @one_of(["litre", "gallon"]) unit: string,
+    filled_at: string,
+    pump_reading: float?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

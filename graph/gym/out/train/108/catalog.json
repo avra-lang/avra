@@ -1,0 +1,572 @@
+{
+ "catalog": {
+  "derivations": [],
+  "fingerprint": "db9c92b32a2465c41849bbdd23bfc91f2ad7aae05339eb499bc4ed6ed293ac95",
+  "models": [
+   {
+    "description": "One narrowboat in the hire fleet. hull_length_cm is the overall length in\ncentimetres. last_survey_ms is the UTC Unix millisecond time of the last\nhull survey; unrecorded means no survey has been done since purchase.\nAn unrecorded berths value means the layout was never counted.",
+    "name": "Boat",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "name",
+      "rules": [
+       "length(min: 1, max: 200)"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "hull_length_cm",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "berths",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "last_survey_ms",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      },
+      "time": {
+       "encoding": "unix_millis"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "never_surveyed",
+       "path": [
+        "last_survey_ms"
+       ]
+      },
+      {
+       "code": "layout_unknown",
+       "path": [
+        "berths"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": [
+      "name"
+     ],
+     "quantities": [
+      {
+       "amount": [
+        "hull_length_cm"
+       ],
+       "decimal_places": 0,
+       "unit": {
+        "constant": "cm"
+       }
+      }
+     ],
+     "relation": null,
+     "times": [
+      {
+       "encoding": "unix_millis",
+       "path": [
+        "last_survey_ms"
+       ]
+      }
+     ],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "A skipper holding a role on a boat during an interval, such as helm or\ndeckhand. The role is a closed label; a posting says nothing about\nwho owns the boat. An open-ended interval means no end is known.",
+    "name": "CrewPosting",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "skipper",
+      "rules": [],
+      "shape": {
+       "reference": "Skipper"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "boat",
+      "rules": [],
+      "shape": {
+       "reference": "Boat"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "enum": [
+       "helm",
+       "deckhand",
+       "trainee",
+       "crew"
+      ],
+      "name": "role",
+      "rules": [
+       "one_of([\"helm\", \"deckhand\", \"trainee\", \"crew\"])"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "during",
+      "rules": [],
+      "shape": {
+       "embedded": "Interval"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [],
+     "relation": {
+      "from": [
+       "skipper"
+      ],
+      "label": [
+       "role"
+      ],
+      "labels": [
+       {
+        "broader": [
+         "crew"
+        ],
+        "forward": [
+         "head helm",
+         "helm"
+        ],
+        "reverse": [],
+        "value": "helm"
+       },
+       {
+        "broader": [
+         "crew"
+        ],
+        "forward": [
+         "deckhand",
+         "lock hand"
+        ],
+        "reverse": [],
+        "value": "deckhand"
+       },
+       {
+        "broader": [
+         "crew"
+        ],
+        "forward": [
+         "trainee"
+        ],
+        "reverse": [],
+        "value": "trainee"
+       },
+       {
+        "broader": [],
+        "forward": [
+         "crew member"
+        ],
+        "reverse": [],
+        "value": "crew"
+       }
+      ],
+      "phrasing": "{from} serves as {label} on {to}",
+      "to": [
+       "boat"
+      ]
+     },
+     "times": [],
+     "validity": {
+      "encoding": "unix_millis",
+      "from": [
+       "during",
+       "from_ms"
+      ],
+      "interval": "half_open",
+      "until": [
+       "during",
+       "until_ms"
+      ]
+     },
+     "version": 1
+    }
+   },
+   {
+    "description": "One hire of a boat by a hirer. pickup_wharf is where the hirer takes the\nboat; collection_wharf is where the company recovers it if that differs.\nAn unrecorded collection_wharf means the boat is returned to the pickup\nwharf; an unrecorded ended_ms means the boat is still out; an unrecorded\ndeposit means none was taken. nights is a count of nights hired.",
+    "name": "Hire",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "boat",
+      "rules": [],
+      "shape": {
+       "reference": "Boat"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "hirer",
+      "rules": [],
+      "shape": {
+       "reference": "Skipper"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "pickup_wharf",
+      "rules": [],
+      "shape": {
+       "reference": "Wharf"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "collection_wharf",
+      "rules": [],
+      "shape": {
+       "optional": {
+        "reference": "Wharf"
+       }
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "nights",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "started_ms",
+      "rules": [],
+      "shape": "integer",
+      "time": {
+       "encoding": "unix_millis"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "ended_ms",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      },
+      "time": {
+       "encoding": "unix_millis"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "charge",
+      "rules": [],
+      "shape": {
+       "embedded": "Money"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "deposit",
+      "rules": [],
+      "shape": {
+       "optional": {
+        "embedded": "Money"
+       }
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "boat_still_out",
+       "path": [
+        "ended_ms"
+       ]
+      },
+      {
+       "code": "returned_to_pickup",
+       "path": [
+        "collection_wharf"
+       ]
+      },
+      {
+       "code": "none_taken",
+       "path": [
+        "deposit"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": null,
+     "quantities": [
+      {
+       "amount": [
+        "nights"
+       ],
+       "decimal_places": 0,
+       "unit": {
+        "constant": "night"
+       }
+      }
+     ],
+     "relation": null,
+     "times": [
+      {
+       "encoding": "unix_millis",
+       "path": [
+        "started_ms"
+       ]
+      },
+      {
+       "encoding": "unix_millis",
+       "path": [
+        "ended_ms"
+       ]
+      }
+     ],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "Embedded valid-time bounds, half-open [from_ms, until_ms) in UTC Unix\nmilliseconds. A missing from_ms means the start was not recorded; a\nmissing until_ms means no end is known yet, not that it lasts forever.",
+    "name": "Interval",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "from_ms",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "until_ms",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [],
+     "relation": null,
+     "times": [],
+     "validity": {
+      "encoding": "unix_millis",
+      "from": [
+       "from_ms"
+      ],
+      "interval": "half_open",
+      "until": [
+       "until_ms"
+      ]
+     },
+     "version": 1
+    }
+   },
+   {
+    "description": "An amount of money in minor units (pence, cents) with its currency code.\nEmbedded in other records. The amount is never a decimal and the currency\nis never inferred from the wharf or the hirer.",
+    "name": "Money",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "amount_minor",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "currency",
+      "rules": [
+       "length(min: 3, max: 3)"
+      ],
+      "shape": "string"
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [
+      {
+       "amount": [
+        "amount_minor"
+       ],
+       "decimal_places": 2,
+       "unit": {
+        "path": [
+         "currency"
+        ]
+       }
+      }
+     ],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "A person who helms, crews or hires boats from the wharf. The name is a\nlabel for mentioning them, not a unique key. An unrecorded email means\nno address was given; an unrecorded phone means none was given.",
+    "name": "Skipper",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "name",
+      "rules": [
+       "length(min: 1, max: 200)"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "email",
+      "rules": [
+       "email()"
+      ],
+      "shape": {
+       "optional": "string"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "phone",
+      "rules": [
+       "length(min: 5, max: 32)"
+      ],
+      "shape": {
+       "optional": "string"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "declined_to_give",
+       "path": [
+        "email"
+       ]
+      },
+      {
+       "code": "declined_to_give",
+       "path": [
+        "phone"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": [
+      "name"
+     ],
+     "quantities": [],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "A mooring wharf or lock-side landing where boats are picked up or\nreturned. The name is the label used to mention it. An unrecorded\nlock_count means the number of locks to the next wharf was never counted.",
+    "name": "Wharf",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "name",
+      "rules": [
+       "length(min: 1, max: 200)"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "mooring_slots",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "lock_count",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "not_surveyed",
+       "path": [
+        "lock_count"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": [
+      "name"
+     ],
+     "quantities": [],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   }
+  ],
+  "revision": 1,
+  "timezone": null
+ },
+ "made": {
+  "model": "claude-sonnet-5-5",
+  "prompt_sha": "0301136bd3b092b5"
+ }
+}
