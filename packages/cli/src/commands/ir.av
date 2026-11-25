@@ -1,12 +1,49 @@
 //! `avra ir` — print a program's IR, regions as brackets.
 use @std.cli.{CliResult, Runnable, command}
-use @std.avrac.compiler.{Program}
-use @std.avrac.compiler.backend.{render_ir}
+use @std.avrac.compiler.{Program, timed_workspace, avra}
+use @std.avrac.compiler.backend.{render_ir, emit_ll}
+use @std.time.{now_ns}
+use @std.io.{read_text, make_dirs, env}
+use @std.path.{joined_path, dir_of, stem_of}
 
 type IrCmd = {}
 
 impl Runnable for IrCmd {
-    fn run(args: CliResult) -> int { phased(args, "lower+render", rendered) }
+    fn run(args: CliResult) -> int {
+        let want = args.arg("file")
+        let ws = timed_workspace(disk_host(), here(), avra(), () -> now_ns())
+        let candidates = [f for f in ws.root_files() if f.contains(want)]
+        let path? = candidates.first() else {
+            println("avra: no file matches '${want}'")
+            return 1
+        }
+        let p = ws.program(path)
+        if !p.clean() {
+            println(p.report())
+            return 1
+        }
+        if env("AVRA_IR_LLVM") == "1" {
+            match p.lowered_checked() {
+                .Err(msg) -> {
+                    println("lower failed: ${msg}")
+                    return 1
+                },
+                .Ok(lo) -> {
+                    let outpath = joined_path(joined_path(p.ws.root, "build"), "${stem_of(path)}.dbg.ll")
+                    let _ = make_dirs(dir_of(outpath))
+                    let failure: string? = emit_ll(lo, outpath)
+                    if failure != null {
+                        println("emit failed: ${failure!}")
+                        return 1
+                    }
+                    println(read_text(outpath) catch "")
+                    return 0
+                },
+            }
+        }
+        println(render_ir(p.lowered()))
+        0
+    }
 }
 
 fn rendered(p: Program) -> Result<int, string> {
