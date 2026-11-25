@@ -1,0 +1,23 @@
+// proves: a `@derive(Facts)` declaration is a whole per-node table: a node never set reads the
+// fact's default, a set node reads its value, only set nodes are held, and a fork is copied out on
+// its first write while the table it came from keeps its own values
+
+use @std.meta.{derive, identity}
+use @std.avrac.core.{Facts, StmtId, IndexTable, index_table_of}
+use @std.avrac.core.marks.{facts_over}
+
+@derive(Facts)
+@facts_over("StmtId")
+type Noted = { note: string? = null, weight: int = 1 }
+
+let t = NotedTable.empty()
+let a = StmtId { index: 3 }
+let b = StmtId { index: 40 }
+t.set_note(a, "three")
+t.set_weight(b, 7)
+let fork = t.forked()
+fork.set_weight(b, 9)
+fork.set_note(b, "forty")
+println(
+    "unset ${t.note(b) ?? "none"} ${t.weight(a)} ; set ${t.note(a) ?? "none"} ${t.weight(b)} ; held ${t.note_held().map("${it}").join(",")} ${t.weight_held().map("${it}").join(",")} ; fork ${fork.weight(b)} ${fork.note(b) ?? "none"} ; source ${t.weight(b)} ${t.note(b) ?? "none"}",
+)
