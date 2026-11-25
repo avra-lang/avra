@@ -1,0 +1,40 @@
+// proves: a @model of nine fields — past any per-count arm — gets every verb: a row
+// inserted, found by id with each field read back, filtered by its last field, and a
+// second row refused by its second unique field.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+
+@model
+type Wide = {
+    id: int = 0,
+    @unique code: string,
+    a: int,
+    b: int,
+    c: int,
+    d: string,
+    e: bool,
+    f: float,
+    @unique last: string,
+}
+
+fn shown(w: Wide?) -> string {
+    match w {
+        row? -> "${row.code} ${row.a + row.b + row.c} ${row.d} ${row.e} ${row.f} ${row.last}"
+        null -> "not found"
+    }
+}
+
+fn story() -> Result<string, ModelError> {
+    mut db = modeled(Db.memory())?
+    modeled(Wide.create_table(db))?
+    let w = Wide { code: "w1", a: 1, b: 2, c: 3, d: "dee", e: true, f: 1.5, last: "z" }.insert(db)?
+    let found = shown(modeled(Wide.find(db, w.id))?)
+    let by_last = (modeled(Wide.where(db, last: "z"))?).length
+    let none = (modeled(Wide.where(db, last: "y"))?).length
+    let twice = match Wide { code: "w2", a: 0, b: 0, c: 0, d: "", e: false, f: 0.0, last: "z" }
+        .insert(db) { .Ok(_) -> "kept", .Err(e) -> e.describe().kind }
+    "${found}\nwhere last ${by_last} ${none}\nsecond ${twice}"
+}
+
+match story() { .Ok(s) -> s, .Err(e) -> "FAILED ${e.describe().kind}: ${e.describe().message}" }
