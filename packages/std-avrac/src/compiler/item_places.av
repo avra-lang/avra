@@ -13,6 +13,9 @@ use core.{
     NamedValue,
     NamesRead,
     NodeReads,
+    OwnType,
+    RowReads,
+    SignedType,
     StatesAsked,
     StatesRead,
     StmtId,
@@ -20,28 +23,54 @@ use core.{
     distinct,
     flatten,
     kept_state,
+    own_row_of,
+    own_shape_reads,
     reached_union,
+    rt_sig_of,
     some_list,
     sorted_texts,
 }
 use features.{ReadFacts, StatePlace, site_places_in, structural_places_in}
+use features.lists.{walk_reads}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 
 /// A body's names on the program layer: its tree, its reads as typing resolved them, what a name the
-/// program declares names read from a home, and what a call of a declared fn reaches.
+/// program declares names read from a home, and what a call of a declared fn reaches. Where its
+/// types are known (`typed`), a method or a verb reaches what its body or its row says (`methods`,
+/// handed the receiver's type, the name, and whether it's called through the type), and a cell
+/// reached through a parameter or the receiver is marked as such (`seats` says which seats take a
+/// place).
 type ProgramReads = {
     store: SyntaxArena,
     names: NamesRead,
     named: fn(string, string?) -> NamedValue?,
     reach: fn(CalledFn) -> List<StatePlace>,
+    typed: bool = false,
+    types: fn(ExprId) -> SignedType? = no_types,
+    methods: fn(SignedType, string, bool) -> List<StatePlace> = no_methods,
+    fields: fn(SignedType, string) -> bool = no_fields,
+    seats: List<bool> = [],
 }
+
+/// No body's types.
+fn no_types(_e: ExprId) -> SignedType? { null }
+
+/// No method reached: what nothing names.
+fn no_methods(_t: SignedType, _n: string, _s: bool) -> List<StatePlace> { [StatePlace.Unknown] }
+
+/// No field known to hold a cell.
+fn no_fields(_t: SignedType, _n: string) -> bool { false }
 
 impl ReadFacts for ProgramReads {
     fn tree() -> SyntaxArena { self.store }
 
     fn named_place(e: ExprId) -> StatePlace? {
+        if self.typed {
+            let through = self.field_through(e) ?? self.seat_through(e)
+            if through != null { return through }
+        }
         let r? = self.names.at(e) else { return null }
         self.place_of(r)
     }
@@ -59,9 +88,66 @@ impl ReadFacts for ProgramReads {
             .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> [],
         }
     }
+
+    fn method_places(call: ExprId) -> List<StatePlace> {
+        if !self.typed { return [StatePlace.Unknown] }
+        let m? = method_parts(self.store, call) else { return [StatePlace.Unknown] }
+        let ty? = (self.types)(m.subject) else { return [StatePlace.Unknown] }
+        let described = ty.described()
+        if described != null { return (self.methods)(described!, m.name, true) }
+        if ty.dynamic || ty.nullable() { return [StatePlace.Unknown] }
+        let reached = (self.methods)(ty, m.name, false)
+        let held = if own_shape_reads(ty, m.name) == RowReads.Handed && ty.own() == OwnType.Cell { some_list(self.root_through(m.subject)) } else { [] }
+        let unapplied = if applies(ty, m.name) && m.args.any((a) -> !self.store.expr_is_closure(a) && ((self.types)(a)?.callable() ?? true)) { [StatePlace.Unknown] } else { [] }
+        reached.concat(held).concat(unapplied)
+    }
+
+    fn applied_bodies(call: ExprId) -> List<ExprId> {
+        if !self.typed { return [] }
+        let m? = method_parts(self.store, call) else { return [] }
+        let ty? = (self.types)(m.subject) else { return [] }
+        if !applies(ty, m.name) { return [] }
+        [b! for a in m.args for b in [self.store.lambda_parts(a)?.body] if b != null]
+    }
 }
 
 impl ProgramReads {
+    /// The cell a read of a `state` seat reaches: the caller's place, through the seat.
+    fn seat_through(e: ExprId) -> StatePlace? {
+        let r? = self.names.at(e) else { return null }
+        let site? = r.binder else { return null }
+        match site {
+            .Seat(j) -> if j < self.seats.length && self.seats[j] { StatePlace.Through(r.name) } else { null },
+            .Stmt(_) or .Expr(_) or .Pat(_) or .Receiver -> null,
+        }
+    }
+
+    /// The cell a read of a `state` field reaches, by where the path to it starts: through the
+    /// parameter or the receiver it starts at; any other start (a local, a pattern's binding, a module
+    /// `state`, whose field's cell is not the state's own) is a place nothing names. Absent where `e`
+    /// reads no `state` field.
+    fn field_through(e: ExprId) -> StatePlace? {
+        let p? = prop_parts(self.store, e) else { return null }
+        let ty? = (self.types)(p.subject) else { return null }
+        if !(self.fields)(ty, p.name) { return null }
+        self.root_through(p.subject) ?? StatePlace.Unknown
+    }
+
+    /// Where the path `e` starts, as a cell reached from it is marked: through the parameter or the
+    /// receiver it starts at, a place nothing names for any other start but a module `state`, and
+    /// absent for one, whose own read names it.
+    fn root_through(e: ExprId) -> StatePlace? {
+        let root = path_root(self.store, e)
+        if self.store.expr(root) is .Receiver { return StatePlace.Through(SELF_NAME) }
+        let r? = self.names.at(root) else { return StatePlace.Unknown }
+        let site? = r.binder else { return if kept_place((self.named)(r.name, r.home)) != null { null } else { StatePlace.Unknown } }
+        match site {
+            .Seat(_) -> StatePlace.Through(r.name),
+            .Receiver -> StatePlace.Through(SELF_NAME),
+            .Stmt(_) or .Expr(_) or .Pat(_) -> StatePlace.Unknown,
+        }
+    }
+
     /// The place a read names: a module `state` the program declares; a `state` statement of the
     /// body, whose cell the body holds; nothing for any other.
     fn place_of(r: NameRead) -> StatePlace? {
@@ -137,7 +223,7 @@ fn kept_box(engine: QueryEngine, p: StatePlace) -> KeptState? {
             let named? = named_value(engine, f, n) else { return null }
             kept_state(named)
         },
-        .Local(_, _) or .Global(_) or .Own(_) or .Unknown -> null,
+        .Local(_, _) or .Global(_) or .Own(_) or .Through(_) or .Unknown -> null,
     }
 }
 
@@ -160,26 +246,174 @@ fn declared_key(file: SourceFileAddress, name: string) -> string { "${template_h
 fn place_said(p: StatePlace) -> string {
     match p {
         .Kept(f, n) -> declared_key(f, n),
-        .Local(_, _) or .Global(_) or .Own(_) or .Unknown -> UNNAMED,
+        .Local(_, _) or .Global(_) or .Own(_) or .Through(_) or .Unknown -> UNNAMED,
     }
 }
 
-/// What the fn `file` declares as `name` reads of the program's state by its own body, and the fns
-/// it calls, each by its key: what it reads at paint time that no reading answers for where
-/// `structural`. A fn with no body to read reads what nothing names.
+/// What the fn `file` declares as `name` reads of the program's state by its own body, and the fns,
+/// methods and verbs it calls, each by its key: what it reads at paint time that no reading answers
+/// for where `structural`. A fn with no body to read reads what nothing names.
 @query("laws")
 export fn fn_reads(engine: QueryEngine, file: SourceFileAddress, name: string, structural: bool) -> NodeReads {
     let body? = elaborated_fn(engine, file, name) else { return unnamed_reads() }
+    let seats = [p.state for p in fn_signature(engine, file, name)?.params ?? []]
+    body_reads(engine, file, body, seats, declared_key(file, name), structural)
+}
+
+/// What the method, or where `statics` the static fn, `name` of the type `file` declares as `owner`
+/// reads, as `fn_reads` says it, its impl's as the package `reader` sees it. One no single impl
+/// writes reads what nothing names.
+@query("laws")
+export fn method_reads(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    name: string,
+    statics: bool,
+    reader: string,
+    structural: bool,
+) -> NodeReads {
+    let impls = impls_given(engine, file, owner, name, statics, reader)
+    if impls.length != 1 { return unnamed_reads() }
+    let signed? = signed_method(engine, impls[0], name, statics) else { return unnamed_reads() }
+    let body = elaborated(engine, impls[0].file, signed.signed)
+    let seats = [p.state for p in signed.signed.signature.params]
+    body_reads(engine, impls[0].file, body, seats, method_key(file, owner, name, statics, reader), structural)
+}
+
+/// What the elaborated `body` in `file` reads by itself, keyed under `here`, and the bodies it calls,
+/// by their keys; `seats` says which of its seats take a place.
+fn body_reads(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    body: ElaboratedBody,
+    seats: List<bool>,
+    here: string,
+    structural: bool,
+) -> NodeReads {
     let calls: Cell<List<string>> = Cell.new([])
     let facts = ProgramReads {
         store: body.store,
         names: NamesRead { reads: body.reads },
         named: (n: string, home: string?) -> named_from(engine, file, n, home),
         reach: (c: CalledFn) -> called(calls, c),
+        typed: true,
+        types: (e: ExprId) -> if e.index < body.core.length { body.core[e.index] } else { null },
+        methods: (ty: SignedType, m: string, statics: bool) -> method_reached(engine, calls, ty, m, statics, file.package_name),
+        fields: (ty: SignedType, f: string) -> holds_state(engine, ty, f),
+        seats: seats,
     }
     let places = roots_read(facts, [body.body], structural, (x) -> heads_answered(engine, body, x))
-    let here = declared_key(file, name)
-    NodeReads { own: [read_said(body.store, here, p) for p in places], refs: calls.get() }
+    NodeReads { own: [read_said(body.store, here, p) for p in places], refs: distinct(calls.get()) }
+}
+
+/// What a method or a verb of a value of `ty` named `name` reaches from a body of the package
+/// `reader`, its key noted among `calls` where a body says: a verb `@std/prelude` writes a body for
+/// is that fn; one that is a row, a shape of rows or a walk reads what its row says; a method of a
+/// type the program declares is its impl's. Any other, and a verb no row speaks for, reads what
+/// nothing names.
+fn method_reached(
+    engine: QueryEngine,
+    calls: Cell<List<string>>,
+    ty: SignedType,
+    name: string,
+    statics: bool,
+    reader: string,
+) -> List<StatePlace> {
+    match ty.head {
+        .Owned(_) -> {
+            let verb = if statics { null } else { verb_callee(engine, ty, name) }
+            if verb != null { return called(calls, verb!) }
+            fact_reached(verb_reads(ty, name, statics))
+        },
+        .Declared(_, _) -> {
+            let d? = declared_at(ty) else { return [StatePlace.Unknown] }
+            calls.push(method_key(d.file, d.name, name, statics, reader))
+            []
+        },
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> [StatePlace.Unknown],
+    }
+}
+
+/// What a verb on a value of the language's own type `ty` named `name` reads, as its row says: the
+/// row it is, the shape of rows it is, or the walk it is; absent where no row speaks for it.
+fn verb_reads(ty: SignedType, name: string, statics: bool) -> RowReads? {
+    if statics { return own_shape_reads(ty, name) }
+    let row = own_row_of(ty, name)
+    if row != null { return rt_sig_of(row!.row)?.reads }
+    own_shape_reads(ty, name) ?? walk_reads(name)
+}
+
+/// The places a verb's own reads add: none where its row says it reads nothing of its own or only
+/// what it's handed (a lambda it applies is read where it stands); what nothing names where its row
+/// says nothing it can tell, or there is no row.
+fn fact_reached(fact: RowReads?) -> List<StatePlace> {
+    let f? = fact else { return [StatePlace.Unknown] }
+    match f { .Nothing or .Handed or .Applies -> [], .Unknown -> [StatePlace.Unknown] }
+}
+
+/// Whether the verb `name` on a value of `ty` applies the lambdas it is handed, as its row says.
+fn applies(ty: SignedType, name: string) -> bool {
+    if ty.own() == null { return false }
+    let row = own_row_of(ty, name)
+    if row != null { return rt_sig_of(row!.row)?.reads == RowReads.Applies }
+    walk_reads(name) == RowReads.Applies
+}
+
+/// Whether the record `ty` names holds its field `name` in a cell: a `state` field, or a prop its
+/// parent writes at each paint.
+fn holds_state(engine: QueryEngine, ty: SignedType, name: string) -> bool {
+    let d? = declared_at(ty) else { return false }
+    (record_signature(engine, d.file, d.name)?.fields ?? []).any(it.name == name && it.state)
+}
+
+/// A method's or a static fn's key: the type it's of, where that's declared, its name, which it is,
+/// and the package that reads it.
+fn method_key(file: SourceFileAddress, owner: string, name: string, statics: bool, reader: string) -> string {
+    "${METHOD_MARK}${template_home(file)}\t${owner}\t${name}\t${if statics { STATIC_WORD } else { METHOD_WORD }}\t${reader}"
+}
+
+/// What a method's key begins with.
+const METHOD_MARK: string = "@"
+
+/// How a method's key says it's a static fn.
+const STATIC_WORD: string = "static"
+
+/// How a method's key says it's a method.
+const METHOD_WORD: string = "method"
+
+/// How the receiver is named where a cell is reached through it.
+const SELF_NAME: string = "self"
+
+/// A method call's parts: its subject, the name it calls, and its arguments.
+type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
+
+/// The parts of the method call `e`; absent for any other node.
+fn method_parts(store: SyntaxArena, e: ExprId) -> MethodParts? {
+    match store.expr(e) {
+        .MethodCall(subject, name, args) -> MethodParts { subject: subject, name: name.of, args: args },
+        rest -> null,
+    }
+}
+
+/// A field read's parts: its subject and the field's name.
+type PropParts = { subject: ExprId, name: string }
+
+/// The parts of the field read `e`; absent for any other node.
+fn prop_parts(store: SyntaxArena, e: ExprId) -> PropParts? {
+    match store.expr(e) {
+        .Prop(subject, name) -> PropParts { subject: subject, name: name.of },
+        rest -> null,
+    }
+}
+
+/// Where the path `e` starts: down its field reads and its index reads to the node they read from.
+fn path_root(store: SyntaxArena, e: ExprId) -> ExprId {
+    match store.expr(e) {
+        .Prop(subject, _) -> path_root(store, subject),
+        .Index(subject, _) -> path_root(store, subject),
+        rest -> e,
+    }
 }
 
 /// A place as a body's own reads key it: a `state` statement of the body by the fn it stands in
@@ -187,9 +421,13 @@ export fn fn_reads(engine: QueryEngine, file: SourceFileAddress, name: string, s
 fn read_said(store: SyntaxArena, here: string, p: StatePlace) -> string {
     match p {
         .Own(s) -> own_said(store, here, s),
+        .Through(n) -> "${THROUGH_MARK}${here}\t${n}",
         .Kept(_, _) or .Local(_, _) or .Global(_) or .Unknown -> place_said(p),
     }
 }
+
+/// What a key of a cell reached through a parameter or the receiver begins with.
+const THROUGH_MARK: string = "~"
 
 /// The key of the `state` statement `s` of a body of the fn `here`: its name and where it's written.
 fn own_said(store: SyntaxArena, here: string, s: StmtId) -> string {
@@ -220,14 +458,23 @@ export fn fn_reaches(engine: QueryEngine, file: SourceFileAddress, name: string,
     sorted_texts(distinct([if k.starts_with(OWN_MARK) { UNNAMED } else { k } for k in reached]))
 }
 
+/// `method_reads` of the method the key `key` names.
+fn method_keyed(engine: QueryEngine, key: string, structural: bool) -> NodeReads {
+    let parts = key.substring(METHOD_MARK.length, key.length).split("\t")
+    if parts.length != 5 { return unnamed_reads() }
+    let file? = template_file(parts[0]) else { return unnamed_reads() }
+    method_reads(engine, file, parts[1], parts[2], parts[3] == STATIC_WORD, parts[4], structural)
+}
+
 /// What a fn no body is read for reads: what nothing names.
 fn unnamed_reads() -> NodeReads { NodeReads { own: [UNNAMED], refs: [] } }
 
 /// The key of a place nothing names.
 const UNNAMED: string = "?"
 
-/// `fn_reads` of the fn a key names.
+/// `fn_reads` of the fn a key names, `method_reads` of the method one names.
 fn keyed_places(engine: QueryEngine, key: string, structural: bool) -> NodeReads {
+    if key.starts_with(METHOD_MARK) { return method_keyed(engine, key, structural) }
     let at = key.index_of("\t")
     let file? = (if at < 0 { null } else { template_file(key.substring(0, at)) }) else { return unnamed_reads() }
     fn_reads(engine, file, key.substring(at + 1, key.length), structural)
