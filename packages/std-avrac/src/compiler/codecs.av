@@ -1,0 +1,180 @@
+//! THE CODEC KEEPER — a record's wire ENCODER and its DECODER agree,
+//! checked by machine. Nothing else in the tree compares them: an
+//! encoder and its decoder that drop the same field twice round-trip a
+//! hash and serve wrong answers from a store, silently.
+//!
+//! ONE REGISTRY, `codec_pairs()`: every row names its encode fn, its
+//! decode fn, its exemplars and its equality. `decode(encode(x))` is
+//! compared to `x` FIELD BY FIELD (`@derive(Exemplar)`'s `codec_same`,
+//! or a hand-written one) — never `encode(decode(encode(x))) ==
+//! encode(x)`, which is idempotence and passes when a field is
+//! dropped both times (CLAUDE.md, "a check can pass because of the
+//! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
+//! an encoder/decoder-shaped pair the tree carries that this registry
+//! does not name.
+use core.{SeatMark, list_eq}
+use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
+
+// ── THE HARNESS ─────────────────────────────────────────────────────
+
+/// One registered pair: its name (both fn names, `encoder/decoder`),
+/// and a thunk that runs every exemplar through it — a fn so the
+/// registry can hold rows of DIFFERENT concrete types in one list.
+export type CodecCheck = { pair: string, run: fn() -> List<string> }
+
+/// A pair whose decoder answers absent where its wire doesn't read.
+fn derived<T, W>(
+    pair: string,
+    exemplars: List<T>,
+    labels: List<string>,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T?,
+    same: fn(T, T) -> bool,
+) -> CodecCheck {
+    CodecCheck {
+        pair: pair,
+        run: () -> {
+            let raw = [codec_one(pair, label_at(labels, i), exemplars[i], encode, decode, same) for i in 0..exemplars.length]
+            [m! for m in raw if m != null]
+        },
+    }
+}
+
+fn label_at(labels: List<string>, i: int) -> string {
+    if i < labels.length { labels[i] } else { "exemplar ${i}" }
+}
+
+fn codec_one<T, W>(
+    pair: string,
+    label: string,
+    value: T,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T?,
+    same: fn(T, T) -> bool,
+) -> string? {
+    let wire = encode(value)
+    let back? = decode(wire) else { return "${pair}: exemplar \\`${label}\\` failed to decode its own wire" }
+    if same(value, back) { return null }
+    "${pair}: exemplar \\`${label}\\` round-tripped to a different value"
+}
+
+/// `derived`'s twin for a decoder that never answers absent — it falls back to a plain default on
+/// bad input rather than failing (`mark_of_word`): the only question left is whether the value
+/// survived.
+fn derived_total<T, W>(
+    pair: string,
+    exemplars: List<T>,
+    labels: List<string>,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T,
+    same: fn(T, T) -> bool,
+) -> CodecCheck {
+    CodecCheck {
+        pair: pair,
+        run: () -> {
+            let raw = [total_one(pair, label_at(labels, i), exemplars[i], encode, decode, same) for i in 0..exemplars.length]
+            [m! for m in raw if m != null]
+        },
+    }
+}
+
+fn total_one<T, W>(
+    pair: string,
+    label: string,
+    value: T,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T,
+    same: fn(T, T) -> bool,
+) -> string? {
+    let back = decode(encode(value))
+    if same(value, back) { return null }
+    "${pair}: exemplar \\`${label}\\` round-tripped to a different value"
+}
+
+// ── `DbRow` — its decoder needs the KIND alongside the wire (the
+// payload carries no tag of its own; the durable key does), so it is
+// not `fn(W) -> T?` shaped and stands outside `derived`. ──
+
+fn dbrow_exemplars() -> List<DbRow> {
+    [DbRow.Sig("n", "text"), DbRow.Answer("n", "0aff")]
+}
+
+fn dbrow_check() -> CodecCheck {
+    CodecCheck {
+        pair: "db.encoded/decoded (DbRow)",
+        run: () -> {
+            let raw = [dbrow_one(r) for r in dbrow_exemplars()]
+            [m! for m in raw if m != null]
+        },
+    }
+}
+
+fn dbrow_one(r: DbRow) -> string? {
+    let wire = encoded(r)
+    let back? = decoded(r.kind(), r.key(), wire) else { return "db.encoded/decoded (DbRow): exemplar \\`${r.kind().tag()}\\` failed to decode" }
+    if dbrow_same(r, back) { return null }
+    "db.encoded/decoded (DbRow): exemplar \\`${r.kind().tag()}\\` round-tripped to a different value"
+}
+
+fn dbrow_same(a: DbRow, b: DbRow) -> bool {
+    match a {
+        .Sig(name, text) -> match b { .Sig(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        .Answer(name, text) -> match b { .Answer(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        rest -> false,
+    }
+}
+
+// ── `code_facts_wire`/`code_facts_from_wire` — a held file's code. ──
+
+fn code_facts_exemplars() -> List<CodeFacts> {
+    [
+        CodeFacts { nodes: [], addressed: [], asked: [] },
+        CodeFacts {
+            nodes: [FactNode { name: "leaf", own: "d0", refs: [] }],
+            addressed: [],
+            asked: [],
+        },
+        CodeFacts {
+            nodes: [FactNode { name: "a:b", own: "d1", refs: ["leaf", "c:d"] }],
+            addressed: ["leaf"],
+            asked: ["answer\$body"],
+        },
+    ]
+}
+
+fn code_facts_labels() -> List<string> {
+    ["no code", "a node with no references", "names holding a colon, an address and an ask"]
+}
+
+fn same_code_facts(a: CodeFacts, b: CodeFacts) -> bool {
+    list_eq(a.nodes, b.nodes, same_fact_node) &&
+        same_texts(a.addressed, b.addressed) &&
+        same_texts(a.asked, b.asked)
+}
+
+fn same_fact_node(a: FactNode, b: FactNode) -> bool { a.name == b.name && a.own == b.own && same_texts(a.refs, b.refs) }
+
+fn same_texts(a: List<string>, b: List<string>) -> bool { list_eq(a, b, (x, y) -> x == y) }
+
+/// Every codec pair the tree carries, each with its exemplars.
+export fn codec_pairs() -> List<CodecCheck> {
+    [
+        derived(
+            "lower.code_facts_wire/code_facts_from_wire",
+            code_facts_exemplars(),
+            code_facts_labels(),
+            code_facts_wire,
+            code_facts_from_wire,
+            same_code_facts,
+        ),
+        derived_total(
+            "record.mark_word/mark_of_word",
+            SeatMark.exemplars(),
+            SeatMark.exemplar_labels(),
+            mark_word,
+            mark_of_word,
+            (x, y) -> x.codec_same(y),
+        ),
+        dbrow_check(),
+    ]
+}
