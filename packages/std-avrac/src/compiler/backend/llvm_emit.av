@@ -748,8 +748,15 @@ impl Emit {
         }
     }
 
+    /// THE ANSWER WEARS THE FN'S OWN RETURN TYPE, on every target: a dev build runs no verifier, so
+    /// a body answering another type is refused here, as a verified build refuses it, never handed to
+    /// a backend that happens to lower it anyway.
     fn ret_value(r: Reg) {
-        let _ = avra_llvm_build_ret(self.b, self.vals[r.index])
+        let v = self.vals[r.index]
+        if avra_llvm_type_of(v) != avra_llvm_return_type_of(self.fn_val) {
+            let _ = self.wrecked("a body answers a value of another type than its fn's", v)
+        }
+        let _ = avra_llvm_build_ret(self.b, v)
     }
 
     /// An early return: ret RIGHT HERE, then open a dead block so the

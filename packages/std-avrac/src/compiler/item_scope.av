@@ -450,11 +450,19 @@ fn written_elsewhere(
 /// Every space a name is bound in.
 const SPACES: List<Space> = [Space.Value, Space.Type, Space.Syntax]
 
-/// What a declaration a generator of `file`'s module made names as `name` in `space`; unbound for none.
+/// What a declaration a generator of `file`'s module made names as `name` in `space`, kept apart per
+/// file as a written one is: the one made over `file` itself, else the module's one, else an export
+/// among several; private ones several of its siblings each made, none of them its own, are refused
+/// as kept apart. Unbound for none.
 fn generated_resolution(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
-    let d? = generated_declarations_of(engine, file.package_name, module_segments(file), true, name)
-        .find(space_of(it.kind) == space) else { return Resolution.Unbound }
-    Resolution.Named(d)
+    let made = [d for d in generated_declarations_of(engine, file.package_name, module_segments(file), true, name) if space_of(d.kind) == space]
+    let first? = made.first() else { return Resolution.Unbound }
+    let mine? = made.find(same_file(it.file, file)) else {
+        if made.length == 1 { return Resolution.Named(first) }
+        let shared? = made.find(it.exported) else { return Resolution.KeptApart(made) }
+        return Resolution.Named(shared)
+    }
+    Resolution.Named(mine)
 }
 
 /// What `name` names in `space` from the top level of `file` among written names alone — the stratum

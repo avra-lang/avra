@@ -4,10 +4,10 @@
 use @std.io.{exists, list_dir, make_dirs, read_bytes, remove, write_bytes}
 use @std.time.{stamp}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
-use answer_record.{question}
+use answer_record.{question, words_of}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
 use answer_record.{ContentHash}
-use frontier.{FrontierLearned, HeldEntry}
+use frontier.{FrontierLearned, HeldEntry, reached_at_rest}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use worked_ahead.{WorkAhead, asked_across_while, engine_worked_ahead}
 use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
@@ -193,6 +193,17 @@ fn rooted_entry(n: int, version: int) -> HeldEntry {
     }
 }
 
+/// A process over the store at `directory` that learned `entries`, kept over the frontier it read.
+fn learned_over(directory: string, entries: List<HeldEntry>) {
+    let store = disk_store_at(directory)
+    store
+        .keep_frontier(
+            "rebased",
+            FrontierLearned { on: store.frontier_of("rebased"), entries: entries, stale: [] },
+        )
+    let _ = store.saved()
+}
+
 fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
 
 fn frontier_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.starts_with("frontier-")) }
@@ -373,6 +384,99 @@ spec "disk_store — answers outlive the process" {
             let read? = disk_store_at(directory).frontier_of("orphans") else { return false }
             let moved? = read.place_of(hash_of(3)) else { return false }
             read.answer_at(moved).same_as(hash_of(1001)) && read.place_of(hash_of(500)) == null
+        }
+    }
+    given "an answer lost from the frontier and written back with nothing reading it" {
+        then "the frontier read back holds it a root, standing and reached: a place that comes back is a root" {
+            let directory = fresh_directory("back")
+            let _ = make_dirs(directory) catch ""
+            let root = HeldEntry {
+                question: hash_of(100),
+                answer: hash_of(101),
+                reads: words_of([hash_of(200)]),
+                input: false,
+                root: true,
+            }
+            let read = HeldEntry {
+                question: hash_of(200),
+                answer: hash_of(201),
+                reads: [],
+                input: false,
+                root: false,
+            }
+            let first = disk_store_at(directory)
+            first
+                .keep_frontier(
+                    "back",
+                    FrontierLearned {
+                        on: null,
+                        entries: [rooted_entry(i, 0) for i in 0..20].concat([root, read]),
+                        stale: [],
+                    },
+                )
+            let _ = first.saved()
+            // the root stops reading it: it is lost
+            let second = disk_store_at(directory)
+            let on = second.frontier_of("back")
+            second
+                .keep_frontier(
+                    "back",
+                    FrontierLearned {
+                        on: on,
+                        entries: [root with { answer: hash_of(102), reads: [] }],
+                        stale: [],
+                    },
+                )
+            let _ = second.saved()
+            // a check that asks works it out again, and nothing reads what it worked out
+            let third = disk_store_at(directory)
+            let later = third.frontier_of("back")
+            third
+                .keep_frontier(
+                    "back",
+                    FrontierLearned {
+                        on: later,
+                        entries: [read with { answer: hash_of(202) }],
+                        stale: [],
+                    },
+                )
+            let _ = third.saved()
+            let back? = disk_store_at(directory).frontier_of("back") else { return false }
+            let at? = back.place_of(hash_of(200)) else { return false }
+            let reached? = reached_at_rest(back) else { return false }
+            back.stands(at) && back.root_at(at) && reached[at]
+        }
+    }
+    given "a root a delta made, rewritten as no root when the chain is rebased" {
+        then "it is still a root read back: a rebased chain keeps the roots its deltas made" {
+            let directory = fresh_directory("rebased-root")
+            let _ = make_dirs(directory) catch ""
+            let root = HeldEntry {
+                question: hash_of(100),
+                answer: hash_of(101),
+                reads: words_of([hash_of(300)]),
+                input: false,
+                root: true,
+            }
+            let made = HeldEntry {
+                question: hash_of(300),
+                answer: hash_of(301),
+                reads: [],
+                input: false,
+                root: false,
+            }
+            learned_over(directory, [rooted_entry(i, 0) for i in 0..40].concat([root, made]))
+            // a delta makes it a root; the root that read it stops reading it
+            learned_over(directory, [made.rooted()])
+            learned_over(directory, [root with { answer: hash_of(102), reads: [] }])
+            // the chain filled to its last link, so the next write rebases it
+            learned_over(directory, [rooted_entry(1, 1)])
+            learned_over(directory, [rooted_entry(2, 1)])
+            learned_over(directory, [made with { answer: hash_of(302) }])
+            let f? = disk_store_at(directory).frontier_of("rebased") else { return false }
+            let at? = f.place_of(hash_of(300)) else { return false }
+            let reached? = reached_at_rest(f) else { return false }
+            f.answer_at(at).same_as(hash_of(302)) && f.root_at(at) && reached[at]
         }
     }
     given "a compaction" {

@@ -1,6 +1,7 @@
 //! The typing rule of a map literal: each key is text, and the literal is the map its seat names, or
 //! with none the map of its values' join, a spread's values among them. `{}` is its own type
-//! wherever it stands.
+//! wherever it stands but one: in a seat that wants nothing (`void`) it is a block, empty, as an
+//! arm's or a lambda's `{}` reads — the seat's want decides, and no map is made to be dropped.
 use core.{
     Checking,
     Checks,
@@ -11,12 +12,14 @@ use core.{
     SignedType,
     types_joined,
     owned_type,
+    OwnType,
 }
 use core.expr.{MapLit}
 
 impl Checks for MapLit {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
+        if self.entries.is_empty() && wanted != null && wanted!.owns(OwnType.Void) { return wanted }
         let held = types_joined([value_of(cx, entry, wanted?.mapped()) for entry in self.entries])
         if wanted?.mapped() != null && !self.entries.is_empty() { return wanted }
         if held != null { return owned_type("Map") with { args: [owned_type("string"), held!] } }

@@ -1,0 +1,23 @@
+//! Two files of one module each hold a private `@model Note`: each file's
+//! `NoteDraft` is its own model's, never the other's.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+
+@model
+type Note = { id: int = 0, body: string, rank: int = 1 }
+
+fn ranked() -> Result<string, ModelError> {
+    let db = modeled(Db.memory())?
+    modeled(Note.create_table(db))?
+    let n = NoteDraft { body: "theirs", rank: 4 }.insert(db)?
+    "${n.body} ${n.rank}"
+}
+
+spec "std/db — a private model's draft, a second file" {
+    given "another file's private `Note`" {
+        then "this file's draft holds this file's fields" { (ranked() catch _ -> "") == "theirs 4" }
+        then "and reads this file's body" { NoteDraft.from_json("{\"body\":\"b\"}") is .Ok }
+        then "the other file's field is no field here" { NoteDraft.from_json("{\"title\":\"t\"}") is .Err }
+    }
+}

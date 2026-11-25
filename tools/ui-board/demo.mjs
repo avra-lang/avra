@@ -159,7 +159,7 @@ fire(field);
 claim("typing writes no value back and sends no frame", valueWrites === 0 && frames === 0, `${valueWrites} write(s), ${spent()}`);
 fire(add);
 await settle();
-claim("Add sends one POST for /tasks carrying the draft as a task", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST" && new TextDecoder().decode(asked[0].init.body) === '{"done":false,"id":0,"title":"Ship the rewrite"}', `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("Add sends one POST for /tasks carrying the draft, no key", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST" && new TextDecoder().decode(asked[0].init.body) === '{"done":false,"title":"Ship the rewrite"}', `${asked.map((a) => a.init.method + " " + a.url + " " + new TextDecoder().decode(a.init.body ?? new Uint8Array()))}`);
 claim("the program clears the field, once", valueWrites === 1 && typed === "", `${valueWrites} write(s), value "${typed}"`);
 claim("the row is not the board's until the server answers", keyed("5") === null);
 await drain();

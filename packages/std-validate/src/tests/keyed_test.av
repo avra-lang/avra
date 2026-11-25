@@ -1,6 +1,7 @@
 // Keyed fields — a query's or a form's, already decoded — read into one
 // value and decoded under `Lax`: absent, bare, empty and repeated stay four
-// answers until a field's own reader judges them.
+// answers until a field's own reader judges them, and an empty value is
+// absence to every reader but text's.
 use @std.meta.{derive}
 use @std.validate.{Decode, Keyed, Coercion, from_keyed}
 
@@ -40,13 +41,32 @@ fn needs(fields: List<Keyed>) -> string {
     }
 }
 
+fn inner(fields: List<Keyed>) -> string {
+    match Inner.decode(from_keyed(fields), Coercion.Lax) {
+        .Ok(i) -> "n=${i.n}",
+        .Err(e) -> [i.path.text() + " " + i.message for i in e.all].join("; "),
+    }
+}
+
+fn strict_inner(t: string) -> string {
+    match Inner.decode(from_keyed([sent("n", t)]), Coercion.Strict) {
+        .Ok(i) -> "n=${i.n}",
+        .Err(e) -> [i.path.text() + " " + i.message for i in e.all].join("; "),
+    }
+}
+
 spec "std/validate — keyed fields" {
     given "the empty cases, written first" {
         then "no fields is an empty map" { from_keyed([]).shown() == "{}" }
         then "no fields takes every default" { page([]) == "50 - [] false 1.0" }
         then "no fields refuses a required field" { needs([]) == "q is required" }
         then "an empty value is text, never absence" { needs([sent("q", "")]) == "q=" }
-        then "an empty number is refused, never defaulted" { page([sent("limit", "")]) == "limit must be an integer, not text" }
+        then "an empty number is absent, and takes its default" { page([sent("limit", "")]) == "50 - [] false 1.0" }
+        then "a blank number is absent too" { page([sent("ratio", "  ")]) == "50 - [] false 1.0" }
+        then "an empty truth is absent, and takes its default" { page([sent("verbose", "")]) == "50 - [] false 1.0" }
+        then "an empty optional text is still text" { page([sent("after", "")]) == "50  [] false 1.0" }
+        then "an empty required number is required" { inner([sent("n", "")]) == "n is required" }
+        then "an empty value under `Strict` is the wrong kind" { strict_inner("") == "n must be an integer, not text" }
         then "a list of none is its default" { page([]).contains("[]") }
     }
     given "the shape" {

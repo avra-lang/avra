@@ -48,6 +48,8 @@ avrac-f    test packages/std-avrac — src/features' own files, and every dir of
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
+store-fuzz the store fuzzer's model self-test, then seeds 1-8 of 12 edits each over build/avra: warm == cold byte for byte, the store clean (`cache check`), the walk held, a fresh copy over the same machine store as the tree, nothing worked where nothing moved
+inputs     make inputs, every world read through the input door and every read a query body reaches held; and inputs.py --planted, two planted reads refused on the tree itself
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
 cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
@@ -59,6 +61,7 @@ cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's 
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
+storyboard test std-ui_gallery: every view std-ui declares told by a story, every case's semantic snapshot on each target held to its golden; then every case under every dial judged in headless Firefox (tools/storyboard_browser.sh)
 findings-a tapes --findings on std-avrac and cli, 0 refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
@@ -466,6 +469,21 @@ fmt_on() {
     row fmt-changed env AVRA=build/avra sh tools/fmt_changed.sh "$1" HEAD
 }
 
+# THE INPUT KEEPER, HELD AND ITS REFUSAL WITNESSED: it ran in no slice for at least two weeks and
+# stood red meanwhile, so it runs here, and `--planted` proves on this tree that it still refuses.
+slice_inputs() {
+    row inputs make -s inputs
+    row inputs-planted python3 tools/inputs.py --planted
+}
+
+# THE STORE FUZZED BY A MODEL, on a bounded budget: a failing seed is shrunk and said as a line that
+# replays it. Each store bug it exists for is found by it with its fix taken back
+# (`make store-fuzz-regressions`, a compiler built a bug, too long for a slice).
+slice_store_fuzz() {
+    row store-fuzz-model python3 tools/store_fuzz.py --self-test
+    row store-fuzz python3 tools/store_fuzz.py --compiler build/avra --seeds 1-8 --steps 12
+}
+
 slice_sound() {
     row sound-check-run env AVRA_SOUND_CHECK=1 build/avra check packages/cli
     cold cli
@@ -523,6 +541,15 @@ slice_ui_browser() {
     judged ui-board-ran "$(grep -c 'SKIPPED' "$out/ui-board.log")"
     row ui-browser env CI=true sh tools/ui_board_browser.sh
     row board-dev env CI=true sh tools/witness_board_dev.sh build/avra
+}
+
+# THE STORYBOARD (docs/2026_11_24_STORYBOARD.md): every view the View derive made, each told by a
+# story, and what every case says on the web, headless and in a terminal, held line by line to the
+# golden its program test prints. A row of its own, so a red one names the storyboard.
+slice_storyboard() {
+    cold std-ui_gallery
+    tested test-std-ui_gallery packages/std-ui_gallery
+    row storyboard-browser env CI=true sh tools/storyboard_browser.sh
 }
 
 # each package named: tapes --findings with no refusal
@@ -703,10 +730,13 @@ if compiler; then
         idioms-cli) idioms_on "${1:-}" keep cli ;;
         idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
         fmt) fmt_on "${1:-}" ;;
+        inputs) slice_inputs ;;
+        store-fuzz) slice_store_fuzz ;;
         sound) slice_sound ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
         ui-browser) slice_ui_browser ;;
+        storyboard) slice_storyboard ;;
         findings-a) slice_findings_a ;;
         findings-b) findings_third 0 ;;
         findings-c) findings_third 1 ;;

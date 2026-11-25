@@ -80,6 +80,9 @@ const row = (key) => `document.querySelector('li[data-key=${JSON.stringify(key)}
 const rows = () => read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, done: li.querySelector("input").checked, words: li.querySelector("label").textContent }))`);
 const keys = async () => (await rows()).map((r) => r.key);
 // Until `holds` answers true of `on`, asked for as long as a build or a server may take: a change is the server's to answer before the board shows it.
+// The server's tasks once they hold `wanted`, read again until they do or the beats run out: a page draws a
+// foreseen write at once, before the server has answered it.
+const held_by_server = async (wanted, beats = 100) => { let tasks = []; for (let i = 0; i < beats; i++) { tasks = await (await fetch(url + "tasks")).json(); if (wanted(tasks)) return { held: true, tasks }; await pause(100); } return { held: false, tasks }; };
 const until = async (holds, on = page, beats = 200) => { for (let i = 0; i < beats; i++) { if (await on.read(holds).catch(() => false)) return true; await pause(100); } return false; };
 // The page's keys, once they are `want` (or as they stand when they never are).
 const keys_become = async (want) => (await until(`[...document.querySelectorAll("li")].map((li) => li.dataset.key).join() === ${JSON.stringify(want)}`)) ? want : (await keys()).join();
@@ -145,11 +148,11 @@ await read(`document.querySelectorAll("li").forEach((li) => { li.witness = li.da
 await press(`${row(k3)}.querySelector("button")`);
 claim("pressing a row's Remove takes that row alone, once the server has answered", await keys_become([k1, k2, k4].join()) === [k1, k2, k4].join(), await keys());
 claim("the row below is the same element: nothing rebuilt it", await read(`${row(k4)}.witness`) === k4, await read(`[...document.querySelectorAll("li")].map((li) => li.dataset.key + ":" + li.witness)`));
-claim("and the server no longer holds the task", !(await (await fetch(url + "tasks")).json()).some((t) => String(t.id) === k3));
+{ const r = await held_by_server((tasks) => !tasks.some((t) => String(t.id) === k3)); claim("and the server no longer holds the task", r.held, r.tasks); }
 
 await press(named("Wire the event channel"));
 claim("ticking a box marks its task done and moves the progress, once the server has answered", await until(`document.querySelector("progress").value === 3`) && (await rows())[1].done, await progress());
-claim("and the server holds the task done", (await (await fetch(url + "tasks")).json()).find((t) => String(t.id) === k2).done === true);
+{ const r = await held_by_server((tasks) => tasks.find((t) => String(t.id) === k2)?.done === true); claim("and the server holds the task done", r.held, r.tasks); }
 
 // ── typing ──────────────────────────────────────────────────────
 await press(named("New task"));

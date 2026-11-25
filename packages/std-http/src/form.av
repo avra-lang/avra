@@ -22,8 +22,8 @@
 //! before its closing delimiter are each a 400. Past a bound is 413.
 use @std.errors.{Error, ErrorInfo, info}
 use @std.io.{AppendFile, write_bytes, opened_for_append, remove}
-use @std.text.{parse_int, parse_float}
 use @std.url.{decoded}
+use @std.validate.{Keyed}
 
 // ── Urlencoded ──────────────────────────────────────────────────
 
@@ -56,6 +56,10 @@ impl Form {
     fn value(name: string) -> string? {
         match self.one(name) { .Value(v) -> v, .Absent or .Repeated(_) -> null }
     }
+
+    /// The fields as keyed input, each as it was sent — the one reading a
+    /// form shares with a query.
+    fn keyed() -> List<Keyed> { [Keyed { key: f.name, text: f.value } for f in self.fields] }
 }
 
 impl Request {
@@ -93,68 +97,15 @@ fn form_text(s: string) -> Result<string, FormFault> {
     plain
 }
 
-// ── Reading a record (`@form`'s vocabulary) ─────────────────────
+// ── Reading a record ────────────────────────────────────────────
 
-/// Why a form did not read as a record: the field, and what it wanted.
-export type FormError = { field: string, wanted: string }
-
-impl Error for FormError {
-    fn describe() -> ErrorInfo { info("form.field", "field `${self.field}` wants ${self.wanted}") }
-}
-
-/// The one value `name` was sent, required.
-export fn form_one(f: Form, name: string) -> Result<string, FormError> {
-    match f.one(name) {
-        .Value(v) -> v,
-        .Absent -> { fail missing(name) },
-        .Repeated(_) -> { fail sent_twice(name) },
+impl Request {
+    /// THE BODY AS A FORM, in either encoding — urlencoded whole, multipart
+    /// with its files refused — or the response refusing it.
+    fn form_body() -> Result<Form, Response> {
+        if media_is(self.header("content-type"), multipart_type) { return (self.multipart(no_files)?).form }
+        self.urlencoded()
     }
-}
-
-/// The value `name` was sent, or null when it was not — or, for a
-/// field that is not text, when it was sent empty, as an empty input
-/// is.
-export fn form_maybe(f: Form, name: string, empty_is_absent: bool) -> Result<string?, FormError> {
-    let values = f.all(name)
-    if values.length > 1 { fail sent_twice(name) }
-    let v? = values.first() else { return .Ok(null) }
-    if empty_is_absent && v.is_empty() { return .Ok(null) }
-    .Ok(v)
-}
-
-/// A checkbox: absent is false, `on`, `true` and `1` true, `off`,
-/// `false` and `0` false.
-export fn form_checked(f: Form, name: string) -> Result<bool, FormError> {
-    let v? = form_maybe(f, name, false)? else { return false }
-    form_bool_of(v, name)
-}
-
-export fn form_int_of(v: string, name: string) -> Result<int, FormError> {
-    let n? = parse_int(v.trim()) else { fail misfit(name, "an integer") }
-    n
-}
-
-export fn form_float_of(v: string, name: string) -> Result<float, FormError> {
-    let x? = parse_float(v.trim()) else { fail misfit(name, "a number") }
-    x
-}
-
-export fn form_bool_of(v: string, name: string) -> Result<bool, FormError> {
-    if ["on", "true", "1"].any(same_token(v, it)) { return true }
-    if ["off", "false", "0"].any(same_token(v, it)) { return false }
-    fail misfit(name, "`on` or `off`")
-}
-
-/// The request's form read by `decode` — a record's `from_form` under
-/// `@form` — or the response refusing it: the body's own, or a 400
-/// naming the field that misfit. Either encoding is read: urlencoded
-/// whole, multipart with its files refused.
-export fn form_body<P, T>(q: Request<P>, decode: fn(Form) -> Result<T, FormError>) -> Result<
-    T,
-    Response,
-> {
-    let f = if media_is(q.header("content-type"), multipart_type) { (q.multipart(no_files)?).form } else { q.urlencoded()? }
-    match decode(f) { .Ok(v) -> v, .Err(e) -> { fail text(400, e.describe().message) } }
 }
 
 /// The sink a form read as a record gives a file: none.
@@ -549,8 +500,3 @@ fn file_too_large(bound: int) -> Response { text(413, "a file is larger than ${b
 
 fn sink_stopped() -> Response { text(500, "an uploaded file could not be kept") }
 
-fn missing(name: string) -> FormError { FormError { field: name, wanted: "a value" } }
-
-fn sent_twice(name: string) -> FormError { FormError { field: name, wanted: "one value, not several" } }
-
-fn misfit(name: string, wanted: string) -> FormError { FormError { field: name, wanted: wanted } }

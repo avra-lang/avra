@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR, and this counts
 the reads that are not: a call in the compiler or its CLI that asks the
 disk, the environment, a tool, a child process, the clock, the process
@@ -34,6 +35,25 @@ evaluator, timing, a debug flag) and takes it out. The file only falls:
 
     python3 tools/inputs.py            # the table; refuses a new site
     python3 tools/inputs.py --accept   # prunes what a move made gone
+    python3 tools/inputs.py --self-test  # its own witnesses alone, the tree not read
+    python3 tools/inputs.py --planted    # two planted reads refused on the tree itself
+
+INSIDE A QUERY'S BODY A LICENCE IS NO DOOR. A query's answer is kept under
+its question and served to every later process whose recorded reads hold,
+so a read its record doesn't hold is a read the store answers wrong the
+day it moves. Every fn a query body reaches — a `@query`, `@cut_query`,
+`@parted_query` or `@input` body, and each free fn it calls, resolved by
+the file's own `use` lines and its module's names — is held to the door
+alone: a world read there that isn't in a DOOR file is refused licensed or
+not, unless tools/query_reads.baseline lists it (that file only shrinks
+too). Beside the world, the engine's own state: every member of the
+engine a reached body names is in ENGINE, recorded, said (no answer reads
+it) or unrecorded, and an unrecorded one stands only under
+`// LICENSED input.unrecorded_read: <what the question's key covers>` on
+the line above. An `@input` outside a DOOR file is refused: a new input is
+a new door, and goes in one. THE REACH FOLLOWS FREE FNS, NOT METHODS: a
+call written `x.f(…)` is not followed, so a read behind a method a query
+body calls is the method's own file's to answer for.
 """
 import collections
 import os
@@ -72,7 +92,7 @@ WORLD = {
         "write_text": W, "write_bytes": W, "append_bytes": W, "synced": W,
         "Draft": T, "drafted": W, "drafts_leaving": E, "drafts_left": E, "abandoned_drafts": "read",
         "this_process": "pid",
-        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W,
+        "opened_for_append": W, "link": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W,
         "println": E, "eprintln": E,
         "one_path": P, "refused": P, "enoent": P, "eacces": P, "enotdir": P,
         "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,
@@ -100,12 +120,15 @@ WORLD = {
         "command": P, "arg": P, "flag": P, "option": P, "CliResult": T, "Runnable": T,
     },
     "net": {"Bell": T, "Listener": T, "Conn": T, "listen": E, "connect": "fetch"},
+    "ui": {"fetched_tags": P},
     "http": {
         "get": "fetch", "fetch": "fetch", "server": E, "directory": "read", "event_stream": E,
         "compiled": P, "dispatch": P, "fixed": P, "framed": P, "limits": P, "text": P,
         "mounted": P, "quiet_default": P, "options": P, "chunker": P, "unchunked": P,
         "Request": T, "Unrouted": T, "Response": T, "Pulled": T, "Header": T, "Route": T,
         "Event": T, "Next": T, "Source": T, "Resume": T, "Method": T, "Files": T, "Body": T,
+        "Hosted": T, "Coded": T, "asset_answer": P, "coding_weight": P, "whole": P,
+        "Handler": T, "media_of": P, "same_token": P, "lists_token": P, "without_field": P,
         "Payload": T, "Redirects": T, "Reach": T, "Stream": T, "Chunker": T, "Decoded": T,
     },
 }
@@ -120,10 +143,12 @@ SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 # An INERT package reads nothing: the rows it may declare, and the one
 # name of it that does read. Held to the package's own source.
 INERT = {
-    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named"}, "world": {"embed": "read"}},
+    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named", "avra_fn_declared"}, "world": {"embed": "read"}},
     "relation": {"rows": {"avra_trap", "avra_qtrace", "avra_cores_group", "avra_cores_fork",
                           "avra_cores_end_fd", "avra_cores_heard", "avra_cores_leave",
-                          "avra_cores_result", "avra_fiber_park_fd"}, "world": {}},
+                          "avra_cores_result", "avra_fiber_park_fd", "avra_ctx_listen",
+                          "avra_ctx_listened", "avra_ctx_holds", "avra_ctx_heard_drop",
+                          "avra_ctx_reheard"}, "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
                  "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room",
@@ -131,6 +156,9 @@ INERT = {
         "world": {},
     },
     "derive": {"rows": set(), "world": {}},
+    "assets": {"rows": set(), "world": {}},
+    "http_compress": {"rows": set(), "world": {}},
+    "compress": {"rows": {"avra_cz_at", "avra_cz_decode", "avra_cz_encode", "avra_cz_failure", "avra_cz_finish", "avra_cz_free", "avra_cz_len", "avra_cz_push", "avra_cz_stream", "avra_cz_stream_at", "avra_cz_stream_clear", "avra_cz_stream_free", "avra_cz_stream_len"}, "world": {}},
     "errors": {"rows": set(), "world": {}},
     "grammar": {"rows": set(), "world": {}},
     "hash": {"rows": {"avra_b3_state_len", "avra_b3_fresh", "avra_b3_update", "avra_b3_digest",
@@ -362,6 +390,165 @@ def key(s):
     return (group_of(s.file, s.kind, s.verb.startswith("host.")), s.file, s.text)
 
 
+# THE QUERY DOOR. A query's definition: its annotation, the comments and annotations under it, its fn.
+QUERY_ROOT = re.compile(
+    r"^@(query|cut_query|parted_query|input)\b[^\n]*\n((?:[ \t]*(?://|@)[^\n]*\n)*)"
+    r"[ \t]*(?:export\s+)?(?:mut\s+|once\s+)?fn\s+([A-Za-z_]\w*)", re.M)
+QUERY_BASELINE = "tools/query_reads.baseline"
+# A free fn called by name, or handed over as a value — never a method.
+CALLED = re.compile(r"(?<![\w.])([a-z_][a-z0-9_]*)\s*(?:\(|(?=\s*[,)]))")
+# Any `use` line, `@std` or the package's own: the module path, then what it takes.
+USE_ANY = re.compile(r"^use\s+(@std\.)?([A-Za-z_][\w.]*?)\.(\{[^}]*\}|[A-Za-z_]\w*)(?=[ \t]*(?:\n|$|//))", re.M)
+ENGINE_TYPE = "QueryEngine"
+ENGINE_SOURCE = "packages/std-program/src/query_engine.av"
+UNRECORDED = "unrecorded_read"
+# Every member of the engine a query body names. RECORDED: the engine records what it reads, or
+# replays reads it recorded. SAID: no answer reads it (the binary's own queries, its timing, the
+# engine's identity). UNRECORDED: the engine's state read past its records.
+ENGINE = {
+    "answer_to": "recorded", "reads_begun": "recorded", "reads_gathered": "recorded",
+    "reads_made_again": "recorded", "reader": "recorded", "input_read_at": "recorded",
+    "read_under": "recorded", "recorded_again": "recorded", "hash_of_answer_to": "recorded",
+    "whole_read": "recorded",
+    "kept_times": "said", "serial": "said", "print": "said", "definitions": "said",
+    "unrecorded_begun": "unrecorded", "store": "unrecorded", "settled_answers": "unrecorded",
+    "frontier": "unrecorded", "stamps_kept": "unrecorded", "stamps_seen": "unrecorded",
+    "asked_alone": "unrecorded", "open_questions": "unrecorded", "settled_answer": "unrecorded",
+}
+
+QuerySite = collections.namedtuple("QuerySite", "file line text what query")
+
+
+def package_root(path):
+    """The `src` directory a scope file's package resolves its own `use` paths against."""
+    return next((r for r in SCOPE if path.startswith(r + "/")), None)
+
+
+def module_base(path, std, dotted):
+    """Where a `use` path lies: a file `<base>.av` or a directory `<base>/`."""
+    if std:
+        pkg, _, rest = dotted.partition(".")
+        root = f"packages/std-{pkg}/src"
+    else:
+        root, rest = package_root(path), dotted
+    return os.path.join(root, *rest.split(".")) if rest else root
+
+
+def query_reach(texts):
+    """Every free fn of `texts` a query body reaches: (file, first line, last line, name, query),
+    each with the first query found reaching it. A call resolves to the fns of its own file, its
+    module's directory, and the names its file's `use` lines take."""
+    fns, by_file, by_dir, roots = {}, collections.defaultdict(dict), collections.defaultdict(dict), []
+    for f, t in texts:
+        code = "\n".join(code_of(l) for l in t.split("\n"))
+        for m in FREE_FN.finditer(code):
+            body = body_from(code, m.end())
+            first = code.count("\n", 0, m.start()) + 1
+            fns[(f, first)] = (f, first, first + body.count("\n"), m.group(1), body)
+            by_file[f].setdefault(m.group(1), []).append((f, first))
+            by_dir[os.path.dirname(f)].setdefault(m.group(1), []).append((f, first))
+        roots += [(f, m.group(3)) for m in QUERY_ROOT.finditer(t)]
+
+    def taken(base):
+        if base + ".av" in by_file:
+            return by_file[base + ".av"]
+        return by_dir.get(base, {})
+
+    names = {}
+    for f, t in texts:
+        seen = collections.defaultdict(list)
+        for n, ids in by_dir[os.path.dirname(f)].items():
+            seen[n] += ids
+        for std, dotted, what in USE_ANY.findall(t):
+            mod = taken(module_base(f, bool(std), dotted))
+            for n in what.strip("{}").split(","):
+                parts = [w.strip() for w in n.split(" as ")]
+                if parts[0] in mod:
+                    seen[parts[-1]] += mod[parts[0]]
+        names[f] = seen
+    # each query is its own: a fn reached from several is named by the first that reached it
+    reached = {i: name for f, name in roots for i in by_file[f].get(name, [])}
+    pending = list(reached.items())
+    while pending:
+        i, query = pending.pop()
+        reached.setdefault(i, query)
+        f, _, _, _, body = fns[i]
+        for c in set(CALLED.findall(body)):
+            fresh_fns = [j for j in names[f].get(c, []) if j not in reached]
+            for j in fresh_fns:
+                reached[j] = query
+            pending += [(j, query) for j in fresh_fns]
+    return [fns[i][:4] + (q,) for i, q in reached.items()]
+
+
+def engine_members(text):
+    """The engine's fields and methods, from its own source."""
+    fields = re.search(r"type " + ENGINE_TYPE + r" = \{(.*?)\n\}", text, re.S)
+    out = set(re.findall(r"^\s+([a-z_]\w*)\s*:", fields.group(1), re.M)) if fields else set()
+    return out | set(re.findall(r"^    fn ([a-z_]\w*)\(", text, re.M))
+
+
+def query_sites(texts, sites, engine_names=None):
+    """What a query body reaches that its record doesn't hold: each world read outside a DOOR file,
+    licensed or not, each unrecorded engine member unlicensed, each member ENGINE doesn't class,
+    and each `@input` outside a DOOR file."""
+    lines = {f: t.split("\n") for f, t in texts}
+    spans = collections.defaultdict(list)
+    for f, first, last, name, query in query_reach(texts):
+        spans[f].append((first, last, query))
+    def inside(f, line):
+        return next((q for first, last, q in spans[f] if first <= line <= last), None)
+    out = []
+    for s in sites:
+        q = inside(s.file, s.line)
+        if q and s.state != "door":
+            out.append(QuerySite(s.file, s.line, s.text, f"a world read ({s.verb}, {s.kind})", q))
+    licence = re.compile(r"^\s*//\s*LICENSED\s+input\." + UNRECORDED + r":\s*\S")
+    for f, t in texts:
+        for first, last, q in spans[f]:
+            body = "\n".join(code_of(l) for l in lines[f][first - 1:last])
+            held = set(re.findall(r"\b([a-z_]\w*)\s*:\s*" + ENGINE_TYPE + r"\b", body)) | {"engine"}
+            for at, line in enumerate(lines[f][first - 1:last]):
+                for m in re.finditer(r"\b(" + "|".join(sorted(held)) + r")\s*\.\s*([a-z_]\w*)", code_of(line)):
+                    member, n = m.group(2), first + at
+                    kind = ENGINE.get(member)
+                    if kind is None:
+                        out.append(QuerySite(f, n, line.strip(), f"the engine's `{member}`, which ENGINE doesn't class", q))
+                    elif kind == "unrecorded" and not (n > 1 and licence.match(lines[f][n - 2])):
+                        out.append(QuerySite(f, n, line.strip(), f"the engine's `{member}`, read past its records", q))
+        if f not in DOOR:
+            for m in QUERY_ROOT.finditer(t):
+                if m.group(1) == "input":
+                    n = t.count("\n", 0, m.start()) + 1
+                    out.append(QuerySite(f, n, lines[f][n - 1].strip(), f"an input `{m.group(3)}` outside the door", m.group(3)))
+    return out
+
+
+def query_key(s):
+    return (s.file, s.text)
+
+
+def query_baseline():
+    if not os.path.exists(QUERY_BASELINE):
+        return []
+    return [tuple(l.split("\t", 1)) for l in open(QUERY_BASELINE).read().split("\n") if l and not l.startswith("#")]
+
+
+QUERY_HEADER = """# READS A QUERY BODY REACHES THAT ITS RECORD DOESN'T HOLD, one TAB-separated site per line: its
+# file and its own source line trimmed. A licence is no door inside a query body. This file only
+# ever SHRINKS — `make inputs-accept` prunes what a move made gone; a new read a query reaches goes
+# through the door, or the engine records it.
+"""
+
+
+def engine_faults():
+    """ENGINE held to the engine's own source: a member it classes that the engine doesn't have."""
+    if not os.path.exists(ENGINE_SOURCE):
+        return [f"{ENGINE_SOURCE} is gone — ENGINE has no engine to hold its members to"]
+    members = engine_members(open(ENGINE_SOURCE).read())
+    return [f"ENGINE classes `{n}`, which {ENGINE_TYPE} doesn't have — drop it" for n in sorted(set(ENGINE) - members)]
+
+
 def fresh(sites, held):
     """The outside sites the baseline does not list — a line listed
     twice covers two."""
@@ -518,10 +705,82 @@ def selftest():
         sys.exit(f"inputs: self-test failed — a pure name is held to its own source: {got}")
 
 
-def main():
+def query_selftest():
+    """The query door's refusals, each a witness, and the limit the reach states."""
+    io = "use @std.io.{env}\n"
+    lic = "// LICENSED input.debug_flag: read once, changes no answer\n"
+    unrec = "    // LICENSED input." + UNRECORDED + ": the key covers the item read back\n"
+    a = "packages/std-avrac/src/compiler/qa.av"
+    helper = "packages/std-avrac/src/compiler/util/helper.av"
+    other = "packages/std-avrac/src/compiler/elsewhere/helper.av"
+    cases = [
+        # a licensed read a query body reaches through a helper is refused: a licence is no door there
+        ("licensed, reached", [(a, io + "@query(\"x\")\nfn q(engine: QueryEngine) -> string { h() }\n" + lic + "fn h() -> string { env(\"A\") ?? \"\" }\n")],
+         [(a, 5, "a world read (env, env)", "q")]),
+        # the same read no query reaches stands licensed
+        ("licensed, unreached", [(a, io + "fn p() -> string { h() }\n" + lic + "fn h() -> string { env(\"A\") ?? \"\" }\n")], []),
+        # a helper taken by `use` is reached; one of the same name in a module not taken is not
+        ("through use", [(a, "use compiler.util.helper.{h}\n@query(\"x\")\nfn q(engine: QueryEngine) -> string { h() }\n"),
+                         (helper, io + "export fn h() -> string { env(\"A\") ?? \"\" }\n"),
+                         (other, io + "export fn h() -> string { env(\"B\") ?? \"\" }\n")],
+         [(helper, 2, "a world read (env, env)", "q")]),
+        # the door is the door, inside a query body too
+        ("the door", [(sorted(DOOR)[0], io + "@query(\"x\")\nfn q(engine: QueryEngine) -> string { env(\"A\") ?? \"\" }\n")], []),
+        # the engine read past its records: refused bare, standing under its licence, refused under another
+        ("unrecorded", [(a, "@query(\"x\")\nfn q(engine: QueryEngine) {\n    engine.unrecorded_begun()\n}\n")],
+         [(a, 3, "the engine's `unrecorded_begun`, read past its records", "q")]),
+        ("unrecorded, licensed", [(a, "@query(\"x\")\nfn q(engine: QueryEngine) {\n" + unrec + "    engine.unrecorded_begun()\n}\n")], []),
+        ("unrecorded, another licence", [(a, "@query(\"x\")\nfn q(engine: QueryEngine) {\n" + lic + "    engine.store.held()\n}\n")],
+         [(a, 4, "the engine's `store`, read past its records", "q")]),
+        # an engine by any name; a member ENGINE doesn't class is refused; a recorded one stands
+        ("engine named e", [(a, "@cut_query(\"x\")\nfn q(e: QueryEngine) {\n    e.frontier.get()\n}\n")],
+         [(a, 3, "the engine's `frontier`, read past its records", "q")]),
+        ("unclassed member", [(a, "@parted_query(\"x\")\nfn q(engine: QueryEngine) {\n    engine.peeked()\n}\n")],
+         [(a, 3, "the engine's `peeked`, which ENGINE doesn't class", "q")]),
+        ("recorded member", [(a, "@query(\"x\")\nfn q(engine: QueryEngine) {\n    engine.reads_begun()\n}\n")], []),
+        # an input outside the door is refused; inside it stands
+        ("input outside", [(a, "@input(\"x\")\nfn i(engine: QueryEngine, p: string) -> string { p }\n")],
+         [(a, 1, "an input `i` outside the door", "i")]),
+        ("input in the door", [(sorted(DOOR)[2], "@input(\"x\")\nfn i(engine: QueryEngine, p: string) -> string { p }\n")], []),
+        # THE STATED LIMIT: a method isn't followed
+        ("a method", [(a, io + "@query(\"x\")\nfn q(engine: QueryEngine, c: C) -> string { c.h() }\n" + lic + "fn h() -> string { env(\"A\") ?? \"\" }\n")], []),
+    ]
+    for label, texts, want in cases:
+        got = [(q.file, q.line, q.what, q.query) for q in query_sites(texts, scope_sites(texts))]
+        if got != want:
+            sys.exit(f"inputs: query self-test `{label}` failed: {got} != {want}")
+    if engine_members("export type QueryEngine = {\n    store: S,\n}\nimpl QueryEngine {\n    fn reader() -> int { 0 }\n}\n") != {"store", "reader"}:
+        sys.exit("inputs: query self-test failed — the engine's members are read from its source")
+
+
+# THE KEEPER REFUSES ON THE TREE ITSELF: two reads planted beside the real scope, each a fault it
+# exists to find — an env read outside the door, unlicensed, and a licensed one inside a query's
+# body. `--planted` passes only where the whole run, every table and baseline as they stand, refuses
+# both; a keeper that stopped refusing fails it, so a gate that runs it holds the instrument too.
+PLANTED = [
+    ("packages/std-avrac/src/compiler/planted_read.av",
+     "use @std.io.{env}\nfn planted() -> string { env(\"AVRA_PLANTED\") ?? \"\" }\n"),
+    ("packages/std-avrac/src/compiler/planted_query.av",
+     "use @std.io.{env}\n@query(\"x\")\nfn planted_query(engine: QueryEngine) -> string {\n"
+     "    // LICENSED input.debug_flag: a licence is no door inside a query body\n"
+     "    env(\"AVRA_PLANTED\") ?? \"\"\n}\n"),
+]
+
+
+def planted_witness():
+    new, qnew = main(planted=PLANTED)
+    found = {s.file for s in new} | {q.file for q in qnew}
+    missed = [f for f, _ in PLANTED if f not in found]
+    if missed:
+        sys.exit(f"inputs: --planted — the keeper let a planted read stand: {', '.join(missed)}")
+    print(f"inputs: --planted — both planted reads refused ({len(new)} outside the door, {len(qnew)} inside a query body)")
+
+
+def main(planted=()):
     selftest()
+    query_selftest()
     files = scope_files()
-    texts = [(f, open(f).read()) for f in files]
+    texts = [(f, open(f).read()) for f in files] + list(planted)
     faults = [u for f, t in texts for u in unclassified(f, t)]
     used = {p for _, t in texts for p in packages_used(t)}
     for pkg in sorted(used & set(INERT)):
@@ -544,6 +803,23 @@ def main():
             out.write(HEADER + "".join("\t".join(k) + "\n" for k in sorted(keep.elements())))
         held = sorted(keep.elements())
     new = fresh(sites, held)
+    faults += engine_faults()
+    reached = query_sites(texts, sites)
+    qheld = query_baseline()
+    if "--accept" in sys.argv:
+        keep = collections.Counter(qheld) & collections.Counter(query_key(q) for q in reached)
+        with open(QUERY_BASELINE, "w") as out:
+            out.write(QUERY_HEADER + "".join("\t".join(k) + "\n" for k in sorted(keep.elements())))
+        qheld = sorted(keep.elements())
+    qleft = collections.Counter(qheld)
+    qnew = []
+    for q in reached:
+        if qleft[query_key(q)] > 0:
+            qleft[query_key(q)] -= 1
+        else:
+            qnew.append(q)
+    if planted:
+        return new, qnew
     by = collections.Counter((group_of(s.file, s.kind, s.verb.startswith("host.")), s.kind)
                              for s in sites if s.state == "outside")
     states = collections.Counter(s.state for s in sites)
@@ -556,15 +832,36 @@ def main():
               + f"{sum(by[(g, k)] for k in kinds):>7}")
     for s in new:
         print(f"{s.file}:{s.line}: a world read outside the input door ({s.verb}, {s.kind}) — {s.text}", file=sys.stderr)
+    print(f"inputs: {len(reached)} read(s) a query body reaches that its record doesn't hold, "
+          f"{len(reached) - len(qnew)} listed")
+    for q in qnew:
+        print(f"{q.file}:{q.line}: inside the query `{q.query}`, {q.what} — {q.text}", file=sys.stderr)
     for f in faults:
         print(f"inputs: {f}", file=sys.stderr)
+    qgone = sum(n for n in qleft.values() if n > 0)
+    if qgone and "--accept" not in sys.argv:
+        print(f"inputs: {qgone} query baseline site(s) are gone — `make inputs-accept` prunes them")
     left = gone(sites, held)
     if left and "--accept" not in sys.argv:
         print(f"inputs: {len(left)} baseline site(s) are gone — `make inputs-accept` prunes them")
-    if new or faults:
-        sys.exit(f"inputs: refused — {len(new)} new site(s), {len(faults)} unclassified; "
-                 "route the read through the door, or license it at the site")
+    if new or faults or qnew:
+        sys.exit(f"inputs: refused — {len(new)} new site(s), {len(qnew)} new inside a query body, "
+                 f"{len(faults)} unclassified; route the read through the door, or license it at the site "
+                 "(inside a query body only the door, or the engine's records)")
+
+
+def selftests():
+    """The keeper's own witnesses alone, every refusal and acceptance of its tables and the query
+    door: the tree is not read."""
+    selftest()
+    query_selftest()
+    print("inputs: self-test passed — the input door's refusals and the query door's, each witnessed")
 
 
 if __name__ == "__main__":
-    main()
+    if "--self-test" in sys.argv:
+        selftests()
+    elif "--planted" in sys.argv:
+        planted_witness()
+    else:
+        main()

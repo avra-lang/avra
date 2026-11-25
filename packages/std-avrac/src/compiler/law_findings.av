@@ -1,6 +1,6 @@
 //! THE LAWS, gathered: every `law` the compiler declares, and what they find in an item, saved per
 //! item and cut off early; a finding is worded by its law's voice only as it's said.
-use core.{At, NodeKind, Span, flatten, some_list}
+use core.{At, NodeKind, Span, digest_of, flatten, some_list}
 use compiler.laws.{ItemAnalysis, Aside, Found, Reach, Unread, law}
 use @std.errors.{Confidence, Edit, Frame, Suggestion}
 use diagnostics.{Diag, Guess, Severity, Voice, error_at, guess_fix, loc_at, said_as, unread_behind}
@@ -195,8 +195,17 @@ fn program_file_errors(
 /// Whether `file` declares a top-level const whose value each program gathers over its own closure:
 /// the only declaration a program's gathering can break (`program_gathered`), read off what every
 /// file's declarations and every const's settlement already answer, so a file that declares none
-/// asks nothing more of a program.
+/// asks nothing more of a program, nor any question of its own.
 export fn gathers_per_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    if !file_declares(engine, file).names.any(it.kind == ItemKind.Const) { return false }
+    const_gathering(engine, file)
+}
+
+/// Whether a const `file` declares settles per program. AN ANSWER OF ITS OWN, for a file that
+/// declares a const: telling a const's settlement reads its item whole, so a run where nothing moved
+/// takes this answer as it stands and reads no item.
+@query("laws")
+fn const_gathering(engine: QueryEngine, file: SourceFileAddress) -> bool {
     file_declares(engine, file).names.any((d) -> per_program_const(engine, d))
 }
 
@@ -574,6 +583,27 @@ fn guessed_fixes(guess: Guess?, at: FindingAt?, path: string) -> List<Suggestion
     let place? = at else { return [] }
     let named? = loc_at(path, Span { lo: place.lo, hi: place.lo + g.written.length }) else { return [] }
     [guess_fix(g, named)]
+}
+
+/// THE TOOLCHAIN'S VERDICT ON ONE STD PACKAGE AS AN ANSWER: whether every file of `package` its
+/// verdict's `lines` name (`package`, path, digest, by tabs) stands with the text the verdict judged,
+/// no line malformed. Its reads are those files' texts, so a run where none of them moved takes it as
+/// it stands, each file's stamp asked and no text read or hashed.
+@query("laws")
+export fn verdict_package(engine: QueryEngine, package: string, lines: List<string>) -> bool {
+    lines.all((l) -> judged_line_stands(engine, package, l.split("\t")))
+}
+
+/// Whether a verdict's line, split at its tabs, names a file of `package` that holds the text it judged.
+fn judged_line_stands(engine: QueryEngine, package: string, parts: List<string>) -> bool {
+    parts.length == 3 && parts[0] == package &&
+        judged_text_stands(engine, SourceFileAddress { package_name: parts[0], path_in_package: parts[1] }, parts[2])
+}
+
+/// Whether `file` holds the text whose digest is `digest`.
+fn judged_text_stands(engine: QueryEngine, file: SourceFileAddress, digest: string) -> bool {
+    let text? = source_text(engine, file) else { return false }
+    digest_of(text) == digest
 }
 
 collect listed_law_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

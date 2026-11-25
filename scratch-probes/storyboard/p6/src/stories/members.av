@@ -1,0 +1,40 @@
+use @std.meta.{Fn, Field, Named, Marker, Declared, declares, literal, type_named, refuse}
+
+export fn dumped(_d: Named) -> Marker { Marker {} }
+
+/// What a component's own members are, read at compile time: each member's
+/// name, spelling, place (`!`), default (`=`), event (`on`), and an enum's variants.
+export fn members(f: Fn, of: string) -> Declared {
+    let t? = type_named(of) else { return Declared { made: [], problems: [refuse("`${of}` names no type")] } }
+    let made = "${of}_members"
+    let said = "${of}: " +
+        [member(m) for m in t.fields].join(" | ") +
+        "  spreads " +
+        t.spreads.join("+")
+    Declared {
+        made: [
+            declares(
+                made,
+                f.at,
+                quote {
+        @dumped
+        export fn ${made}() -> string { ${literal(said)} }
+    },
+            ),
+        ],
+    }
+}
+
+fn member(m: Field) -> string {
+    let ev = if m.says != null { "on " } else { "" }
+    let st = if m.state { "!" } else { "" }
+    let d = if m.defaulted { "=" } else { "" }
+    let vs = variants(m.ty)
+    "${ev}${m.name}${st}${d}:${m.ty}${vs}"
+}
+
+fn variants(ty: string) -> string {
+    let t? = type_named(ty.replace("?", "")) else { return "" }
+    if t.variants.is_empty() { return "" }
+    "{" + [v.name for v in t.variants].join(",") + "}"
+}

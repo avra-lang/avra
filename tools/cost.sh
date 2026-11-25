@@ -183,7 +183,10 @@ ledgered() {
         HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
         taskset -c 0 build/avra "$sub" --passes --passes-rows "$@" > /dev/null 2> "$root/$out/$ran.ledger") || {
         tail -20 "$out/$ran.ledger"; echo "cost: $ran's ledger run failed"; exit 1; }
-    grep '^pass-row' "$out/$ran.ledger" > "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
+    # its pass rows, and the work it did — the queries it computed, the answers an edit worked out again
+    # — which its counted twin did too, to the one (tools/cost_ratchet.py `same_work`)
+    grep -E '^(pass-row|counts: |worked: )' "$out/$ran.ledger" > "$out/$ran.out" || :
+    grep -q '^pass-row' "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
     # the settle and each edit undone are no rows, and no table of the ledger
     case $ran in ledger-settle | ledger-back-*) ;; *) ledger_summary "$ran" "$out/$ran.ledger" ;; esac
     rm -f "$out/$ran.ledger"
@@ -213,6 +216,28 @@ warm() {
 # Each edit of the warm lane's table, over the store the cli check left. An edit undone is built back,
 # so the next edit stands on the store the check left; the share's last edit has no next, and its
 # undoing builds nothing.
+# THE NOOP CHECK: the cli's check again over the store its cold check left, nothing edited — what a
+# user's second `avra check` does, which the warm edits (`tapes --findings`) never ask. Counted as a
+# cold run is, its census the rows of `noop-check`. The store and the run's cache the cold check left
+# are kept aside as they stand (`noop_kept`), with the edited file as it stood, the warm edits run on
+# the store itself, and the noop check runs last, over what was kept: no edit stands on a store the
+# noop moved, and the noop meets no file an edit touched.
+noop_kept() {
+    [ ! -e "$place/noop-held" ] || find "$place/noop-held" -delete
+    mkdir -p "$place/noop-held"
+    cp -a "$src/packages/cli/.avra-cache" "$place/noop-held/store"
+    cp -a "$cache" "$place/noop-held/cache"
+    cp -a "$src/$edited" "$place/noop-held/edited"
+}
+noop_check() {
+    find "$src/packages/cli/.avra-cache" "$cache" -delete
+    mv "$place/noop-held/store" "$src/packages/cli/.avra-cache"
+    mv "$place/noop-held/cache" "$cache"
+    cp -a "$place/noop-held/edited" "$src/$edited"
+    find "$place/noop-held" -delete
+    counted noop-check check --counts packages/cli
+}
+
 warm_edits() {
     warm settle
     cp "$src/$edited" "$out/edited.orig"
@@ -320,6 +345,7 @@ measure() {
             lname=$name
         fi
         echo "$lname" >> "$out/workloads"
+        [ "$name" != check-cli ] || [ "$how" = ledgered ] || echo noop-check >> "$out/workloads"
         [ "$name" != check-cli ] || shared_edits | while IFS='|' read -r kind _ _; do
             if [ "$how" = ledgered ]; then echo "ledger-edit-$kind"; else echo "edit-$kind"; fi >> "$out/workloads"; done
         bare
@@ -330,7 +356,16 @@ measure() {
         # shellcheck disable=SC2086
         $how "$lname" $command
         [ "$how" = ledgered ] || [ "$census" = none ] || resolved "$name"
+        # THE LAID NOOP: the laid check again over the store it left, the std answers still laid
+        # beside the compiler — what a user's second `avra check` does, the toolchain's std vouched for
+        if [ "$lname" = check-cli-laid ]; then
+            echo laid-noop >> "$out/workloads"
+            counted laid-noop check --counts packages/cli
+        fi
+        [ "$name" != check-cli ] || [ "$how" = ledgered ] || noop_kept
         [ "$name" != check-cli ] || warm_edits
+        # the warm edits' runs name themselves (`counted`), so the workload is known by `lname` after them
+        [ "$lname" != check-cli ] || noop_check
     done
 }
 # the ledger's markdown names the program it measured and the snapshot it measured over

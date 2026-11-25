@@ -13,11 +13,14 @@ use core.{
     map_spreads,
     map_values,
     rt_sig_of,
+    OwnType,
 }
 use core.expr.{MapLit}
 
 impl Lowers for MapLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        // `{}` in a seat that wants nothing is an empty block: it makes no map
+        if self.entries.is_empty() && cx.seen_at(e)?.owns(OwnType.Void) ?? false { return cx.hollow_of(cx.seen_at(e)!) }
         if !map_spreads(self.entries).is_empty() { return spread_lowered(cx, e, self.entries) }
         let keys = [cx.lower(k) for k in map_keys(self.entries)]
         let values = [cx.lower(v) for v in map_values(self.entries)]

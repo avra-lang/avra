@@ -985,6 +985,7 @@ fn kept_written(directory: string, binary: string, questions: List<ContentHash>)
     let bytes = "${lines.join("\n")}\n${KEPT_SEAL}\n".bytes()
     let id = content_hash(bytes)
     let path = "${directory}/${KEPT_PREFIX}${binary}.${id.high_word}_${id.low_word}${KEPT_SUFFIX}"
+    // LICENSED input.store_io: the store's own kept-questions file, named by its octets
     if exists(path) { return path }
     let draft? = match drafted("${directory}/kept") { .Ok(d) -> d, .Err(_) -> null } else { return null }
     if (draft.write(bytes) catch -1) < 0 {
@@ -1025,6 +1026,14 @@ fn frontier_names_in(directory: string) -> List<FrontierName> {
     } for name in names if name.starts_with(FRONTIER_PREFIX) &&
         (name.ends_with(suffix_of(FrontierKind.Base)) ||
             name.ends_with(suffix_of(FrontierKind.Delta)))]
+}
+
+/// Every print a frontier file in `directory` is kept under, once each: a binary's, or a binary's
+/// scoped to one program.
+export fn frontier_prints(directory: string) -> List<string> {
+    mut prints: Map<string, bool> = {}
+    for f in frontier_names_in(directory) { prints.set(f.print, true) }
+    sorted_by([print for print, _p in prints], text_before)
 }
 
 /// Every question a frontier of the binary printed `binary` in `directory` holds, whatever program
