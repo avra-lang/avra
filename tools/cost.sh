@@ -268,7 +268,7 @@ warm_edits() {
 # A cold run's site lines with every address its census binary's symbol: <name>.sites, which
 # `avra census --candidates` reads.
 resolved() {
-    grep -E '^(typed|streq|empty-open): site 0x|^(pair|move|reuse): ' "$out/$1.out" > "$out/$1.raw" || :
+    grep -E '^(typed|streq|empty-open): site 0x|^(pair|move|reuse|streq-pair): ' "$out/$1.out" > "$out/$1.raw" || :
     grep -oE '0x[0-9a-f]+' "$out/$1.raw" | sort -u > "$out/$1.addrs"
     xargs addr2line -f -e "$src/build/avra" < "$out/$1.addrs" | awk 'NR % 2 == 1' | paste -d' ' "$out/$1.addrs" - > "$out/$1.names"
     awk 'NR == FNR { name[$1] = $2; next } { for (i = 1; i <= NF; i++) if ($i in name) $i = name[$i]; print }' \

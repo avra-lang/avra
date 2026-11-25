@@ -1,0 +1,58 @@
+//! `avra census` charges a text compare to the fn that asked: one a fn made itself is its own (`==`),
+//! one a map's probe made on a key is the caller of the map row's (`by:avra_map_slot`), and a pair of
+//! two runtime frames is nobody's. `avra_ran` and `scratch_dir` are the neighbouring tests' own.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A report of census site lines: `keyed` asks a map by text 7 times, `asks` compares itself 5 times
+/// and asks a map 2 more, and one pair stands wholly inside the runtime.
+fn report() -> string {
+    let dir = "${scratch_dir()}/census_identity_${stamp()}"
+    let _ = make_dirs(dir)
+    let path = "${dir}/run.sites"
+    let lines = [
+        "streq-pair: avra_map_slot av_pkg\$2Fsrc\$2Fa\$2Eav\$2Ekeyed 7 0",
+        "streq-pair: av_pkg\$2Fsrc\$2Fa\$2Eav\$2Easks av_pkg\$2Fsrc\$2Fa\$2Eav\$2Eouter 5 0",
+        "streq-pair: avra_map_get av_pkg\$2Fsrc\$2Fa\$2Eav\$2Easks 2 0",
+        "streq-pair: avra_map_slot avra_map_slot 9 0",
+        "streq: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Easks 5 0B -",
+    ]
+    let _ = write_text(path, lines.join("\n"))
+    path
+}
+
+/// What `avra census <words> <report>` prints.
+fn census_said(words: List<string>) -> string {
+    match avra_ran(["census"].concat(words).concat([report()])) {
+        .Ok(o) -> o.out.stdout,
+        .Err(_) -> "",
+    }
+}
+
+/// What the identity census of the report prints.
+once fn identity_said() -> string { census_said(["--identity"]) }
+
+spec "avra census — a text compare is the asking fn's" {
+    given "the identity census" {
+        then "it counts every compare an Avra fn asked for, at each site" {
+            identity_said().contains("text-identity: 14 compares at 3 site(s)")
+        }
+        then "a map's compare on a key is the caller's" {
+            identity_said()
+                .contains("text-identity: 7 by:avra_map_slot packages/pkg/src/a.av pkg/src/a.av.keyed")
+        }
+        then "a fn's own compare is its own" {
+            identity_said().contains("text-identity: 5 == packages/pkg/src/a.av pkg/src/a.av.asks")
+        }
+        then "a fn asking both ways is two sites" {
+            identity_said()
+                .contains("text-identity: 2 by:avra_map_get packages/pkg/src/a.av pkg/src/a.av.asks")
+        }
+        then "a pair wholly inside the runtime is nobody's" { !identity_said().contains(" 9 ") }
+    }
+    given "the candidates" {
+        then "interned names are ranked by the asking fn, each counted once" {
+            census_said(["--candidates"]).contains("candidate: interned-names 7 pkg/src/a.av.asks")
+        }
+    }
+}
