@@ -1,0 +1,95 @@
+// A diagnostic IS an error: it answers through the @std.errors trait,
+// and its kind namespaces by prefix.
+use @std.errors.{Loc, Frame, Error}
+use @std.avrac.core.{joined}
+use @std.avrac.diagnostics.{DiagCode, Severity, error_at, registered, Diag, by_position, no_voices}
+
+fn registry() -> List<DiagCode> {
+    let rows = table<DiagCode> {
+        kind             | summary
+        "parse.expected" | "the parse needed a token that is not there"
+    }
+    rows
+}
+
+/// A diagnostic anchored at `lo`, its message the anchor's name.
+fn at(lo: int, message: string) -> Diag {
+    let loc = Loc { file: null, lo: lo, hi: lo + 1 }
+    error_at("k", loc, message)
+}
+
+/// The messages of a list, in order — content AND order in one string.
+fn messages(ds: List<Diag>) -> string {
+    joined([d.message for d in ds], ",")
+}
+
+spec "diagnostics" {
+    given "a diagnostic" {
+        then "it answers through the Error trait" {
+            let at = Loc { file: "app.av", lo: 4, hi: 5 }
+            let d = error_at("parse.expected", at, "expected NAME")
+            let described = d.describe()
+            described.kind == "parse.expected" &&
+                described.message == "expected NAME" &&
+                d.describe().kind.starts_with("parse.")
+        }
+        then "error_at fills the quiet fields" {
+            let at = Loc { file: null, lo: 4, hi: 5 }
+            let d = error_at("parse.expected", at, "expected NAME")
+            d.severity == Severity.Error &&
+                d.help == null &&
+                d.suggestions.is_empty() &&
+                d.secondary.is_empty() &&
+                d.primary.loc?.lo == 4 &&
+                d.primary.label == null &&
+                d.cause == null
+        }
+        then "context() and trace() answer the diagnostic's own secondary frames — one list, not two" {
+            let f = Frame { label: "note", loc: null }
+            let d = error_at("parse.expected", null, "m") with { secondary: [f] }
+            d.context().length == 1 &&
+                d.trace().length == 1 &&
+                d.context()[0].label == "note" &&
+                d.trace()[0].label == "note"
+        }
+        then "an anchorless diagnostic carries an unlocated mark" {
+            let d = error_at("language.defect", null, "rule `x` is declared twice") with { help: "merge same-name rules" }
+            d.primary.loc == null && d.help != null
+        }
+    }
+    given "the code projection" {
+        then "a registered kind is found; an unknown one is not" {
+            registered(registry(), "parse.expected") && !registered(registry(), "no.such.kind")
+        }
+    }
+    given "by_position — source order, spoken order breaking ties" {
+        then "it sorts by where the primary mark starts" {
+            messages(by_position([at(10, "ten"), at(2, "two"), at(5, "five")])) == "two,five,ten"
+        }
+        then "equal starts keep their spoken order" {
+            messages(by_position([at(5, "first"), at(5, "second"), at(5, "third")])) == "first,second,third"
+        }
+        then "an unanchored diagnostic takes a defined slot — first" {
+            let sorted = by_position([at(0, "zero"), error_at("k", null, "nowhere")])
+            messages(sorted) == "nowhere,zero" && sorted[0].primary.loc == null
+        }
+        then "nothing sorts to nothing" {
+            let nothing: List<Diag> = []
+            by_position(nothing).is_empty()
+        }
+        then "one is itself" {
+            messages(by_position([at(3, "only")])) == "only"
+        }
+    }
+    given "Voices — the one sink" {
+        then "nothing spoken is nothing heard" {
+            !no_voices().heard()
+        }
+        then "speaking lands in the list, in order, and is heard" {
+            mut v = no_voices()
+            v.speak(at(1, "a"))
+            v.speak(at(0, "b"))
+            v.heard() && messages(v.list) == "a,b"
+        }
+    }
+}

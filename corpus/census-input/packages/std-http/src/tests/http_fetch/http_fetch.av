@@ -1,0 +1,80 @@
+// proves: a request by URL, evaluated and native alike — a GET and a
+// POST over one pooled connection to a live server, a JSON body, a
+// deadline named by its stage, a 307 followed with its body, a cookie
+// kept and sent back beside a bearer credential, and a URL refused
+// before a socket.
+use @std.net.{NetError, listen}
+use @std.time.{ms, sleep}
+use @std.json.{Json, field}
+use @std.errors.{Error}
+use @std.http.frame.{limits}
+use @std.http.http.{Header, Request, Response, Unrouted, text}
+use @std.http.server.{served, timing}
+use @std.http.client.{Answer, ClientError, method_word}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Payload, Options, Timeouts, fetch, get}
+use @std.http.jar.{jar}
+use @std.http.auth.{bearer}
+
+type Hits = { n: Cell<int> }
+
+fn shown(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${a.status} ${a.body.text() ?? "?"}", .Err(e) -> e.describe().message }
+}
+
+fn followed(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${shown(r)} via ${a.via.join(" ")}", .Err(_) -> shown(r) }
+}
+
+/// A bearer credential, or none when the token cannot be written.
+fn credentials() -> List<Header> {
+    match bearer("t0k") { .Ok(h) -> [h], .Err(_) -> [] }
+}
+
+fn answered(h: Hits, q: Request<Unrouted>) -> Response {
+    if q.target() == "/go" { return Response { status: 307, headers: [Header { name: "location", value: "/b" }] } }
+    if q.target() == "/in" { return Response { status: 204, headers: [Header { name: "set-cookie", value: "s=1" }] } }
+    if q.target() == "/who" { return text(200, "${q.header("cookie") ?? "-"} ${q.header("authorization") ?? "-"}") }
+    if q.target() == "/slow" { sleep(ms(200)) }
+    h.n.set(h.n.get() + 1)
+    text(
+        200,
+        "${method_word(q.method()) ?? "?"} ${q.target() ?? "?"} ${q.body.text() ?? ""} #${h.n.get()}",
+    )
+}
+
+fn run() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> Hits { n: Cell.new(0) }, limits(), timing()) { h, q -> answered(h, q) }
+    spawn s.run(cores: 1)
+    let base = "http://127.0.0.1:${l.port}"
+    let o = Options { pool: pool() }
+    println(shown(fetch(.Get, "${base}/a?x=1#f", .Empty, o)))
+    println(shown(fetch(.Post, "${base}/b", .Json(.Obj([field("k", .Str("v"))])), o)))
+    println(followed(fetch(.Post, "${base}/go", .Text("again"), o)).replace(base, ""))
+    let jo = Options { pool: pool(), jar: jar(), headers: credentials() }
+    println(shown(fetch(.Get, "${base}/in", .Empty, jo)))
+    println(shown(fetch(.Get, "${base}/who", .Empty, jo)))
+    jo.pool.close_all()
+    println("kept ${o.pool.kept_for("http://127.0.0.1:${l.port}")}, connections ${s.connections()}")
+    println(
+        shown(
+            fetch(
+                .Get,
+                "${base}/slow",
+                .Empty,
+                Options { pool: pool(), timeouts: Timeouts { first_byte: ms(20) } },
+            ),
+        ),
+    )
+    println(shown(get("https://example.com/")))
+    println(shown(get("http://user@127.0.0.1/")))
+    o.pool.close_all()
+    s.stop()
+    .Ok(0)
+}
+
+let _ = run() catch e -> {
+    println(e.describe().message)
+    0
+}

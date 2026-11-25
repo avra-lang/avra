@@ -1,0 +1,75 @@
+//! The structs semantics: dispatch only. Typing lives in check.av;
+//! lowering — the MEANING — in lower.av. The declaration is a
+//! STATEMENT kind: names declare program-wide in the type
+//! namespace (the driver gathers them), so here it runs its field
+//! names through the naming law and walks each field default as a
+//! body of its own.
+use core.{Expr, ExprId, StmtId, TypeId, Reg, SyntaxArena}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type StructsSemantics = {}
+
+impl NodeSemantics for StructsSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e {
+            .StructLit(_, _, values) -> values,
+            .With(subject, _, values) -> [subject].concat(values),
+            rest -> [],
+        }
+    }
+
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        match cx.view.store.expr(e) {
+            .StructLit(name, _, _) -> cx.use_type(e, name.of),
+            _ -> nothing(),
+        }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        structs_type(cx, e)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        structs_reg(cx, e)
+    }
+}
+
+export type StructDeclSemantics = {}
+
+impl StmtSemantics for StructDeclSemantics {
+    // a default is a body of its own: it sees declarations, never
+    // the top level's run-time bindings
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        decl_resolve(cx, s)
+        for d in default_exprs(cx.view.store, s) { cx.walk_under([], d) }
+    }
+
+    // a field's default is a declaration of its own, typed as one
+}
+
+/// The declaration's field names run the naming law; the driver
+/// owns the namespace and the field table.
+fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
+    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
+    let record? = cx.view.store.struct_parts(s) else { return }
+    cx.check_params(record.fields, s)
+}
+
+/// The defaults a declaration's fields carry.
+fn default_exprs(store: SyntaxArena, s: StmtId) -> List<ExprId> {
+    let sp? = store.struct_parts(s) else { return [] }
+    [f.default! for f in sp.fields if f.default != null]
+}
+
+/// A NAMED TYPE, and an ALIAS, declares nothing to walk: no field
+/// names to run the naming law over, and no default bodies. The
+/// nesting law and the shape's own laws speak at declare
+/// (typing/declare.av's `declare_named`, `declare_alias`).
+export type NamedTypeSemantics = {}
+
+impl StmtSemantics for NamedTypeSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+    }
+}

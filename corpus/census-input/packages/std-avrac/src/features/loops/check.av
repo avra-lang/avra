@@ -1,0 +1,185 @@
+//! The loops' typing laws: a while condition is a bool; a for range
+//! is ints; a jump ends the turn of a loop around it. When a bound
+//! refuses, the desugared cond/step stay unwalked — the refusal gate
+//! stops the program before their (absorbed) types matter.
+use core.{StmtId, ExprId, TypeId, Type, jump_word}
+use features.{TypeCx, nothing, this_is}
+use diagnostics.{Diag, refusal}
+
+export fn check_while(mut cx: TypeCx, s: StmtId) {
+    match cx.view.store.stmt(s) {
+        .While(cond, stmts) -> {
+            cx.walk(cond)
+            cx.require_bool(cond, "a `while` condition", "this decides the loop")
+            cx.turn_stmts(s, stmts)
+        },
+        _ -> nothing(),
+    }
+}
+
+export fn check_for(mut cx: TypeCx, s: StmtId) {
+    match cx.view.store.stmt(s) {
+        .For(_, from, to, cond, step, stmts) -> {
+            cx.walk(from)
+            cx.walk(to)
+            let ok = range_bound(cx, from, "starts") && range_bound(cx, to, "ends")
+            if ok {
+                cx.walk(cond)
+                cx.walk(step)
+            }
+            cx.turn_stmts(s, stmts)
+        },
+        _ -> nothing(),
+    }
+}
+
+/// A range bound is an `int`; Error absorbs.
+fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
+    let sh = cx.shape_at(e)
+    if sh is .Int { return true }
+    if sh is .Error { return false }
+    let n = cx.name_at(e)
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "a `for` range ${verb} at an `int`, found `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
+    false
+}
+
+/// `for x in xs` — the subject is a LIST; the name binds its
+/// element type for every read in the body.
+export fn check_for_each(mut cx: TypeCx, s: StmtId) {
+    match cx.view.store.stmt(s) {
+        .ForEach(index, _, subject, stmts) -> {
+            if index != null { cx.pair(subject) }
+            cx.walk(subject)
+            cx.record_binding(s, walked_elem(cx, subject))
+            cx.turn_stmts(s, stmts)
+        },
+        _ -> nothing(),
+    }
+}
+
+/// The element type the walk hands out — or the refusal.
+fn walked_elem(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
+    elem ?? not_a_walk(cx, subject)
+}
+
+/// Not a list: Error absorbs; the empty literal and every other
+/// shape refuse, each in its own words.
+fn not_a_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    let sh: Type = cx.seen_at(subject)
+    if sh is .Error { return cx.error_type }
+    if sh is .EmptyList { return nothing_to_walk(cx, subject) }
+    not_walkable(cx, subject)
+}
+
+/// A JUMP ENDS THE TURN OF A LOOP AROUND IT: the innermost, or the
+/// `for` its label reads — with no lambda between, whose body runs
+/// apart from the loop, and no comprehension, whose walk builds its
+/// whole list.
+export fn check_jump(mut cx: TypeCx, s: StmtId) {
+    match cx.view.store.stmt(s) {
+        .Jump(label, again) -> jump_law(cx, s, label, again),
+        _ -> nothing(),
+    }
+}
+
+fn jump_law(mut cx: TypeCx, s: StmtId, label: ExprId?, again: bool) {
+    let word = jump_word(again)
+    let top? = cx.loops.last() else { return cx.emit(no_loop(cx, s, word)) }
+    if top.bars != cx.lam_bar.length { return cx.emit(behind_lambda(cx, s, word)) }
+    if label == null { return aimed_well(cx, s, word, cx.loops.length - 1) }
+    cx.walk(label!)
+    // a name nothing binds was already refused where it was read
+    if cx.names.binding(label!) == null { return }
+    let aimed? = label_loop(cx.names, cx.view.store, label!) else { return cx.emit(not_a_loop(cx, label!, word)) }
+    let at? = [j for j, f in cx.loops if f.owner != null && f.owner! == aimed].last() else {
+        return cx.emit(not_a_loop(cx, label!, word))
+    }
+    aimed_well(cx, s, word, at)
+}
+
+/// The loop at `at` is the jump's own: no comprehension walks between,
+/// and no lambda stands between it and the jump.
+fn aimed_well(mut cx: TypeCx, s: StmtId, word: string, at: int) {
+    let crossed = [cx.loops[j] for j in at..cx.loops.length]
+    if crossed.any(it.owner == null) { return cx.emit(in_comprehension(cx, s, word)) }
+    if cx.loops[at].bars != cx.lam_bar.length { cx.emit(behind_lambda(cx, s, word)) }
+}
+
+// ── The voices ──
+
+fn no_loop(cx: TypeCx, s: StmtId, word: string) -> Diag {
+    refusal(
+        "loop.jump",
+        cx.stmt_loc(s),
+        "`${word}` ends the turn of a loop around it, and no loop encloses it",
+        "no loop here",
+        "`return` leaves the fn",
+    )
+}
+
+fn behind_lambda(cx: TypeCx, s: StmtId, word: string) -> Diag {
+    refusal(
+        "loop.jump",
+        cx.stmt_loc(s),
+        "`${word}` ends the turn of a loop around it, and a lambda's body runs apart from any loop outside it",
+        "inside a lambda",
+        "answer from the lambda, and decide in the loop",
+    )
+}
+
+fn in_comprehension(cx: TypeCx, s: StmtId, word: string) -> Diag {
+    refusal(
+        "loop.jump",
+        cx.stmt_loc(s),
+        "`${word}` ends the turn of a loop around it, and a comprehension's walk builds its whole list",
+        "inside a comprehension",
+        "write the `for` and push, or keep elements with an `if` clause",
+    )
+}
+
+fn not_a_loop(cx: TypeCx, label: ExprId, word: string) -> Diag {
+    refusal(
+        "loop.label",
+        cx.loc_of(label),
+        "`${word}` names a loop by what its `for` binds, and `${cx.view.store.ident_name(label)!}` is no enclosing `for`'s name here",
+        "not a loop's name",
+        "a `while` has no name — `${word}` alone ends the innermost loop",
+    )
+}
+
+fn nothing_to_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(subject),
+                "`for` walks an empty literal — nothing to bind",
+                "always empty",
+                "the loop would never run; drop it, or walk a named list",
+            ),
+        )
+}
+
+fn not_walkable(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    let n = cx.name_at(subject)
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(subject),
+                "`for … in` walks a `List`, this is `${n}`",
+                this_is(n),
+                "ranges spell `for i in lo..hi`",
+            ),
+        )
+}

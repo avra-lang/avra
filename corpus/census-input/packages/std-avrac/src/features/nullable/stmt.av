@@ -1,0 +1,33 @@
+//! The let-else statement's semantics: dispatch only, the stmt
+//! twin of semantics.av. `let_stmt` owns the PARSE (its branch must
+//! try before the recovering plain let); this feature owns the
+//! MEANING — the bind holds what the subject carries, in the
+//! ENCLOSING scope, and the else must leave. Rule bodies live in
+//! check.av and lower.av beside the family's.
+use core.{Stmt, StmtId, Reg}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
+
+export type LetElseSemantics = {}
+
+impl StmtSemantics for LetElseSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+        cx.scope_stmts(else_stmts_of(cx.view.store.stmt(s)))
+        cx.bind_checked(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        cx.walk_value(s)
+        check_let_else(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        let_else_reg(cx, s)
+    }
+}
+
+/// The else block — this feature's own variant, projected.
+fn else_stmts_of(s: Stmt) -> List<StmtId> {
+    // a feature matching its own variant
+    match s { .LetElse(_, _, stmts) -> stmts, _ -> [] }
+}

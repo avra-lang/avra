@@ -1,0 +1,29 @@
+//! The when NodeSemantics: dispatch only. Typing lives in check.av;
+//! lowering — the MEANING — in lower.av.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, TypeCx, LowerCx}
+
+export type WhenSemantics = {}
+
+impl NodeSemantics for WhenSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        match e {
+            .When(conds, values, fallback) -> conds.concat(values).concat([fallback]),
+            _ -> [],
+        }
+    }
+
+    fn heirs(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e { .When(_, values, fallback) -> values.concat([fallback]), _ -> [] }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        when_type(cx, e)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        when_lower(cx, e)
+    }
+
+}

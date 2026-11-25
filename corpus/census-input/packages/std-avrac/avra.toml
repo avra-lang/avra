@@ -1,0 +1,25 @@
+[package]
+name        = "@std/avrac"
+version     = "0.0.1"
+description = "Avra compiler library"
+
+[lib]
+name = "std-avrac"
+path = "src/avrac.av"
+
+# THE HOST SEAM's other half: language/llvm_api.av declares the C
+# binding's prototypes; these keep the promise at link time. The
+# prefix comes from the environment, so no machine's paths live in
+# the tree — `LLVM_PREFIX` is what the Makefile passes.
+[link]
+# ffi.o is the EXTERN HOST's frame — the evaluator's way to call a
+# linked C function by name. It is the COMPILER's C and rides here so
+# that it never reaches a user's binary: every program the compiler
+# emits links the runtime library, and a symbol resolver there would ship
+# inside all of them.
+objects = ["../../build/llvm_wrapper.o", "../../build/ffi.o"]
+# ffi.o resolves the running image's own symbols by name, so a program
+# linking this package keeps every symbol in its dynamic table.
+dynamic_symbols = true
+search  = ["${LLVM_PREFIX}/lib"]
+libs    = ["LLVM"]

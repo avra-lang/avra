@@ -1,0 +1,179 @@
+// proves: a named owner's run replaces its rows in one step — what its
+// run did not write again is removed from every bucket and the set, a
+// kept row keeps its id, a run that writes nothing empties the owner, a
+// row written between runs belongs to the next one, no other owner's row
+// moves, a second owner of one row is refused, a removal is a write a
+// kept answer hears, and a removal under a read bucket is late — in both
+// engines
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db, hooked_db, Hooks}
+
+@relation
+type Fact = { id: int, @key name: string, @index tag: string }
+
+once fn heard() -> Cell<List<string>> { Cell.new([]) }
+
+once fn families() -> Cell<int> { Cell.new(0) }
+
+once fn counts() -> Cell<int> { Cell.new(0) }
+
+once fn now() -> Cell<int> { Cell.new(0 - 1) }
+
+fn next_family() -> int {
+    let f = families().get()
+    families().set(f + 1)
+    f
+}
+
+fn noted(w: string) {
+    let h = heard()
+    h.push(w)
+}
+
+fn none() {}
+
+fn revision_now() -> int { now().get() }
+
+/// A Db whose refusals are heard, its revision `now`'s, a kept answer
+/// reused while no write moved the count.
+fn logged() -> Db {
+    hooked_db(
+        Hooks {
+            family: (_v: fn(int) -> int) -> next_family(),
+            record: (_f: int, _c: int) -> 3,
+            revision: revision_now,
+            reader: (t: int) -> "reader ${t}",
+            refused: noted,
+            opened: (_f: int, _c: int) -> -1,
+            settled: (_f: int, _c: int) -> none(),
+            running: () -> 0 - 1,
+        },
+    )
+}
+
+/// `name` filed under `tag`, owned by `owner` — its key's row, else a new one.
+fn put(db: Db, owner: int, name: string, tag: string) -> int {
+    let rs = Fact.rows_in(db)
+    let at = Fact.by_key(db, FactKey { name: name })?.id ?? rs.next_id()
+    let row = Fact { id: at, name: name, tag: tag }
+    rs.put_owned(db, "Fact", at, row, row.stable_hash(), row.index_keys(), owner)
+    at
+}
+
+fn tagged(db: Db, tag: string) -> string { [f.name for f in Fact.by_tag(db, tag)].join(",") }
+
+fn bucket(db: Db, tag: string) -> int {
+    let rs = Fact.rows_in(db)
+    rs.bucket_hash(rs.bucket_of_text(1, tag))
+}
+
+/// One run of `owner`, writing each `name:tag` pair.
+fn ran(db: Db, owner: int, pairs: List<string>) {
+    let _ = db.opened_run(owner)
+    for p in pairs {
+        let parts = p.split(":")
+        let _ = put(db, owner, parts[0], parts[1])
+    }
+    db.closed_run(owner)
+}
+
+/// Every Fact counted — rerun only after a write.
+@query
+fn facts(db: Db) -> int {
+    counts().set(counts().get() + 1)
+    Fact.all(db).length
+}
+
+/// Three rows, then a run keeping two: the third is gone from its
+/// bucket, the set and its id, the kept row's id stands, and every hash
+/// agrees with a Db that only ever held the two.
+fn replaced() -> string {
+    let db = new_db()
+    let o = db.owner_named("a.av")
+    ran(db, o, ["a:x", "b:x", "c:y"])
+    let a = Fact.by_key(db, FactKey { name: "a" })!.id
+    let c = Fact.by_key(db, FactKey { name: "c" })!.id
+    ran(db, o, ["a:x", "b:y"])
+    let fresh = new_db()
+    ran(fresh, fresh.owner_named("a.av"), ["a:x", "b:y"])
+    let same = db.set_hashes()[0] == fresh.set_hashes()[0] &&
+        bucket(db, "x") == bucket(fresh, "x") &&
+        bucket(db, "y") == bucket(fresh, "y")
+    "${Fact.all(db).length} ${tagged(db, "x")} ${tagged(db, "y")} ${Fact.get(db, c) == null} ${Fact.by_key(db, FactKey { name: "a" })!.id == a} ${same}"
+}
+
+/// A run over nothing removes nothing; a run writing nothing empties
+/// its owner.
+fn emptied() -> string {
+    let db = new_db()
+    let o = db.owner_named("e.av")
+    ran(db, o, [])
+    let before = Fact.all(db).length
+    ran(db, o, ["a:x"])
+    ran(db, o, [])
+    "${before} ${Fact.all(db).length} ${tagged(db, "x") == ""}"
+}
+
+/// A row written while no run is open joins the owner's current run, so
+/// the next run removes it unless it writes it again.
+fn between() -> string {
+    let db = new_db()
+    let o = db.owner_named("g.av")
+    ran(db, o, ["a:x"])
+    let _ = put(db, o, "late", "x")
+    let _ = put(db, o, "kept", "x")
+    let held = tagged(db, "x")
+    ran(db, o, ["a:x", "kept:x"])
+    "${held} ${tagged(db, "x")}"
+}
+
+/// Another owner's rows, and rows no owner wrote, never move.
+fn apart() -> string {
+    let db = new_db()
+    let o = db.owner_named("a.av")
+    let p = db.owner_named("b.av")
+    let _ = Fact.insert(db, name: "loose", tag: "x")
+    ran(db, o, ["a:x"])
+    ran(db, p, ["b:x"])
+    ran(db, o, [])
+    tagged(db, "x")
+}
+
+/// A row one owner holds, written by another, is refused.
+fn rival() -> string {
+    let db = logged()
+    let before = heard().get().length
+    ran(db, db.owner_named("a.av"), ["a:x"])
+    ran(db, db.owner_named("b.av"), ["a:y"])
+    "${heard().get().length - before}"
+}
+
+/// A run that only removes is a write: a kept answer over the relation
+/// is computed again, never reused stale.
+fn heard_removal() -> string {
+    let db = logged()
+    let o = db.owner_named("a.av")
+    ran(db, o, ["a:x", "b:x"])
+    let first = facts(db)
+    let runs = counts().get()
+    ran(db, o, [])
+    let second = facts(db)
+    "${first}${second} ${counts().get() - runs}"
+}
+
+/// A removal from a bucket a reader read this revision is refused, as a
+/// filing there is.
+fn late() -> string {
+    let db = logged()
+    let o = db.owner_named("a.av")
+    ran(db, o, ["a:x", "b:y"])
+    now().set(1)
+    let _ = Fact.by_tag(db, "y")
+    let before = heard().get().length
+    ran(db, o, [])
+    let words = heard().get().last() ?? "-"
+    now().set(0 - 1)
+    "${heard().get().length - before} ${words}"
+}
+
+"${replaced()} | ${emptied()} | ${between()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"

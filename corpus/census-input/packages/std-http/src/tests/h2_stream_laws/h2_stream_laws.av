@@ -1,0 +1,287 @@
+//! proves: the HTTP/2 streaming laws hold against a hostile or careless
+//! peer and a careless handler, one connection per law, each answered
+//! as the law says and the connection still serving after it:
+//! a request that arrives while another's body is read is answered; a
+//! download the peer resets releases its producer; a streamed answer
+//! past or short of its declared length, or whose producer fails, is
+//! reset, never finished; an empty stream is an empty body; an upgrade
+//! or an interim status is a 500; a body the handler never reads is
+//! refused once answered; an upload the peer resets never reaches an
+//! answer; a HEAD over a streamed answer pulls nothing.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within, sleep}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, Upgrade, text, stream_of}
+use @std.http.server.{served, timing}
+use @std.http.wire.{Transport}
+use @std.http.h2.{
+    Frame,
+    preface,
+    frame_bytes,
+    frame_at,
+    u32_at,
+    u32_bytes,
+    end_stream,
+    end_headers,
+    value_named,
+}
+use @std.http.hpack.{HeaderField, HpackDecoder, header_field, encoder, decoder}
+
+/// What the application counts: the producers released, and what the
+/// last upload's handler read.
+type App = { released: Cell<int>, read: Cell<string> }
+
+/// A producer of `n` pieces of `size` octets, declaring `length`
+/// (none when negative), failing after `fail_at` pieces when that is
+/// not negative; its release counted.
+fn producer(app: App, n: int, size: int, length: int, fail_at: int) -> Stream {
+    let pulled = Cell.new(0)
+    let piece = ["y" for _i in 0..size].join("").bytes()
+    let s = Stream {
+        pull: () -> pulled_piece(pulled, n, piece, fail_at),
+        ended: () -> app.released.set(app.released.get() + 1),
+    }
+    if length < 0 { s } else { s with { length: length } }
+}
+
+fn pulled_piece(pulled: Cell<int>, n: int, piece: Bytes, fail_at: int) -> Pulled {
+    if pulled.get() == fail_at { return .Failed }
+    if pulled.get() == n { return .End }
+    pulled.set(pulled.get() + 1)
+    .Data(piece)
+}
+
+/// A body read to its end, what it held — or the failure's word.
+fn read_all(q: Request<Unrouted>) -> string {
+    match q.body.gathered() { .Ok(b) -> "${b.length} octets", .Err(_) -> "broke" }
+}
+
+fn answer(app: App, q: Request<Unrouted>) -> Response {
+    let path = q.path()?.text() ?? ""
+    when {
+        path == "/upload" -> {
+            app.read.set(read_all(q))
+            text(200, app.read.get())
+        }
+        path == "/ignore" -> text(200, "not read")
+        path == "/released" -> text(200, "${app.released.get()} ${app.read.get()}")
+        path == "/big" -> Response { stream: producer(app, 64, 16384, -1, -1) }
+        path == "/over" -> Response { stream: producer(app, 3, 10, 20, -1) }
+        path == "/short" -> Response { stream: producer(app, 1, 10, 20, -1) }
+        path == "/failing" -> Response { stream: producer(app, 3, 10, -1, 1) }
+        path == "/empty" -> Response { stream: stream_of([]) }
+        path == "/upgrade" -> Response { status: 101, upgrade: Upgrade { run: unheld } }
+        path == "/early" -> Response { status: 103 }
+        _ -> text(200, "hello")
+    }
+}
+
+fn unheld(_c: dyn Transport, _b: Bytes) {}
+
+// ── The client ──────────────────────────────────────────────────
+
+fn head(id: int, method: string, path: string, ends: bool, extra: List<HeaderField>) -> Bytes {
+    mut e = encoder(false)
+    let fs = [
+        header_field(":method", method),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "a"),
+    ]
+        .concat(extra)
+    frame_bytes(
+        .Headers,
+        if ends { end_headers | end_stream } else { end_headers },
+        id,
+        e.encoded(fs),
+    )
+}
+
+fn get(id: int, path: string) -> Bytes { head(id, "GET", path, true, []) }
+
+/// A client connection: the octets read and not yet framed, every
+/// frame so far, and each answer head decoded in the order it came —
+/// the server's table moves with every head, so none is decoded alone.
+type Peer = { c: Conn, buf: Cell<Bytes>, frames: Cell<List<Frame>>, heads: Cell<List<Head>>, d: Cell<HpackDecoder> }
+
+/// An answer head: its stream and its status.
+type Head = { id: int, status: string }
+
+/// A connection opened with the preface, SETTINGS and a wide connection
+/// window.
+fn opened(port: int) -> Result<Peer, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+                .concat(frame_bytes(.WindowUpdate, 0, 0, u32_bytes(1073741824))),
+        )?
+    let frames: Cell<List<Frame>> = Cell.new([])
+    let heads: Cell<List<Head>> = Cell.new([])
+    .Ok(
+        Peer {
+            c: c,
+            buf: Cell.new(no_bytes),
+            frames: frames,
+            heads: heads,
+            d: Cell.new(decoder(4096, 65536)),
+        },
+    )
+}
+
+/// Frames read until `done` says so, or nothing arrives for half a
+/// second; every frame so far.
+fn read_until(p: Peer, done: fn(List<Frame>) -> bool) -> List<Frame> {
+    while !done(p.frames.get()) {
+        let got? = match within ms(500) { p.c.read(65536) } { .Ok(b) -> b, .Err(_) -> null } else { return p.frames.get() }
+        p.buf.set(p.buf.get().concat(got))
+        mut more = true
+        while more {
+            match frame_at(p.buf.get(), 0, 16777215) {
+                .Whole(f, end) -> {
+                    heard_frame(p, f)
+                    p.buf.set(p.buf.get().slice(end, p.buf.get().length))
+                },
+                .Partial or .Oversized -> { more = false },
+            }
+        }
+    }
+    p.frames.get()
+}
+
+/// `f` kept, and its status decoded when it is an answer head.
+fn heard_frame(p: Peer, f: Frame) {
+    p.frames.set(p.frames.get().concat([f]))
+    if !(f.kind is .Headers) { return }
+    mut d = p.d.get()
+    let status = match d.decoded(f.payload) {
+        .Fields(xs) -> value_named(xs, ":status".bytes())?.text() ?? "?",
+        .TooLarge or .Refused(_) -> "?",
+    }
+    p.d.set(d)
+    p.heads.set(p.heads.get().concat([Head { id: f.stream, status: status }]))
+}
+
+fn ended(fs: List<Frame>, id: int) -> bool { fs.any(it.stream == id && (it.kind is .Reset || it.flags & end_stream != 0)) }
+
+/// Stream `id`'s outcome: `status body`, `reset <code> after <n> DATA`,
+/// or `silent`.
+fn outcome(p: Peer, id: int) -> string {
+    let fs = p.frames.get()
+    let data = [f.payload for f in fs if f.stream == id && f.kind is .Data]
+    let r? = fs.find(it.stream == id && it.kind is .Reset) else { return answered(p, id, data.bytes()) }
+    "${answered(p, id, data.bytes())}, reset ${u32_at(r.payload, 0)} after ${data.length} DATA"
+}
+
+fn answered(p: Peer, id: int, body: Bytes) -> string {
+    let h? = p.heads.get().find(it.id == id) else { return "silent" }
+    "${h.status} ${body.text() ?? "?"}"
+}
+
+// ── The laws ────────────────────────────────────────────────────
+
+/// A GET sent while stream 1's body is still being read is answered as
+/// soon as that body is done — not held until the peer speaks again.
+fn behind_a_body(port: int) -> Result<string, NetError> {
+    let p = opened(port)?
+    defer { let _ = p.c.close() }
+    p
+        .c
+        .write(
+            head(1, "POST", "/upload", false, [header_field("content-length", "10")])
+                .concat(frame_bytes(.Data, 0, 1, "01234".bytes())),
+        )?
+    sleep(ms(50))
+    p.c.write(get(3, "/"))?
+    sleep(ms(50))
+    p.c.write(frame_bytes(.Data, end_stream, 1, "56789".bytes()))?
+    let _ = read_until(p, (fs) -> ended(fs, 1) && ended(fs, 3))
+    .Ok("${outcome(p, 1)} / ${outcome(p, 3)}")
+}
+
+/// A download the peer resets after its first DATA: the producer is
+/// released and the connection answers the next request.
+fn reset_download(port: int) -> Result<string, NetError> {
+    let p = opened(port)?
+    defer { let _ = p.c.close() }
+    p.c.write(get(1, "/big"))?
+    let _ = read_until(p, (fs) -> fs.any(it.stream == 1 && it.kind is .Data))
+    p.c.write(frame_bytes(.Reset, 0, 1, u32_bytes(8)))?
+    sleep(ms(50))
+    p.c.write(get(3, "/released"))?
+    let _ = read_until(p, (fs) -> ended(fs, 3))
+    .Ok(outcome(p, 3))
+}
+
+/// One GET on a connection of its own, its outcome.
+fn one(port: int, path: string, method: string) -> Result<string, NetError> {
+    let p = opened(port)?
+    defer { let _ = p.c.close() }
+    p.c.write(head(1, method, path, true, []).concat(get(3, "/")))?
+    let _ = read_until(p, (fs) -> ended(fs, 1) && ended(fs, 3))
+    .Ok("${outcome(p, 1)} / then ${outcome(p, 3)}")
+}
+
+/// A 64 KB upload the handler never reads: answered, the rest refused,
+/// and the next request answered.
+fn ignored_upload(port: int) -> Result<string, NetError> {
+    let p = opened(port)?
+    defer { let _ = p.c.close() }
+    p
+        .c
+        .write(
+            head(1, "POST", "/ignore", false, [header_field("content-length", "65535")])
+                .concat(frame_bytes(.Data, 0, 1, ["z" for _i in 0..16384].join("").bytes())),
+        )?
+    let _ = read_until(p, (fs) -> ended(fs, 1) && fs.any(it.stream == 1 && it.kind is .Reset))
+    p.c.write(get(3, "/"))?
+    let _ = read_until(p, (fs) -> ended(fs, 3))
+    .Ok("${outcome(p, 1)} / then ${outcome(p, 3)}")
+}
+
+/// An upload the peer resets halfway: its handler's read breaks and
+/// nothing answers it; the next request is answered and says so.
+fn reset_upload(port: int) -> Result<string, NetError> {
+    let p = opened(port)?
+    defer { let _ = p.c.close() }
+    p
+        .c
+        .write(
+            head(1, "POST", "/upload", false, [header_field("content-length", "10")])
+                .concat(frame_bytes(.Data, 0, 1, "01234".bytes())),
+        )?
+    sleep(ms(50))
+    p.c.write(frame_bytes(.Reset, 0, 1, u32_bytes(8)))?
+    sleep(ms(50))
+    p.c.write(get(3, "/released"))?
+    let _ = read_until(p, (fs) -> ended(fs, 3))
+    .Ok("${outcome(p, 1)} / then ${outcome(p, 3)}")
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App { released: Cell.new(0), read: Cell.new("-") }, limits(), timing()) { app, q -> answer(app, q) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let port = l.port
+    .Ok(
+        [
+            "a GET behind a body: ${behind_a_body(port)?}",
+            "a reset download: ${reset_download(port)?}",
+            "past its length: ${one(port, "/over", "GET")?}",
+            "short of its length: ${one(port, "/short", "GET")?}",
+            "a failing producer: ${one(port, "/failing", "GET")?}",
+            "an empty stream: ${one(port, "/empty", "GET")?}",
+            "an upgrade: ${one(port, "/upgrade", "GET")?}",
+            "an interim status: ${one(port, "/early", "GET")?}",
+            "HEAD over a stream: ${one(port, "/big", "HEAD")?}",
+            "a body never read: ${ignored_upload(port)?}",
+            "a reset upload: ${reset_upload(port)?}",
+            "producers released: ${one(port, "/released", "GET")?}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

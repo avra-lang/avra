@@ -1,0 +1,59 @@
+//! THE `@` SURFACE, both halves. `@name(args)` before a DECLARATION
+//! is an ANNOTATION — a call the compiler makes over the declaration
+//! at compile time. It is a fact of the declaration it crosses (the
+//! store's `annotations_of`), never a node of its own: its callee is
+//! an ident and its arguments are expressions, so every pass reads
+//! them as it reads any expression.
+//!
+//! `@word` or `@word(a, b)` before a declared MEMBER — a variant, a
+//! field — is a MARK, and A MARK IS DATA WHERE AN ANNOTATION IS A
+//! CALL. It is recorded on the member and handed to whoever reads it;
+//! nothing runs where it is written. Its arguments are expressions,
+//! kept two ways: as WORDS for a reader that only names things, and
+//! as the CALL `word(${value}, args)` — a template marked where the
+//! `@` stands, which a reader splices over the value it judges, so
+//! the call is typed where it lands and its refusals point here. An
+//! annotation on a record, an enum or a named type whose fn takes a
+//! VALUE rather than a declaration is the same kind of data: a RULE.
+//! The `mark` rule lives here because the `@` surface is one
+//! feature's; the members that may carry one are spelled by the
+//! features that declare them.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+export fn annotations() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "annotated" | build_annotated
+        "mark"      | build_mark
+    }
+    let codes = table<DiagCode> {
+        kind                         | summary
+        "annotation.callee"          | "an annotation names a fn over a declaration"
+        "annotation.receiver"        | "an annotation's first seat says what it takes"
+        "annotation.seats"           | "an annotation's arguments fill its seats"
+        "annotation.answer"          | "an annotation answers an effect"
+        "annotation.said"            | "an annotation refused this declaration"
+        "annotation.kind"            | "an annotation's kind is a word — `[A-Za-z0-9_-]+`, like `E1`"
+        "annotation.generated_taken" | "an annotation generates a name the file already declares"
+        "annotation.warning"         | "a declaration's warning, spoken at a use"
+        "annotation.derive"          | "`@derive` names a trait that declares `derive`"
+        "annotation.unsettled"       | "an annotation could not run"
+        "annotation.meta"            | "the compiler crosses `@std/meta`'s own shapes"
+        "annotation.unplaceable"     | "a hole was filled with something no seat can hold"
+        "annotation.unread_mark"     | "every mark is read by something that claims it"
+        "annotation.wrap_missing"    | "a WRAP directive's `source` names no matching fn"
+        "annotation.wrap_bodiless"   | "a WRAP directive over a declaration with no body"
+        "annotation.wrap_mismatch"   | "a WRAP directive's wrapper signature does not match"
+        "annotation.wrap_kind"       | "a WRAP directive over a declaration that is neither a fn nor a method"
+    }
+    LanguageFeature annotations {
+        gram: grammar {
+            stmt = a:PKG ( "(" ( e:argument ( "," e:argument )* ","? )? ")" )? BREAK? d:stmt -> annotated(a, e, d)
+            mark = m:PKG ( "(" ( g:argument ( "," g:argument )* ","? )? ")" @expect(")", "expected `)` to close the mark's arguments") )? -> mark(m, g)
+        }
+        diags: codes
+        builders: rows
+    }
+    annotations
+}

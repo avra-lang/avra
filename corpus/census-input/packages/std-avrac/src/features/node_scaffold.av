@@ -1,0 +1,36 @@
+//! THE MIGRATION'S FRONT: the builders a node build still needs and
+//! the node model cannot answer from `core/`.
+//!
+//! One per variant, each naming a CORE constructor and
+//! FEATURES verbs in one expression, which neither layer can write
+//! alone: a derive emits into the file it annotates, and the node
+//! enums are `core/` while `Builder` and `LangNode` are `features/`.
+//! RETIREMENT TRIGGER: a derive being handed a Type it does not sit
+//! on (avra-8sb5.11.100). A payload-value union was considered and
+//! REFUSED — it is the parallel value enum the protocol refused,
+//! wearing an argument's clothes.
+use core.{Expr}
+use features.{BuilderRow, LangNode, Builder}
+
+/// Each variant's builder. Arguments arrive in PAYLOAD ORDER, and a
+/// reader names the payload it wants — never its index, so two
+/// same-typed payloads cannot be swapped silently.
+export fn node_builders() -> List<BuilderRow> {
+    let rows = [
+        BuilderRow { name: "Expr.StrLit", build: build_expr_str_lit },
+        BuilderRow { name: "Expr.BoolLit", build: build_expr_bool_lit },
+    ]
+    rows
+}
+
+// LICENSED compiler.free_state_verb: a builder is a registry ROW's fn, not a verb on `Builder` —
+// the shape every `features/*/builders.av` carries, exempt there by path alone
+fn build_expr_str_lit(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.StrLit(b.text_of("value")?))
+}
+
+// LICENSED compiler.free_state_verb: a builder is a registry ROW's fn, not a verb on `Builder` —
+// the shape every `features/*/builders.av` carries, exempt there by path alone
+fn build_expr_bool_lit(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.BoolLit(b.flag_of("value")?))
+}

@@ -1,0 +1,98 @@
+//! Coherence: the composed grammar, the feature tables, and the code
+//! registry must agree before any source parses.
+use core.{flatten, joined}
+use @std.grammar.{Grammar, Alt, Build, Diagnostic, defect}
+use diagnostics.{DiagCode}
+
+/// Every disagreement between a composed grammar's build calls and the
+/// features' builder tables.
+export fn builder_defects(features: List<LanguageFeature>, g: Grammar) -> List<Diagnostic> {
+    duplicate_defects(features)
+        .concat(unregistered_defects(features, g))
+        .concat(dead_defects(features, referenced_names(g)))
+}
+
+/// The feature whose registration of `name` wins — dispatch's search
+/// order, by construction.
+fn registrar_of(features: List<LanguageFeature>, name: string) -> string? {
+    features.find(it.builders.any(it.name == name))?.name
+}
+
+/// Every build-call name any rule references.
+fn referenced_names(g: Grammar) -> Map<string, bool> {
+    mut out: Map<string, bool> = {}
+    for r in g.rules {
+        for name in call_names_in_alt(r.body) { out.set(name, true) }
+    }
+    out
+}
+
+/// A name registered by two features names the prior owner.
+fn duplicate_defects(features: List<LanguageFeature>) -> List<Diagnostic> {
+    mut seen: Map<string, string> = {}
+    mut out: List<Diagnostic> = []
+    for f in features {
+        for row in f.builders {
+            let prior: string? = seen.get(row.name)
+            if prior == null {
+                seen.set(row.name, f.name)
+            } else {
+                out
+                    .push(defect(f.name, "builder `${row.name}` is already registered by `${prior!}`"))
+            }
+        }
+    }
+    out
+}
+
+/// A build call no feature answers names the rule and the search.
+fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Diagnostic> {
+    let searched = joined(features.map(it.name), ", ")
+    mut out: List<Diagnostic> = []
+    for r in g.rules {
+        let missing = [defect(r.name, "no feature registers builder `${name}` (searched ${searched})") for name in call_names_in_alt(r.body) if registrar_of(features, name) == null]
+        out = out.concat(missing)
+    }
+    out
+}
+
+/// A builder no grammar rule ever calls is dead.
+fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) -> List<Diagnostic> {
+    mut out: List<Diagnostic> = []
+    for f in features {
+        let dead = [defect(f.name, "builder `${row.name}` is never called by any grammar rule") for row in f.builders if referenced.get(row.name) == null]
+        out = out.concat(dead)
+    }
+    out
+}
+
+/// Build-call names referenced anywhere in a branch tree, groups
+/// included.
+fn call_names_in_alt(a: Alt) -> List<string> {
+    flatten([build_call_name(s.build) for s in a.seqs()])
+}
+
+/// The build's callee, as a list — empty for pass-through and Var.
+fn build_call_name(b: Build?) -> List<string> {
+    if b == null { return [] }
+    match b! {
+        .Call(name, _) -> [name],
+        // A node build names no builder here: it is bound where the
+        // node model lives, and registers there.
+        .Node(_, _, _, _) or .Var(_) -> [],
+    }
+}
+
+/// A kind registered twice is an assembly defect.
+export fn code_defects(codes: List<DiagCode>) -> List<Diagnostic> {
+    // LICENSED compiler.seen_accumulator: duplicate DETECTION across tables, not one list
+    mut seen: List<string> = []
+    mut out: List<Diagnostic> = []
+    for c in codes {
+        if seen.contains(c.kind) {
+            out.push(defect(c.kind, "diagnostic kind is registered more than once"))
+        }
+        seen.push(c.kind)
+    }
+    out
+}

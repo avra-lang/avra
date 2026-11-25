@@ -1,0 +1,98 @@
+// A `@side` column's family verifies ONE SLOT, never the whole column —
+// the load-bearing property the ordinary Kernel's `opened` hook relies on
+// to reuse a query that read slot A across an edit to slot B, and rerun
+// only across an edit to A itself (avra-8sb5.57.9.7). This captures the
+// verify callback `SideRows.opened` hands to `db.hooks.family` and calls
+// it directly, the same answer the Kernel would ask for when deciding
+// whether a cached read still holds.
+//
+// `store` IS A `Cell<SideTable<Row>>`, never a bare table: the family's
+// verify closure is bound once, at the first call, so it must re-read the
+// CURRENT table through the Cell on every invocation — a closure over a
+// bare table would answer that first call's snapshot forever. Writing
+// this test caught exactly that bug in the first draft of `get_db`.
+use @std.relation.{relation, side}
+use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.rows.{SideRows, side_rows}
+use @std.avrac.core.{SideTable, side_table}
+
+@relation
+@side
+type Row = { n: int }
+
+once fn captured() -> Cell<fn(int) -> int> { Cell.new((cell: int) -> 0) }
+
+/// A Db that hands the family's own verify callback to the test instead
+/// of hiding it inside the Kernel — everything else behaves like a
+/// Db nothing records.
+fn capturing_db() -> Db {
+    hooked_db(
+        Hooks {
+            family: (verify: fn(int) -> int) -> {
+                captured().set(verify)
+                0
+            },
+            record: (_f: int, _c: int) -> 0,
+            revision: () -> -1,
+            reader: (_t: int) -> "a read",
+            refused: no_refusal,
+            opened: (_f: int, _c: int) -> -1,
+            settled: no_settle,
+            running: () -> 0 - 1,
+        },
+    )
+}
+
+fn verify_cell(cell: int) -> int { (captured().get())(cell) }
+
+fn no_refusal(_w: string) {}
+
+fn no_settle(_f: int, _c: int) {}
+
+fn two_row_store() -> Cell<SideTable<Row>> {
+    mut tbl = side_table("rows", 0, 2, Row { n: 0 })
+    tbl.set(0, Row { n: 1 })
+    tbl.set(1, Row { n: 2 })
+    Cell.new(tbl)
+}
+
+spec "std/relation — a @side column's family verifies one slot at a time" {
+    given "a column with two slots, read through get_db" {
+        then "editing slot B leaves slot A's own verify answer unchanged" {
+            let store = two_row_store()
+            let side: SideRows<Row> = side_rows()
+            let db = capturing_db()
+            let _ = Row.get_db(db, store, side, 0)
+            let before = verify_cell(0 + 1)
+            mut tbl = store.get()
+            tbl.set(1, Row { n: 99 })
+            store.set(tbl)
+            let after = verify_cell(0 + 1)
+            before == after
+        }
+        then "editing slot A moves slot A's own verify answer" {
+            let store = two_row_store()
+            let side: SideRows<Row> = side_rows()
+            let db = capturing_db()
+            let _ = Row.get_db(db, store, side, 0)
+            let before = verify_cell(0 + 1)
+            mut tbl = store.get()
+            tbl.set(0, Row { n: 100 })
+            store.set(tbl)
+            let after = verify_cell(0 + 1)
+            before != after
+        }
+        then "the whole-column cell still answers from the current table" {
+            let store = two_row_store()
+            let side: SideRows<Row> = side_rows()
+            let db = capturing_db()
+            let _ = Row.get_db(db, store, side, 0)
+            let before = verify_cell(0)
+            mut tbl = store.get()
+            tbl.set(1, Row { n: 999 })
+            store.set(tbl)
+            let after = verify_cell(0)
+            before != after
+        }
+    }
+}

@@ -1,0 +1,95 @@
+//! The enums semantics: dispatch only. Typing lives in check.av;
+//! lowering — the MEANING — in lower.av. The declaration is a
+//! STATEMENT kind whose name the driver declares program-wide in
+//! the type namespace, so its own passes do nothing. A match is
+//! CONTROL-OWNING: its arms are hidden from `kids` and walked
+//! through the driver, each under its own bind.
+use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder}
+use features.{NodeSemantics, StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.enums.{bind_types, pat_reg, bind_regs}
+
+export type EnumsSemantics = {}
+
+/// The pattern ladder's five variants are all enums' today. Each
+/// body lives with its concern — typing in check.av, meaning in
+/// lower.av — and this is the dispatch only.
+export type EnumPatSemantics = {}
+
+impl PatSemantics for EnumPatSemantics {
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> { bind_types(cx, p, expected) }
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg { pat_reg(cx, p, v, vty) }
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> { bind_regs(cx, p, v, vty) }
+}
+
+impl NodeSemantics for EnumsSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e {
+            .Match(subject, _) or .Is(subject, _) -> [subject],
+            .VariantLit(_, args) -> args,
+            rest -> [],
+        }
+    }
+
+    fn heirs(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e { .Match(_, arms) -> [a.value for a in arms], _ -> [] }
+    }
+
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        // a feature cannot enumerate OTHER features' variants
+        match cx.view.store.expr(e) { .Match(_, arms) -> resolve_arms(cx, arms), _ -> nothing() }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        enums_type(cx, e)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        enums_reg(cx, e)
+    }
+}
+
+export type EnumDeclSemantics = {}
+
+impl StmtSemantics for EnumDeclSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_enum_decl(cx, s)
+    }
+
+}
+
+/// Each arm walks under its OWN binds — those of its first pattern,
+/// in pre-order (an `or` arm's alternatives bind nothing, which
+/// typing enforces). A match is a CONTROL-OWNING node, so `kids`
+/// hides the arm values and this walks them instead.
+fn resolve_arms(mut cx: ResolveCx, arms: List<Arm>) {
+    for a in arms { cx.arm_scope(cx.bound_pats(arm_binds(cx.view.store, a)), a.value, a.guard) }
+}
+
+/// Whether every pattern is irrefutable — spelled as a scan: a
+/// method call on a captured store inside `all` mistypes the pronoun.
+export fn all_irrefutable(store: SyntaxArena, ids: List<PatId>) -> bool {
+    for p in ids {
+        if !store.irrefutable(p) { return false }
+    }
+    true
+}
+
+/// The first irrefutable pattern among these, when one is.
+export fn hole_of(store: SyntaxArena, ids: List<PatId>) -> PatId? {
+    for p in ids {
+        if store.irrefutable(p) { return p }
+    }
+    null
+}
+
+/// The names an arm binds: its first pattern's, in pre-order.
+export fn arm_binds(store: SyntaxArena, a: Arm) -> List<Binder> {
+    let first? = a.pats.first() else { return [] }
+    store.pattern_binds(first)
+}

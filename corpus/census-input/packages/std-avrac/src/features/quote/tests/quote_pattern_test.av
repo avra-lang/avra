@@ -1,0 +1,408 @@
+// `quote { … }` in PATTERN position: it matches code STRUCTURALLY,
+// never splices, and binds each hole to the `Code` at its seat —
+// layout- and paren-blind, a name written twice demanding the same
+// code by fingerprint. The subject is `Code` (features/code.av),
+// this compiler's own handle — never `@std.meta.Code`, a splicing
+// value a different door mints.
+use @std.avrac.compiler.{analyze_source, parse_source, Analysis, Parsed}
+use @std.avrac.features.{Code}
+use @std.avrac.core.{At, ExprId, PatId}
+
+/// The one statement's expression — every subject here is one line.
+fn root_expr(a: Analysis) -> ExprId {
+    a.view.store.answer_of(a.view.stmts[0])!
+}
+
+/// The subject `Code`, wrapping the whole analysed line.
+fn code_of(a: Analysis) -> Code {
+    a.code_at(At.Expr(root_expr(a)))
+}
+
+/// The subject `Code`, wrapping the one analysed STATEMENT itself —
+/// a `let`/`for` subject has no tail expression to root at.
+fn stmt_code_of(a: Analysis) -> Code {
+    a.code_at(At.Stmt(a.view.stmts[0]))
+}
+
+/// Whether `src` refuses with `code` among its diagnostics — no
+/// `@std/avrac` dependency needed: every refusal this file drives at
+/// is judged on the PATTERN's own shape, before the subject's type
+/// is even asked (features/quote/check.av).
+fn refused_with(src: string, code: string) -> bool {
+    let a = analyze_source(src)
+    !a.clean() && a.report().contains(code)
+}
+
+/// The first arm's first pattern of the one statement's `match`.
+fn first_pat(parsed: Parsed) -> PatId {
+    match parsed.store.expr(parsed.store.answer_of(parsed.stmts[0])!) {
+        .Match(_, arms) -> arms[0].pats[0],
+        rest -> PatId { index: 0 - 1 },
+    }
+}
+
+spec "features/quote — a quote in pattern position" {
+    given "a hole" {
+        then "binds the node at its seat: over `n + 1` x.at names `n`; over `n + 2` the `_` arm answers" {
+            let hit = match code_of(analyze_source("n + 1")) {
+                quote { ${x} + 1 } -> x.name() == "n",
+                _ -> false,
+            }
+            let miss = match code_of(analyze_source("n + 2")) {
+                quote { ${x} + 1 } -> false,
+                _ -> true,
+            }
+            hit && miss
+        }
+    }
+    given "the same name twice" {
+
+        then "must match the same code, by fingerprint — `a == a` matches, `a == b` does not" {
+            let same = match code_of(analyze_source("a == a")) {
+                quote { ${x} == ${x} } -> true,
+                _ -> false,
+            }
+            let diff = match code_of(analyze_source("a == b")) {
+                quote { ${x} == ${x} } -> false,
+                _ -> true,
+            }
+            same && diff
+        }
+    }
+    given "layout and parentheses" {
+
+        then "never matter — the match is over nodes, not spans" {
+            match code_of(analyze_source("(a) + 1")) { quote { ${x} + 1 } -> true, _ -> false }
+        }
+    }
+    given "a guard" {
+
+        then "reads a bind: `if x.name() != null` sees the same `x` the pattern bound" {
+            let hit = match code_of(analyze_source("q ?? 9")) {
+                quote { ${x} ?? ${d} } if x.name() != null -> true,
+                _ -> false,
+            }
+            let miss = match code_of(analyze_source("(1 + 2) ?? 9")) {
+                quote { ${x} ?? ${d} } if x.name() != null -> false,
+                _ -> true,
+            }
+            hit && miss
+        }
+        then "reads an ANALYSED property: `if x.pure()` picks a bare name over a call" {
+            let hit = match code_of(analyze_source("q ?? 9")) {
+                quote { ${x} ?? ${d} } if x.pure() -> true,
+                _ -> false,
+            }
+            let miss = match code_of(analyze_source("next() ?? 9")) {
+                quote { ${x} ?? ${d} } if x.pure() -> false,
+                _ -> true,
+            }
+            hit && miss
+        }
+    }
+    given "an arm-kind pattern" {
+
+        then "a body that is a whole arm refuses — an arm is not a single node the matcher can root at" {
+            refused_with(
+                "match 1 { quote { .A -> 1 } -> true, _ -> false }",
+                "type.quote_pat_shape",
+            )
+        }
+    }
+    given "a NAME hole" {
+
+        then "a `let`'s declared name binds its own text, as a string" {
+            match stmt_code_of(analyze_source("let n = 1")) {
+                quote { let ${x} = 1 } -> x == "n",
+                _ -> false,
+            }
+        }
+        then "the bound text, captured in a lambda (`xs.any(it == x)`), reads as the string it is" {
+            let names = ["m", "n"]
+            match stmt_code_of(analyze_source("let n = 1")) {
+                quote { let ${x} = 1 } -> names.any(it == x),
+                _ -> false,
+            }
+        }
+        then "a `for` loop's binder binds its own text" {
+            match stmt_code_of(analyze_source("for n in xs { n }")) {
+                quote { for ${x} in ${xs} { ${b} } } -> x == "n",
+                _ -> false,
+            }
+        }
+        then "a call's callee binds its own text" {
+            match code_of(analyze_source("f(1)")) { quote { ${f}(1) } -> f == "f", _ -> false }
+        }
+        then "a method call's name binds its own text" {
+            match code_of(analyze_source("xs.push(1)")) {
+                quote { ${xs}.${m}(1) } -> m == "push",
+                _ -> false,
+            }
+        }
+        then "a field read's name binds its own text" {
+            match code_of(analyze_source("p.x")) { quote { ${p}.${n} } -> n == "x", _ -> false }
+        }
+        then "the SAME name used twice at a name seat demands the same text — `f(1) + f(2)` matches, `f(1) + g(2)` does not" {
+            let same = match code_of(analyze_source("f(1) + f(2)")) {
+                quote { ${f}(1) + ${f}(2) } -> true,
+                _ -> false,
+            }
+            let diff = match code_of(analyze_source("f(1) + g(2)")) {
+                quote { ${f}(1) + ${f}(2) } -> false,
+                _ -> true,
+            }
+            same && diff
+        }
+        then "a name hole's own text is readable through a guard, like any other bound value" {
+            match stmt_code_of(analyze_source("let n = 1")) {
+                quote { let ${x} = 1 } if x == "n" -> true,
+                _ -> false,
+            }
+        }
+        then "an EMBEDDED hole (`l\${x}_y` — not the whole field) still refuses — type.quote_pat_seat" {
+            refused_with(
+                "match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }",
+                "type.quote_pat_seat",
+            )
+        }
+        then "one binder mixing a name seat (a callee) and a code seat (an argument) refuses" {
+            refused_with(
+                "match 1 { quote { \${x}(\${x}) } -> true, _ -> false }",
+                "type.quote_pat_mixed",
+            )
+        }
+    }
+    given "a run hole" {
+
+        then "a call's arguments — `\${..args}` binds every argument, in order" {
+            match code_of(analyze_source("f(1, 2, 3)")) {
+                quote { f(${..args}) } -> args.length == 3 && args[0].text() == "1" && args[2].text() == "3",
+                _ -> false,
+            }
+        }
+        then "an empty run — no arguments at all" {
+            match code_of(analyze_source("f()")) {
+                quote { f(${..args}) } -> args.length == 0,
+                _ -> false,
+            }
+        }
+        then "a run at the end, after a fixed argument" {
+            match code_of(analyze_source("f(1, 2, 3)")) {
+                quote { f(1, ${..rest}) } -> rest.length == 2 && rest[0].text() == "2" && rest[1].text() == "3",
+                _ -> false,
+            }
+        }
+        then "a run before a fixed argument, taking the minimal prefix" {
+            match code_of(analyze_source("f(1, 2, 3)")) {
+                quote { f(${..rest}, 3) } -> rest.length == 2 && rest[0].text() == "1" && rest[1].text() == "2",
+                _ -> false,
+            }
+        }
+        then "a list literal's elements" {
+            match code_of(analyze_source("[1, 2, 3]")) {
+                quote { [${..xs}] } -> xs.length == 3,
+                _ -> false,
+            }
+        }
+        then "a block's statements — the run BEFORE a fixed one, by count and content (a STATEMENT's own span rides to the next token, so its text is trimmed here — an EXPRESSION seat's span never carries that, as the trailing-tail case below shows bare)" {
+            match code_of(analyze_source("{\n    a\n    b\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> before.length == 2 &&
+                    before[0].text().trim() == "a" &&
+                    before[1].text().trim() == "b",
+                _ -> false,
+            }
+        }
+        then "a block's statements — the fixed statement's own bind" {
+            match code_of(analyze_source("{\n    a\n    b\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> x == "z",
+                _ -> false,
+            }
+        }
+        then "a block's statements — the run AFTER a fixed one, its trailing tail" {
+            match code_of(analyze_source("{\n    a\n    b\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> after.length == 1 && after[0].text() == "c",
+                _ -> false,
+            }
+        }
+        then "a block's statements — an empty run on the near side" {
+            match code_of(analyze_source("{\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> before.length == 0 && after.length == 1,
+                _ -> false,
+            }
+        }
+        then "two run holes with nothing between them refuse — type.not_offered" {
+            refused_with(
+                "match 1 { quote { f(\${..a}, \${..b}) } -> true, _ -> false }",
+                "type.quote_pat_run",
+            )
+        }
+        then "a run binder mixed with a bare occurrence of the same name refuses" {
+            refused_with(
+                "match 1 { quote { f(\${..xs}) + \${xs} } -> true, _ -> false }",
+                "type.quote_pat_mixed",
+            )
+        }
+    }
+    given "a nested match's own arms hold `Pat.Bind`/`Pat.Variant` NAME holes too" {
+
+        then "a bind pattern's own name binds its text" {
+            match code_of(analyze_source("match c { n -> 1 }")) {
+                quote { match ${c} { ${x} -> 1 } } -> x == "n",
+                _ -> false,
+            }
+        }
+    }
+    given "a TYPE hole" {
+
+        then "TYPE-ONLY: a fixed name beside it, only the annotation open" {
+            let hit = match stmt_code_of(analyze_source("let n: int = 1")) {
+                quote { let n: ${T} = 1 } -> T.text() == "int",
+                _ -> false,
+            }
+            let miss = match stmt_code_of(analyze_source("let m: int = 1")) {
+                quote { let n: ${T} = 1 } -> false,
+                _ -> true,
+            }
+            hit && miss
+        }
+        then "a `let`'s own annotation binds its written type, as a `TypeRef`" {
+            match stmt_code_of(analyze_source("let n: int = 1")) {
+                quote { let ${x}: ${T} = ${v} } -> x == "n" && T.text() == "int",
+                _ -> false,
+            }
+        }
+        then "a `mut`'s own annotation binds too — a NAME hole and a TYPE hole open on the SAME node at once" {
+            match stmt_code_of(analyze_source("mut n: List<int> = []")) {
+                quote { mut ${x}: ${T} = ${v} } -> x == "n" && T.text() == "List<int>",
+                _ -> false,
+            }
+        }
+        then "an unannotated `let` does not match — the type seat is optional, never a crash" {
+            match stmt_code_of(analyze_source("let n = 1")) {
+                quote { let ${x}: ${T} = ${v} } -> false,
+                _ -> true,
+            }
+        }
+        then "a call's own pinned type argument binds too, and an unpinned call of the same name does not match" {
+            let hit = match code_of(analyze_source("f<int>(1)")) {
+                quote { f<${T}>(${a}) } -> T.text() == "int",
+                _ -> false,
+            }
+            let miss = match code_of(analyze_source("f(1)")) {
+                quote { f<${T}>(${a}) } -> false,
+                _ -> true,
+            }
+            hit && miss
+        }
+        then "the SAME type used twice at a type seat demands the same written type — two `let`s of one type match, two of different types do not" {
+            let same = match code_of(analyze_source("{\n    let a: int = 1\n    let b: int = 2\n}")) {
+                quote {
+                    {
+                        let ${a}: ${T} = ${v1}
+                        let ${b}: ${T} = ${v2}
+                    }
+                } -> true,
+                _ -> false,
+            }
+            let diff = match code_of(
+                analyze_source("{\n    let a: int = 1\n    let b: string = \"x\"\n}"),
+            ) {
+                quote {
+                    {
+                        let ${a}: ${T} = ${v1}
+                        let ${b}: ${T} = ${v2}
+                    }
+                } -> true,
+                _ -> false,
+            }
+            same && !diff
+        }
+        then "one binder mixing a type seat and a code seat refuses" {
+            refused_with(
+                "match 1 { quote { let x: \${T} = \${T} } -> true, _ -> false }",
+                "type.quote_pat_mixed",
+            )
+        }
+        then "a DECORATED type hole (`\${T}?`) still refuses — the seat holds only a BARE type" {
+            refused_with(
+                "match 1 { quote { let x: \${T}? = null } -> true, _ -> false }",
+                "type.quote_pat_type",
+            )
+        }
+    }
+    given "refusals, judged on the pattern's own shape first" {
+
+        then "the subject is not `Code`" {
+            refused_with("match 1 { quote { 1 } -> true, _ -> false }", "type.quote_pat_subj")
+        }
+        then "a hole that is not a bare name" {
+            refused_with(
+                "match 1 { quote { \${1 + 1} } -> true, _ -> false }",
+                "type.quote_pat_hole",
+            )
+        }
+        then "a two-statement body" {
+            refused_with("match 1 { quote { 1\n2 } -> true, _ -> false }", "type.quote_pat_shape")
+        }
+        then "a run hole with no node around it — the whole pattern is `\${..xs}`" {
+            refused_with("match 1 { quote { \${..xs} } -> true, _ -> false }", "type.quote_pat_run")
+        }
+    }
+    given "fingerprint_pat" {
+
+        then "distinct for two different quote patterns, and from the wrapped body's own expression fingerprint" {
+            let a1 = parse_source("match c { quote { \${x} + 1 } -> x, _ -> 0 }")
+            let a2 = parse_source("match c { quote { \${x} + 2 } -> x, _ -> 0 }")
+            let pat1 = first_pat(a1)
+            let pat2 = first_pat(a2)
+            let distinct_patterns = a1.store.pat_fingerprint(pat1) != a2.store.pat_fingerprint(pat2)
+            let body1 = match a1.store.pat(pat1) { .Quote(b) -> b, rest -> ExprId { index: 0 - 1 } }
+            let distinct_from_body = a1.store.pat_fingerprint(pat1) != a1.store.expr_fingerprint(body1)
+            distinct_patterns && distinct_from_body
+        }
+    }
+    given "the printer" {
+
+        then "round-trips a quote pattern, holes and all" {
+            let src = "match c { quote { \${x} + 1 } -> x, _ -> 0 }"
+            canonical(src) == src
+        }
+        then "a quote pattern nested inside an outer template's body prints and reparses whole — its own hole is never the outer template's" {
+            let src = "quote { match c { quote { \${x} + 1 } -> x, _ -> 0 } }"
+            canonical(src) == src
+        }
+    }
+    given "the kitchen copier" {
+
+        then "a quote pattern nested inside an outer template's body is walked as ITS OWN quote — the outer's hole count stays zero, so a copier filling the outer's holes never touches the inner pattern's" {
+            let p = parse_source("quote { match c { quote { \${x} + 1 } -> x, _ -> 0 } }")
+            let outer = p.store.answer_of(p.stmts[0])!
+            let q = p.store.expr(outer).body_of()!
+            p.voices.list.is_empty() && q.holes.is_empty()
+        }
+    }
+}

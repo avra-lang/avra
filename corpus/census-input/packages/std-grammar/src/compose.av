@@ -1,0 +1,28 @@
+//! Rule merging: composed feature fragments may declare the same rule
+//! name; the grammar a run consumes has ONE rule per name. Same-name
+//! rules merge with branches appended in first-appearance order, so
+//! feature order is the single ordering truth — and a later feature
+//! extends an alternation without any file naming another.
+
+use ast.{Grammar, Rule, Alt, Seq}
+
+impl Grammar {
+    /// One rule per name: same-name rules merge, branches appended in
+    /// first-appearance order. Rule order is first appearance; the
+    /// start rule is unchanged.
+    fn merged() -> Grammar {
+        mut order: List<string> = []
+        mut branches: Map<string, List<Seq>> = {}
+        for r in self.rules {
+            let prior: List<Seq>? = branches.get(r.name)
+            if prior == null {
+                order.push(r.name)
+                branches.set(r.name, r.body.branches)
+            } else {
+                branches.set(r.name, prior!.concat(r.body.branches))
+            }
+        }
+        let rules = [Rule { name: n, body: Alt { branches: branches.get(n)! } } for n in order]
+        self with { rules: rules }
+    }
+}

@@ -1,0 +1,147 @@
+//! THE RULE TABLE — every rule the compiler carries, as a `collect`
+//! (docs/2026_09_22_COLLECTIONS.md): `rule name { arms }` is an
+//! instance of `features/rule.av`'s `component rule`, and `rules`'
+//! body is SYNTHESISED at lowering from every one the workspace
+//! admits (compiler/lower/lower.av's `lower_collect`) — `run` the
+//! instance's own `fn(Code) -> Fix?` field, `fixes`/`keeps` its
+//! `@fixes`/`@keeps`-filled `List` fields, `root` the ROOT-KIND
+//! INDICES `it.root_kind` folds from its arms (compiler/lower/lower.av's
+//! `component_root_kind` — a general `.Component`-kind field, read
+//! off the WRITTEN body rather than the built value, same as
+//! `doc`/`name`/`module`/`file`). A rule is an ORDINARY declaration,
+//! reached the way any other is: a feature's `mod.av` imports its own
+//! `idioms.av`'s rules, and the COMPILER's own (compiler/idioms.av,
+//! shapes no single feature owns) are imported here.
+use core.{flatten}
+use features.{Code, Fix, Fixes, rule}
+use compiler.{
+    refusal_assembled,
+    str_grown_quadratically,
+    bool_of_defaulted,
+    text_of_defaulted,
+    int_of_defaulted,
+    bits_of_defaulted,
+    elems_of_defaulted,
+    pairs_of_defaulted,
+    uncounted_refusal,
+    diagnostics_uncounted,
+    diagnostics_length_uncounted,
+    voices_uncounted,
+    if_start_raw,
+    loop_start_raw,
+    arm_end_raw,
+    region_end_raw,
+    loop_cond_raw,
+    loop_end_raw,
+    scope_enter_raw,
+    scope_exit_raw,
+    interned_int,
+    interned_str,
+    interned_opt,
+    interned_list,
+    interned_map,
+    interned_res,
+    hand_sized_index,
+    seen_accumulator,
+    emit_then_error,
+    bracket_ritual,
+    modified_copy_literal,
+    stmt_index_walk,
+    raw_rt_call,
+    raw_rt_call_void,
+    raw_mint_emit_bin,
+    raw_mint_emit_un,
+    raw_mint_emit_pack,
+    raw_mint_emit_call,
+    raw_mint_emit_call_ptr,
+    raw_mint_emit_const_int,
+    raw_mint_emit_const_bool,
+    raw_mint_emit_const_str,
+    raw_mint_emit_load,
+    one_body_arms,
+    duplicated_message,
+    duplicated_literal,
+    repeated_projection,
+    bypass_outside_bracket,
+}
+
+/// A root-kind index with no root at all: "any node", tried
+/// everywhere — spelled as the SOLE member of a rule's own root
+/// list, never an empty one: an empty list would spend that absence
+/// on "no kinds narrow it", a state no rule with arms is ever in.
+/// This is the seed `root_kind_of` never answers a kind for.
+export const any_root: int = -1
+
+/// One rule: its identity (`<module>.<name>`, split), the fn the
+/// pass calls, the ROOT-KIND INDICES (`core.root_kind_of`) every
+/// pattern narrows to — one member per kind its arms disagree over,
+/// `[any_root]` for a rule a single pattern cannot narrow at all —
+/// its own `///` SENTENCE, the examples that prove it
+/// (`avra test`'s own suite reads these, never `check` —
+/// compiler/rule_examples.av), and its `@law` — `component rule`'s
+/// own raw `List<string>` (`check` refuses more than one), zero or
+/// one long; `declared_law` is the read that turns it into the
+/// `string?` a rule either carries or does not.
+export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string> }
+
+/// `<module>.<name>` — the identity a finding's kind and `--only`
+/// both read.
+export fn rule_id(r: RuleEntry) -> string { "${r.module}.${r.name}" }
+
+/// A rule's own equivalence claim (`RuleEntry.law`), absent for a
+/// rule whose rewrite (if it has one) stays behind `avra fix`'s IR
+/// proof alone — `compiler/rule_proof.av`'s `law_proved` and
+/// `avra docs rules --json`'s `law` field both read it here, never
+/// the raw list twice over.
+export fn declared_law(r: RuleEntry) -> string? { r.law.first() }
+
+/// EVERY RULE, in module then name order — gathered, never listed by
+/// hand: a rule declared in any feature dir joins this with no edit
+/// here.
+export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law } by it.module, it.name
+
+/// THE RULES BY ROOT KIND: each kind SOME rule is rooted at, the
+/// rules a node of that kind is tried against — its own (a rule
+/// sits under every kind its arms disagree over) and every
+/// `any_root` rule, in table order — and the `any_root` rules alone
+/// for every other kind. Design §5: nodes touched, never nodes ×
+/// rules.
+export type RuleIndex = { roots: List<int>, at_root: List<List<RuleEntry>>, anywhere: List<RuleEntry> }
+
+/// The rule table's index, built once.
+export once fn rule_index() -> RuleIndex { rules_indexed(rules) }
+
+export fn rules_indexed(entries: List<RuleEntry>) -> RuleIndex {
+    let rooted = flatten([r.root for r in entries if !is_any_root(r)])
+    let roots = [k for i, k in rooted if rooted.index_of(k) == i]
+    RuleIndex {
+        roots: roots,
+        at_root: [[r for r in entries if is_any_root(r) || r.root.contains(k)] for k in roots],
+        anywhere: [r for r in entries if is_any_root(r)],
+    }
+}
+
+/// A rule with no narrow root at all — tried at every node.
+fn is_any_root(r: RuleEntry) -> bool { r.root.contains(any_root) }
+
+impl RuleIndex {
+    /// The rules a node of `kind` is tried against.
+    fn at(kind: int) -> List<RuleEntry> {
+        let i = self.roots.index_of(kind)
+        if i < 0 { self.anywhere } else { self.at_root[i] }
+    }
+
+    /// The rules a node is tried against: those filed under its shallow
+    /// fold and those filed under its kind alone (a pattern whose own root
+    /// names a hole), each once.
+    fn at_node(shallow: int, kind: int) -> List<RuleEntry> {
+        let j = self.roots.index_of(kind)
+        if j < 0 { return self.at(shallow) }
+        let i = self.roots.index_of(shallow)
+        if i < 0 { return self.at_root[j] }
+        let first = self.at_root[i]
+        first.concat([r for r in self.at_root[j] if !first.any(same_rule(it, r))])
+    }
+}
+
+fn same_rule(a: RuleEntry, b: RuleEntry) -> bool { a.module == b.module && a.name == b.name }

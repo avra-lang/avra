@@ -1,0 +1,145 @@
+//! The catch lowering — the ONE meaning: a region on OKNESS whose
+//! failure arm recovers. The ok arm unwraps the payload; the
+//! failure arm binds and answers — a catch-all directly, variant
+//! arms through one switch on the error's tag, and a SELECTIVE
+//! catch's default arm exits with the SUBJECT'S OWN BOX, exactly
+//! as `?` does: the unmatched failure propagates by pointer move.
+use core.{ExprId, Reg, Ins, ResSides}
+use features.{LowerCx, EnumSig}
+
+fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Catch(s, vs, bs, arms) -> catched_reg(cx, e, s, [t.of for t in vs], [t.of for t in bs], arms),
+        _ -> cx.foreign_node(e),
+    }
+}
+
+fn catched_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    variants: List<string>,
+    binds: List<string>,
+    values: List<ExprId>,
+) -> Reg {
+    let r = cx.reg_of(subject)
+    let held? = cx.view.types.res_parts(cx.type_at(subject)) else { return cx.lower_defect(e, "a catch without a Result survived typing") }
+    cx
+        .region(cx.okness_of(r), e) { cx -> cx.payload_of(r, held.ok) } else { cx -> failure_reg(cx, e, r, held, variants, binds, values) }
+}
+
+/// The failure arm's whole story. A single catch-all arm answers
+/// directly; variant arms switch on the error's tag.
+fn failure_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    r: Reg,
+    sides: ResSides,
+    variants: List<string>,
+    binds: List<string>,
+    values: List<ExprId>,
+) -> Reg {
+    if variants.length == 1 && variants[0] == "" {
+        return all_arm_reg(cx, r, sides, binds[0], values[0])
+    }
+    if cx.view.types.shape_of(sides.err) is .Union { return switched_union_reg(cx, e, r, sides, variants, binds, values) }
+    switched_reg(cx, e, r, sides, variants, binds, values)
+}
+
+/// The catch-all arm: the whole error binds (when named), the value
+/// answers.
+fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId) -> Reg {
+    if bind != "" { cx.bind_patterns(value, [cx.payload_of(r, sides.err)]) }
+    cx.reg_of(value)
+}
+
+/// Variant arms as ONE switch on the error's tag — a jump table,
+/// like any enum match. A TOTAL catch's last written arm is the
+/// switch's default; a SELECTIVE one gains a default arm that
+/// exits with the subject's own box, propagating the unmatched.
+fn switched_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    r: Reg,
+    sides: ResSides,
+    variants: List<string>,
+    binds: List<string>,
+    values: List<ExprId>,
+) -> Reg {
+    let sig? = cx.variants_of(sides.err) else { return cx.lower_defect(e, "catch arms without variants survived typing") }
+    let err = cx.payload_of(r, sides.err)
+    let selective = !total(sig, variants)
+    let tags = arm_tags(sig, variants, selective)
+    cx.emit(Ins.SwitchStart(cx.tag_of(err), tags))
+    mut answer: Reg? = null
+    for j, v in values {
+        if answer != null { cx.arm_end(answer!) }
+        if binds[j] != "" { bind_payload(cx, err, sig, variants[j], v) }
+        answer = cx.reg_of(v)
+    }
+    if selective {
+        cx.arm_end(answer!)
+        let leaving = cx.propagated(r)
+        cx.failing()
+        cx.emit(Ins.FnExit(leaving))
+        answer = cx.hollow_of(cx.type_at(e))
+    }
+    cx.close_region(e, answer!)
+}
+
+/// Member arms as ONE switch, keyed by the member's own GLOBAL type
+/// id — the union box's own discriminant, `switched_reg`'s twin for a
+/// member set instead of an enum's tag table. A SELECTIVE catch's
+/// default exits with `r` itself: the discriminant is valid under any
+/// wider union that still claims the live member, so no repack is
+/// owed here either — `propagated` already knows this.
+fn switched_union_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    r: Reg,
+    sides: ResSides,
+    variants: List<string>,
+    binds: List<string>,
+    values: List<ExprId>,
+) -> Reg {
+    let members = [cx.view.types.by_name(vn)! for vn in variants]
+    let err = cx.payload_of(r, sides.err)
+    let selective = !cx.view.types.covers(cx.view.types.union_of(members), sides.err)
+    let upto = if selective { members.length } else { members.length - 1 }
+    let tags = [members[j].index for j in 0..upto]
+    cx.emit(Ins.SwitchStart(cx.tag_of(err), tags))
+    mut answer: Reg? = null
+    for j, v in values {
+        if answer != null { cx.arm_end(answer!) }
+        if binds[j] != "" { cx.bind_patterns(v, [cx.payload_of(err, members[j])]) }
+        answer = cx.reg_of(v)
+    }
+    if selective {
+        cx.arm_end(answer!)
+        let leaving = cx.propagated(r)
+        cx.failing()
+        cx.emit(Ins.FnExit(leaving))
+        answer = cx.hollow_of(cx.type_at(e))
+    }
+    cx.close_region(e, answer!)
+}
+
+/// One arm's bind: the payload read INSIDE the arm's bracket.
+fn bind_payload(mut cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) {
+    let carried? = sig.payload_of(vn) else { return }
+    cx.bind_patterns(value, [cx.payload_of(err, carried)])
+}
+
+/// Every variant named — the switch needs no propagating default.
+fn total(sig: EnumSig, variants: List<string>) -> bool {
+    sig.names.all(named_in(variants, it))
+}
+
+/// The selector values, arm order. A total switch's LAST arm is the
+/// default (no case); a selective switch cases EVERY written arm,
+/// leaving the default to the propagating exit.
+fn arm_tags(sig: EnumSig, variants: List<string>, selective: bool) -> List<int> {
+    let upto = if selective { variants.length } else { variants.length - 1 }
+    [sig.tag_of(variants[j])! for j in 0..upto]
+}

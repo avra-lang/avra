@@ -1,0 +1,131 @@
+//! The map vocabulary's rows — `get` and `set`, typing and lowering
+//! side by side. `get` answers the value as a nullable through the
+//! nullable protocol's own adoption; `set` is the place law on a
+//! method, like `push`.
+use core.{BinOp, ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
+use diagnostics.{refusal}
+use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs}
+
+/// The empty literal takes the rows too — it is refused in the
+/// map's own words.
+export fn on_map(t: Type) -> bool {
+    t is .Map || t is .EmptyMap
+}
+
+// ── The rows' rules ──
+
+export fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "get") else { return cx.error_type }
+    got_type(cx, mc.e, mc.args, value)
+}
+export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "set") else { return cx.error_type }
+    set_type(cx, mc.e, mc.subject, mc.args, value)
+}
+export fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    got_reg(cx, mc.e, mc.subject, mc.args[0])
+}
+export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    set_reg(cx, mc.e, mc.subject, mc.args[0], mc.args[1])
+}
+
+/// THE PRELUDE both rows share: the value type the receiver holds.
+/// The empty literal refuses in the row's words and absorbs. A ROW
+/// READS ITS RECEIVER THROUGH THE READ DOOR — a NAMED type reached
+/// this row by standing over a map, so the map is what it holds.
+fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
+    if cx.seen_at(mc.subject) is .EmptyMap {
+        let _ = unknowable_map(cx, mc.e, name)
+        return null
+    }
+    let held: TypeId? = match cx.seen_at(mc.subject) { .Map(_, v) -> v, _ -> null }
+    held
+}
+
+fn got_type(mut cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+    if args.length != 1 {
+        cx.wrong_arity(e, "get", 1, args.length)
+        return cx.error_type
+    }
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("get", 0, key, args[0]) }
+    cx.type(value?)
+}
+
+fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+    if args.length != 2 {
+        cx.wrong_arity(e, "set", 2, args.length)
+        return cx.error_type
+    }
+    let root? = cx.view.store.place_root(subject) else { return cx.not_a_place_call(e, "set") }
+    if !cx.is_mut(root) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root) ?? "this name") }
+    cx.alias_copy_law(e, subject, root)
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
+    if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }
+    cx.type(void)
+}
+
+/// `m.get(k)`: ONE probe names the key's slot, and the value is
+/// adopted into the nullable only when there is one — a cell seeded
+/// absent, like `find`.
+fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+    let opt = cx.type_at(e)
+    let m = cx.reg_of(subject)
+    let k = cx.reg_of(key)
+    let cell = cx.seeded_cell(opt, cx.absent_of(opt))
+    let slot = cx.map_slot(Type.Int, m, k)
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
+            let raw = cx.map_value(m, slot, cx.carried_type(opt))
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+        }
+    cx.loaded(e, cell)
+}
+
+/// `m.set(k, v)`: the place opens unique, the runtime stores, and
+/// the answer is nothing.
+fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+    let box = cx.unique_box(subject)
+    cx.map_write(box, cx.reg_of(key), cx.reg_of(value))
+    cx.zero(e)
+}
+
+// ── The voices ──
+
+fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.map_value",
+                cx.loc_of(e),
+                "`{}.${name}` cannot know its values",
+                "asked here",
+                "bind the map under a declared type first — `let m: Map<string, int> = {}`",
+            ),
+        )
+}
+
+// ── The constructor and property rows' rules ──
+
+export fn map_shape(args: TypeArgs) -> Type {
+    Type.Map(args.parts[0], args.parts[1])
+}
+
+/// A map's keys are strings — other key types are recorded.
+export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
+    let key = args.parts[0]
+    if types.shape_of(key) is .Str { return [] }
+    [
+        Refusal {
+            message: "a map's keys are strings, not `${types.name_of(key)}`",
+            help: "other key types are recorded — `Map<string, …>`",
+        },
+    ]
+}
+
+export fn check_map_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    if cx.view.types.shape_of(ty) is .EmptyMap { return cx.unmeasurable_empty(e, "{}", "Map<string, int>") }
+    cx.type(int)
+}
+

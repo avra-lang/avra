@@ -1,0 +1,150 @@
+//! Parse-time lowering: captures -> the EnumDecl statement, the
+//! Match node with its arms, and the pattern nodes. Arms and
+//! values ZIP (both are written every time); a declaration's
+//! payloads cannot, because they are optional — spans restore the
+//! truth: a payload belongs to the variant whose name precedes it
+//! and whose successor follows it, and a payload's NAME, when
+//! written, precedes its type inside that window. A MARK stands
+//! before the member it marks, so a variant NAME and a payload TYPE
+//! are both anchors — a window set short of the payloads reads a
+//! variant's last payload's mark as the NEXT variant's.
+use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped, SyntaxArena}
+use features.{
+    LangNode,
+    Builder,
+    window_end,
+    pat_ids_at,
+    arms_at,
+    ref_within,
+    between,
+    marks_at,
+    type_lo,
+    MarkWindows,
+    expr_id_at,
+}
+use grammar.{Token}
+
+fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let tp = b.tokens(1)?
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: an enum declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    let vs = b.tokens(2)?
+    let names = b.tokens(4)?
+    let tys = b.type_refs(5)?
+    // A VARIANT NAME AND A PAYLOAD TYPE ARE BOTH ANCHORS: a mark
+    // marks the member it precedes, and a set short of the payloads
+    // reads the last payload's mark as the next variant's.
+    let w = MarkWindows {
+        anchors: [v.span.lo for v in vs].concat([type_lo(t) for t in tys]),
+        marks: marks_at(b.args, 6).concat(marks_at(b.args, 7)),
+        from: b.span?.lo ?? 0,
+    }
+    mut variants: List<Variant> = []
+    for j, v in vs {
+        let upto = window_end(vs, j, ends)
+        variants
+            .push(
+                Variant {
+                    name: Plain(v.text),
+                    payloads: payloads_between(b.store, names, tys, w, v.span.lo, upto),
+                    span: v.span,
+                    marks: w.at(v.span.lo),
+                },
+            )
+    }
+    b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))
+}
+
+/// One variant's payloads: the types inside its window, each named
+/// by the field name written just before it, or "" when positional,
+/// and each carrying the marks written in front of it.
+fn payloads_between(
+    store: SyntaxArena,
+    names: List<Token>,
+    tys: List<TypeRef>,
+    w: MarkWindows,
+    after: int,
+    before: int,
+) -> List<Param> {
+    [Param {
+        name: Scoped(name_before(names, t, after)),
+        ty: t,
+        default: null,
+        promises: plain_mark,
+        id: store.alloc_param_id(t.span),
+        marks: w.at(type_lo(t)),
+    } for t in tys if ref_within(t, after, before)]
+}
+
+/// The field name written between the variant's name and this
+/// payload type, when one was.
+fn name_before(names: List<Token>, t: TypeRef, after: int) -> string {
+    let lo: int = t.span?.lo ?? after
+    mut best = ""
+    for n in names {
+        if between(n.span.lo, after, lo) { best = n.text }
+    }
+    best
+}
+
+fn build_match(b: Builder) -> Result<LangNode, string> {
+    let subject = b.expr(0)?
+    b.make_expr(Expr.Match(subject, arms_at(b.args, 1)))
+}
+
+fn build_arm(b: Builder) -> Result<LangNode, string> {
+    let value = b.expr(2)?
+    b.make_arm(pat_ids_at(b.args, 0), value, expr_id_at(b.args, 1))
+}
+
+/// A template's hole standing as a whole arm: the one hole as the
+/// arm's pattern and its value, so the walk that classifies holes
+/// reads it as an ARM seat. Never guarded — the hole IS the arm.
+fn build_hole_arm(b: Builder) -> Result<LangNode, string> {
+    let h = b.token(0)?
+    let value = b.expr_node(Expr.Ident(Scoped(h.text)))
+    b.make_arm([b.store.alloc_pat(Pat.Bind(Scoped(h.text)), b.span)], value, null)
+}
+
+fn build_variant_pat(b: Builder) -> Result<LangNode, string> {
+    let name = b.token(0)?
+    b.make_pat(Pat.Variant(Plain(name.text), pat_ids_at(b.args, 1)))
+}
+
+fn build_wild_pat(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Wild)
+}
+
+/// A bare name binds — except `rest`, the spec's deliberate
+/// remainder, and `null`, a LITERAL never a binder: read as
+/// `Pat.Bind` it earns the keyword refusal beside whatever else the
+/// arm earns, one mistake wearing two voices.
+fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    if n.text == "rest" { return b.make_pat(Pat.Rest) }
+    if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
+    b.make_pat(Pat.Bind(Scoped(n.text)))
+}
+
+fn build_num_pat(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.IntLit(t.int_value() ?? 0), b.span)))
+}
+
+fn build_true_pat(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.BoolLit(true), b.span)))
+}
+
+fn build_false_pat(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.BoolLit(false), b.span)))
+}
+
+/// `.name(args)` — the variant the expected type will name.
+fn build_variant_lit(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    b.make_expr(Expr.VariantLit(Plain(n.text), b.exprs(1)?))
+}

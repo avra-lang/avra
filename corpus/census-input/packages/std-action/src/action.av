@@ -1,0 +1,107 @@
+//! `@std/action` — what an action PROMISES, as a record every door
+//! (a button, a form, the CLI, an agent) discharges the same way.
+//! Normative design: docs/2026_09_29_AUTHORITY_AND_RECEIPTS.md §4–§5.
+//!
+//!     @action(auth: member_of(b), impact: routine)
+//!     fn add_card(b: Board, title: string) -> Card { … }
+//!
+//! `impact` is REQUIRED and is a profile over the record below; a
+//! mixed case is `destructive with { recovery: .Trash(days(30)) }`.
+use @std.time.{Duration}
+
+/// What may be shown before the authoritative receipt.
+export enum Presentation {
+    /// The next state renders; the node stays `speculative` until the receipt.
+    Speculative
+    /// A pending state, named for the receipt it waits on.
+    Pending
+    /// "Sending" after the server accepts; done only after the external receipt.
+    Sending
+}
+
+/// How the action is undone, if it can be.
+export enum Recovery {
+    None
+    /// A compensating action, valid inside the window.
+    Undo(window: Duration)
+    /// The row is kept, restorable, for this long.
+    Trash(keep: Duration)
+    /// A named compensation that may be lossy.
+    Compensation(name: string)
+}
+
+/// Whose receipt makes the action a fact.
+export enum Commitment { Authoritative, External }
+
+/// The least a door must do before invoking. `None` needs a waiver.
+export enum Safeguard { None, Undo, Confirm, Reauth, Typed }
+
+export type Impact = {
+    presentation: Presentation,
+    recovery: Recovery,
+    commitment: Commitment,
+    safeguard: Safeguard,
+}
+
+// ── Profiles: conservative starting points, not categories.
+
+export const routine: Impact = Impact {
+    presentation: .Speculative,
+    recovery: .None,
+    commitment: .Authoritative,
+    safeguard: .None,
+}
+
+export const reversible: Impact = Impact {
+    presentation: .Speculative,
+    recovery: Recovery.Undo(Duration { ms: 7 * 24 * 3600 * 1000 }),
+    commitment: .Authoritative,
+    safeguard: .Undo,
+}
+
+export const destructive: Impact = Impact {
+    presentation: .Pending,
+    recovery: .None,
+    commitment: .Authoritative,
+    safeguard: .Confirm,
+}
+
+export const external: Impact = Impact {
+    presentation: .Sending,
+    recovery: .None,
+    commitment: .External,
+    safeguard: .Confirm,
+}
+
+// ── Intrinsic laws: checked where an impact settles.
+
+/// Every way an impact record contradicts itself. Empty means sound.
+export fn faults(i: Impact) -> List<string> {
+    present([undo_without_recovery(i), external_shown_done(i), unguarded_loss(i)])
+}
+
+/// The faults that fired.
+fn present(xs: List<string?>) -> List<string> { [x! for x in xs if x != null] }
+
+/// An undo safeguard promises a recovery that exists.
+fn undo_without_recovery(i: Impact) -> string? {
+    if i.safeguard is .Undo && i.recovery is .None { "an undo safeguard needs a recovery" } else { null }
+}
+
+/// Speculation never impersonates another authority's commitment.
+fn external_shown_done(i: Impact) -> string? {
+    if i.commitment is .External && i.presentation is .Speculative {
+        "an external commitment is never shown done before its receipt"
+    } else {
+        null
+    }
+}
+
+/// A loss with no recovery is guarded, or waived.
+fn unguarded_loss(i: Impact) -> string? {
+    if i.presentation is .Pending && i.recovery is .None && i.safeguard is .None {
+        "a destructive impact names a recovery or a safeguard"
+    } else {
+        null
+    }
+}

@@ -1,0 +1,142 @@
+// Red-team pass on `Workspace.compiler_id()`/`compiler_print` and the
+// durable keys that fold it in (avra-8sb5.57.25). The feature is not
+// syntax, so the attacks are the ones that matter for a cache identity:
+// degenerate inputs to the digest, a fallback that must never collide,
+// and the root module's own empty-name edge.
+use @std.avrac.compiler.{avra, new_workspace, build_cache_root}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{module_path}
+use @std.io.{write_text, make_dirs}
+use @std.time.{now_ns}
+
+fn adv_pkg_named(name: string) -> string {
+    let root = "/tmp/avra-cacheprint-adversarial/${name}-${now_ns()}"
+    let _ = make_dirs(root)
+    root
+}
+
+fn adv_binary(name: string, bytes: string) -> string {
+    let dir = adv_pkg_named(name)
+    let path = "${dir}/binary"
+    let _ = write_text(path, bytes)
+    path
+}
+
+/// A stamp that never changes, whatever the file — attacks the roll's
+/// own cache-hit shortcut directly: does it ever trust a stamp match
+/// without checking whether the BYTES it names actually still agree?
+fn same_stamp_always(_p: string) -> int? { 999999 }
+
+fn adv_workspace(binary: string?) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() { 1 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ) with { compiler: binary },
+        "/w",
+        avra(),
+    )
+}
+
+spec "compiler/build — compiler_id under degenerate and hostile inputs" {
+    given "degenerate shapes" {
+        then "an EMPTY compiler binary (0 bytes) still names a real print, no crash" {
+            let path = adv_binary("empty", "")
+            adv_workspace(path).compiler_id() != ""
+        }
+        then "an empty binary and a one-byte binary still disagree" {
+            let empty = adv_workspace(adv_binary("empty2", "")).compiler_id()
+            let one_byte = adv_workspace(adv_binary("one-byte", "x")).compiler_id()
+            empty != one_byte
+        }
+        then "three unnamed workspaces in a row are pairwise distinct, not just the first pair" {
+            let a = adv_workspace(null).compiler_id()
+            let b = adv_workspace(null).compiler_id()
+            let c = adv_workspace(null).compiler_id()
+            a != b && b != c && a != c
+        }
+    }
+    given "a compiler path that names no real file" {
+        then "a path pointing at a DIRECTORY falls back cleanly, no crash" {
+            let dir = adv_pkg_named("dir-as-compiler")
+            adv_workspace(dir).compiler_id() != ""
+        }
+        then "a path that does not exist at all falls back cleanly, no crash" {
+            adv_workspace("/tmp/avra-cacheprint-adversarial/does-not-exist-${now_ns()}")
+                .compiler_id() != ""
+        }
+        then "a directory-as-compiler and a real binary still disagree — the fallback is never mistaken for a real print" {
+            let dir = adv_pkg_named("dir-vs-real")
+            let real = adv_binary("dir-vs-real-bin", "a real compiler")
+            adv_workspace(dir).compiler_id() != adv_workspace(real).compiler_id()
+        }
+    }
+    given "the root module — the one name that is EMPTY, not absent" {
+        then "the root module's record key still differs across two compilers" {
+            let a = adv_workspace(adv_binary("root-a", "compiler one"))
+            let b = adv_workspace(adv_binary("root-b", "compiler two"))
+            let root_module = module_path([])
+            a.record_key(root_module) != b.record_key(root_module)
+        }
+        then "the root module's key differs from a NAMED module's key under the SAME compiler" {
+            let ws = adv_workspace(adv_binary("root-vs-named", "one compiler"))
+            let root_module = module_path([])
+            let named = module_path(["app"])
+            ws.record_key(root_module) != ws.record_key(named)
+        }
+    }
+    given "workspace restart — anew()'s fresh Keys" {
+        then "build_cache_root agrees before and after an internal restart, over the same real binary" {
+            let bin = adv_binary("restart", "one compiler, asked twice")
+            let first = adv_workspace(bin)
+            let second = adv_workspace(bin)
+            // two SEPARATE workspace constructions over the identical real
+            // file stand in for `anew()`'s fresh Keys: both must still
+            // agree, since nothing about the compiler changed between them
+            build_cache_root(first) == build_cache_root(second)
+        }
+    }
+    given "the roll's own stamp-based shortcut, attacked directly — a stamp that never changes" {
+        then "two DIFFERENT binary contents at the SAME path still disagree, even though the stamp never moves" {
+            let dir = adv_pkg_named("stamp-collision")
+            let path = "${dir}/binary"
+            let _ = write_text(path, "generation one")
+            let host = memory_host(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "fn a() { 1 }\n",
+                },
+                ["/w/avra.toml", "/w/src/main.av"],
+            ) with { compiler: path, stamp: same_stamp_always }
+            // the SAME host (its roll file lives in its own in-memory table)
+            // asked twice — a rebuild that lands at the same stamp must not
+            // let the second ask reuse the first's cached print
+            let a = new_workspace(host, "/w", avra()).compiler_id()
+            let _ = write_text(path, "generation two, a longer and very different body")
+            let b = new_workspace(host, "/w", avra()).compiler_id()
+            a != b
+        }
+        then "three rebuilds in a row at the same stamp are pairwise distinct, not just each new one from its predecessor" {
+            let dir = adv_pkg_named("stamp-collision-3")
+            let path = "${dir}/binary"
+            let _ = write_text(path, "v1")
+            let host = memory_host(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "fn a() { 1 }\n",
+                },
+                ["/w/avra.toml", "/w/src/main.av"],
+            ) with { compiler: path, stamp: same_stamp_always }
+            let a = new_workspace(host, "/w", avra()).compiler_id()
+            let _ = write_text(path, "v2, different")
+            let b = new_workspace(host, "/w", avra()).compiler_id()
+            let _ = write_text(path, "v3, different again")
+            let c = new_workspace(host, "/w", avra()).compiler_id()
+            a != b && b != c && a != c
+        }
+    }
+}

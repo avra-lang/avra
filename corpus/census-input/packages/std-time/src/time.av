@@ -1,0 +1,96 @@
+//! @std.time — a duration is a VALUE, never a bare count, so a seat
+//! that wants one cannot be handed a number that meant something
+//! else; the clock is monotonic milliseconds, what a deadline is
+//! made of. Two readings differ by the time between them and mean
+//! nothing alone. `within d { … }` gives a block a deadline.
+//!
+//! TWO CLOCKS, NEVER CROSSED: `now_ms` bounds things and `wall_secs`
+//! dates them. The wall clock is the host's, and it may step either
+//! way, so no deadline is ever read from it.
+use @std.meta.{Code}
+
+extern fn avra_now_ns() -> int
+extern fn avra_time_wall_s() -> int
+extern fn avra_fiber_sleep(ms: int)
+extern fn avra_fiber_within(ms: int) -> int
+extern fn avra_fiber_within_end(outer: int)
+
+/// A span of time, in whole milliseconds.
+export type Duration = { ms: int }
+
+export fn ms(n: int) -> Duration {
+    Duration { ms: n }
+}
+
+export fn secs(n: int) -> Duration {
+    Duration { ms: n * 1000 }
+}
+
+export fn mins(n: int) -> Duration {
+    Duration { ms: n * 60000 }
+}
+
+/// The monotonic clock, in milliseconds since an origin nobody is
+/// told.
+export fn now_ms() -> int {
+    avra_now_ns() / 1000000
+}
+
+/// The same clock in nanoseconds — what a phase timing measures, and
+/// too fine a grain for a deadline.
+export fn now_ns() -> int {
+    avra_now_ns()
+}
+
+/// The wall clock: whole seconds since 1970-01-01 UTC, as the host
+/// says — what a date is made of.
+export fn wall_secs() -> int {
+    avra_time_wall_s()
+}
+
+/// The calling task parked for `d` while the others run; a program
+/// with none simply waits. Under a millisecond it lets every other
+/// ready task run once, then goes on.
+export fn sleep(d: Duration) {
+    avra_fiber_sleep(d.ms)
+}
+
+/// `within limit { … }` — the block answers as written, and every
+/// park inside it (in this task, or one it spawns) ends by `limit`
+/// from now. The task's outer deadline comes back however the block
+/// ends.
+export component within(limit: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}
+                let outer = avra_fiber_within(limit.ms)
+                defer avra_fiber_within_end(outer)
+                ${self.body}
+            }
+        }
+    }
+}
+
+impl Duration {
+    fn plus(other: Duration) -> Duration {
+        Duration { ms: self.ms + other.ms }
+    }
+    fn is_zero() -> bool {
+        self.ms == 0
+    }
+    /// The span as a human reads it: `340ms`, `1.2s`, `2m05s`.
+    fn text() -> string {
+        duration_text(self.ms)
+    }
+}
+
+/// Milliseconds as text, at the unit a human would pick.
+export fn duration_text(total: int) -> string {
+    if total < 1000 { return "${total}ms" }
+    if total < 60000 { return "${total / 1000}.${total % 1000 / 100}s" }
+    let s = total % 60000 / 1000
+    let pad = if s < 10 { "0" } else { "" }
+    "${total / 60000}m${pad}${s}s"
+}

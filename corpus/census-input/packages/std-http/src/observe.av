@@ -1,0 +1,189 @@
+//! OBSERVING — every request given an id and a place in a trace, timed,
+//! and written to an access log, as a layer:
+//!
+//!     server app { layer { wraps: observed }  … }
+//!
+//! THE TRACE CONTEXT PROPAGATES (W3C Trace Context). A request carrying
+//! a well-formed `traceparent` joins that trace as a new span beneath
+//! the caller's; any other request starts a trace. The handler sees the
+//! request with `traceparent` naming THIS server's span, so a call it
+//! makes forwards the header as it stands and the next hop is a child
+//! of this one. A malformed header is not repaired; it starts a new
+//! trace, since a context nobody can trust links nothing.
+//!
+//! THE REQUEST ID is the client's `x-request-id` when that is a plain
+//! token of at most 64 characters, and the trace id otherwise. The
+//! handler sees it on the request and the response carries it back.
+//!
+//! IDS ARE UNIQUE, NOT SECRET: one draw from the kernel per process
+//! seeds them, and a request never waits on the kernel for its id.
+//!
+//! THE LOG IS A HOOK. By default each request is one JSON line on
+//! standard error, written after its handler answered: the id, the
+//! trace, the method and target, the status, the octets and the time
+//! the handler took.
+use @std.json.{Json, field, to_text}
+use @std.net.{entropy32}
+use @std.time.{now_ns}
+
+/// One request as it was served: its id, its trace and span (and the
+/// caller's span, when it came inside a trace), the method and target
+/// as sent, the status and body octets it was answered with, and the
+/// nanoseconds its handler took.
+export type Served = {
+    id: string,
+    trace: string,
+    span: string,
+    parent: string?,
+    method: string,
+    target: string,
+    status: int,
+    size: int,
+    handled_ns: int,
+}
+
+/// What the layer does with each request served: `log` it, echo its id
+/// on the response, and say how long the handler took in
+/// `server-timing` (off by default, since a timing is information).
+export type Observe = { log: fn(Served) -> void = access_line, echo_id: bool = true, timing: bool = false }
+
+/// The layer under the defaults.
+export fn observed(q: Request<Unrouted>, next: Handler) -> Response { Observe {}.served(q, next) }
+
+/// The layer under `o`.
+export fn observing(o: Observe) -> fn(Request<Unrouted>, Handler) -> Response {
+    (q: Request<Unrouted>, next: Handler) -> o.served(q, next)
+}
+
+impl Observe {
+    /// `q` given its id and span, answered by `next`, timed and logged.
+    fn served(q: Request<Unrouted>, next: Handler) -> Response {
+        let caller = parent_of(q.header("traceparent"))
+        let trace = caller?.trace ?? minted(4)
+        let span = minted(2)
+        let sent = q.header("x-request-id")
+        let id = own_id(sent) ?? trace
+        let traced = with_field(q, "traceparent", "00-${trace}-${span}-01")
+        let told = if sent == id { traced } else { with_field(traced, "x-request-id", id) }
+        let t0 = now_ns()
+        let r = next(told)
+        let took = now_ns() - t0
+        (self.log)(
+            Served {
+                id: id,
+                trace: trace,
+                span: span,
+                parent: caller?.span,
+                method: q.raw.slice(q.head.verb.lo, q.head.verb.hi).text() ?? "?",
+                target: q.target() ?? "?",
+                status: r.status,
+                size: r.body.length,
+                handled_ns: took,
+            },
+        )
+        let echoed = if self.echo_id && r.header("x-request-id") == null { r.with_header("x-request-id", id) } else { r }
+        if !self.timing { return echoed }
+        echoed.with_header("server-timing", "app;dur=${took / 1000000}.${pad3(took / 1000 % 1000)}")
+    }
+}
+
+/// A caller's place in a trace: its trace id and its span.
+export type Caller = { trace: string, span: string }
+
+/// The caller a `traceparent` names: version `00`, a 32-hex trace id
+/// and a 16-hex span id, neither all zeros, and two hex of flags — or
+/// null for anything else.
+export fn parent_of(header: string?) -> Caller? {
+    let h? = header else { return null }
+    let v = h.trim()
+    if v.length != 55 ||
+        !v.starts_with("00-") ||
+        v.substring(35, 36) != "-" ||
+        v.substring(52, 53) != "-" {
+        return null
+    }
+    let trace = v.substring(3, 35)
+    let span = v.substring(36, 52)
+    if !lower_hex(trace) ||
+        !lower_hex(span) ||
+        !lower_hex(v.substring(53, 55)) ||
+        all_zero(trace) ||
+        all_zero(span) {
+        return null
+    }
+    Caller { trace: trace, span: span }
+}
+
+/// A client's request id when it is a plain token: 1 to 64 letters,
+/// digits, `-`, `_` or `.`.
+fn own_id(header: string?) -> string? {
+    let h? = header else { return null }
+    if h.is_empty() || h.length > 64 || !every_octet(h, id_char) { return null }
+    h
+}
+
+const id_char: Bytes = admits((c) -> is_digit(c) || is_alpha(c) || c == 45 || c == 95 || c == 46)
+
+fn lower_hex(s: string) -> bool { every_octet(s, lower_hex_char) }
+
+const lower_hex_char: Bytes = admits((c) -> is_digit(c) || c >= 97 && c <= 102)
+
+fn all_zero(s: string) -> bool { s.bytes().run(0, zero_char) == s.length }
+
+const zero_char: Bytes = admits((c) -> c == 48)
+
+// ── Ids ─────────────────────────────────────────────────────────
+
+/// `words` fresh 32-bit words as hex, from the process's generator:
+/// one list of digit octets, made text once.
+fn minted(words: int) -> string {
+    let ws = [next_word() for _i in 0..words]
+    [hex_octets.at((ws[i / 8] >> 28 - 4 * (i % 8)) & 15) for i in 0..8 * words].bytes()!.text()!
+}
+
+const hex_octets: Bytes = "0123456789abcdef".bytes()
+
+/// The generator's state: seeded once from the kernel, then stepped.
+once fn state() -> Cell<int> { Cell.new((entropy32() ?? 0) * 65536 + now_ns() % 65536) }
+
+/// The next 32-bit word: a 64-bit LCG stepped (wrapping), its high
+/// half taken.
+fn next_word() -> int {
+    let s = state()
+    let x = s.get() * 6364136223846793005 + 1442695040888963407
+    s.set(x)
+    (x >> 32) & 4294967295
+}
+
+/// Three digits, zero padded: a duration's fraction.
+fn pad3(n: int) -> string {
+    when {
+        n < 10 -> "00${n}"
+        n < 100 -> "0${n}"
+        _ -> "${n}"
+    }
+}
+
+// ── The default log ─────────────────────────────────────────────
+
+/// One JSON line on standard error per request served.
+export fn access_line(s: Served) { eprintln(access_json(s)) }
+
+/// A request served, as one line of JSON.
+export fn access_json(s: Served) -> string {
+    to_text(
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(s.id)),
+                    field("trace", Json.Str(s.trace)),
+                    field("span", Json.Str(s.span)),
+                    field("method", Json.Str(s.method)),
+                    field("target", Json.Str(s.target)),
+                    field("status", Json.Int(s.status)),
+                    field("bytes", Json.Int(s.size)),
+                    field("handled_ns", Json.Int(s.handled_ns)),
+                ],
+            ),
+    )
+}

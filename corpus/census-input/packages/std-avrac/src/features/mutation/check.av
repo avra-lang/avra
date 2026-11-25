@@ -1,0 +1,63 @@
+//! Mutation's typing laws: a mut binding may declare its type like
+//! `let` (the want the channel plants); an assignment lands on a
+//! PLACE whose type — read off the target — is the slot's law, the
+//! value ACCEPTED by it with widening recorded like every slot's.
+use core.{StmtId, ExprId, TypeId, TypeRef}
+use features.{TypeCx, this_is}
+use diagnostics.{refusal}
+
+export fn check_mut(mut cx: TypeCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return }
+    // The DECLARED type records BEFORE the value walks — it is the
+    // want the channel plants, and downstream reads of the name
+    // see the declaration even when the value refuses.
+    let ann: TypeRef? = cx.view.store.binding_ty(s)
+    let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
+    if declared != null { cx.plant_want(v, declared!) }
+    cx.walk(v)
+    if cx.refuses_type_value(v) { return }
+    if cx.refuses_void_value(v) { return }
+    if declared != null {
+        cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", declared!)
+    }
+}
+
+/// THE PLACE LAW's typing half: the target types as a READ — its
+/// type IS the slot's law — the want is planted so the value hears
+/// its seat, and acceptance WIDENS like every slot's.
+export fn check_assign(mut cx: TypeCx, s: StmtId) {
+    let held: ExprId? = cx.view.store.stmt_value(s)
+    let target: ExprId? = cx.view.store.assign_target(s)
+    if held == null || target == null { return }
+    let v = held!
+    let t = target!
+    cx.walk(t)
+    let want = cx.type_at(t)
+    if cx.errored_ty(want) || !cx.place_lawful(t) {
+        cx.walk(v)
+        return
+    }
+    cx.plant_want(v, want)
+    cx.walk(v)
+    if cx.drops_task(cx.stmt_loc(s), want) { return }
+    if !cx.accepts(v, want) { slot_refused(cx, s, t, want, v) }
+}
+
+// ── The voices ──
+
+fn slot_refused(mut cx: TypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
+    let gn = cx.view.types.name_of(cx.type_at(v))
+    let root: ExprId? = cx.view.store.place_root(t)
+    let named = if root == null { "this place" } else { "`${cx.view.store.ident_name(root!) ?? "this place"}`" }
+    let spot = if cx.view.store.ident_name(t) == null { "a slot of ${named}" } else { named }
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.stmt_loc(s),
+                "assignment changes ${spot}: `${cx.view.types.name_of(want)}` to `${gn}`",
+                this_is(gn),
+                null,
+            ),
+        )
+}

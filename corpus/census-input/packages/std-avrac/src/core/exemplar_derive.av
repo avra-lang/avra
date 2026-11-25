@@ -1,0 +1,211 @@
+//! `@derive(Exemplar)` — synthetic sample values for a codec's
+//! round-trip test, plus a field-by-field `codec_same` to compare
+//! decode(encode(x)) against x WITHOUT trusting a folded hash
+//! (CLAUDE.md, "a check can pass because of the bug": an encoder and
+//! its decoder can drop the same field twice and a hash comparison
+//! would not notice).
+//!
+//! A RECORD needs one hand-written seed, `codec_zero()` (every field
+//! at ITS OWN zero — false, 0, "", [], null, or a nested type's own
+//! zero exemplar): Avra's struct literal takes every declared field
+//! in one call, so no derive can spell one for an unknown field
+//! count. From that seed the derive builds the rest: the seed itself
+//! is the BASELINE sample, and `seed with { field: nonzero }` is one
+//! more sample per field — the shape that catches "never encoded": a
+//! dropped field decodes back to the seed's zero, which disagrees
+//! with the sample's own non-zero value, while comparing two
+//! all-zero values would round-trip whether or not the field was
+//! ever written.
+//!
+//! An ENUM needs no seed: a payload is built POSITIONAL, one sample
+//! per VARIANT, every field of that variant at its non-zero value.
+//!
+//! DISPATCHES ON `Kind`, never on a spelling — `List<T>` and `T?`
+//! recurse structurally, and a declared name defers to that type's
+//! own `exemplars()`/`codec_same` (so it must derive `Exemplar` too,
+//! or hand-write both). A field shape this does not know is refused
+//! by the compiler at the generated code, never skipped — the same
+//! law `@derive(Fingerprint)` holds.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Kind,
+    Directive,
+    Code,
+    Arms,
+    name,
+    literal,
+}
+
+export trait Exemplar {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            impl ${t} {
+                static fn exemplars() -> List<${t}> { ${code_listed(sample_values(t))} }
+                static fn exemplar_labels() -> List<string> { ${string_listed(sample_labels(t))} }
+                fn codec_same(other: ${t}) -> bool { ${same_of(t)} }
+            }
+        },
+            },
+        ]
+    }
+
+    /// No marks: a field's own shape says everything this derive samples.
+    static fn marks(t: MetaType) -> List<string> { [] }
+}
+
+// ── SAMPLES ─────────────────────────────────────────────────────────
+
+fn sample_values(t: MetaType) -> List<Code> {
+    if !t.variants.is_empty() { return [variant_of(t, v) for v in t.variants] }
+    [zero_call(t)].concat([field_sample(t, f) for f in t.fields])
+}
+
+fn sample_labels(t: MetaType) -> List<string> {
+    if !t.variants.is_empty() { return ["variant ${v.name}" for v in t.variants] }
+    ["baseline"].concat(["field ${f.name}" for f in t.fields])
+}
+
+/// The hand-written seed — CLAUDE.md's "write the seed the same way
+/// as its updates" the other way round: every UPDATE (one field
+/// varied) starts from this one SAME seed, so no two samples disagree
+/// about what an untouched field reads as.
+fn zero_call(t: MetaType) -> Code {
+    quote { ${name(t.name)}.codec_zero() }
+}
+
+/// The seed with field `f` alone at its non-zero value.
+fn field_sample(t: MetaType, f: Field) -> Code {
+    let seed = zero_call(t)
+    let fname = f.name
+    let val = nonzero(f.kind)
+    quote { ${seed} with { ${fname}: ${val} } }
+}
+
+/// One enum sample: the variant, every field of its OWN payload at
+/// non-zero — POSITIONAL, so no seed is needed the way a record's
+/// named fields do.
+fn variant_of(t: MetaType, v: MetaVariant) -> Code {
+    if v.fields.is_empty() { return quote { ${name(t.name)}.${v} } }
+    let args = [nonzero(f.kind) for f in v.fields]
+    quote { ${name(t.name)}.${v}(${..args}) }
+}
+
+// ── `[x0, x1, …]`, folded one hole at a time — a run of templates has
+// no expression position (CLAUDE.md), so a variable-length list is
+// built by the derive itself, the same shape `fingerprint.av`'s
+// `listed` folds. ──
+
+fn code_listed(items: List<Code>) -> Code {
+    if items.is_empty() { return quote { [] } }
+    mut acc = quote { [${items.first()!}] }
+    for c in items.slice(1, items.length) { acc = quote { ${acc}.concat([${c}]) } }
+    acc
+}
+
+fn string_listed(items: List<string>) -> Code {
+    if items.is_empty() { return quote { [] } }
+    mut acc = quote { [${literal(items.first()!)}] }
+    for s in items.slice(1, items.length) { acc = quote { ${acc}.concat([${literal(s)}]) } }
+    acc
+}
+
+// ── THE NON-ZERO REGISTRY, one fold per shape, every `Kind` variant
+// answering. A value a "dropped field" decode can never produce by
+// accident — the ONE table a `field_sample` and a `same` comparison
+// both read, so a shape this derive can vary is a shape it can also
+// compare. ──
+
+fn nonzero(k: Kind) -> Code {
+    match k {
+        .Bool -> quote { true },
+        .Int -> quote { 7 },
+        .Str -> quote { "x" },
+        .List(elem) -> quote { [${nonzero(elem)}] },
+        .Opt(inner) -> nonzero(inner),
+        .Named(n, _) -> quote { ${name(n)}.exemplars()[${name(n)}.exemplars().length - 1] },
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote {
+            a_field_kind_the_exemplar_derive_has_no_nonzero_for()
+        },
+    }
+}
+
+// ── `codec_same` ────────────────────────────────────────────────────
+
+fn same_of(t: MetaType) -> Code {
+    if !t.variants.is_empty() { return variants_same(t) }
+    fields_same(t.fields)
+}
+
+/// Every field's comparison, `&&`-ed together — `true` for a record
+/// with no fields at all.
+fn fields_same(fields: List<Field>) -> Code {
+    sample_anded(
+        [same(f.kind, quote { self.${f.name} }, quote { other.${f.name} }) for f in fields],
+    )
+}
+
+/// Two enum values compare equal only under the SAME variant, each
+/// field of the payload compared in turn — a variant `other` does not
+/// carry is a miss, never a defect (the outer match already spells
+/// every variant of `self`, `exact_derive.av`'s own shape).
+fn variants_same(t: MetaType) -> Code {
+    let arms = [variant_same_arm(v) for v in t.variants]
+    quote { match self { ${arms} } }
+}
+
+fn variant_same_arm(v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> other is .${v} } }
+    let a_names = [f.name for f in v.fields]
+    let b_names = ["${f.name}_b" for f in v.fields]
+    let parts = [payload_field_same(v, i, a_names, b_names) for i in 0..v.fields.length]
+    quote { .${v}(${a_names}) -> match other { .${v}(${b_names}) -> ${sample_anded(parts)}, rest -> false } }
+}
+
+fn payload_field_same(v: MetaVariant, i: int, a_names: List<string>, b_names: List<string>) -> Code {
+    same(v.fields[i].kind, name(a_names[i]), name(b_names[i]))
+}
+
+/// HOW A FIELD'S SHAPE COMPARES — `list_eq`/`opt_eq` (core/lists.av)
+/// take the elementwise equality this derive already builds
+/// recursively, so a nested `List<List<T>>` composes without a
+/// hand-written double loop.
+///
+/// THE LAMBDA'S OWN PARAMETERS RIDE HOLES, NEVER STATIC TEXT: a name
+/// written directly in the quote's own source (`(x, y) -> …`) does not
+/// register as a binding a SIBLING hole can see — only a name spliced
+/// THROUGH a hole does, the same door `.${v}(${binders})` already
+/// opens for a match arm's binders. `depth` keeps two nested lambdas'
+/// parameters apart the same way two nested match arms would shadow.
+fn same(k: Kind, a: Code, b: Code, depth: int = 0) -> Code {
+    let px = "x${depth}"
+    let py = "y${depth}"
+    match k {
+        .Bool or .Int or .Str -> quote { ${a} == ${b} },
+        .List(elem) -> quote {
+            list_eq(${a}, ${b}, (${px}, ${py}) -> ${same(elem, name(px), name(py), depth + 1)})
+        },
+        .Opt(inner) -> quote {
+            opt_eq(${a}, ${b}, (${px}, ${py}) -> ${same(inner, name(px), name(py), depth + 1)})
+        },
+        .Named(_, _) -> quote { ${a}.codec_same(${b}) },
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote {
+            a_field_kind_the_exemplar_derive_has_no_same_for()
+        },
+    }
+}
+
+fn sample_anded(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { true } }
+    mut acc = parts.first()!
+    for p in parts.slice(1, parts.length) { acc = quote { ${acc} && ${p} } }
+    acc
+}

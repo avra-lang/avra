@@ -1,0 +1,57 @@
+// A component's `check` judges each instance at compile time: the
+// record's own method over the settled instance, its diagnostics
+// spoken where the instance stands.
+use @std.avrac.testing.{provided, answered, refused_in}
+use @std.avrac.compiler.{Program}
+
+/// The provider: a port that must be in range, and one whose check
+/// traps.
+fn ports() -> string {
+    "use @std.meta.{Diagnostic, refuse}\n\nexport component port(n: int) {\n    fn check() -> List<Diagnostic> {\n        if self.n > 0 && self.n < 65536 { return [] }\n        [refuse(\"a port is 1 to 65535, this is \${self.n}\")]\n    }\n}\n\nexport component brittle(n: int) {\n    fn check() -> List<Diagnostic> {\n        let xs = [1]\n        if xs[self.n] > 0 { return [] }\n        []\n    }\n}"
+}
+
+fn checked(main: string) -> Program {
+    provided("use @x.c.{port, brittle}\n" + main, ports())
+}
+
+spec "features/components — a record's check" {
+    given "a settled instance" {
+        then "one the check accepts runs" {
+            answered(checked("let p = port 8080\np.n")) == "8080"
+        }
+        then "one the check refuses speaks the library's words at the instance" {
+            let said = answered(checked("let p = port 70000\np.n"))
+            said.contains("a port is 1 to 65535, this is 70000") && said.contains("main.av:2")
+        }
+        then "a check that traps says it did not run" {
+            answered(checked("let b = brittle 5\nb.n"))
+                .contains("this instance's `check` did not run")
+        }
+    }
+    given "an instance only a run can build" {
+        then "one built from a parameter is not checked" {
+            answered(checked("fn open(n: int) -> int {\n    let p = port n\n    p.n\n}\nopen(3)")) == "3"
+        }
+        then "one built from a local is not checked, one built from a `const` is" {
+            answered(checked("let base = 60000\nlet p = port base + 10000\np.n")) == "70000" &&
+                answered(checked("const base = 60000\nlet p = port base + 10000\np.n"))
+                    .contains("this is 70000")
+        }
+    }
+    given "binders" {
+        then "an instance a comprehension builds reads the comprehension's binder, and is not checked" {
+            answered(checked("let ps = [port 80 + i for i in 0..2]\nps[1].n")) == "81"
+        }
+    }
+    given "the declaration" {
+        then "a check answering anything but diagnostics refuses at the check" {
+            refused_in(
+                provided(
+                    "use @x.c.{wrong}\n0",
+                    "use @std.meta.{Diagnostic}\n\nexport component wrong(n: int) {\n    fn check() -> int { 1 }\n}\n",
+                ),
+                "a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `int`",
+            )
+        }
+    }
+}

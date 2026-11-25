@@ -1,0 +1,370 @@
+//! @std.text — text built and shaped.
+//!
+//! A `Text` grows in linear time: pieces are kept apart and joined
+//! once, so a scanner copies runs instead of growing a string by one
+//! character (which is quadratic). `repeat`, `pad_left` and
+//! `pad_right` shape a column — width measured in code points, so a
+//! name with an `é` aligns. `lines` and `indent` treat text as rows.
+//! The code-point walk (`codepoints`, `chars`, `codepoint_count`)
+//! reads UTF-8 by its lead bytes, so a byte scanner and a character
+//! count never disagree inside the walk; `from_codepoint` writes one
+//! back. A code point of 0 mints a NUL, and every verb here reads the
+//! header rather than stopping at it, so a NUL is an ordinary
+//! character: text carrying one is longer than its prefix and unequal
+//! to it. `nul_at` and `has_nul` guard the C seats, where it is not.
+//! `parse_int` reads the other way: `-`? digits, the ceiling on both
+//! sides, absence for anything else; `parse_float` adds a fraction
+//! and an exponent, and absence past the largest float. `with_room` is
+//! an empty `Bytes` that appends grow in place.
+
+extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_str_parses_int(s: string) -> bool
+extern fn avra_str_parsed_int(s: string) -> int
+extern fn avra_str_parses_float(s: string) -> int
+extern fn avra_str_parsed_float(s: string) -> float
+extern fn avra_bytes_with_room(n: int) -> Bytes
+
+// ── A buffer with room ──────────────────────────────────────────
+
+/// An empty `Bytes` with room for `n` octets: a buffer appended to
+/// grows in place until the room is spent, never moving to grow. A
+/// negative room traps.
+export fn with_room(n: int) -> Bytes {
+    avra_bytes_with_room(n)
+}
+
+// ── The builder ─────────────────────────────────────────────────
+
+/// Text under construction: pieces apart until `built` joins them.
+export type Text = { parts: List<string> }
+
+export fn builder() -> Text {
+    Text { parts: [] }
+}
+
+impl Text {
+    mut fn push(piece: string) {
+        self.parts.push(piece)
+    }
+
+    fn built() -> string {
+        self.parts.join("")
+    }
+}
+
+// ── Parsing ──────────────────────────────────────────────────────
+
+/// The text as an int: `-`? digits, the ceiling on both sides,
+/// nothing else — no leading `+`, no surrounding space, no fraction.
+/// Absent for anything that is not exactly that; the caller trims
+/// and strips a `+` first, since a parser that accepts two spellings
+/// of one number is the two-hats hazard.
+export fn parse_int(s: string) -> int? {
+    if !avra_str_parses_int(s) { return null }
+    avra_str_parsed_int(s)
+}
+
+/// The text as a float: `-`? digits, then `.` digits and an exponent
+/// (`e`, a sign, digits) each optional. No leading `+`, no space, no
+/// `inf`, `nan` or hex. Absent past the largest float rather than
+/// infinite; a value too small to hold reads as the nearest float.
+/// A NUL is no digit, so text carrying one is absent before it
+/// crosses to C.
+export fn parse_float(s: string) -> float? {
+    if has_nul(s) || avra_str_parses_float(s) == 0 { return null }
+    avra_str_parsed_float(s)
+}
+
+// ── Shaping ─────────────────────────────────────────────────────
+
+/// `s` written `n` times; nothing for `n` at or below zero.
+export fn repeat(s: string, n: int) -> string {
+    mut out = builder()
+    mut i = 0
+    while i < n {
+        out.push(s)
+        i = i + 1
+    }
+    out.built()
+}
+
+/// `s` followed by spaces up to `width` code points — as it is when
+/// already that wide.
+export fn pad_right(s: string, width: int) -> string {
+    s + repeat(" ", width - codepoint_count(s))
+}
+
+/// Spaces then `s`, `width` code points in all.
+export fn pad_left(s: string, width: int) -> string {
+    repeat(" ", width - codepoint_count(s)) + s
+}
+
+/// The rows of a text: split at newlines, a final newline closing
+/// the last row rather than opening an empty one; "" has none.
+export fn lines(s: string) -> List<string> {
+    if s.length == 0 { return [] }
+    s.split("\n")
+}
+
+/// Every row set in by `n` spaces.
+export fn indent(s: string, n: int) -> string {
+    [repeat(" ", n) + l for l in lines(s)].join("\n")
+}
+
+/// Nothing but spaces, tabs, carriage returns and newlines — or
+/// nothing at all.
+export fn is_blank(s: string) -> bool {
+    codepoints(s).all(is_blank_code(it))
+}
+
+fn is_blank_code(c: int) -> bool {
+    c == 32 || c == 9 || c == 13 || c == 10
+}
+
+// ── The C boundary ──────────────────────────────────────────────
+//
+// Every verb in this package reads the header, so a NUL is just a
+// character here. It is the C CALLEE that ends at the first one —
+// `getenv`, `execvp`, `fopen`, `sqlite3_open` — so text that means one
+// thing in Avra means a PREFIX of itself the moment it crosses. These
+// two answer the only question that crossing raises, and they exist
+// for the extern seat, not to compensate for anything on this side.
+
+/// A NUL as text, minted once: the needle every crossing is asked
+/// about, and one no literal can spell.
+once fn nul_needle() -> string {
+    from_codepoint(0)
+}
+
+/// Where the first NUL sits, or -1 for text C would read whole. The
+/// position is the diagnostic: it says how far a host would read.
+/// A search, not a walk — `index_of` reads the header, so this is one
+/// `memmem` over the bytes and allocates nothing.
+export fn nul_at(s: string) -> int {
+    s.index_of(nul_needle())
+}
+
+/// Whether a NUL is anywhere in the text — `nul_at` asked as a
+/// question. Text answering true means something different to C than
+/// it does here, and belongs on no side of a boundary.
+export fn has_nul(s: string) -> bool {
+    nul_at(s) >= 0
+}
+
+// ── The code-point walk ─────────────────────────────────────────
+
+/// One code point as UTF-8 spells it: where it starts, how many
+/// bytes it takes, and its value.
+type Step = { at: int, width: int, code: int }
+
+/// The code points of a text, in order. A byte that begins no valid
+/// sequence — a stray continuation byte, a sequence cut short by the
+/// end — stands for itself.
+export fn codepoints(s: string) -> List<int> {
+    [st.code for st in steps(s)]
+}
+
+/// Each code point as its own text.
+export fn chars(s: string) -> List<string> {
+    [s.substring(st.at, st.at + st.width) for st in steps(s)]
+}
+
+/// Characters, counted without a step each: an ASCII run is its own
+/// length, and anything else is walked by its lead bytes.
+export fn codepoint_count(s: string) -> int {
+    let b = s.bytes()
+    mut i = b.run(0, ascii)
+    mut n = i
+    while i < b.length {
+        let next = i + width_at(s, i, b.length)
+        i = b.run(next, ascii)
+        n = n + 1 + i - next
+    }
+    n
+}
+
+/// The bytes below 128, each a character by itself.
+const ascii: Bytes = admits((c) -> c < 128)
+
+/// A class table: a byte for each of the 256, nonzero where `pred`
+/// admits it — what `Bytes.run` scans by.
+export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(c) { 1 } else { 0 } for c in 0..256].bytes()! }
+
+/// The text one code point spells — U+FFFD for one no sequence can
+/// carry (negative, past U+10FFFF, or a surrogate).
+export fn from_codepoint(code: int) -> string {
+    avra_str_from_codepoint(code)
+}
+
+/// The text a list of code points spells — the walk's inverse.
+export fn from_codepoints(codes: List<int>) -> string {
+    [from_codepoint(c) for c in codes].join("")
+}
+
+fn steps(s: string) -> List<Step> {
+    mut out: List<Step> = []
+    let n = s.length
+    mut i = 0
+    while i < n {
+        let st = step_at(s, i, n)
+        out.push(st)
+        i = i + st.width
+    }
+    out
+}
+
+/// The sequence beginning at `i`: its length by the lead byte, its
+/// value from the six-bit tails — arithmetic, since the bytes are
+/// plain numbers here.
+fn step_at(s: string, i: int, n: int) -> Step {
+    let b = s.char_code(i)
+    let width = width_at(s, i, n)
+    if width == 1 { return lone_byte(i, b) }
+    mut code = b - lead_mark(width)
+    for k in 1..width { code = code * 64 + (s.char_code(i + k) - 128) }
+    Step { at: i, width: width, code: code }
+}
+
+/// How many bytes the sequence at `i` takes: what its lead byte
+/// announces when every tail is there and is a tail, else one — a
+/// byte standing for itself.
+fn width_at(s: string, i: int, n: int) -> int {
+    let width = lead_width(s.char_code(i))
+    if width == 1 || i + width > n { return 1 }
+    mut k = 1
+    while k < width && is_tail(s.char_code(i + k)) { k = k + 1 }
+    if k == width { width } else { 1 }
+}
+
+fn is_tail(b: int) -> bool { b >= 128 && b < 192 }
+
+/// A byte standing for itself — ASCII, or one that leads nothing.
+fn lone_byte(i: int, b: int) -> Step {
+    Step { at: i, width: 1, code: b }
+}
+
+/// How many bytes a lead byte announces: 1 for ASCII and for a byte
+/// that leads nothing.
+fn lead_width(b: int) -> int {
+    when {
+        b < 128 -> 1
+        b >= 240 && b < 248 -> 4
+        b >= 224 && b < 240 -> 3
+        b >= 192 && b < 224 -> 2
+        _ -> 1
+    }
+}
+
+/// The marker bits a lead byte carries, as the number to take away.
+fn lead_mark(width: int) -> int {
+    when {
+        width == 4 -> 240
+        width == 3 -> 224
+        _ -> 192
+    }
+}
+
+// ── ASCII case ──────────────────────────────────────────────────
+
+/// `b` with `A`–`Z` folded to `a`–`z` and every other octet as is —
+/// the case a protocol's words ignore, never a language's.
+export fn ascii_lowered(b: Bytes) -> Bytes { [ascii_folded(b.at(i)) for i in 0..b.length].bytes()! }
+
+/// `s` ASCII-lowercased; every non-ASCII character as is.
+export fn ascii_lower(s: string) -> string { ascii_lowered(s.bytes()).text()! }
+
+/// Octet `c` ASCII-lowercased.
+export fn ascii_folded(c: int) -> int { if c >= 65 && c <= 90 { c + 32 } else { c } }
+
+// ── Base64 ──────────────────────────────────────────────────────
+
+/// The octets in RFC 4648's base64, padded with `=`.
+export fn base64(b: Bytes) -> string { encoded64(b, standard_alphabet, true) }
+
+/// The octets in RFC 4648's URL-safe base64 — `-` and `_`, unpadded —
+/// the form a cookie, a URL and a token carry.
+export fn base64url(b: Bytes) -> string { encoded64(b, url_alphabet, false) }
+
+/// Padded base64 read back, absent for anything `base64` would not
+/// have written: a wrong length or padding, a character outside the
+/// alphabet, or bits past the last octet that are not zero — so one
+/// value has exactly one spelling.
+export fn from_base64(s: string) -> Bytes? { decoded64(s.bytes(), false, true) }
+
+/// Unpadded URL-safe base64 read back, as strictly.
+export fn from_base64url(s: string) -> Bytes? { decoded64(s.bytes(), true, false) }
+
+const standard_alphabet: Bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    .bytes()
+
+const url_alphabet: Bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    .bytes()
+
+fn encoded64(b: Bytes, alphabet: Bytes, pad: bool) -> string {
+    let n = b.length
+    mut out: List<int> = []
+    mut i = 0
+    while i + 3 <= n {
+        let v = (b.at(i) << 16) | (b.at(i + 1) << 8) | b.at(i + 2)
+        out = out
+            .concat(
+                [
+                    alphabet.at(v >> 18),
+                    alphabet.at((v >> 12) & 63),
+                    alphabet.at((v >> 6) & 63),
+                    alphabet.at(v & 63),
+                ],
+            )
+        i = i + 3
+    }
+    let left = n - i
+    if left == 1 {
+        let v = b.at(i) << 16
+        out = out.concat([alphabet.at(v >> 18), alphabet.at((v >> 12) & 63)])
+    }
+    if left == 2 {
+        let v = (b.at(i) << 16) | (b.at(i + 1) << 8)
+        out = out
+            .concat([alphabet.at(v >> 18), alphabet.at((v >> 12) & 63), alphabet.at((v >> 6) & 63)])
+    }
+    if pad && left > 0 { out = out.concat([61 for _k in left..3]) }
+    out.bytes()!.text()!
+}
+
+/// The sextet a character spells in one alphabet, absent outside it.
+fn sextet(c: int, url: bool) -> int? {
+    when {
+        c >= 65 && c <= 90 -> c - 65
+        c >= 97 && c <= 122 -> c - 71
+        c >= 48 && c <= 57 -> c + 4
+        c == 43 && !url -> 62
+        c == 47 && !url -> 63
+        c == 45 && url -> 62
+        c == 95 && url -> 63
+        _ -> null
+    }
+}
+
+fn decoded64(s: Bytes, url: bool, padded: bool) -> Bytes? {
+    let n = s.length
+    if padded && n % 4 != 0 { return null }
+    let pads = if padded && n > 0 && s.at(n - 1) == 61 { if s.at(n - 2) == 61 { 2 } else { 1 } } else { 0 }
+    let body = n - pads
+    if body % 4 == 1 { return null }
+    mut out: List<int> = []
+    mut acc = 0
+    mut bits = 0
+    mut i = 0
+    while i < body {
+        let d? = sextet(s.at(i), url) else { return null }
+        acc = ((acc << 6) | d) & 4095
+        bits = bits + 6
+        if bits >= 8 {
+            bits = bits - 8
+            out.push((acc >> bits) & 255)
+        }
+        i = i + 1
+    }
+    if acc & (1 << bits) - 1 != 0 { return null }
+    out.bytes()
+}

@@ -1,0 +1,55 @@
+//! avra-8sb5.57.9.6: Canon's key names the block words a file's `use`
+//! lines read from OTHER modules (§6.5) — a provider changing what it
+//! exports must un-canonicalize every importer whose own bytes never
+//! moved, or a stale `fmt --check` answers "canonical" for a file that
+//! would no longer parse. `avra_ran`, `avra_bin`, `scratch_dir` and
+//! `exit_is_zero` are the neighbouring tests' own: this module shares
+//! one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.process.{ProcessError, Exit}
+use @std.time.{now_ns}
+
+/// A package of two files: `a.av` exports a named grammar `one`
+/// consumes, and `main.av` writes a block of it. `keyword` is `a.av`'s
+/// own literal — the "provider word" this test changes underneath
+/// `main.av` without touching a byte of it.
+type ProviderPackage = { root: string, provider: string, main: string }
+
+fn provider_package(name: string, keyword: string) -> ProviderPackage {
+    let root = "${scratch_dir()}/canon_provider_${name}_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n")
+    let provider = "${root}/src/a.av"
+    let _ = write_text(
+        provider,
+        "export type Q = { n: int }\nexport fn mk() -> Q { Q { n: 1 } }\nexport grammar one {\n    r = \"${keyword}\" -> mk()\n}\n",
+    )
+    let main = "${root}/src/main.av"
+    let _ = write_text(
+        main,
+        "use a.{one, Q}\nlet q: Q = one { ${keyword} }\nprintln(\"\${q.n}\")\n",
+    )
+    ProviderPackage { root: root, provider: provider, main: main }
+}
+
+fn fmt_checked(root: string) -> Result<Exit, ProcessError> {
+    match avra_ran(["fmt", "--check", root]) { .Ok(o) -> .Ok(o.exit), .Err(e) -> .Err(e) }
+}
+
+spec "avra fmt — Canon's key follows a provider's block words" {
+    given "a file whose parse depends on a grammar another module exports" {
+        then "the importer checks clean before the provider changes its keyword" {
+            let p = provider_package("clean", "ONE")
+            match fmt_checked(p.root) { .Ok(status) -> exit_is_zero(status), .Err(_) -> false }
+        }
+        then "changing the provider's own keyword, with the importer's bytes untouched, is caught on the next check" {
+            let p = provider_package("stale", "ONE")
+            let _ = fmt_checked(p.root)
+            let _ = write_text(
+                p.provider,
+                "export type Q = { n: int }\nexport fn mk() -> Q { Q { n: 1 } }\nexport grammar one {\n    r = \"TWO\" -> mk()\n}\n",
+            )
+            match fmt_checked(p.root) { .Ok(status) -> !exit_is_zero(status), .Err(_) -> false }
+        }
+    }
+}

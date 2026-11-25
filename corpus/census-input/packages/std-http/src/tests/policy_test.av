@@ -1,0 +1,216 @@
+// Redirects and retries, each explicit: every redirect status and the
+// method it asks next, loops and chains past the bound, a location
+// that is missing or no URL, credentials kept within an origin and
+// dropped across one; a request the peer drops retried only when it
+// is idempotent, only within its attempts and its deadline, and the
+// answer saying how many it took.
+use @std.net.{NetError, Listener, listen}
+use @std.time.{ms, secs, now_ms}
+use @std.http.frame.{Method, limits}
+use @std.http.http.{Header, Request, Unrouted, Response, text}
+use @std.http.server.{Server, served, timing}
+use @std.http.client.{Answer, ClientError, Redirected, method_word}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Payload, Options, Redirects, Retry, Timeouts, fetch}
+
+fn pp_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+fn pp_moved(status: int, to: string) -> Response {
+    Response { status: status, headers: [Header { name: "location", value: to }] }
+}
+
+/// Every redirect this suite follows, and `/end`, which shows what
+/// arrived there: the method, the body, and the credentials.
+fn pp_route(q: Request<Unrouted>) -> Response {
+    let host = q.header("host") ?? ""
+    match q.target() ?? "" {
+        "/r301" -> pp_moved(301, "/end"),
+        "/r302" -> pp_moved(302, "/end"),
+        "/r303" -> pp_moved(303, "/end"),
+        "/r307" -> pp_moved(307, "/end"),
+        "/r308" -> pp_moved(308, "/end"),
+        "/loop" -> pp_moved(302, "/loop"),
+        "/ping" -> pp_moved(302, "/pong"),
+        "/pong" -> pp_moved(302, "/ping"),
+        "/c3" -> pp_moved(302, "/c2"),
+        "/c2" -> pp_moved(302, "c1"),
+        "/c1" -> pp_moved(302, "http://${host}/end"),
+        "/noloc" -> Response { status: 302 },
+        "/badloc" -> pp_moved(302, "http://a b/"),
+        "/same" -> pp_moved(302, "http://${host}/end"),
+        "/cross" -> pp_moved(302, "http://${host.replace("127.0.0.1", "localhost")}/end"),
+        "/other" -> pp_moved(302, "https://${host}/end"),
+        "/r304" -> Response { status: 304 },
+        "/r300" -> pp_moved(300, "/end"),
+        "/frag" -> pp_moved(302, "/seen#frag"),
+        "/seen" -> text(200, q.target() ?? "?"),
+        "/creds" -> pp_moved(302, "http://u:p@${host}/end"),
+        "/script" -> pp_moved(302, "javascript:alert(1)"),
+        "/empty" -> pp_moved(302, ""),
+        "/respelled" -> pp_moved(302, "HTTP://${host}/respelled"),
+        _ -> text(
+            200,
+            "${method_word(q.method()) ?? "?"}|${q.body.text() ?? "?"}|${q.header("authorization") ?? "-"}",
+        ),
+    }
+}
+
+fn pp_server() -> Result<Server<App>, ClientError> {
+    let l = pp_lifted(listen("127.0.0.1", 0))?
+    .Ok(served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q -> pp_route(q) })
+}
+
+fn pp_opts(o: Options) -> Options { o with { pool: pool() } }
+
+/// What a request against a fresh server answered: the body and the
+/// chain it followed, or the refusal's kind.
+fn pp_asked(m: Method, path: string, body: Payload, o: Options) -> string {
+    let s? = pp_ok(pp_server()) else { return "no server" }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let opts = pp_opts(o)
+    defer opts.pool.close_all()
+    pp_shown(fetch(m, "http://127.0.0.1:${s.listener.port}${path}", body, opts))
+}
+
+fn pp_ok(r: Result<Server<App>, ClientError>) -> Server<App>? {
+    match r { .Ok(s) -> s, .Err(_) -> null }
+}
+
+fn pp_shown(r: Result<Answer, ClientError>) -> string {
+    match r {
+        .Ok(a) -> "${a.status} ${a.body.text() ?? "?"} via ${a.via.length}",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn pp_follow(path: string, m: Method) -> string { pp_asked(m, path, .Text("b"), Options {}) }
+
+fn pp_auth() -> Options { Options { headers: [Header { name: "Authorization", value: "Bearer t" }] } }
+
+// ── Retries ─────────────────────────────────────────────────────
+
+/// A peer that reads and then drops its first `drops` connections,
+/// and answers the next.
+fn pp_dropper(l: Listener, drops: int) -> Result<int, NetError> {
+    for i in 0..drops {
+        let c = l.accept()?
+        let _ = c.read(4096)?
+        c.close()?
+    }
+    let c = l.accept()?
+    let _ = c.read(4096)?
+    c.write("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".bytes())?
+    c.close()?
+    .Ok(drops)
+}
+
+type PpTried = { shown: string, ms: int }
+
+fn pp_tried(m: Method, drops: int, retry: Retry, total: int) -> PpTried {
+    let l? = pp_listener() else { return PpTried { shown: "no listener", ms: 0 } }
+    spawn pp_dropper(l, drops)
+    let o = Options { pool: pool(), retry: retry, timeouts: Timeouts { total: ms(total) } }
+    let t0 = now_ms()
+    let r = fetch(m, "http://127.0.0.1:${l.port}/", .Empty, o)
+    let took = now_ms() - t0
+    o.pool.close_all()
+    let _ = l.close()
+    PpTried { shown: pp_attempts(r), ms: took }
+}
+
+fn pp_listener() -> Listener? {
+    match listen("127.0.0.1", 0) { .Ok(l) -> l, .Err(_) -> null }
+}
+
+fn pp_attempts(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${a.status} after ${a.attempts}", .Err(e) -> e.describe().kind }
+}
+
+spec "@std.http redirects and retries" {
+    given "each redirect status asks its own next request" {
+        then "a 301 turns a POST into a GET without its body" { pp_follow("/r301", .Post) == "200 GET||- via 1" }
+        then "a 302 turns a POST into a GET" { pp_follow("/r302", .Post) == "200 GET||- via 1" }
+        then "a 302 keeps a PUT and its body" { pp_follow("/r302", .Put) == "200 PUT|b|- via 1" }
+        then "a 303 asks a GET of anything" { pp_follow("/r303", .Put) == "200 GET||- via 1" }
+        then "a 307 repeats the POST and its body" { pp_follow("/r307", .Post) == "200 POST|b|- via 1" }
+        then "a 308 repeats the POST and its body" { pp_follow("/r308", .Post) == "200 POST|b|- via 1" }
+        then "a relative, then a path, then an absolute location all resolve" {
+            pp_asked(.Get, "/c3", .Empty, Options {}) == "200 GET||- via 3"
+        }
+        then "a 302 keeps a GET's body as it keeps the GET" { pp_follow("/c1", .Get) == "200 GET|b|- via 1" }
+        then "a 304 is no redirect" { pp_follow("/r304", .Get) == "304  via 0" }
+        then "a 300 is no redirect" { pp_follow("/r300", .Get) == "300  via 0" }
+    }
+    given "the policy is explicit" {
+        then "`Stop` answers a redirect as it came" {
+            pp_asked(.Get, "/r302", .Empty, Options { redirects: .Stop }) == "302  via 0"
+        }
+        then "a chain longer than `max` is refused" {
+            pp_asked(.Get, "/c3", .Empty, Options { redirects: .Follow(2) }) == "http.redirects"
+        }
+        then "a redirect to itself is a loop" { pp_follow("/loop", .Get) == "http.redirect_loop" }
+        then "two URLs redirecting to each other are a loop" { pp_follow("/ping", .Get) == "http.redirect_loop" }
+        then "a redirect with no location is refused" { pp_follow("/noloc", .Get) == "http.redirect_location" }
+        then "a location that is no URL is refused" { pp_follow("/badloc", .Get) == "http.redirect_location" }
+        then "a redirect to https under options carrying no TLS is refused, never sent plain" {
+            pp_follow("/other", .Get) == "http.no_tls"
+        }
+        then "`Follow(0)` refuses the first redirect" {
+            pp_asked(.Get, "/r302", .Empty, Options { redirects: .Follow(0) }) == "http.redirects"
+        }
+        then "a location's fragment is never sent" { pp_follow("/frag", .Get) == "200 /seen via 1" }
+        then "a location carrying credentials is refused" { pp_follow("/creds", .Get) == "http.userinfo" }
+        then "a location in another scheme is refused by name" { pp_follow("/script", .Get) == "http.scheme" }
+        then "an empty location names the URL that earned it, a loop" { pp_follow("/empty", .Get) == "http.redirect_loop" }
+        then "a loop respelled is still a loop" { pp_follow("/respelled", .Get) == "http.redirect_loop" }
+        then "a 307 cannot replay a stream" {
+            pp_asked(.Post, "/r307", .Stream(() -> null, "text/plain"), Options {}) == "http.redirect_replay"
+        }
+    }
+    given "credentials across origins" {
+        then "within one origin they follow" {
+            pp_asked(.Get, "/same", .Empty, pp_auth()) == "200 GET||Bearer t via 1"
+        }
+        then "to another origin they are dropped" {
+            pp_asked(.Get, "/cross", .Empty, pp_auth()) == "200 GET||- via 1"
+        }
+    }
+    given "a dropped connection" {
+        then "a GET is retried, and the answer says how often" {
+            pp_tried(.Get, 1, Retry {}, 5000).shown == "200 after 2"
+        }
+        then "a GET retried twice waits `backoff`, then `factor` times longer" {
+            let t = pp_tried(.Get, 2, Retry { attempts: 3, backoff: ms(40), factor: 2 }, 5000)
+            t.shown == "200 after 3" && t.ms >= 120
+        }
+        then "one attempt is no retry" {
+            pp_tried(.Get, 1, Retry { attempts: 1 }, 5000).shown == "http.closed"
+        }
+        then "a POST is never retried" {
+            pp_tried(.Post, 1, Retry {}, 5000).shown == "http.closed"
+        }
+        then "no attempts at all is one attempt" {
+            pp_tried(.Get, 1, Retry { attempts: -3 }, 5000).shown == "http.closed"
+        }
+        then "a schedule whose waits would overflow is held at the deadline" {
+            let t = pp_tried(
+                .Get,
+                3,
+                Retry { attempts: 90, backoff: ms(1), factor: 1000000000 },
+                400,
+            )
+            t.shown == "http.closed" && t.ms < 2000
+        }
+        then "a negative wait is no wait" {
+            pp_tried(.Get, 2, Retry { attempts: 3, backoff: ms(-5), factor: -2 }, 5000).shown == "200 after 3"
+        }
+        then "a PUT is retried" { pp_tried(.Put, 1, Retry {}, 5000).shown == "200 after 2" }
+        then "no retry waits past the request's deadline" {
+            let t = pp_tried(.Get, 1, Retry { backoff: secs(5) }, 300)
+            t.shown == "http.closed" && t.ms < 2000
+        }
+    }
+}

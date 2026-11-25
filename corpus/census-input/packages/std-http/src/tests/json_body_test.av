@@ -1,0 +1,81 @@
+// A JSON body in and out: the media type checked, the body parsed, a
+// record decoded under `@json`, and every refusal a response that says
+// why.
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted, Response, json_body}
+use @std.json.{Json, field, to_text}
+use @std.json.codec.{json}
+
+@json
+type Vote = { idea: int, up: bool, note: string? }
+
+/// A POST of `body` carrying `ct` as its content type, when there is one.
+fn json_posted(ct: string?, body: Bytes) -> Request<Unrouted> {
+    let typed = match ct {
+        t? -> "Content-Type: ${t}\r\n"
+        null -> ""
+    }
+    let q = framed_from(
+        "POST /v HTTP/1.1\r\nHost: h\r\n${typed}Content-Length: ${body.length}\r\n\r\n".bytes(),
+    )!
+    q with { body: whole(body) }
+}
+
+/// What reading the body as JSON answered: the document, or the
+/// refusal's status and words.
+fn read_said(q: Request<Unrouted>) -> string {
+    match q.json() { .Ok(j) -> to_text(j), .Err(r) -> "${r.status} ${r.body.text() ?? ""}" }
+}
+
+fn vote_said(q: Request<Unrouted>) -> string {
+    match json_body(q, (j) -> Vote.from_json(j)) {
+        .Ok(v) -> "vote ${v.idea} ${v.up} ${v.note ?? "-"}",
+        .Err(r) -> "${r.status} ${r.body.text() ?? ""}",
+    }
+}
+
+fn json_type_word() -> string? { "application/json" }
+
+spec "std/http — JSON bodies" {
+    given "the empty cases, written first" {
+        then "an empty body is not JSON" { read_said(json_posted(json_type_word(), "".bytes())) == "400 the body is not JSON: unexpected the end of the text at byte 0" }
+        then "no content type is refused" { read_said(json_posted(null, "{}".bytes())) == "415 the body must be `application/json`" }
+        then "an empty content type is refused" { read_said(json_posted("", "{}".bytes())) == "415 the body must be `application/json`" }
+    }
+    given "the media type" {
+        then "application/json reads" { read_said(json_posted(json_type_word(), "{\"a\":1}".bytes())) == "{\"a\":1}" }
+        then "case and parameters aside" { read_said(json_posted("Application/JSON; charset=utf-8", "[1]".bytes())) == "[1]" }
+        then "a +json type reads" { read_said(json_posted("application/problem+json", "[1]".bytes())) == "[1]" }
+        then "text/plain is refused — a form can post it across origins" { read_said(json_posted("text/plain", "{}".bytes())) == "415 the body must be `application/json`" }
+        then "a json word elsewhere is refused" { read_said(json_posted("text/json-ish", "{}".bytes())) == "415 the body must be `application/json`" }
+        then "a bare +json is refused" { read_said(json_posted("+json", "{}".bytes())) == "415 the body must be `application/json`" }
+        then "application/+json names no subtype" { read_said(json_posted("application/+json", "{}".bytes())) == "415 the body must be `application/json`" }
+    }
+    given "the body" {
+        then "text that is not JSON names where" { read_said(json_posted(json_type_word(), "{\"a\":}".bytes())) == "400 the body is not JSON: unexpected \"}\" at byte 5" }
+        then "octets that are not UTF-8" { read_said(json_posted(json_type_word(), [123, 255, 125].bytes()!)) == "400 the body is not UTF-8" }
+    }
+    given "a record decoded" {
+        then "a whole vote" {
+            vote_said(
+                json_posted(json_type_word(), "{\"idea\":7,\"up\":true,\"note\":\"yes\"}".bytes()),
+            ) == "vote 7 true yes"
+        }
+        then "an optional left out" { vote_said(json_posted(json_type_word(), "{\"idea\":7,\"up\":false}".bytes())) == "vote 7 false -" }
+        then "a misfit is a 400 naming the field" { vote_said(json_posted(json_type_word(), "{\"idea\":\"7\",\"up\":true}".bytes())) == "400 `idea` wants an integer, found text" }
+        then "a missing field is a 400 naming it" { vote_said(json_posted(json_type_word(), "{\"idea\":7}".bytes())) == "400 `up` wants `true` or `false`, found nothing" }
+        then "the body's own refusal comes first" { vote_said(json_posted("text/plain", "{}".bytes())) == "415 the body must be `application/json`" }
+    }
+    given "a JSON response" {
+        then "it carries the document and says so" {
+            let r = Response.json(Json.Obj([field("ok", Json.Bool(true))]))
+            r.status == 200 &&
+                r.body.text() == "{\"ok\":true}" &&
+                r.headers.any(it.name == "content-type" && it.value == "application/json")
+        }
+        then "a record writes through its codec" {
+            Response.json(Vote { idea: 1, up: true, note: null }.to_json()).body.text() == "{\"idea\":1,\"up\":true,\"note\":null}"
+        }
+        then "a status other than 200 is a `with`" { (Response.json(Json.Null) with { status: 201 }).status == 201 }
+    }
+}

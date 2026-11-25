@@ -1,0 +1,824 @@
+//! The lowering context's STATE vocabulary: registers minted in
+//! instruction order, slots and cells, bindings read, fn values and
+//! their wrappers, lambdas lifted, captures packed, callee symbols
+//! and the mono worklist's enqueue — the verbs the walk speaks.
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    TypeId,
+    Type,
+    Expr,
+    Reg,
+    Ins,
+    DeclId,
+    Arrow,
+    Binding,
+    SyntaxArena,
+    SeatMark,
+    is_literal,
+    settled_mark,
+    Static,
+    StaticBox,
+}
+use diagnostics.{loc_at, refusal, Diag}
+use features.{
+    LowerCx,
+    capture_lane,
+    Sub,
+    SeatValue,
+    viewed,
+    def_type_of,
+    Wanted,
+    Lift,
+    LiftKind,
+    Wrap,
+    FnSig,
+    Unsettled,
+    Settled,
+    SettleRoot,
+    const_symbol,
+    settled_symbol,
+    seat_symbol,
+    nothing,
+    MetaVal,
+    new_meta_heap,
+    literal_meta,
+}
+use @std.errors.{Loc}
+
+impl LowerCx {
+    /// The fresh register for a node, typed by the type pass.
+    fn mint(e: ExprId) -> Reg {
+        self.out.mint_ty(self.concrete(self.facts.type_at(e)))
+    }
+
+    /// The body's substitution view — identity for plain bodies.
+    fn concrete(ty: TypeId) -> TypeId {
+        viewed(self.view.decls.types, self.sub, ty)
+    }
+
+    /// A declaration's body as instantiated at a site: its plain
+    /// symbol, or — when typing recorded an instantiation there —
+    /// the mangling of that instantiation COMPOSED with this body's
+    /// own view. Wanted either way. The fingerprints come from the
+    /// seats THEMSELVES: a FORWARDED seat's value is per-unit, so
+    /// only the caller's unit can key it.
+    fn symbol_at(d: DeclId, e: ExprId) -> string {
+        let sub? = self.facts.subst_at(e) else { return self.wanted(d) }
+        let seats: List<SeatValue> = self.call_seats(d, e)
+        if !self.seats_complete(d, e, seats) { return self.wanted(d) }
+        self
+            .wanted(
+                d,
+                Sub {
+                    target: sub.target,
+                    args: [self.concrete(t) for t in sub.args],
+                    consts: [sv.fp for sv in seats],
+                },
+                seats,
+            )
+    }
+
+    /// A declared call's registers in SEAT order: each written
+    /// argument's — lowered by the caller in written order — and a
+    /// call to its own default body for each seat no argument writes.
+    /// Typing held every unwritten seat to a default.
+    mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        if seats.length < regs.length { return regs }
+        let defaults = self.view.decls.seat_defaults(d)
+        [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+    }
+
+    mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {
+        let d? = body else { return self.lower_defect(e, "a call leaving a seat without a default survived typing") }
+        let ret? = self.view.decls.sig(d)?.fn_sig()?.ret else { return self.lower_defect(e, "a default with no signature survived typing") }
+        self.call_decl(ret, self.wanted(d), [])
+    }
+
+    /// Whether every `const` seat resolved. A TEMPLATE body has no unit
+    /// value, so a FORWARDED seat is unresolvable there; only the
+    /// specialized units key it, and the template falls back to the
+    /// plain body (whose consts are skipped anyway).
+    fn seats_complete(d: DeclId, e: ExprId, seats: List<SeatValue>) -> bool {
+        if self.sub != null { return true }
+        seats.length == self.settled_count(d, e)
+    }
+
+    /// The call's `const` seats, by count.
+    fn settled_count(d: DeclId, e: ExprId) -> int {
+        let args: List<ExprId> = self.call_args(d, e)
+        let base: int = self.call_base(d, e)
+        let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
+        let settled = [settled_mark(marks, base + j) for j in 0..args.length]
+        settled.filter(it).length
+    }
+
+    /// A METHOD's body as this receiver instantiates it: a trait's
+    /// DEFAULT under `Self` := the receiver's type (its parent is
+    /// the trait, whose one Var that is), any other method as typing
+    /// recorded at the site — or plain, where no site stands.
+    fn method_symbol(m: DeclId, at: ExprId?, recv: TypeId) -> string {
+        let parent: DeclId? = self.view.decls.decl(m).parent
+        if parent != null && self.view.decls.is_trait(parent!) {
+            let contract = parent!
+            if at == null { return self.wanted(m, Sub { target: contract, args: [recv], consts: [] }) }
+            let call = at!
+            let seats: List<SeatValue> = self.call_seats(m, call)
+            if !self.seats_complete(m, call, seats) { return self.wanted(m) }
+            return self
+                .wanted(
+                    m,
+                    Sub {
+                        target: contract,
+                        args: self.trait_args_at(call, contract, recv),
+                        consts: [sv.fp for sv in seats],
+                    },
+                    seats,
+                )
+        }
+        if at == null { return self.wanted(m) }
+        self.symbol_at(m, at!)
+    }
+
+    /// A trait member's instantiation at a call: `Self` and, for a
+    /// generic trait's default, the arguments typing read off the call.
+    fn trait_args_at(call: ExprId, contract: DeclId, recv: TypeId) -> List<TypeId> {
+        let sub? = self.facts.subst_at(call) else { return [recv] }
+        // LICENSED structs.index_compared: DECLARATION identity — whose instantiation this is
+        if sub.target.index == contract.index { sub.args } else { [recv] }
+    }
+
+    /// A declaration's body under an instantiation, as the symbol a
+    /// call or an address names — enqueued on first sight, so the
+    /// program lowers exactly what it reaches.
+    fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
+        let sym = self.view.decls.symbol(d)
+        let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
+        if self.unseen(name) {
+            self
+                .jobs
+                .pending
+                .push(
+                    Wanted {
+                        file: self.view.decls.decl(d).file,
+                        decl: d,
+                        name: name,
+                        sub: sub,
+                        seats: seats,
+                        root: null,
+                    },
+                )
+        }
+        name
+    }
+
+    /// The settled seats a call carries into its unit: each `const`
+    /// seat's value, keyed by its seat index — a source literal, a
+    /// `const`'s value, or a settled seat forwarded from the enclosing
+    /// unit. A seat the source alone does not spell carries nothing
+    /// (typing refused it).
+    fn call_seats(d: DeclId, e: ExprId) -> List<SeatValue> {
+        let args: List<ExprId> = self.call_args(d, e)
+        let base: int = self.call_base(d, e)
+        let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
+        mut out: List<SeatValue> = []
+        for j, a in args {
+            if settled_mark(marks, base + j) {
+                let held: SeatValue? = self.seat_fill(a, base + j)
+                if held != null { out.push(held!) }
+            }
+        }
+        out
+    }
+
+    /// What an argument supplies a `const` seat: a settled seat of the
+    /// ENCLOSING unit forwarded (its value — and so its key — is
+    /// per-unit), or a value the source alone spells.
+    fn seat_fill(a: ExprId, index: int) -> SeatValue? {
+        let b? = self.names.binding(a) else { return self.spelled_seat(a, index) }
+        match b {
+            .Param(_) -> self.forwarded_seat(b, index),
+            // a body's own `const`: spelled, or settled on this unit's seats
+            .Def(s) -> self.spelled_seat(a, index) ?? self
+                .settled_seat(self.view.file, SettleRoot.Const(s), self.seats, index, self.facts.type_at(a)),
+            // a DECLARED `const`: settled in its own file, whatever it spells
+            .Decl(d) -> if self.view.decls.decl(d).kind is .Const { self.declared_seat(d, index, self.facts.type_at(a)) } else { null },
+            // anything else the source spells — an aggregate with consts
+            // or seats inside, a variant — settles as an expression
+            rest -> self.spelled_seat(a, index) ?? self.settled_arg(a, index),
+        }
+    }
+
+    fn declared_seat(d: DeclId, index: int, ty: TypeId) -> SeatValue? {
+        let held = self.view.decls.held_value(d)
+        if held != null { return seat_value(index, ty, held!) }
+        let x = self.view.decls.decl(d)
+        self.settled_seat(x.file, SettleRoot.Const(x.stmt), [], index, ty)
+    }
+
+    /// A `const`-seat argument the evaluator settles as an expression
+    /// of this unit — on its seats, so a forwarded value inside folds.
+    fn settled_arg(a: ExprId, index: int) -> SeatValue? {
+        match self.jobs.settle(self.view.file, SettleRoot.Expr(a), self.seats) {
+            .Ok(x) -> seat_value(index, self.facts.type_at(a), x),
+            .Err(why) -> {
+                self.argument_unsettled(a, why)
+                null
+            },
+        }
+    }
+
+    /// A `const`-seat value the source alone spells — the argument
+    /// itself, or a `const` name's initializer. Its fingerprint carries
+    /// its KIND (`e`): a spelled seat and a SETTLED one (`v`) may hash
+    /// alike, and a bare join of the two would make one call's seats
+    /// read as another's.
+    fn spelled_seat(a: ExprId, index: int) -> SeatValue? {
+        let e? = self.spelled_source(a) else { return null }
+        mut heap = new_meta_heap()
+        let value: MetaVal? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap)
+        if value == null { return null }
+        SeatValue {
+            index: index,
+            fp: "e${self.view.store.expr_fingerprint(e)}",
+            ty: self.facts.type_at(a),
+            value: value!,
+            heap: heap,
+        }
+    }
+
+    /// A `const`-seat argument that is a `const` the evaluator settles —
+    /// in its home file, on the seats it may read — keyed on the value
+    /// itself, so two spellings of one value share one unit.
+    fn settled_seat(f: FileId, root: SettleRoot, seats: List<SeatValue>, index: int, ty: TypeId) -> SeatValue? {
+        match self.jobs.settle(f, root, seats) {
+            .Ok(x) -> seat_value(index, ty, x),
+            .Err(_) -> null,
+        }
+    }
+
+    /// The enclosing unit's settled seat a forwarded read carries —
+    /// null outside a unit, where the seat has no value.
+    fn forwarded_seat(b: Binding, index: int) -> SeatValue? {
+        let i: int = match b { .Param(x) -> x, rest -> 0 }
+        let held? = self.seat_at(i) else { return null }
+        held with { index: index }
+    }
+
+    /// The expression whose value a `const`-seat argument spells: the
+    /// argument itself, or a body's own `const` name's initializer.
+    /// Null for a run-time value.
+    fn spelled_source(a: ExprId) -> ExprId? {
+        let b? = self.names.binding(a) else { return a }
+        match b { .Def(s) -> self.view.store.const_value(s), rest -> a }
+    }
+
+    /// A call node's arguments.
+    /// A call node's arguments in the SEAT order of `d`.
+    fn call_args(d: DeclId, e: ExprId) -> List<ExprId> {
+        let written: List<ExprId> = match self.view.store.expr(e) {
+            .Call(_, _, args) or .MethodCall(_, _, args) -> args,
+            rest -> [],
+        }
+        self.view.store.seated_args(written, self.view.decls.facts_of(d)?.seats ?? [])
+    }
+
+    /// A call node's first written seat — 0 for a free fn, 1 past a
+    /// method's receiver. A STATIC method has NO receiver, so it stays
+    /// 0 even though its call node is dotted.
+    fn call_base(d: DeclId, e: ExprId) -> int {
+        match self.view.store.expr(e) {
+            .MethodCall(_, _, _) if !self.view.decls.is_static_of(d) -> 1,
+            rest -> 0,
+        }
+    }
+
+    /// A worklist name's FIRST sighting — true exactly once; the
+    /// three queues share this one dedupe.
+    fn unseen(name: string) -> bool {
+        let met: bool? = self.jobs.seen.get(name)
+        if met != null { return false }
+        self.jobs.seen.set(name, true)
+        true
+    }
+
+    /// An ident's register: its param's (params ARE registers
+    /// 0..N-1), or its definition's slot — LOADED first when the
+    /// slot is a memory cell, so the ident rule stays dumb.
+    fn def_reg(e: ExprId) -> Reg? {
+        let b? = self.names.binding(e) else { return null }
+        self.read_binding(e, b)
+    }
+
+    /// A binding's VALUE in the current body, worn at the reading
+    /// node's type — the ident rule's read. A READ WEARS THE TYPE OF
+    /// WHAT IS READ: an ident's type IS its binding's, so the node
+    /// answers here; the capture pack, whose node is the lambda,
+    /// names the type itself.
+    fn read_binding(e: ExprId, b: Binding) -> Reg? {
+        self.read_wearing(e, b, self.concrete(self.facts.type_at(e)))
+    }
+
+    /// A binding's VALUE in the current body, minted at `ty` where
+    /// the read mints — a boxed slot's load, a capture lane.
+    fn read_wearing(e: ExprId, b: Binding, ty: TypeId) -> Reg? {
+        match b {
+            .Param(i) -> if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } },
+            .Receiver -> first_seat,
+            .Def(s) -> self.defined_reg(e, s, ty),
+            .Pattern(v, j) -> self.body.pattern_reg(v, j),
+            // valid only inside the LIFTED body: env rides seat 0
+            .LambdaParam(lam, i) -> if self.facts.takes_by_name(lam) { self.offered_reg(lam, i, ty) } else { Reg { index: i + 1 } },
+            .Capture(_, j) -> self.env_read(j, ty),
+            .Index(s) -> self.body.index_reg(s),
+            .Decl(d) -> when {
+                self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d))
+                self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty)
+                self.view.decls.decl(d).kind is .Collect -> self.collect_value_reg(e, d)
+                _ -> null
+            },
+        }
+    }
+
+    /// A parameter a lambda took BY NAME: a field of the one record
+    /// its seat hands it, read by that name.
+    fn offered_reg(lam: ExprId, i: int, ty: TypeId) -> Reg {
+        let record = self.view.types.arrow_parts(self.concrete(self.facts.type_at(lam)))!.seats[0]
+        let name = self.view.store.lambda_parts(lam)!.params[i].name.of
+        self.field_named(Reg { index: 1 }, record, name, ty)
+    }
+
+    /// A DEFINITION read: a const IS its value, so the READ emits
+    /// that value — a literal as written, else what the evaluator
+    /// SETTLED — minted in THIS body. Every other binding reads the
+    /// slot it was bound to.
+    fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
+        let value: ExprId? = self.view.store.const_value(s)
+        if value == null { return self.slot_reg(s, ty) }
+        let own: DeclId? = self.view.decls.decl_of(self.view.file, s)
+        if own != null && self.view.decls.is_instance(own!) && !self.settles(ty) { return self.instance_value_reg(e, own!) }
+        let init = value!
+        if self.sub == null && self.reads_settled_seat(init) {
+            // a TEMPLATE body, not a unit: its `const` seats have no
+            // value here — the specialized units fold them
+            return self.zero_of(ty)
+        }
+        let runtime: string? = self.runtime_read(init)
+        if runtime != null {
+            self.unsettled(self.view.store, self.view.source.file, s, Unsettled.Param(runtime!))
+            return self.zero_of(ty)
+        }
+        self.const_reg(e, self.view.file, s, ty, self.seats)
+    }
+
+    /// A DECLARED const read: settled in the declaration's OWN file, on
+    /// no seats — a declaration has none.
+    fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
+        if self.view.decls.is_instance(d) && !self.settles(ty) { return self.instance_value_reg(e, d) }
+        let x = self.view.decls.decl(d)
+        let held = self.view.decls.held_value(d)
+        if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
+        self.const_reg(e, x.file, x.stmt, ty, [])
+    }
+
+    /// Whether a value of type `ty` is DATA the compiler can lay out
+    /// once, as any const's aggregate is: no fn, `dyn`, `Cell`, task or
+    /// pointer anywhere inside it. An instance answering true here
+    /// settles exactly like a plain const — the call path is owed only
+    /// to one that holds behaviour a static layout cannot represent.
+    fn settles(ty: TypeId) -> bool {
+        self.view.decls.identity_in(ty, []) == null
+    }
+
+    /// A DECLARED VALUE — an exported top-level instance whose type
+    /// holds behaviour (`settles` above said no) — is built once per
+    /// run: its read calls the unit that builds it (`lower_root`'s
+    /// `once` body). The unit is its FILE's, like a fn's body.
+    fn instance_value_reg(e: ExprId, d: DeclId) -> Reg {
+        let unit = self.view.decls.instance_unit(d)
+        if self.unseen(unit.name) { self.jobs.pending.push(unit) }
+        self.call_decl_at(e, unit.name, [])
+    }
+
+    /// A `collect`'s read: its value is SYNTHESISED as its own unit
+    /// (`compiler/lower/lower.av`'s `lower_collect`, keyed on `d`
+    /// through `wanted` exactly as a lambda's wrap is), never a
+    /// literal to inline — so a read CALLS it, once per read site;
+    /// `once` binding it program-wide is the sugar backlog's, same as
+    /// any other computed const.
+    fn collect_value_reg(e: ExprId, d: DeclId) -> Reg {
+        self.call_decl_at(e, self.wanted(d), [])
+    }
+
+    /// The const at `s` in file `f`, read here: a literal as written,
+    /// else what the evaluator settled.
+    fn const_reg(e: ExprId, f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
+        let store: SyntaxArena = self.view.decls.store_of(f)
+        let written: Expr = store.expr(store.const_value(s)!)
+        if is_literal(written) { return self.settled_reg(e, written) }
+        self.settled_value_reg(f, s, ty, seats)
+    }
+
+    /// What the evaluator settled for the const at `s` in file `f`,
+    /// materialized here — a scalar its constant, an aggregate the
+    /// address of its static data; a refusal spoken at the const's
+    /// own value.
+    fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
+        match self.jobs.settle(f, SettleRoot.Const(s), seats) {
+            .Ok(x) -> self.materialized(x.answer, x.heap, ty, settled_symbol(const_symbol(f, s), seats)),
+            .Err(why) -> {
+                self.unsettled(self.view.decls.store_of(f), self.view.decls.file(f).path, s, why)
+                self.zero_of(ty)
+            },
+        }
+    }
+
+    /// The run-time parameter an initializer reads, when it reads one
+    /// its unit did not settle — a const cannot depend on a value that
+    /// only exists while running. A DECLARED `const` seat is legal in a
+    /// template body; in a real unit its value must be carried.
+    fn runtime_read(root: ExprId) -> string? {
+        for node in self.view.store.every_expr(root) {
+            let b: Binding? = self.names.binding(node) // LICENSED structs.index_compared: a seat's ordinal, not a type identity
+            if b != null {
+                match b! {
+                    .Param(i) -> {
+                        if !settled_mark(self.seat_marks, i) { return "parameter ${i + 1}" }
+                        if self.sub != null && !self.seats.any(it.index == i) { return "parameter ${i + 1}" }
+                    },
+                    rest -> nothing(),
+                }
+            }
+        }
+        null
+    }
+
+    /// Whether an initializer reads a DECLARED `const` seat — the
+    /// signal that a body is a template with no unit to fold it.
+    fn reads_settled_seat(root: ExprId) -> bool {
+        for node in self.view.store.every_expr(root) {
+            let b: Binding? = self.names.binding(node)
+            if b != null {
+                match b! {
+                    .Param(i) -> {
+                        if settled_mark(self.seat_marks, i) { return true }
+                    },
+                    rest -> nothing(),
+                }
+            }
+        }
+        false
+    }
+
+    /// The unit's settled seats, seeded as values before the body (or
+    /// a const initializer) lowers. `read_binding` answers a `Param(i)`
+    /// read with the register recorded here, so a seeded register IS
+    /// the value; a gap (a seat nothing settled) is minted as a zero,
+    /// and no const may read it (`runtime_read` refused first).
+    fn seed_seats() {
+        for j in 0..self.seat_span() {
+            let ty = self.seat_ty(j)
+            let r: Reg = match self.seat_at(j) {
+                // a gap: nothing settled this seat, and no const may read it
+                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
+                null -> {
+                    let dst = self.out.mint_ty(ty)
+                    self.out.give(Ins.ConstInt(dst, 0))
+                    dst
+                }
+            }
+            self.seat_regs.push(r)
+        }
+    }
+
+    fn seat_span() -> int {
+        mut top = 0
+        for sv in self.seats {
+            if sv.index + 1 > top { top = sv.index + 1 }
+        }
+        top
+    }
+
+    fn seat_at(j: int) -> SeatValue? {
+        self.seats.find(it.index == j) // LICENSED structs.index_compared: a seat's ordinal, not a type identity
+    }
+
+    fn seat_ty(j: int) -> TypeId {
+        self.seat_at(j)?.ty ?? self.shaped_ty(Type.Error)
+    }
+
+    /// The settled value as an instruction — a literal as written,
+    /// or the one the evaluator answered. Minted in the LITERAL's own
+    /// shape, then lifted into what the use wears — the declaration
+    /// emits nothing, so an annotation's lift is re-emitted at every
+    /// use.
+    fn settled_reg(e: ExprId, value: Expr) -> Reg? {
+        let raw? = self.constant_reg(value) else { return null }
+        self.lifted_constant(e, raw)
+    }
+
+    /// A literal's register, minted at the literal's OWN shape.
+    fn constant_reg(value: Expr) -> Reg? {
+        let n: int? = value.int_of()
+        if n != null {
+            let dst = self.shaped(Type.Int)
+            self.out.give(Ins.ConstInt(dst, n!))
+            return dst
+        }
+        let t: string? = value.text_of()
+        if t != null {
+            let dst = self.shaped(Type.Str)
+            self.out.give(Ins.ConstStr(dst, t!))
+            return dst
+        }
+        let b: bool? = value.bool_of()
+        if b != null {
+            let dst = self.shaped(Type.Bool)
+            self.out.give(Ins.ConstBool(dst, b!))
+            return dst
+        }
+        let bits? = value.bits_of() else { return null }
+        let dst = self.shaped(Type.Float)
+        self.out.give(Ins.ConstFloat(dst, bits))
+        dst
+    }
+
+    fn shaped(t: Type) -> Reg {
+        self.out.mint_ty(self.shaped_ty(t))
+    }
+
+    fn shaped_ty(t: Type) -> TypeId {
+        self.view.decls.types.intern(t)
+    }
+
+    /// The settled constant AS THE USE WEARS IT: a nullable use
+    /// packs the value into its presence pair, everything else
+    /// already wears the literal's own shape.
+    fn lifted_constant(e: ExprId, r: Reg) -> Reg {
+        let want = self.concrete(self.facts.type_at(e))
+        if self.view.decls.types.shape_of(want) is .Opt {
+            return self.adopted(want, false, r)
+        }
+        r
+    }
+
+    /// A NAMED fn as a value: a captureless box holding a WRAPPER's
+    /// address — the wrapper wears the uniform (env, args…)
+    /// convention, so one call path serves lambdas and fns alike. No
+    /// captures ever ride it, so it is laid out once as static data.
+    fn fn_value_reg(e: ExprId, symbol: string) -> Reg? {
+        let wname = "${symbol}\$w"
+        if self.unseen(wname) {
+            let fnty = self.concrete(self.facts.type_at(e))
+            let held: Arrow? = self.view.decls.types.arrow_parts(fnty)
+            self
+                .jobs
+                .wraps
+                .push(
+                    Wrap {
+                        target: symbol,
+                        seats: held?.seats ?? [],
+                        ret: held?.answer ?? self.view.decls.types.intern(Type.Error),
+                        name: wname,
+                    },
+                )
+        }
+        self.static_fn_box(self.view.types.shape_of(self.concrete(self.facts.type_at(e))), wname)
+    }
+
+    /// The symbol a `dyn` box calls for method `m`: the method itself,
+    /// or — for a VALUE RECORD receiver, which the box's slot holds
+    /// boxed — a shim that reads the receiver back first.
+    fn dyn_entry(m: DeclId, recv: TypeId) -> string {
+        let symbol = self.method_symbol(m, null, recv)
+        if !self.view.decls.types.travels_wide(recv) { return symbol }
+        let shim = "${symbol}\$v"
+        if self.unseen(shim) {
+            let sig: FnSig? = self.view.decls.sig(m)?.fn_sig()
+            let params = sig?.params ?? []
+            self
+                .jobs
+                .wraps
+                .push(
+                    Wrap {
+                        target: symbol,
+                        seats: [self.view.decls.types.type(List<int>)]
+                            .concat(params.slice(1, params.length)),
+                        ret: sig?.ret ?? self.view.decls.types.intern(Type.Error),
+                        name: shim,
+                        unboxes: recv,
+                    },
+                )
+        }
+        shim
+    }
+
+    /// A capture read: its LANE of the env box, worn at `ty` — the
+    /// lane law lives with the fn value's other verbs.
+    fn env_read(j: int, ty: TypeId) -> Reg? {
+        self.slot_read(self.env_box(), capture_lane(j), ty)
+    }
+
+    /// The type a lambda's Nth capture wears — typing seated it
+    /// from the captured binding; an unseated lane is a defect.
+    fn capture_ty(lam: ExprId, j: int) -> TypeId {
+        let held: TypeId? = self.facts.capture_type(lam, j)
+        if held == null {
+            self.out.defect("a capture lane typing never seated")
+            return self.shaped_ty(Type.Error)
+        }
+        self.concrete(held!)
+    }
+
+    /// THE ENV SEAT: a lifted body's register 0 is the box its
+    /// captures ride in.
+    fn env_box() -> Reg {
+        first_seat
+    }
+
+    /// The lift: names the lambda's body (mangled under the view
+    /// when the enclosing body is a specialization) and enqueues it
+    /// once.
+    fn lift(e: ExprId) -> string { self.lifted_as(e, LiftKind.Value) }
+
+    /// A task's body: the lambda lifted under its own name, answering
+    /// its value boxed in a one-cell list.
+    fn lift_task(e: ExprId) -> string { self.lifted_as(e, LiftKind.Task) }
+
+    fn lifted_as(e: ExprId, kind: LiftKind) -> string {
+        let base = self.view.decls.lifted_symbol(self.view.file, e)
+        let sym = if kind is .Task { "${base}\$task" } else { base }
+        let name = if self.sub == null { sym } else { self.view.decls.mangle(sym, self.sub!) }
+        if self.unseen(name) {
+            self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub, kind: kind })
+        }
+        name
+    }
+
+    /// The capture pack's values, in lane order — each source read
+    /// in the CURRENT body (a chained capture reads this body's own
+    /// env), worn at the CAPTURE's type: the node here is the
+    /// lambda, whose type is a box, and a captured `int` is not.
+    fn capture_regs(e: ExprId) -> List<Reg> {
+        let cap? = self.names.capture(e) else { return [] }
+        mut out: List<Reg> = []
+        for j, b in cap.sources {
+            let r: Reg? = self.read_wearing(e, b, self.capture_ty(e, j))
+            if r == null {
+                self.out.defect("a capture without a value survived resolve")
+            } else {
+                out.push(r!)
+            }
+        }
+        out
+    }
+
+    /// The box a call goes THROUGH, when the callee is a fn-typed
+    /// VALUE — null for a declared fn (the direct path).
+    fn indirect_callee(e: ExprId) -> Reg? {
+        let b? = self.names.binding(e) else { return null }
+        let direct: bool = match b {
+            .Decl(d) -> self.view.decls.fn_name(d) != null,
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        }
+        if direct { return null }
+        self.callee_binding(e, b)
+    }
+
+    /// The BOX a call goes THROUGH. The node doing the reading is
+    /// the CALL, and a call's type is its ANSWER, never its
+    /// callee's — so the two reads that MINT (a capture's lane, a
+    /// mut cell's load) wear the BINDING's type: a fn value is
+    /// managed, and a read that called it a bare pointer was never
+    /// retained for the callee that released it, while a load at
+    /// the answer's type read the box as a number.
+    fn callee_binding(e: ExprId, b: Binding) -> Reg? {
+        match b {
+            .Capture(lam, j) -> self.env_read(j, self.capture_ty(lam, j)),
+            .Def(s) -> self.read_wearing(e, b, self.concrete(self.def_ty(s))),
+            // the rest mint nothing — the register is the value
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> self.read_binding(e, b),
+        }
+    }
+
+    /// A definition's type as typing settled it — the declared
+    /// annotation, or its value's.
+    fn def_ty(s: StmtId) -> TypeId {
+        def_type_of(self.facts, self.view, self.shaped_ty(Type.Error), s)
+    }
+
+    /// A definition's register: its slot — LOADED first when the
+    /// slot is a memory cell, the load worn at `ty`, so the ident
+    /// rule stays dumb.
+    fn slot_reg(target: StmtId, ty: TypeId) -> Reg? {
+        let slot: Reg? = self.body.slot_of(target)
+        if slot == null { return null }
+        if self.body.is_boxed(target) {
+            let ld = self.out.mint_ty(ty)
+            self.out.give(Ins.Load(ld, slot!))
+            return ld
+        }
+        slot
+    }
+
+    /// Where the program's answer lives: the last value-bearing
+    /// statement's location.
+    fn answer_loc() -> Loc? {
+        let valued = self.view.stmts.filter((s: StmtId) -> self.view.store.stmt_value(s) != null)
+        let speaker? = valued.last() else { return null }
+        loc_at(self.view.source.file, self.view.store.stmt_span(speaker))
+    }
+
+}
+
+/// A settled seat's value, keyed on the VALUE (`v`), so two spellings
+/// of one value share one unit.
+fn seat_value(index: int, ty: TypeId, x: Settled) -> SeatValue {
+    SeatValue { index: index, fp: "v${x.fingerprint}", ty: ty, value: x.answer, heap: x.heap }
+}
+
+/// Register 0 — a body's first seat: a method's receiver, or the
+/// env box a lifted lambda's captures ride in.
+const first_seat: Reg = Reg { index: 0 }
+
+impl LowerCx {
+    /// A settled aggregate READ: its data laid out once per program
+    /// under `name` — wanted on first sight, like a body — and its
+    /// address here.
+    fn static_read(dst: Reg, name: string, boxes: List<StaticBox>) {
+        if self.unseen(name) { self.jobs.statics.push(Static { name: name, boxes: boxes, file: self.view.file }) }
+        self.out.give(Ins.StaticAddr(dst, name))
+    }
+
+    /// The zero of a type — what a refused const reads as, so the
+    /// body lowers on and the refusal alone is what the program hears.
+    fn zero_of(ty: TypeId) -> Reg? {
+        let dst = self.out.mint_ty(ty)
+        self.out.give(Ins.ConstInt(dst, 0))
+        dst
+    }
+}
+
+// ── The voices ──
+
+impl LowerCx {
+    /// The three laws a settlement can break, each in its own words.
+    fn unsettled(store: SyntaxArena, path: string?, s: StmtId, why: Unsettled) {
+        let name = store.let_name(s) ?? "this const"
+        // AT THE DECLARATION'S VALUE, not the use that asked — a const
+        // that reached here has one
+        let at = loc_at(path, store.expr_span(store.const_value(s)!))
+        let d: Diag? = match why {
+            .Reach(label) -> refusal(
+                "const.reach",
+                at,
+                "a const cannot read the world",
+                "`${name}` ${label}",
+                "a const settles at compile time from pure computation alone — read the world at run time, under `let`",
+            ),
+            .Budget(label) -> refusal(
+                "const.budget",
+                at,
+                "a const ran past its budget",
+                "`${name}` ${label}",
+                "raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`",
+            ),
+            .Trap(words) -> refusal(
+                "const.trap",
+                at,
+                "a const trapped while settling",
+                "`${name}` ${words}",
+                "the initializer runs at compile time, so what traps there is refused here",
+            ),
+            .Param(runtime) -> refusal(
+                "const.param",
+                at,
+                "a const cannot read a run-time parameter",
+                "`${name}` reads `${runtime}`",
+                "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`",
+            ),
+            .Spoken or .Recursive -> null,
+        }
+        if d != null { self.out.voices.speak(d!) }
+    }
+
+    /// A `const` seat's argument the evaluator could not settle — its
+    /// parts were spelled, so what failed was a const inside it.
+    fn argument_unsettled(a: ExprId, why: Unsettled) {
+        if why.words().is_empty() { return }
+        self
+            .out
+            .voices
+            .speak(
+                refusal(
+                    "const.trap",
+                    self.view.loc_of(a),
+                    "a `const` seat's argument did not settle",
+                    why.words(),
+                    "the argument settles at compile time from its literals and consts — what fails there is refused here",
+                ),
+            )
+    }
+}

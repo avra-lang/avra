@@ -1,0 +1,34 @@
+// A bound that names a generic trait at its arguments: checked at each
+// call, read by the body, and forwarded through another bound.
+trait Realize<T> {
+    fn draw(t: T) -> string
+}
+
+type Text = { content: string }
+type Button = { label: string }
+type Html = { tag: string = "" }
+type Plain = { tag: string = "" }
+
+impl Realize<Text> for Html {
+    fn draw(t: Text) -> string { "<p>${t.content}</p>" }
+}
+
+impl Realize<Button> for Html {
+    fn draw(t: Button) -> string { "<button>${t.label}</button>" }
+}
+
+impl Realize<Text> for Plain {
+    fn draw(t: Text) -> string { t.content }
+}
+
+fn shown<R: Realize<Text>>(r: R, t: Text) -> string { r.draw(t) }
+
+fn both<R: Realize<Text>, Q: Realize<Button>>(r: R, q: Q) -> string {
+    r.draw(Text { content: "a" }) + q.draw(Button { label: "b" })
+}
+
+fn over<T, R: Realize<T>>(r: R, t: T) -> string { r.draw(t) }
+
+fn forwarded<R: Realize<Text>>(r: R) -> string { shown(r, Text { content: "f" }) }
+
+"${shown(Html {}, Text { content: "x" })} ${shown(Plain {}, Text { content: "y" })} ${both(Html {}, Html {})} ${over(Html {}, Button { label: "z" })} ${forwarded(Plain {})}"

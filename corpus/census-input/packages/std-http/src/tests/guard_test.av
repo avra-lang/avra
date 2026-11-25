@@ -1,0 +1,261 @@
+// The stock guards: CORS granting by name and failing closed with
+// credentials, preflights answered here, and the security headers a
+// response did not set itself.
+use @std.http.http.{Request, Unrouted, Response, Handler, text}
+use @std.http.guard.{Cors, Hardening, cors, hardened, hardening}
+
+fn app() -> Cors {
+    Cors {
+        origins: ["https://app.example"],
+        headers: ["Content-Type", "X-Token"],
+        exposed: ["X-Total"],
+    }
+}
+
+/// `line` with `fields`, through `layer` to a handler answering "ok".
+fn through(layer: fn(Request<Unrouted>, Handler) -> Response, line: string, fields: string) -> Response {
+    layer(framed_from("${line}\r\nHost: h\r\n${fields}\r\n".bytes())!, (_q) -> text(200, "ok"))
+}
+
+fn crossed(c: Cors, fields: string) -> Response { through(cors(c), "GET /x HTTP/1.1", fields) }
+
+fn preflight(c: Cors, fields: string) -> Response { through(cors(c), "OPTIONS /x HTTP/1.1", fields) }
+
+fn field_said(r: Response, name: string) -> string { r.header(name) ?? "-" }
+
+spec "std/http — CORS" {
+    given "the empty cases, written first" {
+        then "no origin, no grant, but a vary" {
+            let r = crossed(app(), "")
+            field_said(r, "access-control-allow-origin") == "-" && field_said(r, "vary") == "origin"
+        }
+        then "no origins listed grants nobody" {
+            field_said(
+                crossed(Cors { origins: [] }, "Origin: https://app.example\r\n"),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+    }
+    given "a simple request" {
+        then "a listed origin is granted by name" {
+            let r = crossed(app(), "Origin: https://app.example\r\n")
+            field_said(r, "access-control-allow-origin") == "https://app.example" &&
+                field_said(r, "access-control-expose-headers") == "X-Total" &&
+                field_said(r, "vary") == "origin"
+        }
+        then "an unlisted origin is not" {
+            field_said(
+                crossed(app(), "Origin: https://evil.example\r\n"),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "an origin differing in case is not listed" {
+            field_said(
+                crossed(app(), "Origin: https://APP.example\r\n"),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "star grants anyone as star, with no vary" {
+            let r = crossed(Cors { origins: ["*"] }, "Origin: https://any.example\r\n")
+            field_said(r, "access-control-allow-origin") == "*" && field_said(r, "vary") == "-"
+        }
+        then "credentials ride with a named grant" {
+            field_said(
+                crossed(app() with { credentials: true }, "Origin: https://app.example\r\n"),
+                "access-control-allow-credentials",
+            ) == "true"
+        }
+        then "star with credentials grants nobody" {
+            field_said(
+                crossed(
+                    Cors { origins: ["*"], credentials: true },
+                    "Origin: https://any.example\r\n",
+                ),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "the handler's own grant stands" {
+            let r = (cors(app()))(
+                framed_from(
+                    "GET / HTTP/1.1\r\nHost: h\r\nOrigin: https://app.example\r\n\r\n".bytes(),
+                )!,
+                (_q) -> text(200, "ok")
+                    .with_header("Access-Control-Allow-Origin", "https://other.example"),
+            )
+            field_said(r, "access-control-allow-origin") == "https://other.example" &&
+                r.headers.length == 3
+        }
+    }
+    given "a preflight" {
+        then "granted" {
+            let r = preflight(
+                app(),
+                "Origin: https://app.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type, x-token\r\n",
+            )
+            r.status == 204 &&
+                field_said(r, "access-control-allow-origin") == "https://app.example" &&
+                field_said(r, "access-control-allow-methods") == "GET, HEAD, POST" &&
+                field_said(r, "access-control-allow-headers") == "content-type, x-token" &&
+                field_said(r, "access-control-max-age") == "600" &&
+                field_said(r, "vary") == "access-control-request-method, access-control-request-headers, origin"
+        }
+        then "a method not listed" {
+            field_said(
+                preflight(
+                    app(),
+                    "Origin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\n",
+                ),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "a header not listed" {
+            field_said(
+                preflight(
+                    app(),
+                    "Origin: https://app.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: x-admin\r\n",
+                ),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "an origin not listed" {
+            field_said(
+                preflight(
+                    app(),
+                    "Origin: https://evil.example\r\nAccess-Control-Request-Method: GET\r\n",
+                ),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "never reaches the route" {
+            preflight(
+                app(),
+                "Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n",
+            )
+                .body
+                .is_empty()
+        }
+        then "a plain OPTIONS does" {
+            through(cors(app()), "OPTIONS /x HTTP/1.1", "Origin: https://app.example\r\n")
+                .body
+                .text() == "ok"
+        }
+        then "no max age when none is set" {
+            field_said(
+                preflight(
+                    app() with { max_age: null },
+                    "Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n",
+                ),
+                "access-control-max-age",
+            ) == "-"
+        }
+    }
+}
+
+spec "std/http — CORS, adversarial" {
+    given "hostile origins and asks" {
+        then "the null origin is nobody unless listed" { field_said(crossed(app(), "Origin: null\r\n"), "access-control-allow-origin") == "-" }
+        then "a listed origin with a path is another origin" {
+            field_said(
+                crossed(app(), "Origin: https://app.example/x\r\n"),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "a suffix of a listed origin is not it" {
+            field_said(
+                crossed(app(), "Origin: https://evilapp.example\r\n"),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "a method asked in another case is not listed" {
+            field_said(
+                preflight(
+                    app(),
+                    "Origin: https://app.example\r\nAccess-Control-Request-Method: post\r\n",
+                ),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "headers asked across two fields are all judged" {
+            field_said(
+                preflight(
+                    app(),
+                    "Origin: https://app.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: x-token\r\nAccess-Control-Request-Headers: x-admin\r\n",
+                ),
+                "access-control-allow-origin",
+            ) == "-"
+        }
+        then "an empty header list asks for nothing" {
+            let r = preflight(
+                app(),
+                "Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\nAccess-Control-Request-Headers: \r\n",
+            )
+            field_said(r, "access-control-allow-origin") == "https://app.example" &&
+                field_said(r, "access-control-allow-headers") == "-"
+        }
+        then "a vary of star stays star" {
+            let r = (cors(app()))(
+                framed_from(
+                    "GET / HTTP/1.1\r\nHost: h\r\nOrigin: https://app.example\r\n\r\n".bytes(),
+                )!,
+                (_q) -> text(200, "ok").with_header("vary", "*"),
+            )
+            r.headers.filter(it.named("vary")).length == 1 && field_said(r, "vary") == "*"
+        }
+        then "credentials without a named origin grant nobody" {
+            field_said(
+                crossed(Cors { origins: [], credentials: true }, "Origin: https://app.example\r\n"),
+                "access-control-allow-credentials",
+            ) == "-"
+        }
+    }
+}
+
+spec "std/http — security headers" {
+    given "the defaults" {
+        then "every header" {
+            let r = through(hardened, "GET / HTTP/1.1", "")
+            field_said(r, "strict-transport-security") == "max-age=31536000; includeSubDomains" &&
+                field_said(r, "content-security-policy") == "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" &&
+                field_said(r, "x-frame-options") == "DENY" &&
+                field_said(r, "referrer-policy") == "strict-origin-when-cross-origin" &&
+                field_said(r, "cross-origin-opener-policy") == "same-origin" &&
+                field_said(r, "x-content-type-options") == "nosniff" &&
+                field_said(r, "permissions-policy") == "-"
+        }
+        then "the handler's own header stands" {
+            let r = hardened(
+                framed_from("GET / HTTP/1.1\r\nHost: h\r\n\r\n".bytes())!,
+                (_q) -> text(200, "ok").with_header("Content-Security-Policy", "default-src *"),
+            )
+            field_said(r, "content-security-policy") == "default-src *" &&
+                r.headers.filter(it.named("content-security-policy")).length == 1
+        }
+    }
+    given "loosened by saying so" {
+        then "no HSTS" {
+            field_said(
+                through(hardening(Hardening { hsts: null }), "GET / HTTP/1.1", ""),
+                "strict-transport-security",
+            ) == "-"
+        }
+        then "HSTS without subdomains" {
+            field_said(
+                through(hardening(Hardening { hsts_subdomains: false }), "GET / HTTP/1.1", ""),
+                "strict-transport-security",
+            ) == "max-age=31536000"
+        }
+        then "a CSP per request" {
+            let h = Hardening { csp: (q) -> "script-src 'nonce-${q.header("x-n") ?? "none"}'" }
+            field_said(
+                through(hardening(h), "GET / HTTP/1.1", "X-N: abc\r\n"),
+                "content-security-policy",
+            ) == "script-src 'nonce-abc'"
+        }
+        then "no CSP" {
+            field_said(
+                through(hardening(Hardening { csp: (_q) -> null }), "GET / HTTP/1.1", ""),
+                "content-security-policy",
+            ) == "-"
+        }
+    }
+}

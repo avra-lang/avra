@@ -1,0 +1,120 @@
+// gzip, zlib and brotli: other implementations' output read, our own
+// read back, and every decode held to its ceiling.
+use @std.compress.{Format, CompressError, encoded, decoded}
+use @std.text.{from_base64, repeat}
+
+/// Vectors written by `gzip -n -9`, Python's `zlib.compress` and the
+/// `brotli` command, each over `hello, world`.
+fn gzip_hello() -> Bytes { from_base64("H4sIAAAAAAACA8tIzcnJ11Eozy/KSQEAOnKr/wwAAAA=")! }
+fn zlib_hello() -> Bytes { from_base64("eJzLSM3JyddRKM8vykkBAB1UBIk=")! }
+fn brotli_hello() -> Bytes { from_base64("jwWAaGVsbG8sIHdvcmxkAw==")! }
+
+fn said(r: Result<Bytes, CompressError>) -> string {
+    match r { .Ok(b) -> b.text() ?? "octets ${b.length}", .Err(e) -> e.describe().message }
+}
+
+fn round(text: string, f: Format) -> string {
+    said(decoded(encoded(text.bytes(), f) catch "".bytes(), f, 1000000))
+}
+
+fn formats() -> List<Format> { [Format.Gzip, Format.Zlib, Format.Brotli] }
+
+/// `2^k` octets of `0`, doubled up — a bomb's worth of input without a
+/// push per octet.
+fn zeros(k: int) -> Bytes {
+    mut b = "0".bytes()
+    for _i in 0..k {
+        b = b.concat(b)
+    }
+    b
+}
+
+spec "std/compress" {
+    given "the empty cases, written first" {
+        then "nothing round-trips in every format" { formats().all(round("", it) == "") }
+        then "empty input is truncated, not empty output" {
+            formats()
+                .all(said(decoded("".bytes(), it, 100)) == "the input ends before its stream does")
+        }
+        then "gzip's own empty member" { said(decoded(from_base64("H4sIAAAAAAAAAwMAAAAAAAAAAAA=")!, Format.Gzip, 10)) == "" }
+        then "a zero ceiling holds an empty output" { said(decoded(encoded("".bytes(), Format.Gzip) catch "".bytes(), Format.Gzip, 0)) == "" }
+    }
+    given "other implementations' output" {
+        then "gzip" { said(decoded(gzip_hello(), Format.Gzip, 100)) == "hello, world" }
+        then "zlib" { said(decoded(zlib_hello(), Format.Zlib, 100)) == "hello, world" }
+        then "brotli" { said(decoded(brotli_hello(), Format.Brotli, 100)) == "hello, world" }
+    }
+    given "our own output" {
+        then "every format round-trips text" { formats().all(round("the quick brown fox", it) == "the quick brown fox") }
+        then "every octet round-trips" {
+            let all = [k % 256 for k in 0..5000].bytes()!
+            formats()
+                .all((decoded(encoded(all, it) catch "".bytes(), it, 5000) catch "".bytes()) == all)
+        }
+        then "repetition shrinks" { formats().all((encoded(repeat("abc", 1000).bytes(), it) catch "".bytes()).length < 500) }
+        then "gzip carries its magic" { (encoded("x".bytes(), Format.Gzip) catch "".bytes()).at(0) == 31 }
+        then "an effort out of range is clamped, not refused" {
+            said(
+                    decoded(
+                        encoded("x".bytes(), Format.Brotli, 99) catch "".bytes(),
+                        Format.Brotli,
+                        10,
+                    ),
+                ) == "x" &&
+                said(
+                    decoded(
+                        encoded("x".bytes(), Format.Zlib, 0 - 4) catch "".bytes(),
+                        Format.Zlib,
+                        10,
+                    ),
+                ) == "x"
+        }
+    }
+    given "a ceiling" {
+        then "exactly the ceiling decodes" { said(decoded(gzip_hello(), Format.Gzip, 12)) == "hello, world" }
+        then "one octet under it refuses" { said(decoded(gzip_hello(), Format.Gzip, 11)) == "the input decodes to more than 11 octets" }
+        then "a bomb stops at the ceiling in every format" {
+            formats()
+                .all(
+                    said(decoded(encoded(zeros(22), it) catch "".bytes(), it, 65536)) == "the input decodes to more than 65536 octets",
+                )
+        }
+        then "the refusal carries the ceiling" {
+            match decoded(brotli_hello(), Format.Brotli, 3) {
+                .Err(e) -> match e { .TooLarge(c) -> c == 3, .Corrupt or .Truncated or .Memory -> false },
+                .Ok(_) -> false,
+            }
+        }
+    }
+    given "malformed input" {
+        then "the wrong format" {
+            said(decoded(gzip_hello(), Format.Zlib, 100)) == "the input is not in the format it was read as" &&
+                said(decoded(zlib_hello(), Format.Gzip, 100)) == "the input is not in the format it was read as"
+        }
+        then "cut short" {
+            formats()
+                .all(
+                    said(
+                        decoded(
+                            (encoded(repeat("a", 3000).bytes(), it) catch "".bytes()).slice(0, 8),
+                            it,
+                            10000,
+                        ),
+                    ) == "the input ends before its stream does",
+                )
+        }
+        then "trailing octets after the stream" {
+            said(decoded(gzip_hello().concat("x".bytes()), Format.Gzip, 100)) == "the input is not in the format it was read as" &&
+                said(decoded(brotli_hello().concat("x".bytes()), Format.Brotli, 100)) == "the input is not in the format it was read as"
+        }
+        then "a flipped octet in gzip's checksum" {
+            let g = gzip_hello()
+            let bad = g
+                .slice(0, g.length - 5)
+                .concat([(g.at(g.length - 5) + 1) % 256].bytes()!)
+                .concat(g.slice(g.length - 4, g.length))
+            said(decoded(bad, Format.Gzip, 100)) == "the input is not in the format it was read as"
+        }
+        then "plain text in every format" { formats().all(said(decoded("hello".bytes(), it, 100)) != "hello") }
+    }
+}

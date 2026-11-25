@@ -1,0 +1,118 @@
+//! proves: a server's bounds hold with HTTP/2 agreed. A core allowed
+//! one TLS handshake at a time frees the slot when an `h2` handshake
+//! completes, so a second `h2` client is served while the first stays
+//! open; an `https` fetch an admission refuses is denied at its address
+//! and never reaches the server, taking no slot from the next; and an
+//! `h2` peer that vanishes while its handler runs leaves the server
+//! serving — the same in both engines
+use @std.net.{listen}
+use @std.time.{ms, secs, sleep, now_ms, within}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.server.{Timing, served}
+use @std.http.client.{ClientError, Answer, netted}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, fetch}
+use @std.http.h2.{preface, frame_bytes, frames_in, end_stream, end_headers, value_named}
+use @std.http.hpack.{header_field, encoder, decoder}
+use @std.https.{over_tls, tls_carried, verified}
+use @std.tls.{TlsConn, dial}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type App = {}
+
+fn answer(q: Request<Unrouted>) -> Response {
+    if (q.path()?.text() ?? "").starts_with("/slow") { sleep(ms(200)) }
+    text(200, "ok")
+}
+
+/// A fetch's status, or what refused it.
+fn shown(r: Result<Answer, ClientError>) -> string {
+    match r {
+        .Ok(a) -> "${a.status}",
+        .Err(.Net(e)) -> if e.denied != null { "denied ${e.denied!.text}" } else { "refused" },
+        .Err(_) -> "refused",
+    }
+}
+
+/// `path` asked on stream 1 of a fresh HTTP/2 conversation over `t`.
+fn asked(t: TlsConn, path: string) -> bool {
+    mut e = encoder(true)
+    let head = [
+        header_field(":method", "GET"),
+        header_field(":scheme", "https"),
+        header_field(":path", path),
+        header_field(":authority", "localhost"),
+    ]
+    let opening = preface
+        .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+        .concat(frame_bytes(.Headers, end_headers | end_stream, 1, e.encoded(head)))
+    t.write(opening) is .Ok
+}
+
+/// The `:status` stream 1 was answered with, read until it arrives or
+/// the peer goes quiet.
+fn status_on_one(t: TlsConn) -> string {
+    mut buf = no_bytes
+    mut open = true
+    while open && heads_on_one(buf).is_empty() {
+        let got = match within secs(2) { t.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+        open = got != null
+        buf = buf.concat(got ?? no_bytes)
+    }
+    let block? = heads_on_one(buf).first() else { return "none" }
+    mut d = decoder(4096, 65536)
+    match d.decoded(block) {
+        .Fields(fs) -> value_named(fs, ":status".bytes())?.text() ?? "?",
+        .TooLarge or .Refused(_) -> "undecoded",
+    }
+}
+
+/// The HEADERS blocks stream 1 was sent in `buf`.
+fn heads_on_one(buf: Bytes) -> List<Bytes> { [f.payload for f in frames_in(buf) if f.stream == 1 && f.kind is .Headers] }
+
+fn run() -> Result<string, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let sc = tls_carried((tls_carried(serving_localhost())?).offering(["h2", "http/1.1"]))?
+    let s = served(l, () -> App {}, limits(), Timing { handshake: ms(400), handshakes: 1 }) { _a, q -> answer(q) }
+        .secured(over_tls(sc))
+    spawn s.run(1)
+    defer s.stop()
+    let h2 = tls_carried((tls_carried(trusting_localhost())?).offering(["h2"]))?
+    let first = tls_carried(dial("localhost", l.port, secs(5), h2))?
+    let held = asked(first, "/slow")
+    let second = tls_carried(dial("localhost", l.port, secs(5), h2))?
+    let beside = if asked(second, "/") { status_on_one(second) } else { "write failed" }
+    let held_answer = if held { status_on_one(first) } else { "write failed" }
+    let before = s.connections()
+    let url = "https://localhost:${l.port}/"
+    let trusted = verified(tls_carried(trusting_localhost())?)
+    let public = Options { pool: pool(), tls: trusted, admit: .Public }
+    let denied = shown(fetch(.Get, "https://127.0.0.1:${l.port}/", .Empty, public))
+    let reached = s.connections() - before
+    let o = Options { pool: pool(), tls: trusted }
+    defer o.pool.close_all()
+    let t0 = now_ms()
+    let next = shown(fetch(.Get, url, .Empty, o))
+    let prompt = now_ms() - t0 < 300
+    let gone = tls_carried(dial("localhost", l.port, secs(5), h2))?
+    let _ = asked(gone, "/slow")
+    let _ = gone.close()
+    sleep(ms(300))
+    let after = tls_carried(dial("localhost", l.port, secs(5), h2))?
+    let still = if asked(after, "/") { status_on_one(after) } else { "write failed" }
+    let _ = first.close()
+    let _ = second.close()
+    let _ = after.close()
+    .Ok(
+        [
+            "a second h2 handshake beside an open one: ${beside}, the first answered ${held_answer}",
+            "a public-only fetch of the loopback: ${denied}, connections it made ${reached}",
+            "the next fetch: ${next} at once ${prompt}",
+            "after an h2 peer vanished mid-handler: ${still}",
+        ]
+            .join("\n"),
+    )
+}
+
+run() catch e -> "failed: ${e.describe().message}"

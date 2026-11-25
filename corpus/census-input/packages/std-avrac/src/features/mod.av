@@ -1,0 +1,193 @@
+//! What a language feature IS. The compiler assembles itself from
+//! these components — composition concatenates every fragment and the
+//! driver parses the whole language once.
+//!
+//! Siblings: contract.av (THE per-pass contract and the shared
+//! fact/refusal vocabulary), checks.av (typing laws shared across
+//! features), builder.av (the authoring surface), compose.av
+//! (assembly + dispatch), coherence.av (feature/grammar agreement).
+use core.{
+    ExprId,
+    StmtId,
+    TypeRef,
+    Type,
+    TypeId,
+    Reg,
+    TypeRegistry,
+    PatId,
+    Case,
+    Arm,
+    Mark,
+    CompClause,
+}
+use @std.meta.{Field}
+use diagnostics.{DiagCode}
+use @std.grammar.{Grammar, Rule}
+/// The language client's node wrapper: builders hand the engine typed
+/// ids, never nodes.
+export enum LangNode {
+    NExpr(id: ExprId)
+    NStmt(id: StmtId)
+    /// A written TYPE — carried as data, not allocated: no pass
+    /// walks an annotation, so it needs no id and no arena.
+    NType(written: TypeRef)
+    /// A pattern, in the store's pattern table.
+    NPat(id: PatId)
+    /// One match arm — its patterns and its value, as data.
+    NArm(arm: Arm)
+    /// One comprehension clause — a `for` head or an `if` filter, as
+    /// data.
+    NCompClause(clause: CompClause)
+    /// Test cases — a `then`, or a `given` group's, as data.
+    NCases(cases: List<Case>)
+    /// A `@word` before a declared member, as data — no pass walks a
+    /// mark, so it needs no id and no arena.
+    NMark(mark: Mark)
+}
+
+/// One builder registration: the name grammar text calls, and the fn
+/// that answers it.
+export type BuilderRow = { name: string, build: fn(mut Builder) -> Result<LangNode, string>, payloads: List<Field> = [] }
+
+/// A keyword's own remedy when it is written as a NAME — the
+/// feature that claims the word says what to write instead.
+export type KeywordRemedy = { word: string, help: string }
+
+/// A method call's seat: the call, its receiver, its arguments —
+/// one value, so a row's rules take two arguments.
+export type MethodCall = { e: ExprId, subject: ExprId, args: List<ExprId> }
+
+/// One builtin method: its name, which receiver shapes it takes,
+/// and its typing and lowering rules. THE METHOD VOCABULARY is
+/// these rows — declared by the feature that owns the receiver,
+/// assembled with the language, queried by the dot-call — never
+/// a chain of forks.
+export enum ReceiverEffect {
+    Read
+    /// a read answering a value the receiver HOLDS (`c.get()`,
+    /// `xs.first()`) — the holder's until copied
+    Lends
+    Write
+    Shared
+}
+
+export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect, answers: fn(TypeRegistry, TypeId) -> TypeId? }
+
+/// What a row answers on a receiver of this type, told from the
+/// receiver alone — for a pass that types no body. Null when only the
+/// call's own arguments decide it.
+export fn same_answer(_types: TypeRegistry, receiver: TypeId) -> TypeId? { receiver }
+export fn int_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(int) }
+export fn bool_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(bool) }
+export fn str_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(string) }
+export fn void_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(void) }
+export fn element_answer(types: TypeRegistry, receiver: TypeId) -> TypeId? { types.element(receiver) }
+export fn held_element_answer(types: TypeRegistry, receiver: TypeId) -> TypeId? {
+    let e? = types.element(receiver) else { return null }
+    types.type(e?)
+}
+export fn unknown_answer(_types: TypeRegistry, _receiver: TypeId) -> TypeId? { null }
+
+/// Whether the vocabulary's method of this name WRITES its receiver
+/// on this shape — the registry fact the receiver law reads.
+export fn row_writes(rows: List<MethodRow>, name: string, sh: Type) -> bool {
+    let row? = method_row(rows, name, sh) else { return false }
+    row.effect is .Write
+}
+
+/// Whether the vocabulary's method of this name LENDS what its
+/// receiver holds on this shape — the registry fact the alias-copy
+/// law reads.
+export fn row_lends(rows: List<MethodRow>, name: string, sh: Type) -> bool {
+    let row? = method_row(rows, name, sh) else { return false }
+    row.effect is .Lends
+}
+
+/// The row a receiver shape and a name select; null when the
+/// vocabulary offers none.
+export fn method_row(rows: List<MethodRow>, name: string, sh: Type) -> MethodRow? {
+    rows.find(it.name == name && it.takes(sh))
+}
+
+/// A refusal in the row's own words — what a constructor's law
+/// answers when the arguments break it (a law answers a list,
+/// empty when it holds — a nullable fn answer does not parse in a
+/// field type).
+export type Refusal = { message: string, help: string }
+
+/// One type CONSTRUCTOR the language owns: its name and arity,
+/// whether its arguments are SLOTS (judged by the slot law), a law
+/// over the arguments, and the shape it builds. THE CONSTRUCTOR
+/// VOCABULARY is these rows — the driver's annotation rule queries
+/// them; nothing names a constructor by hand.
+export type TypeRow = { name: string, arity: int, slots: bool, judge: fn(TypeRegistry, TypeArgs) -> List<Refusal>, builds: fn(TypeArgs) -> Type, variants: fn(TypeArgs) -> EnumSig? }
+
+/// A constructor's arity-checked arguments — one value, because a
+/// generic type does not parse as a fn-type parameter in a field.
+export type TypeArgs = { parts: List<TypeId> }
+
+/// One PROPERTY a receiver shape answers (`.length` and its kin):
+/// both rules take the read and the receiver's TYPE, the lowering
+/// its REGISTER too — the chain holds a carried value and no
+/// subject node, and one registry answers both readers.
+export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg }
+
+/// The constructor a name selects; null when the language owns none.
+export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {
+    rows.find(it.name == name)
+}
+
+/// The property a receiver shape and a name select.
+export fn property_row(rows: List<PropertyRow>, name: string, sh: Type) -> PropertyRow? {
+    rows.find(it.name == name && it.takes(sh))
+}
+
+/// THE ROW A RECEIVER SELECTS: its OWN shape first, then the shape
+/// it stands over — the order `member_type_of` asks in, so the
+/// lowering and the law that admitted it read the same bytes.
+export fn property_of(types: TypeRegistry, rows: List<PropertyRow>, name: string, ty: TypeId) -> PropertyRow? {
+    let own: PropertyRow? = property_row(rows, name, types.shape_of(ty))
+    if own != null { return own }
+    property_row(rows, name, types.seen_shape(ty))
+}
+
+/// A constructor that is no enum — nothing to construct by name.
+// LICENSED fns.dead_parameter: a row's rule wears the row's signature
+export fn no_variants(args: TypeArgs) -> EnumSig? {
+    null
+}
+
+/// A constructor with no law over its arguments — the law holds.
+// LICENSED fns.dead_parameter: a row's law wears the row's signature
+export fn no_law(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
+    []
+}
+
+/// A language feature: its grammar fragment as a GRAMMAR VALUE —
+/// `grammar { … }` reads the notation when the compiler runs, so
+/// assembly merges and never parses — the builder table linking the
+/// fragment's build names to fns, its diagnostic codes, and its
+/// method, constructor and property rows.
+export component LanguageFeature {
+    name: string
+    gram: Grammar = no_grammar()
+    builders: List<BuilderRow> = []
+    diags: List<DiagCode> = []
+    methods: List<MethodRow> = []
+    types: List<TypeRow> = []
+    properties: List<PropertyRow> = []
+    remedies: List<KeywordRemedy> = []
+}
+
+/// A feature that contributes no rules — the config default, and
+/// what a metadata-compiled test starts from.
+export fn no_grammar() -> Grammar {
+    let none: List<Rule> = []
+    Grammar { name: "", start: "", rules: none }
+}
+
+/// A feature value for consumers that cannot instantiate the
+/// component (metadata-compiled tests); extend with `with`.
+export fn feature(fname: string, fgram: Grammar) -> LanguageFeature {
+    LanguageFeature { name: fname, gram: fgram }
+}

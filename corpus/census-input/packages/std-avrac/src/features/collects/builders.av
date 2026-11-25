@@ -1,0 +1,126 @@
+//! Parse-time lowering: captures -> the Collect statement. `it` and
+//! `by` are NEVER grammar keywords — a keyword literal here would
+//! reserve the word across the whole language (breaking every
+//! lambda's pronoun, `xs.any(it > 0)`, and every `by: int` seat
+//! tree-wide). So each reads an ordinary NAME, checked here to carry
+//! the right word. A projection field's optional `.path` is an
+//! ANCHORED WINDOW read — the field name always arrives, so
+//! `aligned_binds` finds the `.NAME` written in its window, or "" for
+//! the bare `it`.
+use core.{Stmt, Scoped, Plain, TypeRef, CollectKind, CollectScope, Projection, ProjField, named_ref}
+use features.{LangNode, Builder, aligned_binds}
+use grammar.{Token, TokenKind}
+
+fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let t = b.type_ref(1)?
+    let k = b.token(2)?
+    let sc = b.token(3)?
+    let pt = b.token(4)?
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: a collect declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    let fns = b.tokens(5)?
+    let iws = b.tokens(6)?
+    let fps = b.tokens(7)?
+    let bws = b.tokens(8)?
+    let biws = b.tokens(9)?
+    let bks = b.tokens(10)?
+    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, k, sc, pt, fns, fps, bks, ends) }
+    .Err("a collect's projection reads its declaration through `it` — found `${bad_it.text}`")
+}
+
+fn bad_by(
+    b: Builder,
+    bws: List<Token>,
+    n: Token,
+    t: TypeRef,
+    k: Token,
+    sc: Token,
+    pt: Token,
+    fns: List<Token>,
+    fps: List<Token>,
+    bks: List<Token>,
+    ends: int,
+) -> Result<LangNode, string> {
+    let bad? = bws.find(not_word("by")) else {
+        let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
+        return b
+            .make_stmt(
+                Stmt
+                    .Collect(
+                        Scoped(n.text),
+                        t,
+                        kind_of(b, k),
+                        scope_of(sc),
+                        proj,
+                        [Plain(bk.text) for bk in bks],
+                    ),
+            )
+    }
+    .Err("a collect's order is declared with `by` — found `${bad.text}`")
+}
+
+/// `collect enum Name = kind in scope by …` — `build_collect_decl`'s
+/// twin with no declared type and no projection.
+fn build_collect_enum_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let k = b.token(1)?
+    let sc = b.token(2)?
+    let bws = b.tokens(3)?
+    let biws = b.tokens(4)?
+    let bks = b.tokens(5)?
+    let bad_it? = biws.find(not_word("it")) else { return bad_enum_by(b, bws, n, k, sc, bks) }
+    .Err("a collect enum's order reads its declaration through `it` — found `${bad_it.text}`")
+}
+
+fn bad_enum_by(b: Builder, bws: List<Token>, n: Token, k: Token, sc: Token, bks: List<Token>) -> Result<
+    LangNode,
+    string,
+> {
+    let bad? = bws.find(not_word("by")) else {
+        return b
+            .make_stmt(
+                Stmt
+                    .CollectEnum(Scoped(n.text), kind_of(b, k), scope_of(sc), [Plain(bk.text) for bk in bks]),
+            )
+    }
+    .Err("a collect enum's order is declared with `by` — found `${bad.text}`")
+}
+
+fn not_word(word: string) -> fn(Token) -> bool {
+    (t: Token) -> t.text != word
+}
+
+/// A collect's kind word: `@name`, the token carrying its `@`, is
+/// `Annotated` — every declaration wearing that annotation, never
+/// resolved against the component list at all. A BARE word is
+/// resolved to an imported component's own name (`model`, `rule`)
+/// — never `instance of`. Not KNOWN, the word stands as written for
+/// `collect`'s own laws to refuse.
+fn kind_of(b: Builder, k: Token) -> CollectKind {
+    if k.kind == TokenKind.Pkg { return CollectKind.Annotated(k.text.substring(1, k.text.length)) }
+    if b.words.components.any(it.word == k.text) { return CollectKind.Component(k.text) }
+    CollectKind.UnknownKind(k.text)
+}
+
+fn scope_of(sc: Token) -> CollectScope {
+    if sc.text == "self" { return CollectScope.Self }
+    if sc.text == "package" { return CollectScope.Package }
+    if sc.text == "closure" { return CollectScope.Closure }
+    CollectScope.UnknownScope(sc.text)
+}
+
+/// Each field's fill: the name always arrives, so `aligned_binds`
+/// finds the `.NAME` written in its window, or "" for the bare `it`
+/// — folded here into the empty path that means the same thing.
+fn proj_fields(fns: List<Token>, fps: List<Token>, ends: int) -> List<ProjField> {
+    let paths = aligned_binds(fns, fps, ends)
+    [ProjField { field: Plain(f.text), path: path_of(paths[j]) } for j, f in fns]
+}
+
+fn path_of(word: string) -> List<Plain> {
+    if word == "" { [] } else { [Plain(word)] }
+}

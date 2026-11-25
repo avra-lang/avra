@@ -1,0 +1,485 @@
+//! fetch.av — ONE REQUEST BY URL: `get(url)?`, over a pool, every stage
+//! on a deadline of its own.
+//!
+//! THE URL DECIDES WHERE, AND IS READ STRICTLY. It parses by RFC 3986
+//! (@std/url) or the request is refused before a socket opens. Its
+//! scheme, host and port name the ORIGIN the pool lends for; its path
+//! and query are sent as written, and its fragment never is. A URL
+//! carrying credentials is refused rather than sent or stripped:
+//! credentials travel in a header a caller names.
+//!
+//! `https` IS SECURED BY THE OPTIONS' `tls`, and this package carries
+//! none, so a plain program links no TLS: `@std/https` fills it. An
+//! `https` URL under options without it is refused before a socket
+//! opens — never sent in the clear.
+//!
+//! A BODY IS A SEAT WITH A KIND. Text, JSON, a form and raw octets are
+//! sent whole with their length; a STREAM is pulled a piece at a time
+//! and sent chunked, so its size need not be known. Each names its
+//! own `content-type`, unless the caller's headers already name one —
+//! the explicit header wins.
+//!
+//! FOUR DEADLINES. `connect` bounds resolving and connecting, `tls`
+//! the handshake, `first_byte` the wait between the request sent and
+//! the reply's first octet, and `total` everything. A refusal names
+//! the stage whose deadline passed, and a stage that outran `total`
+//! is named `.Total`.
+//!
+//! REDIRECTS AND RETRIES ARE POLICY, NAMED IN THE OPTIONS. A redirect
+//! is followed by RFC 9110's method rules up to `Follow(max)`, never
+//! into a loop, never carrying a caller's credentials to another
+//! origin; a request the peer dropped is tried again only when asking
+//! twice means what asking once does. The answer says which URLs it
+//! left (`via`) and how many attempts it took (`attempts`).
+//!
+//! WHERE A REQUEST MAY CONNECT IS ASKED FOR TOO. `admit` judges every
+//! address the host RESOLVES to before one is dialed — `.Public`
+//! refuses loopback, private, link-local and the cloud metadata
+//! address however the URL spelled them — and judges again at every
+//! redirect's hop and every kept connection the pool would lend. The
+//! address judged is the address dialed, so a name that answers
+//! differently the next time is judged the next time.
+//!
+//! COOKIES ARE ASKED FOR: a `jar` in the options keeps what each answer
+//! sets and sends it back where RFC 6265 says (jar.av).
+use @std.url.{Url, UrlError, parse, encoded as percent_encoded, default_port}
+use @std.net.{Admission, Conn, connect}
+use @std.json.{Json, to_text}
+use @std.time.{Duration, ms, secs, now_ms, sleep, within}
+use frame.{Method, Limits, limits}
+use http.{Header, names_one_of, piece_on_wire, body_end}
+use client.{
+    Client,
+    Answer,
+    ClientError,
+    Stage,
+    over,
+    request,
+    chunked_request,
+    method_word,
+    staged,
+    carried,
+    netted,
+}
+use wire.{Transport, Securing, plainly}
+use jar.{Jar}
+use pool.{Pool, Carrier, pool, origin_of}
+
+/// A request body, by kind.
+export enum Payload {
+    Empty
+    Text(text: string)
+    Json(value: Json)
+    Form(fields: List<FormField>)
+    Octets(bytes: Bytes, kind: string)
+    Stream(next: fn() -> Bytes?, kind: string)
+}
+
+/// The four deadlines of a request.
+export type Timeouts = {
+    connect: Duration = secs(10),
+    tls: Duration = secs(10),
+    first_byte: Duration = secs(30),
+    total: Duration = secs(60),
+}
+
+/// How a request is made: the pool its connection comes from, its
+/// deadlines, the bounds its reply is framed under, the headers every
+/// request carries, its redirect and retry policy, how an `https`
+/// connection is secured — none here, so a plain program links no TLS;
+/// `@std/https` fills it — the jar its cookies are kept in, if any, and
+/// which resolved addresses it may connect to.
+export type Options = {
+    pool: Pool = shared_pool(),
+    timeouts: Timeouts = Timeouts {},
+    limits: Limits = limits(),
+    headers: List<Header> = [],
+    redirects: Redirects = .Follow(5),
+    retry: Retry = Retry {},
+    tls: Securing? = null,
+    jar: Jar? = null,
+    admit: Admission = .Anywhere,
+}
+
+/// Whether a redirect is followed: `Stop` answers it as it came,
+/// `Follow` follows up to `max` of them.
+export enum Redirects {
+    Stop
+    Follow(max: int)
+}
+
+/// How a request that the peer dropped is tried again: up to
+/// `attempts` in all, waiting `backoff` and then `factor` times longer
+/// before each. Only an idempotent method is retried, only when the
+/// connection was reset or closed before a reply, never with a stream
+/// body, and never past the request's own deadline.
+export type Retry = { attempts: int = 2, backoff: Duration = ms(50), factor: int = 2 }
+
+/// The process's pool: every request made with the default options
+/// shares its connections.
+once fn shared_pool() -> Pool { pool() }
+
+/// The default options.
+export fn options() -> Options { Options {} }
+
+export fn get(url: string) -> Fetched { fetch(.Get, url, .Empty, options()) }
+
+export fn post(url: string, body: Payload) -> Fetched { fetch(.Post, url, body, options()) }
+
+export fn put(url: string, body: Payload) -> Fetched { fetch(.Put, url, body, options()) }
+
+export fn patch(url: string, body: Payload) -> Fetched { fetch(.Patch, url, body, options()) }
+
+export fn delete(url: string) -> Fetched { fetch(.Delete, url, .Empty, options()) }
+
+/// Where a URL sends a request: its origin, the host and port to
+/// connect to, whether the connection is secured, the `host` field,
+/// and the target on the request line.
+export type Aim = { origin: string, secure: bool, host: string, port: int, field: string, target: string }
+
+/// `method` to `url` with `body`, under `o`.
+export fn fetch(method: Method, url: string, body: Payload, o: Options) -> Fetched {
+    let deadline = now_ms() + o.timeouts.total.ms
+    let answer = within o.timeouts.total { followed(Hop { method: method, url: url, body: body, via: [] }, o, deadline) }
+    overran(answer, deadline)
+}
+
+/// What a request by URL answers.
+export alias Fetched = Result<Answer, ClientError>
+
+/// One request of a redirect chain: its method, its URL, its body,
+/// and the URLs the chain already left, in order.
+type Hop = { method: Method, url: string, body: Payload, via: List<string> }
+
+/// The request made, and each redirect after it followed as `o` says
+/// (RFC 9110 §15.4).
+fn followed(q: Hop, o: Options, deadline: int) -> Fetched {
+    let aim = aimed(q.url)?
+    if aim.secure && o.tls == null { return .Err(.NoTls) }
+    let wire = wire_of(q.method, aim, q.body, o.headers.concat(jarred(o, aim)))?
+    let a = tried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms })?
+    remembered(o, aim, a)
+    let max? = following(o.redirects) else { return .Ok(a) }
+    let next? = rewritten(a.status, q) else { return .Ok(a) }
+    if next.body is .Stream { return .Err(.Redirect(.Unreplayable(a.status))) }
+    if q.via.length >= max { return .Err(.Redirect(.TooMany(max))) }
+    let to = located(a, q.url)?
+    if to == q.url || q.via.contains(to) { return .Err(.Redirect(.Loop(to))) }
+    followed(next with { url: to, via: q.via.concat([q.url]) }, crossed(o, aim, to), deadline)
+}
+
+/// The path a cookie is matched against: the target before its query.
+fn path_of(target: string) -> string { target.split("?").first() ?? "/" }
+
+/// The jar's `cookie` field for `aim`, unless the caller wrote one.
+fn jarred(o: Options, aim: Aim) -> List<Header> {
+    let j? = o.jar else { return [] }
+    if o.headers.any(it.named("cookie")) { return [] }
+    let c? = j.sent(aim.host, path_of(aim.target), aim.secure) else { return [] }
+    [c]
+}
+
+/// The answer's cookies kept, when there is a jar.
+fn remembered(o: Options, aim: Aim, a: Answer) {
+    let j? = o.jar else { return }
+    j.heard(aim.host, path_of(aim.target), aim.secure, a)
+}
+
+fn following(r: Redirects) -> int? {
+    match r { .Stop -> null, .Follow(max) -> max }
+}
+
+/// What a redirect asks next (RFC 9110 §15.4): 303 asks a GET (a HEAD
+/// stays one); 301 and 302 turn a POST into a GET, as every user
+/// agent does; 307 and 308 repeat the request as it was. Any other
+/// status is no redirect.
+fn rewritten(status: int, q: Hop) -> Hop? {
+    match status {
+        301 or 302 -> if q.method is .Post { q with { method: .Get, body: .Empty } } else { q },
+        303 -> if q.method is .Head { q } else { q with { method: .Get, body: .Empty } },
+        307 or 308 -> q,
+        _ -> null,
+    }
+}
+
+/// The redirect's `location`, resolved against the URL that earned it.
+fn located(a: Answer, from: string) -> Result<string, ClientError> {
+    let loc? = a.header("location") else { return .Err(.Redirect(.NoLocation(a.status))) }
+    let base = urled(parse(from))?
+    match base.resolve(loc) { .Ok(u) -> .Ok(u.text()), .Err(e) -> .Err(.Redirect(.BadLocation(e))) }
+}
+
+/// The options for a redirect's next hop: the credentials a caller
+/// wrote for one origin are never carried to another.
+fn crossed(o: Options, from: Aim, to: string) -> Options {
+    let same = match aimed(to) { .Ok(a) -> a.origin == from.origin, .Err(_) -> true }
+    if same { return o }
+    o with { headers: [h for h in o.headers if !credential(h)] }
+}
+
+fn credential(h: Header) -> bool { names_one_of(h.name, credential_names) }
+
+const credential_names: List<Bytes> = [n.bytes() for n in ["authorization", "proxy-authorization", "cookie"]]
+
+/// The request over a lent connection, tried again by `o.retry` when
+/// the peer dropped it; the answer records how many attempts it took.
+fn tried(q: Hop, wire: Bytes, aim: Aim, o: Options, deadline: int, t: Try) -> Fetched {
+    let r = lent(q.method, wire, aim, q.body, o, deadline)
+    if !again(r, q, o.retry, t.n) || now_ms() + t.wait >= deadline { return attempted(r, q, t.n) }
+    if t.wait > 0 { sleep(ms(t.wait)) }
+    tried(
+        q,
+        wire,
+        aim,
+        o,
+        deadline,
+        Try { n: t.n + 1, wait: grown(t.wait, o.retry.factor, deadline - now_ms()) },
+    )
+}
+
+/// An attempt's place in the retry schedule: its number, and the wait
+/// before the next.
+type Try = { n: int, wait: int }
+
+/// The wait after `wait`: `factor` times longer, held at `ceiling` so
+/// no schedule overflows.
+fn grown(wait: int, factor: int, ceiling: int) -> int {
+    if factor > 0 && wait > ceiling / factor { return ceiling }
+    wait * factor
+}
+
+/// The answer to `q` as its chain and its attempts made it.
+fn attempted(r: Fetched, q: Hop, attempts: int) -> Fetched {
+    match r { .Ok(a) -> .Ok(a with { via: q.via, attempts: attempts }), .Err(e) -> .Err(e) }
+}
+
+/// Whether a failed attempt earns another.
+fn again(r: Fetched, q: Hop, p: Retry, attempt: int) -> bool {
+    attempt < p.attempts && idempotent(q.method) && !(q.body is .Stream) && dropped(r)
+}
+
+/// Whether the peer dropped the connection before a reply: closed it,
+/// or reset it.
+fn dropped(r: Fetched) -> bool {
+    match r { .Err(.Closed) -> true, .Err(.Net(e)) -> e.reset(), .Err(_) or .Ok(_) -> false }
+}
+
+/// The idempotent methods (RFC 9110 §9.2.2): asking twice means what
+/// asking once does.
+fn idempotent(m: Method) -> bool {
+    match m {
+        .Get or .Head or .Put or .Delete or .Options or .Trace -> true,
+        .Post or .Patch or .Connect or .Other -> false,
+    }
+}
+
+/// The request as it goes on the wire — whole, or a stream's head — or
+/// the refusal of a word or field the framer would not frame, BEFORE
+/// any socket opens.
+fn wire_of(method: Method, aim: Aim, body: Payload, fields: List<Header>) -> Result<
+    Bytes,
+    ClientError,
+> {
+    let word? = method_word(method) else { return .Err(.Unwritable) }
+    let headers = fields.concat(kind_named(body, fields))
+    let wire = match body {
+        .Stream(_, _) -> chunked_request(word, aim.target, aim.field, headers),
+        .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> request(word, aim.target, aim.field, headers, octets_of(body)),
+    }
+    let w? = wire else { return .Err(.Unwritable) }
+    .Ok(w)
+}
+
+/// A deadline's stage as `.Total` once the whole request's deadline
+/// has passed: the stage that noticed is not the one that ran out. A
+/// read no stage bounds — the body after its first byte — was bounded
+/// by the whole request's deadline alone.
+fn overran(r: Fetched, deadline: int) -> Fetched {
+    match r {
+        .Err(.TimedOut(_)) if now_ms() >= deadline -> .Err(.TimedOut(.Total)),
+        .Err(.Net(e)) if e.timed_out() -> .Err(.TimedOut(.Total)),
+        .Err(e) -> .Err(e),
+        .Ok(a) -> .Ok(a),
+    }
+}
+
+/// A URL read into where it aims, or why it aims nowhere this client
+/// can reach.
+export fn aimed(url: string) -> Result<Aim, ClientError> {
+    let u = urled(parse(url))?
+    if !spoken(u.scheme) { return .Err(.Unspoken(u.scheme)) }
+    let a? = u.authority else { return .Err(.NoHost) }
+    if a.userinfo != null { return .Err(.Userinfo) }
+    let host? = u.normalized().hostname() else { return .Err(.NoHost) }
+    if host.is_empty() { return .Err(.NoHost) }
+    let port = u.port() ?? 80
+    .Ok(
+        Aim {
+            origin: origin_of(u.scheme, host, port),
+            secure: u.scheme == "https",
+            host: host,
+            port: port,
+            field: host_field(u),
+            target: u.target().text() ?? "/",
+        },
+    )
+}
+
+/// The schemes this client speaks.
+fn spoken(scheme: string) -> bool { scheme == "http" || scheme == "https" }
+
+fn urled(r: Result<Url, UrlError>) -> Result<Url, ClientError> {
+    match r { .Ok(u) -> .Ok(u), .Err(e) -> .Err(.Url(e)) }
+}
+
+/// The `host` field (RFC 9110 §7.2): the host as written, bracketed
+/// when an IPv6 address, and the port when one is written that is not
+/// the scheme's own.
+fn host_field(u: Url) -> string {
+    let a = u.authority!
+    let host = a.host.bytes().text() ?? ""
+    let p? = a.port else { return host }
+    if p == default_port(u.scheme) { return host }
+    "${host}:${p}"
+}
+
+/// A connection lent by the pool, the exchange made over it, and the
+/// connection handed back — kept when the reply lets it be, dropped
+/// on any failure.
+fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Result<
+    Answer,
+    ClientError,
+> {
+    let carrier = o.pool.take(aim.origin, () -> dialed_for(aim, o), o.admit)?
+    mut client = client_of(carrier)
+    match exchanged(client, method, wire, body, o, deadline) {
+        .Ok(done) -> {
+            o.pool.give(aim.origin, .H1(done.client))
+            .Ok(done.answer)
+        },
+        .Err(e) -> {
+            o.pool.drop(aim.origin, carrier)
+            .Err(e)
+        },
+    }
+}
+
+/// A new connection to `aim`: made within the connect deadline, then
+/// secured within the TLS one when the URL asked for it.
+fn dialed_for(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
+    let c = staged(.Connect, netted(connect(aim.host, aim.port, o.timeouts.connect, o.admit)))?
+    .Ok(.H1(over(secured(c, aim, o)?, o.limits) with { address: c.address() }))
+}
+
+/// The connection as `aim` asks: plain, or secured by `o.tls` — never
+/// plain where the URL asked for TLS.
+fn secured(c: Conn, aim: Aim, o: Options) -> Result<dyn Transport, ClientError> {
+    if !aim.secure { return .Ok(plainly(c)) }
+    let tls? = o.tls else {
+        let _ = c.close()
+        return .Err(.NoTls)
+    }
+    staged(.Tls, carried(tls.open(c, aim.host, o.timeouts.tls)))
+}
+
+fn client_of(c: Carrier) -> Client {
+    match c { .H1(client) -> client }
+}
+
+/// A finished exchange: the connection as it now stands, and the
+/// answer it carried.
+type Exchanged = { client: Client, answer: Answer }
+
+fn exchanged(mut c: Client, method: Method, wire: Bytes, body: Payload, o: Options, deadline: int) -> Result<
+    Exchanged,
+    ClientError,
+> {
+    sent(c, method, wire, body, deadline)?
+    let first = staged(.FirstByte, within o.timeouts.first_byte { c.received() })?
+    let answer = first ?? received_whole(c)?
+    .Ok(Exchanged { client: c, answer: answer })
+}
+
+/// Reads until the reply is whole; the request's own deadline bounds
+/// every one.
+fn received_whole(mut c: Client) -> Result<Answer, ClientError> {
+    let got? = c.received()? else { return received_whole(c) }
+    .Ok(got)
+}
+
+/// The request sent: whole, or a stream's head followed by each piece
+/// as a chunk and the last chunk.
+fn sent(mut c: Client, method: Method, wire: Bytes, body: Payload, deadline: int) -> Result<
+    int,
+    ClientError,
+> {
+    let n = c.sent(method, wire)?
+    match body {
+        .Stream(next, _) -> poured(c, next, deadline),
+        .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> .Ok(n),
+    }
+}
+
+/// A stream's pieces written as chunks until it answers null, then
+/// the last chunk. The request's deadline is asked between pieces too:
+/// a producer that never ends, into a socket that never fills, would
+/// otherwise never park where a deadline is read.
+fn poured(c: Client, next: fn() -> Bytes?, deadline: int) -> Result<int, ClientError> {
+    mut total = 0
+    mut more = true
+    while more {
+        if now_ms() >= deadline { return .Err(.TimedOut(.Total)) }
+        match next() {
+            piece? -> {
+                carried(c.conn.wire_write(piece_on_wire(piece, .Chunked)))?
+                total = total + piece.length
+            }
+            null -> { more = false }
+        }
+    }
+    carried(c.conn.wire_write(body_end(.Chunked)))?
+    .Ok(total)
+}
+
+/// A whole body's octets.
+fn octets_of(body: Payload) -> Bytes {
+    match body {
+        .Empty or .Stream(_, _) -> empty_octets,
+        .Text(t) -> t.bytes(),
+        .Json(v) -> to_text(v).bytes(),
+        .Form(fields) -> form_encoded(fields).bytes(),
+        .Octets(b, _) -> b,
+    }
+}
+
+/// `application/x-www-form-urlencoded`: each name and value encoded as
+/// a query parameter, a space as `%20`, the pairs joined by `&`.
+fn form_encoded(fields: List<FormField>) -> string {
+    [form_pair(f) for f in fields].join("&")
+}
+
+fn form_pair(f: FormField) -> string {
+    let name = percent_encoded(f.name.bytes(), .Param).text() ?? ""
+    let value = percent_encoded(f.value.bytes(), .Param).text() ?? ""
+    "${name}=${value}"
+}
+
+/// The `content-type` a body names, unless the caller's headers name
+/// one already.
+fn kind_named(body: Payload, headers: List<Header>) -> List<Header> {
+    if headers.any(it.named("content-type")) { return [] }
+    let kind? = payload_type(body) else { return [] }
+    [Header { name: "content-type", value: kind }]
+}
+
+fn payload_type(body: Payload) -> string? {
+    match body {
+        .Empty -> null,
+        .Text(_) -> "text/plain; charset=utf-8",
+        .Json(_) -> "application/json",
+        .Form(_) -> "application/x-www-form-urlencoded",
+        .Octets(_, kind) or .Stream(_, kind) -> kind,
+    }
+}
+
+const empty_octets: Bytes = "".bytes()

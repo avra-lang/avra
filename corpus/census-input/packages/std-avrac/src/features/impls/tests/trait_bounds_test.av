@@ -1,0 +1,92 @@
+// A bound naming a generic trait at its arguments: the laws that hold it.
+use @std.avrac.testing.{shown, refused_with}
+
+/// A generic trait, two drawables, and a drawer for text alone.
+fn drawers() -> string {
+    "trait Realize<T> {\n    fn draw(t: T) -> string\n}\ntype Text = { content: string }\ntype Button = { label: string }\ntype Plain = { tag: string = \"\" }\nimpl Realize<Text> for Plain {\n    fn draw(t: Text) -> string { t.content }\n}\n"
+}
+
+spec "features/impls — bounds with trait arguments" {
+    given "a call" {
+        then "a type implementing the trait at the bound's arguments is accepted" {
+            shown(
+                drawers() +
+                    "fn f<R: Realize<Text>>(r: R) -> string { r.draw(Text { content: \"x\" }) }\nf(Plain {})",
+            ) == "x"
+        }
+        then "a type implementing it at other arguments refuses" {
+            refused_with(
+                drawers() + "fn f<R: Realize<Button>>(r: R) -> int { 1 }\nf(Plain {})",
+                "`Plain` does not implement `Realize<Button>`",
+            )
+        }
+        then "a bound's arguments are instantiated at the call" {
+            refused_with(
+                drawers() +
+                    "fn f<T, R: Realize<T>>(r: R, t: T) -> int { 1 }\nf(Plain {}, Button { label: \"b\" })",
+                "`Plain` does not implement `Realize<Button>`",
+            )
+        }
+        then "a parameter forwarded through its own bound is held to the callee's arguments" {
+            refused_with(
+                drawers() +
+                    "fn f<T, R: Realize<T>>(r: R, t: T) -> int { 1 }\nfn g<Q: Realize<Text>>(q: Q) -> int { f(q, Button { label: \"b\" }) }\n1",
+                "`Q` does not implement `Realize<Button>`",
+            )
+        }
+        then "a parameter forwarded at the callee's arguments is accepted" {
+            shown(
+                drawers() +
+                    "fn f<R: Realize<Text>>(r: R) -> string { r.draw(Text { content: \"m\" }) }\nfn g<Q: Realize<Text>>(q: Q) -> string { f(q) + f(q) }\ng(Plain {})",
+            ) == "mm"
+        }
+    }
+    given "the body" {
+        then "a member's seats are the bound's arguments" {
+            refused_with(
+                drawers() +
+                    "fn f<R: Realize<Text>>(r: R) -> string { r.draw(Button { label: \"b\" }) }\n1",
+                "argument 1 of `Realize.draw` wants `Text`, found `Button`",
+            )
+        }
+    }
+    given "the bound" {
+        then "a generic trait named without its arguments refuses" {
+            refused_with(
+                drawers() + "fn f<R: Realize>(r: R) -> int { 1 }\n1",
+                "`Realize` takes 1 type argument, and this bound gives 0",
+            )
+        }
+        then "a generic trait named at too many refuses" {
+            refused_with(
+                drawers() + "fn f<R: Realize<Text, Text>>(r: R) -> int { 1 }\n1",
+                "`Realize` takes 1 type argument, and this bound gives 2",
+            )
+        }
+        then "a trait that takes none named with arguments refuses" {
+            refused_with(
+                drawers() +
+                    "trait Show {\n    fn show() -> string\n}\nfn f<R: Show<int>>(r: R) -> int { 1 }\n1",
+                "`Show` takes 0 type arguments, and this bound gives 1",
+            )
+        }
+        then "a bound naming no trait refuses where it is written, though nothing calls it" {
+            refused_with(
+                drawers() + "fn f<R: Nope<int>>(r: R) -> int { 1 }\n1",
+                "a bound names a trait, and `Nope<int>` is not one",
+            )
+        }
+        then "a bound naming a type that is not a trait refuses once, at the bound" {
+            refused_with(
+                drawers() + "fn f<R: List<int>>(r: R) -> int { 1 }\nf(Plain {})",
+                "a bound names a trait, and `List<int>` is not one",
+            )
+        }
+        then "a bound that is not a trait's name refuses" {
+            refused_with(
+                drawers() + "fn f<R: Realize<Text>?>(r: R) -> int { 1 }\n1",
+                "a bound names a trait, and `Realize<Text>?` is not one",
+            )
+        }
+    }
+}

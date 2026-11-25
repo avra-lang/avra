@@ -1,0 +1,103 @@
+// Two DIFFERENT modules, each with their own unrelated @model type
+// that happens to share both a bare name AND a field shape with the
+// other — found while red-teaming, and dangerous precisely because it
+// produces no error at all without the claim registry: two unrelated
+// features silently sharing one physical table. See db.av's
+// claim_registry_sql/claim_select_sql/claim_insert_sql/declared_at_of.
+use tests.collide_a.{Shared as SharedA}
+use tests.collide_b.{Shared as SharedB}
+use tests.collide_c.{Shared as SharedC}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+fn same_type_recreate_is_fine() -> Result<int, ModelError> {
+    mut db = modeled(Db.memory())?
+    modeled(SharedA.create_table(db))?
+    modeled(SharedA.create_table(db))?
+    let a = SharedA { id: 0, email: "a@x.com" }.insert(db)?
+    a.id
+}
+
+fn colliding_types_refuse() -> string {
+    match colliding_create() { .Ok(_) -> "no refusal", .Err(e) -> e.cause.kind() }
+}
+
+fn colliding_create() -> Result<int, SqlError> {
+    mut db = Db.memory()?
+    SharedA.create_table(db)?
+    SharedB.create_table(db)?
+    0
+}
+
+fn colliding_types_never_silently_merge_data() -> Result<int, ModelError> {
+    mut db = modeled(Db.memory())?
+    modeled(SharedA.create_table(db))?
+    let _ = SharedA { id: 0, email: "a@x.com" }.insert(db)?
+    // SharedB's create_table refuses before touching the real table —
+    // this insert must never run, and the count below proves it didn't.
+    let attempted = colliding_second_insert(db)
+    let v = modeled(db.scalar(sql("select count(*) from Shared")))?
+    modeled(v.int())
+}
+
+fn colliding_second_insert(mut db: Db) -> Result<int, ModelError> {
+    modeled(SharedB.create_table(db))?
+    let b = SharedB { id: 0, email: "b@x.com" }.insert(db)?
+    b.id
+}
+
+fn independent_databases_never_collide() -> Result<string, ModelError> {
+    mut db1 = modeled(Db.memory())?
+    mut db2 = modeled(Db.memory())?
+    modeled(SharedA.create_table(db1))?
+    modeled(SharedB.create_table(db2))?
+    let a = SharedA { id: 0, email: "a@x.com" }.insert(db1)?
+    let b = SharedB { id: 0, email: "b@x.com" }.insert(db2)?
+    "${a.id}|${b.id}"
+}
+
+// SharedC's shape (id, nickname, age) OVERLAPS none of SharedA's (id,
+// email) — the claim registry must refuse on `declared_at` alone,
+// never on whether the shapes happen to agree, or a same-named model
+// with a genuinely different column set could reach its own `insert`
+// believing it owns a table another model already shaped.
+fn colliding_different_shape_refuses() -> string {
+    match colliding_different_shape_create() { .Ok(_) -> "no refusal", .Err(e) -> e.cause.kind() }
+}
+
+fn colliding_different_shape_create() -> Result<int, SqlError> {
+    mut db = Db.memory()?
+    SharedA.create_table(db)?
+    SharedC.create_table(db)?
+    0
+}
+
+fn table_keeps_first_claimants_columns() -> Result<int, ModelError> {
+    mut db = modeled(Db.memory())?
+    modeled(SharedA.create_table(db))?
+    let _ = SharedA { id: 0, email: "a@x.com" }.insert(db)?
+    let attempted = SharedC.create_table(db)
+    let v = modeled(db.scalar(sql("select count(*) from pragma_table_info('Shared')")))?
+    modeled(v.int())
+}
+
+spec "std/db @model table-name collisions" {
+    given "the same type's create_table called more than once" {
+        then "it stays a harmless no-op, never a false collision" { (same_type_recreate_is_fine() catch 0 - 1) == 1 }
+    }
+    given "two unrelated types in different modules sharing a bare name and shape" {
+
+        then "the second create_table refuses, loudly, naming the first claimant" { colliding_types_refuse() == "sqlite.defect" }
+        then "the table never ends up holding both types' rows" { (colliding_types_never_silently_merge_data() catch 0 - 1) == 1 }
+    }
+    given "two unrelated types sharing a bare name with GENUINELY DIFFERENT shapes" {
+
+        then "the second create_table still refuses, on declared_at alone" { colliding_different_shape_refuses() == "sqlite.defect" }
+        then "the real table keeps the first claimant's own columns, never the second's" { (table_keeps_first_claimants_columns() catch 0 - 1) == 3 }
+    }
+    given "the same colliding names in genuinely separate databases" {
+
+        then "no claim registry crosses a database boundary" { (independent_databases_never_collide() catch "?") == "1|1" }
+    }
+}

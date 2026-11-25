@@ -1,0 +1,172 @@
+//! What every spec file needs to ask of a program, in one place.
+//! Test files are separate compilation units, so each used to carry
+//! its own copy of these — 26 of them, byte-identical.
+use compiler.{analyze_source, parse_source, Program, Workspace, avra, new_workspace}
+use compiler.host.{memory_host}
+use @std.avrac.diagnostics.{Diag}
+use @std.avrac.core.{flatten}
+use @std.meta.{embed}
+use compiler.lower.{Lowered}
+use compiler.format.{render_source}
+
+/// A program's printed value, or "<refused>".
+export fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+/// The source projected through the printer's canonical form — "<parse
+/// refused>" when it does not parse. Two test files carried this
+/// byte-identical.
+export fn projected(source: string) -> string {
+    let p = parse_source(source)
+    if !p.voices.list.is_empty() { return "<parse refused>" }
+    render_source(p.store, p.stmts)
+}
+
+/// How many diagnostics one program earns. The COUNT is half of a
+/// refusal test: a cascade hides behind `contains` alone.
+export fn refusals(source: string) -> int {
+    analyze_source(source).diagnostics.length
+}
+
+/// A program refused EXACTLY ONCE, saying `phrase`. The count is not
+/// optional here — one mistake earns one message, so a refusal test
+/// that does not pin the count cannot catch a cascade. 131 sites
+/// spelled this by hand, and the ones that wrote `>= 1` instead were
+/// asserting almost nothing.
+export fn refused_with(source: string, phrase: string) -> bool {
+    let a = analyze_source(source)
+    a.diagnostics.length == 1 && a.report().contains(phrase)
+}
+
+/// A program that analyzes CLEAN and then refuses to RUN, saying
+/// `phrase` — the refusal is lowering's or the evaluator's, never
+/// analysis's. A diagnosed program refusing to run proves nothing
+/// about the run, so the clean premise is half the assertion.
+export fn refused_at_run(source: string, phrase: string) -> bool {
+    let a = analyze_source(source)
+    if !a.diagnostics.is_empty() { return false }
+    match a.run() { .Err(msg) -> msg.contains(phrase), .Ok(_) -> false }
+}
+
+/// EVERYTHING A PROGRAM SAID — its files' diagnostics, the
+/// workspace's voices and its defects. A suite over an in-memory
+/// package asks a `Program`, not a source, and three test modules had
+/// each spelled this walk and the two refusal verbs over it.
+export fn said(p: Program) -> List<Diag> {
+    flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+}
+
+/// `refused_with` for a program already built: the words, and the
+/// COUNT, so no cascade hides behind the phrase the case names.
+export fn refused_n(p: Program, phrase: string, n: int) -> bool {
+    said(p).length == n && p.report().contains(phrase)
+}
+
+/// One mistake, one message — the count a refusal test pins by
+/// default.
+export fn refused_in(p: Program, phrase: string) -> bool {
+    refused_n(p, phrase, 1)
+}
+
+/// The program as IR, memory strategy applied.
+export fn ir_of(source: string) -> Lowered {
+    analyze_source(source).lowered()
+}
+
+/// A present-maker and an absent-maker over `int?`.
+export const makers: string = "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
+
+/// The spec's headline example — `if let`'s standard subject.
+export const finder: string = "type User = { age: int }\n" +
+    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
+
+/// The scalar-nullable maker: half of an even, absence of an odd.
+export const halver: string = "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n"
+
+// ── `@std/meta`, vendored in memory ──────────────────────────────────
+// A suite that proves the ANNOTATION BOUNDARY needs `@std/meta` inside
+// its in-memory workspace, and five hand-written copies of it had
+// accumulated across three suites in two shapes — the thin one had
+// lost a `const` seat's mark and a `Directive`'s `source`, so the
+// boundary was being proved against a shadow of the contract. These
+// are the packages' OWN sources, read at compile time.
+
+const meta_real: string = embed("../../../std-meta/src/meta.av")
+
+const errors_real: string = embed("../../../std-errors/src/errors.av")
+
+/// The real `@std/meta` and the `@std/errors` it rests on, added to a
+/// memory host's files. The paths are `vendored_meta_paths()`.
+export fn vendored_meta(files: Map<string, string>) -> Map<string, string> {
+    vendored_meta_as(files, meta_real)
+}
+
+/// `vendored_meta` with the meta source REPLACED — for a fixture that
+/// attacks the crossing by shipping an `@std/meta` the compiler was
+/// not built against. Start from `real_meta_source()` and change the
+/// one thing under attack, so the rest of the package stays honest.
+export fn vendored_meta_as(files: Map<string, string>, meta: string) -> Map<string, string> {
+    mut out = files
+    out
+        .set(
+            "/w/vendor/meta/avra.toml",
+            "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/errors\" = { path = \"../errors\" }\n",
+        )
+    out.set("/w/vendor/meta/src/meta.av", meta)
+    out
+        .set("/w/vendor/errors/avra.toml", "[package]\nname = \"@std/errors\"\nversion = \"0.1.0\"\n")
+    out.set("/w/vendor/errors/src/errors.av", errors_real)
+    out
+}
+
+/// The `@std/meta` a fixture starts from.
+export fn real_meta_source() -> string {
+    meta_real
+}
+
+/// What `vendored_meta` adds, for the host's path list.
+export fn vendored_meta_paths() -> List<string> {
+    [
+        "/w/vendor/meta/avra.toml",
+        "/w/vendor/meta/src/meta.av",
+        "/w/vendor/errors/avra.toml",
+        "/w/vendor/errors/src/errors.av",
+    ]
+}
+
+/// A program at `/w` with `@std/meta` and a provider package `@x/c`
+/// whose one file is `provider`, which sees `Code` — the shape every
+/// component test compiles. Each of `modules` is one more module of
+/// the program's own, a file under `src/<name>/`.
+export fn provided(main: string, provider: string, modules: List<Module> = []) -> Program {
+    provided_workspace(main, provider, modules).program("/w/src/main.av")
+}
+
+/// `provided`'s workspace, before a program is asked of it.
+export fn provided_workspace(main: string, provider: string, modules: List<Module> = []) -> Workspace {
+    mut files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
+            "/w/src/main.av": main,
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + provider,
+        },
+    )
+    for m in modules { files.set(m.path(), m.text) }
+    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"]
+        .concat([m.path() for m in modules])
+    new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+}
+
+/// One module of a test program: its name and its one file's text.
+export type Module = { name: string, text: string }
+
+impl Module {
+    fn path() -> string { "/w/src/${self.name}/${self.name}.av" }
+}
+
+/// What a program answers when run, or the words it stopped with.
+export fn answered(p: Program) -> string {
+    match p.run() { .Ok(v) -> v, .Err(why) -> why }
+}

@@ -1,0 +1,435 @@
+//! @std.cli — a command line is DATA the program declares, and a
+//! verdict it answers.
+//!
+//! A `cli` names its commands. Each `command` holds its name, flags,
+//! options and positionals — data read directly — and `run`, a
+//! `Runnable`: one method, given what the line said as a
+//! `CliResult`, answering the exit code. All five are components, so
+//! an app is written as the tree it is:
+//!
+//!     cli avra {
+//!         command fmt {
+//!             flag write { description: "rewrite the file" }
+//!             arg file { required: true }
+//!             run: Fmt {}
+//!         }
+//!     }
+//!
+//! `parse` reads a word list against the app and answers a
+//! `CliResult` or a `CliError` that names the mistake; `cli.run`
+//! renders help, speaks a refusal with the way to the help, and
+//! answers 0 clean, the command's code, or 2 for a line it could
+//! not read. A flag or option is declared as it is typed
+//! (`--time`, `-t`); it is asked for by its plain name (`time`).
+use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{pad_right}
+
+extern fn avra_selfhost_argc() -> int
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
+
+// ── The declarations ────────────────────────────────────────────
+
+/// A switch: present or not. `aliases` are whole tokens that mean
+/// the same (`--used-by` for `callers`, `--message-format=json`).
+export component flag {
+    name: string
+    short: string = ""
+    description: string = ""
+    aliases: List<string> = []
+}
+
+/// A named value: `--name v`, `--name=v` or `-s v`; `default` stands
+/// when the line omits it.
+export component option {
+    name: string
+    short: string = ""
+    description: string = ""
+    default: string = ""
+}
+
+/// A positional. A variadic one absorbs every remaining positional;
+/// declare it last.
+export component arg {
+    name: string
+    description: string = ""
+    required: bool = false
+    variadic: bool = false
+}
+
+/// One command: its identity and what it takes — the DATA — and `run`,
+/// its BEHAVIOUR. A hidden command dispatches and has its own help,
+/// but stays out of the app's list.
+export component command {
+    name: string
+    description: string = ""
+    hidden: bool = false
+    flags: List<flag> = []
+    options: List<option> = []
+    args: List<arg> = []
+    run: dyn Runnable
+}
+
+/// The BEHAVIOUR half: run with what the line said, answer the exit.
+export trait Runnable {
+    fn run(args: CliResult) -> int
+}
+
+/// An app: its name, what it is, its version, and its commands.
+export component cli {
+    name: string
+    description: string = ""
+    version: string = "0.0.1"
+    commands: List<command> = []
+}
+
+// ── What the line said ──────────────────────────────────────────
+
+/// A parsed line, by the declaration's plain names: the flags present, every
+/// option (defaults filled), the positionals, and a variadic's rest.
+export type CliResult = {
+    command: string,
+    flags: List<string>,
+    options: Map<string, string>,
+    args: Map<string, string>,
+    rest: List<string>,
+}
+
+impl CliResult {
+    fn has_flag(name: string) -> bool {
+        self.flags.contains(plain(name))
+    }
+
+    /// The option's value — its default when the line omitted it, ""
+    /// for a name the command never declared.
+    fn option(name: string) -> string {
+        self.options.get(plain(name)) ?? ""
+    }
+
+    /// The positional's value, "" when absent.
+    fn arg(name: string) -> string {
+        self.args.get(name) ?? ""
+    }
+
+    /// A variadic positional's values, in order.
+    fn args_of(name: string) -> List<string> {
+        if self.args.get(name) == null { return [] }
+        self.rest
+    }
+}
+
+/// A name as it is asked for: the dashes dropped.
+fn plain(name: string) -> string {
+    if name.starts_with("--") { return name.substring(2, name.length) }
+    if name.starts_with("-") { return name.substring(1, name.length) }
+    name
+}
+
+/// A name as it is typed: dashes restored — two for a word, one for
+/// a letter.
+fn spelled(name: string) -> string {
+    if name.starts_with("-") { return name }
+    if name.length == 1 { return "-${name}" }
+    "--${name}"
+}
+
+// ── Refusals ────────────────────────────────────────────────────
+
+/// Why a line could not be read: which command, which word.
+export enum CliError {
+    UnknownCommand(name: string)
+    UnknownFlag(command: string, token: string)
+    MissingValue(command: string, option: string)
+    MissingArg(command: string, arg: string)
+    ExtraArg(command: string, token: string)
+}
+
+impl Error for CliError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .UnknownCommand(n) -> info("cli.unknown_command", unknown_command_text(n)),
+            .UnknownFlag(c, t) -> info("cli.unknown_flag", "`${c}` takes no `${t}`"),
+            .MissingValue(c, o) -> info("cli.missing_value", "`${c}`'s `${spelled(o)}` needs a value"),
+            .MissingArg(c, a) -> info("cli.missing_arg", "`${c}` needs its `${a}`"),
+            .ExtraArg(c, t) -> info("cli.extra_arg", "`${c}` does not take `${t}`"),
+        }
+    }
+}
+
+/// An unknown command's words — a line with no command at all says so.
+fn unknown_command_text(name: string) -> string {
+    if name.length == 0 { return "no command given" }
+    "unknown command: ${name}"
+}
+
+/// The command a refusal belongs to — the app itself for an unknown
+/// command name.
+fn blamed(e: CliError) -> string? {
+    match e {
+        .UnknownCommand(_) -> null,
+        .UnknownFlag(c, _) or .MissingValue(c, _) or .MissingArg(c, _) or .ExtraArg(c, _) -> c,
+    }
+}
+
+// ── Parsing ─────────────────────────────────────────────────────
+
+/// A word list read against the app: the command is the first word,
+/// the rest are its flags, options and positionals.
+export fn parse(app: cli, words: List<string>) -> Result<CliResult, CliError> {
+    let name = words.first() ?? ""
+    let sub? = app.commands.find(it.name == name) else { fail CliError.UnknownCommand(name) }
+    read_line(sub, words.slice(1, words.length))
+}
+
+/// One token's meaning against a declaration.
+enum Token {
+    Flag(name: string)
+    Option(name: string, inline: string?)
+    Word(text: string)
+    Unknown(text: string)
+}
+
+/// The words after the command name, read in order: options stop at
+/// `--`, everything else is a positional bound by declaration order.
+fn read_line(meta: command, words: List<string>) -> Result<CliResult, CliError> {
+    mut flags: List<string> = []
+    mut options: Map<string, string> = {}
+    mut positional: List<string> = []
+    mut options_over = false
+    mut i = 0
+    while i < words.length {
+        let w = words[i]
+        if !options_over && w == "--" {
+            options_over = true
+        } else {
+            match classified(meta, w, options_over) {
+                .Flag(name) -> flags.push(name),
+                .Word(text) -> positional.push(text),
+                .Unknown(text) -> { fail CliError.UnknownFlag(meta.name, text) },
+                .Option(name, inline) -> {
+                    if inline == null {
+                        if i + 1 >= words.length { fail CliError.MissingValue(meta.name, name) }
+                        i = i + 1
+                        options.set(name, words[i])
+                    } else {
+                        options.set(name, inline!)
+                    }
+                },
+            }
+        }
+        i = i + 1
+    }
+    for o in meta.options {
+        if options.get(plain(o.name)) == null { options.set(plain(o.name), o.default) }
+    }
+    let bound = bind_positionals(meta, positional)?
+    CliResult {
+        command: meta.name,
+        flags: flags,
+        options: options,
+        args: bound.named,
+        rest: bound.rest,
+    }
+}
+
+/// A word's kind: a declared flag by name, short or alias; a declared
+/// option by name or short, its value inline after `=` or in the next
+/// word; a dash-led word nothing declares; or a plain word. After
+/// `--`, every word is plain.
+fn classified(meta: command, w: string, options_over: bool) -> Token {
+    if options_over || !w.starts_with("-") || w == "-" { return Token.Word(w) }
+    let switch: flag? = meta.flags.find(names_flag(it, w))
+    if switch != null { return Token.Flag(plain(switch!.name)) }
+    let eq = w.index_of("=")
+    let head = if eq < 0 { w } else { w.substring(0, eq) }
+    let option? = meta.options.find(names_option(it, head)) else { return Token.Unknown(w) }
+    if eq < 0 { return Token.Option(plain(option.name), null) }
+    Token.Option(plain(option.name), w.substring(eq + 1, w.length))
+}
+
+fn names_flag(f: flag, w: string) -> bool {
+    spelled(f.name) == w || f.short.length > 0 && spelled(f.short) == w || f.aliases.contains(w)
+}
+
+fn names_option(o: option, w: string) -> bool {
+    spelled(o.name) == w || o.short.length > 0 && spelled(o.short) == w
+}
+
+/// The positionals bound to their declarations, and a variadic's rest.
+type Bound = { named: Map<string, string>, rest: List<string> }
+
+/// Positionals by declaration order: a variadic takes the rest (at
+/// least one when required); a required one missing, or a word past
+/// the last declaration, refuses.
+fn bind_positionals(meta: command, positional: List<string>) -> Result<Bound, CliError> {
+    mut named: Map<string, string> = {}
+    mut rest: List<string> = []
+    for j, a in meta.args {
+        if a.variadic {
+            rest = positional.slice(j, positional.length)
+            if rest.is_empty() && a.required { fail CliError.MissingArg(meta.name, a.name) }
+            if !rest.is_empty() { named.set(a.name, rest[0]) }
+        } else if j < positional.length {
+            named.set(a.name, positional[j])
+        } else if a.required {
+            fail CliError.MissingArg(meta.name, a.name)
+        }
+    }
+    if !meta.args.any(it.variadic) && positional.length > meta.args.length {
+        fail CliError.ExtraArg(meta.name, positional[meta.args.length])
+    }
+    Bound { named: named, rest: rest }
+}
+
+// ── Help ────────────────────────────────────────────────────────
+
+/// The app's help: name, version, description, usage, and every
+/// command that is not hidden, aligned.
+export fn app_help(app: cli) -> string {
+    let shown = [c for c in app.commands if !c.hidden]
+    let width = widest([s.name for s in shown])
+    let rows = [rendered_row(s.name, s.description, width) for s in shown]
+    "${app.name} ${app.version} — ${app.description}\n\nusage: ${app.name} <command> [flags] [args]\n\ncommands:\n${rows.join("\n")}\n\n`${app.name} <command> --help` says what a command takes."
+}
+
+/// One command's help: its usage line, its description, and each
+/// flag, option and positional with its words.
+export fn command_help(app: cli, meta: command) -> string {
+    let parts = [usage_of(app, meta), "", meta.description]
+        .concat(flags_help(meta))
+        .concat(options_help(meta))
+        .concat(args_help(meta))
+    parts.join("\n")
+}
+
+fn usage_of(app: cli, meta: command) -> string {
+    let flags = [" [${spelled(f.name)}]" for f in meta.flags].join("")
+    let options = [" [${spelled(o.name)} <value>]" for o in meta.options].join("")
+    let args = [" ${arg_word(a)}" for a in meta.args].join("")
+    "usage: ${app.name} ${meta.name}${flags}${options}${args}"
+}
+
+/// A positional in a usage line: `<file>` required, `[file]` not,
+/// `<files...>` variadic.
+fn arg_word(a: arg) -> string {
+    let dots = if a.variadic { "..." } else { "" }
+    if a.required { return "<${a.name}${dots}>" }
+    "[${a.name}${dots}]"
+}
+
+fn flags_help(meta: command) -> List<string> {
+    section("flags:", [flag_spelling(f) for f in meta.flags], [f.description for f in meta.flags])
+}
+
+fn flag_spelling(f: flag) -> string {
+    if f.short.length == 0 { return spelled(f.name) }
+    "${spelled(f.short)}, ${spelled(f.name)}"
+}
+
+fn options_help(meta: command) -> List<string> {
+    section(
+        "options:",
+        [option_spelling(o) for o in meta.options],
+        [option_words(o) for o in meta.options],
+    )
+}
+
+fn option_spelling(o: option) -> string {
+    let name = "${spelled(o.name)} <value>"
+    if o.short.length == 0 { return name }
+    "${spelled(o.short)}, ${name}"
+}
+
+fn option_words(o: option) -> string {
+    if o.default.length == 0 { return o.description }
+    "${o.description} (default: ${o.default})"
+}
+
+fn args_help(meta: command) -> List<string> {
+    section("args:", [a.name for a in meta.args], [a.description for a in meta.args])
+}
+
+/// A help section: a blank line, the title, then every name aligned
+/// against its words — nothing at all when there are no names.
+fn section(title: string, names: List<string>, words: List<string>) -> List<string> {
+    if names.is_empty() { return [] }
+    let width = widest(names)
+    ["", title].concat([rendered_row(n, words[j], width) for j, n in names])
+}
+
+/// One aligned row: two spaces, the name padded to the column, two
+/// spaces, the words.
+fn rendered_row(name: string, words: string, width: int) -> string {
+    "  ${pad_right(name, width)}  ${words}"
+}
+
+fn widest(names: List<string>) -> int {
+    mut w = 0
+    for n in names {
+        if n.length > w { w = n.length }
+    }
+    w
+}
+
+// ── Running ─────────────────────────────────────────────────────
+
+impl cli {
+    /// The program's own arguments, read and run.
+    fn run() -> int {
+        self.run_argv(argv())
+    }
+
+    /// A word list run: help and version answer here; a line the app
+    /// cannot read is spoken with the way to its help and answers 2;
+    /// otherwise the command's verdict.
+    fn run_argv(words: List<string>) -> int {
+        let first = words.first() ?? ""
+        if first == "" {
+            println(app_help(self))
+            return 2
+        }
+        if first == "--help" || first == "-h" || first == "help" {
+            return self.helped(words.slice(1, words.length).first())
+        }
+        if first == "--version" || first == "-V" {
+            println("${self.name} ${self.version}")
+            return 0
+        }
+        if words.contains("--help") || words.contains("-h") { return self.helped(first) }
+        match parse(self, words) { .Ok(r) -> self.ran(r), .Err(e) -> self.refused(e) }
+    }
+
+    /// The help for a command by name — the app's own when none, or
+    /// the refusal when the name is no command.
+    fn helped(name: string?) -> int {
+        if name == null {
+            println(app_help(self))
+            return 0
+        }
+        let sub? = self.commands.find(it.name == name!) else { return self.refused(CliError.UnknownCommand(name!)) }
+        println(command_help(self, sub))
+        0
+    }
+
+    fn ran(r: CliResult) -> int {
+        let sub? = self.commands.find(it.name == r.command) else { return self.refused(CliError.UnknownCommand(r.command)) }
+        sub.run.run(r)
+    }
+
+    /// A refusal spoken: the message, then the help that would have
+    /// prevented it. Answers 2 — usage.
+    fn refused(e: CliError) -> int {
+        eprintln("${self.name}: ${e.describe().message}")
+        eprintln(try_help(self.name, blamed(e)))
+        2
+    }
+}
+
+fn try_help(app: string, command: string?) -> string {
+    if command == null { return "try `${app} --help`" }
+    "try `${app} ${command!} --help`"
+}
+
+/// The program's arguments after its own name.
+export fn argv() -> List<string> {
+    [avra_selfhost_get_arg_cstr(i) for i in 1..avra_selfhost_argc()]
+}

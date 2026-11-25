@@ -1,0 +1,85 @@
+//! A READ OF A DECLARATION'S FACTS THAT SKIPPED THE KERNEL. Each variant is one raw
+//! table read `Decls` answers without an `ask` — no dependency is recorded, so
+//! nothing a query read this way is visible to its witness. `AVRA_DEP_AUDIT` hears
+//! them, judges each against what the outermost open query reached, and reports the
+//! ones nothing covered.
+use core.{DeclId, FileId}
+
+export enum Bypassed {
+    /// A declaration's own row.
+    Decl(d: DeclId)
+    /// A signature as the table stands, hook-free.
+    SigSoFar(d: DeclId)
+    /// A file's node store.
+    Store(f: FileId)
+    /// A declaration's parse facts.
+    Facts(d: DeclId)
+    /// A type's registered methods as they stand, hook-free.
+    Methods(d: DeclId)
+    /// Whether a pass found a seat written, as it stands.
+    Written(d: DeclId)
+    /// A `_`-declared fn's error set as the fixpoint found it so far.
+    Errors(d: DeclId)
+}
+
+/// The verb a read is reported under.
+export fn bypass_word(r: Bypassed) -> string {
+    match r {
+        .Decl(_) -> "decl",
+        .SigSoFar(_) -> "sig_so_far",
+        .Store(_) -> "store_of",
+        .Facts(_) -> "facts_of",
+        .Methods(_) -> "methods_of",
+        .Written(_) -> "written_so_far",
+        .Errors(_) -> "inferred_errors_so_far",
+    }
+}
+
+/// Whether this compiler carries the audit. A constant, so a compiler built with it false
+/// has no audit code at all — every audited accessor folds to its bare table read — and
+/// `tools/dep_audit.sh` builds the audit compiler with it true.
+export const audit_build: bool = false
+
+/// How many verbs a reader tells apart: `bypass_ordinal`'s range.
+export const bypass_verbs: int = 7
+
+/// A read as two dense numbers — its verb and its subject — for a kernel that only
+/// counts. `bypassed_at` is the inverse; both spell every variant.
+export fn bypass_ordinal(r: Bypassed) -> int {
+    match r {
+        .Decl(_) -> 0,
+        .SigSoFar(_) -> 1,
+        .Store(_) -> 2,
+        .Facts(_) -> 3,
+        .Methods(_) -> 4,
+        .Written(_) -> 5,
+        .Errors(_) -> 6,
+    }
+}
+
+export fn bypass_subject(r: Bypassed) -> int {
+    match r {
+        .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> d.index,
+        .Store(f) -> f.index,
+    }
+}
+
+export fn bypassed_at(verb: int, subject: int) -> Bypassed {
+    match verb {
+        0 -> Bypassed.Decl(DeclId { index: subject }),
+        1 -> Bypassed.SigSoFar(DeclId { index: subject }),
+        2 -> Bypassed.Store(FileId { index: subject }),
+        3 -> Bypassed.Facts(DeclId { index: subject }),
+        4 -> Bypassed.Methods(DeclId { index: subject }),
+        5 -> Bypassed.Written(DeclId { index: subject }),
+        6 -> Bypassed.Errors(DeclId { index: subject }),
+        other -> {
+            avra_trap(
+                "defect: no read numbered ${other} — bypass_ordinal and bypassed_at must list the same set",
+            )
+            Bypassed.Decl(DeclId { index: 0 })
+        },
+    }
+}
+
+extern fn avra_trap(message: string)

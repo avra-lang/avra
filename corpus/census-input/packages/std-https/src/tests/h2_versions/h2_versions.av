@@ -1,0 +1,211 @@
+//! proves: ONE HANDLER, THREE WIRES, ONE ANSWER. The same questions are
+//! asked over HTTP/2 in the clear (h2c, by prior knowledge), over TLS
+//! with `h2` agreed by ALPN, and over TLS with `http/1.1` agreed — and
+//! every answer, status, content type and body, is the same, a streamed
+//! one included. An `https` scheme over the clear port and an `http`
+//! one over TLS are both misdirected, whichever version carried them.
+use @std.net.{NetError, listen, connect}
+use @std.time.{secs, within}
+use @std.http.frame.{Method, limits, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, Header, text, status, stream_of}
+use @std.http.server.{served, timing}
+use @std.http.client.{Client, ClientError, request, netted}
+use @std.http.h2.{
+    Frame,
+    preface,
+    frame_bytes,
+    frame_at,
+    end_stream,
+    end_headers,
+    value_named,
+    frames_in,
+}
+use @std.http.hpack.{HeaderField, HpackDecoder, header_field, encoder, decoder}
+use @std.https.{over_tls, secured, tls_carried}
+use @std.tls.{TlsConn, dial}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type App = {}
+
+/// The one handler every wire reaches.
+fn answer(q: Request<Unrouted>) -> Response {
+    let path = q.path()?.text() ?? ""
+    if path.starts_with("/hello/") { return text(200, "hello ${path.substring(7, path.length)}") }
+    if path == "/echo" { return text(201, "got ${q.body.text() ?? "?"}") }
+    if path == "/who" { return text(200, "${q.header("x-who") ?? "nobody"} at ${q.header("host") ?? "?"}") }
+    if path == "/stream" {
+        return Response {
+            status: 200,
+            stream: stream_of(["one ".bytes(), "two ".bytes(), "three".bytes()]),
+        }
+    }
+    status(404)
+}
+
+/// One question: its method, path, extra fields and body.
+type Ask = { method: string, path: string, fields: List<HeaderField>, body: string }
+
+const asks: List<Ask> = [
+    Ask { method: "GET", path: "/hello/world", fields: [], body: "" },
+    Ask { method: "POST", path: "/echo", fields: [], body: "a body" },
+    Ask { method: "GET", path: "/who", fields: [header_field("x-who", "ana")], body: "" },
+    Ask { method: "GET", path: "/stream", fields: [], body: "" },
+    Ask { method: "HEAD", path: "/hello/head", fields: [], body: "" },
+    Ask { method: "GET", path: "/nope", fields: [], body: "" },
+]
+
+// ── HTTP/2, over any wire ───────────────────────────────────────
+
+/// A connection's two verbs, as a client uses them.
+type Wire = { read: fn() -> Bytes?, write: fn(Bytes) -> bool }
+
+/// Every question at once on streams 1, 3, 5 … of ONE connection, each
+/// answer as `status | content type | body`, in the questions' order.
+fn h2_answers(w: Wire, scheme: string) -> List<string> {
+    let opening = preface
+        .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+        .concat([h2_asked(2 * i + 1, a, scheme) for i, a in asks].bytes())
+    if !w.write(opening) { return ["write failed"] }
+    let frames = h2_frames(w)
+    mut d = decoder(4096, 65536)
+    mut heads: List<List<HeaderField>> = [[] for a in asks]
+    for f in frames { if f.kind is .Headers { heads[(f.stream - 1) / 2] = decoded_list(d, f.payload) } }
+    [h2_line(heads[i], frames, 2 * i + 1) for i, a in asks]
+}
+
+fn decoded_list(mut d: HpackDecoder, block: Bytes) -> List<HeaderField> {
+    match d.decoded(block) { .Fields(fs) -> fs, .TooLarge or .Refused(_) -> [] }
+}
+
+fn h2_asked(id: int, a: Ask, scheme: string) -> Bytes {
+    mut e = encoder(true)
+    let head = [
+        header_field(":method", a.method),
+        header_field(":scheme", scheme),
+        header_field(":path", a.path),
+        header_field(":authority", "localhost"),
+    ]
+        .concat(a.fields)
+    if a.body.is_empty() { return frame_bytes(.Headers, end_headers | end_stream, id, e.encoded(head)) }
+    frame_bytes(
+        .Headers,
+        end_headers,
+        id,
+        e.encoded(head.concat([header_field("content-length", "${a.body.length}")])),
+    )
+        .concat(frame_bytes(.Data, end_stream, id, a.body.bytes()))
+}
+
+/// Frames read until every stream has ended or the peer goes quiet.
+fn h2_frames(w: Wire) -> List<Frame> {
+    mut buf = no_bytes
+    mut open = true
+    while open && ended_streams(frames_in(buf)) < asks.length {
+        let got = w.read()
+        open = got != null
+        buf = buf.concat(got ?? no_bytes)
+    }
+    frames_in(buf)
+}
+
+fn ended_streams(fs: List<Frame>) -> int { fs.filter(it.stream > 0 && it.flags & end_stream != 0).length }
+
+fn h2_line(fs: List<HeaderField>, frames: List<Frame>, id: int) -> string {
+    let body = [f.payload for f in frames if f.stream == id && f.kind is .Data].bytes()
+    let st = value_named(fs, ":status".bytes())?.text() ?? "?"
+    let kind = value_named(fs, "content-type".bytes())?.text() ?? "-"
+    "${st} | ${kind} | ${body.text() ?? "?"}"
+}
+
+/// A plain connection as a wire.
+fn plain_wire(port: int) -> Result<Wire, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    .Ok(
+        Wire {
+            read: () -> match within secs(2) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null },
+            write: (b: Bytes) -> c.write(b) is .Ok,
+        },
+    )
+}
+
+/// A TLS connection as a wire.
+fn tls_wire(t: TlsConn) -> Wire {
+    Wire {
+        read: () -> match within secs(2) { t.read(65536) } { .Ok(b) -> b, .Err(_) -> null },
+        write: (b: Bytes) -> t.write(b) is .Ok,
+    }
+}
+
+// ── HTTP/1.1 over TLS ───────────────────────────────────────────
+
+fn h1_line(mut c: Client, a: Ask) -> Result<string, ClientError> {
+    let method = match a.method { "POST" -> Method.Post, "HEAD" -> Method.Head, _ -> Method.Get }
+    let headers = [Header { name: f.name.text() ?? "", value: f.value.text() ?? "" } for f in a.fields]
+    let r = c
+        .fetched(method, request(a.method, a.path, "localhost", headers, a.body.bytes())!, secs(5))?
+    .Ok("${r.status} | ${r.header("content-type") ?? "-"} | ${r.body.text() ?? "?"}")
+}
+
+fn shown() -> Result<string, ClientError> {
+    let clear = netted(listen("127.0.0.1", 0))?
+    let s = served(clear, () -> App {}, limits(), timing()) { _app, q -> answer(q) }
+    spawn s.run(1)
+    defer s.stop()
+    let sc = tls_carried((tls_carried(serving_localhost())?).offering(["h2", "http/1.1"]))?
+    let secure = netted(listen("127.0.0.1", 0))?
+    let t = served(secure, () -> App {}, limits(), timing()) { _app, q -> answer(q) }
+        .secured(over_tls(sc))
+    spawn t.run(1)
+    defer t.stop()
+    let h2c = h2_answers(netted(plain_wire(clear.port))?, "http")
+    let h2_config = tls_carried((tls_carried(trusting_localhost())?).offering(["h2"]))?
+    let tc = tls_carried(dial("localhost", secure.port, secs(5), h2_config))?
+    let agreed = tc.protocol() ?? "<none>"
+    let h2s = h2_answers(tls_wire(tc), "https")
+    let h1_config = tls_carried((tls_carried(trusting_localhost())?).offering(["http/1.1"]))?
+    mut c = secured("localhost", secure.port, secs(5), limits(), h1_config)?
+    let h1s = [h1_line(c, a)? for a in asks]
+    let rows = ["${a.method} ${a.path}: ${h2c[i]}${if h2c[i] == h2s[i] && h2c[i] == h1s[i] { "" } else { "  DIFFERS: ${h2s[i]} / ${h1s[i]}" }}" for i, a in asks]
+    let crossed = [
+        h2_answers(netted(plain_wire(clear.port))?, "https")[0],
+        h2_answers(
+            tls_wire(tls_carried(dial("localhost", secure.port, secs(5), h2_config))?),
+            "http",
+        )[0],
+    ]
+    let unagreed = [
+        prefaced(tls_carried(dial("localhost", secure.port, secs(5), h1_config))?),
+        prefaced(
+            tls_carried(dial("localhost", secure.port, secs(5), tls_carried(trusting_localhost())?))?,
+        ),
+    ]
+    .Ok(
+        rows
+            .concat(
+                [
+                    "h2 agreed over TLS: ${agreed}",
+                    "https over the clear port: ${crossed[0]}",
+                    "http over TLS: ${crossed[1]}",
+                    "a preface over TLS that agreed http/1.1: ${unagreed[0]}",
+                    "a preface over TLS that agreed nothing: ${unagreed[1]}",
+                ],
+            )
+            .join("\n"),
+    )
+}
+
+/// What a TLS link that did not agree `h2` answers a client that speaks
+/// HTTP/2 anyway: the first line of its reply, or `h2` when it answered
+/// with frames.
+fn prefaced(t: TlsConn) -> string {
+    let w = tls_wire(t)
+    let hello = preface
+        .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+        .concat(h2_asked(1, asks[0], "https"))
+    if !w.write(hello) { return "write failed" }
+    let got = w.read() ?? no_bytes
+    if got.length >= 9 && frames_in(got).any(it.kind is .Settings) { return "h2" }
+    (got.text() ?? "?").split("\r\n").first() ?? "?"
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

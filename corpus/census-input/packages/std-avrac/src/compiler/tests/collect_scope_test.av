@@ -1,0 +1,65 @@
+// THE DECLARATIONS RELATION, proved end to end: `collect` gathers by
+// a BARE COMPONENT WORD (never `instance of`), and each scope reaches
+// exactly what it promises — `self` the collect's own file alone,
+// `package` a sibling file it never imports too. In-memory paths
+// under `/w`, never `/tests/`, so the exclusion that keeps a
+// stand-alone fixture out of a real package's own admission does not
+// also swallow the file under test — `avra.toml`'s own `docs/2026_09_22_COLLECTIONS.md`.
+use @std.avrac.compiler.{avra, new_workspace, Program}
+use compiler.host.{memory_host}
+
+const manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/widgets\" = { path = \"vendor/widgets\" }\n"
+const widgets_manifest: string = "[package]\nname = \"@x/widgets\"\nversion = \"0.1.0\"\n"
+const widget: string = "export component Widget {\n    label: string\n}\n"
+const uses_widget: string = "use @x.widgets.{Widget}\n"
+const own_instances: string = "export Widget one { label: \"a\" }\nexport Widget two { label: \"b\" }\n"
+const sibling_instance: string = "export Widget three { label: \"c\" }\n"
+
+fn entry_says(collect_line: string, other: string?) -> string? {
+    mut files: Map<string, string> = {
+        "/w/avra.toml": manifest,
+        "/w/vendor/widgets/avra.toml": widgets_manifest,
+        "/w/vendor/widgets/src/widget.av": widget,
+        "/w/src/main.av": "${uses_widget}${own_instances}${collect_line}",
+    }
+    let roots = if other == null {
+        [
+            "/w/avra.toml",
+            "/w/vendor/widgets/avra.toml",
+            "/w/vendor/widgets/src/widget.av",
+            "/w/src/main.av",
+        ]
+    } else {
+        files.set("/w/src/other.av", "${uses_widget}${other!}")
+        [
+            "/w/avra.toml",
+            "/w/vendor/widgets/avra.toml",
+            "/w/vendor/widgets/src/widget.av",
+            "/w/src/main.av",
+            "/w/src/other.av",
+        ]
+    }
+    let ws = new_workspace(memory_host(files, roots), "/w", avra())
+    let p: Program = ws.program("/w/src/main.av")
+    p.entry_file()?.ran()
+}
+
+fn collect_line(scope: string) -> string {
+    "type Entry = { name: string }\ncollect ws: List<Entry> = Widget in ${scope} as Entry { name: it.name } by it.name\n\"\${ws.length} \${[e.name for e in ws].join(\" \")}\"\n"
+}
+
+spec "compiler/collect scope" {
+    given "`in self` — the collect's own file alone" {
+        then "both of ITS OWN named instances are gathered, a sibling's is not" {
+            entry_says(collect_line("self"), sibling_instance) == "2 one two"
+        }
+    }
+    given "`in package` — every file the owning package holds" {
+        then "a sibling file's instance joins, never `use`-reached" {
+            entry_says(collect_line("package"), sibling_instance) == "3 one three two"
+        }
+        then "with no sibling file, the collect's own instances still answer" {
+            entry_says(collect_line("package"), null) == "2 one two"
+        }
+    }
+}

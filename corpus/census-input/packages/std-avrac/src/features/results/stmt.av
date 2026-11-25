@@ -1,0 +1,91 @@
+//! `fail`'s semantics: the enclosing fn answers its FAILURE channel
+//! right here. Typing demands a Result-promising fn and a value the
+//! err side accepts; lowering wraps the value as the built-in
+//! enum's `.Err` and exits — `FnExit` settles every open scope's
+//! debts at the site, exactly as `return` does.
+use core.{StmtId, TypeId, Reg, Ins, ResSides}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, this_is}
+use diagnostics.{refusal}
+
+export type FailSemantics = {}
+
+impl StmtSemantics for FailSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        cx.walk_value(s)
+        check_fail(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        lower_fail(cx, s)
+    }
+}
+
+/// `fail v` — legal only inside a fn promising a `Result`, with `v`
+/// ACCEPTED by the err side (widening recorded, like every slot).
+fn check_fail(mut cx: TypeCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return }
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        cx
+            .emit(
+                refusal(
+                    "type.fail",
+                    cx.stmt_loc(s),
+                    "a `fail` raises to a caller, and there is none enclosing",
+                    "raised here",
+                    "at the top level there is no failure channel",
+                ),
+            )
+        return
+    }
+    let promised = ret!
+    if cx.errored_ty(promised) { return }
+    let sides: ResSides? = cx.view.types.res_parts(promised)
+    if sides == null {
+        let promise = cx.view.types.name_of(promised)
+        cx
+            .emit(
+                refusal(
+                    "type.fail",
+                    cx.stmt_loc(s),
+                    "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`",
+                    "raised here",
+                    "declare the answer fallible — `-> Result<${promise}, E>`",
+                ),
+            )
+        return
+    }
+    if cx.errored(v) { return }
+    if cx.accepts(v, sides!.err) { return }
+    let gn = cx.name_at(v)
+    cx
+        .emit(
+            refusal(
+                "type.fail",
+                cx.stmt_loc(s),
+                "`fail` raises a `${cx.view.types.name_of(sides!.err)}`, this is `${gn}`",
+                this_is(gn),
+                null,
+            ),
+        )
+}
+
+/// The failure wrapped and exited — the open frames' `defer`s and
+/// `errdefer`s run first; the memory pass settles every open scope
+/// at the site; other paths continue.
+fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let v? = cx.lower_value(s) else { return null }
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        cx.defect("a `fail` without an enclosing fn survived typing")
+        return null
+    }
+    let raised = cx.failed(ret!, v)
+    cx.failing()
+    cx.emit(Ins.FnExit(raised))
+    null
+}

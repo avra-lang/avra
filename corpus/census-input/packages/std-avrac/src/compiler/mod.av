@@ -1,0 +1,300 @@
+//! THE COMPILER — the driver above the language's features: features assembled
+//! into one grammar, a program derived over what the store can stand in for,
+//! and every command a projection of that derivation.
+//!
+//!   mod.av        assemble features; THE language (`avra()`)
+//!   program.av    parse: text -> Parsed; the semantics maps; the Program view
+//!   analysis.av   every fact of one file in ONE artifact (Analysis)
+//!   workspace*.av the query families over the memo kernel (query/db.av);
+//!                 expand.av derives and marks, modules.av/packages.av where
+//!                 source lives, whole.av the whole program, voices.av its words
+//!   derive.av     THE DERIVATION every command asks: hold, load, analyse,
+//!                 lower, keep (docs/2026_09_21_COMPILER.md)
+//!   record.av, interface.av, settlement_wire.av   what stands in for a file
+//!   build.av, link.av         the build: objects, the program's module, the link
+//!   suite.av, suite_entry.av  the suite: a build with another entry
+//!   receivers.av  the receiver seal, whole-program
+//!   codes.av      the built-in diagnostic registry
+//!
+//!   resolve/   names -> bindings, one file (NameFacts)
+//!   typing/    one declaration's body -> types; signatures; traits and impls
+//!   lower/     one body -> IR (a unit); the program its entry's closure —
+//!              THE semantics. Owns `Lowered` and `Body`.
+//!   memory/    the memory strategy, per scope level; escapes
+//!   backend/   what consumes the IR: llvm (llvm_api.av the C surface), the
+//!              evaluator (interp*.av), the IR's human projection (ir_text.av)
+//!   store/     every artifact a build keeps, on disk, by content
+//!   host/      the filesystem seam and the manifest
+//!   format/    the AST's source projection (`avra fmt`)
+//!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
+use core.{flatten, PayloadRow, node_payload_rows}
+use @std.meta.{Field}
+use @std.grammar.{Diagnostic, Ready, ready, node_builder_name}
+use grammar.{avra_known_terminals}
+use features.{
+    LanguageFeature,
+    BuilderRow,
+    compose_grammar,
+    builder_defects,
+    builder_index,
+    code_defects,
+    LanguageRows,
+    Dispatch,
+    bind_nodes,
+    node_builders,
+    BlockWords,
+}
+use diagnostics.{Diag, DiagCode, new_source_file}
+use features.type_expr.{type_expr}
+use features.stmt_spine.{stmt_spine}
+use features.block.{block}
+use features.let_stmt.{let_stmt}
+use features.consts.{consts}
+use features.mutation.{mutation}
+use features.loops.{loops}
+use features.fns.{fns}
+use features.expr_stmt.{expr_stmt}
+use features.bool_lit.{bool_lit}
+use features.quote.{quote_lit}
+use features.sublang.{sublang}
+use features.if_expr.{if_expr}
+use features.when_expr.{when_expr}
+use features.structs.{structs}
+use features.enums.{enums}
+use features.formats.{formats}
+use features.nullable.{nullable}
+use features.results.{results}
+use features.defers.{defers}
+use features.impls.{impls}
+use features.closures.{closures}
+use features.tasks.{tasks}
+use features.expr_spine.{expr_spine}
+use features.lists.{lists}
+use features.maps.{maps}
+use features.cells.{cells}
+use features.tables.{tables}
+use features.grammar_lit.{grammar_lit}
+use features.components.{components}
+use features.annotations.{annotations}
+use features.modules.{modules}
+use features.specs.{specs}
+use features.str_lit.{str_lit}
+use features.bytes.{bytes}
+use features.collects.{collects}
+
+/// A feature set assembled once: composed, parsed, merged, and gated
+/// on grammar + builder coherence. `grammar` is null when assembly
+/// found defects — they are the diagnostics. `keywords` derive from
+/// the grammar's own literals — the features' fragments ARE the
+/// keyword list.
+export type Language = {
+    features: List<LanguageFeature>,
+    // every builder under its name — the parse dispatches a node's
+    // build through one lookup, where it walked every feature's rows
+    builders: Map<string, BuilderRow>,
+    syntax: Ready?,
+    keywords: List<string>,
+    rows: LanguageRows,
+    dispatch: Dispatch,
+    diagnostics: List<Diag>,
+}
+
+export fn assemble(features: List<LanguageFeature>) -> Language {
+    // NOTHING IS PARSED HERE. Each feature read its own
+    // `grammar { … }` when the compiler ran; assembly is a merge.
+    let g = compose_grammar(features).built.merged()
+    // BOUND ONCE: every `-> Expr.Variant` resolved against the node
+    // model into the call the engine runs, its arguments in payload
+    // order. The AUTHORED grammar is what the feature registry is
+    // judged against — a node build names no feature's builder.
+    let rows = node_payload_rows()
+    let bound = bind_nodes(g, rows)
+    // PREPARED ONCE: validated and indexed here, so a parse pays for
+    // neither — and the defects the assembly gates on ARE that
+    // validation, asked a single time.
+    let rd = ready(bound.g, avra_known_terminals())
+    let codes = code_registry(features)
+    let defects = flatten(
+        [rd.defects, bound.defects, builder_defects(features, g), code_defects(codes)],
+    )
+    if !defects.is_empty() { return unassembled(features, defects) }
+    Language {
+        features: features,
+        builders: with_nodes(builder_index(features), rows),
+        syntax: rd,
+        keywords: g.keywords(),
+        rows: rows_of(features, codes),
+        dispatch: new_dispatch(),
+        diagnostics: [],
+    }
+}
+
+/// The feature builders, plus one per node variant a rule may name.
+/// A node builder's name is the variant's own, which no feature can
+/// spell — the DSL reads a builder name as one word.
+fn with_nodes(index: Map<string, BuilderRow>, rows: List<PayloadRow>) -> Map<string, BuilderRow> {
+    mut out = index
+    for row in node_builders() { out.set(row.name, row with { payloads: payloads_for(rows, row.name) }) }
+    out
+}
+
+/// The payloads the model declares for the variant a builder names —
+/// what lets its body ask by NAME instead of by index.
+fn payloads_for(rows: List<PayloadRow>, name: string) -> List<Field> {
+    let hit: PayloadRow? = rows.find(node_builder_name(it.owner, it.variant) == name)
+    hit?.payloads ?? []
+}
+
+/// The language's registries, gathered once from its features.
+fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRows {
+    LanguageRows {
+        methods: flatten([f.methods for f in features]),
+        types: flatten([f.types for f in features]),
+        properties: flatten([f.properties for f in features]),
+        codes: codes,
+        remedies: flatten([f.remedies for f in features]),
+    }
+}
+
+/// Assembly refused: the defects, projected, are the language's
+/// diagnostics.
+fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
+    Language {
+        features: features,
+        builders: {},
+        syntax: null,
+        keywords: [],
+        rows: rows_of(features, []),
+        dispatch: new_dispatch(),
+        diagnostics: as_defects(defects),
+    }
+}
+
+/// Built-in codes plus every feature's registered codes, in feature
+/// order — the registry `avra docs` walks.
+fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
+    flatten([builtin_codes].concat([f.diags for f in features]))
+}
+
+/// The Avra language: its features, in the order that defines it —
+/// feature order is branch order is the language.
+export fn language_features() -> List<LanguageFeature> {
+    [
+        stmt_spine(),
+        // a program IS statements — and the START rule
+        closures(),
+        // `fn(int) -> bool` types and `(x: int) -> e`
+        tasks(),
+        // `spawn e` and `Task<T>` — keyword-anchored
+        components(),
+        // `component N(h) { … }` declares; an imported component's
+        // word opens its instance — anchored on the word's own token
+        // kind, so it merges before every NAME-headed branch
+        // lambdas — BOTH keyword/paren-anchored, so they
+        // merge before type_expr's bare NAME and before
+        // the paren group in the primary ladder
+        type_expr(),
+        // `int`, `int?` — the surface annotations share
+        block(),
+        // { statements… value } — braces, defined once
+        annotations(),
+        // `@name(args)` above a declaration: the compiler's call over it
+        modules(),
+        // `use a.b.{x}` and the `export` prefix
+        specs(),
+        // `spec "…" { given "…" { then "…" { … } } }` — keyword-anchored
+        collects(),
+        // `collect name: List<T> = kind in scope as Ty { … } by …` —
+        // keyword-anchored; shares the "collect" word with the
+        // list feature's `collect { … }` expression, disambiguated
+        // by the NAME that must follow (never recovers, so a miss
+        // falls through to that floor)
+        let_stmt(),
+        consts(),
+        // `const NAME = v` — settled by the compiler,
+        // so a use is the value and never a load     // `let` names a value
+        impls(),
+        // `impl Target { … }`, `trait`, `mut fn`, and the
+        // `self` primary — keyword-anchored; BEFORE
+        // mutation, whose recovering `mut` statement
+        // would otherwise swallow `mut fn`
+        mutation(),
+        // `mut` declares; `name = e` reassigns
+        loops(),
+        // `while c { statements }`
+        bool_lit(),
+        // `true` and `false`
+        quote_lit(),
+        // `quote { … }` — generated source as a `Code` value
+        sublang(),
+        // `syntax w { … }` declares a sublanguage; `w { … }` is its block
+        if_expr(),
+        // `if c { a } else { b }`, an expression
+        when_expr(),
+        // `when { c -> a, ..., _ -> d }`, total
+        lists(),
+        // [e, e, e] — the first aggregate; `collect { … }` is a
+        // keyword anchor, before a struct literal's NAME `{`
+        structs(),
+        // `type N = { f: t = d }`; literals BEFORE the bare NAME
+        nullable(),
+        // `null`, `a ?? b`, `v!`, and `match v { b? -> }`
+        // — its `match` arms are MORE SPECIFIC than an
+        // enum's, and enums' branch @expects its `}`, so
+        // this one must be tried first
+        formats(),
+        // a STRING in pattern position: `"{m} {p}"` binds
+        // its holes — it owns that parse, so it merges
+        // BEFORE enums, whose pattern ladder is otherwise
+        // unchanged
+        enums(),
+        // `enum N { A B }`; `match v { .A -> x }`, total
+        results(),
+        // `fail` raises on the Result channel; keyword-
+        // anchored, so it merges with the statements
+        defers(),
+        // `defer e` runs e when the scope ends, `errdefer e`
+        // when the fn fails — keyword-anchored statements
+        fns(),
+        // `fn` declares a body; a call applies it — the
+        // call branch is NAME-HEADED, so it lands AFTER
+        // every keyword anchor: `if (c)` would otherwise
+        // parse as a call to a fn named `if`
+        tables(),
+        // table<Row> { … } — a keyword anchor, before NAME
+        grammar_lit(),
+        // grammar """ … """ — a keyword anchor, before NAME
+        expr_spine(),
+        // literals, names, the operator ladder, postfix
+        maps(),
+        // { "k": v } — string-keyed, insertion-ordered
+        bytes(),
+        // octets: `s.bytes()`, `b.text()`, the exact word between
+        cells(),
+        // Cell.new(v) — explicit shared interior mutation
+        str_lit(),
+        // "text"
+        expr_stmt(),
+        // the stmt FLOOR: a bare expression line, and it
+        // RECOVERS — every keyword statement merges first
+    ]
+}
+
+/// THE language, assembled — one word to hold Avra. ONCE per
+/// process: the features are the same features every time, so the
+/// merge, the validation and the first sets are one value the
+/// whole run shares.
+export once fn avra() -> Language {
+    assemble(language_features())
+}
+
+/// The canonical language over one nameless source — a lone source
+/// stands in no package, so it names no import: no block words.
+export fn parse_source(text: string) -> Parsed {
+    parse_program(avra(), new_source_file("<source>", text), BlockWords {})
+}
+
+/// The canonical language's whole pipeline over one nameless source.
+export fn analyze_source(text: string) -> Analysis {
+    avra().analyze(new_source_file("<source>", text))
+}

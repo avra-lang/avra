@@ -1,0 +1,123 @@
+//! `@std/ui_gallery` — every view in every named state. An `Entry` is
+//! a view's name and its `Case`s (the conventional four are empty,
+//! one, many, pathological; the author supplies them). The gallery is
+//! one page for the web, one listing for the terminal, and a list of
+//! semantic `Snapshot`s: what a case says (its HTML, what it speaks)
+//! and a digest of both, never pixels. `changed` compares two
+//! snapshot lists by digest, so only what differs is looked at.
+//!
+//!     let entries = [Entry { view: "greeting", cases: [Case { name: "one", view: hello("Ada") }] }]
+//!     gallery(entries)                // a View: a section per entry
+//!     changed(snapshots(old), snapshots(entries))
+use @std.ui.{View, column, section, heading, spoken}
+use @std.ui_html.{html}
+use @std.ui_tui.{render}
+use @std.text.{chars}
+
+/// One named state of a view.
+export type Case = { name: string, view: dyn View }
+
+/// A view under a name, with its states.
+export type Entry = { view: string, cases: List<Case> }
+
+/// What a case says, and the digest of it.
+export type Snapshot = { view: string, case: string, html: string, spoken: string, digest: string }
+
+export enum ChangeKind { Added, Removed, Changed }
+
+/// A case whose snapshot differs between two runs.
+export type Change = { view: string, case: string, kind: ChangeKind }
+
+// ── The page ────────────────────────────────────────────────────
+
+/// A section per view, a heading per case, and the case's view under it.
+export fn gallery(entries: List<Entry>) -> dyn View {
+    column {
+        gap: .L
+        [entry_view(e) for e in entries]
+    }
+}
+
+fn entry_view(e: Entry) -> dyn View {
+    section e.view {
+        gap: .M
+        pad: .M
+        [v for c in e.cases for v in [case_title(c), c.view]]
+    }
+}
+
+fn case_title(c: Case) -> dyn View {
+    heading c.name {
+        rank: 3
+    }
+}
+
+// ── Snapshots ───────────────────────────────────────────────────
+
+/// The snapshot of every case, in entry order.
+export fn snapshots(entries: List<Entry>) -> List<Snapshot> {
+    [snapshot(e.view, c) for e in entries for c in e.cases]
+}
+
+fn snapshot(view: string, c: Case) -> Snapshot {
+    let n = c.view.node()
+    let h = html(n)
+    let s = spoken(n)
+    Snapshot { view: view, case: c.name, html: h, spoken: s, digest: digest_of(h, s) }
+}
+
+/// The digest of a snapshot's two texts; the first's length leads so
+/// no split of the same bytes collides.
+fn digest_of(h: string, s: string) -> string {
+    hex(fnv1a("${h.length}:${h}${s}"))
+}
+
+/// FNV-1a over the bytes, 64 bits, wrapping.
+fn fnv1a(text: string) -> int {
+    let b = text.bytes()
+    mut h = 0 - 3750763034362895579
+    for i in 0..b.length {
+        h = (h ^ b.at(i)) * 1099511628211
+    }
+    h
+}
+
+/// Sixteen lowercase hex digits of the 64 bits.
+fn hex(h: int) -> string {
+    let digits = chars("0123456789abcdef")
+    [digits[(h >> 60 - 4 * i) & 15] for i in 0..16].join("")
+}
+
+// ── Comparison ──────────────────────────────────────────────────
+
+/// What differs between two runs, matched by (view, case): the after
+/// list's additions and changes in its order, then what went missing
+/// in the before list's. An equal digest is not listed.
+export fn changed(before: List<Snapshot>, after: List<Snapshot>) -> List<Change> {
+    let seen = [c for a in after for c in changes_of(a, before)]
+    seen
+        .concat(
+            [Change { view: b.view, case: b.case, kind: .Removed } for b in before if !holds(after, b)],
+        )
+}
+
+/// The one change an after-snapshot makes against the before list, or none.
+fn changes_of(a: Snapshot, before: List<Snapshot>) -> List<Change> {
+    let b? = before.find(same_case(it, a)) else { return [Change { view: a.view, case: a.case, kind: .Added }] }
+    if b.digest == a.digest { [] } else { [Change { view: a.view, case: a.case, kind: .Changed }] }
+}
+
+fn same_case(a: Snapshot, b: Snapshot) -> bool { a.view == b.view && a.case == b.case }
+
+fn holds(snaps: List<Snapshot>, s: Snapshot) -> bool { snaps.any(same_case(it, s)) }
+
+// ── The terminal ────────────────────────────────────────────────
+
+/// Every case drawn by the terminal realizer, each under a rule line
+/// naming its view and case.
+export fn gallery_text(entries: List<Entry>, width: int) -> string {
+    [part for e in entries for c in e.cases for part in [rule(e.view, c.name), render(c.view.node(), width)]]
+        .join("\n")
+}
+
+fn rule(view: string, case: string) -> string { "── ${view} / ${case} ──" }

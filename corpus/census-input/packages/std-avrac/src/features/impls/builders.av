@@ -1,0 +1,236 @@
+//! Parse-time lowering: captures -> the ImplDecl and TraitDecl
+//! statements. An impl's contained statements must each be fn
+//! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
+//! is a hole no pass walks), so declare and totality reuse the fn
+//! machinery whole.
+use core.{
+    Expr,
+    Stmt,
+    StmtId,
+    Param,
+    TypeRef,
+    Span,
+    ExprId,
+    SyntaxArena,
+    plain_mark,
+    Nominal,
+    Scoped,
+    Plain,
+    spelled,
+}
+use features.{
+    LangNode,
+    Builder,
+    spread_named,
+    window_end,
+    aligned_param_types,
+    void_ref,
+    marked_seats,
+    isolating,
+    between,
+    ref_within,
+}
+use grammar.{Token}
+/// `self` — the receiver, a keyword: no name rides the node.
+fn build_receiver(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Receiver)
+}
+
+/// `mut fn name(params) -> ret { body }` — a fn declaration that
+/// DECLARES its receiver written: the store flag carries the word,
+/// and the declare pass judges its placement (a method, or a stray).
+/// A FN DECLARATION UNDER A MARKER WORD — `mut fn` and `static fn`
+/// fill the same slots and differ only in the mark their builder
+/// then sets, so the declaration is built once here.
+///
+/// Type parameters parse so a generic one meets the generic-method
+/// law, not a parse hole; their bounds are dropped — the law refuses
+/// the method before a bound could matter.
+fn marked_fn(b: Builder) -> Result<StmtId, string> {
+    let n = b.token(0)?
+    let tparams = [Param {
+        name: Scoped(t.text),
+        ty: null,
+        default: null,
+        promises: plain_mark,
+        id: b.store.alloc_param_id(t.span),
+    } for t in b.tokens(1)?]
+    let consts = b.tokens(2)?
+    let muts = b.tokens(3)?
+    let ps = b.tokens(4)?
+    let r = b.answer(7)
+    let body = b.expr(8)?
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: a fn declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    let params = b
+        .defaulted(
+            ps,
+            isolating(
+                marked_seats(
+                    b.store,
+                    ps,
+                    aligned_param_types(ps, b.type_refs(5)?, ends),
+                    muts,
+                    consts,
+                    n.span.lo,
+                ),
+                ps,
+                b.tokens(9)?,
+                n.span.lo,
+            ),
+            b.exprs(6)?,
+        )
+    .Ok(
+        b
+            .store
+            .alloc_stmt(
+                Stmt
+                    .FnDecl(Scoped(n.text), tparams, spread_named(params, ps, b.tokens(10)?), r, body),
+                b.span,
+            ),
+    )
+}
+
+/// `mut fn` — a method declaring that it writes its receiver.
+fn build_mut_fn(b: Builder) -> Result<LangNode, string> {
+    let s = marked_fn(b)?
+    b.store.mark_mutating(s)
+    .Ok(LangNode.NStmt(s))
+}
+
+/// `static fn` — a method declaring it has NO receiver. The third
+/// value of the word `fn` and `mut fn` are the first two of.
+fn build_static_fn(b: Builder) -> Result<LangNode, string> {
+    let s = marked_fn(b)?
+    b.store.mark_static(s)
+    .Ok(LangNode.NStmt(s))
+}
+
+/// The target's type parameters (`impl Arena<N>`, `impl Show<X> for
+/// Box<T>`) typing reads from the type's OWN declaration, never this
+/// spelling — but the printer has no other way to spell them back, so
+/// they land in a side table (`mark_impl_tparams`), printing only.
+fn build_impl(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    let written = b.type_refs(1)?
+    let tp = [Plain(spelled(w)) for w in written]
+    let ib = b.tokens(2)?
+    let tp2 = b.tokens(3)?
+    let fns = b.stmts(4)?
+    for s in fns {
+        if !is_fn(b, s) && b.store.hole_stmt(s) == null { return .Err("an `impl` block holds `fn` declarations only") }
+    }
+    // with a `for`, the FIRST name is the trait and the for-name
+    // is the target; without one, the first name IS the target.
+    let forred? = ib.first() else {
+        let s = b.store.alloc_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns), b.span)
+        mark_written_tparams(b, s, [], tp)
+        return .Ok(LangNode.NStmt(s))
+    }
+    let s = b.store.alloc_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns), b.span)
+    mark_written_tparams(b, s, tp, [Plain(t.text) for t in tp2])
+    if !written.is_empty() { b.store.mark_trait_args(s, written) }
+    .Ok(LangNode.NStmt(s))
+}
+
+/// Skipped on a plain impl, so only a generic one carries the mark.
+fn mark_written_tparams(b: Builder, s: StmtId, of: List<Plain>, target: List<Plain>) {
+    if of.is_empty() && target.is_empty() { return }
+    b.store.mark_impl_tparams(s, of, target)
+}
+
+fn is_fn(b: Builder, s: StmtId) -> bool {
+    b.store.stmt(s) is .FnDecl
+}
+
+/// The trait's sig lines, each minted as a bodyless FnDecl — the
+/// method anchors window their own params, the rets zip.
+fn build_trait(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let statics = b.tokens(1)?
+    let muts = b.tokens(2)?
+    let mn = b.tokens(3)?
+    let consts = b.tokens(4)?
+    let seat_marks = b.tokens(5)?
+    let ps = b.tokens(6)?
+    let tys = b.type_refs(7)?
+    let rets = b.type_refs(8)?
+    let bodies = b.exprs(9)?
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: a trait declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    mut fns: List<StmtId> = []
+    for j, m in mn {
+        let upto = window_end(mn, j, ends)
+        let sig = member_stmt(
+            b,
+            m,
+            params_between(b.store, ps, tys, seat_marks, consts, m.span.lo, upto),
+            ret_between(rets, m.span.lo, upto),
+            body_between(b.store, bodies, m.span.lo, upto),
+        )
+        // a `mut` between the previous sig and this name is this sig's
+        let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
+        if muts.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
+        if statics.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
+        fns.push(sig)
+    }
+    let s = b.store.alloc_stmt(Stmt.TraitDecl(Scoped(n.text), fns), b.span)
+    let own = b.tokens(10)?
+    if !own.is_empty() { b.store.mark_trait_tparams(s, [t.text for t in own]) }
+    .Ok(LangNode.NStmt(s))
+}
+
+/// One sig's params — the names inside the window, each typed by
+/// its own inner window, marked `mut` by the marks inside it.
+fn params_between(
+    store: SyntaxArena,
+    ps: List<Token>,
+    tys: List<TypeRef>,
+    muts: List<Token>,
+    consts: List<Token>,
+    after: int,
+    before: int,
+) -> List<Param> {
+    let mine = [p for p in ps if between(p.span.lo, after, before)]
+    marked_seats(store, mine, aligned_param_types(mine, tys, before), muts, consts, after)
+}
+
+/// A trait's member: a sig with a HOLE body, or a DEFAULT with the
+/// block written under it — spanning name to body's end, so the
+/// body's expressions are the member's own range.
+fn member_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef, body: ExprId?) -> StmtId {
+    if body == null { return sig_stmt(b, name, params, ret) }
+    let bsp: Span? = b.store.expr_span(body!)
+    let whole = Span { lo: name.span.lo, hi: bsp?.hi ?? name.span.hi }
+    b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, body!), whole)
+}
+
+/// A bodyless fn: the body is a HOLE no pass walks. The sig wears
+/// its name's span, so a refusal at it lands on the line.
+fn sig_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
+    let hollow = b.store.alloc_expr(Expr.Error)
+    b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, hollow), name.span)
+}
+
+/// The block written inside one sig's window — the member's
+/// default body, when it has one.
+fn body_between(store: SyntaxArena, bodies: List<ExprId>, after: int, before: int) -> ExprId? {
+    bodies.find(expr_within(store, it, after, before))
+}
+
+fn expr_within(store: SyntaxArena, e: ExprId, after: int, before: int) -> bool {
+    let sp: Span? = store.expr_span(e)
+    sp != null && sp!.lo > after && sp!.lo < before
+}
+
+/// The return written inside one sig's window — `void` when none.
+fn ret_between(rets: List<TypeRef>, after: int, before: int) -> TypeRef {
+    let mine: TypeRef? = rets.find(ref_within(it, after, before))
+    mine ?? void_ref
+}

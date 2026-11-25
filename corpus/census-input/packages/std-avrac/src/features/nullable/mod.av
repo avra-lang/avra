@@ -1,0 +1,49 @@
+//! Nullability — `T?` opts IN to absence (spec Axis 10.2), so every
+//! other type is a guarantee. This feature owns the two nodes that
+//! MEAN absence: the `null` literal, and `??`, which answers it.
+//!
+//! `??`, `!`, `?` and `?.` PARSE in the expression ladder (the `with`
+//! precedent — the spine owns precedence, a feature owns meaning);
+//! `null`, the asking `match` arms, and `if let` anchor branches
+//! of their own, keyword-first. `if let` is pure sugar: its action
+//! IS the `match_opt` builder, so the two surfaces share one node,
+//! one typing, one lowering — and one set of refusals, worded by
+//! the BIND so both read naturally.
+//!
+//! Representation is values.av's per-shape choice (`repr_of`): a
+//! pointer-shaped nullable IS its value with the null pointer as
+//! absence, a scalar rides the tagged slot array. This file never
+//! knows which — lowering asks the verbs.
+use features.{LanguageFeature, BuilderRow}
+use features.nullable.{if_null_ternary, let_else_guard, nullable_flag_local}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn nullable() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "null_lit"  | build_null
+        "match_opt" | build_match_opt
+    }
+    let codes = table<DiagCode> {
+        kind                  | summary
+        "type.coalesce"       | "`??` answers a nullable with a value of its type"
+        "type.force"          | "`!` insists on a nullable"
+        "type.match_opt"      | "the `v?`/`null` arms ask a nullable"
+        "type.chain"          | "`?.` reaches into a nullable"
+        "type.propagate"      | "`?` passes absence to the caller"
+        "type.let_else"       | "`let v? =` asks a nullable; its `else` must leave"
+        "type.coalesce_never" | "`??` on a value that is never absent"
+    }
+    LanguageFeature nullable {
+        gram: grammar {
+            primary = "if" "let" b:NAME "?" "=" s:expression p:block "else" a:block @expect("else", "an `if let` needs its `else` branch — absence must be answered") -> match_opt(s, b, p, a) @head(s)
+            primary = "match" s:expression "{" BREAK? b:NAME "?" "->" p:expression BREAK? "null" "->" a:expression BREAK? "}" -> match_opt(s, b, p, a) @head(s)
+            primary = "match" s:expression "{" BREAK? "null" "->" a:expression BREAK? b:NAME "?" "->" p:expression BREAK? "}" -> match_opt(s, b, p, a) @head(s)
+            primary = "null" -> null_lit()
+        }
+        builders: rows
+        diags: codes
+    }
+    nullable
+}

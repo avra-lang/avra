@@ -1,0 +1,600 @@
+//! THE DB a relation's rows live under: an identity and ERASED hooks.
+//! Each relation keeps its typed rows in a store of its own, indexed by
+//! the Db's id, so a Db never names a row type and a relation declared
+//! in any package reaches its rows the same way. A CLOSED Db refuses
+//! every reach: its rows are gone, and nothing opens them again.
+//!
+//! A QUERY RUNS in a frame: the rows it inserts are its own, stamped
+//! with the run, and a rerun sweeps what it did not write again — so a
+//! keyed rerun upserts and a keyless one replaces its whole set. A query
+//! never reads a relation it writes, and two queries never own one key.
+//! A NAMED OWNER runs the same way with no frame: a writer outside every
+//! query names its rows' owner itself (`put_owned`), and its run's close
+//! sweeps exactly as a query's does.
+use rows.{Rows, named_rows, Stamp, unowned}
+use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
+
+extern fn avra_trap(message: string)
+
+/// A Db: its dense id, whether it is closed, each relation's hooks once
+/// reached in it, the hooks its owner armed it with (quiet when it has no
+/// owner), and the queries it runs — how many writes it has seen, each
+/// query call's dense cell, each owner's run count, the frames open now,
+/// and a frame per query of the OWNER's own that touched it, by its cell —
+/// and where its owner keeps query answers past the process.
+export type Db = {
+    id: int,
+    closed: Cell<bool>,
+    hashes: Cell<List<fn() -> int>>,
+    closers: Cell<List<fn() -> void>>,
+    sweepers: Cell<List<fn(Db, int, int) -> void>>,
+    hooks: Hooks,
+    durable: Durable,
+    quiet: bool,
+    writes: Cell<int>,
+    cells: Cell<Map<string, int>>,
+    runs: Cell<List<int>>,
+    running: Cell<List<Frame>>,
+    owner_frames: Cell<Map<string, Frame>>,
+    last_query: Cell<int>,
+    last_frame: Cell<Frame?>,
+}
+
+/// One query call running: its owner cell, which run of it this is, and
+/// the relations it wrote and read so far.
+type Frame = { owner: int, run: int, wrote: Cell<List<int>>, read: Cell<List<int>> }
+
+/// What an owner arms a Db with, ints only, so the Db never names it:
+/// `family` registers a relation — its verifier answers a cell's LIVE
+/// hash, cell 0 the whole relation and cell `b + 1` bucket `b` — and
+/// answers its ordinal; `record` notes a read of a cell and answers the
+/// reader's token; `revision` is the owner's revision, -1 when nothing is
+/// recorded; `reader` names a token; `refused` hears a write the
+/// law of the store refuses; `opened` gives the owner's verdict on a
+/// query cell — 1 reuse, 0 compute, -1 no opinion, the Db's own count of
+/// writes deciding — `settled` hears the cell settle, and `running` names
+/// the owner's own query running now, -1 when none: asked only when a row
+/// is read or written outside a `@query`, never per query.
+export type Hooks = {
+    family: fn(fn(int) -> int) -> int,
+    record: fn(int, int) -> int,
+    revision: fn() -> int,
+    reader: fn(int) -> string,
+    refused: fn(string) -> void,
+    opened: fn(int, int) -> int,
+    settled: fn(int, int) -> void,
+    running: fn() -> int,
+}
+
+/// A Db nothing records: families counted in this process, no reader,
+/// revision -1, no opinion on a query — and a refusal TRAPS, since no
+/// owner is there to hear it.
+export fn quiet_hooks() -> Hooks {
+    Hooks {
+        family: (_verify: fn(int) -> int) -> next_family(),
+        record: (_family: int, _cell: int) -> 0,
+        revision: () -> -1,
+        reader: (_token: int) -> "a read",
+        refused: trapped,
+        opened: (_family: int, _cell: int) -> -1,
+        settled: (_family: int, _cell: int) -> no_word(),
+        running: () -> 0 - 1,
+    }
+}
+
+fn no_word() {}
+
+/// Where an owner keeps query answers past the process, by a query's
+/// durable name and its arguments' stable hash: `answer` reads a kept
+/// record back, `keep` hands one over. What key a record lives under,
+/// and whether it still stands, is the owner's.
+export type Durable = { answer: fn(string, int) -> Bytes?, keep: fn(string, int, Bytes) -> void }
+
+/// An owner that keeps nothing past the process.
+export fn transient() -> Durable {
+    Durable {
+        answer: (_query: string, _args: int) -> no_bytes(),
+        keep: (_query: string, _args: int, _record: Bytes) -> no_word(),
+    }
+}
+
+fn no_bytes() -> Bytes? { null }
+
+/// A refusal no owner hears ends the program, in its own words.
+fn trapped(words: string) { avra_trap(words) }
+
+/// The families a quiet Db has registered in this process.
+once fn quiet_families() -> Cell<int> { Cell.new(0) }
+
+fn next_family() -> int {
+    let n = quiet_families()
+    let f = n.get()
+    n.set(f + 1)
+    f
+}
+
+/// The next Db id this process mints.
+once fn minted() -> Cell<int> { Cell.new(0) }
+
+/// A fresh Db under the next dense id, recording nothing.
+export fn new_db() -> Db { made(quiet_hooks(), true, transient()) }
+
+/// A fresh Db under the next dense id, armed with its owner's hooks.
+export fn hooked_db(hooks: Hooks) -> Db { made(hooks, false, transient()) }
+
+/// `hooked_db`, its query answers kept past the process where `durable`
+/// keeps them.
+export fn durable_db(hooks: Hooks, durable: Durable) -> Db { made(hooks, false, durable) }
+
+/// A fresh Db under the next dense id; a `quiet` one has no owner to tell.
+fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
+    let next = minted()
+    let id = next.get()
+    next.set(id + 1)
+    let hashes: Cell<List<fn() -> int>> = Cell.new([])
+    let closers: Cell<List<fn() -> void>> = Cell.new([])
+    let sweepers: Cell<List<fn(Db, int, int) -> void>> = Cell.new([])
+    let cells: Cell<Map<string, int>> = Cell.new({})
+    let runs: Cell<List<int>> = Cell.new([0])
+    let running: Cell<List<Frame>> = Cell.new([])
+    let owner_frames: Cell<Map<string, Frame>> = Cell.new({})
+    let no_frame: Frame? = null
+    Db {
+        id: id,
+        closed: Cell.new(false),
+        hashes: hashes,
+        closers: closers,
+        sweepers: sweepers,
+        hooks: hooks,
+        durable: durable,
+        quiet: quiet,
+        writes: Cell.new(0),
+        cells: cells,
+        runs: runs,
+        running: running,
+        owner_frames: owner_frames,
+        last_query: Cell.new(0 - 1),
+        last_frame: Cell.new(no_frame),
+    }
+}
+
+impl Db {
+    /// A relation reached here for the first time: its set hash and its
+    /// close, each already bound to this Db.
+    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(Db, int, int) -> void) {
+        self.hashes.push(hash)
+        self.closers.push(close)
+        self.sweepers.push(sweep)
+    }
+
+    /// Whether a read here is heard by no one: no owner, no query running.
+    fn unheard() -> bool { self.quiet && self.running.get().is_empty() }
+
+    /// A read of `cell` in `family` recorded, answering the reader's token
+    /// — refused when the running query wrote that relation.
+    fn read(family: int, cell: int) -> int {
+        let top? = self.frame() else { return self.recorded(family, cell) }
+        if top.wrote.get().contains(family) { self.refuse(self_read()) }
+        if !top.read.get().contains(family) { top.read.push(family) }
+        self.recorded(family, cell)
+    }
+
+    fn recorded(family: int, cell: int) -> int {
+        let record = self.hooks.record
+        record(family, cell)
+    }
+
+    /// A write into `family`, counted — refused when the running query
+    /// read that relation.
+    fn wrote(family: int) {
+        self.counted()
+        let top? = self.frame() else { return }
+        if top.read.get().contains(family) { self.refuse(self_read()) }
+        if !top.wrote.get().contains(family) { top.wrote.push(family) }
+    }
+
+    /// A write counted: what a kept answer settled at moves on.
+    fn counted() { self.writes.set(self.writes.get() + 1) }
+
+    /// Who a write belongs to: the running query's run, or no one.
+    fn stamp() -> Stamp {
+        let top? = self.frame() else { return unowned }
+        Stamp { owner: top.owner, run: top.run }
+    }
+
+    /// A write `owner` makes in the run it has open.
+    fn stamp_of(owner: int) -> Stamp { Stamp { owner: owner, run: self.runs.get()[owner] } }
+
+    /// An owner named by the writer, never a query: its dense cell.
+    fn owner_named(key: string) -> int { self.interned("named:${key}") }
+
+    /// The running query's owner cell, when one runs.
+    fn running_owner() -> int? { self.frame()?.owner }
+
+    /// The frame a read or write lands in: the innermost `@query` running
+    /// here, else the owner's own running query's, made on its first touch.
+    fn frame() -> Frame? {
+        let top = self.running.get().last()
+        if top != null { return top }
+        let ask = self.hooks.running
+        let query = ask()
+        if query < 0 { return null }
+        // the owner query read last is the one reading again, almost always
+        if query == self.last_query.get() { return self.last_frame.get() }
+        let found = self.owner_frame(query)
+        self.last_query.set(query)
+        self.last_frame.set(found)
+        found
+    }
+
+    /// The owner query's frame, made on its first touch.
+    fn owner_frame(query: int) -> Frame {
+        let owner = self.interned("owner:${query}")
+        let known = self.owner_frames.get().get("${owner}")
+        if known != null { return known! }
+        let wrote: List<int> = []
+        let read: List<int> = []
+        let made = Frame {
+            owner: owner,
+            run: self.runs.get()[owner],
+            wrote: Cell.new(wrote),
+            read: Cell.new(read),
+        }
+        self.owner_frames.put("${owner}", made)
+        made
+    }
+
+    /// A query call's dense cell: its family and its arguments' hash,
+    /// interned here — 0 is no one.
+    fn cell(family: int, args: int) -> int { self.interned("${family}:${args}") }
+
+    /// An owner's dense cell under `key` — a `@query` call's, or an owner
+    /// query's, apart by their keys' spelling.
+    fn interned(key: string) -> int {
+        let known? = self.cells.get().get(key) else {
+            let made = self.runs.get().length
+            self.cells.put(key, made)
+            self.runs.push(0)
+            return made
+        }
+        known
+    }
+
+    /// The next run of `owner` opened, with no frame: answers the run.
+    fn opened_run(owner: int) -> int {
+        let run = self.runs.get()[owner] + 1
+        self.runs.set_at(owner, run)
+        run
+    }
+
+    /// `owner`'s open run closed: every relation sweeps the rows it did
+    /// not write again in that run.
+    fn closed_run(owner: int) {
+        let run = self.runs.get()[owner]
+        for s in self.sweepers.get() { s(self, owner, run) }
+    }
+
+    /// A query cell's run opened: the next run of that owner, in a frame.
+    fn began(owner: int) {
+        let run = self.opened_run(owner)
+        let wrote: List<int> = []
+        let read: List<int> = []
+        self
+            .running
+            .push(Frame { owner: owner, run: run, wrote: Cell.new(wrote), read: Cell.new(read) })
+    }
+
+    /// The running query's run closed: every relation sweeps the rows
+    /// this owner did not write again. Answers whether the run wrote.
+    fn ended(owner: int) -> bool {
+        let open = self.running.get()
+        self.running.set(open.slice(0, open.length - 1))
+        self.closed_run(owner)
+        let top? = open.last() else { return false }
+        !top.wrote.get().is_empty()
+    }
+
+    /// The owner's verdict on a query cell: 1 reuse, 0 compute, -1 none.
+    fn verdict(family: int, cell: int) -> int {
+        let opened = self.hooks.opened
+        opened(family, cell)
+    }
+
+    /// A query cell settled, told to the owner.
+    fn settle(family: int, cell: int) {
+        let settled = self.hooks.settled
+        settled(family, cell)
+    }
+
+    /// The owner's revision, -1 when nothing is recorded.
+    fn revision() -> int {
+        let now = self.hooks.revision
+        now()
+    }
+
+    /// The name a reader's token stands for.
+    fn reader(token: int) -> string {
+        let named = self.hooks.reader
+        named(token)
+    }
+
+    /// A write the law refuses, told to the owner.
+    fn refuse(words: string) {
+        let heard = self.hooks.refused
+        heard(words)
+    }
+
+    /// Every reached relation's set hash, in the order they were reached.
+    fn set_hashes() -> List<int> { [h() for h in self.hashes.get()] }
+
+    /// Every reached relation's rows let go, and every later reach
+    /// refused.
+    fn close() {
+        self.closed.set(true)
+        for c in self.closers.get() { c() }
+    }
+}
+
+/// One Db's rows of one relation: never reached, open, or let go when
+/// the Db closed — three states, never one absence standing for two.
+enum Slot<R> {
+    Unreached
+    Open(rows: Rows<R>)
+    Closed
+}
+
+/// One relation's rows under every Db, indexed by the Db's id, each
+/// opened with the relation's own name and indexes: how many, and a bit
+/// per index set where it hashes in order.
+export type Stores<R> = { slots: Cell<List<Slot<R>>>, name: string, indexes: int, ordered: int }
+
+export fn stores<R>(name: string, indexes: int, ordered: int) -> Stores<R> {
+    let none: List<Slot<R>> = []
+    Stores { slots: Cell.new(none), name: name, indexes: indexes, ordered: ordered }
+}
+
+impl Stores<R> {
+    /// The rows under `db`: opened and kept on the first reach, the Db
+    /// told how to hash them and let them go; refused once it closed. A
+    /// close turns every reached slot `Closed`, so only a first reach
+    /// asks the Db whether it closed.
+    fn reach(db: Db) -> Rows<R> {
+        let held = self.slots.get()
+        let at = db.id
+        if at >= held.length { return self.first_reach(db) }
+        match held[at] {
+            .Open(rows) -> rows,
+            .Unreached -> self.first_reach(db),
+            .Closed -> self.refused(db),
+        }
+    }
+
+    /// A Db's first reach: refused once it closed, opened otherwise.
+    fn first_reach(db: Db) -> Rows<R> {
+        if db.closed.get() { return self.refused(db) }
+        while self.slots.get().length <= db.id { self.slots.push(Slot.Unreached) }
+        self.opened(db)
+    }
+
+    /// Fresh rows under `db`, kept, the Db told, the owner's family
+    /// registered to verify them.
+    fn opened(db: Db) -> Rows<R> {
+        let made = self.fresh()
+        self.slots.set_at(db.id, Slot.Open(made))
+        let slots = self.slots
+        let id = db.id
+        let register = db.hooks.family
+        made.family.set(register((cell: int) -> cell_hash(slots.get()[id], cell)))
+        db
+            .joined(
+                () -> open_hash(slots.get()[id]),
+                () -> slots.set_at(id, Slot.Closed),
+                (on: Db, owner: int, run: int) -> swept(slots.get()[id], on, owner, run),
+            )
+        made
+    }
+
+    fn refused(db: Db) -> Rows<R> {
+        avra_trap(closed_db(db.id))
+        self.fresh()
+    }
+
+    fn fresh() -> Rows<R> { named_rows(self.name, [(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
+}
+
+/// A cell's live hash: cell 0 the relation's set, cell `b + 1` bucket
+/// `b`; none while unreached or closed.
+fn cell_hash<R>(s: Slot<R>, cell: int) -> int {
+    match s {
+        .Open(held) -> if cell == 0 { held.set_hash() } else { held.bucket_hash(cell - 1) },
+        .Unreached or .Closed -> 0,
+    }
+}
+
+/// A slot's rows swept of what `owner` did not write in `run`.
+fn swept<R>(s: Slot<R>, db: Db, owner: int, run: int) {
+    match s { .Open(held) -> held.sweep(db, owner, run), .Unreached or .Closed -> no_word() }
+}
+
+/// A slot's set hash: its rows', none while unreached or closed.
+fn open_hash<R>(s: Slot<R>) -> int {
+    match s { .Open(held) -> held.set_hash(), .Unreached or .Closed -> 0 }
+}
+
+// ── queries ──
+
+/// One `@query`'s kept answers, by Db and cell, each with the Db's write
+/// count when it settled — a plain Db reuses an answer only while no row
+/// has been written since.
+export type Memo<V> = { kept: Cell<Map<string, Kept<V>>>, families: Cell<Map<string, int>> }
+
+/// An answer and the write count it settled at.
+export type Kept<V> = { value: V, writes: int }
+
+export fn memo<V>() -> Memo<V> {
+    let kept: Cell<Map<string, Kept<V>>> = Cell.new({})
+    let families: Cell<Map<string, int>> = Cell.new({})
+    Memo { kept: kept, families: families }
+}
+
+impl Memo<V> {
+    /// This query's family under `db`, registered on first ask.
+    fn family(db: Db) -> int {
+        let known? = self.families.get().get("${db.id}") else {
+            let register = db.hooks.family
+            let made = register((_cell: int) -> 0)
+            self.families.put("${db.id}", made)
+            return made
+        }
+        known
+    }
+
+    /// A call's cell under `db`, by its arguments' hash.
+    fn cell(db: Db, args: int) -> int { db.cell(self.family(db), args) }
+
+    /// The kept answer for a call, when it may be reused.
+    fn kept(db: Db, args: int) -> Kept<V>? {
+        let cell = self.cell(db, args)
+        let held? = self.kept.get().get("${db.id}:${cell}") else { return null }
+        match db.verdict(self.family(db), cell) {
+            1 -> held,
+            0 -> null,
+            rest -> if held.writes == db.writes.get() { held } else { null },
+        }
+    }
+
+    /// `kept`, else — for a call this process never answered — the
+    /// owner's record for it read back. A call answered here and gone
+    /// stale was moved by a write in this process, which no record saw.
+    fn lasting(db: Db, args: int, query: string, each: fn(Reader) -> Result<V, CodecFault>) -> Kept<
+        V,
+    >? {
+        if self.answered(db, args) { return self.kept(db, args) }
+        self.restored(db, args, query, each)
+    }
+
+    /// Whether this process holds an answer for the call, stale or not.
+    fn answered(db: Db, args: int) -> bool { self.kept.get().get("${db.id}:${self.cell(db, args)}") != null }
+
+    /// The owner's record for a call, read back and kept here — a record
+    /// that does not read back is recomputed, never guessed at.
+    fn restored(db: Db, args: int, query: string, each: fn(Reader) -> Result<V, CodecFault>) -> Kept<
+        V,
+    >? {
+        let answer = db.durable.answer
+        let record? = answer(query, args) else { return null }
+        match decoded_with(record, each) {
+            .Ok(value) -> self.held(db, self.cell(db, args), value),
+            .Err(_) -> null,
+        }
+    }
+
+    /// `body` run as the call's next run, its rows its own, its answer kept.
+    fn ran(db: Db, args: int, body: fn() -> V) -> V { self.run(db, args, body).value }
+
+    /// `ran`, its answer handed to the owner to outlive the process —
+    /// only from a call's first run here, over what the owner's key
+    /// names, and only from a run that wrote no rows, since a record
+    /// read back brings no rows with it.
+    fn ran_lasting(db: Db, args: int, query: string, body: fn() -> V, each: fn(Writer, V) -> void) -> V {
+        let first = !self.answered(db, args)
+        let done = self.run(db, args, body)
+        if first && !done.wrote {
+            let keep = db.durable.keep
+            keep(query, args, encoded_with(done.value, each))
+        }
+        done.value
+    }
+
+    fn run(db: Db, args: int, body: fn() -> V) -> Run<V> {
+        let cell = self.cell(db, args)
+        db.began(cell)
+        let value = body()
+        let wrote = db.ended(cell)
+        let _ = self.held(db, cell, value)
+        Run { value: value, wrote: wrote }
+    }
+
+    /// `value` kept as `cell`'s answer, the owner told it settled.
+    fn held(db: Db, cell: int, value: V) -> Kept<V> {
+        let kept = Kept { value: value, writes: db.writes.get() }
+        self.kept.put("${db.id}:${cell}", kept)
+        db.settle(self.family(db), cell)
+        kept
+    }
+}
+
+/// A run's answer and whether it wrote rows.
+type Run<V> = { value: V, wrote: bool }
+
+/// A DRIVER-SET value: `@input`'s own store. `read` computes it once, on
+/// the first ask, and holds what it found after — an input is the
+/// driver's to refresh, never a reader's to recompute. `write` is that
+/// refresh: a value the driver already holds, hashed and compared to
+/// what was staged before, so bytes that come back unchanged cost no
+/// invalidation and a `@query` reading this input keeps its kept
+/// answer (`Memo.kept`, above, reading the same `db.writes` this
+/// settles through).
+export type InputSlot<V> = { values: Cell<Map<string, V>>, hashes: Cell<Map<string, int>>, families: Cell<Map<string, int>> }
+
+export fn input_slot<V>() -> InputSlot<V> {
+    let values: Cell<Map<string, V>> = Cell.new({})
+    let hashes: Cell<Map<string, int>> = Cell.new({})
+    let families: Cell<Map<string, int>> = Cell.new({})
+    InputSlot { values: values, hashes: hashes, families: families }
+}
+
+impl InputSlot<V> {
+    /// This input's family under `db`, registered on first ask — the
+    /// same door `Memo.family` uses.
+    fn family(db: Db) -> int {
+        let known? = self.families.get().get("${db.id}") else {
+            let register = db.hooks.family
+            let made = register((_cell: int) -> 0)
+            self.families.put("${db.id}", made)
+            return made
+        }
+        known
+    }
+
+    /// A call's cell under `db`, by its arguments' hash.
+    fn cell(db: Db, args: int) -> int { db.cell(self.family(db), args) }
+
+    /// The value staged for `cell`: `load` runs once, on the first ask;
+    /// every later ask answers what is already there.
+    fn read(db: Db, cell: int, load: fn() -> V, hash: fn(V) -> int) -> V {
+        let key = "${db.id}:${cell}"
+        let held? = self.values.get().get(key) else { return self.staged(db, key, load(), hash) }
+        held
+    }
+
+    /// The driver's own push, over an already-computed value.
+    fn write(db: Db, cell: int, value: V, hash: fn(V) -> int) -> V {
+        self.staged(db, "${db.id}:${cell}", value, hash)
+    }
+
+    fn staged(db: Db, key: string, value: V, hash: fn(V) -> int) -> V {
+        let h = hash(value)
+        self.values.put(key, value)
+        let prior? = self.hashes.get().get(key) else {
+            self.hashes.put(key, h)
+            db.wrote(self.family(db))
+            return value
+        }
+        if prior != h {
+            self.hashes.put(key, h)
+            db.wrote(self.family(db))
+        }
+        value
+    }
+}
+
+// ── voices ──
+
+fn self_read() -> string {
+    "a query read a relation it writes — a query never reads its own rows; read the rows its last run left with `prior(db)`"
+}
+
+fn closed_db(id: int) -> string {
+    "relation rows reached through Db ${id} after it closed — a closed Db's rows are gone; open a new Db"
+}

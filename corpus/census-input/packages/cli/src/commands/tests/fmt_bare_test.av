@@ -1,0 +1,87 @@
+//! `avra fmt <file>` with no flag: canonical text on stdout, nothing on
+//! disk, and one stderr line saying so — real subprocesses over real
+//! files, so the streams are the ones a shell sees. `avra_bin` and
+//! `scratch_dir` are hang_test.av's own: this module shares one namespace.
+use @std.io.{make_dirs, write_text, read_text}
+use @std.process.{tool, cmd, Exit, Outcome, ProcessError}
+use @std.time.{ms}
+
+fn note_line() -> string {
+    "avra fmt: printed the canonical text and wrote nothing — --write updates the file, --check compares it\n"
+}
+
+fn messy() -> string { "fn   main( )   ->   int {   0   }\n" }
+
+fn broken() -> string { "fn main( -> int {\n    1\n}\n" }
+
+fn fmt_fixture(name: string, text: string) -> string {
+    let _ = make_dirs(scratch_dir())
+    let path = "${scratch_dir()}/${name}.av"
+    let _ = write_text(path, text)
+    path
+}
+
+fn fmt_ran(args: List<string>) -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, args) with { timeout: ms(20000) }).outcome()
+}
+
+fn on_disk(path: string) -> string { read_text(path) catch "" }
+
+fn exit_is_zero(e: Exit) -> bool {
+    match e { .Clean or .Code(0) -> true, .Code(_) or .Signal(_, _) -> false }
+}
+
+spec "avra fmt — a bare run says it only printed" {
+    given "a file that is not canonical" {
+        then "stdout carries the canonical text, stderr carries the one-line note, the file is untouched" {
+            let path = fmt_fixture("fmt_bare_messy", messy())
+            match fmt_ran(["fmt", path]) {
+                .Ok(o) -> exit_is_zero(o.exit) &&
+                    o.out.stderr == note_line() &&
+                    !o.out.stdout.is_empty() &&
+                    !o.out.stdout.contains("wrote nothing") &&
+                    on_disk(path) == messy(),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a file that is already canonical, so the output looks like a run that changed nothing" {
+        then "the note is what tells the two apart — it prints all the same, and the file is untouched" {
+            let path = fmt_fixture("fmt_bare_canonical", messy())
+            let _ = fmt_ran(["fmt", "--write", path])
+            let canonical = on_disk(path)
+            match fmt_ran(["fmt", path]) {
+                .Ok(o) -> exit_is_zero(o.exit) && o.out.stderr == note_line() && on_disk(path) == canonical,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "--write" {
+        then "the note is not printed — the run does write" {
+            let path = fmt_fixture("fmt_bare_write", messy())
+            match fmt_ran(["fmt", "--write", path]) {
+                .Ok(o) -> !o.out.stderr.contains("wrote nothing"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "--check" {
+        then "the note is not printed — the run compares" {
+            let path = fmt_fixture("fmt_bare_check", messy())
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> !o.out.stderr.contains("wrote nothing"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a file the formatter refuses to read" {
+        then "no canonical text was printed, so the note is not either" {
+            let path = fmt_fixture("fmt_bare_broken", broken())
+            match fmt_ran(["fmt", path]) {
+                .Ok(o) -> !o.out.stderr.contains("wrote nothing") && !exit_is_zero(o.exit),
+                .Err(_) -> false,
+            }
+        }
+    }
+}

@@ -1,0 +1,64 @@
+//! `avra test` — EVERY PROOF A PACKAGE CARRIES: its spec cases and its
+//! program tests, one binary a suite, linked through the store a build
+//! links through — so a file nothing moved is not read, compiled or
+//! evaluated again. The binaries run in a fresh image of this program.
+use @std.cli.{CliResult, Runnable, command}
+use @std.avrac.compiler.{BuildOutcome, Toolchain}
+use @std.avrac.core.{flatten}
+use @std.io.{is_dir}
+
+type TestCmd = {}
+
+impl Runnable for TestCmd {
+    fn run(args: CliResult) -> int {
+        let path? = slotted_path(args) else { return 2 }
+        let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
+        let ws = build_workspace(path)
+        let tools = Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path }
+        match ws.suites(if is_dir(path) { null } else { path }, here(), tools) {
+            .Ok(made) -> proved(args, path, made, tools),
+            .Err(report) -> {
+                println(report)
+                1
+            },
+        }
+    }
+}
+
+/// The suites said, their `.refuses` tests held to their voice, then run
+/// by a fresh image — or the voice for none.
+fn proved(args: CliResult, path: string, made: List<BuildOutcome>, tools: Toolchain) -> int {
+    for b in made {
+        if !b.warnings.is_empty() { eprintln(b.warnings) }
+        if timed(args) { eprintln(if b.reused { "time: suite · cache hit" } else { "time: ${b.phases}" }) }
+    }
+    if made.is_empty() { return nothing_to_prove(path) }
+    let refuses = flatten([b.refuses for b in made])
+    if !refuses.is_empty() {
+        let wrong = checked_refuses(own_binary(), tools, refuses)
+        if wrong != 0 { return wrong }
+    }
+    handed_off([b.binary for b in made])
+}
+
+export command test {
+    description: "Run a package's spec cases and its program tests"
+    flags: [time]
+    args: [file]
+    run: TestCmd {}
+}
+
+// ── The voices ──
+
+/// ZERO CASES FOR A NAMED FILE IS A REFUSAL, not a green run: the whole job
+/// of `test` is the verdict, and a file that yields none has none to give.
+fn nothing_to_prove(path: string) -> int {
+    if is_dir(path) {
+        println("no spec cases here")
+        return 0
+    }
+    eprintln(
+        "avra: ${path} holds no spec cases — a file named to `test` carries `spec`/`given`/`then` blocks",
+    )
+    1
+}

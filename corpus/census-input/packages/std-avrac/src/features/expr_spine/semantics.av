@@ -1,0 +1,32 @@
+//! The spine's dispatch: typing rules live in check.av, lowering
+//! rules in lower.av.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type SpineSemantics = {}
+
+impl NodeSemantics for SpineSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e {
+            .Binary(_, l, r) -> [l, r],
+            .Index(s, i) -> [s, i],
+            .Not(v) -> [v],
+            .Prop(s, _) -> [s],
+            rest -> [],
+        }
+    }
+
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        match cx.view.store.expr(e) { .Ident(name) -> cx.use_name(e, name.of), _ -> nothing() }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        spine_type(cx, e)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        spine_lower(cx, e)
+    }
+
+}

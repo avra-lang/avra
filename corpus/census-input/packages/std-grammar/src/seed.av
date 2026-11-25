@@ -1,0 +1,348 @@
+//! The grammar-of-grammars: the DSL's own grammar, written once as
+//! data. `parse_grammar` is the executor running this seed — no
+//! hand-written parser for the DSL exists anywhere.
+//!
+//! The construction vocabulary below (`rule_def`, `seq`, `seq_to`, `item`,
+//! `cap`, `expecting`, `rule_ref`, `lit`, `named`, `group`) is how a
+//! grammar is written as data; rare modifiers ride `with`
+//! (`... with { rep: Rep.Star }`).
+//!
+//! This grammar relies on one executor contract: an optional or
+//! repeated group that fails midway rolls back cleanly (`labeled`'s
+//! leading `(NAME ":")?` needs it).
+
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect}
+
+/// An unlabeled item matched exactly once.
+export fn item(p: Prim) -> Item {
+    Item { label: null, prim: p, rep: Rep.One, expect: null }
+}
+
+/// A captured item matched exactly once.
+export fn cap(label: string, p: Prim) -> Item {
+    Item { label: label, prim: p, rep: Rep.One, expect: null }
+}
+
+/// An unlabeled item whose absence speaks with its own message.
+export fn expecting(p: Prim, message: string) -> Item {
+    item(p) with { expect: Expect { message: message } }
+}
+
+/// A pass-through branch.
+export fn seq(items: List<Item>) -> Seq {
+    Seq { items: items, build: null, recover: null }
+}
+
+/// A branch with a build directive.
+export fn seq_to(items: List<Item>, b: Build) -> Seq {
+    Seq { items: items, build: b, recover: null }
+}
+
+/// An alternation of branches.
+export fn alt(branches: List<Seq>) -> Alt {
+    Alt { branches: branches }
+}
+
+/// A rule from its branches.
+export fn rule_def(name: string, branches: List<Seq>) -> Rule {
+    Rule { name: name, body: alt(branches) }
+}
+
+/// A rule reference atom.
+export fn rule_ref(rule_name: string) -> Prim { Prim.Ref(rule_name) }
+
+/// An exact-text atom.
+export fn lit(text: string) -> Prim { Prim.Lit(text) }
+
+/// A token-class atom.
+export fn named(term: string) -> Prim { Prim.Named(term) }
+
+/// A grouped alternation atom.
+export fn group(branches: List<Seq>) -> Prim { Prim.Group(alt(branches)) }
+
+/// The terminal classes this grammar's own notation names — the
+/// vocabulary `ready` is given when validating and running it.
+export const dsl_terminals: List<string> = ["NAME", "NUMBER", "STRING", "BREAK"]
+
+/// The DSL's grammar. Rule names mirror the notation's own vocabulary;
+/// builder names resolve in the executor's registry.
+export const grammar_of_grammars: Grammar = Grammar {
+    name: "grammar_dsl",
+    start: "grammar",
+    rules: [
+        // grammar = rule+
+        rule_def(
+            "grammar",
+            [
+                seq_to(
+                    [cap("rules", rule_ref("rule")) with { rep: Rep.Plus }],
+                    Build.Call("build_grammar", ["rules"]),
+                ),
+            ],
+        ),
+
+        // rule = NAME "=" alt BREAK
+        rule_def(
+            "rule",
+            [
+                seq_to(
+                    [
+                        cap("name", named("NAME")),
+                        item(lit("=")),
+                        cap("body", rule_ref("alt")),
+                        item(named("BREAK")),
+                    ],
+                    Build.Call("build_rule", ["name", "body"]),
+                ),
+            ],
+        ),
+
+        // alt = seq ( "|" seq )*
+        rule_def(
+            "alt",
+            [
+                seq_to(
+                    [
+                        cap("branches", rule_ref("seq")),
+                        item(group([seq([item(lit("|")), cap("branches", rule_ref("seq"))])])) with { rep: Rep.Star },
+                    ],
+                    Build.Call("build_alt", ["branches"]),
+                ),
+            ],
+        ),
+
+        // seq = labeled+ annot* ( "->" build )? annot*
+        // Annotations are legal before and after the build; the
+        // repeated label accumulates both in source order.
+        rule_def(
+            "seq",
+            [
+                seq_to(
+                    [
+                        cap("items", rule_ref("labeled")) with { rep: Rep.Plus },
+                        cap("annots", rule_ref("annot")) with { rep: Rep.Star },
+                        item(group([seq([item(lit("->")), cap("build", rule_ref("build"))])])) with { rep: Rep.Opt },
+                        cap("annots", rule_ref("annot")) with { rep: Rep.Star },
+                    ],
+                    Build.Call("build_seq", ["items", "build", "annots"]),
+                ),
+            ],
+        ),
+
+        // labeled = ( NAME ":" )? postfix
+        rule_def(
+            "labeled",
+            [
+                seq_to(
+                    [
+                        item(group([seq([cap("label", named("NAME")), item(lit(":"))])])) with { rep: Rep.Opt },
+                        cap("inner", rule_ref("postfix")),
+                    ],
+                    Build.Call("build_labeled", ["label", "inner"]),
+                ),
+            ],
+        ),
+
+        // postfix = primary ( "*" | "+" | "?" )?
+        rule_def(
+            "postfix",
+            [
+                seq_to(
+                    [
+                        cap("inner", rule_ref("primary")),
+                        cap(
+                            "rep",
+                            group(
+                                [
+                                    seq([item(lit("*"))]),
+                                    seq([item(lit("+"))]),
+                                    seq([item(lit("?"))]),
+                                ],
+                            ),
+                        ) with { rep: Rep.Opt },
+                    ],
+                    Build.Call("build_postfix", ["inner", "rep"]),
+                ),
+            ],
+        ),
+
+        // primary = "not" "(" primary ")" | NAME | STRING | "(" alt ")"
+        // The `not(...)` branch anchors on the LITERAL "not" ahead of
+        // the bare-NAME branch it shares a leading NAME token with —
+        // a rule genuinely named `not` still resolves there when no
+        // `(` follows (the anchor's own committed break defers to it).
+        rule_def(
+            "primary",
+            [
+                seq_to(
+                    [
+                        item(lit("not")),
+                        item(lit("(")),
+                        cap("inner", rule_ref("primary")),
+                        expecting(lit(")"), "expected ')' to close not(...)"),
+                    ],
+                    Build.Call("build_not", ["inner"]),
+                ),
+                seq_to([cap("name", named("NAME"))], Build.Call("build_prim_name", ["name"])),
+                seq_to([cap("text", named("STRING"))], Build.Call("build_lit", ["text"])),
+                seq_to(
+                    [
+                        item(lit("(")),
+                        cap("inner", rule_ref("alt")),
+                        expecting(lit(")"), "expected ')' to close the group"),
+                    ],
+                    Build.Call("build_group", ["inner"]),
+                ),
+            ],
+        ),
+
+        // build = NAME ( "." NAME )? ( "(" ( arg ("," arg)* ","? )? ")" )?
+        // `lp` captures the open paren: absent means `-> e` (a
+        // capture reference), present means an argument list.
+        // `variant` present means the branch NAMES A NODE
+        // (`-> Expr.StrLit`): its captures reach their payloads by
+        // LABEL, and its arguments may only FIX payloads the rule
+        // states rather than captures.
+        rule_def(
+            "build",
+            [
+                seq_to(
+                    [
+                        cap("name", named("NAME")),
+                        item(group([seq([item(lit(".")), cap("variant", named("NAME"))])])) with { rep: Rep.Opt },
+                        item(
+                            group(
+                                [
+                                    seq(
+                                        [
+                                            cap("lp", lit("(")),
+                                            item(
+                                                group(
+                                                    [
+                                                        seq(
+                                                            [
+                                                                cap("args", rule_ref("build_arg")),
+                                                                item(
+                                                                    group(
+                                                                        [
+                                                                            seq(
+                                                                                [
+                                                                                    item(lit(",")),
+                                                                                    cap(
+                                                                                        "args",
+                                                                                        rule_ref(
+                                                                                            "build_arg",
+                                                                                        ),
+                                                                                    ),
+                                                                                ],
+                                                                            ),
+                                                                        ],
+                                                                    ),
+                                                                ) with { rep: Rep.Star },
+                                                                item(lit(",")) with { rep: Rep.Opt },
+                                                            ],
+                                                        ),
+                                                    ],
+                                                ),
+                                            ) with { rep: Rep.Opt },
+                                            expecting(
+                                                lit(")"),
+                                                "expected ')' to close the argument list",
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ) with { rep: Rep.Opt },
+                    ],
+                    Build.Call("build_build", ["name", "variant", "lp", "args"]),
+                ),
+            ],
+        ),
+
+        // build_arg = NAME ( "=" ( NAME | NUMBER | STRING ) )?
+        // A bare name is a capture's label; a name given a value
+        // is a payload the rule STATES.
+        rule_def(
+            "build_arg",
+            [
+                seq_to(
+                    [
+                        cap("name", named("NAME")),
+                        item(
+                            group(
+                                [
+                                    seq(
+                                        [
+                                            item(lit("=")),
+                                            cap(
+                                                "fixed",
+                                                group(
+                                                    [
+                                                        seq([item(named("NAME"))]),
+                                                        seq([item(named("NUMBER"))]),
+                                                        seq([item(named("STRING"))]),
+                                                    ],
+                                                ),
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ) with { rep: Rep.Opt },
+                    ],
+                    Build.Call("build_arg", ["name", "fixed"]),
+                ),
+            ],
+        ),
+
+        // annot = "@expect" "(" STRING "," STRING ")"
+        //       | "@recover" "(" "sync_to" ":" STRING ")"
+        //       | "@head" "(" NAME ")" | "@trailer" "(" NAME ")"
+        rule_def(
+            "annot",
+            [
+                seq_to(
+                    [
+                        item(lit("@expect")),
+                        item(lit("(")),
+                        cap("token", named("STRING")),
+                        item(lit(",")),
+                        cap("msg", named("STRING")),
+                        expecting(lit(")"), "expected ')' to close @expect"),
+                    ],
+                    Build.Call("build_expect", ["token", "msg"]),
+                ),
+                seq_to(
+                    [
+                        item(lit("@recover")),
+                        item(lit("(")),
+                        item(lit("sync_to")),
+                        item(lit(":")),
+                        cap("target", named("STRING")),
+                        expecting(lit(")"), "expected ')' to close @recover"),
+                    ],
+                    Build.Call("build_recover", ["target"]),
+                ),
+                seq_to(
+                    [
+                        item(lit("@head")),
+                        item(lit("(")),
+                        cap("label", named("NAME")),
+                        expecting(lit(")"), "expected ')' to close @head"),
+                    ],
+                    Build.Call("build_head", ["label"]),
+                ),
+                seq_to(
+                    [
+                        item(lit("@trailer")),
+                        item(lit("(")),
+                        cap("label", named("NAME")),
+                        expecting(lit(")"), "expected ')' to close @trailer"),
+                    ],
+                    Build.Call("build_trailer", ["label"]),
+                ),
+            ],
+        ),
+    ],
+}

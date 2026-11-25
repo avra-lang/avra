@@ -1,0 +1,162 @@
+//! `@form` — a record type that reads itself from a posted form. The
+//! declaration IS the form: each field reads the form field of its own
+//! name, by its own type.
+//!
+//!     use @std.http.form_codec.{form}
+//!
+//!     @form
+//!     type Signup = { email: string, age: int, plan: string?, agree: bool, tags: List<string> }
+//!
+//! gives `Signup.from_form(f)`, answering the record or a `FormError`
+//! naming the field that misfit. A `string`, `int` or `float` wants
+//! exactly one value; a `bool` is a checkbox (absent is false); a `T?`
+//! is null when the field was not sent — or, unless it is text, sent
+//! empty; a `List<T>` reads every value sent under its name. Anything
+//! else is refused at the declaration.
+//!
+//! Stands alone with `@std/meta` and the vocabulary it generates calls
+//! to, per the derive-isolation law.
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Directive,
+    Diagnostic,
+    Declared,
+    Code,
+    Decls,
+    literal,
+    name,
+    refuse_as_at,
+}
+use @std.derive.{record_of, RECORD_WIDTH}
+use @std.http.form.{
+    Form,
+    FormError,
+    form_one,
+    form_maybe,
+    form_checked,
+    form_int_of,
+    form_float_of,
+    form_bool_of,
+}
+
+/// `@form` — a record's form reader, and every way its shape refuses
+/// one, spoken at the declaration.
+export fn form(t: Type) -> Declared {
+    let problems = shape_problems(t)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    Declared { made: [Directive { twin: "", name: t.name, at: t.at, source: reader(t) }] }
+}
+
+fn reader(t: Type) -> Decls {
+    let body = record_of(t, [field_read(f) for f in t.fields])
+    quote {
+        impl ${t} {
+            /// This record read from a posted form.
+            static fn from_form(f: Form) -> Result<${t}, FormError> {
+                ${body}
+            }
+        }
+    }
+}
+
+// ── Reading ──────────────────────────────────────────────────────
+
+/// A field's reading from the form `f`, by its kind.
+fn field_read(fd: Field) -> Code {
+    let n = literal(fd.name)
+    match fd.kind {
+        .Bool -> quote { form_checked(f, ${n})? },
+        .Opt(inner) -> read_maybe(inner, n),
+        .List(elem) -> read_all(elem, n),
+        rest -> parsed(fd.kind, quote { form_one(f, ${n})? }, n),
+    }
+}
+
+/// A `List<T>`: every value sent under the name, each read as `T`.
+fn read_all(elem: Kind, n: Code) -> Code {
+    let v = "v"
+    let got = parsed(elem, name(v), n)
+    quote { [${got} for ${v} in f.all(${n})] }
+}
+
+/// A `T?`: null when absent — or empty, unless `T` is text.
+fn read_maybe(inner: Kind, n: Code) -> Code {
+    let x = "x"
+    let got = parsed(inner, name(x), n)
+    let empty_is_absent = match inner { .Str -> quote { false }, rest -> quote { true } }
+    quote {
+        match form_maybe(f, ${n}, ${empty_is_absent})? {
+            ${x}? -> ${got}
+            null -> null
+        }
+    }
+}
+
+/// The code reading one value `v` (a `string`) as `kind`.
+fn parsed(kind: Kind, v: Code, n: Code) -> Code {
+    match kind {
+        .Str -> v,
+        .Int -> quote { form_int_of(${v}, ${n})? },
+        .Float -> quote { form_float_of(${v}, ${n})? },
+        .Bool -> quote { form_bool_of(${v}, ${n})? },
+        rest -> quote { unreadable() },
+    }
+}
+
+// ── The shape a form reads ───────────────────────────────────────
+
+fn shape_problems(t: Type) -> List<Diagnostic> {
+    if !t.variants.is_empty() { return [an_enum(t)] }
+    if t.fields.length > RECORD_WIDTH { return [too_wide(t)] }
+    [unreadable_field(t, f) for f in t.fields if !readable(f.kind)]
+}
+
+/// Whether a field of this kind has a form reading: a scalar, a
+/// scalar that may be absent, or a list of scalars. A REGISTRY: every
+/// kind answers.
+fn readable(k: Kind) -> bool {
+    match k {
+        .Int or .Float or .Bool or .Str -> true,
+        .Opt(inner) or .List(inner) -> scalar(inner),
+        .Named(_, _) or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// Whether a kind is one value a form field spells. A REGISTRY.
+fn scalar(k: Kind) -> bool {
+    match k {
+        .Int or .Float or .Bool or .Str -> true,
+        .Opt(_) or .List(_) or .Named(_, _) or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+// ── Voices ───────────────────────────────────────────────────────
+
+fn an_enum(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "enum_record",
+        t.at,
+        "`@form` reads a record, and `${t.name}` is an enum",
+        "give each variant its own record, or write `from_form` by hand",
+    )
+}
+
+fn too_wide(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "too_wide",
+        t.at,
+        "`@form` reads a record of at most ${RECORD_WIDTH} fields, and `${t.name}` has ${t.fields.length}",
+        "read the rest from `Form.value` by hand",
+    )
+}
+
+fn unreadable_field(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unreadable_field",
+        f.at,
+        "`${t.name}.${f.name}` is `${f.ty}`, which has no form reading",
+        "a field reads int, float, bool, string, a `T?` of one, or a `List<T>` of one",
+    )
+}

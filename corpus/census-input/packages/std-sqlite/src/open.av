@@ -1,0 +1,437 @@
+//! OPENING AND CLOSING. `open(path)` is four steps — judge the path,
+//! compute the flags, call, build the failure — and the first two are
+//! pure, so they are tested without a database at all.
+//!
+//! THE HANDLE IS A `ptr?` ALL THE WAY THROUGH THE CALL. SQLite writes
+//! it through a `sqlite3**` and leaves NULL there when the open fails;
+//! Avra's niche for an absent pointer IS the null pointer, so the type
+//! and the C convention are one value rather than two that agree.
+//!
+//! OPENING IS LAZY, AND THIS VERB IS NOT (T127). `sqlite3_open_v2`
+//! records the filename and allocates; the file's header is not read
+//! until a statement needs the schema, so a corrupt or non-database
+//! file opens CLEANLY and would fail at the caller's first query,
+//! blaming the query. `unreadable` runs one trivial statement before
+//! answering `Ok`, so "the connection opened" and "the file is a
+//! database" are the same answer. It costs one page read.
+use error.{Cause, SqlError, barred}
+use @std.text.{has_nul}
+use c.{sqlite3_open_v2, sqlite3_close_v2, sqlite3_errstr, sqlite3_last_insert_rowid}
+use stmt.{Stmt}
+
+/// How the file is opened. THREE MODES AND NO `create` FIELD, because
+/// the header allows exactly three flag combinations and a fourth
+/// cannot be spelled here.
+///
+/// A separate `create: bool` made `ReadOnly` + `create: true`
+/// expressible, and there is no honest thing to do with it: SQLite
+/// answers `SQLITE_MISUSE` to `READONLY|CREATE` (measured, rc=21 "bad
+/// parameter or other API misuse"), so passing it through would blame
+/// the DRIVER through `Cause.Defect` for the caller's contradiction,
+/// and dropping it silently is the accepted-and-ignored shape this
+/// driver refuses everywhere else. The state is unrepresentable
+/// instead.
+export enum Mode {
+    /// Read, write, and create the file when it is not there.
+    ReadWrite
+    /// Read and write a file that must ALREADY EXIST. A missing file is
+    /// `CantOpen` rather than a new empty database.
+    OpenExisting
+    /// Read only, and the file must exist. Also the existence check
+    /// that does not create what it asks about.
+    ReadOnly
+}
+
+/// How the connection is shared between threads. `.Serialized` is the
+/// library's own default under `-DSQLITE_THREADSAFE=1` and is what a
+/// service wants; `.Unshared` drops the per-connection mutex and is only
+/// safe when one thread ever touches the handle.
+export enum Threading { Serialized, Unshared }
+
+/// Everything a connection is, at the moment it is opened. Every field
+/// below is a decision, and each one says what it costs.
+export type OpenConfig = {
+    /// The file. NEVER `""` and never `":memory:"` — both are SQLite's
+    /// spelling for a temporary database, and both are their own verbs
+    /// here so that a config with a missing key cannot become one.
+    path: string,
+    mode: Mode = .ReadWrite,
+    /// Read the path as a URI, so `?mode=ro` and `?cache=shared` ride in
+    /// it. OFF, and off at the LIBRARY: this build no longer compiles
+    /// `SQLITE_USE_URI`, so a caller's raw path cannot be reinterpreted
+    /// by a route that never passed through this field.
+    uri: bool = false,
+    /// A private page cache, which is what a connection wants unless it
+    /// is deliberately sharing one.
+    shared_cache: bool = false,
+    threading: Threading = .Serialized,
+    /// Refuse a path whose final component is a symbolic link.
+    no_follow: bool = false,
+}
+
+impl OpenConfig {
+    /// The config `open(path)` means.
+    static fn config_at(path: string) -> OpenConfig { OpenConfig { path: path } }
+
+    // ── The flag word ───────────────────────────────────────────
+    //
+    // The values are `vendor/sqlite3.h:603-624`, and only the ones the
+    // header marks "Ok for sqlite3_open_v2()" appear here — a VFS-only
+    // bit in this word is a defect, not an option.
+
+    /// The flags word for a config — `sqlite3_open_v2`'s third argument.
+    ///
+    /// EXTENDED RESULT CODES ARE ALWAYS ON, and that is not a field: a
+    /// caller who cannot tell `CONSTRAINT_UNIQUE` from `CONSTRAINT_FOREIGNKEY`
+    /// cannot be given a cause, and nobody wants them off.
+    ///
+    /// The header requires exactly one of three combinations, and `access`
+    /// is where that law lives.
+    ///
+    /// BOTH WORDS ARE MEASURED against the vendored library, not merely
+    /// computed, and the adversarial suite pins both numbers:
+    ///
+    /// ```
+    /// the default word          33882118   open_v2 -> rc=0
+    ///   a UNIQUE violation      errcode=2067, extended=2067
+    ///   2067 rather than 19 is EXRESCODE observed, not assumed
+    /// the read-only word        33882113   on a MISSING file -> rc=14
+    ///   file created? no — which is the existence check that must not
+    ///   create the thing it asks about
+    /// ```
+    ///
+    /// Each contributor answers ITS OWN BIT OR ZERO and they are joined
+    /// with `|`, so a bit two contributors share merges rather than
+    /// carrying into a neighbour.
+    fn flags_of() -> int {
+        access(self) | uri_bit(self) | cache_bit(self) | mutex_bit(self) | follow_bit(self) | open_exrescode
+    }
+
+    // ── The path, judged ──────────────────────────────────────────
+
+    /// What is wrong with a path, or absence when nothing is — the whole
+    /// refusal, built at the guard that found it.
+    ///
+    /// THE EMPTY CASE IS THE FIRST CASE. SQLite spends the empty string to
+    /// mean "a private temporary database on disk, deleted at close", so a
+    /// config whose `path =` key is missing would open, succeed at every
+    /// write, and lose everything at shutdown, with no error anywhere.
+    ///
+    /// `":memory:"` is spent the same way, and a raw `file:` path would be a
+    /// URI wherever URI parsing is on. Both are separately named verbs so a
+    /// caller asks for them rather than spelling them.
+    ///
+    /// ONE FN AND NO SECOND DISPATCH: a `match` from `Cause` back to words
+    /// would answer two arms out of twenty-eight and need a catch-all, which
+    /// is a registry with a hole. Each guard names its own refusal instead.
+    fn path_fault() -> SqlError? {
+        if self.path.is_empty() { return spent_empty }
+        if has_nul(self.path) { return path_holds_a_nul }
+        if self.path == ":memory:" { return spent_empty }
+        if !self.uri && self.path.starts_with("file:") { return reads_as_uri(self.path) }
+        if self.uri && empty_uri_path(self.path) { return spent_empty }
+        null
+    }
+}
+
+const open_readonly: int = 1
+const open_readwrite: int = 2
+const open_create: int = 4
+const open_uri: int = 64
+const open_nomutex: int = 32768
+const open_fullmutex: int = 65536
+const open_sharedcache: int = 131072
+const open_privatecache: int = 262144
+const open_nofollow: int = 16777216
+const open_exrescode: int = 33554432
+
+/// One of the header's three lawful combinations, and never anything
+/// else. Every other spelling — `READONLY|CREATE`, both access bits,
+/// `CREATE` alone, none at all — answers `SQLITE_MISUSE`, so this match
+/// is the law rather than a convenience.
+fn access(c: OpenConfig) -> int {
+    match c.mode {
+        .ReadWrite -> open_readwrite | open_create,
+        .OpenExisting -> open_readwrite,
+        .ReadOnly -> open_readonly,
+    }
+}
+
+fn uri_bit(c: OpenConfig) -> int { if c.uri { open_uri } else { 0 } }
+
+fn cache_bit(c: OpenConfig) -> int { if c.shared_cache { open_sharedcache } else { open_privatecache } }
+
+fn mutex_bit(c: OpenConfig) -> int {
+    match c.threading { .Serialized -> open_fullmutex, .Unshared -> open_nomutex }
+}
+
+fn follow_bit(c: OpenConfig) -> int { if c.no_follow { open_nofollow } else { 0 } }
+
+/// A `file:` URI whose PATH COMPONENT is empty — `file:`, `file://`,
+/// `file:?mode=ro`, `file:#frag`.
+///
+/// THE THIRD SPELLING OF THE EMPTY DATABASE. `""` and `":memory:"` were
+/// the first two; this is the same trap wearing a URI, and it is
+/// reachable by any caller who asked for URIs. Measured, all four:
+/// `rc=0` and `db_filename` empty, which is the private temporary
+/// database deleted at close.
+///
+/// AN ENCODING SPENDS THE EMPTY VALUE, and SQLite spends it three ways
+/// in one API. The door has to know every spelling, because they all
+/// mean the same silent data loss.
+///
+/// This runs AFTER the NUL guard, which is what makes `starts_with`
+/// enough: the text has already been refused if C would read less of it
+/// than we do.
+fn empty_uri_path(path: string) -> bool {
+    let body = past_authority(past_scheme(path))
+    body.is_empty() || body.starts_with("?") || body.starts_with("#")
+}
+
+fn past_scheme(path: string) -> string {
+    if !path.starts_with("file:") { return path }
+    path.substring(5, path.length)
+}
+
+fn past_authority(s: string) -> string {
+    if !s.starts_with("//") { return s }
+    s.substring(2, s.length)
+}
+
+// ── The voices ──────────────────────────────────────────────────
+//
+// A refusal carries no SQLite code, because SQLite never saw the call.
+
+const spent_empty: SqlError = SqlError
+    .refused(
+        Cause.EmptyPath,
+        "a database path is a FILE — `\"\"` and `:memory:` are SQLite's two temporary databases, and each has its own verb",
+    )
+
+/// MEASURED, and the reason this guard exists: a path whose first byte
+/// is a NUL reaches SQLite as the EMPTY STRING, because C stops there —
+/// `db_filename` comes back empty, which is the private temporary
+/// database deleted at close. The door's own `.length` said 2. So the
+/// empty-path trap walks straight through a door built to stop it, and
+/// a mid-NUL path opens a file the caller did not name.
+const path_holds_a_nul: SqlError = SqlError
+    .refused(
+        Cause.HoldsNul,
+        "a database path holds a NUL, and C reads only the bytes before it — the path SQLite would open is not the path you wrote",
+    )
+
+fn reads_as_uri(path: string) -> SqlError {
+    SqlError
+        .refused(
+            Cause.UriPath,
+            "`${path}` begins `file:`, which is a URI and not a filename — ask for a URI deliberately, or give a path",
+        )
+}
+
+// ── Opening, and closing ────────────────────────────────────────
+
+/// A statement kept alive under the exact text that prepared it.
+type Cached = { text: string, stmt: Stmt }
+
+/// An open connection.
+///
+/// THE HANDLE IS A CELL BECAUSE LIVENESS IS SHARED. Two `close_v2`
+/// calls on one pointer are undefined behaviour, so closing must NULL
+/// the handle — and every holder of the connection must see that null,
+/// not only the binding that closed it. A cell is one slot every copy
+/// of the value points at, so `mut b = a` and closing either closes
+/// once. A seat that writes through the caller's binding reaches ONE
+/// other holder and only by the calling convention's leave; this holds
+/// by the type.
+///
+/// WHAT IS STILL OPEN is a handle nobody holds — a connection closed
+/// while another part of the program still names a `Db` it got some
+/// other way. `@std/process` catches that with a generation tag
+/// (`gen << 32 | idx` into a table, `runtime/avra_runtime.c:1727`), a
+/// process-wide table a package cannot build. THAT remains the language
+/// ask; the double close does not.
+export type Db = {
+    raw: Cell<ptr?>,
+    /// Statements this connection has already compiled, RESET rather
+    /// than finalized between calls — `sql.av`'s `run`/`one`/`first`/
+    /// `all`/`scalar` reuse one instead of paying `prepare` again for
+    /// text they have already seen. A CELL for the same reason `raw`
+    /// is: a copy of `Db` must share one cache for one connection, not
+    /// fork into two.
+    ///
+    /// KEYED ON THE EXACT TEXT, byte for byte — two spellings of one
+    /// query that differ by whitespace or a comment are two entries,
+    /// each paying its own `prepare` once. Never evicted: nothing here
+    /// ages an entry out, so a connection that runs many DISTINCT
+    /// one-off texts over its life grows this without bound. Sound for
+    /// the fixed, small set of texts an ORM or a hand-written app
+    /// repeats; wrong for a connection that never repeats a query.
+    /// `close` finalizes every entry.
+    cache: Cell<List<Cached>> = Cell.new([]),
+}
+
+impl Db {
+    /// A database at a path, opened for reading and writing and created
+    /// if it is not there.
+    static fn open(path: string) -> Result<Db, SqlError> { Db.open_with(OpenConfig.config_at(path)) }
+
+    /// The same file, read only. A missing file is a failure rather than
+    /// a new empty database, which is what an existence check wants.
+    static fn open_read(path: string) -> Result<Db, SqlError> {
+        Db.open_with(OpenConfig.config_at(path) with { mode: Mode.ReadOnly })
+    }
+
+    /// A private database in memory: no file, no journal, no lock. It
+    /// dies with the connection, which is why it is a VERB and never a
+    /// path — a config whose `path =` key went missing must not become
+    /// one.
+    static fn memory() -> Result<Db, SqlError> { opened(":memory:", OpenConfig.config_at(":memory:").flags_of()) }
+
+    /// Every knob, spelled. `open(p)` is `open_with(config_at(p))`.
+    static fn open_with(c: OpenConfig) -> Result<Db, SqlError> {
+        let _ = barred(c.path_fault())?
+        opened(c.path, c.flags_of())
+    }
+
+    /// The connection closed, and the handle NULLED so it cannot be
+    /// closed again. Answers the result code, which is `0` for every
+    /// close a caller can make: `close_v2` is the ZOMBIE form, so a
+    /// connection with an outstanding statement is marked and freed
+    /// when the last derived object goes, rather than answering BUSY
+    /// and leaving the file locked. Anything but zero here is a driver
+    /// defect.
+    ///
+    /// Closing an already-closed `Db` answers 0 and does nothing —
+    /// through the same binding or through any copy of it, since they
+    /// share a cell.
+    ///
+    /// EVERY CACHED STATEMENT IS FINALIZED FIRST, and `close_v2`'s
+    /// zombie form is not why. Left unfinalized, a cached statement is
+    /// nobody's to finalize later — the cache was its only holder — so
+    /// it leaks, and being a zombie's anchor it keeps the CONNECTION
+    /// object alive and leaking too. Finalizing here is what actually
+    /// frees both, whatever `close_v2` would have tolerated.
+    ///
+    /// CLEARING THE CACHE AFTER IS WHAT MAKES THE NEXT CALL HONEST: a
+    /// `run`/`one`/`first`/`all`/`scalar` on a closed `Db` falls through
+    /// every empty cache lookup straight to `prepare`, which is where
+    /// `Cause.Closed` is spoken. A stale, already-finalized entry left
+    /// standing would answer `Cause.Finalized` instead — true of the
+    /// statement, and the wrong reason.
+    fn close() -> int {
+        let handle: ptr? = self.raw.get()
+        if handle == null { return 0 }
+        for c in self.cache.get() {
+            let _ = c.stmt.finalize()
+        }
+        self.cache.set([])
+        self.raw.set(null)
+        sqlite3_close_v2(handle)
+    }
+
+    /// The rowid of the last row this connection inserted — 0 before
+    /// any insert. A trigger's own insert changes this, so a caller
+    /// wanting THEIR statement's rowid reads it immediately after
+    /// stepping, before any other statement on the same connection runs.
+    fn last_insert_rowid() -> int {
+        sqlite3_last_insert_rowid(self.raw.get())
+    }
+
+    /// The refusal for a connection that was closed, or absence when it
+    /// is still open. `close` NULLS the handle, so the null test IS the
+    /// question — the same shape `path_fault` has, and the same shape
+    /// `stmt.av` gives a finalized statement.
+    ///
+    /// THE DOOR EXISTS BECAUSE C ANSWERS THE WRONG THING RATHER THAN
+    /// NOTHING. Under `SQLITE_ENABLE_API_ARMOR` a refused handle does not
+    /// fault: `sqlite3_get_autocommit` answers 0, which is also its answer
+    /// for a connection INSIDE a transaction, and `prepare` answers
+    /// SQLITE_MISUSE, which reads as a driver bug. Every verb that would
+    /// otherwise report the caller's own sequence as SQLite's opinion asks
+    /// here first.
+    fn closed_fault() -> SqlError? {
+        if self.raw.get() == null { return connection_closed }
+        null
+    }
+
+    /// The statement already prepared for `text` on this connection,
+    /// or absence when this is the first time it is asked for. The
+    /// hottest call on the cached path — every `run`/`one`/`first`/
+    /// `all`/`scalar` reaches it once.
+    fn cached(text: string) -> Stmt? {
+        for c in self.cache.get() {
+            if c.text == text { return c.stmt }
+        }
+        null
+    }
+
+    /// `stmt` kept under `text`, so the next call for the same text
+    /// finds it here instead of preparing again.
+    fn remember(text: string, stmt: Stmt) {
+        self.cache.push(Cached { text: text, stmt: stmt })
+    }
+}
+
+/// THE CALL, and the only place the handle is nullable.
+///
+/// THE HANDLE IS CLOSED ON EVERY PATH. SQLite may allocate a connection
+/// object even for a FAILED open — its header says so — so a driver
+/// that closes only on success leaks one per failure, and the leak is
+/// invisible because the caller has an error in hand.
+fn opened(path: string, flags: int) -> Result<Db, SqlError> {
+    mut handle: ptr? = null
+    let rc = sqlite3_open_v2(path, handle, flags, null)
+    if rc != 0 { fail closing(handle, rc) }
+    if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
+    let db = Db { raw: Cell.new(handle) }
+    let fault: SqlError? = unreadable(db)
+    if fault != null {
+        let _ = db.close()
+        fail fault!
+    }
+    db
+}
+
+/// T127 CLOSED: the one trivial statement that tells a database from a
+/// file. Answers the failure when the file is not one, or absence when
+/// it is.
+///
+/// `sqlite_schema` is the right table to ask for: every database has
+/// it, an empty one included, and counting it reads the header without
+/// reading the data.
+fn unreadable(db: Db) -> SqlError? {
+    match db.prepare("select count(*) from sqlite_schema") { .Ok(s) -> ran(s), .Err(e) -> e }
+}
+
+/// The probe stepped and finalized, whatever it answered — a statement
+/// left open would hold the connection it was meant to prove.
+fn ran(s: Stmt) -> SqlError? {
+    let outcome = s.step()
+    let _ = s.finalize()
+    fault_of(outcome)
+}
+
+fn fault_of(r: Result<bool, SqlError>) -> SqlError? {
+    match r { .Ok(_) -> null, .Err(e) -> e }
+}
+
+/// The failure of an open, with the handle released first.
+///
+/// The message is `sqlite3_errstr`, not `sqlite3_errmsg`. `errstr` reads
+/// a static table so it crosses as text safely; `errmsg` is richer and
+/// is a BORROWED pointer into the connection, and nothing in the
+/// language can copy foreign text into a box yet. The day it can, the
+/// message here becomes the connection's own words.
+fn closing(handle: ptr?, rc: int) -> SqlError {
+    let _ = sqlite3_close_v2(handle)
+    SqlError {
+        cause: Cause.of(rc),
+        code: rc % 256,
+        extended: rc,
+        message: sqlite3_errstr(rc),
+        sql: null,
+    }
+}
+
+const connection_closed: SqlError = SqlError
+    .refused(Cause.Closed, "this connection was closed — open it again")

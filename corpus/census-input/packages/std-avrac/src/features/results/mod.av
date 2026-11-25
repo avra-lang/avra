@@ -1,0 +1,39 @@
+//! The error spine. `Result<T, E>` is the
+//! BUILT-IN enum — `Type.Res`, structural like `Opt`, its variants
+//! answered by the registry bridge so the enums feature serves its
+//! match whole. This feature owns the PRODUCE side: `fail e` raises
+//! (a diverging statement, `return`'s twin on the failure channel),
+//! and the auto-Ok lift wraps a bare success at the one widening
+//! edge (checks.av, `res_accepts`). The CONSUME side: `?` (the
+//! unified operator, in `nullable` with its family), `match`
+//! (free, through the variants bridge), and `catch` — whose parse
+//! rides the ladder's loosest layer and whose meaning lives here,
+//! in check.av and lower.av.
+use features.{LanguageFeature, BuilderRow, TypeRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn results() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "fail_stmt" | build_fail
+    }
+    let codes = table<DiagCode> {
+        kind         | summary
+        "type.fail"  | "`fail` raises on a Result fn's failure channel"
+        "type.catch" | "`catch` recovers a Result, arm by arm"
+    }
+    let types = table<TypeRow> {
+        name     | arity | slots | judge   | builds    | variants
+        "Result" | 2     | false | res_law | res_shape | res_variants
+    }
+    LanguageFeature results {
+        gram: grammar {
+            stmt = "fail" v:expression END @recover(sync_to: "END") -> fail_stmt(v)
+        }
+        diags: codes
+        builders: rows
+        types: types
+    }
+    results
+}

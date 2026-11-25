@@ -1,0 +1,70 @@
+//! Assembly: features compose into one grammar — their rules in
+//! feature order, the first feature's first rule the start — and the
+//! engine's build calls dispatch back through the features' builder
+//! tables. Nothing is parsed here: a feature's `grammar { … }` was
+//! read when the compiler ran.
+use core.{SyntaxArena, Span, flatten}
+use @std.grammar.{Captured, Grammar, Rule}
+use grammar.{Token}
+/// The composed grammar: every feature's rules, in feature order.
+export type Composed = { built: Grammar }
+
+/// Every fragment, in feature order — the first feature's first rule
+/// is the language's start rule.
+export fn compose_grammar(features: List<LanguageFeature>) -> Composed {
+    let rules = flatten([f.gram.rules for f in features])
+    let start = if rules.is_empty() { "" } else { rules[0].name }
+    Composed { built: Grammar { name: start, start: start, rules: rules } }
+}
+
+/// Every builder under its name, the first feature registering a
+/// name winning — dispatch's search order, indexed once so a parse
+/// finds a node's builder in one lookup instead of a walk over every
+/// feature's rows.
+export fn builder_index(features: List<LanguageFeature>) -> Map<string, BuilderRow> {
+    mut index: Map<string, BuilderRow> = {}
+    for f in features {
+        for row in f.builders {
+            if index.get(row.name) == null { index.set(row.name, row) }
+        }
+    }
+    index
+}
+
+/// The engine-facing dispatch: the builder registered under `name`
+/// builds, through a Builder holding this call's world.
+export fn build_named(
+    builders: Map<string, BuilderRow>,
+    store: SyntaxArena,
+    name: string,
+    args: List<Captured<Token, LangNode>>,
+    span: Span?,
+    text: string,
+    words: BlockWords,
+) -> Result<Captured<Token, LangNode>, string> {
+    let hit: BuilderRow? = builders.get(name)
+    if hit == null { return .Err("no feature owns builder `${name}`") }
+    // the builder is a `mut` seat — the world it writes through is
+    // a place, never a temporary
+    mut world = Builder {
+        store: store,
+        args: args,
+        span: span,
+        text: text,
+        words: words,
+        payloads: hit!.payloads,
+    }
+    .Ok(Captured.Node(hit!.build(world)?))
+}
+
+/// The same dispatch from the features themselves — what a test of
+/// the registration asks.
+export fn dispatch(
+    features: List<LanguageFeature>,
+    store: SyntaxArena,
+    name: string,
+    args: List<Captured<Token, LangNode>>,
+    span: Span?,
+) -> Result<Captured<Token, LangNode>, string> {
+    build_named(builder_index(features), store, name, args, span, "", BlockWords {})
+}

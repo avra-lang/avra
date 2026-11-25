@@ -1,0 +1,28 @@
+// proves: `@json` end to end, evaluated and native alike — a record
+// with a nested record, a list and an optional read from text, written
+// back, and a misfit refused with its path.
+use @std.json.{Json, parse, to_text}
+use @std.json.codec.{json}
+
+@json
+type Point = { x: float, y: float }
+
+@json
+type Shape = { name: string, points: List<Point>, closed: bool, label: string? }
+
+fn shown(text: string) -> string {
+    match Shape.from_json(parse(text) catch Json.Null) {
+        .Ok(s) -> to_text(s.to_json()),
+        .Err(e) -> e.describe().message,
+    }
+}
+
+println(
+    shown(
+        "{\"name\":\"tri\",\"points\":[{\"x\":0,\"y\":0},{\"x\":1.5,\"y\":-2e-3}],\"closed\":true}",
+    ),
+)
+println(shown("{\"name\":\"tri\",\"points\":[{\"x\":0,\"y\":\"0\"}],\"closed\":true}"))
+println(shown("{\"name\":\"tri\",\"points\":[],\"closed\":false,\"label\":\"L\"}"))
+let made = Shape { name: "sq", points: [Point { x: 1.0, y: 2.0 }], closed: true, label: null }
+to_text(made.to_json())

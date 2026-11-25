@@ -1,0 +1,104 @@
+// A HANDSHAKE HOLDS MEMORY UNTIL IT ENDS, so a core runs at most
+// `Timing.handshakes` at once: a connection arriving past the cap is
+// closed before its opener runs — before any byte is read or any
+// crypto begins — and a slot comes back when a handshake ends. The
+// opener here stands in for TLS: it counts its calls and takes its
+// time, as a slow peer's handshake does.
+use @std.net.{Conn, NetError, connect, listen}
+use @std.time.{Duration, ms, secs, sleep, now_ms, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Timing, served}
+use @std.http.wire.{Secure, Transport, plainly}
+
+type HcApp = {}
+
+/// An opener that counts its calls and holds each for `hold` ms.
+fn hc_slow(c: Conn, calls: Cell<int>, hold: int) -> dyn Transport? {
+    calls.set(calls.get() + 1)
+    sleep(ms(hold))
+    plainly(c)
+}
+
+/// What a connection heard before `wait` ms: "end" when the server
+/// closed it, "quiet" when nothing came.
+fn hc_heard(c: Conn, wait: int) -> string {
+    match within ms(wait) { c.read(64) } {
+        .Ok(b) -> if b == null { "end" } else { "data" },
+        .Err(e) -> if e.timed_out() { "quiet" } else { "failed" },
+    }
+}
+
+/// A request answered over `c`: its status line's code, or what broke.
+fn hc_asked(c: Conn) -> string {
+    match c.write("GET / HTTP/1.1\r\nhost: a\r\n\r\n".bytes()) {
+        .Ok(_) -> {},
+        .Err(_) -> { return "unwritten" },
+    }
+    match within secs(2) { c.read(4096) } {
+        .Ok(b) -> ((b ?? "".bytes()).text() ?? "").substring(9, 12),
+        .Err(_) -> "unanswered",
+    }
+}
+
+/// One slot: the first connection holds it through a slow handshake,
+/// the second is closed at once and its opener never runs, and once
+/// the first ends a third is opened and served.
+fn hc_past_the_cap() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let calls: Cell<int> = Cell.new(0)
+    let s = served(l, () -> HcApp {}, limits(), Timing { handshakes: 1 }) { _a, q -> text(200, "ok") }
+        .secured(Secure { open: (c: Conn, d: Duration) -> hc_slow(c, calls, 300) })
+    spawn s.run(1)
+    defer s.stop()
+    let first = connect("127.0.0.1", l.port, secs(2))?
+    sleep(ms(50))
+    let second = connect("127.0.0.1", l.port, secs(2))?
+    let t0 = now_ms()
+    let refused = hc_heard(second, 1000)
+    let prompt = now_ms() - t0 < 200
+    let served_first = hc_asked(first)
+    let third = connect("127.0.0.1", l.port, secs(2))?
+    let served_third = hc_asked(third)
+    .Ok("${refused} ${prompt} ${served_first} ${served_third} ${calls.get()}")
+}
+
+/// A cap of none, or below none, opens nothing: every connection
+/// closed, no opener run — a bound is never read as "no bound".
+fn hc_no_slots(cap: int) -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let calls: Cell<int> = Cell.new(0)
+    let s = served(l, () -> HcApp {}, limits(), Timing { handshakes: cap }) { _a, q -> text(200, "ok") }
+        .secured(Secure { open: (c: Conn, d: Duration) -> hc_slow(c, calls, 0) })
+    spawn s.run(1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    .Ok("${hc_heard(c, 1000)} ${calls.get()}")
+}
+
+/// A plain server counts no handshakes: past a cap of none it serves.
+fn hc_plain_is_uncapped() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> HcApp {}, limits(), Timing { handshakes: 0 }) { _a, q -> text(200, "ok") }
+    spawn s.run(1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    .Ok(hc_asked(c))
+}
+
+fn hc_shown(r: Result<string, NetError>) -> string {
+    match r { .Ok(s) -> s, .Err(e) -> e.describe().message }
+}
+
+spec "std.http handshakes in flight" {
+    given "a core allowed one handshake at a time" {
+        then "a connection past the cap is closed at once, its opener never run, and the slot returns when the handshake ends" {
+            hc_shown(hc_past_the_cap()) == "end true 200 200 2"
+        }
+    }
+    given "a cap of none" {
+        then "every secured connection is closed and no opener runs" { hc_shown(hc_no_slots(0)) == "end 0" }
+        then "a negative cap is no slot, never no bound" { hc_shown(hc_no_slots(-1)) == "end 0" }
+        then "a plain server has no handshakes to cap" { hc_shown(hc_plain_is_uncapped()) == "200" }
+    }
+}

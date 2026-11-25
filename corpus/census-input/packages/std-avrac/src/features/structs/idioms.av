@@ -1,0 +1,30 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+
+/// A hand-rolled identity comparison — every typed id (`TypeId`,
+/// `ExprId`, a struct wrapping one field) is compared by `.index`
+/// pervasively in this compiler's own source, but the SHAPE that
+/// makes the comparison honest — one word, nothing more — is a
+/// property of the type, not of the site that wrote it. `avra fix`
+/// names no mechanical rewrite here: a `.index` comparison names no
+/// verb the type doesn't already carry, so this rule only SAYS,
+/// never rewrites.
+@keeps("a.name == b.name")
+export rule index_compared {
+    // LICENSED structs.index_compared: both arms — a rule matches the shape an idiom names
+    quote { ${a}.index == ${b}.index } -> hand_rolled_identity(a, b),
+    quote { ${a}.index != ${b}.index } -> hand_rolled_identity(a, b),
+}
+
+fn hand_rolled_identity(a: Code, b: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                a.loc(),
+                "a typed id is compared by the verb its type declares, never by `.index` — `${a.text()}` and `${b.text()}` name that verb, this site spells its `.index` instead",
+                "this comparison",
+                "compare the values the type itself agrees by, or license this site if it IS that law",
+            ),
+        )
+}

@@ -1,0 +1,100 @@
+// `run_settle` — a const's initializer run to its value. The reach
+// law is checked BEFORE the run: one World row anywhere in the
+// program refuses it, naming the row and the body.
+use @std.avrac.testing.{ir_of}
+
+use @std.avrac.core.{Ins, Reg}
+use @std.avrac.features.{Unsettled, budgets_of}
+use compiler.backend.{run_settle, world_witness}
+use compiler.lower.{Body, Lowered}
+
+spec "compiler/settle — the evaluator settles a const" {
+    given "a program's own entry" {
+        then "prints, and printing reaches the world" {
+            match run_settle(ir_of("3 + 4"), budgets_of(1000), "/") {
+                .Err(why) -> reaches(why, "avra_puts"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+    given "the reach law" {
+        then "a World row in any body refuses before the run, naming the row" {
+            let l = ir_of("fn f() -> int { 3 }\nf()")
+            let f: Body = l.fns.first()!
+            // LICENSED compiler.raw_rt_call_void: the reach law's own subject is the row's NAME — a
+            // synthetic instruction built by hand to probe it, not a feature's call
+            let worldly = f with { ins: [Ins.CallRtVoid("avra_io_write", [])].concat(f.ins) }
+            match run_settle(l with { fns: [worldly] }, budgets_of(1000), "/") {
+                .Err(why) -> reaches(why, "avra_io_write"),
+                .Ok(_) -> false,
+            }
+        }
+        then "an embed under an aggregate is admitted to compile-time transport" {
+            let l = ir_of("fn f() -> int { 3 }\nf()")
+            let f: Body = l.fns.first()!
+            // LICENSED compiler.raw_rt_call_void: the reach law's own subject is the row's NAME — a
+            // synthetic instruction built by hand to probe it, not a feature's call
+            let embedding = f with { ins: [Ins.CallRtVoid("avra_embed", [])].concat(f.ins) }
+            match run_settle(l with { fns: [embedding] }, budgets_of(1000), "/") {
+                .Err(why) -> reaches(why, "avra_puts"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a row the registry does not know is the program's own extern, and reaches the world" {
+            let l = ir_of("3")
+            let e: Body = l.entry
+            match run_settle(
+                l with { entry: e with { ins: [Ins.CallRtVoid("sqlite3_open", [])].concat(e.ins) } },
+                budgets_of(1000),
+                "/",
+            ) { .Err(why) -> reaches(why, "sqlite3_open"), .Ok(_) -> false }
+        }
+    }
+    given "a two-body call chain beside a body reached only as a value, never called" {
+        then "the settlement refuses: the chain's own call reaches the world" {
+            match run_settle(chained(true), budgets_of(1000), "/") {
+                .Err(why) -> reaches(why, "avra_io_write"),
+                .Ok(_) -> false,
+            }
+        }
+        then "the witness names the entry and both real callers, never the value-only body" {
+            let names = witness_names(chained(true))
+            names.contains("callee_a") && names.contains("callee_b") && !names.contains("off_chain")
+        }
+        then "removing the world call off the same chain settles to a value" {
+            match run_settle(chained(false), budgets_of(1000), "/") {
+                .Ok(_) -> true,
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
+/// A two-hop call chain (`entry -> callee_a -> callee_b`) that reaches the
+/// world only when `speaks`, plus `off_chain`: lowered alongside them (as
+/// any body `l.fns` over-approximates might be) but never on the call
+/// path — the witness law's subject, never its witness.
+fn chained(speaks: bool) -> Lowered {
+    let base = ir_of("fn f() -> int { 3 }\nf()")
+    let plain: Body = base.fns.first()!
+    let seat: Reg = Reg { index: 0 }
+    let entry = plain with { name: base.entry.name, ins: [Ins.Call(seat, "callee_a", [])].concat(plain.ins) }
+    let callee_a = plain with { name: "callee_a", ins: [Ins.Call(seat, "callee_b", [])].concat(plain.ins) }
+    let world_ins: List<Ins> = if speaks { [Ins.CallRtVoid("avra_io_write", [])] } else { [] }
+    let callee_b = plain with { name: "callee_b", ins: world_ins.concat(plain.ins) }
+    let off_chain = plain with { name: "off_chain" }
+    base with { entry: entry, fns: [callee_a, callee_b, off_chain] }
+}
+
+/// The witness chain's body names, or `[]` when the program never reaches
+/// the world at all.
+fn witness_names(l: Lowered) -> List<string> {
+    [b.name for b in world_witness(l, true) ?? []]
+}
+
+fn reaches(why: Unsettled, row: string) -> bool {
+    match why {
+        .Reach(label) -> label.contains(row),
+        .Budget(_) or .Trap(_) or .Param(_) or .Spoken or .Recursive -> false,
+    }
+}

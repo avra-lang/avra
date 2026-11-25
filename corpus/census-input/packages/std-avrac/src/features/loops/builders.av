@@ -1,0 +1,61 @@
+//! Parse-time lowering: the condition and body statements -> the
+//! While node; a range head -> the For node plus its DESUGARED
+//! condition and step (`name < hi`, `name + 1`) as real nodes with
+//! null spans. The two Ident references are SEPARATE nodes — each
+//! lowering site mints its own load.
+use core.{Stmt, Expr, BinOp, Scoped}
+use features.{LangNode, Builder, scoped_at}
+use grammar.{Token}
+
+fn build_while(b: Builder) -> Result<LangNode, string> {
+    let c = b.expr(0)?
+    let stmts = b.stmts(1)?
+    b.make_stmt(Stmt.While(c, stmts))
+}
+
+/// `for x in xs` — the element walk; the range form has its own
+/// branch (`..`-anchored, tried after this one falls through).
+fn build_for_each(b: Builder) -> Result<LangNode, string> {
+    let ix = b.tokens(0)?
+    let n = b.token(1)?
+    let xs = b.expr(2)?
+    let stmts = b.stmts(3)?
+    let index: Token? = ix.first()
+    b.make_stmt(Stmt.ForEach(scoped_at(index), Scoped(n.text), xs, stmts))
+}
+
+fn build_for(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let lo = b.expr(1)?
+    let hi = b.expr(2)?
+    let stmts = b.stmts(3)?
+    let cond_ref = b.store.alloc_expr(Expr.Ident(Scoped(n.text)))
+    let cond = b.store.alloc_expr(Expr.Binary(BinOp.Lt, cond_ref, hi))
+    let step_ref = b.store.alloc_expr(Expr.Ident(Scoped(n.text)))
+    let one = b.store.alloc_expr(Expr.IntLit(1))
+    let step = b.store.alloc_expr(Expr.Binary(BinOp.Add, step_ref, one))
+    b.make_stmt(Stmt.For(Scoped(n.text), lo, hi, cond, step, stmts))
+}
+
+fn build_break(b: Builder) -> Result<LangNode, string> {
+    labelled(b, false)
+}
+
+fn build_continue(b: Builder) -> Result<LangNode, string> {
+    labelled(b, true)
+}
+
+fn build_bare_break(b: Builder) -> Result<LangNode, string> {
+    b.make_stmt(Stmt.Jump(null, false))
+}
+
+fn build_bare_continue(b: Builder) -> Result<LangNode, string> {
+    b.make_stmt(Stmt.Jump(null, true))
+}
+
+/// A jump naming its loop: the label a READ of the name the `for`
+/// binds, at the name's own span, where a refusal about it points.
+fn labelled(b: Builder, again: bool) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    b.make_stmt(Stmt.Jump(b.store.alloc_expr(Expr.Ident(Scoped(n.text)), n.span), again))
+}

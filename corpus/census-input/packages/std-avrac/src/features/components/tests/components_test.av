@@ -1,0 +1,57 @@
+// Components, the vertical: a declaration is a record with
+// defaults, and in its own module a literal fills the rest — every
+// refusal the struct law's.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+fn config_of() -> string {
+    "fn twice(n: int) -> int {\n    n * 2\n}\ncomponent Cfg {\n    name: string\n    depth: int = 3\n    f: fn(int) -> int = twice\n    notes: List<string> = [\"a\"]\n}\n"
+}
+
+spec "features/components" {
+    given "declaration and instantiation" {
+        then "omitted fields take their defaults" {
+            shown(
+                "${config_of()}let c = Cfg { name: \"one\" }\n\"" +
+                    "\${c.depth} " +
+                    "\${c.f(21)} " +
+                    "\${c.notes[0]}\"",
+            ) == "3 42 a"
+        }
+        then "a written field wins" {
+            shown("${config_of()}let d = Cfg { name: \"two\", depth: 9 }\nd.depth") == "9"
+        }
+        then "the instance is a plain record — `with` and fields work" {
+            shown("${config_of()}let c = Cfg { name: \"one\" }\n(c with { depth: 5 }).depth") == "5"
+        }
+        then "an ordinary `type` may declare defaults too" {
+            shown("type P = { x: int, y: int = 7 }\nP { x: 1 }.y") == "7"
+        }
+        then "a managed default is value-semantic — two instances, two boxes" {
+            shown(
+                "type P = { x: int, tags: List<string> = [] }\nmut a = P { x: 0 }\nmut b = P { x: 0 }\na.tags.push(\"only-a\")\n\"" +
+                    "\${a.tags.length} " +
+                    "\${b.tags.length}\"",
+            ) == "1 0"
+        }
+        then "a lambda default hears the field's seat" {
+            shown("type H = { f: fn(int) -> int = (x) -> x + 1 }\nH { }.f(1)") == "2"
+        }
+    }
+    given "the refusals" {
+        then "a default of the wrong type, at the declaration" {
+            refused_with(
+                "type P = { x: int = \"s\" }\n2",
+                "field `x` defaults to `string`, and it is `int`",
+            )
+        }
+        then "a field without a default is still required" {
+            refused_with("${config_of()}let c = Cfg { depth: 1 }\n2", "`Cfg` needs field `name`")
+        }
+        then "an unknown field at instantiation" {
+            refused_with(
+                "${config_of()}let c = Cfg { name: \"x\", size: 1 }\n2",
+                "`Cfg` has no field `size`",
+            )
+        }
+    }
+}

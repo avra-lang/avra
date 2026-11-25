@@ -1,0 +1,42 @@
+// A seat named through a hole binds where the code lands: a template
+// reads it through the hole, and a read by its written name refuses
+// once, saying so.
+use @std.avrac.testing.{refused_in, provided, answered}
+
+/// A derive whose one method's seats are the row's fields, each spread
+/// as `seat` spells it, and whose body is `body`.
+fn reads(seat: string, body: string) -> string {
+    "use @std.meta.{Type, Field, Directive, Decls, name}\n" +
+        "fn seat_of(f: Field) -> Decls { quote { fn _(${seat}) {} } }\n" +
+        "export trait Reads {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let seats = [seat_of(f) for f in t.fields]\n" +
+        "        let a = name(t.fields[0].name)\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { static fn first(..\${seats}) -> int { ${body} } } } }]\n" +
+        "    }\n" +
+        "}\n"
+}
+
+const plain: string = "\${f.name}: \${f.ty}"
+
+fn row() -> string { "use @std.meta.{derive}\nuse @x.c.{Reads}\n@derive(Reads)\ntype P = { a: int, b: int }\n" }
+
+spec "features/quote — a seat named through a hole" {
+    given "the body reads a spread seat" {
+        then "through the hole, the seat answers" {
+            answered(provided(row() + "P.first(4, 5)", reads(plain, "\${a}"))) == "4"
+        }
+        then "by its written name, the read refuses once and names the hole" {
+            refused_in(
+                provided(row() + "P.first(4, 5)", reads(plain, "a")),
+                "`a` is bound through a hole, so a template reads it through the hole, never by its written name",
+            )
+        }
+        then "a defaulted seat's written name refuses the same — its default is no value to read" {
+            refused_in(
+                provided(row() + "P.first()", reads("\${f.name}: \${f.ty} = 5", "a")),
+                "`a` is bound through a hole, so a template reads it through the hole, never by its written name",
+            )
+        }
+    }
+}

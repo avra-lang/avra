@@ -1,0 +1,24 @@
+// proves: an OpenAPI document projected from a route table and a
+// `@json` record, evaluated and native alike.
+use @std.json.{to_text}
+use @std.json.codec.{json}
+use @std.http.frame.{Method}
+use @std.http.http.{Request, Unrouted, Response, ok}
+use @std.http.route.{fixed}
+use @std.openapi.{Api, Operation, operations, described, openapi}
+
+@json
+type Vote = { idea: int, up: bool }
+
+fn hi(_q: Request<Unrouted>) -> Response { ok("hi") }
+
+let routes = [fixed(Method.Get, "/health", hi), fixed(Method.Post, "/votes", hi)]
+let voted = Operation {
+    method: Method.Post,
+    pattern: "/votes",
+    body: Vote.json_schema(),
+    schemas: Vote.json_schemas(),
+}
+to_text(
+    openapi(Api { title: "Votes", version: "1", operations: described(operations(routes), voted) }),
+)

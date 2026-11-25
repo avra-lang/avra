@@ -1,0 +1,197 @@
+//! THE STORE — every artifact a build keeps, on disk, by content.
+//!
+//! ONE ROW SHAPE (a key, the bytes it names, the keys it read), ONE VERB SET, and a
+//! family as a KIND rather than a spelling. THE FILESYSTEM IS THE INDEX: `has` uses
+//! two `exists` calls and reads nothing, so "has this changed?" is O(1) with no index to load and
+//! no second copy of the truth to disagree with the first.
+//!
+//! A KEY IS CONTENT — a digest over a STABLE projection, never a per-run id, which is a
+//! slot in one process's table and means nothing to the next.
+//!
+//! A ROW IS PRESENT ONLY WHEN ITS EDGES ARE. Data and edges are two files and `has`
+//! wants both, so a write that never finished reads as ABSENT rather than as half a
+//! value: the edges are the COMMIT, not bookkeeping.
+use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
+use @std.path.{joined_path}
+use core.{digest_of, joined}
+
+/// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
+/// over it is exhaustive. Adding one is this enum and a directory name, which is the
+/// smallest edit a new family can be.
+export enum Stored {
+    /// A declaration's interface, stored STRUCTURALLY: a rendered spelling is a lossy
+    /// round trip that must REFUSE what it cannot re-render, which is what text did.
+    Sig
+    /// The tree's stamps: one row, each path with its stamp and its digest.
+    Fp
+    /// What a derivation remembers that is no artifact: a file's asks, a settled
+    /// const, a program's homes and closure, a verdict the evaluator agreed with.
+    Unit
+    /// Machine code: a file's object, or a program's module.
+    Obj
+    /// The linked program.
+    Bin
+    /// WHAT THE BUILD SAID about it — the warnings a hit must still speak, and the
+    /// reason they are a row rather than a field: a program that is not analysed has no
+    /// voice to ask, and a build that quietly stops warning is the silent wrongness this
+    /// whole design is arranged against.
+    Warn
+    /// THE DB's own rows (compiler/db.av) — a heterogeneous answer, keyed by its kind
+    /// and name, never an artifact of a build.
+    Rows
+}
+
+impl Stored {
+    /// The directory a family lives in — ONE projection, so the name a row is written
+    /// under and the name it is looked up by cannot differ.
+    fn name() -> string {
+        match self {
+            .Sig -> "sig",
+            .Fp -> "fp",
+            .Unit -> "unit",
+            .Obj -> "obj",
+            .Bin -> "bin",
+            .Warn -> "warn",
+            .Rows -> "rows",
+        }
+    }
+}
+
+/// WHERE A STORE'S WRITES LAND: on disk, or SET ASIDE in this process — read
+/// back before the disk and never written to it, so an inspection derives as a
+/// check does and leaves the store exactly as it found it (P7).
+export enum Keeping {
+    Disk
+    Aside(Cell<Map<string, string>>)
+}
+
+/// THE STORE — one root, every family under it, and where its writes land.
+export type Store = { root: string, keeping: Keeping }
+
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — the root in, the store out, like `new_kernel`.
+export fn store_at(root: string) -> Store { Store { root: root, keeping: Keeping.Disk } }
+
+/// A KEY OVER A PROJECTION — the one derivation every family shares, so no family can
+/// key itself differently from its neighbours. The family's name is folded first, so two
+/// families naming the same parts stay apart.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a family and its parts in, the key out.
+export fn node_key(family: Stored, parts: List<string>) -> string {
+    digest_of(joined([family.name()].concat(parts), "\n"))
+}
+
+impl Store {
+    /// THE SHARD a key lands in — one projection, because the writer that makes the
+    /// directory and the writer that names the file must agree about it. A content key is
+    /// uniform, so two characters make 256 buckets and no directory grows unbounded.
+    fn shard(family: Stored, key: string) -> string {
+        joined_path(joined_path(self.root, family.name()), key.substring(0, 2))
+    }
+
+    /// A key's path.
+    fn path(family: Stored, key: string) -> string { joined_path(self.shard(family, key), key) }
+
+    fn edge_path(family: Stored, key: string) -> string { "${self.path(family, key)}.deps" }
+
+    /// Withdraw an earlier commit before replacing its data. If the next
+    /// write fails, its old edge cannot make the new data look complete.
+    fn uncommit(family: Stored, key: string) -> bool {
+        let edge = self.edge_path(family, key)
+        if !exists(edge) { return true }
+        match remove(edge) { .Ok(_) -> true, .Err(_) -> false }
+    }
+
+    /// HAS THIS CHANGED? A row set aside, or two `exists` calls — NOTHING read.
+    fn has(family: Stored, key: string) -> bool {
+        self.aside_row(family, key) != null || self.on_disk(family, key)
+    }
+
+    fn on_disk(family: Stored, key: string) -> bool {
+        exists(self.path(family, key)) && exists(self.edge_path(family, key))
+    }
+
+    /// The row this process set aside under a key — none on a store that keeps to disk.
+    fn aside_row(family: Stored, key: string) -> string? {
+        match self.keeping { .Disk -> null, .Aside(rows) -> rows.get().get(self.path(family, key)) }
+    }
+
+    /// The bytes a key names, or nothing when the row is not committed.
+    fn get(family: Stored, key: string) -> string? { self.aside_row(family, key) ?? self.read_disk(family, key) }
+
+    fn read_disk(family: Stored, key: string) -> string? {
+        if !self.on_disk(family, key) { return null }
+        match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(why) -> null }
+    }
+
+    /// REMEMBER A ROW — on disk, or set aside where the store keeps none.
+    fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        match self.keeping {
+            .Disk -> self.written(family, key, bytes, read),
+            .Aside(rows) -> {
+                rows.put(self.path(family, key), bytes)
+                true
+            },
+        }
+    }
+
+    /// A row on disk: the DATA first, then the EDGES, so the second write is what makes
+    /// the row visible and a crash between them leaves nothing rather than half.
+    fn written(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        if !self.uncommit(family, key) { return false }
+        match write_text(self.path(family, key), bytes) {
+            .Ok(_) -> {},
+            .Err(_) -> { return false },
+        }
+        match write_text(self.edge_path(family, key), joined(read, "\n")) {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
+    }
+
+    /// A ROW WHOSE KEY IS ITS CONTENT is kept once: the same key names the same
+    /// bytes, and a write is two files opened, written and closed.
+    fn keep_once(family: Stored, key: string, bytes: string, read: List<string> = []) -> bool {
+        self.has(family, key) || self.keep(family, key, bytes, read)
+    }
+
+    /// THE ONE VERB MOST CALLERS WANT: the stored bytes, or compute, remember, hand back.
+    /// The ladder nobody should write — `if has { get } else { compute; keep }` — has no
+    /// site in the tree, because this is that ladder with the key, the edges and the body
+    /// in one place.
+    ///
+    /// REMEMBER A ROW WHOSE BYTES ARE A FILE — the twinned half of `keep`, because a
+    /// linked binary is BYTES and reading it as text is the thing that loses them. The
+    /// edges are the commit here too. A store that keeps aside keeps no file: only a
+    /// build makes one, and an inspection builds nothing.
+    fn keep_file(family: Stored, key: string, from: string, read: List<string>) -> bool {
+        match self.keeping {
+            .Disk -> self.file_written(family, key, from, read),
+            .Aside(_) -> false,
+        }
+    }
+
+    fn file_written(family: Stored, key: string, from: string, read: List<string>) -> bool {
+        match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        let bytes = match read_bytes(from) { .Ok(b) -> b, .Err(why) -> { return false } }
+        if !self.uncommit(family, key) { return false }
+        match write_bytes(self.path(family, key), bytes) {
+            .Ok(_) -> {},
+            .Err(_) -> { return false },
+        }
+        match write_text(self.edge_path(family, key), joined(read, "\n")) {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
+    }
+
+    /// PUT A ROW WHERE A CALLER WANTS IT — what a hit does with a binary: the store has
+    /// the bytes and the caller wants them at a path, and neither re-reads the other.
+    fn place(family: Stored, key: string, to: string) -> bool {
+        if !self.has(family, key) { return false }
+        let bytes = match read_bytes(self.path(family, key)) {
+            .Ok(b) -> b,
+            .Err(why) -> { return false },
+        }
+        match write_bytes(to, bytes) { .Ok(_) -> true, .Err(_) -> false }
+    }
+}

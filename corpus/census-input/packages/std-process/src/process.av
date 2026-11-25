@@ -1,0 +1,1431 @@
+//! @std.process — the program is the authority, the words are data.
+//!
+//! A `Tool` is minted once (`tool("git")?`) and pinned right there:
+//! a NAME becomes an absolute path no call site looks up again; a
+//! name spelled with a `/` is kept as written, so every child
+//! re-reads it against its own `cwd`. A `Command` is a tool, its
+//! words and its wiring — a record with defaults, changed by `with`.
+//! A word built from DATA lands where a dash is inert: `flag` fuses
+//! it to its option and `path` anchors it under `./`, both answering
+//! a `Command`, so they chain; `after_options` puts words past the
+//! tool's end-of-options word and `word` places a bare positional,
+//! and those two answer a `Result`, so the next verb reads `(…)?`.
+//! An exit is a VERDICT, never a count: `run()` judges it by
+//! `ok_exits`, `outcome()` reads it. No verb here takes a command
+//! string, so there is no shell to inject.
+use @std.time.{Duration, secs, now_ms}
+use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{nul_at}
+use @std.io.{env}
+
+// THIS PACKAGE'S OWN C (src/c/std_process.c) — the spawn table, the
+// pipes, the signals and the reaping, every one answering an int. A
+// child's streams are DESCRIPTORS; what flows through them is read
+// and written by the runtime's rows below, which are the only door
+// that mints a managed box.
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_var(token: int, text: string) -> int
+extern fn avra_proc_unstage(token: int) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_fd(h: int, stream: int) -> int
+extern fn avra_proc_shut(h: int, stream: int) -> int
+extern fn avra_proc_ready(h: int, timeout_ms: int) -> int
+extern fn avra_proc_reap(h: int) -> int
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_pid(h: int) -> int
+extern fn avra_proc_close(h: int) -> int
+extern fn avra_proc_executable(path: string) -> int
+
+// THE RUNTIME'S OWN — the descriptor rows.
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_errno_text(err: int) -> string
+extern fn avra_host_env(name: string) -> string
+extern fn avra_process_exit(code: int)
+extern fn avra_puts(s: string)
+
+// The substrate's spawn flags — one bit each, summed — and the events
+// read back from a finished handle. Fns, because a module file holds
+// declarations only.
+const pipe_in: int = 1
+const pipe_out: int = 2
+const pipe_err: int = 4
+const null_in: int = 16
+const inherit_in: int = 128
+const inherit_out: int = 256
+const inherit_err: int = 512
+const new_pgroup: int = 1024
+const inherit_env: int = 8192
+// What `ready` reports — bits, since more than one can be true.
+const ready_out: int = 1
+const ready_err: int = 2
+const ready_in: int = 4
+
+/// The pump's turn. Short enough that a deadline is not overshot by
+/// much, long enough that a quiet child is not spun on — and its size
+/// is not a correctness question, because the three invariants the
+/// pump holds are about ORDER (`pumped`).
+const turn_ms: int = 20
+
+/// The read's bite, the descriptor scratch's own size.
+const chunk: int = 1048576
+/// The status word's tag lives above the low 32 bits.
+const tag_base: int = 4294967296
+export const enoent: int = 2
+export const eacces: int = 13
+export const enotdir: int = 20
+const sigterm: int = 15
+const sigkill: int = 9
+const sigpipe: int = 13
+
+// ── The types ───────────────────────────────────────────────────
+
+/// The right to run one binary: minted by `tool`, never typed. `path`
+/// is what the mint pinned — absolute when a NAME was looked up on the
+/// PATH, the spelling itself when it held a `/`, which every child
+/// re-reads against its own `cwd`; `terminator` is the word after
+/// which the tool reads no options, when it has one.
+export type Tool = { name: string, path: string, terminator: string? }
+
+/// Where a child's standard input comes from. `Open` is a pipe held
+/// open for a started child: `write` feeds it, `close_stdin` ends it.
+export enum Stdin {
+    Closed
+    Inherit
+    Open
+    Text(s: string)
+    Lines(xs: List<string>)
+}
+
+/// Where a child's stdout and stderr go: into the capture, or straight
+/// through to ours — for a tool whose words are meant for the terminal.
+export enum Streams {
+    Captured
+    Inherited
+}
+
+/// When a started child counts as up. No variant guesses: `Started` is
+/// the pid alone and says so.
+export enum Ready {
+    Started
+    Exit
+    Line(pattern: string)
+    Exec(probe: Command)
+}
+
+export type EnvPair = { name: string, value: string }
+
+/// What a child sees in its environment: named pairs alone, or the
+/// invoker's whole world with pairs of ours laid over it — the hatch,
+/// spelled.
+export enum Env {
+    Only(pairs: List<EnvPair>)
+    Inherit(overrides: List<EnvPair>)
+}
+
+/// A tool, its words, and its wiring. A record with defaults: `with`
+/// changes what differs. `cwd` absent is the invoker's; `timeout`
+/// absent is no deadline, and `drain_grace` bounds output arriving
+/// AFTER the exit — a grandchild holding the pipe; `max_capture` is per
+/// stream and `0` lifts the cap, spelled; `ok_exits` are the codes
+/// `run` accepts; `own_group` puts the child at the head of its own
+/// process group, so a stop reaches its whole tree — false for a tool
+/// the terminal's Ctrl-C must reach; `streams` inherited means the child
+/// speaks straight to ours and the capture stays empty.
+export type Command = {
+    tool: Tool,
+    args: List<string>,
+    cwd: string? = null,
+    env: Env = minimal(),
+    stdin: Stdin = .Closed,
+    streams: Streams = .Captured,
+    timeout: Duration? = null,
+    drain_grace: Duration = secs(2),
+    max_capture: int = 16777216,
+    ok_exits: List<int> = [0],
+    stop_grace: Duration = secs(5),
+    own_group: bool = true,
+}
+
+/// A child's exit — a verdict, never a count. `.Code(0)` is never built:
+/// a zero is `.Clean`.
+export enum Exit {
+    Clean
+    Code(n: int)
+    Signal(sig: int, core: bool)
+}
+
+/// The two captured streams, whole. `truncated` says a stream was still
+/// open past `drain_grace` after the child exited — a grandchild held
+/// the pipe — and what was read so far is what there is.
+export type Output = { stdout: string, stderr: string, truncated: bool }
+
+/// A finished child, unjudged.
+export type Outcome = { exit: Exit, out: Output, took_ms: int }
+
+export enum Stream {
+    Stdout
+    Stderr
+}
+
+export enum ProcessError {
+    /// The program resolved to nothing — at mint, or at spawn when the
+    /// file is gone by then. `searched` is the PATH at mint and the
+    /// tool's own path at spawn.
+    NotFound(program: string, searched: string)
+    /// At spawn: the file exists and may not be executed.
+    Denied(program: string, path: string)
+    /// The working directory asked for is not a directory that is there.
+    NoCwd(dir: string)
+    /// An environment name that is not a name: empty, or holding `=`.
+    BadEnvName(name: string)
+    /// `run()` judged an exit outside `ok_exits`; the output rides along.
+    Failed(exit: Exit, out: Output)
+    /// The timeout fired and the child was stopped; what it said so far.
+    TimedOut(after_ms: int, partial: Output)
+    /// A stream exceeded `max_capture` and the child was stopped.
+    TooMuch(stream: Stream, cap: int, partial: Output)
+    /// A positional word begins with `-` and the tool declares no end of options.
+    Unplaceable(word: string, program: string)
+    Holed(word: string, at: int)
+    /// `start` waited the window out and the sign of readiness never came;
+    /// the child was stopped, and what it said rides along.
+    NotReady(waited_ms: int, partial: Output)
+    /// A pipeline stage exited outside its `ok_exits`; every stage's outcome rides along.
+    StageFailed(stage: int, exit: Exit, outs: List<Outcome>)
+    /// A scripted runner has no row for this command.
+    Unscripted(program: string, args: string)
+    /// Nothing to run: an empty pipeline, an empty race.
+    Empty(what: string)
+    /// The host refused: the errno and the call, never a sentinel.
+    Host(errno: int, call: string)
+}
+
+impl Error for ProcessError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .NotFound(p, s) -> info("process.not_found", not_found_text(p, s)),
+            .Denied(p, path) -> info("process.denied", "`${p}` at ${path} may not be executed"),
+            .NoCwd(d) -> info("process.no_cwd", "`${d}` is not a directory the child can stand in"),
+            .BadEnvName(n) -> info("process.bad_env_name", "`${n}` is not an environment variable's name"),
+            .Failed(e, o) -> info("process.failed", "the child exited ${exit_text(e)}: ${first_line(o.stderr)}"),
+            .TimedOut(after, _) -> info("process.timed_out", "the child was stopped after ${after}ms"),
+            .TooMuch(s, cap, _) -> info("process.too_much", "${stream_text(s)} exceeded the capture cap of ${cap} bytes"),
+            .Unplaceable(w, p) -> info(
+                "process.unplaceable",
+                "`${w}` begins with `-` and `${p}` declares no end of options",
+            ),
+            .Holed(_, at) -> info(
+                "process.holed",
+                "a word holding a NUL is two words — the host reads to byte ${at} and no further",
+            ),
+            .NotReady(waited, _) -> info(
+                "process.not_ready",
+                "the child gave no sign of readiness in ${waited}ms and was stopped",
+            ),
+            .StageFailed(i, e, _) -> info("process.stage_failed", "pipeline stage ${i + 1} exited ${exit_text(e)}"),
+            .Unscripted(p, a) -> info("process.unscripted", "no script answers `${p} ${a}`"),
+            .Empty(what) -> info("process.empty", "${what} has nothing to run"),
+            .Host(e, call) -> info("process.host", "${call}: ${avra_errno_text(e)}"),
+        }
+    }
+}
+
+/// A tool that resolved to nothing: a spelled path is not an executable
+/// file; a name is counted against `searched`'s entries, never dumped —
+/// and `searched` is one path at spawn, so the count reads 1 there.
+fn not_found_text(p: string, searched: string) -> string {
+    if p.contains(" ") { return "`${p}` is not one program — a tool is a name or a path, never a command line" }
+    if p.contains("/") { return "`${p}` is not an executable file" }
+    "`${p}` is on none of the PATH's ${searched.split(":").length} entries"
+}
+
+/// An exit as a sentence's tail: `clean`, `with code 3`, `by signal 9`.
+export fn exit_text(e: Exit) -> string {
+    match e {
+        .Clean -> "clean",
+        .Code(n) -> "with code ${n}",
+        .Signal(s, core) -> signal_text(s, core),
+    }
+}
+
+fn signal_text(s: int, core: bool) -> string {
+    let tail = if core { " (core dumped)" } else { "" }
+    "by signal ${s}${tail}"
+}
+
+/// A message quotes stderr's first line only — never a capture's worth.
+fn first_line(s: string) -> string {
+    let whole = s.trim()
+    let cut = whole.index_of("\n")
+    if cut < 0 { return whole }
+    "${whole.substring(0, cut)} …"
+}
+
+fn stream_text(s: Stream) -> string {
+    match s { .Stdout -> "stdout", .Stderr -> "stderr" }
+}
+
+// ── Minting ─────────────────────────────────────────────────────
+
+/// The one widening from a name to a tool: resolved on the invoker's
+/// PATH now — relative entries never searched — and pinned as an
+/// absolute path for good. A name spelled with a `/` is taken as written.
+export fn tool(name: string) -> Result<Tool, ProcessError> {
+    let holed_at = nul_at(name)
+    if holed_at >= 0 { fail ProcessError.Holed(name, holed_at) }
+    let path = which(name, search_path())
+    if path.length == 0 { fail ProcessError.NotFound(name, search_path()) }
+    Tool { name: name, path: path, terminator: terminator_of(name) }
+}
+
+/// A tool named by the environment (`CC`) with a fallback name: the
+/// variable's value is taken as written — a path or a name — and the
+/// fallback is looked up when it is unset or empty.
+export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessError> {
+    let holed_at = nul_at(var)
+    if holed_at >= 0 { fail ProcessError.Holed(var, holed_at) }
+    let named = avra_host_env(var)
+    tool(if named.length > 0 { named } else { default })
+}
+
+/// The invoker's PATH with its relative entries removed — the only PATH
+/// a lookup or a child ever sees.
+/// WHERE A NAME RESOLVES on the search path — the first entry holding
+/// a file this process may execute, or "" for none. The WALK is the
+/// language's; C answers the one question only it can, which is the
+/// same split as @std/io's environment predicate.
+fn which(name: string, path: string) -> string {
+    if name.contains("/") { return if avra_proc_executable(name) == 0 { name } else { "" } }
+    let hit: string? = [candidate(d, name) for d in path.split(":") if d.starts_with("/")]
+        .find(avra_proc_executable(it) == 0)
+    hit ?? ""
+}
+
+fn candidate(dir: string, name: string) -> string {
+    "${dir}/${name}"
+}
+
+fn search_path() -> string {
+    [d for d in avra_host_env("PATH").split(":") if is_absolute(d)].join(":")
+}
+
+fn is_absolute(d: string) -> bool {
+    d.starts_with("/")
+}
+
+/// Where a tool stops reading options — data about the tool, never a
+/// rule in the compiler. git repurposed `--` for pathspecs and has its
+/// own word; find and dd have none at all; every getopt tool honours
+/// `--`, which is what a tool not listed here gets. A row is keyed by
+/// the minted NAME, so a tool spelled as a path matches none and takes
+/// `--`: mint by name wherever the tool has a word of its own.
+type Terminator = { name: string, word: string? }
+
+const terminators: List<Terminator> = table<Terminator> {
+    name   | word
+    "git"  | "--end-of-options"
+    "find" | null
+    "dd"   | null
+}
+
+fn terminator_of(name: string) -> string? {
+    let row? = terminators.find(it.name == name) else { return "--" }
+    row.word
+}
+
+// ── The environment ─────────────────────────────────────────────
+
+/// The minimal base: what a child needs to run and nothing that turns
+/// a program into an interpreter — PATH (the invoker's, relative entries
+/// stripped), HOME, TMPDIR and TERM when set, `LANG=C`, `LC_ALL=C`,
+/// `NO_COLOR=1` so parsed output is stable.
+export fn minimal() -> Env {
+    Env
+        .Only(
+            present(["HOME", "TMPDIR", "TERM"])
+                .concat(
+                    [
+                        pair("PATH", search_path()),
+                        pair("LANG", "C"),
+                        pair("LC_ALL", "C"),
+                        pair("NO_COLOR", "1"),
+                    ],
+                ),
+        )
+}
+
+/// The developer's base: `minimal` plus the homes, proxies and agents a
+/// toolchain reaches for.
+export fn developer() -> Env {
+    minimal()
+        .passing(
+            [
+                "USER",
+                "LOGNAME",
+                "SHELL",
+                "SSH_AUTH_SOCK",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "NO_PROXY",
+                "CARGO_HOME",
+                "RUSTUP_HOME",
+                "GOPATH",
+                "XDG_CONFIG_HOME",
+                "XDG_CACHE_HOME",
+            ],
+        )
+}
+
+/// The invoker's whole environment, as it stands.
+export fn inherited() -> Env {
+    Env.Inherit([])
+}
+
+fn pair(name: string, value: string) -> EnvPair {
+    EnvPair { name: name, value: value }
+}
+
+/// The named variables the invoker has set, as pairs; an unset or empty
+/// one is absent.
+fn present(names: List<string>) -> List<EnvPair> {
+    [pair(n, avra_host_env(n)) for n in names if is_set(n)]
+}
+
+fn is_set(name: string) -> bool {
+    avra_host_env(name).length > 0
+}
+
+fn without(pairs: List<EnvPair>, name: string) -> List<EnvPair> {
+    [p for p in pairs if p.name != name]
+}
+
+impl Env {
+    /// The pairs this environment sets: every one under `Only`, the
+    /// overrides under `Inherit`.
+    fn pairs() -> List<EnvPair> {
+        match self { .Only(ps) or .Inherit(ps) -> ps }
+    }
+    /// The same kind of environment, setting `ps`.
+    fn holding(ps: List<EnvPair>) -> Env {
+        match self { .Only(_) -> Env.Only(ps), .Inherit(_) -> Env.Inherit(ps) }
+    }
+    /// More of the invoker's variables, by name — each replacing an
+    /// earlier pair of the same name.
+    fn passing(names: List<string>) -> Env {
+        self.holding(merged(self.pairs(), present(names)))
+    }
+    /// One variable set to a value of ours, replacing any earlier one.
+    fn with_var(name: string, value: string) -> Env {
+        self.holding(without(self.pairs(), name).concat([pair(name, value)]))
+    }
+    /// The names this environment sets.
+    fn names() -> List<string> {
+        [p.name for p in self.pairs()]
+    }
+    /// The pairs as the host takes them, `NAME=value`.
+    fn words() -> List<string> {
+        ["${p.name}=${p.value}" for p in self.pairs()]
+    }
+    /// The value the child would see, or null when it would see none —
+    /// an empty value is set. A name holding a NUL names nothing under
+    /// either variant: one method never reads one name two ways.
+    fn get(name: string) -> string? {
+        if nul_at(name) >= 0 { return null }
+        match self {
+            .Only(ps) -> ps.find(it.name == name)?.value,
+            .Inherit(ps) -> ps.find(it.name == name)?.value ?? env(name),
+        }
+    }
+}
+
+/// `later` laid over `earlier`, name by name.
+fn merged(earlier: List<EnvPair>, later: List<EnvPair>) -> List<EnvPair> {
+    mut out = earlier
+    for p in later { out = without(out, p.name).concat([p]) }
+    out
+}
+
+// ── The command ─────────────────────────────────────────────────
+
+/// A tool and the words the author wrote.
+export fn cmd(t: Tool, args: List<string>) -> Command {
+    Command { tool: t, args: args }
+}
+
+/// A path as a word no tool can read as an option: anchored under `./`
+/// unless it already names its root. An empty path stays empty — it is
+/// not the current directory in disguise.
+fn anchored(p: string) -> string {
+    if p.length == 0 || p.starts_with("/") || p.starts_with("./") || p.starts_with("../") { return p }
+    "./${p}"
+}
+
+/// A flag and its value as one word: `-o` attaches (`-ox`), every longer
+/// name fuses with `=`.
+fn fused(name: string, value: string) -> string {
+    if name.length == 2 && name.starts_with("-") && !name.starts_with("--") { return "${name}${value}" }
+    "${name}=${value}"
+}
+
+impl Command {
+    /// An option with its value as ONE word — `--name=value`, or `-ovalue`
+    /// for a one-letter option, which takes no `=` — so a value beginning
+    /// with `-` can never open another option.
+    fn flag(name: string, value: string) -> Command {
+        self with { args: self.args.concat([fused(name, value)]) }
+    }
+    /// A path word, anchored so the tool cannot read it as an option.
+    fn path(p: string) -> Command {
+        self with { args: self.args.concat([anchored(p)]) }
+    }
+    /// Words placed after the tool's end-of-options marker, where a
+    /// leading `-` is inert; a tool with no such word refuses a dashed one.
+    fn after_options(words: List<string>) -> Result<Command, ProcessError> {
+        let t: string? = self.tool.terminator
+        if t == null {
+            let dashed: string? = words.find(it.starts_with("-"))
+            if dashed != null { fail ProcessError.Unplaceable(dashed!, self.tool.name) }
+            return self with { args: self.args.concat(words) }
+        }
+        self with { args: self.args.concat([t!]).concat(words) }
+    }
+    /// A bare positional; one that begins with `-` belongs after the
+    /// options and is refused here.
+    fn word(w: string) -> Result<Command, ProcessError> {
+        if w.starts_with("-") { fail ProcessError.Unplaceable(w, self.tool.name) }
+        self with { args: self.args.concat([w]) }
+    }
+
+    /// Run to the end and JUDGE: an exit outside `ok_exits` fails with
+    /// the output riding along.
+    fn run() -> Result<Output, ProcessError> {
+        judged(self, self.outcome()?)
+    }
+
+    /// Run to the end and READ: the exit is the caller's to match. Fails
+    /// only when the child never ran, timed out, or outgrew its cap.
+    fn outcome() -> Result<Outcome, ProcessError> {
+        let began = now_ms()
+        let s = launched(self, 0 - 1)?
+        let done = pumped(s, self.drain_grace.ms)
+        let word = avra_proc_reap(done.h)
+        let _ = avra_proc_close(done.h)
+        if done.timed { fail ProcessError.TimedOut(timeout_ms(self.timeout), gathered(done)) }
+        if done.capped_out { fail ProcessError.TooMuch(Stream.Stdout, self.max_capture, gathered(done)) }
+        if done.capped_err { fail ProcessError.TooMuch(Stream.Stderr, self.max_capture, gathered(done)) }
+        Outcome { exit: exit_of(word), out: gathered(done), took_ms: now_ms() - began }
+    }
+
+    /// Whether `ok_exits` accepts an exit; a signal death never is.
+    fn accepts(e: Exit) -> bool {
+        match e {
+            .Clean -> self.ok_exits.contains(0),
+            .Code(n) -> self.ok_exits.contains(n),
+            .Signal(_, _) -> false,
+        }
+    }
+
+    /// The substrate's flags for this wiring.
+    fn flags() -> int {
+        let group = if self.own_group { new_pgroup } else { 0 }
+        let world = match self.env { .Only(_) -> 0, .Inherit(_) -> inherit_env }
+        let out = if self.streams is .Inherited { inherit_out + inherit_err } else { pipe_out + pipe_err }
+        stdin_flag(self.stdin) + out + group + world
+    }
+}
+
+fn stdin_flag(s: Stdin) -> int {
+    match s {
+        .Closed -> null_in,
+        .Inherit -> inherit_in,
+        .Open or .Text(_) or .Lines(_) -> pipe_in,
+    }
+}
+
+/// Stdin's octets. A NUL here is DATA — stdin is a byte stream, where
+/// a path is a name; the same package rules them opposite ways.
+fn stdin_bytes(s: Stdin) -> Bytes {
+    stdin_text(s).bytes()
+}
+
+fn stdin_text(s: Stdin) -> string {
+    match s { .Text(t) -> t, .Lines(xs) -> lines_text(xs), .Closed or .Inherit or .Open -> "" }
+}
+
+fn lines_text(xs: List<string>) -> string {
+    if xs.is_empty() { return "" }
+    xs.join("\n") + "\n"
+}
+
+/// A deadline in the substrate's terms: milliseconds, none when
+/// absent — and a negative span is a deadline already passed, never
+/// the absence of one.
+fn timeout_ms(d: Duration?) -> int {
+    if d == null { return 0 - 1 }
+    if d!.ms < 0 { return 0 }
+    d!.ms
+}
+
+fn has_bit(word: int, bit: int) -> bool {
+    word / bit % 2 == 1
+}
+
+/// The status word decoded once: the tag above (1 exited, 2 signalled),
+/// the payload below. A signal's payload carries the core-dump bit at 256.
+fn exit_of(word: int) -> Exit {
+    let tag = word / tag_base
+    let payload = word - tag * tag_base
+    if tag == 2 { return Exit.Signal(payload % 256, payload / 256 % 2 == 1) }
+    if payload == 0 { return Exit.Clean }
+    Exit.Code(payload)
+}
+
+fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
+    if errno == enotdir { return ProcessError.NoCwd(cwd) }
+    if errno == enoent { return ProcessError.NotFound(t.name, t.path) }
+    if errno == eacces { return ProcessError.Denied(t.name, t.path) }
+    ProcessError.Host(errno, "posix_spawn")
+}
+
+/// A name a child's environment cannot carry: empty, or holding the
+/// `=` that would split it into two.
+fn bad_env_name(n: string) -> bool {
+    n.length == 0 || n.contains("=")
+}
+
+/// THE DOOR every value this command hands the host passes through —
+/// the tool's path, the directory, each argument, each `NAME=value`.
+/// C reads a C STRING, so a NUL ends the value there while Avra still
+/// holds the rest: the guard and the kernel read different bytes, and
+/// an allowlisted path executes another program. Refused, never
+/// truncated. Stdin is the one string that MAY hold a NUL, because it
+/// is a byte stream rather than a name.
+fn holed(c: Command) -> ProcessError? {
+    let bad? = [c.tool.path, c.cwd ?? ""].concat(c.args).concat(c.env.words()).find(nul_at(it) >= 0) else { return null }
+    ProcessError.Holed(bad, nul_at(bad))
+}
+
+// ── A running child ─────────────────────────────────────────────
+
+/// A child that is up. Its scope is its lifetime: `stop` ends it — TERM
+/// to its tree, the command's `stop_grace`, then KILL — and `wait` sees
+/// it out. Output said and not yet read waits in the stage's `out` and
+/// `err`. Once ended, the child REMEMBERS its outcome: `stop` and `wait`
+/// answer it again, `read_line` has nothing more, `is_alive` is false.
+/// A child in flight under a driver. THE TEXT IT HAS SAID LIVES HERE,
+/// not in the stage: the one-shot pump keeps its landings and gathers
+/// once at the end, while a line reader must see text as it arrives —
+/// so each turn moves the stage's landings into these and clears
+/// them. The move is the size of the TURN's output, never of the
+/// child's, and `read_line` drains what it cuts.
+export type Child = { stage: Stage, command: Command, out: string = "", err: string = "", ended: Outcome? = null }
+
+impl Command {
+    /// The child started and READY by the sign asked for — or stopped
+    /// and refused with what it said so far. `Started` is the pid alone.
+    fn start(ready: Ready, limit: Duration) -> Result<Child, ProcessError> {
+        let s = launched(self, 0 - 1)?
+        mut child = Child { stage: s, command: self }
+        child.until_ready(ready, limit)?
+        child
+    }
+}
+
+impl Child {
+    /// One turn of the pump: whatever arrived joins this child's text
+    /// and the stage's landings are spent. Answers whether the child
+    /// is gone AND both ends are at EOF, which is what every caller
+    /// here asked the old event word.
+    fn pump(ms: int) -> bool {
+        let t = ticked(self.stage, ms)
+        self.out = self.out + (t.out.bytes().text() ?? "")
+        self.err = self.err + (t.err.bytes().text() ?? "")
+        self.stage = t with { out: [], err: [] }
+        self.done()
+    }
+
+    /// Gone, with nothing left to read on either end.
+    fn done() -> bool {
+        self.stage.stopped && avra_proc_fd(self.stage.h, 1) < 0 && avra_proc_fd(self.stage.h, 2) < 0
+    }
+
+    /// The child's ending, taken once: the text becomes the outcome and
+    /// the handle is released.
+    fn ended_with(began: int) -> Outcome {
+        let word = avra_proc_reap(self.stage.h)
+        let _ = avra_proc_close(self.stage.h)
+        let o = Outcome {
+            exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+            out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
+            took_ms: now_ms() - began,
+        }
+        self.out = ""
+        self.err = ""
+        self.ended = o
+        o
+    }
+
+    /// Ticks until the sign shows, the child dies first, or the window
+    /// closes — the last two stop the child and refuse.
+    fn until_ready(ready: Ready, limit: Duration) -> Result<int, ProcessError> {
+        if ready is .Started { return 0 }
+        let began = now_ms()
+        let deadline = began + limit.ms
+        mut waited = 0
+        while true {
+            let gone = self.pump(100)
+            if self.satisfied(ready) { return now_ms() - began }
+            waited = now_ms() - began
+            if gone && !(ready is .Exit) || now_ms() >= deadline {
+                let partial = Output { stdout: self.out, stderr: self.err, truncated: false }
+                self.stop()
+                fail ProcessError.NotReady(waited, partial)
+            }
+        }
+        waited
+    }
+
+    fn satisfied(ready: Ready) -> bool {
+        match ready {
+            .Started -> true,
+            .Exit -> avra_proc_reap(self.stage.h) != 0,
+            .Line(p) -> self.out.contains(p) || self.err.contains(p),
+            .Exec(probe) -> probe_clean(probe),
+        }
+    }
+
+    /// Text queued for the child's stdin; `Open` is the stdin that takes it.
+    /// LENGTH-AWARE: the bytes are measured by the header, so a NUL is
+    /// data here — stdin is a byte stream where a path is a name.
+    fn write(text: string) -> Result<int, ProcessError> {
+        let fd = avra_proc_fd(self.stage.h, 0)
+        if fd < 0 { fail ProcessError.Host(9, "stdin") }
+        let n = avra_fd_write(fd, text.bytes(), 0)
+        if n < 0 { fail ProcessError.Host(0 - n, "stdin") }
+        n
+    }
+
+    fn close_stdin() {
+        let _ = avra_proc_shut(self.stage.h, 0)
+    }
+
+    /// The next line the child says on stdout, waiting up to `limit` —
+    /// absent when the window closes with no complete line, or the child
+    /// is done and said nothing more. A last line without its newline is
+    /// answered once the child is gone.
+    fn read_line(limit: Duration) -> string? {
+        if self.ended != null { return null }
+        let deadline = now_ms() + limit.ms
+        while true {
+            let cut = self.out.index_of("\n")
+            if cut >= 0 {
+                let line = self.out.substring(0, cut)
+                self.out = self.out.substring(cut + 1, self.out.length)
+                return line
+            }
+            if self.pump(50) {
+                if self.out.length == 0 { return null }
+                let rest = self.out
+                self.out = ""
+                return rest
+            }
+            if now_ms() >= deadline { return null }
+        }
+        null
+    }
+
+    /// The child seen out: pumped to its end, or stopped at the deadline
+    /// with what it said so far. The handle is released either way.
+    fn wait(limit: Duration?) -> Result<Outcome, ProcessError> {
+        if self.ended != null { return self.ended! }
+        let began = now_ms()
+        let deadline = timeout_ms(limit)
+        mut gone = self.pump(0)
+        while !gone && (deadline < 0 || now_ms() - began < deadline) {
+            gone = self.pump(100)
+        }
+        if !gone {
+            let partial = Output { stdout: self.out, stderr: self.err, truncated: true }
+            self.stop()
+            fail ProcessError.TimedOut(deadline, partial)
+        }
+        self.ended_with(began)
+    }
+
+    /// The child ended: TERM to its tree, `stop_grace`, then KILL — and
+    /// the exit it met. The handle is released.
+    fn stop() -> Exit {
+        if self.ended != null { return self.ended!.exit }
+        let began = now_ms()
+        let _ = avra_proc_signal(self.stage.h, sigterm, 1)
+        self.until_gone(self.command.stop_grace.ms)
+        if avra_proc_reap(self.stage.h) == 0 {
+            let _ = avra_proc_signal(self.stage.h, sigkill, 1)
+            self.until_gone(self.command.stop_grace.ms)
+        }
+        self.ended_with(began).exit
+    }
+
+    /// Ticks until the child is reaped or `ms` pass.
+    fn until_gone(ms: int) {
+        let deadline = now_ms() + ms
+        let _ = self.pump(0)
+        while avra_proc_reap(self.stage.h) == 0 && now_ms() < deadline {
+            let _ = self.pump(50)
+        }
+    }
+
+    fn pid() -> int {
+        avra_proc_pid(self.stage.h)
+    }
+
+    /// Whether the child still runs — asked of the host.
+    fn is_alive() -> bool {
+        self.ended == null && avra_proc_reap(self.stage.h) == 0
+    }
+}
+
+/// A probe command's verdict as readiness: clean is up.
+fn probe_clean(probe: Command) -> bool {
+    match probe.outcome() { .Ok(o) -> o.exit is .Clean, .Err(_) -> false }
+}
+
+/// The bracket: the child up and ready around `body`, and stopped when
+/// it returns — however it returns. What `body` answered is the answer.
+export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T) -> Result<
+    T,
+    ProcessError,
+> {
+    mut child = c.start(ready, limit)?
+    let answer = body()
+    child.stop()
+    answer
+}
+
+// ── Pipelines ───────────────────────────────────────────────────
+
+/// Commands joined left to right by the kernel's pipes — no byte passes
+/// through this program. Every stage keeps its own stderr; the last
+/// stage's stdout is the pipeline's; a later stage's stdin IS the pipe,
+/// whatever its own command says.
+export type Pipeline = { stages: List<Command> }
+
+/// A finished pipeline, unjudged: one outcome per stage, in order.
+export type PipeOutcome = { stages: List<Outcome> }
+
+impl Command {
+    fn pipe(next: Command) -> Pipeline {
+        Pipeline { stages: [self, next] }
+    }
+}
+
+/// One child in flight: its handle, its deadline (or none below
+/// zero), the landings each stream has given, what stdin still owes
+/// it, and the verdicts that have become true — `expired` when the
+/// deadline had passed at launch, so nothing it says is captured. The buffers live HERE
+/// now — the C holds descriptors and nothing else.
+type Stage = {
+    h: int,
+    deadline: int,
+    out: List<Bytes> = [],
+    err: List<Bytes> = [],
+    out_len: int = 0,
+    err_len: int = 0,
+    feed: Bytes,
+    fed: int = 0,
+    cap: int,
+    capped_out: bool = false,
+    capped_err: bool = false,
+    closes: bool = false,
+    stopped: bool = false,
+    timed: bool = false,
+    truncated: bool = false,
+    expired: bool = false,
+}
+
+/// One stream's landings, taken until it has nothing more to give.
+/// A read answers a TOKEN and the take mints from it once, so each
+/// landing is taken before the next read is asked for.
+/// `ended` is the stream at EOF — a read answering 0, which is the
+/// child's end of it closed. The stream is LET GO then: a reader that
+/// keeps a dead end open never reads as finished, and every verb here
+/// that asks "is it done" asks whether both ends are gone.
+type Landed = { parts: List<Bytes>, len: int, over: bool, ended: bool }
+
+fn landed(fd: int, have: int, cap: int) -> Landed {
+    mut parts: List<Bytes> = []
+    mut len = have
+    mut token = avra_fd_read(fd, bite(len, cap))
+    while token > 0 {
+        let b = avra_fd_taken(token)
+        parts.push(b)
+        len = len + b.length
+        if cap > 0 && len > cap { return Landed { parts: parts, len: len, over: true, ended: false } }
+        token = avra_fd_read(fd, bite(len, cap))
+    }
+    Landed { parts: parts, len: len, over: cap > 0 && len > cap, ended: token == 0 }
+}
+
+/// HOW MUCH TO ASK FOR, which a cap decides. Draining the pipe dry
+/// and THEN testing the bound makes the capture as big as the child
+/// is fast: a cap of 1000 against `yes` kept 679 KB natively and 52 MB
+/// under the evaluator — the same decision, a different answer, which
+/// is a divergence in a value the caller reads. Asking for one byte
+/// past what is left bounds the overshoot to that byte.
+fn bite(have: int, cap: int) -> int {
+    if cap <= 0 { return chunk }
+    let left = cap - have + 1
+    if left < chunk { left } else { chunk }
+}
+
+/// A command launched; `upstream` is the handle whose stdout feeds
+/// it, or -1. THE GUARD JUDGES THE WHOLE COMMAND BEFORE THE FIRST
+/// WORD IS STAGED: a holed argument refused mid-stage would leave
+/// staged state to unwind, and judged up front the refusal has no
+/// side effects at all.
+fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
+    let bad: string? = c.env.names().find(bad_env_name(it))
+    if bad != null { fail ProcessError.BadEnvName(bad!) }
+    let short: ProcessError? = holed(c)
+    if short != null { fail short! }
+    let token = avra_proc_stage()
+    for w in c.args { let _ = avra_proc_word(token, w) }
+    for v in c.env.words() { let _ = avra_proc_var(token, v) }
+    let h = avra_proc_spawn(token, c.tool.path, c.cwd ?? "", c.flags(), upstream)
+    if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
+    let t = timeout_ms(c.timeout)
+    fed_first(
+        Stage {
+            h: h,
+            deadline: if t < 0 { 0 - 1 } else { now_ms() + t },
+            expired: t == 0,
+            feed: stdin_bytes(c.stdin),
+            cap: c.max_capture,
+        },
+        c,
+        upstream,
+    )
+}
+
+/// A stage whose stdin the caller will never write again gets it all
+/// now and the end closed, so a child reading to EOF is not waiting
+/// on a driver that has moved on.
+fn fed_first(s: Stage, c: Command, upstream: int) -> Stage {
+    if upstream >= 0 || c.stdin is .Open { return s }
+    shut_when_fed(poured(s with { closes: true }))
+}
+
+/// A stdin the stage OWNS is closed once it is all delivered — never
+/// before, because a feed larger than the pipe takes several turns.
+/// An `Open` stdin is the CALLER's and this must not touch it: the
+/// first draft closed it the moment the pipe was writable, which for
+/// an empty feed is immediately, and a child waiting to be written to
+/// saw EOF instead.
+fn shut_when_fed(s: Stage) -> Stage {
+    if s.closes && s.fed >= s.feed.length { let _ = avra_proc_shut(s.h, 0) }
+    s
+}
+
+/// Stdin handed to the pipe as far as it takes it — a short write is
+/// normal. The bytes are measured by the HEADER, so a NUL in stdin is
+/// data and travels: stdin is a byte stream where a path is a name.
+fn poured(s: Stage) -> Stage {
+    let fd = avra_proc_fd(s.h, 0)
+    if fd < 0 || s.fed >= s.feed.length { return s }
+    let n = avra_fd_write(fd, s.feed, s.fed)
+    if n <= 0 { return s }
+    s with { fed: s.fed + n }
+}
+
+/// ONE STAGE'S TURN IN A SWEEP: the DEADLINE asked before the turn, as
+/// the one-shot pump asks it, and the WAIT spent only if this sweep has
+/// not spent it yet.
+///
+/// ONE WAIT PACES A SWEEP, NOT ONE PER STAGE. The wait is what paces
+/// the loop, so N waits pace it N times over and the field's own size
+/// becomes the latency. A stage that turns ready during that one wait
+/// is seen on the next pass — one turn late at worst, where a wait per
+/// stage made it N turns.
+///
+/// `timed` is the witness of which branch was taken: nothing else sets
+/// it, and a stage that is already timed never reaches a sweep.
+fn paced(s: Stage, waited: bool) -> Stage {
+    if past(s) { return heard(s) with { timed: true } }
+    ticked(s, if waited { 0 } else { turn_ms })
+}
+
+/// A paced turn, GRACED the instant it stops on its own: a collector
+/// that reads `stopped` as "the capture is whole" would else miss a
+/// grandchild still holding the pipe — the law `pumped` already pays
+/// for a single command, owed here to every collector that declares a
+/// stage done. A stage stopped by a bound break is not graced: its
+/// caller kills the tree and the capture is already truncated.
+fn graced(s: Stage, waited: bool, grace_ms: int) -> Stage {
+    let t = paced(s, waited)
+    if t.stopped && !overdue(t) && !capped(t) { grace(t, grace_ms) } else { t }
+}
+
+/// One turn: what is ready, drained and fed, then a reap. The turn's
+/// LENGTH is not a correctness question — `pumped` and the drain
+/// below hold the order.
+///
+/// THE DRAIN IS THE LAST ACT BEFORE DECLARING THE CHILD GONE. A reap
+/// can report the child ended at the same instant the poll that
+/// preceded it answered "nothing ready" — the child wrote and exited
+/// between the poll and the reap — and a caller that reads `stopped`
+/// as "the capture is whole" then collects whatever the poll's own
+/// drain happened to land. Everything readable is swept here, once,
+/// before `stopped` can be answered; a caller only ever sees a gone
+/// child whose streams are dry.
+fn ticked(s: Stage, ms: int) -> Stage {
+    let ready = avra_proc_ready(s.h, ms)
+    let after = fed_on(drawn(s, ready), ready)
+    if avra_proc_reap(after.h) == 0 { return after }
+    swept(after) with { stopped: true }
+}
+
+fn drawn(s: Stage, ready: int) -> Stage {
+    let a = if has_bit(ready, ready_out) { taken_out(s) } else { s }
+    if has_bit(ready, ready_err) { taken_err(a) } else { a }
+}
+
+fn fed_on(s: Stage, ready: int) -> Stage {
+    if !has_bit(ready, ready_in) { return s }
+    shut_when_fed(poured(s))
+}
+
+fn taken_out(s: Stage) -> Stage {
+    let fd = avra_proc_fd(s.h, 1)
+    if fd < 0 { return s }
+    let l = landed(fd, s.out_len, s.cap)
+    if l.ended { let _ = avra_proc_shut(s.h, 1) }
+    s with { out: s.out.concat(l.parts), out_len: l.len, capped_out: s.capped_out || l.over }
+}
+
+fn taken_err(s: Stage) -> Stage {
+    let fd = avra_proc_fd(s.h, 2)
+    if fd < 0 { return s }
+    let l = landed(fd, s.err_len, s.cap)
+    if l.ended { let _ = avra_proc_shut(s.h, 2) }
+    s with { err: s.err.concat(l.parts), err_len: l.len, capped_err: s.capped_err || l.over }
+}
+
+/// Everything readable right now, both streams, with no wait.
+fn swept(s: Stage) -> Stage {
+    taken_err(taken_out(s))
+}
+
+/// THE PUMP, AND ITS THREE ORDER INVARIANTS — lane B's, and they are
+/// ORDER rather than granularity, which is why the turn's length
+/// above is free.
+///
+/// (A) A DEADLINE ALREADY PASSED FIRES BEFORE THE CHILD IS POLLED AT
+/// ALL. `ms(-5)` and `ms(0)` must answer a timeout with an EMPTY
+/// capture — one turn taken first and `echo` gets its word out.
+///
+/// (B) A TIMEOUT'S CAPTURE HOLDS EVERYTHING READABLE WHEN THE
+/// DEADLINE FIRED: the last act before declaring one is a SWEEP. (A)
+/// and (B) are opposite orderings around one event, which is why no
+/// turn size satisfies both and two invariants do.
+///
+/// (C) THE DRAIN GRACE IS A FLOOR, NOT A CEILING. After the child is
+/// gone its pipes may still be held by a grandchild; overshooting is
+/// safe and under-waiting is not, so the grace is waited OUT rather
+/// than raced.
+fn pumped(start: Stage, grace_ms: int) -> Stage {
+    mut s = start
+    while !s.stopped && !s.timed && !s.capped_out && !s.capped_err {
+        if past(s) {
+            s = heard(s) with { timed: true }
+        } else {
+            s = ticked(s, turn_ms)
+        }
+    }
+    if s.timed || s.capped_out || s.capped_err { return stopped_tree(s) }
+    grace(s, grace_ms)
+}
+
+/// Past its deadline, which is asked BEFORE any poll.
+fn past(s: Stage) -> bool {
+    s.deadline >= 0 && now_ms() >= s.deadline
+}
+
+/// A child that broke a bound is ended with its tree and swept once
+/// more — what it managed to say before it died is still the
+/// caller's.
+fn stopped_tree(s: Stage) -> Stage {
+    let _ = avra_proc_signal(s.h, sigkill, 1)
+    heard(s) with { truncated: true }
+}
+
+/// What a stage has said, swept — except a stage EXPIRED at launch:
+/// anything it wrote came after its deadline, and sweeping it would make
+/// the answer a race between the child and this process's scheduler.
+fn heard(s: Stage) -> Stage {
+    if s.expired { s } else { swept(s) }
+}
+
+/// The grace WAITED OUT after the child is gone: a grandchild may
+/// hold the pipes open, and whatever it says inside the floor is
+/// captured. What is still open when the floor expires is truncation.
+fn grace(s: Stage, grace_ms: int) -> Stage {
+    let until = now_ms() + grace_ms
+    mut g = s
+    // THE FLOOR BOUNDS A HOLDER'S TIME, IT DOES NOT MANUFACTURE ONE.
+    // The window exists because a GRANDCHILD may still hold a pipe and
+    // speak into it; with both ends closed nobody can, and waiting the
+    // rest out buys nothing — the loop asked the clock alone and paid
+    // the whole floor for every command that had no holder at all.
+    // Both questions, in the order they answer: is there time left,
+    // and is anyone left to use it.
+    while now_ms() < until && still_held(g) {
+        g = swept(ticked(g, turn_ms))
+    }
+    let last = swept(g)
+    if avra_proc_fd(last.h, 1) < 0 && avra_proc_fd(last.h, 2) < 0 { return last }
+    // A GRANDCHILD IS HOLDING OUR PIPE past the floor — the child is
+    // gone and its end is not. The GROUP goes, or the run leaves a
+    // process behind that outlives it; then one last sweep, because
+    // what it managed to say before it died is still the caller's.
+    let _ = avra_proc_signal(last.h, sigkill, 1)
+    swept(last) with { truncated: true }
+}
+
+/// WHETHER ANYONE CAN STILL SPEAK INTO THIS STAGE: an end of ours
+/// still open is a pipe a grandchild may hold. Both closed is silence
+/// that cannot break — the floor has nothing left to protect.
+fn still_held(s: Stage) -> bool {
+    avra_proc_fd(s.h, 1) >= 0 || avra_proc_fd(s.h, 2) >= 0
+}
+
+/// What a stage has captured, both streams gathered once.
+fn gathered(s: Stage) -> Output {
+    Output {
+        stdout: s.out.bytes().text() ?? "",
+        stderr: s.err.bytes().text() ?? "",
+        truncated: s.truncated,
+    }
+}
+
+/// Past its deadline and still running.
+fn overdue(s: Stage) -> bool {
+    s.timed
+}
+
+fn capped(s: Stage) -> bool {
+    s.capped_out || s.capped_err
+}
+
+/// The bound a stage broke, as the error a driver fails with.
+fn broken(c: Command, s: Stage) -> ProcessError {
+    if s.timed { return ProcessError.TimedOut(timeout_ms(c.timeout), gathered(s)) }
+    ProcessError
+        .TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
+}
+
+/// A stage's death by SIGPIPE — as a signal, or as the shell's
+/// 128-plus-signal code, which is how a wrapper reports it.
+fn is_sigpipe(e: Exit) -> bool {
+    match e { .Clean -> false, .Code(n) -> n == 128 + sigpipe, .Signal(s, _) -> s == sigpipe }
+}
+
+/// A finished stage's outcome; the handle is released. A status the
+/// host cannot answer reads as a kill, never as a code.
+fn collected(s: Stage, began: int) -> Outcome {
+    let word = avra_proc_reap(s.h)
+    let _ = avra_proc_close(s.h)
+    Outcome {
+        exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+        out: gathered(s),
+        took_ms: now_ms() - began,
+    }
+}
+
+/// Every stage still running killed with its tree and released.
+fn abandoned(live: List<Stage>) {
+    for s in live {
+        if !s.stopped { let _ = avra_proc_signal(s.h, sigkill, 1) }
+        let _ = avra_proc_close(s.h)
+    }
+}
+
+/// An outcome judged by its command's `ok_exits`.
+fn judged(c: Command, o: Outcome) -> Result<Output, ProcessError> {
+    if !c.accepts(o.exit) { fail ProcessError.Failed(o.exit, o.out) }
+    o.out
+}
+
+impl Pipeline {
+    fn pipe(next: Command) -> Pipeline {
+        Pipeline { stages: self.stages.concat([next]) }
+    }
+
+    /// Run to the end and JUDGE every stage by its own `ok_exits`; the
+    /// first stage outside them fails the pipeline, every outcome riding
+    /// along. The answer is the last stage's output.
+    fn run() -> Result<Output, ProcessError> {
+        let po = self.outcome()?
+        for i, o in po.stages {
+            if !self.stages[i].accepts(o.exit) && !self.consumer_left(i, po) { fail ProcessError.StageFailed(i, o.exit, po.stages) }
+        }
+        po.stages.last()!.out
+    }
+
+    /// A stage killed by SIGPIPE because the stage after it finished
+    /// clean did its job: `yes | head` is a success, as the shell never
+    /// managed to say.
+    fn consumer_left(i: int, po: PipeOutcome) -> bool {
+        if i + 1 >= po.stages.length { return false }
+        let mine = po.stages[i].exit
+        let theirs = po.stages[i + 1].exit
+        is_sigpipe(mine) && self.stages[i + 1].accepts(theirs)
+    }
+
+    /// Run to the end and READ every stage's exit. A stage past its
+    /// deadline or its cap is stopped and fails the whole.
+    fn outcome() -> Result<PipeOutcome, ProcessError> {
+        if self.stages.is_empty() { fail ProcessError.Empty("the pipeline") }
+        let began = now_ms()
+        mut live: List<Stage> = []
+        mut upstream = 0 - 1
+        for c in self.stages {
+            match launched(c, upstream) {
+                .Err(e) -> {
+                    abandoned(live)
+                    fail e
+                },
+                .Ok(s) -> {
+                    live.push(s)
+                    upstream = s.h
+                },
+            }
+        }
+        mut failure: ProcessError? = null
+        mut pending = live.length
+        while pending > 0 {
+            pending = 0
+            mut grown: List<Stage> = []
+            mut waited = false
+            for i, s in live {
+                if s.stopped {
+                    grown.push(s)
+                } else {
+                    let t = graced(s, waited, self.stages[i].drain_grace.ms)
+                    waited = waited || !t.timed
+                    if overdue(t) || capped(t) {
+                        let _ = avra_proc_signal(s.h, sigkill, 1)
+                        if failure == null { failure = broken(self.stages[i], t) }
+                    }
+                    grown.push(t)
+                    if !t.stopped && !t.timed && !capped(t) { pending = pending + 1 }
+                }
+            }
+            live = grown
+        }
+        let outs = [collected(s, began) for s in live]
+        if failure != null { fail failure! }
+        PipeOutcome { stages: outs }
+    }
+}
+
+// ── Many at once ────────────────────────────────────────────────
+
+/// An outcome slot not yet filled.
+const nothing_yet: Outcome? = null
+
+/// The commands run at most `limit` at a time — never unbounded by
+/// accident: a list of a thousand is not a fork bomb — and their
+/// outcomes in the list's order, unjudged. One past its deadline or its
+/// cap stops every sibling and fails the whole.
+export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, ProcessError> {
+    let width = if limit < 1 { 1 } else { limit }
+    let began = now_ms()
+    mut outs: List<Outcome?> = [nothing_yet for c in cs]
+    mut live: List<Stage> = []
+    mut owners: List<int> = []
+    mut next = 0
+    mut done = 0
+    while done < cs.length {
+        while live.length < width && next < cs.length {
+            match launched(cs[next], 0 - 1) {
+                .Err(e) -> {
+                    abandoned(live)
+                    fail e
+                },
+                .Ok(s) -> {
+                    live.push(s)
+                    owners.push(next)
+                },
+            }
+            next = next + 1
+        }
+        mut still: List<Stage> = []
+        mut still_owners: List<int> = []
+        mut waited = false
+        for i, s in live {
+            let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
+            waited = waited || !t.timed
+            if overdue(t) || capped(t) {
+                let why = broken(cs[owners[i]], t)
+                abandoned(live)
+                fail why
+            }
+            if t.stopped {
+                outs.set(owners[i], collected(t, began))
+                done = done + 1
+            } else {
+                still.push(t)
+                still_owners.push(owners[i])
+            }
+        }
+        live = still
+        owners = still_owners
+    }
+    [o! for o in outs]
+}
+
+/// The commands started one after another, `stagger` apart; the first
+/// to FINISH wins — success or failure — and every other is stopped,
+/// never left behind. An empty race is refused as `Empty`.
+export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessError> {
+    if cs.is_empty() { fail ProcessError.Empty("the race") }
+    let began = now_ms()
+    mut live: List<Stage> = []
+    mut owners: List<int> = []
+    mut next = 0
+    mut next_at = began
+    while true {
+        // EVERY COMMAND THAT IS DUE, not one per pass. A pass costs a
+        // turn per live stage, so launching one at a time made the
+        // START of the last command wait for a sweep of all the
+        // others — quadratic in the field, and `stagger: ms(0)`,
+        // which asks for all of them AT ONCE, paid the most.
+        while next < cs.length && now_ms() >= next_at {
+            match launched(cs[next], 0 - 1) {
+                .Err(e) -> {
+                    abandoned(live)
+                    fail e
+                },
+                .Ok(s) -> {
+                    live.push(s)
+                    owners.push(next)
+                },
+            }
+            next = next + 1
+            next_at = now_ms() + stagger.ms
+        }
+        mut winner: Outcome? = null
+        mut grown: List<Stage> = []
+        mut waited = false
+        for i, s in live {
+            let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
+            waited = waited || !t.timed
+            if overdue(t) || capped(t) {
+                let why = broken(cs[owners[i]], t)
+                abandoned(live)
+                fail why
+            }
+            if t.stopped && winner == null { winner = collected(t, began) }
+            grown.push(t)
+        }
+        if winner != null {
+            abandoned([s for s in grown if !s.stopped])
+            return winner!
+        }
+        live = grown
+    }
+    fail ProcessError.Empty("the race")
+}
+
+// ── The seam: who actually runs a command ───────────────────────
+
+/// Who runs a command: the host, a table of answers, or a plan that only
+/// says what it would run. Every law above the syscall — the judging,
+/// the positions, the caps — runs in all three.
+export trait Runner {
+    fn outcome(c: Command) -> Result<Outcome, ProcessError>
+}
+
+/// `run` through a runner: judged by the command's `ok_exits`.
+export fn run_through(r: dyn Runner, c: Command) -> Result<Output, ProcessError> {
+    judged(c, r.outcome(c)?)
+}
+
+type HostRunner = {}
+
+impl Runner for HostRunner {
+    fn outcome(c: Command) -> Result<Outcome, ProcessError> {
+        c.outcome()
+    }
+}
+
+/// The host: children really run.
+export fn host() -> dyn Runner {
+    let r: dyn Runner = HostRunner {}
+    r
+}
+
+/// One scripted answer: the tool's name and its words, joined by a
+/// space, and what the child would have said.
+export type Script = { program: string, args: string, exit: Exit, stdout: string, stderr: string }
+
+type ScriptedRunner = { rows: List<Script> }
+
+fn answers(row: Script, program: string, spelled: string) -> bool {
+    row.program == program && row.args == spelled
+}
+
+impl Runner for ScriptedRunner {
+    fn outcome(c: Command) -> Result<Outcome, ProcessError> {
+        let spelled = c.args.join(" ")
+        let hit? = self.rows.find(answers(it, c.tool.name, spelled)) else { fail ProcessError.Unscripted(c.tool.name, spelled) }
+        Outcome {
+            exit: hit.exit,
+            out: Output { stdout: hit.stdout, stderr: hit.stderr, truncated: false },
+            took_ms: 0,
+        }
+    }
+}
+
+/// A table of answers stands in for the host; a command without a row
+/// is `Unscripted`.
+export fn scripted(rows: List<Script>) -> dyn Runner {
+    let r: dyn Runner = ScriptedRunner { rows: rows }
+    r
+}
+
+type PlanRunner = {}
+
+impl Runner for PlanRunner {
+    fn outcome(c: Command) -> Result<Outcome, ProcessError> {
+        avra_puts("would run: ${c.tool.path} ${c.args.join(" ")}")
+        Outcome {
+            exit: Exit.Clean,
+            out: Output { stdout: "", stderr: "", truncated: false },
+            took_ms: 0,
+        }
+    }
+}
+
+/// The dry run: every command is printed and answered clean.
+export fn plan() -> dyn Runner {
+    let r: dyn Runner = PlanRunner {}
+    r
+}
+
+// ── This program's own verdict ──────────────────────────────────
+
+/// Exit this program with a VERDICT, never a count: a tally of
+/// failures cannot be handed here by mistake.
+export fn exit(v: Exit) {
+    avra_process_exit(status_of(v))
+}
+
+/// An exit as the process status a shell would see: the code, or
+/// 128 plus the signal.
+export fn status_of(v: Exit) -> int {
+    match v { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 128 + s }
+}

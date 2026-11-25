@@ -1,0 +1,28 @@
+// proves: a directory served, evaluated and native alike — a file, a
+// range, a 304, and a traversal and a symlink refused.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{Body}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{compiled, dispatch}
+use @std.http.files.{Files, directory}
+
+fn served(line: string, fields: string) -> Response {
+    let raw = "${line}\r\nHost: h\r\n${fields}\r\n".bytes()
+    let q = match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+    dispatch(
+        compiled(directory("/s", Files { root: "packages/std-http/src/tests/files_root" })),
+        q!,
+    )
+}
+
+fn said(r: Response) -> string { "${r.status} ${(r.body.text() ?? "?").trim()}" }
+
+println(said(served("GET /s/a.txt HTTP/1.1", "")))
+println(said(served("GET /s/a.txt HTTP/1.1", "Range: bytes=6-\r\n")))
+println(said(served("GET /s/a.txt HTTP/1.1", "If-None-Match: *\r\n")))
+println(said(served("GET /s/%2e%2e/files_outside.txt HTTP/1.1", "")))
+println(said(served("GET /s/escape.txt HTTP/1.1", "")))
+said(served("GET /s/ HTTP/1.1", ""))

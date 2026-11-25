@@ -1,0 +1,34 @@
+// The `@query` law, judged on the Fn a derive receives: a `Db` first,
+// then arguments and an answer that each fold through the stable
+// encoding.
+use @std.relation.query.{query_problems}
+use @std.meta.{Fn, Param, Kind}
+
+fn seat(name: string, ty: string, kind: Kind) -> Param {
+    Param { name: name, ty: ty, mutable: false, settled: false, at: null, kind: kind }
+}
+
+fn db_seat() -> Param { seat("db", "Db", Kind.Named("Db", [])) }
+
+fn problems(params: List<Param>, answer: string, answers: Kind) -> string {
+    [d.kind ?? "?" for d in query_problems(Fn { name: "q", params: params, answer: answer, at: null, answers: answers })]
+        .join(",")
+}
+
+spec "std/relation — @query's law" {
+    given "a fn over a Db" {
+        then "a Db, carried arguments and a carried answer are a query" {
+            problems([db_seat(), seat("k", "string", Kind.Str)], "int", Kind.Int) == ""
+        }
+        then "a first seat that is no Db is refused" {
+            problems([seat("k", "int", Kind.Int)], "int", Kind.Int) == "query_db" &&
+                problems([], "int", Kind.Int) == "query_db"
+        }
+        then "an argument with no stable encoding is refused — a call is named by its arguments' hash" {
+            problems([db_seat(), seat("x", "float", Kind.Float)], "int", Kind.Int) == "query_arg"
+        }
+        then "an answer with no stable encoding is refused — a kept answer is compared by its hash" {
+            problems([db_seat()], "float", Kind.Float) == "query_answer"
+        }
+    }
+}

@@ -1,0 +1,109 @@
+// The TLS red team's survivors: a downgrade to a protocol this build
+// does not speak, a certificate chain larger than a handshake message
+// may be, a handshake truncated at every byte, and a peer dribbling a
+// handshake one byte at a time past its deadline. Renegotiation is
+// held absent where it is decided — std_tls.c refuses to build with it
+// — so no peer can restart a handshake to flood one.
+use @std.net.{Listener, connect}
+use @std.time.{Duration, ms, secs, sleep, within}
+use @std.tls.{TlsError, server_config, session, wired}
+use @std.tls.testing.{
+    localhost_ca,
+    localhost_chain,
+    localhost_key,
+    trusting_localhost,
+    serving_localhost,
+}
+
+/// A TLS 1.0 ClientHello offering one CBC suite and no extensions —
+/// no `supported_versions`, so nothing newer than 1.0 is on offer.
+fn tls10_hello() -> Bytes {
+    [22, 3, 1, 0, 45, 1, 0, 0, 41, 3, 1]
+        .concat([0 for i in 0..32])
+        .concat([0, 0, 2, 0, 47, 1, 0])
+        .bytes()!
+}
+
+fn downgrade_refused() -> Result<bool, TlsError> {
+    let s = session(serving_localhost()?, "")?
+    s.fed(tls10_hello())?
+    let refused = words(s.step())
+    let alert = s.outgoing()?
+    refused.starts_with("handshake ") && !alert.is_empty() && alert.at(0) == 21
+}
+
+/// The leaf followed by the test authority `copies` times over.
+fn swollen_chain(copies: int) -> Bytes {
+    [localhost_chain()].concat([localhost_ca() for i in 0..copies]).bytes()
+}
+
+fn huge_chain_refused() -> Result<bool, TlsError> {
+    let s = server_config()?
+    let refused = words(s.presenting(swollen_chain(60), localhost_key()))
+    let fits = s.presenting(swollen_chain(5), localhost_key())?
+    let p = paired(trusting_localhost()?, fits, "localhost")?
+    refused
+            .ends_with("a chain larger than one handshake message holds — present fewer certificates") &&
+        shaken(p)?
+}
+
+/// A ClientHello cut after `n` bytes: the server asks for more, and
+/// never mistakes a prefix for a hello.
+fn cut_hello_waits(hello: Bytes, n: int) -> Result<bool, TlsError> {
+    let s = session(serving_localhost()?, "")?
+    s.fed(hello.slice(0, n))?
+    let step = s.step()?
+    s.end()?
+    step is .Reading
+}
+
+fn every_cut_waits() -> Result<bool, TlsError> {
+    let c = session(trusting_localhost()?, "localhost")?
+    c.step()?
+    let hello = c.outgoing()?
+    let cuts = [cut_hello_waits(hello, n)? for n in 1..hello.length]
+    hello.length > 100 && cuts.all(it)
+}
+
+/// A server whose handshake must finish within `d`, answering its
+/// words.
+fn serving_within(l: Listener, d: Duration) -> string {
+    match within d { accepted_tls(l) } {
+        .Ok(c) -> {
+            let _ = c.close()
+            "<ok>"
+        },
+        .Err(e) -> if e.timed_out() { "timed out" } else { e.describe().message },
+    }
+}
+
+fn dribble_meets_the_deadline() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn serving_within(l, ms(400))
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    let head = [22, 3, 1, 1, 0].bytes()!
+    mut i = 0
+    while i < 12 {
+        let _ = c.write(head.slice(i % 5, i % 5 + 1))
+        sleep(ms(80))
+        i = i + 1
+    }
+    let words = server.await
+    let _ = c.close()
+    words == "timed out"
+}
+
+spec "std.tls red team" {
+    given "a peer offering an older protocol" {
+        then "a TLS 1.0 hello is refused with an alert, never answered in 1.0" { passes(downgrade_refused()) }
+    }
+    given "a chain larger than a handshake message may be" {
+        then "a server refuses to present it, and one that fits is served" { passes(huge_chain_refused()) }
+    }
+    given "a truncated handshake" {
+        then "a hello cut at every byte reads as Reading, never as a hello" { passes(every_cut_waits()) }
+        then "a hello dribbled a byte at a time meets the whole handshake's deadline" {
+            passes(dribble_meets_the_deadline())
+        }
+    }
+}

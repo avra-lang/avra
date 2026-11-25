@@ -1,0 +1,176 @@
+//! THE STOCK GUARDS — two layers a browser-facing server wants:
+//! cross-origin reads (CORS) and the security headers a browser obeys.
+//!
+//!     server app { layer { wraps: cors(Cors { origins: ["https://app.example"] }) }
+//!                  layer { wraps: hardened }  … }
+//!
+//! CORS GRANTS BY NAME, NEVER BY ECHO. An origin reads a response only
+//! when it is listed; `*` grants every origin only while credentials
+//! are off, and with them on it grants none — echoing any origin back
+//! with credentials allowed is how a stranger's page reads a signed-in
+//! user's data, so that combination fails closed. A preflight is
+//! answered here, never by a route, and one that asks for a method or
+//! header not listed gets no grant: the browser then refuses. Every
+//! answer that depended on the origin says `Vary: origin`.
+//!
+//! THE SECURITY HEADERS ARE THE STRICT ONES, and a response loosens
+//! one by setting it itself: the layer never overwrites a header the
+//! handler wrote, so a page with its own `content-security-policy`
+//! (a nonce, say) keeps it. `csp` is a hook, asked per request.
+
+// ── CORS ────────────────────────────────────────────────────────
+
+/// Who may read across origins: the origins by exact name (`*` for
+/// any, without credentials), the methods and request headers a
+/// preflight may ask for, the response headers a page may read,
+/// whether credentials ride, and how long a browser may keep a
+/// preflight's answer.
+export type Cors = {
+    origins: List<string>,
+    methods: List<string> = ["GET", "HEAD", "POST"],
+    headers: List<string> = [],
+    exposed: List<string> = [],
+    credentials: bool = false,
+    max_age: int? = 600,
+}
+
+/// The CORS layer under `c`.
+export fn cors(c: Cors) -> fn(Request<Unrouted>, Handler) -> Response {
+    (q: Request<Unrouted>, next: Handler) -> c.shared(q, next)
+}
+
+impl Cors {
+    /// `q` answered by `next` — or, as a preflight, here — with the
+    /// grant its origin earns.
+    fn shared(q: Request<Unrouted>, next: Handler) -> Response {
+        let origin? = q.header("origin") else { return self.varied(next(q)) }
+        if q.method() is .Options && q.header("access-control-request-method") != null { return self.preflighted(q, origin) }
+        let r = next(q)
+        if !self.admits(origin) || r.header("access-control-allow-origin") != null { return self.varied(r) }
+        self.varied(self.granted(r, origin))
+    }
+
+    /// Whether `origin` may read: listed by name, or `*` while
+    /// credentials are off.
+    fn admits(origin: string) -> bool {
+        self.origins.contains(origin) || self.anyone()
+    }
+
+    /// Whether every origin reads alike: `*`, with no credentials.
+    fn anyone() -> bool { !self.credentials && self.origins.contains("*") }
+
+    /// `r` granted to `origin`.
+    fn granted(r: Response, origin: string) -> Response {
+        let named = r
+            .with_header("access-control-allow-origin", if self.anyone() { "*" } else { origin })
+        let with_credentials = if self.credentials { named.with_header("access-control-allow-credentials", "true") } else { named }
+        if self.exposed.is_empty() { return with_credentials }
+        with_credentials.with_header("access-control-expose-headers", self.exposed.join(", "))
+    }
+
+    /// A preflight's answer: 204, granting the method and headers asked
+    /// for when every one is listed, and nothing when any is not.
+    fn preflighted(q: Request<Unrouted>, origin: string) -> Response {
+        let blank = Response { status: 204 }
+            .varied("access-control-request-method")
+            .varied("access-control-request-headers")
+        let method = q.header("access-control-request-method") ?? ""
+        let asked = [h.trim() for h in q.headers("access-control-request-headers").join(",").split(",") if !h.trim().is_empty()]
+        if !self.admits(origin) ||
+            !self.methods.contains(method) ||
+            !asked.all((h) -> self.lists_header(h)) {
+            return self.varied(blank)
+        }
+        let granted = self
+            .granted(blank, origin)
+            .with_header("access-control-allow-methods", self.methods.join(", "))
+        let headed = if asked.is_empty() { granted } else { granted.with_header("access-control-allow-headers", asked.join(", ")) }
+        let aged? = self.max_age else { return self.varied(headed) }
+        self.varied(headed.with_header("access-control-max-age", "${aged}"))
+    }
+
+    /// Whether a request header a preflight asks for is listed, names
+    /// folded.
+    fn lists_header(name: string) -> bool { self.headers.any(same_token(name, it)) }
+
+    /// `r` saying it varies on the origin — unless every origin reads
+    /// it alike.
+    fn varied(r: Response) -> Response {
+        if self.anyone() { return r }
+        r.varied("origin")
+    }
+}
+
+// ── Security headers ────────────────────────────────────────────
+
+/// The security headers a response carries unless it set its own:
+/// HSTS for `hsts` seconds (with subdomains when asked; a browser
+/// ignores it over plain HTTP), the content security policy `csp`
+/// answers per request, who may frame the page, how much of the URL a
+/// link's target is told, the features a page may use, and whether a
+/// page it opens shares its window. `x-content-type-options: nosniff`
+/// always rides.
+export type Hardening = {
+    hsts: int? = 31536000,
+    hsts_subdomains: bool = true,
+    csp: fn(Request<Unrouted>) -> string? = strict_csp,
+    frames: string? = "DENY",
+    referrer: string? = "strict-origin-when-cross-origin",
+    permissions: string? = null,
+    opener: string? = "same-origin",
+}
+
+/// The security headers under the defaults.
+export fn hardened(q: Request<Unrouted>, next: Handler) -> Response { Hardening {}.applied(strict_headers(), q, next) }
+
+/// The security-headers layer under `h`: every header but the policy
+/// spelled once, here, and the policy asked per request.
+export fn hardening(h: Hardening) -> fn(Request<Unrouted>, Handler) -> Response {
+    let fixed = h.fixed()
+    (q: Request<Unrouted>, next: Handler) -> h.applied(fixed, q, next)
+}
+
+/// The policy that loads only from the page's own origin, runs no
+/// plugin, keeps `<base>` home and lets no other page frame it.
+export fn strict_csp(_q: Request<Unrouted>) -> string? {
+    "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+}
+
+/// The defaults' fixed headers, spelled once for the process.
+once fn strict_headers() -> List<Header> { Hardening {}.fixed() }
+
+impl Hardening {
+    /// `q` answered by `next`, and the answer given every header —
+    /// `fixed`, then the policy — it did not set itself.
+    fn applied(fixed: List<Header>, q: Request<Unrouted>, next: Handler) -> Response {
+        let r = next(q)
+        if r.status < 200 { return r }
+        let offered = [h! for h in [header_of("content-security-policy", (self.csp)(q))] if h != null]
+            .concat(fixed)
+        r with { headers: r.headers.concat([h for h in offered if r.header(h.name) == null]) }
+    }
+
+    /// Every header but the policy, as this hardening spells them.
+    fn fixed() -> List<Header> {
+        let offered = [
+            header_of("strict-transport-security", self.transport()),
+            header_of("x-frame-options", self.frames),
+            header_of("referrer-policy", self.referrer),
+            header_of("permissions-policy", self.permissions),
+            header_of("cross-origin-opener-policy", self.opener),
+            header_of("x-content-type-options", "nosniff"),
+        ]
+        [h! for h in offered if h != null]
+    }
+
+    fn transport() -> string? {
+        let age? = self.hsts else { return null }
+        if self.hsts_subdomains { "max-age=${age}; includeSubDomains" } else { "max-age=${age}" }
+    }
+}
+
+/// A header of `name` when there is a value to give it.
+fn header_of(name: string, value: string?) -> Header? {
+    let v? = value else { return null }
+    header_pair(name, v)
+}

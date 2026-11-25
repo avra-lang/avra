@@ -1,0 +1,43 @@
+//! proves: an interrupt wakes a reader already parked on a socket as
+//! TIMED OUT, at once and though its own deadline is far off — and
+//! loses nothing: the socket stays open, and what the peer sends next
+//! is the next read's
+use @std.net.{listen, connect, Conn, NetError}
+use @std.time.{ms, secs, sleep, within, now_ms}
+
+/// What a read parked for up to ten seconds finds, and whether it
+/// answered within one.
+fn parked_read(s: Conn) -> string {
+    let from = now_ms()
+    let got = match within secs(10) { s.read(64) } {
+        .Ok(b) -> if b == null { "end" } else { "more" },
+        .Err(e) -> if e.timed_out() { "timed out" } else { "failed" },
+    }
+    "${got} ${now_ms() - from < 1000}"
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let s = l.accept()?
+    let reader = spawn parked_read(s)
+    sleep(ms(20))
+    s.interrupt()
+    let woke = reader.await
+    let _ = c.write("after".bytes())?
+    let next = match within secs(1) { s.read(64) } {
+        .Ok(b) -> b?.text() ?? "end",
+        .Err(_) -> "failed",
+    }
+    s.interrupt()
+    let idle = match within ms(50) { s.read(64) } {
+        .Ok(_) -> "read",
+        .Err(e) -> if e.timed_out() { "timed out" } else { "failed" },
+    }
+    let _ = s.close()
+    let _ = c.close()
+    let _ = l.close()
+    .Ok("${woke} | ${next} | ${idle}")
+}
+
+run() catch _ -> "failed"

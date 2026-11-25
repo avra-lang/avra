@@ -1,0 +1,102 @@
+// FETCH UNDER ATTACK: words and fields that would split a request,
+// a method with no word, a caller's own `content-type`, streams that
+// end at once, pause with empty pieces, or never end at all.
+use @std.time.{ms}
+use @std.http.http.{Header}
+use @std.http.client.{Answer, ClientError}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Payload, Options, Timeouts, fetch, post}
+
+/// A stream answering `pieces` in order, then its end.
+fn fa_stream(url: string, pieces: List<string>) -> Result<Answer, ClientError> {
+    let at = Cell.new(0)
+    post(url, .Stream(() -> fa_next(at, pieces), "text/plain"))
+}
+
+fn fa_next(at: Cell<int>, pieces: List<string>) -> Bytes? {
+    if at.get() >= pieces.length { return null }
+    at.set(at.get() + 1)
+    pieces[at.get() - 1].bytes()
+}
+
+/// A stream that never ends, bounded only by the request's deadline.
+fn fa_endless(url: string) -> Result<Answer, ClientError> {
+    let o = Options { pool: pool(), timeouts: Timeouts { total: ms(100) } }
+    let r = fetch(.Post, url, .Stream(fa_forever, "text/plain"), o)
+    o.pool.close_all()
+    r
+}
+
+fn fa_forever() -> Bytes? { "x".bytes() }
+
+fn fa_refused(r: Result<Answer, ClientError>) -> bool {
+    match r { .Err(.Unwritable) -> true, .Err(_) or .Ok(_) -> false }
+}
+
+fn fa_with(headers: List<Header>) -> Options { Options { pool: pool(), headers: headers } }
+
+spec "@std.http fetch under attack" {
+    given "a request that would split" {
+        then "a field value holding a CRLF is refused, never sent" {
+            fa_refused(
+                fetch(
+                    .Get,
+                    "http://127.0.0.1:9/",
+                    .Empty,
+                    fa_with([Header { name: "x", value: "a\r\nHost: evil" }]),
+                ),
+            )
+        }
+        then "a field name holding a colon is refused" {
+            fa_refused(
+                fetch(
+                    .Get,
+                    "http://127.0.0.1:9/",
+                    .Empty,
+                    fa_with([Header { name: "x:y", value: "a" }]),
+                ),
+            )
+        }
+        then "a caller's `transfer-encoding` is refused — the body's framing is the client's" {
+            fa_refused(
+                fetch(
+                    .Get,
+                    "http://127.0.0.1:9/",
+                    .Empty,
+                    fa_with([Header { name: "Transfer-Encoding", value: "chunked" }]),
+                ),
+            )
+        }
+        then "a body kind holding a CRLF is refused" {
+            fa_refused(post("http://127.0.0.1:9/", .Octets("x".bytes(), "a/b\r\nx: y")))
+        }
+        then "a method with no word is refused" {
+            fa_refused(fetch(.Other, "http://127.0.0.1:9/", .Empty, fa_with([])))
+        }
+    }
+    given "the caller's own content-type" {
+        then "it wins over the body's, and is sent once" {
+            ft_seen(
+                "/c",
+                (u) -> fetch(
+                    .Post,
+                    u,
+                    .Text("t"),
+                    fa_with([Header { name: "Content-Type", value: "x/y" }]),
+                ),
+            )
+                .starts_with("POST|/c|t|x/y|")
+        }
+    }
+    given "streams at their edges" {
+        then "a stream that ends at once sends an empty body" {
+            ft_seen("/e", (u) -> fa_stream(u, [])).starts_with("POST|/e||text/plain|")
+        }
+        then "an empty piece is no chunk, so it never ends the body early" {
+            ft_seen("/g", (u) -> fa_stream(u, ["", "a", "", "b", ""])).starts_with("POST|/g|ab|")
+        }
+        then "a stream that never ends is stopped by the deadline" {
+            ft_seen("/n", fa_endless) == "refused"
+        }
+    }
+}

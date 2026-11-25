@@ -1,0 +1,30 @@
+// proves: a `once fn` that PARKS mid-body (an `.await`) has no
+// in-flight guard — a second fiber reaching it while the first is
+// parked runs the body again, and each racer answers its OWN
+// locally computed value; only the FIRST to commit sets what every
+// LATER call answers.
+once fn tally() -> Cell<int> {
+    Cell.new(0)
+}
+
+once fn slow() -> Cell<int> {
+    let mine = tally().get() + 1
+    tally().set(mine)
+    let t = spawn { 1 }
+    let _ = t.await
+    Cell.new(mine)
+}
+
+fn racer(_tag: int) -> int {
+    slow().get()
+}
+
+fn run() -> string {
+    let a = spawn racer(1)
+    let b = spawn racer(2)
+    let ra = a.await
+    let rb = b.await
+    let after = slow().get()
+    "${ra} ${rb} ${after}"
+}
+run()

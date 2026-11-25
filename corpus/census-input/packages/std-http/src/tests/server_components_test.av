@@ -1,0 +1,27 @@
+// A server as a declaration: settings by name, and each route line
+// collected in the order written — the order that answers first.
+use @std.http.route.{get, post, faults}
+use @std.http.server.{server}
+
+spec "@std.http.server — a server as a declaration" {
+    given "the declaration" {
+        then "its routes are collected in the order written" {
+            server web {
+                get "/a" { _req -> "a" }
+                post "/b" { _req -> "b" }
+                get "/c/{id}" { req -> req.params.id }
+            }
+            web.routes.length == 3 && web.routes[1].pattern == "/b" && faults(web.routes).is_empty()
+        }
+        then "an address it does not name is the loopback's default port" {
+            server web
+            web.host == "127.0.0.1" && web.port == 8080 && web.routes.is_empty()
+        }
+        then "a setting names the port" {
+            server web {
+                port: 0
+            }
+            web.port == 0
+        }
+    }
+}

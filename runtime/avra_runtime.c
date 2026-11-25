@@ -331,8 +331,8 @@ static void acc_report(void) {
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
         report_made("copy", g_copy_sites, 12, slide);
-        report_made("push", g_push_sites, 16, slide);
-        report_made("retain", g_retain_sites, 20, slide);
+        report_made("push", g_push_sites, 400, slide);
+        report_made("retain", g_retain_sites, 400, slide);
     }
     report_types(40);
 #endif

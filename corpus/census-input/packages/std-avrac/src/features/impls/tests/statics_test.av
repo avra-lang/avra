@@ -1,0 +1,165 @@
+// STATIC METHODS — `static fn` is the THIRD value of the word `fn`
+// and `mut fn` are the first two of: a fn under an impl with no
+// receiver, called `Type.name(…)`. The variant WINS that spelling,
+// so an enum's variant is never shadowed, and the pair is refused
+// where it is written.
+use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{analyze_source}
+
+/// A type with a static constructor and an ordinary method.
+fn pointed() -> string {
+    "type P = { x: int, y: int }\nimpl P {\n    static fn origin() -> P { P { x: 0, y: 0 } }\n    fn sum() -> int { self.x + self.y }\n}\n"
+}
+
+spec "features/impls/statics" {
+    given "a static under an impl" {
+        then "it is called through the TYPE, not a value" {
+            shown("${pointed()}P.origin().sum()") == "0"
+        }
+        then "its seats are numbered from zero — no receiver spends one" {
+            shown(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(7).x",
+            ) == "7"
+        }
+        then "it stands beside ordinary methods on the same type" {
+            shown("${pointed()}let p = P { x: 1, y: 2 }\np.sum() + P.origin().sum()") == "3"
+        }
+        then "a static answers a scalar as readily as its own type" {
+            shown("type P = { x: int }\nimpl P {\n    static fn two() -> int { 2 }\n}\nP.two()") == "2"
+        }
+    }
+    given "a static and an enum" {
+        then "a variant of the same type still constructs" {
+            shown(
+                "enum K { a, b }\nimpl K {\n    static fn many() -> int { 2 }\n}\nlet v = K.a\nif v is .a { K.many() } else { 0 }",
+            ) == "2"
+        }
+        then "a static NAMED like a variant is refused where it is written" {
+            refused_with(
+                "enum K { a, b }\nimpl K {\n    static fn a() -> int { 7 }\n}\n1",
+                "`K.a` is already a variant — a `static fn` of that name could never be called",
+            )
+        }
+    }
+    given "the receiver a static does not have" {
+        then "`self` inside one refuses, and says why" {
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    static fn get() -> int { self.x }\n}\n1",
+                "`self` names a method's receiver — a `static fn` has none",
+            )
+        }
+        then "`static fn` at the top level is a plain fn already" {
+            refused_with(
+                "static fn f() -> int { 1 }\nf()",
+                "`static fn` marks a method with no receiver — `f` is already a plain fn",
+            )
+        }
+        then "a trait's associated fn is answered by the impl and called through the type" {
+            shown(
+                "trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn lifted(t: int) -> int { t + 1 }\n}\nP.lifted(3)",
+            ) == "4"
+        }
+        then "an abstract associated fn's `Self` is each signatory's own type" {
+            shown(
+                "trait Make {\n    static fn make(n: int) -> Self\n}\ntype P = { x: int }\nimpl Make for P {\n    static fn make(n: int) -> P { P { x: n } }\n}\nP.make(4).x",
+            ) == "4"
+        }
+        then "a bodied associated fn's signature names no `Self`" {
+            refused_with(
+                "trait T {\n    static fn tally(s: Self) -> int { 1 }\n}\n1",
+                "`Self` names no type",
+            )
+        }
+        then "an unanswered associated fn is the contract's refusal" {
+            refused_with(
+                "trait T {\n    static fn make() -> int\n}\ntype P = { x: int }\nimpl T for P {\n}\n1",
+                "`impl T for P` must answer `make`",
+            )
+        }
+    }
+    given "a bodied associated fn — the trait's own name is a receiver too" {
+        then "a Self-free one is called through the trait's own name" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\nFoo.make(41)") == "42"
+        }
+        then "two on one trait are both reachable that way" {
+            shown(
+                "trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n    static fn make2(n: int) -> int { n + 2 }\n}\nFoo.make(1) + Foo.make2(1)",
+            ) == "5"
+        }
+        then "reachable from inside another trait's own default body" {
+            shown(
+                "trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\ntrait Bar {\n    fn go(n: int) -> int { Foo.make(n) }\n}\ntype P = { x: int }\nimpl Bar for P {}\nP { x: 0 }.go(9)",
+            ) == "10"
+        }
+        then "an abstract one has no single body to answer through the trait" {
+            refused_with(
+                "trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\nShow.lifted(3)",
+                "`Show.lifted` has no one body — each signatory answers its own",
+            )
+        }
+    }
+    given "a call that does not fit" {
+        then "the arity refusal names no `self`" {
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(1, 2).x",
+                "`P.of` takes 1 argument, found 2",
+            )
+        }
+        then "an unknown static under a record names the fn and lists the ones it has" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n    static fn zero() -> P { P { x: 0 } }\n    fn twice() -> int { self.x * 2 }\n}\nP.nope().x",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("error[type.unknown_prop]: `P` has no static fn `nope`") &&
+                a.report().contains("help: its static fns are `of`, `zero`")
+        }
+        then "an unknown static under a record, rendered whole" {
+            analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n    static fn zero() -> P { P { x: 0 } }\n}\nP.nope().x",
+            )
+                .report()
+                .starts_with(
+                    "error[type.unknown_prop]: `P` has no static fn `nope`\n  ╭─[<source>:6:1]\n6 │ P.nope().x\n  · ┬\n  · ╰── called here\n──╯\nhelp: its static fns are `of`, `zero`",
+                )
+        }
+        then "a record with no static fn is told how a record is built" {
+            let a = analyze_source("type P = { x: int }\nP.nope().x")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` has no static fn `nope`") &&
+                a.report().contains("build a record with `P { ... }`")
+        }
+        then "a static fn read as a value names the law and writes the lambda" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply(P.of)",
+            )
+            a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains(
+                        "error[type.unknown_prop]: `P.of` is a static fn, and a static fn is not a value yet",
+                    ) &&
+                a.report().contains("help: wrap it in a lambda — `(n: int) -> P.of(n)`")
+        }
+        then "a static fn read as a value, rendered whole" {
+            analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply(P.of)",
+            )
+                .report()
+                .starts_with(
+                    "error[type.unknown_prop]: `P.of` is a static fn, and a static fn is not a value yet\n  ╭─[<source>:6:7]\n6 │ apply(P.of)\n  ·       ┬\n  ·       ╰── read here\n──╯\nhelp: wrap it in a lambda — `(n: int) -> P.of(n)`",
+                )
+        }
+        then "the lambda spells every seat of a static fn" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn sum(a: int, b: int) -> P { P { x: a + b } }\n}\nfn apply(f: fn(int, int) -> P) -> int { f(1, 2).x }\napply(P.sum)",
+            )
+            a.diagnostics.length == 1 && a.report().contains("`(a: int, b: int) -> P.sum(a, b)`")
+        }
+        then "the lambda it writes is the fix" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply((n: int) -> P.of(n))",
+            )
+            a.diagnostics.is_empty()
+        }
+    }
+}

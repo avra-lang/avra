@@ -1,0 +1,24 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{rule}
+
+/// An if/else-if ladder of 3+ arms answering a value is `when`. The
+/// pattern's own three parts (`if`, `else if`, `else`) are the
+/// floor — "3+ arms" — and a LONGER chain nests the same shape one
+/// level down, so this rule fires again there rather than needing a
+/// pattern that spans every length: `Expr.If`'s own kids are three
+/// ExprIds fixed by arity, never a list a `${..}` run could span, so
+/// a chain of unbounded depth is read by RECURSING a bound Code,
+/// never by one wider pattern. THE FORM ITSELF excludes what the
+/// retired regex excluded by construction: a chain that answers
+/// VOID (used for its side effects, never its value) parses as
+/// `Stmt.IfStmt` — a different node kind by POSITION
+/// (avra-8sb5.25.21) — so it never reaches this pattern's `Expr.If`
+/// shape at all, and a bare two-arm `if … else …` (no `else if`)
+/// has no THIRD part to fill this pattern's own `else` seat.
+@fixes("if a { 1 } else if b { 2 } else { 3 }", "when { a -> 1, b -> 2, _ -> 3 }")
+@keeps("if a { x }")
+@keeps("if a { x } else { y }")
+export rule when_ladder {
+    quote { if ${c} { ${a} } else if ${c2} { ${b} } else { ${z} } } -> quote { when { ${c} -> ${a}, ${c2} -> ${b}, _ -> ${z} } },
+}

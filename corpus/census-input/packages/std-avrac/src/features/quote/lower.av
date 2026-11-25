@@ -1,0 +1,425 @@
+//! A quote lowers as ONE `template` call: this file, the quote's
+//! offset, its runs, and its fills — each fill coerced by its seat's
+//! kind through a `@std/meta` row — wrapped as the kind the body
+//! parsed as. No new instruction.
+use core.{
+    ExprId,
+    Reg,
+    DeclId,
+    PatId,
+    TypeId,
+    HoleKind,
+    MetaKind,
+    FillClass,
+    Shape,
+    Open,
+    Slot,
+    StaticBox,
+    QuoteHole,
+    hole_kinds,
+    quote_kind,
+    holes_kind,
+    holes_seat,
+    quote_pat_holes,
+    quote_pat_names,
+    quote_pat_root,
+    quote_pat_shape,
+    quote_pat_is_text,
+    quote_pat_is_run,
+    quote_pat_is_type,
+}
+use features.{LowerCx, EnumSig, FnSig}
+
+fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    let q? = cx.view.store.expr(e).body_of() else { return cx.lower_defect(e, "a quote without its body") }
+    let node_ty = meta_self(cx, "Node")
+    let kinds = hole_kinds(cx.view.store, e)
+    let whole = quote_kind(cx.view.store, e)
+    let classes = [class_of(cx.view.decls, cx.type_at(h), cx.shape_at(h)) for h in q.holes]
+    let file = cx.const_str(cx.view.source.file)
+    let at = cx.const_int(cx.view.store.expr_span(e)?.lo ?? 0)
+    let parts = boxed(cx, cx.type(List<string>), [cx.const_str(p) for p in q.parts])
+    mut fills: List<Reg> = []
+    // LICENSED loops.push_loop: a fill with no class returns from the fn, which a comprehension element cannot
+    for k, h in q.holes {
+        let class? = classes[k] else { return cx.lower_defect(h, "a hole typing accepted lowers no fill") }
+        let kind = if whole is .Holes { holes_seat(holes_kind([c! for c in classes]) ?? MetaKind.Stmts, q.holes.length) } else { kinds[k] }
+        fills.push(fill_reg(cx, e, class, kind, h, node_ty))
+    }
+    let node = meta_call(
+        cx,
+        e,
+        "template",
+        [file, at, parts, boxed(cx, cx.type(List<node_ty>), fills)],
+        node_ty,
+    )
+    meta_call(cx, e, wrap_verb(cx, e), [node], cx.type_at(e))
+}
+
+/// The wrapping row for the kind the quote answers.
+fn wrap_verb(cx: LowerCx, e: ExprId) -> string {
+    match template_kind(cx.view.decls, cx.type_at(e)) ?? MetaKind.Code {
+        .Code -> "as_code",
+        .Stmts -> "as_stmts",
+        .Arms -> "as_arms",
+        .Decls -> "as_decls",
+    }
+}
+
+/// A hole's value as a `Node`, by what it is: a template as its
+/// node, a list of templates through the row that joins them, a
+/// number or a name through the row that lifts it.
+fn fill_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    class: FillClass,
+    kind: HoleKind,
+    h: ExprId,
+    node_ty: TypeId,
+) -> Reg {
+    let ty = cx.type_at(h)
+    match class {
+        .Template(_) or .Pattern -> node_of(cx, cx.reg_of(h), ty, node_ty),
+        .Templates(k) -> meta_call(cx, e, list_row(k), [cx.reg_of(h)], node_ty),
+        .Texts -> meta_call(cx, e, "names_node", [cx.reg_of(h)], node_ty),
+        .Text -> meta_call(cx, e, "name_node", [cx.reg_of(h)], node_ty),
+        .Named -> meta_call(cx, e, "name_node", [named(cx, h, ty)], node_ty),
+        .Int -> meta_call(
+            cx,
+            e,
+            if kind is .Expression { "int_node" } else { "int_name" },
+            [cx.reg_of(h)],
+            node_ty,
+        ),
+        .Bool -> meta_call(cx, e, "bool_node", [cx.reg_of(h)], node_ty),
+        .Held -> meta_call(
+            cx,
+            e,
+            "text_node",
+            [avrac_call(cx, "spliced_text", [cx.reg_of(h)], cx.type(string))],
+            node_ty,
+        ),
+    }
+}
+
+/// The joining row for a list of templates of a kind.
+fn list_row(k: MetaKind) -> string {
+    match k {
+        .Code -> "code_nodes",
+        .Stmts -> "stmts_nodes",
+        .Arms -> "arms_nodes",
+        .Decls -> "decls_nodes",
+    }
+}
+
+/// A template value's node — its one field.
+fn node_of(mut cx: LowerCx, v: Reg, ty: TypeId, node_ty: TypeId) -> Reg {
+    cx.field_named(v, ty, "node", node_ty)
+}
+
+/// A named meta value's `name`.
+fn named(mut cx: LowerCx, h: ExprId, ty: TypeId) -> Reg {
+    cx.field_named(cx.reg_of(h), ty, "name", cx.type(string))
+}
+
+/// A list of registers as a box of `ty`.
+fn boxed(mut cx: LowerCx, ty: TypeId, items: List<Reg>) -> Reg {
+    let size = cx.box_size(items.length)
+    cx.grown_box(cx.view.types.shape_of(ty), size, items)
+}
+
+fn meta_self(cx: LowerCx, name: string) -> TypeId {
+    let d? = cx.view.decls.meta_named(name) else { return cx.type(string) }
+    cx.view.decls.self_type_of(d)
+}
+
+/// A `@std/meta` row called by the compiler, answering `ret`.
+fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: TypeId) -> Reg {
+    let d: DeclId? = cx.view.decls.meta_named(verb)
+    if d == null { return cx.lower_defect(e, "`@std.meta.${verb}` is not declared") }
+    cx.call_decl(ret, cx.wanted(d!), args)
+}
+
+// ── the quote AS A PATTERN — matches, never splices ──
+//
+// The Shape is COMPUTED at compile time, from the PATTERN's own
+// store — never the subject's — and never changes after: CLAUDE.md's
+// "A SETTLED AGGREGATE IS STATIC DATA" law, so it is laid out ONCE as
+// an immortal box (`shape_static`) and every match reads its address,
+// never a construction sequence replayed per attempt. `matched_runs`
+// is called by symbol through the same one-door lookup `meta_call`
+// uses, over `@std/avrac` instead of `@std/meta`.
+
+/// `pat_accepts`: the subject's `view.store`/`at` read, the pattern's
+/// own Shape rebuilt, `core.matched_runs` called — its answer stashed
+/// for the binds, `pat_accepts` itself the null test on it.
+/// `matched_runs` answers ONE SPAN per binder (`List<At>`, never a
+/// bare `At`) so a `Run` and an ordinary hole share the one carried
+/// shape — `quote_pat_binds` is where the two read apart again.
+export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> Reg {
+    let root? = quote_pat_root(cx.view.store, body) else { return no_root(cx) }
+    let holes = quote_pat_holes(cx.view.store, body)
+    let names = quote_pat_names(holes)
+    let shape = quote_pat_shape(cx.view.store, root, holes, names)
+    let subj = subject_of(cx, v, vty)
+    let runs? = avrac_sig(cx, "matched_runs") else { return cx.const_bool(false) }
+    let s = shape_static(cx, runs.params[2], "qshape\$${cx.view.file.index}\$${p.index}", shape)
+    let answer = avrac_call(cx, "matched_runs", [subj.store, subj.at, s], runs.ret)
+    cx.bind_test(p, [answer])
+    cx.presence_of(answer, runs.ret)
+}
+
+/// A quote subject's reads: its `of`, its `at` (and the `At` type,
+/// which the binds unpack), and the store its `of.view` carries.
+type Subject = { of: Reg, at: Reg, at_ty: TypeId, store: Reg }
+
+/// `v`'s reads, every type taken off `code_ty`'s declared fields —
+/// the subject's type is the anchor, so no type is looked up by name.
+fn subject_of(mut cx: LowerCx, v: Reg, code_ty: TypeId) -> Subject {
+    let of_ty = avrac_field_type(cx, code_ty, "of")
+    let view_ty = avrac_field_type(cx, of_ty, "view")
+    let at_ty = avrac_field_type(cx, code_ty, "at")
+    let of = cx.field_named(v, code_ty, "of", of_ty)
+    Subject {
+        of: of,
+        at: cx.field_named(v, code_ty, "at", at_ty),
+        at_ty: at_ty,
+        store: cx
+            .field_named(
+                cx.field_named(of, of_ty, "view", view_ty),
+                view_ty,
+                "store",
+                avrac_field_type(cx, view_ty, "store"),
+            ),
+    }
+}
+
+/// One binder per name, in first-occurrence order — an ordinary code
+/// seat packs the subject's `of` with the ONE `At` its span holds, as
+/// before; a NAME or a TYPE seat reads that same `At`'s own name text
+/// or written type back instead (`own_name_at`/`own_type_at`) —
+/// present by construction, since `bind_opens` (shape.av) never binds
+/// one it could not read; a RUN seat wraps its WHOLE span
+/// (`run_coded`, features/code.av) as a `List<Code>` instead of
+/// unwrapping one element.
+export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> List<Reg> {
+    let regs = cx.test_regs_of(p)
+    if regs.length != 1 { return untested(cx) }
+    let answer = regs[0]
+    let holes = quote_pat_holes(cx.view.store, body)
+    let names = quote_pat_names(holes)
+    let subj = subject_of(cx, v, vty)
+    let at_ty = subj.at_ty
+    let carried = cx.carried_of(answer, cx.type(List<List<at_ty>>?))
+    let list_at_ty = cx.type(List<at_ty>)
+    mut out: List<Reg> = []
+    // LICENSED loops.push_loop: each binder's bind is packed in binder order, its own mint
+    for j, n in names {
+        let span_j = cx.slot_read(carried, j, list_at_ty)
+        out
+            .push(
+                bind_of(
+                    cx,
+                    subj,
+                    vty,
+                    span_j,
+                    quote_pat_is_text(holes, n),
+                    quote_pat_is_run(holes, n),
+                    quote_pat_is_type(holes, n),
+                ),
+            )
+    }
+    out
+}
+
+/// One binder's value: a RUN seat wraps its whole span; a code, name
+/// or type seat reads the span's ONE element (`bound_hole`/
+/// `bound_name_hole`/`bound_type_hole`, shape.av, never bind more)
+/// and proceeds as before — a code seat packs `Code { of, at }`, a
+/// name seat reads the `At`'s own name text, a type seat its own
+/// written type.
+fn bind_of(
+    mut cx: LowerCx,
+    subj: Subject,
+    code_ty: TypeId,
+    span_j: Reg,
+    text: bool,
+    run: bool,
+    ty: bool,
+) -> Reg {
+    if run { return avrac_call(cx, "run_coded", [subj.of, span_j], cx.type(List<code_ty>)) }
+    let at_j = cx.slot_read(span_j, 0, subj.at_ty)
+    if text { return text_bind(cx, subj.store, at_j) }
+    if ty { return type_bind(cx, subj.store, at_j) }
+    cx.packed_struct(code_ty, [subj.of, at_j])
+}
+
+/// The `At`'s own name, insisted on — present by construction (see
+/// `quote_pat_binds`'s own note).
+fn text_bind(mut cx: LowerCx, store: Reg, at_j: Reg) -> Reg {
+    let opt_ty = cx.type(string?)
+    let text = avrac_call(cx, "own_name_at", [store, at_j], opt_ty)
+    cx.insisted(text, opt_ty)
+}
+
+/// The `At`'s own written type, insisted on — `text_bind`'s twin,
+/// present by construction: `match_typed_node` never binds a TYPE
+/// open whose `own_type_at` answered null.
+fn type_bind(mut cx: LowerCx, store: Reg, at_j: Reg) -> Reg {
+    let own? = avrac_sig(cx, "own_type_at") else { return cx.hollow_of(cx.type(string)) }
+    cx.insisted(avrac_call(cx, "own_type_at", [store, at_j], own.ret), own.ret)
+}
+
+/// The pattern's own Shape, laid out as static data and read by
+/// address — its tags resolved once, up front (a missing variant
+/// speaks its defect here and nowhere inside the recursion), then
+/// every box pushed child-first by `ShapeBuild`.
+fn shape_static(mut cx: LowerCx, shape_ty: TypeId, name: string, s: Shape) -> Reg {
+    let sig? = cx.variants_of(shape_ty) else { return untagged(cx, shape_ty, "Shape") }
+    let open_ty = opens_of(cx, sig)
+    let open_sig? = cx.variants_of(open_ty) else { return untagged(cx, open_ty, "Open") }
+    mut build = ShapeBuild {
+        tags: ShapeTags {
+            hole: variant_tag(cx, sig, "Shape", "Hole"),
+            run: variant_tag(cx, sig, "Shape", "Run"),
+            typed_node: variant_tag(cx, sig, "Shape", "TypedNode"),
+            open_name: variant_tag(cx, open_sig, "Open", "Name"),
+            open_type: variant_tag(cx, open_sig, "Open", "Type"),
+        },
+    }
+    build.shape_slot(s)
+    let dst = cx.mint_ty(shape_ty)
+    cx.static_read(dst, name, build.boxes)
+    dst
+}
+
+/// A pattern Shape's resolved variant tags — looked up once, so the
+/// recursive lay-out below never repeats a lookup or a defect.
+type ShapeTags = { hole: int, run: int, typed_node: int, open_name: int, open_type: int }
+
+/// `Shape`/`Open`, laid out as boxes child-first, the root last — the
+/// same recursion `shape_reg` used to run at every match, over `Slot`/
+/// `StaticBox` instead of `Reg`/`Ins` (features/statics.av's
+/// `StaticBuild` is this same idea over a value that crossed the
+/// const evaluator; this one lays out a value the lowering computed
+/// directly, with no crossing to do).
+type ShapeBuild = { tags: ShapeTags, boxes: List<StaticBox> = [] }
+
+impl ShapeBuild {
+    mut fn shape_slot(s: Shape) -> Slot {
+        match s {
+            .Hole(index) -> self.variant(self.tags.hole, [Slot.Int(index)]),
+            .Run(index) -> self.variant(self.tags.run, [Slot.Int(index)]),
+            .TypedNode(shallow, kids, opens) -> {
+                let kid_slots = [self.shape_slot(k) for k in kids]
+                let kids_box = self.pushed(StaticBox.Slots(kid_slots))
+                let open_slots = [self.open_slot(o) for o in opens]
+                let opens_box = self.pushed(StaticBox.Slots(open_slots))
+                self.variant(self.tags.typed_node, [Slot.Int(shallow), kids_box, opens_box])
+            },
+        }
+    }
+
+    /// One `Open`, laid out — `shape_slot`'s twin over the smaller
+    /// enum a `TypedNode`'s own open fields carry.
+    mut fn open_slot(o: Open) -> Slot {
+        match o {
+            .Name(index) -> self.variant(self.tags.open_name, [Slot.Int(index)]),
+            .Type(index) -> self.variant(self.tags.open_type, [Slot.Int(index)]),
+        }
+    }
+
+    mut fn variant(tag: int, payload: List<Slot>) -> Slot {
+        self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(payload)))
+    }
+
+    /// One more box, child-first: its address is its index.
+    mut fn pushed(b: StaticBox) -> Slot {
+        self.boxes.push(b)
+        Slot.Box(self.boxes.length - 1)
+    }
+}
+
+/// An enum's variant tag — GUARANTEED by the compiler's own type, so
+/// absence is a defect, spoken, never defaulted over.
+fn variant_tag(mut cx: LowerCx, sig: EnumSig, tyname: string, name: string) -> int {
+    let t? = sig.tag_of(name) else {
+        cx
+            .defect(
+                "`@std.avrac.${tyname}` has no `${name}` variant — the compiler's own enum moved under this lowering",
+            )
+        return 0
+    }
+    t
+}
+
+fn untagged(mut cx: LowerCx, ty: TypeId, tyname: string) -> Reg {
+    cx.defect("`@std.avrac.${tyname}` has no variant signature — @std/avrac not loaded")
+    cx.hollow_of(ty)
+}
+
+/// `Open`, read off `Shape.TypedNode`'s `opens: List<Open>` payload.
+fn opens_of(mut cx: LowerCx, shape: EnumSig) -> TypeId {
+    let typed = shape.payloads[variant_tag(cx, shape, "Shape", "TypedNode")]
+    let open? = cx.view.decls.elem_of(typed.last() ?? cx.type(string)) else { return opens_moved(cx) }
+    open
+}
+
+fn opens_moved(mut cx: LowerCx) -> TypeId {
+    cx
+        .defect(
+            "`@std.avrac.Shape.TypedNode` ends in no `List<Open>` — the compiler's own enum moved under this lowering",
+        )
+    cx.type(string)
+}
+
+/// A `@std/avrac` verb's declared signature — the door the quote
+/// lowering reads its vocabulary's types through, by declaration.
+fn avrac_sig(mut cx: LowerCx, verb: string) -> FnSig? {
+    let d? = cx.view.decls.avrac_named(verb) else {
+        avrac_missing(cx, verb, cx.type(string))
+        return null
+    }
+    cx.view.decls.sig(d)?.fn_sig()
+}
+
+/// One field's declared type, read off `owner_ty`'s OWN struct sig
+/// rather than named directly — a field access through a NAME that
+/// never changes (`FileView.store`) instead of the field's own type's
+/// name, which a rename moves. No self-lookup by that name is needed
+/// at all: the field's type IS whatever the declaration says today.
+fn avrac_field_type(mut cx: LowerCx, owner_ty: TypeId, field: string) -> TypeId {
+    let sig? = cx.fields_of(owner_ty) else { return avrac_field_missing(cx, owner_ty, field) }
+    let slot? = sig.slot_of(field) else { return avrac_field_missing(cx, owner_ty, field) }
+    sig.types[slot]
+}
+
+fn avrac_field_missing(mut cx: LowerCx, owner_ty: TypeId, field: string) -> TypeId {
+    cx
+        .defect(
+            "`${cx.view.types.name_of(owner_ty)}` has no field `${field}` — the compiler's own struct moved under this lowering",
+        )
+    cx.type(string)
+}
+
+/// A `@std/avrac` row called by the compiler, answering `ret` —
+/// `meta_call`'s twin over the compiler's own library.
+fn avrac_call(mut cx: LowerCx, verb: string, args: List<Reg>, ret: TypeId) -> Reg {
+    let d? = cx.view.decls.avrac_named(verb) else { return avrac_missing(cx, verb, ret) }
+    cx.call_decl(ret, cx.wanted(d), args)
+}
+
+fn avrac_missing(mut cx: LowerCx, verb: string, ret: TypeId) -> Reg {
+    cx.defect("`@std.avrac.${verb}` is not declared")
+    cx.hollow_of(ret)
+}
+
+fn no_root(mut cx: LowerCx) -> Reg {
+    cx.defect("a quote pattern with no single root survived typing")
+    cx.const_bool(false)
+}
+
+fn untested(mut cx: LowerCx) -> List<Reg> {
+    cx.defect("a quote pattern's binds were asked before its test found the answer")
+    []
+}

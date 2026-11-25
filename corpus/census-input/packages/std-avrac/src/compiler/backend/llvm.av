@@ -1,0 +1,556 @@
+//! The LLVM projection of Lowered IR. The module is built through
+//! the LLVM C API (the same wrapper every binary here already
+//! links), verified function-by-function, and written as `.ll` text
+//! for clang. Every fn body becomes its own function (declared
+//! first, so call order never matters); `main` is the statement
+//! list. Programs link OUR runtime (runtime/avra_runtime.c) —
+//! printing, string equality, aggregates, and ownership — and
+//! nothing else.
+use core.{
+    Reg,
+    body_symbol,
+    hosted_symbol,
+    static_symbol,
+    TypeId,
+    TypeRegistry,
+    RtKind,
+    RtSig,
+    rt_sigs,
+    rt_index,
+    Static,
+    StaticBox,
+    Slot,
+    FileId,
+    same_file,
+    static_code_syms,
+}
+use features.{nothing}
+use compiler.lower.{Body, Lowered}
+use compiler.lower.{Body, Lowered}
+
+// The runtime's wreck. The backend has no diagnostic channel — by the
+// time IR is emitted the program has been judged — so an IR shape the
+// compiler's own law forbids exits 2 and is never read as a
+// disagreement with the program.
+extern fn avra_trap(message: string)
+
+/// One body's emission world: the LLVM handles, this body's register
+/// types, the growing register value table (dense by Reg — registers
+/// mint in instruction order, params first), and the open regions,
+/// innermost last.
+type Emit = {
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    fn_val: ptr,
+    types: TypeRegistry,
+    tys: List<TypeId>,
+    vals: List<ptr>,
+    frames: List<Region>,
+    loops: List<LoopFrame>,
+    externs: List<RtSig>,
+    // the runtime's rows by name, built once per module
+    rt: Map<string, RtSig>,
+    // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
+    census: bool,
+}
+
+/// One open loop: where the back edge returns and where false exits.
+type LoopFrame = { header: ptr, exit: ptr }
+
+/// One open region: N arms merging into ONE value. `arms` holds
+/// every arm's block in order and `next` the one to build when the
+/// current arm ends; `ended`/`gives` accumulate each finished arm's
+/// exit block and yielded register, which the merge phis together.
+/// An `if` is the TWO-arm case of exactly this.
+type Region = {
+    arms: List<ptr>,
+    next: int,
+    merge_bb: ptr,
+    ended: List<ptr>,
+    gives: List<Reg>,
+}
+
+/// A user fn's symbol — prefixed clear of the runtime and `main`.
+fn mangled(name: string) -> string {
+    "av_${name}"
+}
+
+/// A `once fn`'s own slot global — one per symbol, distinct from the
+/// fn's own mangled name so the two never collide.
+fn once_slot_name(sym: string) -> string {
+    "${mangled(sym)}.once"
+}
+
+/// WHAT A MODULE'S BODIES NAME — the bodies they call or take the address
+/// of, the hosted rows they call, and the statics they address.
+///
+/// A SPLIT MODULE DECLARES WHAT IT REFERENCES, which is what LLVM requires
+/// and nothing more. Declaring the whole program in every module is the
+/// duplication that makes a split cost MORE disk than it saves: the
+/// declarations are the bulk of a module's text, not its bodies.
+///
+/// `whole` is a WHOLE-PROGRAM module — one that carries every name, which
+/// is what a lone module must do and the only shape there was before the
+/// split. It is a field rather than an absent value so no caller guards.
+type Refs = { whole: bool, bodies: Map<string, bool>, hosted: Map<string, bool>, statics: Map<string, bool> }
+
+/// A whole-program module: every name is carried, so the lists are unread.
+fn every_name() -> Refs { Refs { whole: true, bodies: {}, hosted: {}, statics: {} } }
+
+/// WHICH BODIES A MODULE DEFINES: every one; one file's; or the PROGRAM's — what
+/// no file owns (an instantiation, a wrapper several files ask for) and the
+/// entry. Exactly one module of a program defines the entry.
+export enum Owned { Whole, File(f: FileId), Program }
+
+impl Owned {
+    fn defines(b: Body) -> bool {
+        match self { .Whole -> true, .File(f) -> owns(b, f), .Program -> home_of(b) == null }
+    }
+
+    fn carries_entry() -> bool { !(self is .File) }
+}
+
+/// WHERE A BODY BELONGS — `Body.file`, the file that asked for it. A WRAPPER is asked
+/// for by every file that takes the named fn as a value, so several modules can name
+/// one `$w`; it is emitted WEAK (in `build_cache`'s held remap), so the copies coalesce
+/// at link and no single declaring file has to exist to own it. That is the property
+/// the held world needs, where the declaring file may come from the store and the
+/// wrapper minted here is not in the stored object.
+/// Whether a module OWNS the body — its file is that module's file. ONE question,
+/// asked once, so no caller opens the nullable twice and none can disagree.
+fn owns(b: Body, f: FileId) -> bool {
+    let home = home_of(b)
+    home != null && same_file(home!, f)
+}
+
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a body in, the file it belongs to out.
+export fn home_of(b: Body) -> FileId? { b.file }
+
+/// What these bodies NAME, and their own names with it: a module declares a
+/// body it owns as much as one it only calls. A STATIC this module lays out
+/// names too — a capture-free closure's `Slot.Code` is a body reference as
+/// real as an instruction's, just not one an `Ins` scan would ever see.
+fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
+    mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
+    // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
+    // `carries` asks membership per body, per static and per runtime row. The lists this
+    // replaces held one entry per REFERENCING INSTRUCTION and were SCANNED linearly for
+    // each of them — the repeated-whole-program-scan shape, one `contains` at a time.
+    for bd in bodies { r.bodies.set(bd.name, true) }
+    for bd in bodies {
+        for i in bd.ins {
+            let body = body_symbol(i)
+            if body != null { r.bodies.set(body!, true) }
+            let host = hosted_symbol(i)
+            if host != null { r.hosted.set(host!, true) }
+            let st = static_symbol(i)
+            if st != null { r.statics.set(st!, true) }
+        }
+    }
+    for st in statics {
+        if r.statics.get(st.name) != null {
+            for sym in static_code_syms(st.boxes) { r.bodies.set(sym, true) }
+        }
+    }
+    r
+}
+
+/// Does this module carry the name? Every name in a whole-program module;
+/// only what its own bodies named in a split one.
+fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole || named.get(name) != null }
+
+/// The whole program as verified `.ll` text; null means written, a string is
+/// the failure.
+export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owned.Whole, Written.Text) }
+
+/// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
+/// NAME — LLVM wants a called symbol declared where it is called — and lays out
+/// the statics they read: private linkage, so each module's copy is its own.
+/// The caller has asked `program_closed`, a whole-program scan with one answer.
+export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, Written.Bitcode) }
+
+/// How many objects are made at once: a worker is a thread of this process and
+/// holds one module, and the machine is shared — four buys the wall without
+/// saturating it.
+const EMIT_WIDTH: int = 4
+
+/// The same module as an OBJECT, optimized and generated in this process at
+/// clang's level — BY A WORKER: the module is built here and handed over, and
+/// `objects_made` waits for every one handed.
+export fn emit_object(l: Lowered, path: string, which: Owned, opt: int) -> string? { emit_mode(l, path, which, Written.Object(opt)) }
+
+/// The link option that drops code nothing reaches: Mach-O drops by
+/// atom, ELF by section — and every definition is emitted in one of its own.
+export fn unreached_dropped() -> string {
+    if avra_llvm_drops_by_atom() != 0 { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" }
+}
+
+/// Every object handed to a worker, written — null — or the refusal.
+export fn objects_made() -> string? {
+    let unwritten = avra_llvm_objects_unwritten()
+    if unwritten == 0 { null } else { "avra: ${unwritten} object(s) could not be written" }
+}
+
+/// Whether the objects this process writes carry the runtime's hot leaves
+/// inlined (`AVRA_INLINE_RUNTIME=0` keeps them calls).
+export fn inlines_runtime() -> bool { avra_llvm_inlines_runtime() != 0 }
+
+/// What a module is written as. An `Object`'s module leaves with its context,
+/// for a worker to write and dispose.
+enum Written { Text, Bitcode, Object(opt: int) }
+
+/// A program with a symbol nothing declares — a DEFECT, in its own words.
+export fn not_closed(missing: string) -> string {
+    "internal compiler error: nothing declares `${missing}` — the program is not closed"
+}
+
+fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
+    let lc = avra_llvm_context_create()
+    let m = avra_llvm_module_create("avra", lc)
+    let b = avra_llvm_create_builder(lc)
+    let own = [bd for bd in l.fns if which.defines(bd)]
+    // the entry is carried beside `l.fns`, and it names what it calls
+    let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
+    mut mine: Map<string, bool> = {}
+    for bd in own { mine.set(bd.name, true) }
+    declare_runtime(lc, m)
+    declare_externs(lc, m, l.externs, refs)
+    for bd in l.fns {
+        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
+    }
+    for st in l.statics {
+        if carries(refs, refs.statics, st.name) { emit_static(lc, m, st) }
+    }
+    let rt = rt_index()
+    for bd in l.fns {
+        if mine.get(bd.name) != null {
+            let f = avra_llvm_get_named_function(m, mangled(bd.name))
+            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
+            if failure != null { return wreck(m, path, failure!) }
+            if bd.weak { avra_llvm_set_weak_odr(f) }
+            if l.cold.get(bd.name) != null { avra_llvm_set_cold(f) }
+        }
+    }
+    if which.carries_entry() {
+        let failure: string? = emit_entry(lc, m, b, l, rt)
+        if failure != null { return wreck(m, path, failure!) }
+    }
+    avra_llvm_dispose_builder(b)
+    let written = match form {
+        .Text -> avra_llvm_print_module_to_file(m, path),
+        .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
+        .Object(opt) -> avra_llvm_emit_object_later(m, lc, path, opt, EMIT_WIDTH),
+    }
+    // a handed module's context is its worker's
+    if !(form is .Object) { avra_llvm_context_dispose(lc) }
+    if written == 0 { null } else { "cannot write `${path}`" }
+}
+
+/// One static as its globals: every box under its own name, the
+/// root under the static's, so a read finds it by that name alone.
+/// Boxes are laid out child-first, as the fold pushed them, so each
+/// slot's box already stands when the slot names it.
+fn emit_static(lc: ptr, m: ptr, st: Static) {
+    for j, b in st.boxes { emit_box(lc, m, box_name(st, j), st, b) }
+}
+
+fn box_name(st: Static, j: int) -> string {
+    if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}\$${j}" }
+}
+
+fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
+    match b {
+        .Slots(cells) -> { let _ = static_array(lc, m, name, st, cells) },
+        .Octets(b) -> { let _ = avra_llvm_global_text(m, b, b.length, name) },
+        .Table(keys, values) -> {
+            let k = static_array(lc, m, "${name}\$k", st, [Slot.Text(key) for key in keys])
+            let v = static_array(lc, m, "${name}\$v", st, values)
+            let _ = avra_llvm_static_map(m, name, k, v)
+        },
+    }
+}
+
+/// A slot array laid out whole; answers its payload's address.
+fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) -> ptr {
+    let arr = avra_llvm_value_array_new(cells.length)
+    let marks = avra_llvm_value_array_new(cells.length)
+    for j, c in cells {
+        avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c))
+        avra_llvm_value_array_set(
+            marks,
+            j,
+            avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0),
+        )
+    }
+    let payload = avra_llvm_static_array(m, name, arr, marks, cells.length)
+    avra_llvm_value_array_free(arr)
+    avra_llvm_value_array_free(marks)
+    payload
+}
+
+/// A cell's mark (runtime/avra_box.h): owned for a pointer the layout
+/// holds, absent for a nullable scalar that is not there.
+fn slot_mark(c: Slot) -> int {
+    match c {
+        .Text(_) or .Box(_) or .Null -> 1,
+        .Absent -> 2,
+        // a code address is a raw word, never a header — `push_slot`
+        // treats a dynamic closure's own code slot the same way
+        .Int(_) or .Float(_) or .Bool(_) or .Code(_) -> 0,
+    }
+}
+
+/// A slot's constant: a word as the i64 a cell holds, a pointer as
+/// the address of the data it names — the layout marks it owned.
+fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
+    match c {
+        .Int(n) -> avra_llvm_const_int(avra_llvm_int64_type(lc), n, 1),
+        .Float(bits) -> avra_llvm_const_int(avra_llvm_int64_type(lc), bits, 1),
+        .Bool(b) -> avra_llvm_const_int(avra_llvm_int64_type(lc), if b { 1 } else { 0 }, 0),
+        .Text(s) -> avra_llvm_global_text(m, s.bytes(), s.length, ".str"),
+        .Box(at) -> avra_llvm_global_payload(m, box_name(st, at)),
+        .Null -> avra_llvm_const_pointer_null(avra_llvm_pointer_type(lc)),
+        .Absent -> avra_llvm_const_int(avra_llvm_int64_type(lc), 0, 0),
+        // the function's own address, a pointer constant like `.Box` —
+        // `avra_llvm_static_array` ptrtoints any pointer-shaped cell
+        .Code(sym) -> avra_llvm_get_named_function(m, mangled(sym)),
+    }
+}
+
+/// THE CLOSURE LAW: every name a program's steps call is one the
+/// module will declare — a body the program lowered, a runtime row,
+/// or one of its own externs. The first that is not, named, instead
+/// of a null function at emission.
+export fn program_closed(l: Lowered) -> string? {
+    mut declared: Map<string, bool> = {}
+    for bd in l.fns.concat([l.entry]) { declared.set(bd.name, true) }
+    for row in rt_sigs().concat(l.externs) { declared.set(row.name, true) }
+    for bd in l.fns.concat([l.entry]) {
+        for i in bd.ins {
+            let body: string? = body_symbol(i)
+            if body != null && declared.get(body!) == null { return body }
+            let host: string? = hosted_symbol(i)
+            if host != null && declared.get(host!) == null { return host }
+        }
+    }
+    null
+}
+
+/// THE ENTRY. The program's own statements become `av_entry`; C's
+/// `main` hands the runtime its arguments and answers what the
+/// entry answered. The argument pair crosses the seam exactly here
+/// — a program reads it through the host from then on.
+fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
+    declare(
+        m,
+        "avra_args_init",
+        avra_llvm_void_type(lc),
+        [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)],
+        false,
+    )
+    declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
+    let entry = avra_llvm_get_named_function(m, "av_entry")
+    let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
+    if failure != null { return failure }
+    open_main(lc, m, b, entry)
+}
+
+/// `int main(int argc, char** argv)`: the arguments handed over,
+/// then the entry.
+fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
+    declare(
+        m,
+        "main",
+        avra_llvm_int32_type(lc),
+        [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)],
+        false,
+    )
+    let f = avra_llvm_get_named_function(m, "main")
+    avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
+    let init = avra_llvm_get_named_function(m, "avra_args_init")
+    let args = avra_llvm_value_array_new(2)
+    // argc is C's `int` and is never negative, so the widening is a
+    // ZERO extend — said here because only this site knows the sign
+    avra_llvm_value_array_set(
+        args,
+        0,
+        avra_llvm_build_zext(b, avra_llvm_get_param(f, 0), avra_llvm_int64_type(lc), "argc"),
+    )
+    avra_llvm_value_array_set(args, 1, avra_llvm_get_param(f, 1))
+    avra_llvm_build_call(b, avra_llvm_fn_type_of(init), init, args, 2, "")
+    avra_llvm_value_array_free(args)
+    let seatless = avra_llvm_value_array_new(0)
+    let answer = avra_llvm_build_call(b, avra_llvm_fn_type_of(entry), entry, seatless, 0, "code")
+    avra_llvm_value_array_free(seatless)
+    let _ = avra_llvm_build_ret(b, answer)
+    if avra_llvm_verify_function(f) != 0 { return "internal compiler error: LLVM verification failed for main" }
+    null
+}
+
+/// One body into one function: params seed the value table, every
+/// instruction emits, the verifier gates.
+fn emit_body(
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    types: TypeRegistry,
+    externs: List<RtSig>,
+    rt: Map<string, RtSig>,
+    bd: Body,
+    f: ptr,
+) -> string? {
+    mut vals: List<ptr> = []
+    // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
+    for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
+    mut em = Emit {
+        lc: lc,
+        m: m,
+        b: b,
+        fn_val: f,
+        types: types,
+        tys: bd.reg_types,
+        vals: vals,
+        frames: [],
+        loops: [],
+        externs: externs,
+        rt: rt,
+        census: avra_llvm_census_types() != 0,
+    }
+    avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
+    for i in bd.ins { em.emit_ins(i) }
+    if avra_llvm_verify_function(f) != 0 {
+        return "internal compiler error: LLVM verification failed for ${bd.name}"
+    }
+    null
+}
+
+/// The verifier's own report goes to stderr; the module still writes
+/// so the wreck is inspectable.
+fn wreck(m: ptr, path: string, failure: string) -> string {
+    let _ = avra_llvm_verify_module_print(m)
+    let _ = avra_llvm_print_module_to_file(m, path)
+    "${failure} (module at ${path})"
+}
+
+/// The runtime surface, declared straight from the registry —
+/// runtime_api.av is the one definition, runtime/avra_runtime.c
+/// its implementation twin. A split module declares the rows it
+/// calls; a whole-program module declares every row.
+fn declare_runtime(lc: ptr, m: ptr) {
+    // EVERY RUNTIME ROW, in every module, and NOT filtered to the names the
+    // program's instructions mention. `emit_body` emits runtime calls of its own
+    // — retains, releases, boxing, the trap — that are NOT instructions a
+    // reference walk can see, so a filtered declaration list leaves those calls
+    // aiming at nothing (the split's first run died in `fn_type_of` on a null
+    // function). The rows are a few dozen and their declarations are a small
+    // part of a module's text; the USER declarations and the STATICS are where
+    // the duplication actually lives, and those are still filtered.
+    for s in rt_sigs() {
+        declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+    }
+}
+
+/// The program's own host fns, declared like the runtime's rows.
+fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs) {
+    for s in rows {
+        if carries(refs, refs.hosted, s.name) {
+            declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        }
+    }
+}
+
+/// A runtime slot's machine type. The WIDTHS belong to an extern
+/// seat alone — the registry's own rows are all words and pointers.
+/// `.F64`/`.F32` land here as the double and float types the day a
+/// float VALUE exists to construct them.
+fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
+    match k {
+        .I64 -> avra_llvm_int64_type(lc),
+        .I32 or .U32 -> avra_llvm_int32_type(lc),
+        .F64 -> avra_llvm_double_type(lc),
+        .Ptr -> avra_llvm_pointer_type(lc),
+        .Void -> avra_llvm_void_type(lc),
+    }
+}
+
+/// One user fn's declaration, typed from its signature's shapes.
+fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
+    declare(
+        m,
+        mangled(bd.name),
+        ll_type_of(lc, types, bd.ret),
+        [ll_type_of(lc, types, pt) for pt in bd.params],
+        false,
+    )
+}
+
+fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
+    let arr = avra_llvm_type_array_new(params.length)
+    for i, p in params { avra_llvm_type_array_set(arr, i, p) }
+    let vararg = if variadic { 1 } else { 0 }
+    avra_llvm_add_function(m, name, avra_llvm_function_type(ret, arr, params.length, vararg))
+    avra_llvm_type_array_free(arr)
+}
+
+/// HOW A VALUE CATEGORY RIDES THE RUNTIME'S 64-BIT CELLS. `Word` is
+/// the identity: the value is already the slot, or is no slot at all.
+enum SlotForm { Address, Widened, Reinterpreted, Word }
+
+/// WHICH MACHINE CLASS a value of this type lands in — the third of
+/// the neighbouring questions stated at `rides_pointer`, and the only
+/// one that is not a bool: the pointer arm agrees with
+/// `rides_pointer` and the rest split a word from a double from a
+/// bit.
+fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
+    // a value enum: its tag and its word
+    if types.valued_carrier(ty) {
+        let word = types.type(int)
+        return wide_ll_type(lc, types, [word, word])
+    }
+    if types.travels_wide(ty) { return wide_ll_type(lc, types, types.flat_fields(types.machine_type(ty))) }
+    // THE MACHINE FORM decides, never the bare shape: a FLAT record
+    // IS its one field, so a name over `string` is a pointer and a
+    // name over `float` is a double.
+    match types.machine_shape(ty) {
+        // TypeName never materializes: no value ever has it — nor
+        // does Var: mono substitutes before any register minted.
+        .Float -> avra_llvm_double_type(lc),
+        .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
+        .Bool -> avra_llvm_int1_type(lc),
+        .Opt(inner) -> opt_ll_type(lc, types, inner),
+        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) -> avra_llvm_pointer_type(lc),
+    }
+}
+
+/// A VALUE RECORD's machine type: its fields as one aggregate, in
+/// registers.
+fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
+    let arr = avra_llvm_type_array_new(fields.length)
+    for j, f in fields { avra_llvm_type_array_set(arr, j, ll_type_of(lc, types, f)) }
+    let st = avra_llvm_struct_type(lc, arr, fields.length)
+    avra_llvm_type_array_free(arr)
+    st
+}
+
+/// A nullable's machine type: the niche IS its value's pointer; a
+/// WORD ENUM's nullable is its own register, the spare tag its
+/// absence; a scalar pair is a first-class {present: i1, value}
+/// aggregate that lives in registers and never touches memory.
+fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
+    if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
+    if types.is_word_enum(inner) { return ll_type_of(lc, types, inner) }
+    let arr = avra_llvm_type_array_new(2)
+    avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
+    avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))
+    let st = avra_llvm_struct_type(lc, arr, 2)
+    avra_llvm_type_array_free(arr)
+    st
+}
+
+const lazy_in_eager: string = "a lazy op reached the eager path"
+
+/// The integer-only operations, met by a double.
+const int_only_on_floats: string = "an integer-only op reached float operands"
+

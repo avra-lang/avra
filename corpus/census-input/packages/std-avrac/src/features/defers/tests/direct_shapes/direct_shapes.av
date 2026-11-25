@@ -1,0 +1,71 @@
+// proves: which deferred calls go direct changes nothing a program sees —
+// a generic callee, a defaulted seat, a callee answering a value, a
+// defer in a lambda and in a task, a host row, and errdefer through
+// two frames all run as the boxed form did
+extern fn avra_puts(s: string)
+extern fn avra_fiber_within(ms: int) -> int
+extern fn avra_fiber_within_end(outer: int)
+type Id = int
+fn mark(n: int) {
+    avra_puts("mark ${n}")
+}
+fn gen<T>(x: T, n: int) {
+    avra_puts("gen ${n}")
+}
+fn dflt(n: int, m: int = 9) {
+    avra_puts("dflt ${n} ${m}")
+}
+fn answers(n: int) -> int {
+    avra_puts("answers ${n}")
+    n
+}
+fn id_of(i: Id) {
+    avra_puts("id")
+}
+fn host() -> int {
+    let outer = avra_fiber_within(100)
+    defer avra_fiber_within_end(outer)
+    7
+}
+fn in_lambda() -> int {
+    let f = () -> {
+        defer mark(11)
+        12
+    }
+    f()
+}
+fn in_task() -> int {
+    let t = spawn {
+        defer mark(21)
+        22
+    }
+    t.await
+}
+fn inner(fail_it: bool) -> Result<int, string> {
+    errdefer mark(31)
+    if fail_it {
+        fail "x"
+    }
+    1
+}
+fn outer_fn(fail_it: bool) -> Result<int, string> {
+    errdefer mark(32)
+    defer mark(33)
+    let v = inner(fail_it)?
+    .Ok(v)
+}
+fn all() -> int {
+    defer gen(1, 1)
+    defer dflt(2)
+    defer answers(3)
+    let i: Id = Id(4)
+    defer id_of(i)
+    0
+}
+let a = all()
+let h = host()
+let l = in_lambda()
+let t = in_task()
+let good = match outer_fn(false) { .Ok(v) -> v, .Err(_) -> 0 }
+let bad = match outer_fn(true) { .Ok(v) -> v, .Err(_) -> 0 }
+"${a} ${h} ${l} ${t} ${good} ${bad}"

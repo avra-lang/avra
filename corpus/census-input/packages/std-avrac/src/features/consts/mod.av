@@ -1,0 +1,31 @@
+//! `const` — a value the COMPILER computes, so the program never
+//! does. Its initializer is settled at compile time and every use IS
+//! that value; nothing the host answers can ride in one, because
+//! nothing the host answers is known when the compiler runs.
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn consts() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name         | build
+        "const_decl" | build_const
+    }
+    let codes = table<DiagCode> {
+        kind           | summary
+        "const.reach"  | "a const cannot read the world"
+        "const.budget" | "a const ran past its budget"
+        "const.trap"   | "a const trapped while settling"
+        "const.param"  | "a const cannot read a run-time parameter"
+        "const.form"   | "a computed const has no compile-time value form"
+        "const.cycle"  | "a const's value asks for its own type"
+    }
+    LanguageFeature consts {
+        gram: grammar {
+            stmt = "const" n:NAME ( ":" t:type )? "=" v:expression END @recover(sync_to: "END") -> const_decl(n, t, v)
+        }
+        diags: codes
+        builders: rows
+    }
+    consts
+}

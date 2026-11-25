@@ -1,0 +1,160 @@
+//! Two rules that read TYPES before they speak: compiler.
+//! file_id_across_relation (a per-file id matched across a whole
+//! store) and compiler.one_body_arms (a join only where both arms
+//! bind alike). The fixture texts write the shapes under test.
+use compiler.{analyze_source, fix_applied}
+
+/// A store and its relation, modelled on `@std/relation`'s own members.
+const relation_prelude: string = "type Db = { n: int }\ntype ExprId = { index: int }\ntype DeclId = { index: int }\ntype FileView = { db: Db }\ntype Site = { owner: DeclId, within: ExprId? }\nimpl Site {\n    static fn all(db: Db) -> List<Site> { [] }\n    static fn by_owner(db: Db, owner: DeclId) -> List<Site> { [] }\n}\nfn within_is(w: ExprId?, c: ExprId) -> bool { (w?.index ?? -1) == c.index }\n"
+
+fn relation_fires(body: string) -> bool {
+    findings_of_source(relation_prelude + body + "0\n")
+        .any(it.rule == "compiler.file_id_across_relation")
+}
+
+/// A `Block` whose two variants carry payloads of the named types.
+fn blocks(a: string, b: string, arms: string) -> string {
+    "type TextP = { content: string }\ntype HeadP = { content: string }\nenum Block { Text(p: ${a}), Heading(p: ${b}), Rule }\nfn shown(k: Block) -> string {\n    match k {\n${arms}    }\n}\n0\n"
+}
+
+fn joins(text: string) -> bool { findings_of_source(text).any(it.rule == "compiler.one_body_arms") }
+
+/// Whether the join `one_body_arms` suggests over `text`, applied, analyses clean.
+fn join_compiles(text: string) -> bool {
+    let after = fix_applied(text, fix_apps_of(text, "compiler.one_body_arms")) ?? text
+    after != text && analyze_source(after).clean()
+}
+
+/// Two variants carrying the same two payload types in opposite orders.
+const swapped: string = "enum Pair { L(a: int, b: string), R(b: string, a: int) }\nfn shown(k: Pair) -> int {\n    match k {\n        .L(x, y) -> x + y.length,\n        .R(y, x) -> x + y.length,\n    }\n}\n0\n"
+
+spec "compiler.file_id_across_relation" {
+    given "an arena id tested across every row of a store" {
+        then "a comprehension over `T.all(db)` fires" {
+            relation_fires(
+                "fn inside(db: Db, c: ExprId) -> List<Site> {\n    [s for s in Site.all(db) if within_is(s.within, c)]\n}\n",
+            )
+        }
+        then "a `find` over `T.all(db)` fires" {
+            relation_fires(
+                "fn inside(db: Db, c: ExprId) -> Site? {\n    Site.all(db).find((s) -> within_is(s.within, c))\n}\n",
+            )
+        }
+        then "an `any` over `T.all(db)` fires" {
+            relation_fires(
+                "fn inside(db: Db, c: ExprId) -> bool {\n    Site.all(db).any((s) -> within_is(s.within, c))\n}\n",
+            )
+        }
+    }
+    given "the rows narrowed by a global column" {
+        then "reading through `by_owner`, then filtering, is clean" {
+            !relation_fires(
+                "fn inside(db: Db, d: DeclId, c: ExprId) -> List<Site> {\n    [s for s in Site.by_owner(db, d) if within_is(s.within, c)]\n}\n",
+            )
+        }
+        then "a `DeclId` column tested beside the id is clean" {
+            !relation_fires(
+                "fn inside(db: Db, d: DeclId, c: ExprId) -> List<Site> {\n    [s for s in Site.all(db) if s.owner == d && within_is(s.within, c)]\n}\n",
+            )
+        }
+    }
+    given "a store built per file" {
+        then "a `db` read off a `FileView` is clean" {
+            !relation_fires(
+                "fn inside(view: FileView, c: ExprId) -> List<Site> {\n    [s for s in Site.all(view.db) if within_is(s.within, c)]\n}\n",
+            )
+        }
+    }
+    given "a per-file store bound to a local first" {
+        then "it reads as a workspace store and fires — the site takes a license" {
+            relation_fires(
+                "fn inside(view: FileView, c: ExprId) -> List<Site> {\n    let db = view.db\n    [s for s in Site.all(db) if within_is(s.within, c)]\n}\n",
+            )
+        }
+    }
+    given "a nullable `DeclId` column tested beside the id" {
+        then "it narrows the rows and is clean" {
+            !relation_fires(
+                "type Edge = { callee: DeclId?, at: ExprId }\nimpl Edge {\n    static fn all(db: Db) -> List<Edge> { [] }\n}\nfn edges(db: Db, d: DeclId, c: ExprId) -> List<Edge> {\n    [e for e in Edge.all(db) if e.callee == d && e.at == c]\n}\n",
+            )
+        }
+    }
+    given "a scan that tests no arena id" {
+        then "a `DeclId` test alone is clean" {
+            !relation_fires(
+                "fn owned(db: Db, d: DeclId) -> List<Site> {\n    [s for s in Site.all(db) if s.owner == d]\n}\n",
+            )
+        }
+    }
+}
+
+spec "compiler.one_body_arms — binders must agree" {
+    given "two arms whose one name binds two payload types" {
+        then "no join is suggested" {
+            !joins(
+                blocks(
+                    "TextP",
+                    "HeadP",
+                    "        .Text(p) -> p.content,\n        .Heading(p) -> p.content,\n        .Rule -> \"\",\n",
+                ),
+            )
+        }
+    }
+    given "two arms binding one name at one payload type" {
+        then "the join is suggested" {
+            joins(
+                blocks(
+                    "TextP",
+                    "TextP",
+                    "        .Text(p) -> p.content,\n        .Heading(p) -> p.content,\n        .Rule -> \"\",\n",
+                ),
+            )
+        }
+        then "the suggested join compiles" {
+            join_compiles(
+                blocks(
+                    "TextP",
+                    "TextP",
+                    "        .Text(p) -> p.content,\n        .Heading(p) -> p.content,\n        .Rule -> \"\",\n",
+                ),
+            )
+        }
+    }
+    given "two arms that bind nothing" {
+        then "the join is suggested, and it compiles" {
+            let text = blocks(
+                "TextP",
+                "HeadP",
+                "        .Text(_) -> \"x\",\n        .Heading(_) -> \"x\",\n        .Rule -> \"\",\n",
+            )
+            joins(text) && join_compiles(text)
+        }
+    }
+    given "two arms binding different names" {
+        then "no join is suggested" {
+            !joins(
+                blocks(
+                    "TextP",
+                    "TextP",
+                    "        .Text(p) -> \"x\",\n        .Heading(q) -> \"x\",\n        .Rule -> \"\",\n",
+                ),
+            )
+        }
+    }
+    given "one name per type, bound in opposite orders" {
+        then "the join is suggested, and it compiles" {
+            joins(swapped) && join_compiles(swapped)
+        }
+    }
+    given "a nested payload whose inner types differ" {
+        then "no join is suggested" {
+            !joins(
+                blocks(
+                    "List<TextP>",
+                    "List<HeadP>",
+                    "        .Text(p) -> \"x\",\n        .Heading(p) -> \"x\",\n        .Rule -> \"\",\n",
+                ),
+            )
+        }
+    }
+}

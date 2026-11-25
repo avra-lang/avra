@@ -1,0 +1,33 @@
+// proves: `@index` and `@unique` over a nullable field — a row files
+// under its value when present and in no bucket when null, the lookup
+// taking the value itself; `@unique` holds among present values while
+// any number of rows are null
+use @std.relation.{relation}
+use @std.meta.{dense}
+use @std.relation.db.{new_db}
+use @std.relation.refused.{InsertRefused}
+
+@dense
+type NodeId = { index: int }
+
+enum Shade { Red, Green }
+
+@relation
+type Site = { id: int, @local @index callee: NodeId?, @index within: int?, @unique label: string?, @index shade: Shade?, n: int }
+
+fn ns(xs: List<Site>) -> string { ["${s.n}" for s in xs].join(",") }
+
+fn sites() -> Result<string, InsertRefused> {
+    let db = new_db()
+    let one = NodeId { index: 1 }
+    let _ = Site.insert(db, callee: one, within: 7, label: "a", shade: Shade.Red, n: 1)?
+    let _ = Site.insert(db, callee: null, within: 7, label: null, shade: null, n: 2)?
+    let _ = Site.insert(db, callee: one, within: null, label: null, shade: Shade.Red, n: 3)?
+    let dup = match Site.insert(db, callee: null, within: null, label: "a", shade: null, n: 4) {
+        .Ok(_) -> "taken",
+        .Err(_) -> "refused",
+    }
+    "${ns(Site.by_callee(db, one))} ${ns(Site.by_within(db, 7))} ${ns(Site.by_shade(db, Shade.Red))} ${Site.by_label(db, "a")?.n ?? 0} ${dup} ${Site.all(db).length}"
+}
+
+sites() catch e -> e.describe().message

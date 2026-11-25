@@ -1,0 +1,75 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule}
+use @std.meta.{name}
+
+/// A one-parameter lambda handed to a method call is `it` — the
+/// pronoun says the predicate and nothing else: no binder, no
+/// annotation, no arrow. THE ONE LAMBDA THAT STAYS: `it` binds at
+/// the NEAREST enclosing method call, so a parameter handed on to
+/// ANOTHER call's own arguments cannot be the pronoun — that is the
+/// language's own spelling; nor a block body, a nested lambda (any
+/// `->` inside reaches this the same way), or a body that already
+/// says `it`.
+///
+/// The rewrite renames every standalone `${p}` in `body` to `it` —
+/// never a `.${p}` FIELD read on some other subject, and never part
+/// of a longer identifier (`renamed`'s own boundary check) — through
+/// `@std/meta`'s raw-text door (`features/fix.av`), since a hole only
+/// ever splices a bound `Code` whole, never edits inside one.
+@fixes("held.find((o) -> o.ready)", "held.find(it.ready)")
+@keeps("held.find((o) -> !store.has(k, o.key))")
+@keeps("xs.any((k) -> self.rides(k))")
+@keeps("xs.any((k) -> { k > 2 })")
+@keeps("xs.any((k) -> it == k)")
+@keeps("xs.any((k) -> f((j) -> j == k))")
+export rule pronoun_lambda {
+    quote { ${xs}.${m}((${p}) -> ${body}) } if !body.is_block() && !mentions(body, "it") && mentions(body, p) && !handed_to_a_call(body, p) -> pronoun_lambda_fix(xs, m, p, body),
+}
+
+/// Whether `name` occurs anywhere under `c`, `c` itself included.
+fn mentions(c: Code, name: string) -> bool {
+    c.name() == name || c.kids().any((k) -> mentions(k, name))
+}
+
+/// Whether `name` sits inside some nested call's own ARGUMENTS,
+/// anywhere under `c` — the shape `it` cannot rename, since `it`
+/// would bind at that NEARER call instead.
+fn handed_to_a_call(c: Code, name: string) -> bool {
+    c.call_args().any((a) -> mentions(a, name)) || c.kids().any((k) -> handed_to_a_call(k, name))
+}
+
+fn pronoun_lambda_fix(xs: Code, m: string, p: string, body: Code) -> Fix {
+    Fix.Rewrite(name("${xs.text()}.${m}(${renamed(body.text(), p, "it")})"))
+}
+
+/// `name` renamed to `to`, everywhere it stands as its OWN token —
+/// never mid-identifier, never right after a `.` (a FIELD of the
+/// same spelling on some other subject).
+fn renamed(text: string, from: string, to: string) -> string {
+    mut out = ""
+    mut i = 0
+    while i < text.length {
+        let hi = if i + from.length > text.length { text.length } else { i + from.length }
+        let after_ident = hi < text.length && is_ident_char(text.char_code(hi))
+        if text.substring(i, hi) == from && ident_boundary(text, i) && !after_ident {
+            out = out + to
+            i = hi
+        } else {
+            out = out + text.substring(i, i + 1)
+            i = i + 1
+        }
+    }
+    out
+}
+
+/// Whether `text[i]` starts a fresh identifier — the character just
+/// before is neither part of one nor the `.` that would make this a
+/// FIELD read on some other subject rather than the bound parameter.
+fn ident_boundary(text: string, i: int) -> bool {
+    i == 0 || !is_ident_char(text.char_code(i - 1)) && text.char_code(i - 1) != 46
+}
+
+fn is_ident_char(c: int) -> bool {
+    c == 95 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122
+}

@@ -1,0 +1,16 @@
+//! proves: a bell nobody holds wakes every waiter at one ring, a wait
+//! nobody rings ends at its timeout, and the pipe waiters park on is
+//! closed behind the last — the same in both engines
+use @std.net.{Bell}
+use @std.time.{ms, sleep}
+
+fn waited(b: Bell, limit: int) -> string { if b.waited(ms(limit)) is .Ok { "woken" } else { "timed out" } }
+
+let b = Bell {}
+let waiters = [spawn waited(b, 2000) for i in 0..5]
+sleep(ms(20))
+let counted = b.waiting.get()
+b.ring()
+let said = [w.await for w in waiters]
+let lone = waited(b, 30)
+"${counted} ${said.join(" ")} | ${lone} | fd ${b.heard.get()}"

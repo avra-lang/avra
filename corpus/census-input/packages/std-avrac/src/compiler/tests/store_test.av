@@ -1,0 +1,64 @@
+// THE STORE'S CONTRACT, which is three claims and every one of them is load-bearing:
+//
+//   * PRESENCE IS O(1) AND NEEDS NOTHING READ — `has` is one `exists`, which is what
+//     makes "has this changed?" cheap enough to ask about every node.
+//   * A ROW IS PRESENT ONLY WHEN ITS EDGES ARE — the second write is the COMMIT, so a
+//     crash between them reads as ABSENT rather than as half a value.
+//   * A KEY NAMES CONTENT, and the family is folded first, so two families naming the
+//     same parts stay apart.
+
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+use compiler.store.{Store, Stored, node_key, store_at}
+
+/// One directory per run, so no earlier run's rows answer for this one.
+once fn store_base() -> string { "/tmp/avra-store-test/${now_ns()}" }
+
+/// A store of one spec's own, so two specs cannot see each other's rows.
+fn at(name: string) -> Store { store_at("${store_base()}/${name}") }
+
+spec "store" {
+    given "a key names content, and the family separates" {
+        then "the same parts under two families are two keys" {
+            node_key(Stored.Sig, ["a", "b"]) != node_key(Stored.Unit, ["a", "b"])
+        }
+        then "the same parts under one family are one key" {
+            node_key(Stored.Sig, ["a", "b"]) == node_key(Stored.Sig, ["a", "b"])
+        }
+        then "different parts are different keys" {
+            node_key(Stored.Sig, ["a", "b"]) != node_key(Stored.Sig, ["a", "c"])
+        }
+    }
+    given "a store that has seen nothing" {
+
+        then "nothing is present" {
+            !at("empty").has(Stored.Sig, node_key(Stored.Sig, ["x"]))
+        }
+        then "and nothing is handed back" {
+            at("empty").get(Stored.Sig, node_key(Stored.Sig, ["x"])) == null
+        }
+    }
+    given "a row that was remembered" {
+
+        then "it is present and answers its bytes" {
+            let s = at("kept")
+            let k = node_key(Stored.Unit, ["body", "int"])
+            let _ = s.keep(Stored.Unit, k, "the lowered body", ["edge-one", "edge-two"])
+            s.has(Stored.Unit, k) && s.get(Stored.Unit, k) == "the lowered body"
+        }
+    }
+    given "a row whose EDGES never arrived" {
+
+        then "it reads as ABSENT, because the second write is the commit" {
+            let s = at("uncommitted")
+            let k = node_key(Stored.Obj, ["half"])
+            // THE DATA IS REALLY THERE — directories made, bytes written — and only the
+            // EDGES are missing. A fixture that failed to write would pass this for the
+            // wrong reason, which is the fixture that cannot exhibit the defect.
+            let shard = "${store_base()}/uncommitted/obj/${k.substring(0, 2)}"
+            let _ = make_dirs(shard)
+            let _ = write_text("${shard}/${k}", "the data landed")
+            !s.has(Stored.Obj, k) && s.get(Stored.Obj, k) == null
+        }
+    }
+}

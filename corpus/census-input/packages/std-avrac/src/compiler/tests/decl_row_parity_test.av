@@ -1,0 +1,18 @@
+use core.{DeclKind, no_stmt}
+use features.{Decls, new_decls}
+
+// THE PINNED HANDLE'S IDENTITY: `Decls.decl_row_rows` is read once at
+// construction and never re-pinned — a declaration a later `mint` inserts
+// must still be visible through that SAME pin, or `decl(d)` would answer
+// for a row that was never there when the pin was taken. Reads through
+// `decl`, the one door every pass uses, proving it directly rather than
+// through the relation's own generated `get`.
+spec "compiler/decl_rows — the pinned Rows<Decl> handle sees a row inserted after Decls was built" {
+    then "a declaration minted after Decls was constructed reads back through the pin" {
+        let d: Decls = new_decls()
+        let f = d.file_id("/w/src/pinned.av", "pinned", false)
+        let id = d
+            .mint("pinned::fn::seed", f, no_stmt, "seed", DeclKind.Fn, true, "", null, false, null)
+        d.decl(id).name == "seed" && d.decl(id).kind is .Fn && d.decl(id).exported
+    }
+}

@@ -1,0 +1,62 @@
+// The cache walk's graph half over one process's own workspace: a query's label
+// names its family and what it keys by, a trail runs from a file's analysis down
+// to a text it reads, and a text's readers are the queries that reach it.
+// `a_process_over`, `checked`, `package_files` and the ordinals are
+// workspace_fixtures.av's own.
+use compiler.{Workspace}
+use query.{Key}
+
+/// The package checked in one process, so the kernel holds what each file read.
+fn walked() -> Workspace {
+    let ws = a_process_over(package_files(), package_names())
+    for path in package_names() { let _ = checked(ws, path) }
+    ws
+}
+
+fn label_at(ws: Workspace, family: int, arg: int) -> string { ws.key_label(Key { family: family, arg: arg }) }
+
+spec "compiler/cache_walk — a query's label" {
+    then "each ordinal the fixtures use names its family and its subject" {
+        let ws = walked()
+        let f = decl_in_file(ws, "/w/src/a.av", "f").index
+        label_at(ws, parsed_ordinal(), ws.file_id("/w/src/a.av").index) == "Parsed(src/a.av)" &&
+            label_at(ws, namespace_ordinal(), ws.decls.module_id("").index) == "Namespace(the root module)" &&
+            label_at(ws, sig_ordinal(), f) == "Sig(f · src/a.av)" &&
+            label_at(ws, methods_ordinal(), f) == "Methods(f · src/a.av)" &&
+            label_at(ws, manifest_ordinal(), 0).starts_with("Manifest(")
+    }
+    then "a label typed whole names exactly that query" {
+        walked().named_queries("Sig(f · src/a.av)").length == 1
+    }
+}
+
+spec "compiler/cache_walk — down from a file's analysis" {
+    then "a caller's trail runs from its own analysis to the callee's text" {
+        let ws = walked()
+        let found = ws.trails(ws.analysis_key("/w/src/b.av")!, ["/w/src/a.av"])
+        found.length == 1 &&
+            found[0].input == "src/a.av" &&
+            found[0].steps.first() ?? "" == "Analysis(src/b.av)" &&
+            found[0].steps.last() ?? "" == "Source(src/a.av)"
+    }
+    then "a file the workspace never met has no trail and no key" {
+        let ws = walked()
+        ws.input_key("/w/src/gone.av") == null &&
+            ws.trails(ws.analysis_key("/w/src/b.av")!, ["/w/src/gone.av"]).is_empty()
+    }
+    then "a file's analysis reads more than itself" {
+        let ws = walked()
+        ws.reads_count(ws.analysis_key("/w/src/b.av")!) > 0
+    }
+}
+
+spec "compiler/cache_walk — up from a text" {
+    then "a callee's text is read by its own parse and by its caller's analysis, never by itself" {
+        let ws = walked()
+        let text = ws.input_key("/w/src/a.av")!
+        let labels = [ws.key_label(k) for k in ws.readers(text)]
+        labels.contains("Parsed(src/a.av)") &&
+            labels.contains("Analysis(src/b.av)") &&
+            !labels.contains("Source(src/a.av)")
+    }
+}

@@ -1,0 +1,99 @@
+//! `.refuses` PROGRAM TESTS — a program whose TRAP is the proof: it
+//! ends through `avra_trap` (a `!` on an absent value, or any other
+//! law that speaks and quits), exit 2, its words on stderr. A suite
+//! calls every case IN ONE PROCESS, so calling such a program there
+//! would end the suite at the first one — each leg runs as a CHILD
+//! instead, through the same `@std/process` door the light phase
+//! already spawns suite binaries with: native is the built program
+//! itself, eval is this same compiler re-exec'd into the light
+//! phase's own `@refuse-eval` hand-off (`stage.av`), which runs the
+//! evaluator over the one file's own scoped derivation — never the
+//! whole-package `Program` `avra run` builds, which would refuse a
+//! sibling program test's top level as a second entry.
+use @std.avrac.compiler.{RefusesCall, Toolchain}
+use @std.path.{joined_path, relative_path}
+use @std.process.{cmd, tool, Exit, Outcome as ChildOutcome, ProcessError, exit_text}
+use @std.time.{secs}
+use stage.{refuse_eval_words}
+
+/// A trap's own exit: code 2, never a signal or a clean run.
+fn trapped(e: Exit) -> bool {
+    match e { .Code(n) -> n == 2, .Clean or .Signal(_, _) -> false }
+}
+
+/// One leg's own verdict against the voice it owes.
+fn leg_wrong(leg: string, voice: string, o: ChildOutcome) -> string? {
+    if !trapped(o.exit) { return "${leg} exited ${exit_text(o.exit)}, wanted a trap (code 2)\n${o.out.stderr}" }
+    if !o.out.stderr.contains(voice) { return "${leg} trapped with a different voice\nwanted: ${voice}\ngot: ${o.out.stderr}" }
+    null
+}
+
+/// One leg run as a child and judged against the voice — a program
+/// under test, never a workload, so a leg that outlives its window is
+/// refused rather than hung on.
+fn leg(program: string, args: List<string>, name: string, voice: string) -> Result<
+    string?,
+    ProcessError,
+> {
+    let o = (cmd(tool(program)?, args) with { timeout: secs(30) }).outcome()?
+    leg_wrong(name, voice, o)
+}
+
+/// One leg, a host refusal folded into the same voice a wrong trap
+/// would carry.
+fn leg_or_host(program: string, args: List<string>, name: string, voice: string) -> string? {
+    match leg(program, args, name, voice) {
+        .Ok(w) -> w,
+        .Err(e) -> "${name} could not run: ${e.describe().message}",
+    }
+}
+
+/// Where a `.refuses` test's native leg is built — under `build/`,
+/// named by its path relative to the package root so two tests never
+/// collide.
+fn refuses_binary(root: string, path: string) -> string {
+    let safe = relative_path(root, path).replace("/", "_").replace(".", "_")
+    joined_path(joined_path(root, "build"), "refuses-${safe}")
+}
+
+/// One `.refuses` test, both engines: the built program first (its own
+/// binary, cached like any other build), then the evaluator over the
+/// same scoped derivation, run through the light phase's own
+/// `@refuse-eval` hand-off — ending a trap exactly as a native binary
+/// does, so one voice serves both.
+fn one_refuses(self_binary: string, tools: Toolchain, call: RefusesCall) -> string? {
+    let ws = file_workspace(call.path)
+    let binary = refuses_binary(ws.root, call.path)
+    let native = match ws.linked_program(call.path, binary, tools) {
+        .Ok(b) -> b.binary,
+        .Err(e) -> { return "${call.path}: native build failed — ${e.describe().message}" },
+    }
+    let by_native = leg_or_host(native, [], "native", call.voice)
+    if by_native != null { return "${call.path}: ${by_native!}" }
+    let by_eval = leg_or_host(
+        self_binary,
+        refuse_eval_words(ws.root, call.path),
+        "eval",
+        call.voice,
+    )
+    if by_eval != null { return "${call.path}: ${by_eval!}" }
+    null
+}
+
+/// Every `.refuses` test judged in order; the first wrong voice stops
+/// the run and is spoken — the ordinary suites never run behind a
+/// refusal law that does not hold.
+fn checked_refuses(self_binary: string?, tools: Toolchain, calls: List<RefusesCall>) -> int {
+    let bin? = self_binary else {
+        eprintln("avra: could not find this compiler's own binary to run the evaluator leg")
+        return 1
+    }
+    for call in calls {
+        let wrong = one_refuses(bin, tools, call)
+        if wrong != null {
+            eprintln(wrong!)
+            return 1
+        }
+    }
+    0
+}

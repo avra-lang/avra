@@ -1,0 +1,108 @@
+// A program test is a program, not a module file: the entry's law over
+// every other file exempts one with its proof beside it, and still
+// refuses any other file that runs statements. `ran_as` is
+// workspace_test.av's own: this module shares one namespace.
+use @std.avrac.compiler.{avra, new_workspace, Want}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+const ALPHA: string = "/w/src/alpha/alpha.av"
+const BETA: string = "/w/src/beta/beta.av"
+const LIB: string = "/w/src/lib.av"
+const GAMMA: string = "/w/src/gamma/gamma.av"
+
+/// A library, two program tests and a refusal test, in one package.
+fn program_files() -> Map<string, string> {
+    {
+        "/w/src/lib.av": "export fn double(n: int) -> int {\n    n * 2\n}\n",
+        "/w/src/alpha/alpha.av": "use lib.{double}\ndouble(21)\n",
+        "/w/src/alpha/alpha.expected": "42\n",
+        "/w/src/beta/beta.av": "use lib.{double}\nlet n = double(4)\nn + 1\n",
+        "/w/src/beta/beta.expected": "9\n",
+        "/w/src/trap/trap.av": "let missing: int? = null\nmissing!\n",
+        "/w/src/trap/trap.refuses": "unwrapped an absent value\n",
+    }
+}
+
+fn program_names() -> List<string> {
+    [LIB, ALPHA, BETA, "/w/src/trap/trap.av"]
+}
+
+fn programs_ws() -> Workspace {
+    new_workspace(memory_host(program_files(), program_names()), "/w", avra())
+}
+
+/// The package with `gamma.av` added, a run-time statement in it, and
+/// `proof` beside it when there is one.
+fn programs_ws_gamma(proof: string?) -> Workspace {
+    mut fs = program_files()
+    fs.set(GAMMA, "use lib.{double}\ndouble(1)\n")
+    if proof != null { fs.set(proof!, "x\n") }
+    new_workspace(memory_host(fs, program_names().concat([GAMMA])), "/w", avra())
+}
+
+/// The entry's law over the other files, as its one voice.
+fn refused_outside(ws: Workspace, entry: string) -> bool {
+    let p = ws.program(entry)
+    p.clean() &&
+        p.lowered().diagnostics.length == 1 &&
+        p.rendered(p.lowered().diagnostics).contains("only the entry `${entry}` runs statements")
+}
+
+fn law_silent(ws: Workspace, entry: string) -> bool {
+    ws.program(entry).lowered().diagnostics.is_empty()
+}
+
+spec "compiler/program files" {
+    given "two program tests and a refusal test beside a library" {
+        then "each program test runs as its own entry and answers its own text" {
+            ran_as(programs_ws().program(ALPHA).run(), "42") &&
+                ran_as(programs_ws().program(BETA).run(), "9")
+        }
+        then "the entry's law finds nothing to refuse, whichever program is the entry" {
+            law_silent(programs_ws(), ALPHA) && law_silent(programs_ws(), BETA)
+        }
+        then "the derivation's own check over the whole program passes with either as the entry" {
+            programs_ws().program(ALPHA).files_checked() is .Ok &&
+                programs_ws().program(BETA).files_checked() is .Ok
+        }
+        then "a derivation from the sources alone, with no hold, stands with either as the entry" {
+            programs_ws().from_sources(ALPHA, Want.Binary) is .Ok &&
+                programs_ws().from_sources(BETA, Want.Binary) is .Ok
+        }
+    }
+    given "a file with no proof beside it" {
+        then "a run-time statement in it is still refused, naming the entry" {
+            refused_outside(programs_ws_gamma(null), ALPHA)
+        }
+        then "the derivation's own check refuses it too" {
+            match programs_ws_gamma(null).program(ALPHA).files_checked() {
+                .Err(report) -> report.contains("only the entry `${ALPHA}` runs statements"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a proof beside another file's stem does not mark it" {
+            refused_outside(programs_ws_gamma("/w/src/gamma/other.expected"), ALPHA)
+        }
+    }
+    given "a proof beside a file" {
+        then "an `.expected` makes its statements the file's own program" {
+            law_silent(programs_ws_gamma("/w/src/gamma/gamma.expected"), ALPHA)
+        }
+        then "a `.refuses` does the same" {
+            law_silent(programs_ws_gamma("/w/src/gamma/gamma.refuses"), ALPHA)
+        }
+    }
+    given "what the suite discovers" {
+        then "every program test and every refusal test it finds is a program to the entry's law" {
+            let ws = programs_ws()
+            ws.program_tests().all((p) -> ws.is_program(p)) &&
+                ws.refuses_tests().all((c) -> ws.is_program(c.path)) &&
+                ws.program_tests().length == 2 &&
+                ws.refuses_tests().length == 1
+        }
+        then "a library file is no program" {
+            !programs_ws().is_program(LIB)
+        }
+    }
+}

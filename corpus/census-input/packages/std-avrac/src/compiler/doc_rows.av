@@ -1,0 +1,38 @@
+//! `avra docs`' two reads over the `Decl` relation: the declarations a name
+//! names, and the ones a package exports. Each answers `DocKey`s — a dense
+//! id never crosses a query's answer — and `Program` renders from them.
+use features.{Decl, File, Module}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
+
+/// A declaration's stable name: its module, the type it serves (empty for
+/// none), and its own name.
+export type DocKey = { module: string, owner: string, name: string }
+
+/// Every declaration wearing `name`.
+@query
+export fn named_decls(db: RelDb, name: string) -> List<DocKey> {
+    [doc_key(db, d) for d in Decl.all(db) if d.name == name]
+}
+
+/// Every declaration this package exports — the language's own builtins
+/// aside.
+@query
+export fn exported_decls(db: RelDb) -> List<DocKey> {
+    [doc_key(db, d) for d in Decl.all(db) if d.exported && !(d.kind is .Builtin)]
+}
+
+fn doc_key(db: RelDb, d: Decl) -> DocKey {
+    DocKey {
+        module: Module.get(db, File.get(db, d.file)!.module)!.name,
+        owner: d.owner,
+        name: d.name,
+    }
+}
+
+/// The declaration a key names, re-found through the name's index.
+export fn keyed_decl(db: RelDb, k: DocKey) -> Decl? {
+    Decl
+        .by_name(db, k.name)
+        .find((d: Decl) -> d.owner == k.owner && doc_key(db, d).module == k.module)
+}

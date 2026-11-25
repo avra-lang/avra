@@ -1,0 +1,131 @@
+//! The one artifact consumers hold: a file as every pass sees it,
+//! every pass's facts, every diagnostic, and every question —
+//! report, run, lower — as methods. Pass order lives in the query
+//! graph (workspace.av); this is its snapshot.
+use core.{ExprId, TypeId, At, joined, FileId, Binding}
+use diagnostics.{Diag, SourceFile, render, has_errors}
+use features.{
+    Decls,
+    NameFacts,
+    TypeFacts,
+    FileView,
+    Code,
+    Analysed,
+    no_owner_spans,
+    no_assign_roots,
+}
+use compiler.lower.{Lowered}
+
+/// One source, fully analyzed: the tree, every pass's facts, every
+/// diagnostic in pipeline order, and the registry to render them —
+/// the ONE self-sufficient artifact consumers hold.
+export type Analysis = {
+    view: FileView,
+    names: NameFacts,
+    facts: TypeFacts,
+    lang: Language,
+    diagnostics: List<Diag>,
+    program: fn() -> Program,
+}
+
+impl Analysis {
+    /// No errors — warnings render and never block.
+    fn clean() -> bool { !has_errors(self.diagnostics) }
+
+    /// Every diagnostic rendered for the terminal; "" means clean.
+    fn report() -> string {
+        self.rendered(self.diagnostics)
+    }
+
+    /// Any diagnostics rendered for the terminal — analysis's or a
+    /// later stage's, one look everywhere.
+    fn rendered(ds: List<Diag>) -> string {
+        joined([render(d, self.view.source) for d in ds], "\n\n")
+    }
+
+    /// What an expression's name resolves to, when it does — the
+    /// ONE binding currency.
+    fn binding(e: ExprId) -> Binding? { self.names.binding(e) }
+
+    /// An expression's type — total: every expression has one.
+    fn type_at(e: ExprId) -> TypeId { self.facts.type_at(e) }
+
+    /// An expression's type as text (the printing projection).
+    fn type_name(e: ExprId) -> string {
+        self.view.decls.types.name_of(self.type_at(e))
+    }
+
+    /// The ONE constructor a rule or a spec builds a `Code` from —
+    /// this analysis's three shared tables, plus the one node in
+    /// hand.
+    fn code_at(at: At) -> Code {
+        Code { of: Analysed { view: self.view, names: self.names, facts: self.facts }, at: at }
+    }
+
+    /// The program's printed answer, or the report/refusal that
+    /// stopped it — the ONE semantics, interpreted over the SAME
+    /// post-memory stream the backend compiles: every instruction,
+    /// Retain and Release included, shared to the last bracket. A
+    /// lone file is a program of one; the Program owns the law.
+    fn run() -> Result<string, string> {
+        let p = self.program()
+        p.run()
+    }
+
+    /// Everything wrong, rendered; "" means clean.
+    /// Everything spoken, rendered — refusals or, failing those, the
+    /// warnings; "" when nothing spoke.
+    fn check() -> string {
+        let p = self.program()
+        match p.check() { .Ok(warned) -> warned, .Err(report) -> report }
+    }
+
+    /// The program as IR, memory strategy applied — what `avra
+    /// build` compiles.
+    fn lowered() -> Lowered {
+        let p = self.program()
+        p.lowered()
+    }
+
+    /// The program's printed answer, or null when it refused.
+    fn ran() -> string? {
+        match self.run() { .Ok(text) -> text, .Err(_) -> null }
+    }
+}
+
+/// What every pass reads of a file. `owner_spans`/`assign_roots`
+/// start empty — this call is the only mint, so every analysis of
+/// this file gets its own.
+export fn file_view(lang: Language, p: Parsed, decls: Decls, f: FileId) -> FileView {
+    FileView {
+        file: f,
+        store: p.store,
+        stmts: p.stmts,
+        source: p.source,
+        decls: decls,
+        types: decls.types,
+        lang: lang.rows,
+        owner_spans: no_owner_spans(),
+        assign_roots: no_assign_roots(),
+    }
+}
+
+impl Language {
+    /// The whole pipeline over ONE file — a program of one: its own
+    /// declarations are its scope, and a `use` has no package to
+    /// reach.
+    fn analyze(src: SourceFile) -> Analysis {
+        let ws = lone_workspace(src.file, src.text, self)
+        let a = ws.analysis(ws.file_id(src.file))
+        ws.disarmed()
+        a
+    }
+
+    /// Everything wrong with one source, rendered; "" means clean.
+    /// EVERYTHING: analysis diagnostics first, and when those are
+    /// clean, lowering's refusals too — check agrees with run and
+    /// build about what is wrong.
+    fn check(src: SourceFile) -> string {
+        self.analyze(src).check()
+    }
+}

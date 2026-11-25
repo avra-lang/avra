@@ -1,0 +1,38 @@
+//! The block's NodeSemantics: a CONTROL-OWNING node — kids() is
+//! empty and every pass recurses through its driver capability, so
+//! the scope discipline (binding order, frames, releases) stays
+//! with the drivers that own it.
+use core.{Expr, ExprId, TypeId, Reg, some_list}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type BlockSemantics = {}
+
+impl NodeSemantics for BlockSemantics {
+
+    fn heirs(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e { .Block(_, value) -> some_list(value), _ -> [] }
+    }
+
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        match cx.view.store.expr(e) {
+            .Block(stmts, value) -> cx.block_scope(stmts, value),
+            _ -> nothing(),
+        }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        match cx.view.store.expr(e) {
+            .Block(stmts, value) -> cx.block_type(stmts, value),
+            _ -> cx.error_type,
+        }
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        match cx.view.store.expr(e) {
+            .Block(stmts, value) -> cx.lower_block(stmts, value, cx.type_at(e)),
+            _ -> cx.foreign_node(e),
+        }
+    }
+
+}

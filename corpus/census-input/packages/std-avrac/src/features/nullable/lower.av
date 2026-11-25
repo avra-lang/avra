@@ -1,0 +1,179 @@
+//! The lowering rule — the ONE meaning. WHICH layout a nullable
+//! takes is values.av's business (`repr_of` and its verbs); this
+//! file only says what each consumer MEANS, and every consumer of
+//! absence opens the SAME region on presence — so `??`'s right
+//! side, the absent arm, and the chain's absence all run only when
+//! the value is not there.
+use core.{ExprId, StmtId, TypeId, Reg, Ins}
+use features.{LowerCx, property_of}
+
+fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .NullLit -> null_reg(cx, e),
+        .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
+        .Force(v) -> forced_reg(cx, v),
+        .Propagate(v) -> propagate_reg(cx, e, v),
+        .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
+        .Chain(s, name) -> chain_reg(cx, e, s, name.of),
+        rest -> cx.foreign_node(e),
+    }
+}
+
+/// The absence itself: a null constant, typed as absence. It has no
+/// carried layout — the ADOPTING edge gives it one (values.av,
+/// `adopted`), and for a niche this very value already is it.
+fn null_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.zero(e)
+}
+
+/// `l ?? r` — the present arm unwraps what `l` carries; the absent
+/// arm answers with `r`, evaluated only then.
+fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    let v = cx.reg_of(l)
+    let held = cx.type_at(l)
+    // a left side that is never absent IS the answer — typing said so
+    if cx.view.types.carried(held) == null { return v }
+    cx
+        .region(cx.presence_of(v, held), e) { cx -> present_as(cx, v, held, cx.type_at(e)) } else { cx -> cx.reg_of(r) }
+}
+
+/// The present side of `??`, as the answer's type: the held nullable
+/// whole when the answer IS it (a chain's middle), what it carries when
+/// the answer is that, and what it carries widened otherwise — an
+/// `int??` coalesced with `null` answers the `int?` inside, once.
+fn present_as(mut cx: LowerCx, v: Reg, held: TypeId, answer: TypeId) -> Reg {
+    // LICENSED structs.index_compared: layout identity — which register shape answers — not type agreement
+    if answer.index == held.index { return v }
+    let inner = cx.carried_of(v, held)
+    let carried = cx.view.types.carried(held) ?? held
+    // LICENSED structs.index_compared: layout identity — which register shape answers — not type agreement
+    if answer.index == carried.index { return inner }
+    cx.adopted(answer, false, inner)
+}
+
+/// `v!` — the carried value, insisted on; a read a narrowing made
+/// present is that value already.
+fn forced_reg(mut cx: LowerCx, v: ExprId) -> Reg {
+    if cx.view.types.carried(cx.type_at(v)) == null { return cx.reg_of(v) }
+    cx.insisted(cx.reg_of(v), cx.type_at(v))
+}
+
+/// `match v { b? -> p, null -> a }` — the bind receives what the
+/// nullable carries before the present arm lowers inside its
+/// bracket; the absent arm is the other bracket.
+fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, present: ExprId, absent: ExprId) -> Reg {
+    let v = cx.reg_of(subject)
+    let held = cx.type_at(subject)
+    cx
+        .region(cx.presence_of(v, held), e) { cx ->
+            cx.bind_patterns(present, [cx.carried_of(v, held)])
+            cx.reg_of(present)
+        } else { cx -> cx.reg_of(absent) }
+}
+
+/// `v?` — the present arm unwraps what the nullable carries; the
+/// absent arm makes the FN answer absence right here (`FnExit` —
+/// the memory pass settles every open scope at the site) and
+/// yields a hollow the merge never reads, since the backend parks
+/// everything after the exit in a dead continuation.
+fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+    let r = cx.reg_of(v)
+    let held = cx.type_at(v)
+    if cx.view.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
+    cx.presence(r, held, e) { cx, carried -> carried } else { cx -> departed(cx, e) }
+}
+
+/// `v?` on a RESULT: one region on OKNESS. The ok arm unwraps the
+/// payload; the failure arm exits with the subject itself wherever the
+/// fn's Result is laid out alike (`propagated`) — an `.Err` of
+/// `Result<_, E>` is then a valid `.Err` of every such `Result<_, E>`.
+fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
+    cx
+        .region(cx.okness_of(r), e) { cx -> cx.payload_of(r, cx.type_at(e)) } else { cx ->
+            let leaving = cx.propagated(r)
+            cx.failing()
+            cx.emit(Ins.FnExit(leaving))
+            cx.hollow_of(cx.type_at(e))
+        }
+}
+
+/// The absent arm's whole story: the enclosing fn answers absence.
+fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
+    let ret? = cx.enclosing_ret() else { return cx.lower_defect(e, "a propagation without an enclosing fn survived typing") }
+    cx.leaving(null)
+    cx.emit(Ins.FnExit(cx.absent_of(ret)))
+    cx.hollow_of(cx.type_at(e))
+}
+
+/// `let v? = e else { ... }` — the same presence region, with the
+/// merge REGISTER as the binding: the present arm yields the
+/// carried value; the absent arm runs the else, which LEAVES
+/// (typing enforced it), and yields a hollow the merge never
+/// reads. The driver binds the answered register like any let's.
+fn let_else_reg(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let subject? = cx.view.store.stmt_value(s) else { return null }
+    let v = cx.reg_of(subject)
+    let held = cx.type_at(subject)
+    cx
+        .region_as(cx.presence_of(v, held), cx.carried_type(held)) { cx -> cx.carried_of(v, held) } else { cx ->
+            cx.arm_stmts(else_stmts_of(cx.view.store.stmt(s)))
+            cx.hollow_of(cx.carried_type(held))
+        }
+}
+
+/// `a?.b` — the member of the CARRIED value on the present arm,
+/// lifted into the chain's nullable answer; absence on the other.
+fn chain_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
+    let v = cx.reg_of(subject)
+    let held = cx.type_at(subject)
+    let answer = cx.type_at(e)
+    cx
+        .region(cx.presence_of(v, held), e) { cx -> lifted_member(cx, e, v, held, name, answer) } else { cx -> cx.absent_of(answer) }
+}
+
+/// The present arm: read the member of what the subject carries,
+/// lifted into the chain's answer — unless the member is that
+/// nullable already (the flatten rule), when it IS the answer.
+fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId, name: string, answer: TypeId) -> Reg {
+    member_reg(cx, e, cx.carried_of(v, held), cx.carried_type(held), name, answer)
+}
+
+/// The member read on the carried value: a field's slot, or the row
+/// the receiver's shape answers (a measure, a name's shape), each
+/// lifted into `answer`. THE SAME REGISTRY THE SPINE READS — the
+/// chain holds a register where the spine holds a node, which is
+/// the whole reason a row's lowering takes one. A field already
+/// wearing the answer's nullable reads straight; one wearing what
+/// it carries is adopted; anything else means the flatten rule
+/// changed without this lowering learning it, which must break
+/// loudly, not lift twice.
+fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId, name: string, answer: TypeId) -> Reg {
+    let fields? = cx.fields_of(held) else { return cx.adopted(answer, false, chained_row(cx, e, carried, held, name)) }
+    let at? = fields.slot_of(name) else { return memberless_chain(cx, e) }
+    let own = fields.types[at]
+    if !types_differ(own, answer) { return cx.field_read(carried, held, at, own) }
+    if types_differ(own, cx.carried_type(answer)) {
+        return cx.lower_defect(e, "a chain's member wears a type its lift does not expect")
+    }
+    cx.adopted(answer, false, cx.field_read(carried, held, at, own))
+}
+
+/// The property the receiver answers, lowered from the carried
+/// register.
+fn chained_row(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId, name: string) -> Reg {
+    let r? = property_of(cx.view.types, cx.view.lang.properties, name, held) else { return memberless_chain(cx, e) }
+    r.lower(cx, e, carried, held)
+}
+
+/// A chain reaching a member the receiver has not got — typing
+/// admitted it, so the lowering cannot.
+fn memberless_chain(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.lower_defect(e, "a memberless chain survived typing")
+}
+
+fn types_differ(a: TypeId, b: TypeId) -> bool {
+    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
+    a.index != b.index
+}
+

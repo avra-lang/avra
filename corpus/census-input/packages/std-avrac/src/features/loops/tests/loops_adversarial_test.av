@@ -1,0 +1,274 @@
+// Index pairing under attack (rt32): degenerate subjects, the
+// index in every wrong place, the malformed header (one
+// message each, counts pinned), every
+// feature crossed, names against names, and churn.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/loops/adversarial" {
+    given "a range loop as the LAST statement that runs" {
+        // A RANGE HEAD DESUGARS INTO SPAN-LESS NODES (builders.av mints
+        // the `i < hi` condition and the `i + 1` step with null spans),
+        // and a declaration's expression RANGE is computed only from
+        // expressions that HAVE a span (decls.av `range_bodies`). So
+        // when the loop is the last thing that runs, those nodes sit
+        // ABOVE the range's `hi` and `type_at` — a window read,
+        // `of_expr[e.index - lo]` — indexes past its end. It TRAPPED:
+        // "index N is out of bounds (length N)", exit 2, no diagnostic.
+        //
+        // A following RUN-TIME statement hid it by extending the range;
+        // a following fn DECLARATION did not, because its expressions
+        // are owned by that fn. That is why it survived every suite.
+        then "the loop alone checks clean" {
+            refusals("for i in 0..1 {\n    let x = i\n}") == 0
+        }
+        then "an empty body checks clean — fewest expressions, still past the end" {
+            refusals("for i in 0..1 {\n}") == 0
+        }
+        then "a fn declaration after it does NOT shield it" {
+            refusals("for i in 0..1 {\n    let x = i\n}\nfn g() -> int { 1 }") == 0
+        }
+        then "two loops, the second last" {
+            refusals("for i in 0..1 {\n}\nfor j in 0..1 {\n}") == 0
+        }
+        then "and it still RUNS" {
+            shown("mut n = 0\nfor i in 0..3 {\n    n = n + i\n}\nn") == "3"
+        }
+    }
+    given "degenerate subjects" {
+        then "an empty literal cannot be walked; a declared empty list walks nothing" {
+            refused_with(
+                    "mut t = 0\nfor i, x in [] {\n    t = t + i\n}\nt",
+                    "walks an empty literal",
+                ) &&
+                shown("let xs: List<int> = []\nmut t = 0\nfor i, x in xs {\n    t = t + i\n}\nt") == "0"
+        }
+        then "one element" {
+            shown("mut t = 0\nfor i, x in [7] {\n    t = i + x\n}\nt") == "7"
+        }
+    }
+    given "the index in every wrong place" {
+        then "it does not outlive the loop" {
+            refused_with(
+                "mut t = 0\nfor i, x in [1, 2] {\n    t = t + i\n}\ni",
+                "`i` is not defined",
+            )
+        }
+        then "the index is not assigned — it counts" {
+            refused_with(
+                "mut t = 0\nfor i, x in [1] {\n    i = 5\n    t = i\n}\nt",
+                "`i` is a loop index",
+            )
+        }
+        then "one name for both index and element" {
+            refused_with(
+                "for i, i in [1, 2] {\n    2\n}\n2",
+                "`i` names both the index and the element",
+            )
+        }
+        then "non-list subjects refuse in the walk's words" {
+            refused_with(
+                    "mut t = 0\nfor i, x in 5 {\n    t = t + i\n}\nt",
+                    "walks a `List`, this is `int`",
+                ) &&
+                refused_with(
+                    "let m = { \"a\": 1 }\nmut t = 0\nfor i, x in m {\n    t = t + i\n}\nt",
+                    "this is `Map<string, int>`",
+                ) &&
+                refused_with(
+                    "mut t = 0\nfor i, x in \"abc\" {\n    t = t + i\n}\nt",
+                    "this is `string`",
+                )
+        }
+    }
+    given "the malformed header — a diagnostic every time, the cascade pinned" {
+        then "a missing comma, element, index, a third name, an unclosed paren" {
+            refusals("for i x in [1] {\n    2\n}\n2") == 1 &&
+                refusals("for i, in [1] {\n    2\n}\n2") == 1 &&
+                refusals("for , x in [1] {\n    2\n}\n2") == 1 &&
+                refusals("for i, x, y in [1] {\n    2\n}\n2") == 1 &&
+                refusals("for (i, x in [1] {\n    2\n}\n2") == 1
+        }
+    }
+    given "pairing across every feature" {
+        then "a walked subject, an if on the index, both pushed" {
+            shown("mut t = 0\nfor i, x in [3, 4].map(it * 2) {\n    t = t + i * x\n}\nt") == "8" &&
+                shown(
+                    "mut t = 0\nfor i, x in [1, 2, 3] {\n    t = t + (if i == 1 { 100 } else { x })\n}\nt",
+                ) == "104" &&
+                shown(
+                    "mut out: List<int> = []\nfor i, x in [5, 6] {\n    out.push(i)\n    out.push(x)\n}\nout.length",
+                ) == "4"
+        }
+        then "in a fn, returning the index early" {
+            shown(
+                "fn first_big(xs: List<int>) -> int {\n    for i, x in xs {\n        if x > 10 {\n            return i\n        }\n    }\n    0 - 1\n}\nfirst_big([1, 50, 3])",
+            ) == "1"
+        }
+        then "the index in an interpolation" {
+            shown(
+                "mut s = \"\"\nfor i, w in [\"a\", \"b\"] {\n    s = \"" +
+                    "\${s}" +
+                    "\${i}:" +
+                    "\${w} \"\n}\ns",
+            ) == "0:a 1:b "
+        }
+    }
+    given "names against names" {
+        then "an inner loop's index shadows the outer's; a loop index shadows an outer let" {
+            shown(
+                    "mut t = 0\nfor i, x in [1, 2] {\n    for i, y in [3] {\n        t = t + i\n    }\n    t = t + i\n}\nt",
+                ) == "1" &&
+                shown(
+                    "let i = 100\nmut t = 0\nfor i, x in [1, 2] {\n    t = t + i\n}\n\"" +
+                        "\${t} " +
+                        "\${i}\"",
+                ) == "1 100"
+        }
+    }
+    given "ownership and churn" {
+        then "three hundred loops over managed elements; two hundred captured indexes" {
+            shown(
+                    "mut n = 0\nmut i2 = 0\nwhile i2 < 300 {\n    let ws = [\"w" +
+                        "\${i2}\", \"v\"]\n    for i, w in ws {\n        n = n + i + w.length\n    }\n    i2 = i2 + 1\n}\nn",
+                ) == "1690" &&
+                shown(
+                    "mut fs: List<fn(int) -> int> = []\nmut i2 = 0\nwhile i2 < 100 {\n    for i, v in [1, 2] {\n        fs.push(it + i + v)\n    }\n    i2 = i2 + 1\n}\nfs[199](0)",
+                ) == "3"
+        }
+    }
+    given "break and continue — degenerate shapes" {
+        then "a jump in a one-element walk's only turn" {
+            shown("mut n = 0\nfor x in [5] {\n    n = x\n    break\n}\nn") == "5"
+        }
+        then "a `continue` as a turn's last statement changes nothing" {
+            shown("mut n = 0\nfor x in [1, 2] {\n    n = n + x\n    continue\n}\nn") == "3"
+        }
+        then "a jump over an empty walk never runs" {
+            shown("mut n = 0\nlet none: List<int> = []\nfor x in none {\n    break\n}\nn") == "0"
+        }
+        then "the line after a jump never runs" {
+            shown("mut n = 0\nfor x in [1, 2] {\n    break\n    n = n + 1\n}\nn") == "0"
+        }
+        then "a `while true` ends by its `break` alone" {
+            shown("mut k = 3\nwhile true {\n    if k == 0 { break }\n    k = k - 1\n}\nk") == "0"
+        }
+    }
+    given "break and continue — every wrong thing after the word" {
+        then "a number, a string, a call, a field and parentheses each refuse once, in the word's own words" {
+            [
+                "for x in [1] {\n    break 5\n}\n1",
+                "for x in [1] {\n    break \"x\"\n}\n1",
+                "fn f() -> int { 1 }\nfor x in [1] {\n    break f()\n}\n1",
+                "for x in [1] {\n    break x.y\n}\n1",
+                "for x in [1] {\n    break()\n}\n1",
+                "for x in [1] {\n    break x x\n}\n1",
+            ]
+                .all(
+                    refusals(it) == 1 &&
+                        refused_with(it, "`break` ends its line, or names its loop"),
+                )
+        }
+        then "`continue` speaks its own word" {
+            refused_with(
+                "for x in [1] {\n    continue 5\n}\n1",
+                "`continue` ends its line, or names its loop",
+            )
+        }
+        then "a jump where a value stands is the keyword refusal, once" {
+            [
+                "for x in [1] {\n    let y = break\n}\n1",
+                "fn f(n: int) -> int { n }\nfor x in [1] {\n    f(break)\n}\n1",
+                "for x in [1] {\n    let ys = [1, break]\n}\n1",
+            ]
+                .all(refusals(it) == 1 && refused_with(it, "`break` is a keyword"))
+        }
+    }
+    given "break and continue — crossed with every feature" {
+        then "a `continue` inside an interpolation hole skips the turn" {
+            // a leaving branch once typed the hole as the fn's promise —
+            // Error at the top level, silently — and the evaluator met an
+            // int where it had been promised text
+            shown(
+                "mut s = \"\"\nfor x in [1, 2, 3] {\n    s = s + \"\${if x == 2 { continue } else { x }}\"\n}\ns",
+            ) == "13"
+        }
+        then "an `if` VALUE whose branch leaves answers the other branch's type" {
+            shown(
+                "fn f() -> string {\n    mut t = 0\n    for x in [1, 20, 3] {\n        let w = if x > 10 { break } else { x }\n        t = t + w\n    }\n    \"\${t}\"\n}\nf()",
+            ) == "1"
+        }
+        then "an `if` VALUE whose branch RETURNS answers the other branch's type too" {
+            shown(
+                "fn f(c: bool) -> string {\n    let n = if c { return \"early\" } else { 5 }\n    \"\${n + 1}\"\n}\n\"\${f(true)} \${f(false)}\"",
+            ) == "early 6"
+        }
+        then "a `match` VALUE arm may jump" {
+            shown(
+                "mut t = 0\nfor x in [1, 0, 3] {\n    let v = match x {\n        0 -> { continue },\n        _ -> x,\n    }\n    t = t + v\n}\nt",
+            ) == "4"
+        }
+        then "a `when` arm may jump" {
+            shown(
+                "mut t = 0\nfor x in [1, 2, 3] {\n    when {\n        x == 2 -> { continue },\n        _ -> { t = t + x },\n    }\n}\nt",
+            ) == "4"
+        }
+        then "`continue` names the `for` around a `while`" {
+            shown(
+                "mut t = 0\nfor a in [1, 2, 3] {\n    mut i = 0\n    while i < 10 {\n        i = i + 1\n        if i == 3 { continue a }\n        t = t + a\n    }\n}\nt",
+            ) == "12"
+        }
+        then "a `const` settles through a `break`" {
+            shown(
+                "const k = collatz(6)\nfn collatz(n: int) -> int {\n    mut m = n\n    mut steps = 0\n    while true {\n        if m == 1 { break }\n        m = if m % 2 == 0 { m / 2 } else { 3 * m + 1 }\n        steps = steps + 1\n    }\n    steps\n}\nk",
+            ) == "8"
+        }
+        then "a jump runs its turn's `defer`s and drops its `errdefer`s — a jump is no failure" {
+            shown(
+                "fn f(log: Cell<string>) -> Result<int, string> {\n    for x in [1, 2] {\n        errdefer log.set(log.get() + \"e\")\n        defer log.set(log.get() + \"d\")\n        if x == 1 { continue }\n        break\n    }\n    .Ok(1)\n}\nlet log = Cell.new(\"\")\nlet _ = f(log)\nlog.get()",
+            ) == "dd"
+        }
+        then "a `defer`'s body and a task's body are lambdas — a jump there refuses" {
+            refused_with(
+                    "for x in [1] {\n    defer { break }\n}\n1",
+                    "a lambda's body runs apart",
+                ) &&
+                refused_with(
+                    "for x in [1] {\n    let t = spawn {\n        break\n    }\n}\n1",
+                    "a lambda's body runs apart",
+                )
+        }
+    }
+    given "break and continue — names against names" {
+        then "a label reads the NEAREST binding of its name — the inner `for`" {
+            shown(
+                "mut t = 0\nfor x in [1, 2, 3] {\n    for x in [10, 20, 30] {\n        if x == 20 { break x }\n        t = t + x\n    }\n    t = t + x\n}\nt",
+            ) == "36"
+        }
+        then "a label that reads a param, a fn or a const refuses at the label" {
+            [
+                "fn g(p: int) -> int {\n    for x in [1] {\n        break p\n    }\n    p\n}\ng(1)",
+                "fn f() -> int { 1 }\nfor x in [1] {\n    break f\n}\n1",
+                "const k = 3\nfor x in [1] {\n    break k\n}\n1",
+            ]
+                .all(refusals(it) == 1 && refused_with(it, "is no enclosing `for`'s name here"))
+        }
+        then "a label nothing binds, or a keyword, refuses once — where it is read" {
+            refusals("for x in [1] {\n    break nope\n}\n1") == 1 &&
+                refused_with("for x in [1] {\n    break nope\n}\n1", "`nope` is not defined") &&
+                refusals("for x in [1] {\n    break fn\n}\n1") == 1
+        }
+        then "a label read from inside a lambda refuses" {
+            refused_with(
+                "for x in [1] {\n    let f = () -> {\n        for y in [2] {\n            break x\n        }\n    }\n}\n1",
+                "is no enclosing `for`'s name here",
+            )
+        }
+    }
+    given "break and continue — ownership" {
+        then "managed values at every way out of a turn, nested three deep" {
+            shown(
+                "mut out = \"\"\nfor r, row in [[\"a\", \"skip\", \"b\"], [\"c\", \"next\", \"d\"], [\"e\", \"stop\", \"f\"], [\"g\"]] {\n    let tag = \"r\${r}:\"\n    for w in row {\n        let up = tag + w\n        if w == \"skip\" { continue }\n        match w {\n            \"stop\" -> {\n                let note = up + \"!\"\n                if note.length > 0 { break row }\n            },\n            \"next\" -> { continue row },\n            _ -> { out = out + up + \" \" },\n        }\n    }\n}\nout",
+            ) == "r0:a r0:b r1:c r2:e "
+        }
+    }
+}

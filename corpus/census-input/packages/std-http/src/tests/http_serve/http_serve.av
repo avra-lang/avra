@@ -1,0 +1,56 @@
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, served, timing}
+
+type App = { hits: Cell<int> }
+
+/// `sent` written, then read until `expected` bytes have come or the
+/// server has been quiet for a moment.
+fn exchanged(c: Conn, sent: string, expected: int) -> Result<string, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while got.length < expected {
+        match within ms(300) { c.read(65536) } {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    .Ok(undated(got.text() ?? "?").replace("\r\n", "/"))
+}
+
+/// The wire with each `date` value — the second it was written in —
+/// shown as `<now>`: an IMF-fixdate is 29 characters, always.
+fn undated(t: string) -> string {
+    let at = t.index_of("date: ")
+    if at < 0 { return t }
+    t.substring(0, at) + "date: <now>" + undated(t.substring(at + 35, t.length))
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+        app.hits.set(app.hits.get() + 1)
+        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${app.hits.get()}")
+    }
+    spawn s.run()
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    let one = exchanged(c, "GET /one HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
+    let two = exchanged(
+        c,
+        "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n",
+        150,
+    )?
+    let three = exchanged(c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello", 1)?
+    let four = exchanged(c, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
+    let five = exchanged(c, "GET /n HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
+    .Ok("${one}\n${two}\n${three}\n${four}\n${five}\n${s.connections()}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

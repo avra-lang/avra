@@ -1,0 +1,135 @@
+// The document a route table and its records project: every route's
+// method and path, its holes as parameters, a described body by its
+// record's schema, and each referenced schema once.
+use @std.json.{Json, to_text}
+use @std.json.codec.{json}
+use @std.http.frame.{Method}
+use @std.http.http.{Request, Unrouted, Response, ok}
+use @std.http.route.{Route, fixed}
+use @std.openapi.{Api, Operation, operations, described, openapi, served_at}
+
+@json
+type Tag = { label: string }
+
+@json
+type Idea = { title: string, tags: List<Tag>, note: string? }
+
+fn hi(_q: Request<Unrouted>) -> Response { ok("hi") }
+
+fn declared_routes() -> List<Route> {
+    [
+        fixed(Method.Get, "/health", hi),
+        Route {
+            method: Method.Get,
+            pattern: "/ideas/{id}",
+            reach: .Width,
+            serve: (_q: Request<Unrouted>, _t: Bytes) -> null,
+        },
+        Route {
+            method: Method.Delete,
+            pattern: "/ideas/{id}",
+            reach: .Width,
+            serve: (_q: Request<Unrouted>, _t: Bytes) -> null,
+        },
+        Route {
+            method: Method.Get,
+            pattern: "/files/{path...}",
+            reach: .Rest,
+            serve: (_q: Request<Unrouted>, _t: Bytes) -> null,
+        },
+        Route {
+            method: Method.Other,
+            pattern: "/odd",
+            reach: .Literal,
+            serve: (_q: Request<Unrouted>, _t: Bytes) -> null,
+        },
+        Route {
+            method: Method.Get,
+            pattern: "/a-{x}/{name}.txt",
+            reach: .Width,
+            serve: (_q: Request<Unrouted>, _t: Bytes) -> null,
+        },
+        fixed(Method.Get, "/lit{eral}", hi),
+    ]
+}
+
+fn doc() -> string {
+    let posted = Operation {
+        method: Method.Post,
+        pattern: "/ideas",
+        summary: "Post an idea",
+        body: Idea.json_schema(),
+        answers: Idea.json_schema(),
+        schemas: Idea.json_schemas(),
+    }
+    to_text(
+        openapi(
+            Api {
+                title: "Ideas",
+                version: "1.0.0",
+                operations: described(operations(declared_routes()), posted),
+            },
+        ),
+    )
+}
+
+spec "std/openapi" {
+    given "the empty case, written first" {
+        then "no operations" {
+            to_text(openapi(Api { title: "T", version: "0", operations: [] })) == "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"T\",\"version\":\"0\"},\"paths\":{},\"components\":{\"schemas\":{}}}"
+        }
+    }
+    given "a route table" {
+        then "a fixed path has no parameters" {
+            doc()
+                .contains(
+                    "\"/health\":{\"get\":{\"parameters\":[],\"responses\":{\"200\":{\"description\":\"OK\"}}}}",
+                )
+        }
+        then "two methods at one path share its item" {
+            doc().contains("\"/ideas/{id}\":{\"get\":") &&
+                doc().contains("},\"delete\":{\"parameters\":[{\"name\":\"id\",\"in\":\"path\"")
+        }
+        then "a greedy hole is a plain parameter" { doc().contains("\"/files/{path}\":{\"get\":{\"parameters\":[{\"name\":\"path\"") }
+        then "a method OpenAPI has no field for is left out" { !doc().contains("/odd") }
+        then "a hole inside a segment is a parameter" {
+            doc().contains("\"/a-{x}/{name}.txt\":{\"get\":{\"parameters\":[{\"name\":\"x\"") &&
+                doc().contains("{\"name\":\"name\",\"in\":\"path\"")
+        }
+        then "a literal path's braces bind nothing" { doc().contains("\"/lit{eral}\":{\"get\":{\"parameters\":[]") }
+        then "a path appears once" { doc().split("\"/ideas/{id}\"").length == 2 }
+    }
+    given "a described operation" {
+        then "its summary, body and answer" {
+            doc()
+                .contains(
+                    "\"/ideas\":{\"post\":{\"summary\":\"Post an idea\",\"parameters\":[],\"requestBody\":{\"required\":true,\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"",
+                )
+        }
+        then "its records under components, each once" {
+            doc().contains("\"components\":{\"schemas\":{\"Idea\":{") &&
+                doc().contains("\"Tag\":{\"type\":\"object\"") &&
+                doc().split("\"Tag\":{").length == 2
+        }
+        then "describing a declared route keeps its place" {
+            let d = described(
+                operations(declared_routes()),
+                Operation { method: Method.Get, pattern: "/health", summary: "Liveness" },
+            )
+            d.length == 6 && d[0].summary == "Liveness"
+        }
+    }
+    given "served" {
+        then "as JSON at its path" {
+            match served_at("/openapi.json", Api { title: "T", version: "0", operations: [] })
+                .serve(
+                    framed_from("GET /openapi.json HTTP/1.1\r\nHost: h\r\n\r\n".bytes())!,
+                    "/openapi.json".bytes(),
+                ) {
+                r? -> r.header("content-type") == "application/json" &&
+                    (r.body.text() ?? "").starts_with("{\"openapi\":\"3.1.0\"")
+                null -> false
+            }
+        }
+    }
+}

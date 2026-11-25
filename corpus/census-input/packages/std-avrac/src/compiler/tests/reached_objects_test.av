@@ -1,0 +1,49 @@
+// A program's build key covers every reached package's own objects, not
+// only its `.av` sources — a C-only edit moves no `.av` file's digest, so
+// without this a kept binary built against an older object stays kept
+// (avra-8sb5.57.139). `object_line` reads real bytes off real disk
+// (`digest_of_binary`, never the host) — a memory host cannot stand in
+// for it, same as `source_stamp_adversarial_test.av` found for `Store`;
+// its `real_disk_host`/`write_file_safe` are reused here, same module.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.io.{make_dirs}
+use @std.time.{now_ns}
+use core.{joined}
+
+fn robj_root(name: string) -> string {
+    let root = "/tmp/avra-robj-test/${name}-${now_ns()}"
+    let _ = make_dirs(root)
+    root
+}
+
+fn robj_lines(root: string) -> string {
+    let ws = new_workspace(real_disk_host(), root, avra())
+    let _ = ws.items(ws.file_id("${root}/src/main.av"))
+    joined([ws.object_line(o) for o in ws.reached_objects("${root}/src/main.av")], "\n")
+}
+
+spec "compiler/build — a program's key covers its reached objects' bytes" {
+    then "an unedited object answers the same line twice" {
+        let root = robj_root("same")
+        let _ = write_file_safe(
+            "${root}/avra.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nobjects = [\"obj.o\"]\n",
+        )
+        let _ = write_file_safe("${root}/src/main.av", "fn main() {}\n")
+        let _ = write_file_safe("${root}/obj.o", "AAAA")
+        robj_lines(root) == robj_lines(root)
+    }
+    then "an edited object moves the line" {
+        let root = robj_root("moved")
+        let _ = write_file_safe(
+            "${root}/avra.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nobjects = [\"obj.o\"]\n",
+        )
+        let _ = write_file_safe("${root}/src/main.av", "fn main() {}\n")
+        let _ = write_file_safe("${root}/obj.o", "AAAA")
+        let before = robj_lines(root)
+        let _ = write_file_safe("${root}/obj.o", "BBBB")
+        let after = robj_lines(root)
+        before != after
+    }
+}
