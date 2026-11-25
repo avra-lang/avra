@@ -1,0 +1,75 @@
+// A stamp's path is normalized once, where it's kept, and read back from the store's directory with
+// no normalizing: it must name exactly what normalizing it as it's read names.
+use @std.path.{joined_path, normalized}
+use disk_store.{door_normalized, named_from, stamp_paths_from}
+
+/// Whether every path of `paths`, kept from `directory`, reads back as normalizing it would.
+fn reads_as_normalized(directory: string, paths: List<string>) -> bool {
+    let named = stamp_paths_from(directory)
+    paths
+        .all(
+            (p) -> {
+                let kept = named_from(normalized(directory), door_normalized(p))
+                named.path_of(kept) == normalized(joined_path(directory, kept))
+            },
+        )
+}
+
+fn spread(root: string) -> List<string> {
+    [
+        "${root}/packages/cli/src/main.av",
+        "${root}/packages/cli/.avra-cache/tapes/x.av",
+        "${root}/packages/cli/.avra-cache/tapes",
+        "${root}/packages/std-io/src/io.av",
+        "${root}/packages/cli",
+        "${root}/tools/./ui-board/src/../src/board.av",
+        "${root}/a.av",
+        root,
+        "/",
+        "/etc/elsewhere.txt",
+    ]
+}
+
+spec "stamp paths — kept normalized, read back without normalizing" {
+    given "a path as the door hands it on" {
+        then "it is normalized wherever normalizing changes it, and kept as it stands where it doesn't" {
+            [
+                "/a/b/c.av",
+                "/a/./b",
+                "/a//b",
+                "/a/b/../c",
+                "./a",
+                "../a",
+                "a/b",
+                "/",
+                "/a/.hidden/b",
+                "/a/b/",
+                "a/b/",
+            ]
+                .all((p) -> door_normalized(p) == normalized(p))
+        }
+    }
+    given "a store under a checkout" {
+        then "every path, up, down, beside, the directory itself and the root, reads as normalizing it" {
+            reads_as_normalized("/work/x/packages/cli/.avra-cache/tapes", spread("/work/x"))
+        }
+        then "a store directory spelled with dots and slashes to spare reads the same" {
+            reads_as_normalized("/work/x/packages/./cli//.avra-cache/tapes/", spread("/work/x"))
+        }
+        then "a store at the root reads the same" { reads_as_normalized("/", spread("/work/x")) }
+    }
+    given "a relative store" {
+        then "a relative path reads as normalizing it, and an absolute one stands as kept" {
+            reads_as_normalized(
+                "packages/cli/.avra-cache/tapes",
+                [
+                    "packages/cli/src/main.av",
+                    "packages/std-io/src/io.av",
+                    "a.av",
+                    "../outside/b.av",
+                    "/etc/x",
+                ],
+            )
+        }
+    }
+}
