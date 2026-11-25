@@ -11,6 +11,8 @@
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
 #   sh tools/gate.sh jobs               the runner jobs: each job, then the slices it runs, dealt by seconds
+#   sh tools/gate.sh seconds <log>...   tools/gate/path.seconds made again from the `fact path` lines of a gate's
+#                                       logs, each path's latest seconds over the ones it held
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
 #   sh tools/gate.sh seed               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler of generation 2,
 #                                       built here first where none of HEAD's stands, and every object a
@@ -43,7 +45,6 @@ slices() {
 build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm
 avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
 avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
-avrac-d    test packages/std-avrac — src/features/[n-r]*
 avrac-f    test packages/std-avrac — src/features' own files, and every dir of src/ but compiler and features
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
@@ -90,12 +91,10 @@ EOF
 # part runs its share; a row, a case or a path added joins its family's list, never one part's.
 splits() {
     cat <<'EOF'
-avrac-b|3|test packages/std-avrac — src/features/[a-e]*, its dirs dealt in turn
-avrac-c|2|test packages/std-avrac — src/features/[f-m]*, its dirs dealt in turn
-avrac-e|2|test packages/std-avrac — src/features/[s-z]*, its dirs dealt in turn
+avrac-features|9|test packages/std-avrac — every dir of src/features, a row each, dealt by their seconds
 edit-f|2|witness_program_edit's whole-mode cases (modes-whole), each alone over its own cold product, the frontier walk checked
 edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone over its own cold product, the frontier walk checked
-cli|6|test packages/cli, its tests dealt in turn, failing names held to tools/gate/cli.names
+cli|6|test packages/cli, a row each of its tests, dealt by their seconds, failing names held to tools/gate/cli.names
 program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-ns and each runtime test (runtime/tests/*.c) — dealt in turn
 refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
@@ -184,6 +183,15 @@ slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
 if [ "$slice" = jobs ]; then jobs; exit 0; fi
+if [ "$slice" = seconds ]; then
+    [ $# -ge 1 ] || { echo "gate: seconds names the gate logs it reads" >&2; exit 2; }
+    kept="$root/tools/gate/path.seconds"
+    { grep '^#' "$kept"; { grep -v '^#' "$kept"; cat "$@" | sed -n 's/.*gate: fact path \([^ ]*\) \([0-9][0-9]*\)$/\1 \2/p'; } |
+        awk '{ w[$1] = $2 } END { for (p in w) print p, w[p] }' | LC_ALL=C sort; } > "$kept.new"
+    mv "$kept.new" "$kept"
+    echo "gate: $(grep -vc '^#' "$kept") path(s) in tools/gate/path.seconds"
+    exit 0
+fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
 [ "$slice" = seed ] && slice=pack
 [ "$slice" = pack ] || [ "$slice" = census ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
@@ -328,19 +336,46 @@ avrac() {
     rows_empty=0
     for p in "$@"; do
         if [ -f "$p/avra.toml" ]; then tested "std-avrac-$(basename "$p")" "$p"
-        elif [ -d "$p" ]; then avrac_row "std-avrac@$(echo "${p#packages/std-avrac/src/}" | tr '/' '+')" "$p"
+        elif [ -d "$p" ]; then share_row "std-avrac@$(echo "${p#packages/std-avrac/src/}" | tr '/' '+')" "$p"
         else files="$files $p"; fi
     done
-    [ -z "$files" ] || avrac_row std-avrac@files $files
+    [ -z "$files" ] || share_row std-avrac@files $files
     [ "$rows_held" -gt "$rows_empty" ] || judged std-avrac-held-no-proof 1
 }
 # one share row: `tested`, an empty scope counted as no proof here rather than a failure
-avrac_row() {
+# one row of a suite share: `tested`, an empty scope counted as no proof here rather than a failure, and
+# the row's seconds said beside its path (`fact path <path> <n>`), which tools/gate/path.seconds keeps
+share_row() {
     rows_held=$((rows_held + 1))
+    t0=$(date +%s)
     EMPTY_SCOPE_PASSES=1
     tested "$@"
     EMPTY_SCOPE_PASSES=
     [ ! -f "$out/$1.empty" ] || rows_empty=$((rows_empty + 1))
+    [ "$#" != 2 ] || echo "fact path $2 $(( $(date +%s) - t0 ))" >>"$out/rows"
+}
+
+# the `$1`-th (from 0) of `$2` shares of the paths on stdin, dealt by their measured seconds
+# (tools/gate/path.seconds; a path it does not name weighs the median of those it does, or 60): heaviest
+# first, each into the lightest share so far, ties by path, so a tree deals one way
+dealt_by_seconds() {
+    awk -v k="$1" -v n="$2" '
+        NR == FNR { if ($0 !~ /^#/ && NF == 2) { secs[$1] = $2; known[++m] = $2 } next }
+        NF { p[++c] = $1 }
+        END {
+            for (i = 1; i <= m; i++) for (j = i + 1; j <= m; j++) if (known[j] < known[i]) { t = known[i]; known[i] = known[j]; known[j] = t }
+            dflt = m ? known[int((m + 1) / 2)] : 60
+            for (i = 1; i <= c; i++) w[i] = (p[i] in secs) ? secs[p[i]] : dflt
+            for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++)
+                if (w[j] > w[i] || (w[j] == w[i] && p[j] < p[i])) { t = w[i]; w[i] = w[j]; w[j] = t; t = p[i]; p[i] = p[j]; p[j] = t }
+            for (b = 0; b < n; b++) load[b] = 0
+            for (i = 1; i <= c; i++) {
+                best = 0
+                for (b = 1; b < n; b++) if (load[b] < load[best]) best = b
+                load[best] += w[i]
+                if (best == k) print p[i]
+            }
+        }' "$root/tools/gate/path.seconds" -
 }
 # half of std-avrac's src/compiler/tests, the `$1`-th (from 0), dealt in turn
 compiler_tests_half() { find packages/std-avrac/src/compiler/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt "$1" 2; }
@@ -353,7 +388,6 @@ slice_avrac_a() {
     )
 }
 slice_avrac_g() { avrac $({ compiler_tests_half 1; echo packages/std-avrac/src/compiler/soundness; } | sort); }
-slice_avrac_d() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[n-r]*' | sort); }
 slice_avrac_f() {
     avrac $(
         {
@@ -408,8 +442,16 @@ listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 # runs in-process.
 slice_cli() {
     cold cli
-    children_kept tested cli-suite "${@:-packages/cli}"
-    children_of_failed cli-suite
+    find "$out/children" -delete 2>/dev/null || :
+    rows_held=0
+    rows_empty=0
+    # a row each of the share's tests, its children kept apart (children/<row>/), each row its seconds
+    for p in "${@:-packages/cli}"; do
+        name="cli@$(echo "${p#packages/cli/src/}" | tr '/' '+')"
+        children_kept "$name" share_row "$name" "$p"
+        children_of_failed "$name"
+    done
+    [ "$rows_held" -gt "$rows_empty" ] || judged cli-held-no-proof 1
     ci_captured
     export AVRA_PROGRAM_NET=0
 }
@@ -420,12 +462,12 @@ slice_cli() {
 # print; then that one check run again under the suite's own environment with the query and trap
 # traces on, its stderr held to 20 MB. A green slice keeps nothing.
 ci_captured() {
-    grep -q '^row cli-suite FAIL' "$out/rows" 2>/dev/null || return 0
+    grep -q '^row cli@[^ ]* FAIL' "$out/rows" 2>/dev/null || return 0
     cap="$out/capture"
     mkdir -p "$cap"
     { echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null)"; "$root/build/avra" --version 2>&1 | head -3; env | grep '^AVRA' | sort; } > "$cap/facts.txt"
     n=0
-    for d in "$out"/children/*/; do
+    for d in "$out"/children/*/*/; do
         grep -q 'embed_law_test' "$d/case" 2>/dev/null || continue
         for a in "$d"*.args; do
             [ "$(head -1 "$a")" = check ] || continue
@@ -450,15 +492,16 @@ ci_captured() {
 # `<tree>/avra` filed under $out/children/<case> by tools/gate/child_kept.sh — its arguments, its
 # streams and its exit — so a red row has the words its children said.
 children_kept() {
-    find "$out/children" -delete 2>/dev/null || :
-    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$out/children"
+    kept="$out/children/$1"
+    shift
+    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$kept"
     "$@"
     unset AVRA_BIN AVRA_CHILD_BIN AVRA_CHILDREN
 }
 
 # the children of the cases row `$1` failed, kept; every other case's dropped
 children_of_failed() {
-    for d in "$out"/children/*/; do
+    for d in "$out/children/$1"/*/; do
         [ -f "$d/case" ] || continue
         grep -qxF "$(sed 's/ @ .*//' "$d/case")" "$out/$1.failed" || find "$d" -delete
     done
@@ -649,12 +692,10 @@ part_of() {
     case $2 in '' | *[!0-9]*) judged "part-$slice" 1; return ;; esac
     [ -n "$3" ] && [ "$2" -ge 1 ] && [ "$2" -le "$3" ] || { judged "part-$slice" 1; return; }
     case $1 in
-        avrac-b) avrac $(features '[a-e]*' | dealt "$(($2 - 1))" "$3") ;;
-        avrac-c) avrac $(features '[f-m]*' | dealt "$(($2 - 1))" "$3") ;;
-        avrac-e) avrac $(features '[s-z]*' | dealt "$(($2 - 1))" "$3") ;;
+        avrac-features) avrac $(features '*' | dealt_by_seconds "$(($2 - 1))" "$3") ;;
         edit-f) edit_part "modes-whole-$2" ;;
         edit-g) edit_part "modes-layered-$2" ;;
-        cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt "$(($2 - 1))" "$3") ;;
+        cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt_by_seconds "$(($2 - 1))" "$3") ;;
         program)
             cold std-program std-relation
             rows_dealt program_rows "$2" "$3"
@@ -758,7 +799,6 @@ if compiler; then
         build) slice_build ;;
         avrac-a) slice_avrac_a ;;
         avrac-g) slice_avrac_g ;;
-        avrac-d) slice_avrac_d ;;
         avrac-f) slice_avrac_f ;;
         idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
         idioms-cli) idioms_on "${1:-}" keep cli ;;
