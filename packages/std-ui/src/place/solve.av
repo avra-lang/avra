@@ -20,7 +20,7 @@
 //! it hugs.
 //! Not read: aspect and inset.
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge}
-use tree.node.{Node, own_axis}
+use tree.node.{Node, own_axis, own_align}
 use tree.trap.{trapped}
 use place.measure.{Measure, Extent, fine}
 
@@ -220,6 +220,9 @@ fn yields(s: Sizing?, content: int, own: int) -> int {
 
 fn axis_of(n: Node) -> Axis { n.box.layout.direction ?? own_axis(n.prim) ?? .Column }
 
+/// How `n` aligns its children across its axis: its layout's, else its primitive's own.
+fn align_of(n: Node) -> Align { n.box.layout.align ?? own_align(n.prim) ?? .Stretch }
+
 fn sides(cx: Ctx, e: Edge?) -> Sides {
     let edge? = e else { return Sides { start: 0, end: 0, top: 0, bottom: 0 } }
     Sides {
@@ -323,7 +326,7 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
     let cp = "${path}.${i}"
     let l = c.box.layout
     let mg = sides(cx, l.margin)
-    let stretch = n.box.layout.align ?? .Stretch is .Stretch
+    let stretch = align_of(n) is .Stretch
     if dir is .Row {
         let pads = sides(cx, l.pad)
         let wide = sized_w(cx, c, iw) ?? if fills(l.width) { pads.start + pads.end } else { max_w(cx, c, cp) }
@@ -559,7 +562,7 @@ fn flow(cx: Ctx, n: Node, path: string, iw: int, ih: int?) -> Flow {
     let natural = [[line[j].c0 + crossed[k][j] + line[j].c1 for j, _item in line].max() ?? 0 for k, line in lines]
     let definite = if dir is .Row { ih } else { iw }
     let rows = stacked_lines(natural, across_gap, definite, wrapped)
-    let align = n.box.layout.align ?? .Stretch
+    let align = align_of(n)
     let extent = definite ?? natural.sum() + across_gap * (lines.length - 1)
     mut rects: List<Rect> = [empty_rect() for _c in n.children]
     mut sure = [false for _c in n.children]
