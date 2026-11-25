@@ -33,7 +33,7 @@ built=$(cd "$tree" && "$avra" build --target arm64-apple-ios-simulator tools/ios
 
 app=$work/Spike.app
 mkdir -p "$app"
-cp "$built" "$app/spike"
+mv "$built" "$app/spike"
 cat > "$app/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,22 +79,22 @@ said "simulator $udid"
 launched() {
     name=$1; shift
     out=$work/$name.out
-    env "$@" timeout 40 xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" 2>&1 | tr -d '\r' > "$out"
-    sed "s/^/  $name| /" "$out"
+    env "$@" timeout 40 xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" > "$out" 2>&1
+    tr -d '\r' < "$out" | sed "s/^/  $name| /"
 }
 
 holds() { grep -qF "$2" "$work/$1.out" || fail "$1: expected \"$2\""; said "ok — $1: \"$2\""; }
 
 # THE ROUND TRIP, with a screenshot of the label once the presses landed
 : > "$work/roundtrip.out"
-( launched roundtrip SIMCTL_CHILD_AVRA_SPIKE_WITNESS=1 SIMCTL_CHILD_AVRA_SPIKE_PRESS=3 SIMCTL_CHILD_AVRA_SPIKE_PAUSE=2 ) &
+( launched roundtrip SIMCTL_CHILD_AVRA_SPIKE_WITNESS=1 SIMCTL_CHILD_AVRA_SPIKE_PRESS=3 SIMCTL_CHILD_AVRA_SPIKE_PAUSE=4 ) &
 # shot <line> <file>: a screenshot once the run's console says <line>
 shot() {
     for _ in $(seq 1 150); do
         grep -q "$1" "$work/roundtrip.out" 2> /dev/null && break
         sleep 0.1
     done
-    sleep 0.5
+    sleep 2
     xcrun simctl io "$udid" screenshot "$work/$2" > /dev/null 2>&1 && said "screenshot: $work/$2"
 }
 shot "a11y before" slice1-before.png

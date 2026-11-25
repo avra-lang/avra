@@ -1,0 +1,52 @@
+//! The UIKit host's `mount`: std-ui's app, standing and differ over a neutral
+//! frame the host draws; a tap echoes back as the node's number and seat.
+use @std.ui.app.{App, Msg, owned_app, stood}
+use @std.ui.native.sources.{opened, served}
+use @std.ui.native.net.{unwired}
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.tree.identity.{Owner, NodeId}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.seats.{seat_numbered}
+use @std.ui.tree.view.{View}
+use frame.{neutral}
+
+extern fn avra_spike_attach()
+extern fn avra_spike_frame(records: string)
+
+/// What a tap reaches: the page the program paints, once it stands.
+once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -> false) }
+
+/// The host's echo: the node numbered `id` (one more than the page's) spoke
+/// at seat `seat`. Its handler runs as a turn the program's loop takes.
+extern fn avra_spike_tapped(id: int, seat: int) { let _ = (page().get())(id, seat) }
+
+/// A tap on `node` at `seat`, left as a turn for the program's loop.
+fn tapped(app: App, at: Live, node: NodeId, seat: int) -> bool {
+    let s? = seat_numbered(seat) else { return false }
+    app.send(Msg.Turn(() -> at.fire(node, s, null), "${node.n}"))
+}
+
+/// Nothing to do between turns.
+fn idle() {}
+
+/// `view` drawn by the UIKit host until the program's loop ends.
+export fn mount<V: View>(view: fn() -> V) {
+    avra_spike_attach()
+    let at = live()
+    let on_screen: Cell<List<Owner>> = Cell.new([])
+    let app = owned_app(
+        view,
+        (root: Node) -> {
+            let patches = at.patches_drawn(root, null)
+            on_screen.set(at.owners())
+            if !patches.is_empty() { avra_spike_frame(neutral(patches)) }
+        },
+        on_screen,
+        at.stands,
+    )
+    stood(app)
+    let inbox = opened(app, unwired)
+    page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
+    app.paint()
+    served(app, inbox, idle)
+}
