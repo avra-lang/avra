@@ -122,8 +122,8 @@ static void flung(void) {
         g_bench.fling_from = bench_now_s();
         g_bench.flinging = YES;
         later(fling_s + 1, ^{
-            say([NSString stringWithFormat:@"slow scroll: %ld frames in %.1f s, longest gap %.1f ms, gaps over 16.7 ms %ld",
-                (long)g_bench.fling_frames, fling_s, g_bench.fling_longest, (long)g_bench.over16]);
+            say([NSString stringWithFormat:@"slow scroll: %ld frames in %.1f s, longest gap %.1f ms, gaps over 16.7 ms %ld, over 8.3 ms %ld",
+                (long)g_bench.fling_frames, fling_s, g_bench.fling_longest, (long)g_bench.over16, (long)g_bench.over8]);
             say(@"done");
             exit(0);
         });
@@ -139,6 +139,7 @@ static void toggled_wait(void) {
 // The script, once the first frame is drawn: memory, a toggle, a fling, the report.
 static void scripted(void) {
     say([NSString stringWithFormat:@"cold start to first frame drawn: %.1f ms", (g_bench.first_drawn - g_bench.started) * 1000]);
+    say([NSString stringWithFormat:@"display: up to %ld frames a second", (long)UIScreen.mainScreen.maximumFramesPerSecond]);
     later(1, ^{
         say([NSString stringWithFormat:@"memory after first frame: %.1f MB", footprint_mb()]);
         g_bench.toggle_asked = bench_now_s();
