@@ -9,7 +9,7 @@ type Job = { n: int }
 state starts: Cell<int> = Cell.new(0)
 state buried: Cell<List<string>> = Cell.new([])
 
-fn why(f: Fate) -> string {
+fn why(f: Fate<string>) -> string {
     match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
 }
 
@@ -18,7 +18,7 @@ fn pay(starts: Cell<int>, d: Delivery<Job>) -> Result<int, string> {
     .Ok(d.item.n)
 }
 
-queue<Dead<Job>> letters {}
+queue<Dead<Job, string>> letters {}
 queue<Job> jobs {
     capacity: 8
     lease: ms(0)
@@ -28,7 +28,7 @@ worker settle {
     reads: jobs
     each: (d: Delivery<Job>) -> pay(starts, d)
     dead: letters
-    buried: (gone: Dead<Job>) -> buried.push(why(gone.fate))
+    buried: (gone: Dead<Job, string>) -> buried.push(why(gone.fate))
 }
 let q = jobs.home()
 let _ = q.send(Job { n: 7 }, key("k"))

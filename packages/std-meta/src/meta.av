@@ -315,7 +315,7 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// the statements a component is MADE OF, as the template a reader
 /// splices where they mean something — absent for a declaration that
 /// holds none. `impls` is the traits an `impl … for` it can see names.
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], body: Stmts? = null, impls: List<string> = [], exported: bool = false }
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], body: Stmts? = null, impls: List<string> = [] }
 
 impl Type {
     /// The shape a `type Name = shape` stands over, absent for a record or an enum.
@@ -418,22 +418,6 @@ export fn composes(_tr: Trait, _carried: Named) {}
 /// `@identity` is a `Cell<…>`, or another `@identity` type.
 export fn identity(_t: Type) {}
 
-/// `@seeded_at_need`: the type's own `state` is seeded at first need,
-/// from its declaration's expression over the members the value holds
-/// then. Until then a copy owns no cell to share. A seed runs at most
-/// once per instance that is kept. On a trait, it marks every type the
-/// trait is derived over. A marker the compiler reads
-/// (`compiler/typing/declare.av`).
-export fn seeded_at_need(_t: Named) {}
-
-/// `v`, every own `state` of it seeded now: a value of a type
-/// `@seeded_at_need` keeps the cells its seeds fill, so a copy of it
-/// shares them and no seed of it runs again. Any other value is `v`
-/// itself, and so is one whose type is a type parameter where it is
-/// called: call it where the type is named. The compiler lowers a call
-/// of it.
-export fn seeded<T>(v: T) -> T { v }
-
 /// The fn is a member of the named fixpoint or table BRACKET: it may
 /// read that bracket's own hook-free accessors — the table as it
 /// stands, mid-computation — because it IS the computation trusted to
@@ -474,13 +458,6 @@ export fn host(_f: Fn, _on: Host) {}
 /// checked constructor the module exports is then the type's one door.
 /// A marker the compiler's checker reads (`features/sealed.av`).
 export fn sealed(_t: Type) {}
-
-/// The type is UNBRANCHED: a value of it is read and never chosen by —
-/// no `==`, `!=` or `match` decides on it, while every read stays open
-/// (a field, an interpolation, a method). What would differ by such a
-/// value is a value of its own. A marker the compiler's checker reads
-/// (`type.unbranched`).
-export fn unbranched(_t: Type) {}
 
 /// The record LACKS `field` on purpose, and `why` says so: a read or a
 /// literal naming it refuses in those words. A marker the compiler's
@@ -665,15 +642,6 @@ export fn stored_scalar(name: string) -> Kind? {
 /// declarations so: the file it runs over need not import them. Absent
 /// when the module exports no such type.
 export fn type_exported(module: string, name: string) -> Type? {
-    if name.contains(".") { return null }
-    avra_type_named("${module}.${name}")
-}
-
-/// The `Type` a MODULE declares under `name`, exported or kept private —
-/// what a derive reads of its own type's module, whose private types are
-/// as much its declarations as its exports. Absent when the module
-/// declares no such type.
-export fn type_declared(module: string, name: string) -> Type? {
     if name.contains(".") { return null }
     avra_type_named("${module}.${name}")
 }

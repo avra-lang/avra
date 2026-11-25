@@ -29,8 +29,6 @@ use core.{
     hears_want,
     some_list,
     closest,
-    distinct,
-    edit_distance,
 }
 use diagnostics.{Diag, Guess, Severity, Voice, guess_fix, refusal, said_as, warning}
 use @std.errors.{Confidence, Edit, Suggestion, Loc}
@@ -285,24 +283,65 @@ impl TypeCx {
         self.seated_early(e, want, decl, bound)
         let got = self.type_at(e)
         let matched = self.unify(want, got, decl, bound) || self.seat_widens(want, got, decl, bound)
-        if !self.fully_bound(want, decl, bound) { return matched }
+        if !self.fully_bound(want, decl, bound) {
+            // a lambda still hungry here speaks, at the walk's end, of the
+            // slot as far as it is known
+            let vars = self.view.decls.instance_vars(decl)
+            let _ = self
+                .starve(e, self.view.types.substituted(want, decl, [b ?? vars[j] for j, b in bound.slots]))
+            return matched
+        }
         self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
     }
 
-    /// A hungry lambda whose SEATS the bindings already make concrete
-    /// is typed under them now, so its answer can pin what they leave
-    /// free: `fn(Req<P>) -> T` after `P` is bound hears `T` from the body.
-    mut fn seated_early(e: ExprId, want: TypeId, decl: DeclId, bound: Pins) {
+    /// A hungry lambda whose SEATS are known is typed under them now,
+    /// so its answer can pin what they leave free: `fn(Req<P>) -> T`
+    /// after `P` is bound hears `T` from the body. Each seat is known
+    /// by its OWN variables, or by the lambda's annotation there — which
+    /// pins them: `(req, idea: Idea)` in `fn(Req<R>, B)` once `R` is bound.
+    mut fn seated_early(e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) {
         let arrow? = self.view.types.arrow_parts(want) else { return }
-        if !arrow.seats.all((s) -> self.fully_bound(s, decl, bound)) { return }
+        let written? = self.annotated_seats(e, arrow.seats, decl, bound) else { return }
         let vars = self.view.decls.instance_vars(decl)
         let seated = self.view.types.substituted(want, decl, [b ?? vars[j] for j, b in bound.slots])
         let concrete? = self.view.types.arrow_parts(seated) else { return }
+        let seats = [written[j] ?? s for j, s in concrete.seats]
         // an answer left free (`T` in `fn(Req<P>) -> T`) is inferred
         // FROM the body, never planted as its want
         let answer: TypeId? = if self.fully_bound(concrete.answer, decl, bound) { concrete.answer } else { null }
         // a lambda taking an offered record by name hears the want itself
-        if self.retype_seated(e, concrete.seats, concrete.marks, answer) == null { self.feed(e, seated) }
+        if self.retype_seated(e, seats, concrete.marks, answer) == null { self.feed(e, seated) }
+    }
+
+    /// The types a hungry lambda at `e` writes at the seats its slot
+    /// leaves open, each pinning that seat's variables — absent when a
+    /// seat is neither known nor annotated, or an annotation disagrees.
+    mut fn annotated_seats(e: ExprId, seats: List<TypeId>, decl: DeclId, mut bound: Pins) -> List<
+        TypeId?,
+    >? {
+        let known: List<TypeId?> = [null for _j in seats]
+        if seats.all((s) -> self.fully_bound(s, decl, bound)) { return known }
+        if !self.facts.hungry_at(e) { return null }
+        let lam? = self.view.store.body_fn(e) else { return null }
+        let parts? = self.view.store.lambda_parts(lam) else { return null }
+        if parts.params.length != seats.length { return null }
+        // an open seat the lambda leaves bare: nothing to pin it by
+        for j, s in seats {
+            if parts.params[j].ty == null && !self.fully_bound(s, decl, bound) { return null }
+        }
+        mut written: List<TypeId?> = []
+        for j, s in seats {
+            let tr = parts.params[j].ty
+            if tr == null || self.fully_bound(s, decl, bound) {
+                written.push(null)
+                continue
+            }
+            let ty = self.written(lam, tr!)
+            if self.errored_ty(ty) || !self.unify(s, ty, decl, bound) { return null }
+            written.push(ty)
+        }
+        if !seats.all((s) -> self.fully_bound(s, decl, bound)) { return null }
+        written
     }
 
     /// A `T?` SEAT takes a present value and pins `T` to it — here and
@@ -1459,10 +1498,8 @@ impl TypeCx {
         // a short name one letter off is a typo; two off is a different word
         if name.length <= 4 && n.distance > 1 { return d }
         let at: Loc? = if subject == null { null } else { self.name_after(subject!, name) }
-        // a machine edit is offered only where the nearest name is the one name that near: a tie is a guess
-        let tied = distinct(candidates).filter((c) -> edit_distance(name, c) == n.distance).length
         let fix = Suggestion {
-            confidence: if n.distance == 1 && tied == 1 { Confidence.High } else { Confidence.Medium },
+            confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
             description: "replace `${name}` with `${n.name}`",
             edits: [Edit { loc: l, replacement: n.name } for l in some_list(at)],
         }

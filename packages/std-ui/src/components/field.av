@@ -2,14 +2,7 @@
 //! given one (`field "Name" { value: draft }`) it shares it, given none it keeps its own, seeded
 //! from `initial`. Typing writes it, then the `input` handler hears what was typed; `shown`, where
 //! given, is what the field shows instead, told each paint and never written.
-//!
-//! `submit` is the user sending what they typed: Enter, or a phone keyboard's return key, while no
-//! word is being composed. It says nothing: `value` already holds the whole text when its handler
-//! runs. A field that hears it wears a return key that says so (`submit_label`, Done where unsaid);
-//! one that hears none has no such key. A field inside a `form` that hears its own submit sends
-//! that alone, never the form's. A field is one line: no field takes a line break.
-use @std.meta.{derive, Diagnostic, refuse_as}
-use tree.node.{SubmitLabel}
+use @std.meta.{derive}
 use tree.prim.{prim}
 use tree.view.{View}
 use style.box.{Box}
@@ -27,26 +20,4 @@ export component field(@attr(.Label) label: string) {
     @attr(.Invalid) invalid: bool = false
     @attr(.Masked) masked: bool = false
     @sets(value) on input(typed: string)
-    on submit
-    @attr(.SubmitLabel) submit_label: SubmitLabel? = null
-    /// A return key's word says what submitting does, so it is written only where the field hears
-    /// `on submit`.
-    fn check() -> List<Diagnostic> { return_key_words(self.submit_label != null, self.submit != null) }
-}
-
-/// What a field owes the label of its return key: nothing unless one is written where the field
-/// hears no submit.
-export fn return_key_words(labelled: bool, heard: bool) -> List<Diagnostic> {
-    if labelled && !heard { return [unheard_label()] }
-    []
-}
-
-// ── voices ──────────────────────────────────────────────────────
-
-/// A return key labelled on a field that sends nothing.
-fn unheard_label() -> Diagnostic {
-    refuse_as(
-        "field.submit_label",
-        "a field's `submit_label` says what its return key does, and this field hears no `on submit`",
-    )
 }

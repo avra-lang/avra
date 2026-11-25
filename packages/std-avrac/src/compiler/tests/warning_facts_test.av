@@ -1,0 +1,57 @@
+// A FILE'S WARNINGS ARE KEPT AS DATA, AND THEIR PLACES FOLLOW THE TOKENS HOLDING THEM. A file's
+// facts cross on `file_facts_wire`, whose `Loc` crosses as a token place, so comment lines added
+// above move the text the facts were made over and the reader lands on the same bytes at their
+// new place. A file the table does not know says no facts.
+use @std.errors.{Loc, Frame}
+use @std.avrac.diagnostics.{Diag, Severity}
+use compiler.{Workspace, FileFacts}
+
+fn wf_path() -> string { "/w/src/b.av" }
+
+fn wf_text() -> string { "fn first() -> int {\n    1\n}\n\nfn second(n: int) -> int {\n    n + 2\n}\n" }
+
+fn wf_shifted() -> string { "// a line\n// another\n${wf_text()}" }
+
+/// A warning whose one place is `needle`'s first occurrence, `width` bytes wide.
+fn wf_diag(text: string, needle: string, width: int) -> Diag {
+    let lo = text.index_of(needle)
+    Diag {
+        kind: "spec.kept_warning",
+        severity: Severity.Warning,
+        primary: Frame { label: "here", loc: Loc { file: wf_path(), lo: lo, hi: lo + width } },
+        secondary: [],
+        cause_lines: [],
+        message: "a kept warning",
+        help: null,
+        suggestions: [],
+    }
+}
+
+fn wf_over(text: string) -> Workspace { a_process_over({wf_path(): text}, [wf_path()]) }
+
+/// `text`'s facts on their wire, as a process over `now` reads them back.
+fn wf_back(text: string, now: string) -> List<Loc>? {
+    let wire = wf_over(text)
+        .file_facts_wire(FileFacts { warnings: [wf_diag(text, "n + 2", 5)], rules: [] })
+    let back? = wf_over(now).file_facts_of_wire(wire) else { return null }
+    [f.primary.loc! for f in back.warnings if f.primary.loc != null]
+}
+
+const WF_SHIFT: int = 21
+
+spec "compiler/warning-facts — a warning's facts follow its tokens" {
+    given "a file's warning, on its wire over the text it was found in" {
+        then "it reads back at the same place while the text stands" {
+            let at? = wf_back(wf_text(), wf_text())?.first() else { return false }
+            at.lo == wf_text().index_of("n + 2")
+        }
+        then "two comment lines inserted above move it by exactly their length" {
+            let at? = wf_back(wf_text(), wf_shifted())?.first() else { return false }
+            at.lo == wf_text().index_of("n + 2") + WF_SHIFT &&
+                at.hi == wf_text().index_of("n + 2") + 5 + WF_SHIFT
+        }
+        then "a file the table does not know says no facts" {
+            wf_over(wf_text()).facts_said_by("/w/src/never.av") == null
+        }
+    }
+}

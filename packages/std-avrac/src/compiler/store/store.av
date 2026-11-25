@@ -156,6 +156,27 @@ fn mint_pack(at: string, root: string, print: string) -> Pack {
     made
 }
 
+/// A workspace's hold, moved to the pack of `root` under `print`: `held` is the key it
+/// holds now (empty for none), and the key it holds after is answered. A hold that
+/// has not moved costs a compare.
+export fn pack_holding(held: string, root: string, print: string) -> string {
+    let at = pack_key(root, print)
+    if at == held { return held }
+    if !held.is_empty() { pack_released(held) }
+    holders().put(at, (holders().get().get(at) ?? 0) + 1)
+    at
+}
+
+/// A workspace lets go of the pack it held; the last one lets the pack go, its mappings and open
+/// files with it.
+export fn pack_released(at: string) {
+    let left = (holders().get().get(at) ?? 0) - 1
+    holders().put(at, if left > 0 { left } else { 0 })
+    if left > 0 { return }
+    for p in packs().get().get(at) ?? [] { pack_unmapped(p) }
+    packs().put(at, [])
+}
+
 /// Whether a store's writes are set aside — an inspection keeps to memory.
 fn inspects(keeping: Keeping) -> bool { match keeping { .Disk -> false, .Aside(_) -> true } }
 

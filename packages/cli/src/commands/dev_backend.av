@@ -3,9 +3,7 @@
 //! this machine, run on a loopback port of its own, told that port as `PORT`,
 //! and run again whenever a file its build reads moves. Every request the
 //! page does not own is sent on to it, so the page and what it asks for stand
-//! on one origin. It is TOLD THE PAGE'S FILES — the module, where the glue
-//! stands, every file the page fetches (`AVRA_PAGE_*`, what `app_page`
-//! reads) — and run again when they move, so the page it draws names them.
+//! on one origin.
 use @std.http_message.message.{Header, Method}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, Reach}
@@ -14,6 +12,7 @@ use @std.http.frame.{Chunker, Decoded, chunker, limits, unchunked}
 use @std.http.http.{Pulled, Stream}
 use @std.net.{Conn}
 use @std.net.{listen, connect}
+use @std.io.{list_dir}
 use @std.path.{joined_path, normalized}
 use @std.process.{Tool, Child, Env, EnvPair, Ready, cmd, tool_at, inherited}
 use @std.text.{ascii_lower, parse_int}
@@ -27,8 +26,6 @@ export type Backend = {
     port: int,
     child: Cell<Child?>,
     watched: Cell<List<Watched>>,
-    binary: Cell<string>,
-    page: Cell<List<EnvPair>>,
 }
 
 /// The server the page at `page_root` names, nothing built yet — absent when
@@ -46,7 +43,6 @@ export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, stri
     let _ = door.close()
     let none: List<Watched> = []
     let idle: Child? = null
-    let no_page: List<EnvPair> = []
     .Ok(
         Backend {
             root: root,
@@ -54,8 +50,6 @@ export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, stri
             port: port,
             child: Cell.new(idle),
             watched: Cell.new(none),
-            binary: Cell.new(""),
-            page: Cell.new(no_page),
         },
     )
 }
@@ -114,8 +108,7 @@ impl Backend {
     /// waited on, so the first request after a build finds it listening.
     fn restarted(binary: string) {
         self.stopped()
-        self.binary.set(binary)
-        let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }].concat(self.page.get())), streams: .Inherited }
+        let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }]), streams: .Inherited }
         // LICENSED input.live_process: the server dev runs is a child, and no compile answer reads it
         match run.start(Ready.Started, secs(5)) {
             .Ok(c) -> {
@@ -124,22 +117,6 @@ impl Backend {
             },
             .Err(e) -> eprintln(server_failed(self.root, e.describe().message)),
         }
-    }
-
-    /// The server told the page's files, and run again with them when they
-    /// moved and it has been built.
-    fn told(page: List<EnvPair>) {
-        if spelled(page) == spelled(self.page.get()) { return }
-        self.page.set(page)
-        if self.binary.get() != "" { self.restarted(self.binary.get()) }
-    }
-
-    /// The page the server draws: its answer to `q` when that is a
-    /// document, else nothing — the server draws no page.
-    fn drawn(q: Request<Unrouted>) -> Response? {
-        let r = self.forward(q)
-        if r.status != 200 || !(r.header("content-type") ?? "").starts_with("text/html") { return null }
-        r
     }
 
     /// Whether the server's port takes a connection within five seconds.
@@ -170,45 +147,30 @@ impl Backend {
     }
 
     /// `q` sent on to the server as it came, and its answer sent back as it
-    /// came. A server being run again is waited for, so a request made
-    /// while it restarts reaches the new one; a server that does not answer
-    /// is a 502 saying so.
+    /// came. A server that does not answer is a 502 saying so.
     fn forward(q: Request<Unrouted>) -> Response {
-        if wants_events(q) {
-            let first = relayed(self.port, self.root, q)
-            return if first.status == 502 && self.listening() { relayed(self.port, self.root, q) } else { first }
-        }
-        match self.sent(q) {
-            .Ok(r) -> r,
-            .Err(why) -> if self.listening() { self.sent(q) catch text(502, not_answered(self.root, why)) } else { text(502, not_answered(self.root, why)) },
-        }
-    }
-
-    /// `q` sent on to the server once: its answer, or why none came.
-    fn sent(q: Request<Unrouted>) -> Result<Response, string> {
+        if wants_events(q) { return relayed(self.port, self.root, q) }
         let target = q.target() ?? "/"
         let body = q.body.octets() ?? "".bytes()
         let payload = if body.length == 0 { Payload.Empty } else { Payload.Octets(body, q.header("content-type") ?? "application/octet-stream") }
-        let options_sent = options() with { headers: [h for h in fields_of(q) if passes(h.name)], redirects: Redirects.Stop }
+        let sent = options() with { headers: [h for h in fields_of(q) if passes(h.name)], redirects: Redirects.Stop }
         // LICENSED input.live_process: a request dev forwards to its server, which no compile answer reads
-        match fetch(q.method(), "http://127.0.0.1:${self.port}${target}", payload, options_sent) {
-            .Ok(a) -> .Ok(
-                Response {
-                    status: a.status,
-                    headers: [h for h in a.headers if passes(h.name)],
-                    body: a.body,
-                },
-            ),
-            .Err(e) -> .Err(e.describe().message),
+        match fetch(q.method(), "http://127.0.0.1:${self.port}${target}", payload, sent) {
+            .Ok(a) -> Response {
+                status: a.status,
+                headers: [h for h in a.headers if passes(h.name)],
+                body: a.body,
+            },
+            .Err(e) -> text(502, not_answered(self.root, e.describe().message)),
         }
     }
 
-    /// The routes the page's address space is shared by with its server. A
-    /// target one of the page's files answers is the page's, and any other
-    /// goes on to the server: one route per reading method, so the two
-    /// never overlap. A method the page never answers is the server's alone.
-    fn routes(files: List<Route>) -> List<Route> {
-        [f with { serve: (q: Request<Unrouted>, t: Bytes) -> f.serve(q, t) ?? self.forward(q) } for f in files]
+    /// The routes the page's address space is shared by with its server. Where
+    /// the glue holds a file the glue answers it, and anything else goes on to
+    /// the server: one route per reading method, so the two never overlap. A
+    /// method the glue never answers is the server's alone.
+    fn routes(glue: List<string>, files: List<Route>) -> List<Route> {
+        [f with { serve: self.glued_or_sent(f, glue) } for f in files]
             .concat(
                 [Route {
                     method: m,
@@ -217,6 +179,11 @@ impl Backend {
                     serve: (q: Request<Unrouted>, _t: Bytes) -> self.forward(q),
                 } for m in methods()],
             )
+    }
+
+    /// The glue's own answer to a file it holds, else the server's.
+    fn glued_or_sent(file: Route, glue: List<string>) -> fn(Request<Unrouted>, Bytes) -> Response? {
+        (q: Request<Unrouted>, t: Bytes) -> if glued(file.method, t, glue) { file.serve(q, t) } else { self.forward(q) }
     }
 }
 
@@ -251,11 +218,23 @@ export fn relayed(port: int, root: string, q: Request<Unrouted>) -> Response {
     }
 }
 
-/// An environment's pairs as one text, for comparing two.
-fn spelled(pairs: List<EnvPair>) -> string { ["${p.name}=${p.value}" for p in pairs].join("\n") }
-
-/// Every method the page never answers: the server's alone.
+/// Every method the glue never answers: the server's alone.
 fn methods() -> List<Method> { [.Post, .Put, .Delete, .Patch, .Options] }
+
+/// Whether the glue answers this request: a GET or a HEAD of a file it holds.
+fn glued(m: Method, t: Bytes, glue: List<string>) -> bool {
+    let read = match m {
+        .Get or .Head -> true,
+        .Post or .Put or .Delete or .Patch or .Options or .Connect or .Trace or .Other -> false,
+    }
+    read && glue.contains((t.text() ?? "").split("?")[0])
+}
+
+/// The paths of the files a glue directory holds, as a page asks for them.
+export fn glue_files(dir: string) -> List<string> {
+    // LICENSED input.live_process: the glue files dev serves, never an input of what is built
+    ["/${f}" for f in list_dir(dir) catch []]
+}
 
 /// Every field `q` carries, in the order sent.
 fn fields_of(q: Request<Unrouted>) -> List<Header> {

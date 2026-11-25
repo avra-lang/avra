@@ -492,7 +492,7 @@ impl Frontier {
     /// frontier keeps its places in: a hash that moves with unrelated code moves no warm work.
     fn readers_of(changed: List<int>, decide: fn(int) -> int) -> List<bool>? {
         let reach? = self.reach_of(changed) else { return null }
-        self.settled(reach, decide, (_reader, _by) -> true)
+        self.settled(reach, decide)
     }
 
     /// EVERY PLACE THE CHANGE CAN REACH, walked once: each with the places that read it, read once
@@ -536,13 +536,9 @@ impl Frontier {
     }
 
     /// The places `reach` reaches, each settled once all it reads among them are: reached, or cut
-    /// off where `decide` says a cutting answer stands. A place reached meets each of its readers
-    /// that `meets` says it does — one whose read of it no longer sees what it saw — and a reader met
-    /// by none stands. The first ready are taken in place order. Absent when the places reached go
-    /// round.
-    fn settled(reach: FrontierReach, decide: fn(int) -> int, meets: fn(int, int) -> bool) -> List<
-        bool,
-    >? {
+    /// off where `decide` says a cutting answer stands. The first ready are taken in place order.
+    /// Absent when the places reached go round.
+    fn settled(reach: FrontierReach, decide: fn(int) -> int) -> List<bool>? {
         let count = reach.found.length
         mut waiting = [w for w in reach.waiting]
         mut reached_here = [false for _i in 0..count]
@@ -560,7 +556,7 @@ impl Frontier {
             let reaches = changed_here[i] || met[i] && decide(reach.found[i]) != CUT_STANDS
             if reaches { reached_here.set(i, true) }
             for k in reach.readers[i] {
-                if reaches && !met[k] && meets(reach.found[k], reach.found[i]) { met.set(k, true) }
+                if reaches { met.set(k, true) }
                 waiting.set(k, waiting[k] - 1)
                 if waiting[k] == 0 { ready.push(k) }
             }

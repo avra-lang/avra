@@ -368,7 +368,7 @@ fn worn_in_item(engine: QueryEngine, d: DeclaredName) -> NameWorn? {
 /// them, the methods and statics it writes, the trait it implements, as written, and where each of
 /// the target's and the trait's names reads, for one a generator made.
 @derive(Saved)
-export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string?, target_in: string? = null, trait_in: string? = null }
+export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string?, target_in: string? = null, trait_in: string? = null, bounded: bool = false }
 
 /// A component an item declares: its name, whether its instance binds a name, whether it's exported.
 @derive(Saved)
@@ -415,6 +415,7 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
             implements: p!.of,
             target_in: store.seat_home(s, LandedSeat.Target),
             trait_in: store.seat_home(s, LandedSeat.Trait),
+            bounded: store.impl_bounds_of(s).any(it != null),
         } for s in stmts for p in [store.impl_parts(s)] if p != null]
             .concat(
                 [ItemImpl {
@@ -950,47 +951,6 @@ export fn component_import(engine: QueryEngine, file: SourceFileAddress, word: s
         .find(it.word == word && it.module != own) else { return null }
     "${home.module}.{${home.word}}"
 }
-
-/// A fn a package exports: the file of it that declares it.
-@derive(Saved)
-export type FnHome = { package: string, path: string }
-
-/// Every fn a package's modules export, tests aside, kept by its name: a name is asked in one probe.
-@derive(Saved)
-export type FnExports = { homes: Map<string, List<FnHome>> }
-
-/// What `package` exports of fns, read once a package, its sources listed once.
-@query("summary")
-export fn fn_exports(engine: QueryEngine, package: string) -> FnExports {
-    mut homes: Map<string, List<FnHome>> = {}
-    for path in package_sources(engine, package, SOURCE_ROOT) {
-        if path.contains("/tests/") { continue }
-        let f = SourceFileAddress { package_name: package, path_in_package: path }
-        for d in file_declares(engine, f).names {
-            if d.kind == ItemKind.Fn && d.exported {
-                homes
-                    .set(
-                        d.name,
-                        (homes.get(d.name) ?? []).concat([FnHome { package: package, path: path }]),
-                    )
-            }
-        }
-    }
-    FnExports { homes: homes }
-}
-
-/// The packages a `use` line of `file` names, and its own, each once.
-export fn packages_used(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
-    distinct(
-        [file.package_name]
-            .concat(
-                [p! for u in file_words(engine, file).uses if u.path.length >= 2 && u.path[0].starts_with("@") for p in [package_named(u.path)] if p != null],
-            ),
-    )
-}
-
-/// The package a `use` path names — `@std.validate.x` names `@std/validate`.
-fn package_named(path: List<string>) -> string? { if path.length < 2 { null } else { "${path[0]}/${path[1]}" } }
 
 /// `asked`, then each package their manifests depend on, and theirs, each once — `seen` those met.
 fn depended_on(engine: QueryEngine, asked: List<string>, seen: List<string>) -> List<string> {

@@ -5,10 +5,20 @@
 //! red suite stops the run, so a failure names one thing.
 use @std.avrac.compiler.{verdict_of, staged_binaries, Want, Verdict}
 use @std.avrac.compiler.backend.{program_ended}
+use @std.avrac.compiler.lower.{program_symbol}
 use @std.process.{status_of, cmd, Env, Outcome, ProcessError, minimal}
 use @std.text.{parse_int}
 use @std.io.{env}
-use commands.{run_binary, refused_by_host, tool, ended_as, program_refuse_evaluated, every_suite}
+use commands.{
+    run_binary,
+    refused_by_host,
+    root_workspace,
+    tool,
+    ended_as,
+    program_door,
+    program_refuse_evaluated,
+    every_suite,
+}
 
 /// A child-run program test's EVAL leg's own hand-off word — a package's
 /// root and one file under it, never a suite binary.
@@ -52,7 +62,21 @@ export fn light_phase(words: List<string>) -> int? {
 /// not derive is no end at all: its report goes to stderr, where the
 /// suite reads a leg, under an exit of its own.
 fn refuse_eval(root: string, path: string) -> int {
-    program_refuse_evaluated(root, path)
+    if program_door() { return program_refuse_evaluated(root, path) }
+    let ws = root_workspace(root)
+    match ws.from_sources(null, Want.Binary) {
+        .Ok(d) -> match program_ended(d.lowered, program_symbol(ws.file_name(path))) {
+            .Ok(end) -> ended_as(end),
+            .Err(words) -> {
+                eprintln("avra: ${words}")
+                2
+            },
+        },
+        .Err(report) -> {
+            eprintln(report)
+            underived
+        },
+    }
 }
 
 /// `AVRA_SOUNDNESS` asks for the two extra runs below — off by

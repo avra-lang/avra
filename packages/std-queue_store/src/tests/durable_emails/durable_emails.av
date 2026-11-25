@@ -27,7 +27,7 @@ fn count(text: string) -> Result<int, HomeError> {
     homed((homed(ctx.db.scalar(sql(text)))?).int())
 }
 
-fn why(f: Fate) -> string {
+fn why(f: Fate<string>) -> string {
     match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
 }
 
@@ -44,7 +44,7 @@ fn main() -> Result<string, HomeError> {
         dedupe: mins(1440)
     }
 
-    queue<Dead<Email>> undeliverable {
+    queue<Dead<Email, string>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Email>()
     }
@@ -65,7 +65,8 @@ fn main() -> Result<string, HomeError> {
     let tx = transaction(ctx.db)?
     errdefer tx.rollback()
     let _ = homed(tx.db.run(sql("INSERT INTO \"users\" (\"name\") VALUES ('grace')")))?
-    let _ = tx.send(emails, Email { to: "grace@example.com", subject: "receipt" }, id: "receipt-7")?
+    let _ = emails
+        .send(Email { to: "grace@example.com", subject: "receipt" }, id: "receipt-7", tx: tx)?
     let _ = tx.commit()?
 
     let sent = emails.home().depth()?

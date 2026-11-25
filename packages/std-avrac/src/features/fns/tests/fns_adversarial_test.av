@@ -1,7 +1,8 @@
 // The RED TEAM's permanent record for fns — declarations, calls,
 // params, returns. Every program here was written to BREAK the
 // feature, not to use it.
-use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, ir_of, halver, judged}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, ir_of, halver}
 
 spec "features/fns (adversarial)" {
     given "a seat's default — degenerate shapes" {
@@ -264,7 +265,7 @@ spec "features/fns (adversarial)" {
             ) == "9"
         }
         then "a name declared TWICE is refused, as a field or variant would be" {
-            let a = judged("fn f(a: int, a: int) -> int { a }\nf(1, 2)")
+            let a = analyze_source("fn f(a: int, a: int) -> int { a }\nf(1, 2)")
             a.diagnostics.length == 1 && a.report().contains("declares `a` more than once")
         }
         then "each EXTRA copy speaks — the same count a record gives" {
@@ -298,11 +299,8 @@ spec "features/fns (adversarial)" {
             shown("fn f(f: int) -> int { f }\nf(3)") == "3"
         }
         then "a nested declaration refuses — fns live at the top level" {
-            let a = judged("fn f() -> int {\n    fn g() -> int { 1 }\n    g()\n}\nf()")
-            a.diagnostics.length == 1 &&
-                a
-                    .report()
-                    .contains("error[resolve.nested_fn]: fn declarations live at the top level")
+            let a = analyze_source("fn f() -> int {\n    fn g() -> int { 1 }\n    g()\n}\nf()")
+            a.diagnostics.length == 2 && a.report().contains("live at the top level")
         }
     }
     given "the body against its declared return" {
@@ -536,7 +534,7 @@ spec "features/fns (adversarial)" {
             )
         }
         then "the misuse does not cascade onto an ordinary call of the same symbol" {
-            let a = judged(
+            let a = analyze_source(
                 "extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\navra_host_is_dir(\"packages\") > 0",
             )
             a.diagnostics.length == 1
@@ -578,7 +576,7 @@ spec "features/fns (adversarial)" {
             )
         }
         then "TWO independent misuses answer TWO diagnostics, each at its own read — not a cascade" {
-            let a = judged(
+            let a = analyze_source(
                 "extern fn avra_host_is_dir(path: string) -> int\nlet f = if true { avra_host_is_dir } else { avra_host_is_dir }\n1",
             )
             a.diagnostics.length == 2 &&

@@ -4,7 +4,8 @@
 // and a clean start — as a built page and as the page `avra dev` serves.
 import fs from "node:fs";
 
-const script = fs.readFileSync(new URL("./start.js", import.meta.url), "utf8");
+const html = fs.readFileSync(new URL("./page.html", import.meta.url), "utf8");
+const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1];
 // The script's dynamic imports go through `load`, so a test can fail them.
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const page = new AsyncFunction("document", "addEventListener", "load", script.replaceAll("import(", "load("));
@@ -23,7 +24,7 @@ const stage = ({ dev = false } = {}) => {
   const element = (tag) => ({ tag, attrs: {}, style: {}, kids: [], textContent: "", setAttribute(k, v) { this.attrs[k] = v; }, append(...k) { this.kids.push(...k); }, addEventListener() {} });
   const document = {
     createElement: (tag) => element(tag),
-    getElementById: () => ({ dataset: { avraModule: "./app.wasm" } }),
+    getElementById: () => ({}),
     querySelector: (q) => (dev && q.includes("avra-module") ? {} : null),
     body: { prepend: (el) => alerts.push(el) },
   };

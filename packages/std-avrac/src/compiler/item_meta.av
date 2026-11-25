@@ -245,12 +245,11 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         annotations: [annotation_meta(engine, d.file, item, a) for a in item.store.annotations_of(s)],
         module: dotted_module(d.file),
         impls: written_traits(engine, d.file, d.name),
-        exported: d.exported,
     }
     match d.kind {
         .Record or .Component -> {
             let parts? = item.store.struct_parts(s) else { return null }
-            let signed = record_signature_written(engine, d.file, d.name)?.fields ?? []
+            let signed = record_signature(engine, d.file, d.name)?.fields ?? []
             base with { fields: [field_meta(
                 engine,
                 d.file,
@@ -518,7 +517,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
     let item = read_item(engine, m.file, m.item)
     let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
     let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
-    let signed = record_signature_written(engine, m.file, m.name)?.fields ?? []
+    let signed = record_signature(engine, m.file, m.name)?.fields ?? []
     MetaVariant {
         name: m.name,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
@@ -548,7 +547,7 @@ fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
 /// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
 /// `@std/meta`'s `Marker`.
 fn marks_a_member(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
-    let d? = written_resolution(engine, file, Space.Value, name).named() else { return false }
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
     let sig? = fn_signature(engine, d.file, d.name) else { return false }
     meta_named(sig.answer, MARKER)
 }
@@ -561,7 +560,7 @@ const MARKER: string = "Marker"
 fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
     let item = read_item(engine, m.file, m.item)
     let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
-    [f for f in record_signature_written(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
+    [f for f in record_signature(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
 }
 
 /// A record's field or a variant's payload `file` writes as a `Field`: its name, its type as written
@@ -605,12 +604,12 @@ fn by_value(engine: QueryEngine, ty: SignedType?) -> bool {
     if t.dynamic || !t.args.is_empty() { return false }
     match t.head {
         .Owned(word) -> BY_VALUE.contains(word),
-        .Declared(file, name) -> {
+        .Declared(file, name, _) -> {
             let shape = named_over(engine, t)
             if shape != null { return by_value(engine, shape) }
             let e = enum_signature(engine, file, name)
             if e != null { return e!.variants.all(it.payloads.is_empty()) }
-            let fields = record_signature_written(engine, file, name)?.fields ?? []
+            let fields = record_signature(engine, file, name)?.fields ?? []
             fields.length == 1 && !fields[0].state && by_value(engine, fields[0].ty)
         },
         rest -> false,
@@ -714,8 +713,8 @@ fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem,
 /// The declaration an annotation `file` writes as `name` resolves to, read once for both its call
 /// and its identity; absent where it resolves to none.
 fn named_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> DeclaredName? {
-    let scope? = written_file_scope(engine, file) else { return null }
-    stratum_resolved(engine, scope, file, Space.Value, name).named()
+    let scope? = file_scope(engine, file) else { return null }
+    resolved_in(engine, scope, file, Space.Value, name).named()
 }
 
 /// The identity of the fn `d` is, which `decl` builds only when a derive asks; empty for no fn.
@@ -812,7 +811,7 @@ export fn signed_kind(ty: SignedType) -> Kind {
     if ty.nulls > 0 { return Kind.Opt(signed_kind(ty with { nulls: ty.nulls - 1 })) }
     match ty.head {
         .Owned(word) -> owned_kind(word, ty),
-        .Declared(_, name) -> if ty.dynamic { Kind.Dyn(name) } else { Kind.Named(name, [signed_kind(a) for a in ty.args]) },
+        .Declared(_, name, _) -> if ty.dynamic { Kind.Dyn(name) } else { Kind.Named(name, [signed_kind(a) for a in ty.args]) },
         .Parameter(_, name) -> Kind.Var(name),
         .Function -> Kind
             .Fn(
@@ -851,8 +850,8 @@ export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: strin
     let path = name.split(".")
     let last? = path.last() else { return absent_lifted() }
     let reader? = (if path.length == 1 { file } else { dotted_file(engine, path.take(path.length - 1)) }) else { return absent_lifted() }
-    let scope? = written_file_scope(engine, reader) else { return absent_lifted() }
-    let d? = stratum_resolved(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
+    let scope? = file_scope(engine, reader) else { return absent_lifted() }
+    let d? = resolved_in(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
     lifted_decl(engine, d.file, d.name)
 }
 

@@ -1,13 +1,14 @@
 // A type pattern's laws, each refusal rendered whole: its subject is a
 // `dyn`, the type it names implements that `dyn`'s trait, and a `match`
 // over a `dyn` keeps its catch-all.
-use @std.avrac.testing.{refusals, refused_with, judged}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{refusals, refused_with}
 use @std.avrac.testing.held.{held_at}
 
 spec "features/narrows" {
     given "the refusals, rendered whole" {
         then "a subject that is no `dyn` is refused, naming its type" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: int) -> int {\n    match x {\n        c: Sq -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -16,7 +17,7 @@ spec "features/narrows" {
                 )
         }
         then "a `dyn` that may be absent is refused until unwrapped" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape?) -> int {\n    match x {\n        c: Sq -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -25,7 +26,7 @@ spec "features/narrows" {
                 )
         }
         then "a type that does not implement the trait is refused, naming both" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Other -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -34,7 +35,7 @@ spec "features/narrows" {
                 )
         }
         then "a match of type tests alone is refused: a `dyn` is open" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Sq -> 1\n    }\n}\n",
             )
                 .report()
@@ -43,7 +44,7 @@ spec "features/narrows" {
                 )
         }
         then "a `dyn` target is refused: a box never holds a box" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Box<T> = { v: T }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: dyn Shape -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -52,7 +53,7 @@ spec "features/narrows" {
                 )
         }
         then "a nullable target is refused: a box never holds absence" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Box<T> = { v: T }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Sq? -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -66,7 +67,7 @@ spec "features/narrows" {
             ) == 0
         }
         then "a built-in generic instance is refused: no declaration names it" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Box<T> = { v: T }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: List<int> -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -75,7 +76,7 @@ spec "features/narrows" {
                 )
         }
         then "a type parameter target is refused: it names no one type" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Box<T> = { v: T }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f<T>(x: dyn Shape, y: T) -> int {\n    match x {\n        c: T -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()
@@ -84,7 +85,7 @@ spec "features/narrows" {
                 )
         }
         then "an unknown type in a pattern is refused where it stands" {
-            judged(
+            analyze_source(
                 "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Nope -> 1\n        _ -> 0\n    }\n}\n",
             )
                 .report()

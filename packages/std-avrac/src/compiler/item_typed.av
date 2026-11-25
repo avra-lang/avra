@@ -5,6 +5,7 @@ use features.{NodeVariant, meta_moved_from}
 use features.annotations.{meta_foreign}
 use diagnostics.{Diag, said_as}
 use core.{
+    declared_head,
     MethodParts,
     flatten,
     FieldSeat,
@@ -312,6 +313,7 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
         fields: record.fields,
         defaults: record.defaults,
         names: record.type_params,
+        bounds: record.bounds,
     }
 }
 
@@ -337,18 +339,6 @@ fn sealed_home(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> 
     if at.file.package_name == file.package_name && local == module_segments(file).join(".") { return null }
     if at.file.package_name == file.package_name { local } else { [at.file.package_name.replace("/", ".")].concat(home).join(".") }
 }
-
-/// Whether `ty`, a type the program declares, wears `@unbranched`.
-fn unbranched_type(engine: QueryEngine, ty: SignedType) -> bool {
-    let at? = declared_at(ty with { nulls: 0 }) else { return false }
-    let d? = file_declares_named(engine, at.file, at.name)
-        .names
-        .find(it.name == at.name && it.kind != ItemKind.Fn) else { return false }
-    wears_mark(engine, d, UNBRANCHED_MARK)
-}
-
-/// The mark a type wears whose value is read and never chosen by.
-const UNBRANCHED_MARK: string = "unbranched"
 
 /// The mark a type wears that only its declaring module builds or rewrites it under.
 const SEALED_MARK: string = "sealed"
@@ -405,7 +395,6 @@ fn program_answered(
         named_next: (ty: SignedType) -> named_next_over(engine, ty),
         owner: (ty: SignedType) -> marked_owner(engine, ty),
         sealed_home: (ty: SignedType) -> sealed_home(engine, file, ty),
-        unbranched: (ty: SignedType) -> unbranched_type(engine, ty),
         declared_here: (ty: SignedType) -> declared_in(ty, file),
         enum_of: (ty: SignedType) -> kept_answer(
             memos,
@@ -450,7 +439,7 @@ fn program_answered(
             .any((f) -> names_state(engine, f, n)),
         bound_of: (t: SignedType) -> signing.bound_of(t),
         default_seats: (t: SignedType, name: string) -> match t.head {
-            .Declared(f, owner) -> default_seats(engine, f, owner, name),
+            .Declared(f, owner, _) -> default_seats(engine, f, owner, name),
             rest -> null,
         },
         context: (n: string, home: string?) -> read_from(engine, file, home)
@@ -844,7 +833,7 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
     if resolved(engine, file, Space.Value, name).named() != null { return null }
     let named = signing.named(name)
     match named.head {
-        .Declared(_, _) or .Owned(_) -> meta_type(named),
+        .Declared(_, _, _) or .Owned(_) -> meta_type(named),
         .Parameter(_, _) -> if signing.bound_of(named) == null { null } else { meta_type(named) },
         .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
@@ -858,7 +847,7 @@ fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> Sign
     let package? = m.package() else { return null }
     let d? = declarations_of(engine, package, m.local(), false, name)
         .find(space_of(it.kind) == Space.Type) else { return null }
-    headed_type(TypeHead.Declared(d.file, d.name))
+    headed_type(declared_head(d.file, d.name))
 }
 
 /// THE META DOOR on the program layer: where the `@std/meta` this engine loads parts from the shapes
@@ -1013,5 +1002,5 @@ type MethodNamed = { subject: ExprId, name: string }
 
 /// Whether the type `ty` is declared in `file`.
 fn declared_in(ty: SignedType, file: SourceFileAddress) -> bool {
-    match ty.head { .Declared(home, _) -> same_file(home, file), rest -> false }
+    match ty.head { .Declared(home, _, _) -> same_file(home, file), rest -> false }
 }

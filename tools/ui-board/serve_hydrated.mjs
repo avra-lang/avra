@@ -28,7 +28,7 @@ const backend = flags.includes("--backend") ? flags[flags.indexOf("--backend") +
 // Before the module runs, every element the server drew is marked, so a page
 // that kept them can be told from one that drew them again.
 const marker = `<script>for (const el of document.querySelectorAll("#app *")) el.__served = true;${tampered ? ' document.querySelector("#app").firstElementChild.remove();' : ""}</script>`;
-const page = fs.readFileSync(documentFile, "utf8").replace('<script type="module"', `${marker}<script type="module"`);
+const page = fs.readFileSync(documentFile, "utf8").replace('<script type="module">', `${marker}<script type="module">`);
 
 const types = { ".js": "text/javascript", ".wasm": "application/wasm", ".html": "text/html; charset=utf-8" };
 const served = (res, kind, body) => { res.writeHead(200, { "content-type": kind, "cache-control": "no-store" }); res.end(body); };

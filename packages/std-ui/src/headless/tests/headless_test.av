@@ -2,7 +2,6 @@
 //! words, the handler the view bound runs, and the screen is painted
 //! again — and what a reader could not reach answers nothing.
 use @std.ui.components.{button, checkbox, column, dialog, field, form, item, list, slider, text}
-use @std.ui.components.field.{return_key_words}
 use @std.ui.headless.{Screen, headless}
 use @std.ui.app.{later}
 use @std.time.{ms}
@@ -209,52 +208,6 @@ spec "a form is sent by what stands in it" {
             let c = Count {}
             let page = counter(c)
             !page.submit("Count")
-        }
-    }
-    given "a field that hears its own submit" {
-        then "the return key sends it, and its place already holds the whole text" {
-            let heard: Cell<string> = Cell.new("")
-            let draft: Cell<string> = Cell.new("")
-            let page = headless(
-                () -> field "Task" {
-                    on input { typed -> draft.set(typed) }
-                    on submit { heard.set(draft.get()) }
-                },
-            )
-            page.fill("Task", "Write the tour") &&
-                page.submit("Task") &&
-                heard.get() == "Write the tour"
-        }
-        then "inside a form it sends its own submit alone, never the form's too" {
-            let own: Cell<int> = Cell.new(0)
-            let sent: Cell<int> = Cell.new(0)
-            let page = headless(
-                () -> form {
-                    on submit { sent.set(sent.get() + 1) }
-                    field "Name" { on submit { own.set(own.get() + 1) } }
-                },
-            )
-            page.submit("Name") && own.get() == 1 && sent.get() == 0
-        }
-        then "a field that hears none still sends the form it stands in" {
-            let sent: Cell<int> = Cell.new(0)
-            let page = headless(
-                () -> form {
-                    on submit { sent.set(sent.get() + 1) }
-                    field "Name" {}
-                },
-            )
-            page.submit("Name") && sent.get() == 1
-        }
-    }
-    given "a field's return key" {
-        then "a label is owed nothing where the field hears its submit, or where none is written" {
-            return_key_words(true, true).is_empty() &&
-                return_key_words(false, true).is_empty() &&
-                return_key_words(false, false).is_empty()
-        }
-        then "a label written on a field that hears no submit is refused, in these words" {
-            return_key_words(true, false).map(it.message).join("|") == "a field's `submit_label` says what its return key does, and this field hears no `on submit`"
         }
     }
 }

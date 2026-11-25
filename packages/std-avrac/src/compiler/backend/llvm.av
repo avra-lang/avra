@@ -303,6 +303,14 @@ export fn in_symbol_order(l: Lowered) -> Lowered {
     l with { fns: sorted_by(l.fns, (a: Body, b: Body) -> text_before(a.name, b.name)) }
 }
 
+/// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
+/// NAME — LLVM wants a called symbol declared where it is called — and lays out
+/// the statics they read: private linkage, so each module's copy is its own.
+/// The caller has asked `program_closed`, a whole-program scan with one answer.
+export fn emit_closed(l: Lowered, ix: EmitIndex, path: string, which: Owned, target: string) -> string? {
+    emit_mode(l, ix, path, which, Written.Bitcode, target)
+}
+
 extern fn avra_cores_online() -> int
 extern fn avra_disk_free_bytes(path: string) -> int
 extern fn avra_file_bytes(path: string) -> int
@@ -591,6 +599,20 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
     }
 }
 
+/// WHAT A NON-HOST TARGET HAS NO BODY FOR, by NAME: a runtime row that
+/// declares no wasm body (a fiber, a core), and a closure package that owns C,
+/// names no wasm object, and defines a symbol a body calls. It reads the program
+/// LOWERED FROM ITS ENTRY (`Program.reached`), so a body nothing reaches names
+/// nothing. The build speaks which one — never a linker's "undefined symbol",
+/// which accuses the innocent.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
+export fn unsupported_on_wasm(l: Lowered) -> List<string> {
+    wasm_missing(
+        [WasmCall { caller: bd.name, symbol: n! } for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null],
+        l.libraries,
+    )
+}
+
 /// What a non-host target has no body for among `calls`, a program's reached fns each calling a
 /// symbol, linking `libraries`: each runtime row declaring no wasm body, then each package whose C
 /// has no wasm object and defines a symbol one of them calls.
@@ -616,6 +638,15 @@ fn calls_its_c(p: LinkedPackage, c: WasmCall) -> bool {
 fn refused_package(p: LinkedPackage, calls: List<WasmCall>) -> string {
     let first = calls.find((c) -> calls_its_c(p, c))!
     "${p.name} (`${first.caller}` calls `${first.symbol}`)"
+}
+
+/// Whether a program calls a runtime row that may switch a task out: it runs
+/// tasks, and a wasm build of it has a fallback for a host that cannot suspend
+/// a stack. The same reading of the rows `unsupported_on_wasm` makes.
+export fn runs_tasks(l: Lowered) -> bool {
+    calls_waiting(
+        [n! for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null],
+    )
 }
 
 /// Whether any of the symbols `called` names a runtime row that may switch a task out.

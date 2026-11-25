@@ -344,31 +344,6 @@ wasm-runtime: $(WASM_RUNTIME_LIB)
 # The package objects every wasm build may link — the manifests declare them.
 wasm-packages: $(WASM_PACKAGE_OBJS)
 
-# THE RUNTIME FOR AN APPLE SDK, one object per file plus the tick, MINUS the
-# core: an app may not fork. It stands in build/<sdk>/, where the compiler
-# looks beside the native archive (packages/cli/src/commands/shared.av,
-# `apple_toolchain`), built for the release the compiler settles a bare triple
-# on — one of two copies; packages/std-avrac/src/compiler/targets.av's
-# `APPLE_OSES` is the other.
-APPLE_SDK ?= iphonesimulator
-APPLE_TRIPLE_iphonesimulator := arm64-apple-ios17.0-simulator
-APPLE_TRIPLE_iphoneos := arm64-apple-ios17.0
-APPLE_SDKROOT = $(shell xcrun --sdk $(APPLE_SDK) --show-sdk-path 2>/dev/null)
-APPLE_RUNTIME_OBJS := $(patsubst runtime/%.c,build/$(APPLE_SDK)/%.o,$(filter-out runtime/avra_cores.c,$(wildcard runtime/*.c))) build/$(APPLE_SDK)/avra_tick.o
-APPLE_RUNTIME_LIB := build/$(APPLE_SDK)/libavra_runtime.a
-
-build/$(APPLE_SDK)/%.o: %.c build/%.sha
-	@mkdir -p build/$(APPLE_SDK)
-	clang -target $(APPLE_TRIPLE_$(APPLE_SDK)) -isysroot $(APPLE_SDKROOT) -c -O2 -MMD -MP $(SECTIONS) -Wall -Werror -Iruntime $(CFLAGS_$*) -o $@ $<
-
--include $(patsubst %.o,%.d,$(APPLE_RUNTIME_OBJS))
-
-$(APPLE_RUNTIME_LIB): $(APPLE_RUNTIME_OBJS)
-	@rm -f $@
-	@ar rcs $@ $^
-
-apple-runtime: $(APPLE_RUNTIME_LIB)
-
 # THE WASM PROOF: build the fixtures native and for wasm32 and require
 # identical stdout. Skips, spoken, where the wasm toolchain or node is absent.
 wasm-check:

@@ -1,7 +1,8 @@
 // The ONE semantics runs: clean programs interpret over the same IR
 // the backend compiles, and anything diagnosed REFUSES to run — the
 // report is the refusal.
-use @std.avrac.testing.{shown, refused_at_run, judged}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_at_run}
 
 spec "compiler/run" {
     given "arithmetic" {
@@ -20,7 +21,7 @@ spec "compiler/run" {
     }
     given "a program that does not analyze clean" {
         then "it refuses to run and the refusal IS the report" {
-            match judged("let x = 1 + y").run() {
+            match analyze_source("let x = 1 + y").run() {
                 .Err(report) -> report.contains("resolve.unresolved") && report.contains("did you mean"),
                 .Ok(_) -> false,
             }
@@ -47,7 +48,7 @@ spec "compiler/run" {
     }
     given "an empty program" {
         then "it runs and shows nothing" {
-            match judged("").run() { .Ok(out) -> out == "", .Err(_) -> false }
+            match analyze_source("").run() { .Ok(out) -> out == "", .Err(_) -> false }
         }
     }
     given "a root-module fn named `main`" {
@@ -60,7 +61,7 @@ spec "compiler/run" {
 spec "a closed workspace" {
     given "the analysis of a lone source, its captures ended" {
         then "it runs twice and lowers after — the record is remade over its memoized parts" {
-            let a = judged("let x = 1\nx")
+            let a = analyze_source("let x = 1\nx")
             let first: string? = a.ran()
             let again: string? = a.ran()
             first == "1" && again == "1" && a.lowered().fns.length >= 0

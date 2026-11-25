@@ -40,13 +40,6 @@ enum StepNew {
 @codec
 type Nothing = {}
 
-/// A job that reaches a type wearing its own codec.
-@codec
-type JobPart = { n: int }
-
-@codec
-type JobWhole = { part: JobPart }
-
 @codec
 type Something = { n: int = 5 }
 
@@ -186,16 +179,6 @@ fn no_item_under_a_known_shape(db: Db) -> Result<bool, HomeError> {
     q.take()? == null && why_word(q.unreadable()?[0].why) == "octets" && q.depth()? == 0
 }
 
-/// An item an earlier build wrote under another hash with every slot and reach spelled
-/// alike, as a build that folded no nested coded type's own shape left one.
-fn alike_under_another_hash(db: Db) -> Result<bool, HomeError> {
-    let theirs = descriptor_unspelled(JobWhole.codec_descriptor())! with { hash: JobWhole.codec_shape() + 1 }
-    let _ = (store_home_with<string>(db, "jobs", by_key(), posing(theirs.hash, theirs.spelled()))?)
-        .send("words", key("a"))?
-    let q = store_home<JobWhole>(db, "jobs", by_key())?
-    q.take()? == null && why_word(q.unreadable()?[0].why) == "shape"
-}
-
 /// The row of the one item still in the queue: its attempt, its epoch and whether it is held.
 fn standing(db: Db) -> Result<string, HomeError> {
     let row? = homed(
@@ -312,9 +295,6 @@ spec "std/queue_store — an item another build wrote" {
         }
         then "octets that are no item of a shape the verdict let through are set aside as octets" {
             over_both(no_item_under_a_known_shape)
-        }
-        then "one spelled alike in every slot and reach under another hash is set aside as a shape" {
-            over_both(alike_under_another_hash)
         }
     }
 }

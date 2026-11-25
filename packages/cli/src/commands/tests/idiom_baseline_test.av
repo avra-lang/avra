@@ -5,21 +5,18 @@
 //! future check will ever reach it either.
 use @std.io.{make_dirs, write_text, read_text}
 use @std.time.{stamp}
-use @std.avrac.compiler.{Finding, finding_line}
+use @std.avrac.compiler.{Checked, Finding, finding_line}
 use @std.avrac.core.{joined}
-use @std.process.{tool, cmd, inherited}
+use commands.{accepted, checked_at, sites_of}
 
-/// `avra check <root>` with `more`, as a user runs it on the program layer (the net off), from `/`:
-/// what it printed. Its sites are keyed from `/`, as the baseline it writes keys them.
-fn check_said(root: string, more: List<string>) -> string {
-    let t = match tool(avra_bin()) { .Ok(t) -> t, .Err(_) -> { return "" } }
-    let run = (cmd(t, ["check", root].concat(more)) with { cwd: "/", env: inherited().with_var("AVRA_PROGRAM_NET", "0"), timeout: hang_bound(), ok_exits: [0, 1, 2] })
-        .outcome()
-    match run { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+/// `root`'s live `Checked` — absent reads as clean, which no probe
+/// fixture here should ever hit.
+fn checked_of(root: string) -> Checked {
+    match checked_at(root) {
+        .Ok(c) -> c,
+        .Err(_) -> Checked { warnings: "", reused: false, timed: "" },
+    }
 }
-
-/// `--baseline_accept` of `baseline` over `root`: the rows kept where a fresh check still fires them.
-fn accepted(root: string, baseline: string) { let _ = check_said(root, ["--baseline", baseline, "--baseline_accept"]) }
 
 /// A package root of one file under `src/`, holding `text` — its own
 /// path each run, so a check the same compiler kept for an earlier run
@@ -32,16 +29,11 @@ fn probe_root(name: string, text: string) -> string {
     root
 }
 
-/// One site a live check of `root` reports, of `kind`, as `check --baseline` says a site the
-/// baseline doesn't list — its own file and text, never a hand-typed guess.
+/// One site a live check of `root` reports, of `kind` — its OWN
+/// `file`/`text` fields, never a hand-typed guess at what `here()`
+/// resolves to under the test runner.
 fn live_site(root: string, kind: string) -> Finding {
-    let empty = "${root}/empty.baseline"
-    let _ = write_text(empty, "# none\n")
-    let line = check_said(root, ["--baseline", empty])
-        .split("\n")
-        .find(it.contains("\t[${kind}]\t"))!
-    let parts = line.trim().split("\t")
-    Finding { rule: kind, file: parts[0], text: joined(parts.drop(2), "\t") }
+    sites_of(checked_of(root).findings).find(it.rule == kind)!
 }
 
 fn baseline_of(root: string, sites: List<Finding>) -> string {
@@ -60,7 +52,7 @@ spec "commands/check idiom_baseline_accept" {
             let root = probe_root("still_firing", "mut a = 0\na\n")
             let site = live_site(root, unmutated_mut)
             let baseline = baseline_of(root, [site])
-            accepted(root, baseline)
+            let _ = accepted(root, baseline, checked_of(root))
             baseline_text(baseline).contains(unmutated_mut)
         }
     }
@@ -70,7 +62,7 @@ spec "commands/check idiom_baseline_accept" {
             let site = live_site(root, unmutated_mut)
             let baseline = baseline_of(root, [site])
             let _ = write_text("${root}/src/main.av", "let a = 0\na\n")
-            accepted(root, baseline)
+            let _ = accepted(root, baseline, checked_of(root))
             !baseline_text(baseline).contains(unmutated_mut)
         }
     }
@@ -80,7 +72,7 @@ spec "commands/check idiom_baseline_accept" {
             let foreign_site = live_site(elsewhere, unmutated_mut)
             let root = probe_root("outside_reach", "let a = 0\na\n")
             let baseline = baseline_of(root, [foreign_site])
-            accepted(root, baseline)
+            let _ = accepted(root, baseline, checked_of(root))
             baseline_text(baseline).contains(unmutated_mut)
         }
     }
@@ -89,11 +81,11 @@ spec "commands/check idiom_baseline_accept" {
             let root = probe_root("file_gone", "let a = 0\na\n")
             let ghost = Finding {
                 rule: unmutated_mut,
-                file: "${root.substring(1, root.length)}/src/does_not_exist.av",
+                file: "${root}/src/does_not_exist.av",
                 text: "mut z = 0",
             }
             let baseline = baseline_of(root, [ghost])
-            accepted(root, baseline)
+            let _ = accepted(root, baseline, checked_of(root))
             !baseline_text(baseline).contains(unmutated_mut)
         }
     }

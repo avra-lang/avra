@@ -3,9 +3,9 @@
 // statement costing one diagnostic while its neighbors parse around
 // the visible hole.
 use @std.avrac.core.{BinOp}
-use @std.avrac.compiler.{assemble, parse_program, Parsed}
+use @std.avrac.compiler.{assemble, parse_program, Parsed, analyze_source}
 use @std.avrac.features.{BlockWords}
-use @std.avrac.testing.{shown, refused_with, refusals, judged}
+use @std.avrac.testing.{shown, refused_with, refusals}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.features.stmt_spine.{stmt_spine}
 use @std.avrac.features.let_stmt.{let_stmt}
@@ -78,7 +78,7 @@ spec "features/let_stmt" {
     given "the declared-binding law" {
         then "the SPEC'S OWN SENTENCE: `let x: int = null` refuses; `let x: int? = null` is fine" {
             refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") &&
-                judged("let x: int? = null\nx ?? 7").diagnostics.is_empty()
+                analyze_source("let x: int? = null\nx ?? 7").diagnostics.is_empty()
         }
         then "a mismatch names the binding and both sides" {
             refused_with("let x: int = \"s\"\nx", "`x` declares `int`, this is `string`")
@@ -93,7 +93,7 @@ spec "features/let_stmt" {
             refused_with("let x: int? = 5\nx + 1", "`+` needs `int` operands, found `int?`")
         }
         then "a TYPE used as the value speaks ONCE — the value law, not both" {
-            let a = judged("type User = { age: int }\nlet x: int = User\nx")
+            let a = analyze_source("type User = { age: int }\nlet x: int = User\nx")
             a.diagnostics.length == 1 && a.report().contains("`User` is a type, not a value")
         }
         then "a niche annotation adopts a call's answer" {

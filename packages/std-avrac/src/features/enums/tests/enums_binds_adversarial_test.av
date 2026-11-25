@@ -6,12 +6,13 @@
 // Every program here was written to BREAK the bind, not to use it.
 // A case that once produced a wrong answer, a crash, an internal
 // defect, or an engine divergence keeps its place here forever.
-use @std.avrac.testing.{refused_with, shown, refusals, judged}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{refused_with, shown, refusals}
 use compiler.backend.{render_ir}
 
 /// The IR a program lowers to, as `avra ir` prints it.
 fn ir_text(source: string) -> string {
-    render_ir(judged(source).lowered())
+    render_ir(analyze_source(source).lowered())
 }
 
 /// THE subject under attack: one carrying variant, one unit.
@@ -68,7 +69,7 @@ spec "features/enums — pattern binds (adversarial)" {
     }
     given "binds in the bind slot" {
         then "a keyword refuses as a bind name" {
-            let a = judged("${ab_enum()}match E.a(1) {\n    .a(match) -> 1\n    .b -> 0\n}")
+            let a = analyze_source("${ab_enum()}match E.a(1) {\n    .a(match) -> 1\n    .b -> 0\n}")
             a.diagnostics.length == 1 && a.report().contains("`match` is a keyword")
         }
         then "`_` in the payload slot is the hole — the arm accepts the variant whole" {
@@ -194,9 +195,41 @@ ret 0"""
             ir_text("${boxed_enum()}match E.a(21, 0) {\n    .a(n, _) -> n * 2\n    .b -> 0\n}") == expected
         }
         then "a called subject is lowered ONCE — the arms read one value" {
-            shown(
-                "extern fn avra_puts(s: string)\n${boxed_enum()}fn mk() -> E {\n    avra_puts(\"mk\")\n    E.a(1, 0)\n}\nmatch mk() {\n    .a(n, _) -> n\n    .b -> 0\n}",
-            ) == "mk\n1"
+            let expected = """fn mk() -> E
+scope application {
+  r0 = int 1
+  r1 = int 0
+  r2 = int 3
+  r3 = call avra_array_sized(r2)
+  r4 = int 0
+  call avra_array_push(r3, r4)
+  call avra_array_push(r3, r0)
+  call avra_array_push(r3, r1)
+  yield r3
+}
+ret r3
+
+scope application {
+  r0 = call mk()
+  r1 = int 0
+  r2 = call avra_array_get(r0, r1)
+  switch r2 over [0] {
+    r3 = int 1
+    r4 = call avra_array_get(r0, r3)
+    yield r4
+  } arm {
+    r5 = int 0
+    yield r5
+  } -> r6
+  r7 = call avra_int_text(r6)
+  call avra_puts(r7)
+  release r7
+  release r0
+}
+ret 0"""
+            ir_text(
+                "${boxed_enum()}fn mk() -> E { E.a(1, 0) }\nmatch mk() {\n    .a(n, _) -> n\n    .b -> 0\n}",
+            ) == expected
         }
         then "a value enum is its tag and word — no box, and nothing counted when no variant carries a pointer" {
             let expected = """scope application {

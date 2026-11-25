@@ -17,8 +17,8 @@
 //! fired.
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
-use compiler.{avra}
-use testing.held.{empty_store, entry_of, held_alone}
+use compiler.{avra, new_workspace, one_shot_let_go, Want}
+use compiler.host.{Host, memory_host}
 use @std.program.source_facts.{FileOctets}
 use testing.{
     held_at,
@@ -75,11 +75,13 @@ impl Witness {
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
 
-/// A package witness BUILT on the program layer, as `avra build` builds it: what its build says,
-/// then what making the program refuses — the refusal, or the warnings of a program that lowers.
+/// A package witness BUILT: derived through the door `avra build` takes, so it
+/// says what a build says — the refusal, or the warnings of a program that lowers.
 fn built_report(files: Map<string, string>) -> string {
-    let j = held_at(files, "/w").judged_at("/w/src/main.av")
-    match j.made() { .Ok(_) -> j.report(), .Err(why) -> why }
+    one_shot_let_go()
+    let ws = new_workspace(witness_host(files), "/w", avra())
+    ws.alone()
+    match ws.derived("/w/src/main.av", Want.Binary) { .Err(report) -> report, .Ok(d) -> d.warnings }
 }
 
 /// One code's witness, run: what the compiler actually said, and
@@ -115,7 +117,7 @@ fn shown(c: DiagCode) -> Shown {
 /// reaches the code.
 export fn rendered_over(w: Witness) -> string {
     match w {
-        .Source(text) -> held_alone(text).judged(entry_of("alone")).report(),
+        .Source(text) -> avra().check(new_source_file("witness.av", text)),
         .Package(files) -> package_report(files),
         .Built(files) -> built_report(files),
         .Unread(files, unread) -> unread_report(files, unread),
@@ -163,13 +165,22 @@ fn package_text(files: Map<string, string>) -> string {
 /// program — never the witness itself, so a golden does not print it.
 fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.starts_with("/std/") }
 
-/// A package witness on the program layer: its files laid out in memory at `/w`, and what the
-/// program its entry runs says there — its manifests and package graph first — or, with no entry,
-/// where its entry says nothing, what a check of the whole package says.
+/// The memory host a witness's `files` stand in: one naming the std root where they carry a std
+/// package there, so the toolchain reads it as its own.
+fn witness_host(files: Map<string, string>) -> Host {
+    let host = memory_host(files, files.keys())
+    if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host }
+}
+
+/// A package witness compiled: its files laid out in memory at `/w`,
+/// and what the program there says. One one-shot workspace is alive at a
+/// time, so the one before is let go.
 fn package_report(files: Map<string, string>) -> string {
-    let held = held_at(files, "/w")
-    let entered = if files.has("/w/src/main.av") { held.judged_at("/w/src/main.av").report() } else { "" }
-    if entered != "" { entered } else { held.checked_over(empty_store()) }
+    one_shot_let_go()
+    let ws = new_workspace(witness_host(files), "/w", avra())
+    ws.alone()
+    let entry: string? = if files.has("/w/src/main.av") { "/w/src/main.av" } else { null }
+    match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
 }
 
 /// Every registered code's witness, as the files a program on disk holds: a lone source at
@@ -690,13 +701,6 @@ fn witnesses() -> List<CodeWitness> {
                 ),
         },
         CodeWitness {
-            code: "type.component_named_head",
-            witness: Witness
-                .Source(
-                    "component chip(label: string) {\n    size: int = 1\n}\n\nfn f() -> int { chip { label: \"x\", size: 2 }.size }\n",
-                ),
-        },
-        CodeWitness {
             code: "type.component_twice",
             witness: Witness
                 .Beyond(
@@ -721,13 +725,16 @@ fn witnesses() -> List<CodeWitness> {
             code: "type.component_default",
             witness: program_golden("state_member_default_reads_state"),
         },
-        CodeWitness { code: "type.seed_ring", witness: program_golden("seed_ring") },
         CodeWitness { code: "type.slot_shadows", witness: program_golden("builds_slot_shadows") },
         CodeWitness { code: "ctx.unknown", witness: program_golden("ctx_unknown") },
         CodeWitness { code: "ctx.where", witness: program_golden("ctx_set_at_top") },
         CodeWitness { code: "ctx.required", witness: program_golden("ctx_required_unset") },
         CodeWitness { code: "ctx.unread", witness: program_golden("builds_ctx_set_unread") },
         CodeWitness { code: "ctx.cached", witness: program_golden("ctx_cached_untold") },
+        CodeWitness {
+            code: "ctx.old_path",
+            witness: Witness.Source("ctx depth: int = 0\n\nfn deep() -> int { ctx.depth }\n\ndeep()\n"),
+        },
         CodeWitness { code: "type.plan_residual", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plans_mismatch", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plan_scan", witness: Witness.Beyond(planned_golden) },
@@ -813,13 +820,6 @@ fn witnesses() -> List<CodeWitness> {
             witness: Witness
                 .Beyond(
                     "it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for",
-                ),
-        },
-        CodeWitness {
-            code: "manifest.no_manifest",
-            witness: Witness
-                .Beyond(
-                    "it names a directory handed to `check` that holds no manifest — a directory's own shape, which no lone source text can stand in for",
                 ),
         },
         CodeWitness { code: "source.missing", witness: unread_beside("missing") },
@@ -1163,17 +1163,6 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness {
             code: "type.code_hash_named",
             witness: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
-        },
-        CodeWitness {
-            code: "annotation.unimported",
-            witness: on_the_program_layer(
-                with_meta_modules(
-                    "use @std.meta.{derive}\nuse kit.{Reads}\n\n@derive(Reads)\ntype R = { @flag n: int }\n0\n",
-                    {
-                        "/w/src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\nexport trait Reads {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n",
-                    },
-                ),
-            ),
         },
         CodeWitness {
             code: "type.marks_named",
@@ -1605,15 +1594,6 @@ fn witnesses() -> List<CodeWitness> {
             ),
         },
         CodeWitness {
-            code: "type.unbranched",
-            witness: meta_program(
-                "use stages.{Stage}\nlet s: Stage = \"prod\"\nif s == \"prod\" { 1 } else { 2 }",
-                {
-                    "/w/src/stages/stages.av": "use @std.meta.{unbranched}\n@unbranched\nexport type Stage = string\n",
-                },
-            ),
-        },
-        CodeWitness {
             code: "type.sealed",
             witness: meta_program(
                 "use urls.{Url}\nlet u: Url = \"x\"\n1",
@@ -1732,12 +1712,6 @@ fn program_golden(case: string) -> Witness {
 
 /// A package witness whose program sees `@std/meta`, vendored in memory.
 export fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }
-
-/// `w`'s files judged on the program layer, the only reader of a law no other path holds, nothing
-/// held unread.
-fn on_the_program_layer(w: Witness) -> Witness {
-    match w { .Package(files) -> Witness.Unread(files, {}), _ -> w }
-}
 
 /// `with_meta`, with more files of the program's own beside the entry.
 fn with_meta_modules(main: string, more: Map<string, string>) -> Witness {

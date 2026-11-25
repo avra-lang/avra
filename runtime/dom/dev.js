@@ -30,9 +30,8 @@ function stands(doc, id) {
   if (doc.documentElement) doc.documentElement.setAttribute("data-avra-module", id);
 }
 
-// Hear the stream for the page running the module `mine` — a module's id is
-// the name it is served by: a module that is
-// no longer that one replaces it under the page — `swap(id)` starts the new
+// Hear the stream for the page running the module `mine`: a module that is
+// no longer that one replaces it under the page — `swap()` starts the new
 // module over the elements the page holds, so an edit is applied as a diff —
 // or reloads the page where nothing can swap or the swap failed. A failure
 // is shown, and a good build of the module it runs clears what was shown.
@@ -43,7 +42,7 @@ export function watch({ doc, mine, events, reload, swap = null }) {
     if (said.data === running) { shown(doc, ""); return; }
     if (!swap) { reload(); return; }
     try {
-      await swap(said.data);
+      await swap();
       running = said.data;
       stands(doc, running);
       shown(doc, "");
@@ -85,9 +84,9 @@ if (typeof document !== "undefined") {
     reload: () => location.reload(),
     // Asked when a build lands, not when this script loads: the page's own
     // script offers the verb once its module runs.
-    swap: async (id) => {
+    swap: async () => {
       if (typeof globalThis.avraSwap !== "function") throw new Error("the page offers no swap");
-      await globalThis.avraSwap(`./${id}`);
+      await globalThis.avraSwap("./app.wasm");
     },
   });
 }

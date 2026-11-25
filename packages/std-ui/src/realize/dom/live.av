@@ -23,11 +23,13 @@ use realize.html.css.{
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
 use realize.dom.wire.{frame}
-use realize.diff.hearing.{Bound, bound_at, bound_on, owners_of}
 use realize.dom.exact.{Watch, watching, disagreement}
 use style.theme.{Theme}
 use tree.trap.{trapped}
 use @std.io.{env}
+
+/// An element that hears an event, and what it does then.
+type Bound = { id: NodeId, action: Action, ordered: bool }
 
 /// A page as last painted: its elements, the next number it will give
 /// one, every rule a paint has named so far and what the page wore of its
@@ -84,6 +86,13 @@ fn unheard(e: Element) -> Element {
 fn present_adopt(adopting: Patch?) -> List<Patch> {
     let said? = adopting else { return [] }
     [said]
+}
+
+/// Every handler an element and what it holds bound, by who hears it.
+fn bound_in(e: Element) -> List<Bound> {
+    let el? = e.tagged() else { return [] }
+    [Bound { id: el.id, action: a, ordered: el.crowded } for a in el.hears]
+        .concat([b for k in el.kids for b in bound_in(k)])
 }
 
 /// A page holding the words `said` gave its text runs.
@@ -280,7 +289,7 @@ impl Live {
         self.page.set(now.page)
         self.next.set(now.next)
         self.heard.set([])
-        self.bound.set(bound_on(now.page))
+        self.bound.set([b for e in now.page for b in bound_in(e)])
         restyled.concat(now.patches)
     }
 
@@ -320,7 +329,7 @@ impl Live {
 
     /// The owner keys of the elements that hear something: a node's
     /// number, the identity a page gives it while it stays.
-    fn owners() -> List<Owner> { owners_of(self.bound.get()) }
+    fn owners() -> List<Owner> { [Owner { key: "${b.id.n}", ordered: b.ordered } for b in self.bound.get()] }
 
     /// The sheet, when it must be sent again: the page has never worn one
     /// of the tree's classes, or what it wears of its theme moved. The sheet's
@@ -364,9 +373,9 @@ impl Live {
     /// answered. What a control said is what its property now holds, so
     /// the next paint compares against that.
     fn fire(id: NodeId, seat: Seat, said: Said?) -> bool {
-        let action? = bound_at(self.bound.get(), id, seat) else { return false }
-        self.hear(id, action, said)
-        action.fire(said)
+        let found? = self.bound.get().find(it.id == id && it.action.seat == seat) else { return false }
+        self.hear(id, found.action, said)
+        found.action.fire(said)
     }
 
     /// What the page holds once an element has spoken: the door the page's

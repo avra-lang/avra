@@ -5,6 +5,7 @@
 //! marks `mut`. A lambda's `self` is a copy, so nothing inside one counts. A method whose answer
 //! turns on what can't be read here is unproved, and says why.
 use core.{
+    declared_head,
     FieldSeat,
     ExprId,
     NAMED_FIELD,
@@ -254,7 +255,7 @@ fn gathered_evidence(engine: QueryEngine, m: MethodAt) -> Evidence? {
 /// declared type's method reached, a verb the language gives marked where its receiver is `mut`.
 /// Absent for a type that stands over no shape, or a shape without the method.
 fn shape_evidence(engine: QueryEngine, m: MethodAt) -> Evidence? {
-    let shape? = named_over(engine, headed_type(TypeHead.Declared(m.file, m.owner))) else { return null }
+    let shape? = named_over(engine, headed_type(declared_head(m.file, m.owner))) else { return null }
     let d = declared_at(shape)
     if d != null {
         return Evidence {
@@ -309,7 +310,7 @@ fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
     let item? = trait_item(engine, giving[0]) else { return unread(not_one_impl(m)) }
     let s? = trait_fns(item)
         .find((f) -> item.store.fn_parts(f)?.name == m.name && !item.store.is_static(f)) else { return unread(not_one_impl(m)) }
-    let receiver = headed_type(TypeHead.Declared(m.file, m.owner))
+    let receiver = headed_type(declared_head(m.file, m.owner))
     fns_evidence(
         engine,
         giving[0].file,
@@ -529,11 +530,14 @@ impl Survey {
         if variant_named(self.engine, d.file, d.name, name) { filled(count, false) } else { null }
     }
 
-    /// The trait the receiver's type parameter `ty` is bound by, where the type that declares the
-    /// receiver writes one; absent for any other type.
+    /// The trait the receiver's type parameter `ty` is bound by: the one the method's own signature
+    /// carries (an impl's `G<T: B>`), else the one the type that declares the receiver writes; absent
+    /// for any other type.
     fn owner_bound(ty: SignedType) -> SignedType? {
         if ty.nullable() { return null }
         let i? = parameter_index(ty) else { return null }
+        let own = (self.signed)()?.bounds ?? []
+        if i < own.length && own[i] != null { return own[i] }
         let k? = self.owner.args.find_index((a) -> parameter_index(a) == i) else { return null }
         let d? = declared_at(self.owner) else { return null }
         let sig? = record_signature(self.engine, d.file, d.name) else { return null }
@@ -759,6 +763,7 @@ fn contracts_overwritten(view: ItemView) -> List<Found> {
                 item: view.at,
                 params: impl_params(view.engine, i, d!),
                 nth: nth,
+                bounded: i.bounded,
             },
             i,
             d!,

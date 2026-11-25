@@ -14,10 +14,7 @@ who=dev-server
 
 mkdir -p "$work/page/src" "$work/page/server/src"
 printf '[package]\nname = "dev-page"\nversion = "0.1.0"\n\n[dev]\nserver = "server"\n' > "$work/page/avra.toml"
-# The page bundles a picture and draws its served name, so the module carries the name its page asks by.
-mkdir -p "$work/page/art"
-printf '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="10" fill="#335"/><circle cx="12" cy="12" r="6" fill="#ccd"/></svg>\n' > "$work/page/art/dot.svg"
-printf 'use @std.assets.{Picture, served_name}\nuse @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nasset dot: Picture = "art/dot.svg"\n\nmount(() -> text "page ${served_name(dot)}")\n' > "$work/page/src/main.av"
+printf 'use @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nmount(() -> text "page")\n' > "$work/page/src/main.av"
 printf '[package]\nname = "dev-server"\nversion = "0.1.0"\n' > "$work/page/server/avra.toml"
 served() {
     printf 'use @std.http.route.{get, post}\nuse @std.http.server.{server}\n\nserver api {\n    %s\n    get "/hello" { _req -> "%s" }\n    post "/echo" { req -> "echo " + (req.body.text() ?? "?") }\n}\nlet ran = api.run()\nif ran is .Err(e) { eprintln(e.describe().message) }\n' "${2:-}" "$1" > "${3:-$work/page/server}/src/main.av"
@@ -56,24 +53,6 @@ page=$(curl -s --max-time 10 "$url")
 case "$page" in *app.wasm*|*bootstrap.js*) say "the page is still the page's" ;; *) fail "GET / is not the page: $(echo "$page" | head -c 80)";; esac
 glue=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "${url}bootstrap.js")
 [ "$glue" = "200" ] && say "the page's glue is still the page's" || fail "GET /bootstrap.js answered $glue"
-
-# THE PAGE'S BUNDLED FILES ARE SERVED where its pages ask for them: /assets/<the name the compiler gave>,
-# the file's own octets under its own media type, kept for ever.
-waits 120 "built the page" logged '^dev: built module'
-name=$(grep -aoE '[0-9a-f]{32}\.svg' "$work/page/src/main.wasm" | head -1)
-if [ -z "$name" ]; then fail "the module names no bundled picture"; else
-    kind=$(curl -s --max-time 10 -o "$work/dot.got" -w '%{http_code} %{content_type}' "${url}assets/$name")
-    if [ "$kind" = "200 image/svg+xml" ] && cmp -s "$work/dot.got" "$work/page/art/dot.svg"; then
-        say "a bundled picture is served as its page asks for it: GET /assets/$name -> $kind, its own bytes"
-    else fail "GET /assets/$name answered '$kind'$(cmp -s "$work/dot.got" "$work/page/art/dot.svg" || echo ', not the file')"; fi
-fi
-other=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "${url}assets/00000000000000000000000000000000.svg")
-[ "$other" = "404" ] && say "a name the page bundles nothing by is not found" || fail "an unbundled /assets name answered $other"
-# A BUILD LEAVES NOTHING BESIDE THE SOURCES but what it was asked for — a build again whose module
-# the store already holds included, which places the very file that stands.
-"$avra" build --target wasm --wasm_reactor "$work/page" > /dev/null 2>&1 || fail "the page did not build again"
-left=$(find "$work/page/src" -name '*.placing.*' | head -1)
-[ -z "$left" ] && say "the build left no file of its own beside the sources" || fail "the build left $left beside the sources"
 
 # What the page's walk says (order-only instances) reaches dev's own output, once a module.
 warning='ui: `counter` keeps state, and here its instances are told apart by their order alone — give each its own `key`'

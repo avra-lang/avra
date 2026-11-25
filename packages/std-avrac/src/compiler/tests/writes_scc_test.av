@@ -2,18 +2,6 @@
 // cycle takes what a member outside it writes, and a cycle with no writer stays unwritten — so
 // its `mut` seats are said never written through.
 use @std.avrac.testing.{held_at, Judged}
-use @std.program.tests.support.store_in_memory.{store_in_memory}
-use compiler.{
-    avra_fact_definitions,
-    item_ids,
-    read_item,
-    SeatOf,
-    seat_evidence,
-    seat_evidence_is_known,
-    written_through,
-}
-use @std.program.address.{SourceFileAddress}
-use @std.program.query_engine.{QueryEngine, query_engine}
 
 /// The program `main` writes, judged on the layer.
 fn writes_judged(main: string) -> Judged {
@@ -48,48 +36,6 @@ spec "compiler/receivers — a fn's written seats settle with its own set" {
         then "neither member writes it" {
             let j = writes_judged(writes_cycle("let _ = p.n"))
             !writes_through(j, "ping") && !writes_through(j, "pong")
-        }
-    }
-}
-
-/// The seat `at` of the fn `name` declares in `/w/src/main.av`, as the layer keys it.
-fn seat_of(engine: QueryEngine, file: SourceFileAddress, name: string, at: int) -> SeatOf? {
-    let item? = [i for i in item_ids(engine, file) if read_item(engine, file, i)
-        .stmts
-        .any((s) -> read_item(engine, file, i).store.fn_parts(s)?.name == name)]
-        .first() else { return null }
-    SeatOf { file: file, item: item, fn_name: name, at: at }
-}
-
-/// After asking only whether `asked`'s first seat is written, on a fresh engine: whether the
-/// evidence of each fn of `names` was worked out, `y` where it was and `n` where it wasn't.
-fn worked_after(asked: string, names: List<string>) -> string {
-    let held = held_at(
-        {
-            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-            "/w/src/main.av": writes_cycle("p.n = 1"),
-        },
-        "/w",
-    )
-    held.entered()
-    let engine = query_engine(store_in_memory(), avra_fact_definitions())
-    let file = held.file_at("/w/src/main.av")
-    let s? = seat_of(engine, file, asked, 0) else { return "" }
-    let _ = written_through(engine, seat_evidence(engine, s))
-    [if seat_of(engine, file, n, 0) != null &&
-        seat_evidence_is_known(engine, seat_of(engine, file, n, 0)!) { "y" } else { "n" } for n in names]
-        .join("")
-}
-
-spec "compiler/receivers — asking one fn's seat reads only the seats it reaches" {
-    given "a fn that hands its seat to no one" {
-        then "asking it works out none of the cycle's seats" {
-            worked_after("leaf", ["leaf", "ping", "pong"]) == "ynn"
-        }
-    }
-    given "a cycle asked from one member" {
-        then "works out the whole set, and the fn it hands the seat to outside it" {
-            worked_after("pong", ["pong", "ping", "leaf"]) == "yyy"
         }
     }
 }

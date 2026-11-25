@@ -80,8 +80,7 @@ impl Lowers for StructLit {
     /// which is the binary's own data. A field no entry gives is what its role fills, else its
     /// default's; a `state` field's value is held in a cell of its own, minted at this literal, or is the
     /// place an entry names. A component member whose default reads the instance is made last, its
-    /// default called on the instance as its inputs stand; a `state` member seeded at need that no
-    /// entry gives holds no cell, and is seeded where it is first needed. One that spreads what isn't a record whose
+    /// default called on the instance as its inputs stand. One that spreads what isn't a record whose
     /// fields are known isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.missed_as("an untyped record literal `${self.name.of}`") }
@@ -93,12 +92,11 @@ impl Lowers for StructLit {
         if (0..self.fields.length).any(spread_unknown(cx, self, it)) { return cx.missed_as("a record literal spreading what isn't a record") }
         let cells = places_named(cx, self, fields)
         let values = [cells[j] ?? keyed(cx, fields, self.fields[j].of, v) for j, v in self.values]
-        let made = [f.made && !f.needed && !gives(cx, self, f.name) for f in fields]
-        let unseeded = [f.needed && !gives(cx, self, f.name) for f in fields]
+        let made = [f.made && !gives(cx, self, f.name) for f in fields]
         let record = cx
             .record_packed(
                 cx.laid_out(ty),
-                [if made[n] || unseeded[n] { cx.hollow_of(f.slot_type()!) } else { filled(cx, self, e, ty, values, cells, f) } for n, f in fields],
+                [if made[n] { cx.hollow_of(f.slot_type()!) } else { filled(cx, self, e, ty, values, cells, f) } for n, f in fields],
             )
         for n, f in fields { if made[n] { cx.slot_made(record, fields, n, cx.seat_filled(f, cx.made_default(ty, f, record))) } }
         record

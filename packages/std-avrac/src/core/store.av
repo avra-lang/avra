@@ -41,6 +41,7 @@ once fn no_expr_ids() -> List<ExprId> { [] }
 
 once fn no_type_refs() -> List<TypeRef> { [] }
 
+once fn no_bounds() -> List<TypeRef?> { [] }
 once fn no_annotations() -> List<Annotation> { [] }
 
 fn no_expr_marks() -> ExprMarks {
@@ -1327,7 +1328,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> if self.answers(v) { v } else { null },
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -1785,7 +1786,7 @@ impl SyntaxArena {
     /// plain (non-generic) impl.
     fn impl_tparams_of(s: StmtId) -> ImplTypeParams? {
         match self.stmt(s) {
-            .ImplDecl(_, of, _, target, _) -> if of.is_empty() && target.is_empty() { null } else { ImplTypeParams { of: spelled_all(of), target: spelled_all(target) } },
+            .ImplDecl(_, of, _, target, _, _) -> if of.is_empty() && target.is_empty() { null } else { ImplTypeParams { of: spelled_all(of), target: spelled_all(target) } },
             _ -> null,
         }
     }
@@ -1793,7 +1794,16 @@ impl SyntaxArena {
     /// The arguments a trait impl gives its trait — part of what the
     /// impl declares.
     fn trait_args_of(s: StmtId) -> List<TypeRef> {
-        match self.stmt(s) { .ImplDecl(_, of, _, _, _) -> of, _ -> [] }
+        match self.stmt(s) { .ImplDecl(_, of, _, _, _, _) -> of, _ -> [] }
+    }
+
+    /// The bound each of an impl's target arguments writes, in written order; empty for an impl
+    /// that writes none.
+    fn impl_bounds_of(s: StmtId) -> List<TypeRef?> {
+        match self.stmt(s) {
+            .ImplDecl(_, _, _, _, _, bounded) -> if bounded == null { no_bounds() } else { [p.ty for p in bounded!] },
+            _ -> no_bounds(),
+        }
     }
 
     /// A declaration an instance minted, joining its file's top level.
@@ -2261,7 +2271,12 @@ impl SyntaxArena {
         let p? = self.impl_parts(s) else { return self.stmt_fingerprint(s) }
         fp(
             199,
-            [fp_str(p.of ?? ""), fp_str(p.target), fp_list([self.signature_fp(m) for m in p.fns])],
+            [
+                fp_str(p.of ?? ""),
+                fp_str(p.target),
+                fp_list([self.signature_fp(m) for m in p.fns]),
+                fp_list([if b == null { 0 } else { type_fp(b!) } for b in self.impl_bounds_of(s)]),
+            ],
         )
     }
 

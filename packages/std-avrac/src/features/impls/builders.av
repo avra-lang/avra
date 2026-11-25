@@ -1,0 +1,41 @@
+//! Parse-time lowering: an impl whose target's arguments may each write a bound after a colon
+//! (`impl Respond for Created<T: Shown>`), the bounds kept on the statement.
+use core.{Built, Param, Span, Stmt, TypeRef, Nominal, Slots, computed}
+
+/// `impl Tr for G<T: B> { … }` — the impl, its target's arguments as written and, where any writes
+/// a bound, each one as a seat: a bounded argument `T: B` is the seat named `T` typed by `B`, the type
+/// its parameter is held to; a bare argument is a seat with neither.
+@computed
+fn impl_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let args = s.params_of("target_args")?
+    let bounded = args.any((a) -> !a.name.text().is_empty())
+    let made = store
+        .alloc_stmt(
+            Stmt
+                .ImplDecl(
+                    [Nominal(t) for t in s.texts_of("of")?].first(),
+                    s.types_of("of_args")?,
+                    Nominal(s.text_of("target")?),
+                    [written_arg(store.param_id_span(a.id), a) for a in args],
+                    s.stmts_of("fns")?,
+                    if bounded { [if a.name.text().is_empty() { a with { ty: null } } else { a } for a in args] } else { null },
+                ),
+            s.built_at(),
+        )
+    .Ok(Built.Stmt(made))
+}
+
+/// The type an argument of the target writes: a bounded one's parameter by its name, a bare one's
+/// type as written.
+fn written_arg(at: Span?, a: Param) -> TypeRef {
+    if a.name.text().is_empty() { return a.ty! }
+    TypeRef {
+        name: a.name.text(),
+        applied: [],
+        optional: false,
+        dynamic: false,
+        arrow: false,
+        span: at,
+    }
+}

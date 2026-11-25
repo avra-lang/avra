@@ -1,0 +1,784 @@
+//! The interface's Workspace/Decls verbs: mint, fill, key, and the
+//! wire each record line carries. The record FORMAT lives in record.av.
+use core.{
+    some_list,
+    wire_fields,
+    joined,
+    flatten,
+    distinct,
+    sorted_texts,
+    sorted_by,
+    module_path,
+    digest_of,
+    same_decl,
+    ModulePath,
+    DeclKind,
+    Type,
+    TypeId,
+    DeclId,
+    FileId,
+    StmtId,
+    ExprId,
+    SeatMark,
+    qtrace,
+    traced,
+}
+use @std.text.{text_before}
+use features.{
+    ItemLine,
+    Decl,
+    Settlement,
+    LANGUAGE_HOME,
+    DeclAt,
+    FnSig,
+    StructSig,
+    EnumSig,
+    NamedSig,
+    Decls,
+    SettleRoot,
+    Settled,
+    kind_word,
+    WireIndex,
+    CancelReach,
+    Signing,
+}
+use compiler.store.{Store, Stored, node_key}
+
+/// One file's lines in its module's record, and the digest of what a caller can see of them.
+type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string, syntax: string }
+
+impl Workspace {
+
+    // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
+    // spelling it does not know is a DEFECT in the record, not a name to guess at. The
+    // fallback is `error`, the ABSORBING type, so a broken record produces a type that
+    // refuses rather than one that is silently wrong.
+
+    /// A held field's default: the record's own, else the one its row
+    /// names — a spread field's default belongs to the record it came
+    /// from. A trailing empty ref is absent from the split, so an index
+    /// past the end is "no default".
+    fn field_default(id: DeclId, field: string, refs: List<string>, j: int) -> DeclId? {
+        self.decls.default_named(id, field) ?? self
+            .decl_from_ref(if j < refs.length { refs[j] } else { "" })
+    }
+
+    /// Each bounded seat's trait arguments as `seat=wire|wire`, `;`-joined —
+    /// a seat whose bound takes none is not written, so an empty column is
+    /// no arguments anywhere.
+    fn bounds_wire(d: DeclId) -> string {
+        let n = self.decls.tparams(d).length
+        joined(
+            [bound_entry(j, [self.decls.type_wire(t) for t in self.decls.bound_args(d, j)]) for j in 0..n if !self.decls.bound_args(d, j).is_empty()],
+            ";",
+        )
+    }
+
+    fn bound_at(entries: List<string>, j: int) -> List<TypeId> {
+        let hit? = entries.find(it.starts_with("${j}=")) else { return [] }
+        [self.interface_type(w) for w in hit.substring("${j}=".length, hit.length).split("|")]
+    }
+
+    /// A type as a record wrote it: a wire, or the error type — a record writes nothing else.
+    fn interface_type(name: string) -> TypeId {
+        let words = wire_fields(name.substring(1, name.length), "~")
+        let decoded? = (if name.starts_with("^") { self.decls.read_type_wire(words, 0) } else { null }) else { return self.decls.types.intern(Type.Error) }
+        if decoded.next == words.length { decoded.id } else { self.decls.types.intern(Type.Error) }
+    }
+
+    /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
+    /// top-level ones. The file's statement table is written ONCE: read out and stored back
+    /// per line, two copies stand while it is written, and every line copies it.
+    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
+        DeclId,
+    > {
+        work_file_minted()
+        let f = self.file_id(path)
+        let read = [r for p in rows for r in some_list(read_row(p))]
+        let lines = [l for r in read for l in some_list(self.item_line_of(path, r, makers))]
+        if lines.length != read.length { return [] }
+        self.decls.held_opened(f, makers.values())
+        let ids = self.decls.mint_lines(f, lines, 0)
+        self.decls.held_closed(f, makers.values())
+        // the cancel bit is read before any signature is asked, so it lands with the row
+        for j, r in read { if j < ids.length { self.decls.record_cancel(ids[j], r.shaped().reach()) } }
+        [ids[j] for j, l in lines if l.item]
+    }
+
+    /// A kept line as the line minting reads — none, and a defect said, for one that does not decode.
+    fn item_line_of(path: string, r: Row, makers: Map<string, string>) -> ItemLine? {
+        let kind = declared_kind(r.shape, r.kind)
+        let facts = facts_unblocked(r.facts)
+        if kind == null || facts == null {
+            self.defect("a record line did not decode — ${path}")
+            return null
+        }
+        ItemLine {
+            stmt: r.stmt,
+            name: r.name,
+            kind: kind!,
+            exported: r.exported,
+            owner: r.owner,
+            parent: r.parent_at,
+            enclosing: r.enclosing,
+            root: r.root,
+            item: r.item,
+            facts: facts!,
+            maker: makers.get("${r.ordinal}") ?? "",
+        }
+    }
+
+    fn record_line(d: Decl, ordinal: int, item: bool) -> string {
+        let shape = self.row_shape(d)
+        let at = shape.index_of("\t")
+        let visibility = bit_word(d.exported)
+        let first = if at < 0 { shape } else { shape.substring(0, at) }
+        let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
+        mut parent_at = 0 - 1
+        if d.parent != null {
+            for j, id in self.decls.decls_of_file(d.file) {
+                if same_decl(id, d.parent!) { parent_at = j }
+            }
+        }
+        let root = d.root?.index ?? 0 - 1
+        let facts = self.decls.facts_or(d.id)
+        let block = facts_block(facts)
+        // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
+        // back is a defect said now, never a check every reader pays
+        if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
+        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
+    }
+
+    /// The shape word and payload a declaration's row and record line carry. AN `extern fn`
+    /// WEARS ITS OWN SHAPE WORD: the fact is a STORE read (`extern_parts`), which a held file
+    /// has none of, and the payload's layout is unchanged.
+    fn row_shape(d: Decl) -> string {
+        let shape = self.record_shape(d)
+        if !self.decls.is_extern(d.id) { return shape }
+        let at = shape.index_of("\t")
+        if at < 0 { "extern" } else { "extern${shape.substring(at, shape.length)}" }
+    }
+
+    /// The shape word and payload of a declaration's kind.
+    fn record_shape(d: Decl) -> string {
+        match d.kind {
+            // a reader bakes the VALUE in, so the value is the interface
+            .Const -> "const\t${self.const_type_wire(d)};${self.const_print(d)}\t${field_text(self.const_kept(d))}",
+            // a reader calls the gathered list's own symbol, so its type is the interface
+            .Collect -> "collect\t${self.const_type_wire(d)}",
+            // a reader calls the shared cell's own symbol, so its type is the interface
+            .State -> "state\t${self.const_type_wire(d)}",
+            // an impl is filed under its target's NAME, and a held one has no namespace to
+            // ask which declaration of that name it means
+            .Impl -> "aims\t${self.decl_ref(self.decls.target_of(d.id))}",
+            .Fn or .Method or .Default or .Case -> self.fn_shape(d),
+            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Main or .CollectEnum -> self.signed_shape(d),
+        }
+    }
+
+    /// A const's or a collect's type as a wire — the error type for one that has none.
+    fn const_type_wire(d: Decl) -> string {
+        self
+            .decls
+            .type_wire(self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error))
+    }
+
+    /// A fn's or a method's shape: its signature, then its seats' contracts and written
+    /// bits, its bounds, and whether a call to it may reach a cancel point.
+    fn fn_shape(d: Decl) -> string {
+        let sig? = self.sig(d.id) else { return "opaque" }
+        // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
+        // cannot answer, and a caller's `mut`/retain decision reads them. They ride
+        // the fn's payload: one word per seat, then one bit per seat.
+        // `seat_mark` alone is the DECLARED promises only — `consumed` (R3) is a
+        // separate, whole-program inference merged in at lowering (`Body.marks`,
+        // compiler/lower/lower.av) and never written back into `Decls`'
+        // own table. A held reader has no lowering to merge it at, so the
+        // record is the only place `consumed` can ever reach it: write it here.
+        let n = self.decls.seat_count(d.id)
+        let marks = joined(
+            [mark_word(
+                self.decls.seat_mark(d.id, j) with { consumed: self.decls.consumed_seat(d.id, j) },
+            ) for j in 0..n],
+            ";",
+        )
+        let writes = joined(
+            [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
+            "",
+        )
+        // a record is kept once the build has lowered every body, never inside a resolve,
+        // so the cancel bit is the settled pass's and not its conservative stand-in
+        let reach = self.reach_of(d.id)
+        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${parks_word(reach)}\t${bit_word(reach.spins)}"
+    }
+
+    /// A type's shape from its signature — `opaque` for a declaration that has none.
+    fn signed_shape(d: Decl) -> string {
+        let sig? = self.sig(d.id) else { return "opaque" }
+        shape_line(
+            self,
+            sig,
+            if d.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d.id)) { "boxed" } else { "struct" },
+        )
+    }
+
+    /// Whether this attempt READ the file: met and not held. A file nothing
+    /// met has no row, and its record lines carry forward as a held one's do.
+    fn read_here(path: string) -> bool {
+        let f? = self.decls.known_file_id(path) else { return false }
+        true
+    }
+
+    fn record_of(store: Store, m: ModulePath) -> string {
+        let prior_lines = record_cached(self, store, m).split("\n")
+        let files = self.module_files(m)
+        let kept = lines_by_file(prior_lines)
+        let fresh = flatten([self.import_lines(path) for path in files if self.read_here(path)])
+        let gathers = flatten([self.gathers_lines(path) for path in files if self.read_here(path)])
+        let here = distinct(
+            [line for line in prior_lines if kept_import(self, files, line) || kept_gathers(self, line)]
+                .concat(fresh)
+                .concat(gathers),
+        )
+        // EVERY FILE'S OWN OUTGOING REFERENCES, kept beside its
+        // declarations — never inside `iface_digest`'s own fold, since a
+        // dependent needs to know only that this attempt's `references()`
+        // can still answer for this file once it is held, not WHAT it
+        // referenced. A held file's `ref` lines ride forward from `kept`,
+        // in the same place a fresh file's stand, so where they stand never
+        // says which it was.
+        let refs = flatten([self.file_ref_lines(path, kept) for path in files])
+        let parts = [self.file_lines(store, m, path, kept) for path in files]
+        // what a file's lines were read from, what its runs read and its own interface
+        // stand on its `file` line; the module's interface is its files', in name order
+        // A FILE'S OWN PARSE DIGEST rides its `file` line: the body-inclusive, comment-free
+        // answer to "did only a comment move?", which no other column gives — `iface` is the
+        // contracts alone, deliberately, so a body edit moves no dependent.
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.runs_recorded(store, m, f.path))}\t${f.iface}\t${f.idents}\t${f.global}\t${f.syntax}" for f in parts]
+        let iface = ifaces_digest([f.iface for f in parts])
+        joined(
+            ["iface\t${iface}"]
+                .concat(here)
+                .concat(refs)
+                .concat(read)
+                .concat(flatten([[l for l in f.lines if !items_line(read_fields(l))] for f in parts]))
+                .concat(flatten([[l for l in f.lines if items_line(read_fields(l))] for f in parts])),
+            "\n",
+        )
+    }
+
+    /// What a file's runs read, as its record states it: a read file's from its runs, a held
+    /// file's as the record kept them — it is held against that key, and no run ran to say
+    /// otherwise, so a rewritten record must not forget them.
+    fn runs_recorded(store: Store, m: ModulePath, path: string) -> List<RunRead> {
+        if self.read_here(path) { self.ran_by(store, path) } else { kept_runs(record_places(self, store, m).get(path)) }
+    }
+
+    /// One file's part of its module's record. A HELD file's lines are copied
+    /// verbatim — it is held against them — and its interface digest with them, so a
+    /// body edit elsewhere in the module reads no held line.
+    /// A file's `import` lines: each module it imports, the file that imports it and the text
+    /// that file was read at.
+    fn import_lines(path: string) -> List<string> {
+        let digest = self.text_digest(path)
+        ["import\t${d.text()}\t${path}\t${digest}" for d in self.imported_by(path)]
+    }
+
+    fn file_lines(store: Store, m: ModulePath, path: string, kept: Map<string, List<string>>) -> FileLines {
+        if self.read_here(path) {
+            let lines = self.lines_of(path)
+            return FileLines {
+                path: path,
+                lines: lines,
+                iface: iface_digest(lines),
+                idents: self.mentioned(path),
+                global: global_digest(lines),
+                syntax: "${fingerprint_of_parsed(self.parsed(self.file_id(path)))}",
+            }
+        }
+        let lines = [line for line in kept.get(path) ?? [] if !line.starts_with("ref\t")]
+        let columns = record_places(self, store, m).get(path)?.file ?? []
+        FileLines {
+            path: path,
+            lines: lines,
+            iface: if columns.length > 4 { columns[4] } else { iface_digest(lines) },
+            idents: if columns.length > 6 { columns[5] } else { "" },
+            global: if columns.length > 6 { columns[6] } else { "" },
+            syntax: if columns.length > 7 { columns[7] } else { "" },
+        }
+    }
+
+    /// THE NAMES A FILE MENTIONS: every token of its text, and every declaration its resolved
+    /// references name — code a derive or a template wrote into it spells names its text does not.
+    fn mentioned(path: string) -> string {
+        let refs = [self.decls.decl(r.decl).name for r in self.file_refs(self.file_id(path))]
+        joined(sorted_texts(distinct(idents_of(self.listed_text(path)).concat(refs))), ",")
+    }
+
+    /// A file's `ref` lines: a held file's as its record kept them, a read one's fresh.
+    fn file_ref_lines(path: string, kept: Map<string, List<string>>) -> List<string> {
+        if !self.read_here(path) { return [line for line in kept.get(path) ?? [] if line.starts_with("ref\t")] }
+        self.ref_lines(path, self.file_refs(self.file_id(path)))
+    }
+
+    /// A parsed file's record lines, one per declaration.
+    fn lines_of(path: string) -> List<string> {
+        let f = self.file_id(path)
+        let top = self.items(f)
+        let ids = self.decls.decls_of_file(f)
+        [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in ids]
+            .concat(
+                [maker_line(path, ordinal, self.decl_at(id).maker) for ordinal, id in ids if self.decl_at(id).maker != ""],
+            )
+            .concat([reexport_line(path, r) for r in self.file_reexports(path)])
+    }
+
+    /// A CONST'S KEPT VERDICT, the one its line carries: its settled value, or — for a
+    /// settlement STRUCTURALLY refused (`Unsettled.structural`, `Reach`) — the refusal
+    /// itself, since that verdict is as stable as a value and is what lets the file hold.
+    /// A non-structural refusal SPEAKS a diagnostic elsewhere and keeps nothing, so its file
+    /// is read again. A gathered member — a `rule`'s `run: fn(Code) -> Fix?`, any declared
+    /// instance holding behavior — refuses structurally too and is kept the same way.
+    fn const_kept(d: Decl) -> string {
+        match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
+            .Ok(value) -> kept_wire(value),
+            // `settled` collapses a reused refusal to `.Spoken` so a diagnostic never
+            // repeats — ask the relation for the const's one real verdict
+            .Err(_) -> reach_kept(self.settle_verdict(d.file, SettleRoot.Const(d.stmt), [])),
+        }
+    }
+
+    /// A settled const's value as one number — 0 for one that did not settle.
+    fn const_print(d: Decl) -> int {
+        match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
+            .Ok(value) -> value.fingerprint,
+            .Err(_) -> 0,
+        }
+    }
+
+    /// EVERY FILE WHOSE TEXT A FILE'S COMPILE-TIME RUNS READ — its own runs', and the
+    /// runs behind every declaration those read (`followed`). In name order.
+    fn ran_by(store: Store, path: string) -> List<RunRead> {
+        // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
+        mut seen: List<RunRead> = [self.plain_read(path)]
+        mut known: Map<string, bool> = {}
+        known.set(read_id(seen[0]), true)
+        mut at = 0
+        while at < seen.length {
+            for q in self.followed(store, seen[at]) {
+                if !known.has(read_id(q)) {
+                    known.set(read_id(q), true)
+                    seen.push(q)
+                }
+            }
+            at = at + 1
+        }
+        sorted_by(
+            seen.slice(1, seen.length),
+            (a: RunRead, b: RunRead) -> text_before(a.path, b.path),
+        )
+    }
+
+    /// WHAT READING ONE THING INHERITS. A fn read inherits nothing: what its body runs
+    /// is read by the run that called it. A const read inherits its kept verdict's
+    /// reads, which already hold the reads of every const it stood on. Anything else —
+    /// a whole file, a declaration that generates others, a const with no verdict
+    /// kept — inherits all its file's runs.
+    fn followed(store: Store, r: RunRead) -> List<RunRead> {
+        // A read's expansion is a function of the store (fixed this build) and the
+        // runs recorded for ITS OWN path, so it is memoized per read for the
+        // attempt and invalidated only when that path's runs move. A closure read
+        // is never marked seen: a fn read inherits nothing, and the same path
+        // expanded as a run walks its whole file.
+        let dep = self.hold.runs_gen.get().get(r.path) ?? 0
+        let hit = self.hold.ran_followed.get().get(read_id(r))
+        if hit != null && hit!.gen == dep {
+            return hit!.reads
+        }
+        let out = self.followed_uncached(store, r)
+        self.hold.ran_followed.put(read_id(r), Followed { reads: out, gen: dep })
+        out
+    }
+
+    /// `followed`'s one expansion, before the per-attempt memo.
+    fn followed_uncached(store: Store, r: RunRead) -> List<RunRead> {
+        let words = r.ref.split("~")
+        if r.ref.is_empty() || words.length < 4 { return self.ran_directly(store, r.path) }
+        match words[1] { "fn" -> [], _ -> self.ran_directly(store, r.path) }
+    }
+
+    /// What one file's runs read: as this build met them, or, for a held file, as
+    /// its module's last record kept them.
+    fn ran_directly(store: Store, path: string) -> List<RunRead> {
+        if self.read_here(path) { return self.hold.runs.get().get(path) ?? [] }
+        kept_runs(record_places(self, store, self.module_path_of(path)).get(path))
+    }
+
+}
+
+/// The sentinel wire for a declaration that cannot be named — a tilde in
+/// its own text; `wire_decl` reads too few words from it to decode.
+const NO_ORDINAL: int = 0 - 1
+
+impl Decls {
+
+    /// A declaration as a wire: its file, kind, owner and name — never a
+    /// position. A moved declaration keeps this wire; a declaration reordered
+    /// around it never steals it. `owner` is a method's impl target ("" for
+    /// anything not one), which is what tells `impl Word { fn one() }`'s `one`
+    /// apart from a free `fn one()` sharing its name. A generated declaration
+    /// adds its maker, and declarations sharing all of these are told apart by
+    /// their place among them — a group that arrives whole, written ones at
+    /// the parse and a maker's at its expansion, so its count never depends on
+    /// what else is minted yet (`wire_spelled`). A tilde in owner, name or maker
+    /// (case labels are sentences) wears NO_ORDINAL rather than corrupt the
+    /// tilde stream.
+    fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).path) }
+
+    /// `decl_wire`, its file spelled by `home`.
+    fn decl_wire_from(d: DeclId, home: fn(FileId) -> string) -> string {
+        let x = self.decl(d)
+        let kind = kind_word(x.kind)
+        // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
+        // one declaration has one spelling whichever file a process met first.
+        if self.is_builtin(d) && !x.owner.contains("~") && !x.name.contains("~") { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
+        let group = self.wire_siblings(x.file, kind, x.owner, x.name, x.maker)
+        let at = [j for j, id in group if same_decl(id, d)].first() ?? 0
+        wire_spelled(
+            home(x.file),
+            WireName { kind: kind, owner: x.owner, name: x.name, maker: x.maker },
+            at,
+            group.length,
+        )
+    }
+
+    /// `f`'s declarations of one kind, owner, name and maker, in file order. The
+    /// reader owes only the NAME's bucket, so a declaration of another name
+    /// never moves it.
+    fn wire_siblings(f: FileId, kind: string, owner: string, name: string, maker: string) -> List<
+        DeclId,
+    > {
+        // the rows are minted, and the read is UNRECORDED: the one edge the reader owes is below,
+        // so a name's bucket stands in for the whole file
+        (self.ensure_file.get())(f)
+        let kept = self.wire_index.get().get("${f.index}")
+        let by = if kept != null && kept!.count == self.decl_count_of(f) { kept!.by } else { self.wire_indexed(f, self.decls_so_far(f)) }
+        let b = self.name_bucket(name)
+        if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
+        self.bucket_moved(b)
+        // a `main` is its own file's: the shared bucket holds one per file
+        if kind == kind_word(DeclKind.Main) { self.rows_read(f) } else { self.record_kernel.record_at(self.record_names.get(), b) }
+        by.get(wire_key(kind, owner, name, maker)) ?? []
+    }
+
+    /// `f`'s declarations indexed by kind, owner and name, kept.
+    fn wire_indexed(f: FileId, ids: List<DeclId>) -> Map<string, List<DeclId>> {
+        mut by: Map<string, List<DeclId>> = {}
+        for id in ids {
+            let x = self.raw_decl(id)
+            let k = wire_key(kind_word(x.kind), x.owner, x.name, x.maker)
+            by.set(k, (by.get(k) ?? []).concat([id]))
+        }
+        self.wire_index.put("${f.index}", WireIndex { count: ids.length, by: by })
+        by
+    }
+
+    fn read_type_wire(words: List<string>, at: int) -> WireType? {
+        if at >= words.length { return null }
+        let tag = words[at]
+        let scalar: Type? = match tag {
+            "i" -> Type.Int,
+            "f" -> Type.Float,
+            "b" -> Type.Bool,
+            "s" -> Type.Str,
+            "y" -> Type.Bytes,
+            "p" -> Type.Ptr,
+            "v" -> Type.Void,
+            "n" -> Type.Null,
+            "g" -> Type.Range,
+            "e" -> Type.EmptyList,
+            "h" -> Type.EmptyMap,
+            "x" -> Type.Error,
+            "T" -> Type.Tasks,
+            _ -> null,
+        }
+        if scalar != null { return WireType { id: self.types.intern(scalar!), next: at + 1 } }
+        if tag == "S" || tag == "E" || tag == "D" || tag == "N" || tag == "R" || tag == "A" {
+            let wd? = self.wire_decl(words, at + 1) else { return null }
+            let d = wd.id
+            let x = self.decl(d)
+            if tag == "S" { return WireType { id: self.types.intern(Type.Struct(d, x.name)), next: wd.next } }
+            if tag == "E" { return WireType { id: self.types.intern(Type.Enum(d, x.name)), next: wd.next } }
+            if tag == "D" { return WireType { id: self.types.intern(Type.Dyn(d, x.name)), next: wd.next } }
+            if tag == "N" { return WireType { id: self.types.intern(Type.TypeName(d, x.name)), next: wd.next } }
+            if wd.next >= words.length { return null }
+            let n? = wire_number(words[wd.next]) else { return null }
+            if tag == "R" {
+                let names = self.tparams(d)
+                if n < 0 || n >= names.length { return null }
+                return WireType {
+                    id: self.types.intern(Type.Var(d, n, names[n])),
+                    next: wd.next + 1,
+                }
+            }
+            if n < 0 { return null }
+            mut args: List<TypeId> = []
+            mut cursor = wd.next + 1
+            for j in 0..n {
+                let child? = self.read_type_wire(words, cursor) else { return null }
+                args.push(child.id)
+                cursor = child.next
+            }
+            return WireType { id: self.types.intern(Type.App(d, x.name, args)), next: cursor }
+        }
+        if tag == "L" || tag == "C" || tag == "O" || tag == "K" {
+            let child? = self.read_type_wire(words, at + 1) else { return null }
+            let raw = when {
+                tag == "L" -> Type.List(child.id)
+                tag == "C" -> Type.Cell(child.id)
+                tag == "K" -> Type.Task(child.id)
+                _ -> Type.Opt(child.id)
+            }
+            return WireType { id: self.types.intern(raw), next: child.next }
+        }
+        if tag == "M" || tag == "Q" {
+            let a? = self.read_type_wire(words, at + 1) else { return null }
+            let b? = self.read_type_wire(words, a.next) else { return null }
+            let raw = if tag == "M" { Type.Map(a.id, b.id) } else { Type.Res(a.id, b.id) }
+            return WireType { id: self.types.intern(raw), next: b.next }
+        }
+        if tag == "F" {
+            if at + 1 >= words.length { return null }
+            let n? = wire_number(words[at + 1]) else { return null }
+            mut params: List<TypeId> = []
+            mut cursor = at + 2
+            if n < 0 { return null }
+            for j in 0..n {
+                let child? = self.read_type_wire(words, cursor) else { return null }
+                params.push(child.id)
+                cursor = child.next
+            }
+            if cursor >= words.length { return null }
+            let bits = words[cursor]
+            // EACH SEAT SPENDS `mark_word_width` CHARACTERS, PACKED WITH NO
+            // SEPARATOR — the same boundary-that-moves hazard a flat splice
+            // always carries (CLAUDE.md), so a seat is read at its own
+            // slice, never at one character per seat.
+            mut marks: List<SeatMark> = []
+            for j in 0..n {
+                let lo = j * mark_word_width
+                let hi = lo + mark_word_width
+                if hi > bits.length { return null }
+                marks.push(mark_of_word(bits.substring(lo, hi)))
+            }
+            let ret? = self.read_type_wire(words, cursor + 1) else { return null }
+            return WireType {
+                id: self.types.intern(Type.Fn(params, marks, ret.id)),
+                next: ret.next,
+            }
+        }
+        if tag == "U" {
+            if at + 1 >= words.length { return null }
+            let n? = wire_number(words[at + 1]) else { return null }
+            if n < 0 { return null }
+            mut members: List<TypeId> = []
+            mut cursor = at + 2
+            for j in 0..n {
+                let child? = self.read_type_wire(words, cursor) else { return null }
+                members.push(child.id)
+                cursor = child.next
+            }
+            // `union_of` is the only door — a wire's members re-canonicalize
+            // exactly as a freshly-declared union's would
+            return WireType { id: self.types.union_of(members), next: cursor }
+        }
+        null
+    }
+
+    /// A type as a record writes it.
+    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).path)}" }
+
+    /// A type as a SYMBOL spells it: the record's wire with each file named
+    /// by its package and its path within it, never where the building
+    /// machine keeps the tree — an object is the same bytes on every machine.
+    fn type_symbol(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).name)}" }
+
+    /// The wire without its mark — what a wire nests — each file spelled by `home`.
+    fn wire_body(id: TypeId, home: fn(FileId) -> string) -> string {
+        match self.types.shape_of(id) {
+            .Int -> "i",
+            .Float -> "f",
+            .Bool -> "b",
+            .Str -> "s",
+            .Bytes -> "y",
+            .Ptr -> "p",
+            .Void -> "v",
+            .Null -> "n",
+            .EmptyList -> "e",
+            .EmptyMap -> "h",
+            .Error -> "x",
+            .Struct(d, _) -> "S~${self.decl_wire_from(d, home)}",
+            .Enum(d, _) -> "E~${self.decl_wire_from(d, home)}",
+            .Dyn(d, _) -> "D~${self.decl_wire_from(d, home)}",
+            .TypeName(d, _) -> "N~${self.decl_wire_from(d, home)}",
+            .Var(d, j, _) -> "R~${self.decl_wire_from(d, home)}~${j}",
+            .App(d, _, args) -> "A~${self.decl_wire_from(d, home)}~${args.length}~${joined([self.wire_body(a, home) for a in args], "~")}",
+            .List(t) -> "L~${self.wire_body(t, home)}",
+            .Cell(t) -> "C~${self.wire_body(t, home)}",
+            .Task(t) -> "K~${self.wire_body(t, home)}",
+            .Tasks -> "T",
+            .Opt(t) -> "O~${self.wire_body(t, home)}",
+            .Map(k, v) -> "M~${self.wire_body(k, home)}~${self.wire_body(v, home)}",
+            .Res(ok, err) -> "Q~${self.wire_body(ok, home)}~${self.wire_body(err, home)}",
+            .Fn(params, marks, ret) -> joined(
+                ["F", "${params.length}"]
+                    .concat([self.wire_body(t, home) for t in params])
+                    .concat(
+                        [
+                            joined(
+                                [mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length],
+                                "",
+                            ),
+                            self.wire_body(ret, home),
+                        ],
+                    ),
+                "~",
+            ),
+            .Union(members) -> joined(
+                ["U", "${members.length}"].concat([self.wire_body(m, home) for m in members]),
+                "~",
+            ),
+            .Range -> "g",
+        }
+    }
+
+    /// `decl_wire`'s inverse — the declaration a wire names, and how many
+    /// words it read: four, then a maker's when one is spelled, then a place
+    /// when its group has more than one.
+    fn wire_decl(words: List<string>, at: int) -> WireDeclRef? {
+        if at + 3 >= words.length { return null }
+        let kind = words[at + 1]
+        let owner = text_of_field(words[at + 2])
+        let name = text_of_field(words[at + 3])
+        // A BUILTIN IS THE LANGUAGE'S, filed under no file of the program's: its name
+        // alone finds it.
+        if builtin_word(kind) {
+            let b? = self.builtin_decls().find((d) -> self.decl(d).name == name) else { return null }
+            return WireDeclRef { id: b, next: at + 4 }
+        }
+        let f: FileId? = self.known_file_id(words[at])
+        if f == null { return null }
+        let made = at + 4 < words.length && words[at + 4].starts_with(MAKER_MARK)
+        let maker = if made { text_of_field(words[at + 4].substring(MAKER_MARK.length, words[at + 4].length)) } else { "" }
+        let past = if made { at + 5 } else { at + 4 }
+        let group = self.wire_siblings(f!, kind, owner, name, maker)
+        if group.length == 1 { return WireDeclRef { id: group[0], next: past } }
+        if group.is_empty() || past >= words.length { return null }
+        let idx? = wire_number(words[past]) else { return null }
+        if idx < 0 || idx >= group.length { return null }
+        WireDeclRef { id: group[idx], next: past + 1 }
+    }
+}
+
+/// A declaration's place in its file's wire index.
+fn wire_key(kind: string, owner: string, name: string, maker: string) -> string { "${kind}\t${owner}\t${name}\t${maker}" }
+
+/// What a declaration's wire names it by, apart from its file and place.
+export type WireName = { kind: string, owner: string, name: string, maker: string }
+
+/// The word a generated declaration's maker opens with in its wire.
+const MAKER_MARK: string = "="
+
+/// THE ONE SPELLING of a declaration's wire: its file, kind, owner and name, its maker's
+/// when one made it, and its place `at` among the `count` that share all of these.
+export fn wire_spelled(home: string, n: WireName, at: int, count: int) -> string {
+    if [n.owner, n.name, n.maker].any(it.contains("~")) { return "${home}~${NO_ORDINAL}" }
+    let base = "${home}~${n.kind}~${field_text(n.owner)}~${field_text(n.name)}"
+    let made = if n.maker == "" { base } else { "${base}~${MAKER_MARK}${field_text(n.maker)}" }
+    if count <= 1 { made } else { "${made}~${at}" }
+}
+
+/// A file's declaration lines' wires, from its Items lines alone, by the name each declares.
+export fn line_wires_by_name(path: string, lines: List<List<string>>) -> Map<string, List<string>> {
+    let makers = makers_in(lines, path)
+    let names = [line_name(p, makers) for p in lines if declares(p)]
+    let wires = line_wires(path, lines)
+    mut by: Map<string, List<string>> = {}
+    for j, n in names { by.set(n.name, (by.get(n.name) ?? []).concat([wires[j]])) }
+    by
+}
+
+/// Every declaration line's wire, from a file's Items lines alone — what `decl_wire` spells
+/// for each once it is minted, so an unminted file is named without minting it.
+export fn line_wires(path: string, lines: List<List<string>>) -> List<string> {
+    let makers = makers_in(lines, path)
+    let names = [line_name(p, makers) for p in lines if declares(p)]
+    let counts: Cell<Map<string, int>> = Cell.new({})
+    for n in names { counts.put(name_key(n), (counts.get().get(name_key(n)) ?? 0) + 1) }
+    let seen: Cell<Map<string, int>> = Cell.new({})
+    [wire_spelled(path, n, seen_once(seen, name_key(n)), counts.get().get(name_key(n)) ?? 1) for n in names]
+}
+
+/// The place of the next declaration filed under `key`: how many came before it.
+fn seen_once(seen: Cell<Map<string, int>>, key: string) -> int {
+    let at = seen.get().get(key) ?? 0
+    seen.put(key, at + 1)
+    at
+}
+
+fn name_key(n: WireName) -> string { wire_key(n.kind, n.owner, n.name, n.maker) }
+
+fn line_name(p: List<string>, makers: Map<string, string>) -> WireName {
+    WireName { kind: p[6], owner: p[7], name: p[5], maker: makers.get(p[2]) ?? "" }
+}
+
+/// `wire_decl`'s answer: the declaration, and where the next field starts.
+type WireDeclRef = { id: DeclId, next: int }
+
+/// One bounded seat in the fn row's bounds column.
+fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|")}" }
+
+/// A refused const's verdict as its line keeps it: a structural refusal's reach, else nothing.
+fn reach_kept(verdict: Settlement?) -> string {
+    let v? = verdict else { return "" }
+    match v {
+        .Refused(why) -> if why.structural() { reach_wire(why.words()) } else { "" },
+        .Held(_) -> "",
+    }
+}
+
+/// What generated the declaration at `ordinal` of `path` — written only for a generated one.
+fn maker_line(path: string, ordinal: int, maker: string) -> string {
+    "maker\t${path}\t${ordinal}\t${field_text(maker)}"
+}
+
+/// A file's makers as its record keeps them, by the declaration's ordinal — read from the
+/// file's own lines (`file_lines`), never the module's whole record.
+export fn makers_in(lines: List<List<string>>, path: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for p in lines {
+        if p.length == 4 && p[0] == "maker" && p[1] == path { out.set(p[2], text_of_field(p[3])) }
+    }
+    out
+}
+
+/// A bit as a record field writes it.
+fn bit_word(b: bool) -> string {
+    if b { "1" } else { "0" }
+}
+
+/// How a fn waits, as its record says it: `0` never, `1` it may, `2`
+/// through a row or a spawn — the word `Record.reach` reads back.
+fn parks_word(r: CancelReach) -> string {
+    when {
+        r.links -> "2"
+        r.parks -> "1"
+        _ -> "0"
+    }
+}
+
+/// One read's identity: the file and the declaration read in it.
+fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
+
+/// Whether a record line is one a file's Items keep: a declaration's, or the maker that made it.
+fn items_line(parts: List<string>) -> bool { declares(parts) || parts[0] == "maker" }

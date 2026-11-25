@@ -51,6 +51,38 @@ export fn instanced(store: SyntaxArena, s: StmtId) -> Instanced? {
     Instanced { name: name, declared: of }
 }
 
+/// The named instances a file declares at its top level
+/// (`layer auth { … }`), read off its tokens before it parses — so a
+/// body lists one by name wherever in the file it is declared.
+export fn named_instances(text: string, words: List<ComponentWord>) -> List<Instanced> {
+    let tokens = lex_source(text).tokens
+    flatten([some_list(instance_at(tokens, i, words)) for i in top_starts(tokens)])
+}
+
+/// Where each top-level statement begins, past an `export`.
+fn top_starts(tokens: List<Token>) -> List<int> {
+    mut depth = 0
+    mut fresh = true
+    mut starts: List<int> = []
+    // LICENSED loops.push_loop: a running depth — each token's place depends on every brace before it
+    for i, t in tokens {
+        if depth == 0 && fresh && !t.lit_matches("export") { starts.push(i) }
+        if t.lit_matches("{") { depth = depth + 1 }
+        if t.lit_matches("}") { depth = depth - 1 }
+        fresh = t.kind == TokenKind.Break || fresh && t.lit_matches("export")
+    }
+    starts
+}
+
+/// `word name` opening a statement, where `word` is a component whose
+/// named instance binds its name.
+fn instance_at(tokens: List<Token>, i: int, words: List<ComponentWord>) -> Instanced? {
+    let at = after_type_args(tokens, i + 1)
+    if at >= tokens.length || tokens[at].kind != TokenKind.Name { return null }
+    let w? = words.find(it.word == tokens[i].text && binds_name(it)) else { return null }
+    Instanced { name: tokens[at].text, declared: w.declared }
+}
+
 /// Whether a named instance of the component binds its name: a
 /// record with no head.
 export fn binds_name(c: ComponentWord) -> bool {

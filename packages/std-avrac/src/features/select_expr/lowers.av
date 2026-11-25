@@ -6,6 +6,7 @@
 //! that wakes it is only a hint: the next turn scans again. A head that makes its tasks where it is
 //! written is joined as the scope around the `select` ends, as a bound `spawn` is.
 use core.{
+    declared_head,
     BinOp,
     Bound,
     CalledFn,
@@ -163,7 +164,7 @@ fn typed_wait(mut cx: Lowering, a: Arm) -> ArmWait? {
 /// The file declaring `ty`, where it's the type `package` declares as `name`.
 fn declared_in(ty: SignedType, package: string, name: string) -> TypeHead? {
     match ty.head {
-        .Declared(file, n) -> if n == name && file.package_name == package && !ty.nullable() { ty.head } else { null },
+        .Declared(file, n, _) -> if n == name && file.package_name == package && !ty.nullable() { ty.head } else { null },
         rest -> null,
     }
 }
@@ -203,13 +204,13 @@ fn quiet_at(mut cx: Lowering, ty: SignedType, quiet: Reg) -> Reg {
     let span? = field_of(cx, quiet, ty, "span") else { return cx.missed_as("a `Quiet` without its span") }
     let file? = declaring_file(ty) else { return cx.missed_as("a `Quiet` no file declares") }
     let after? = time_after(cx, "${file.package_name}:${file.path_in_package}") else { return cx.missed_as("a `Quiet` without `@std/time`'s `after`") }
-    let deadline = headed_type(TypeHead.Declared(file, "Deadline"))
+    let deadline = headed_type(declared_head(file, "Deadline"))
     deadline_at(cx, deadline, cx.call_fn(cx.laid_out(deadline), after, [span]))
 }
 
 /// The file declaring `ty`, where a file does.
 fn declaring_file(ty: SignedType) -> SourceFileAddress? {
-    match ty.head { .Declared(f, _) -> f, rest -> null }
+    match ty.head { .Declared(f, _, _) -> f, rest -> null }
 }
 
 /// `@std/time`'s `after`, read in the file `home` names.

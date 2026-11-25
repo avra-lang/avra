@@ -245,15 +245,7 @@ fn item_view(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemVi
     for v in views_pinned().get() { if v.shows(engine, reader, file, at) { return v } }
     let held = views_held().get()
     for v in held { if v.shows(engine, reader, file, at) { return v } }
-    let view = view_made(engine, file, at, held.find(it.holds(engine, file, at))?.item)
-    views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
-    view
-}
-
-/// A view of the item at `at` in `file` no asker holds, read again where `read` is absent: what a
-/// judgement over other nodes than the item's own pins (`case_found`), never held for the next asker.
-fn view_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: ReadItem?) -> ItemView {
-    let reader = engine.reader()
+    let read = held.find(it.holds(engine, file, at))?.item
     let impls: Cell<List<ImplAt>?> = Cell.new(null)
     let typed: Cell<List<TypedNodes>?> = Cell.new(null)
     let stated: Cell<StatedHeld?> = Cell.new(null)
@@ -278,7 +270,7 @@ fn view_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: Rea
     let holes: Cell<ItemHoles?> = Cell.new(null)
     let refusals: Cell<ItemRefusals?> = Cell.new(null)
     let broken: Cell<ItemBroken?> = Cell.new(null)
-    ItemView {
+    let view = ItemView {
         engine: engine,
         reader: reader,
         file: file,
@@ -309,10 +301,12 @@ fn view_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: Rea
         refusals: refusals,
         broken: broken,
     }
+    views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
+    view
 }
 
 /// The item at `at` in `file`, read back: the asker's view of it.
-export fn read_item(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadItem { item_view(engine, file, at).item }
+fn read_item(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadItem { item_view(engine, file, at).item }
 
 /// The impls the written item `at` of `file` holds, each as a method's typing reaches it: the
 /// asker's view of them.

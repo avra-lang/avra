@@ -1,6 +1,7 @@
 // Loops, vertically: the condition re-evaluates each turn, the body
 // scopes its bindings, and the IR carries the third bracket family.
-use @std.avrac.testing.{refused_with, shown, ir_of, judged}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{refused_with, shown, ir_of}
 use compiler.backend.{render_ir}
 
 spec "features/loops" {
@@ -41,18 +42,18 @@ spec "features/loops" {
             shown("let i = 5\nmut t = 0\nfor i in 0..i {\n    t = t + i\n}\nt") == "10"
         }
         then "the counter dies with its loop — and says so exactly once" {
-            let a = judged("for i in 0..3 {\n    i\n}\ni")
+            let a = analyze_source("for i in 0..3 {\n    i\n}\ni")
             a.diagnostics.length == 1 && a.report().contains("`i` is not defined")
         }
     }
     given "wrong shapes" {
         then "a non-bool condition points at itself" {
-            let a = judged("while 1 {\n    2\n}\n3")
+            let a = analyze_source("while 1 {\n    2\n}\n3")
             a.diagnostics.length == 1 &&
                 a.report().contains("a `while` condition is a `bool`, found `int`")
         }
         then "a non-int range bound refuses once, in the range's own words" {
-            let a = judged("for i in 0..\"x\" {\n    1\n}\n2")
+            let a = analyze_source("for i in 0..\"x\" {\n    1\n}\n2")
             a.diagnostics.length == 1 &&
                 a.report().contains("a range ends at an `int`, found `string`")
         }

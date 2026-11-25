@@ -1,7 +1,7 @@
 // A file's items on tapes, through the program layer's engine and a store on disk: a later process
 // reads an unchanged file with no item read at all, an edited one reads only the items that moved,
 // and the tree put back together is the one a parse makes.
-use core.{ExprId, StmtId, SyntaxArena, distinct}
+use core.{ExprId, distinct}
 use compiler.{
     ReadBack,
     avra_fact_definitions,
@@ -9,8 +9,9 @@ use compiler.{
     file_meant,
     item_under,
     parse_source,
-    file_compiled_items,
     read_back,
+    refusal_difference,
+    respelled_origins,
     statement_difference,
     made_key,
     tape_of_item,
@@ -19,7 +20,6 @@ use compiler.{
 use @std.io.{make_dirs}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
-use @std.program.tests.support.store_in_memory.{store_in_memory}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{PlacedTape, file_tapes, use_source_world}
 use @std.program.syntax_tape.{SyntaxTape}
@@ -168,11 +168,8 @@ spec "an item read under its file's words" {
     }
 }
 
-/// `path` read back for what it means, when it reads as many written statements as a fresh compile
-/// of the same files writes in its items (`file_compiled_items`, over a store that has kept nothing), and
-/// refuses where that compile refuses; absent when it doesn't. What each statement means is each
-/// case's own to ask of what's read back: the program layer's meaning of a file is its items',
-/// placed, so no second parse stands beside it to compare node for node.
+/// `path` read back for what it means, when it's the tree the compiler's own parse makes of it in a
+/// workspace over the same files, statement for statement; absent when it isn't.
 fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> ReadBack? {
     files().set(held)
     use_source_world(avra_source_world(read_held, list_held, "avra-test"))
@@ -180,22 +177,23 @@ fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> Read
         path,
         file_meant(query_engine(disk_store_at(dir), avra_fact_definitions()), file_at(path)),
     )
-    let items = file_compiled_items(
-        query_engine(store_in_memory(), avra_fact_definitions()),
-        file_at(path),
-    )
-    if written(back.store, back.stmts) != items.map(written(it.store, it.stmts)).fold(0, (a, b) -> a + b) ||
-        back.store.refusals().is_empty() != items.all(it.store.refusals().is_empty()) {
+    let rooted = [Entry { key: "/w/${e.key}", value: e.value } for e in held.entries()]
+    mut in_w: Map<string, string> = {}
+    for e in rooted { in_w.set(e.key, e.value) }
+    let ws = a_process_over(in_w, [e.key for e in rooted])
+    let parsed = ws.parsed(ws.file_id("/w/${path}"))
+    respelled_origins(parsed.store, (p) -> "@test/p:${p.substring(3, p.length)}")
+    if back.stmts.length != parsed.stmts.length ||
+        refusal_difference(back.store, parsed.store) != null {
+        return null
+    }
+    if (0..back.stmts.length)
+        .any(
+            (at) -> statement_difference(back.store, back.stmts[at], parsed.store, parsed.stmts[at]) != null,
+        ) {
         return null
     }
     back
-}
-
-/// How many of `stmts` were written, the declarations an instance hoists aside: a compiled item
-/// hoists its own, where a file read back holds one of each.
-fn written(store: SyntaxArena, stmts: List<StmtId>) -> int {
-    let hoisted = [h.index for h in store.hoisted_decls()]
-    [s for s in stmts if !hoisted.contains(s.index)].length
 }
 
 /// Whether the last statement read back means something.

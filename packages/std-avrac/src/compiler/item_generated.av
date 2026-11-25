@@ -318,10 +318,10 @@ fn taken_names(engine: QueryEngine, file: SourceFileAddress, items: List<Generat
     string,
 > {
     if items.is_empty() { return [] }
-    let scope? = written_file_scope(engine, file) else { return [] }
+    let scope? = file_scope(engine, file) else { return [] }
     distinct(
-        [n.name for g in items if !g.wraps for n in g.tape.declares if stratum_resolved(engine, scope, file, Space.Value, n.name).named() != null ||
-            stratum_resolved(engine, scope, file, Space.Type, n.name).named() != null],
+        [n.name for g in items if !g.wraps for n in g.tape.declares if resolved_in(engine, scope, file, Space.Value, n.name).named() != null ||
+            resolved_in(engine, scope, file, Space.Type, n.name).named() != null],
     )
 }
 
@@ -446,7 +446,7 @@ fn moved_method(engine: QueryEngine, m: MethodSite, name: string, store: SyntaxA
     let marks = store.marks_at(s)
     store.update_marks(moved, (_m) -> marks)
     let alone? = match store.stmt(held) {
-        .ImplDecl(of, of_args, target, target_args, _) -> Stmt.ImplDecl(of, of_args, target, target_args, [moved]),
+        .ImplDecl(of, of_args, target, target_args, _, bounded) -> Stmt.ImplDecl(of, of_args, target, target_args, [moved], bounded),
         rest -> null,
     } else { return null }
     MovedMethod { moved: moved, held: store.alloc_stmt(alone, store.stmt_span(held)) }

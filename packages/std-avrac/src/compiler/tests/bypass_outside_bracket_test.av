@@ -8,9 +8,10 @@
 // package so the annotation genuinely resolves. The subject type's own
 // methods are named after the covered verbs on purpose: the rule
 // matches by NAME, syntactically, never by resolving a receiver's type
-// (there is no real `Decls` here to call). Read off the program layer's findings, the rows `avra
-// check` prints.
-use @std.avrac.testing.{provided}
+// (there is no real `Decls` here to call).
+use @std.avrac.testing.old_path.{provided}
+use @std.avrac.compiler.{rule_findings}
+use @std.avrac.features.{Analysed}
 
 const bracket_test_decl: string = "type Decls = { n: int, methods: int }\n" +
     "impl Decls {\n" +
@@ -20,12 +21,21 @@ const bracket_test_decl: string = "type Decls = { n: int, methods: int }\n" +
     "    fn methods_of(target: int) -> int { target }\n" +
     "}\n"
 
-/// Whether `avra check`, over the program the entry `body` stands in with the real `@std/meta`
-/// vendored, finds the rule at work: the program layer's findings, each rule's own row.
+/// The entry file's RULE findings rendered — `Program.report()` never
+/// carries them (they join the CLI's own `checked_at` pipeline, over a
+/// derived `Checked`, never a bare `Program`), so a rule's own test
+/// reads `rule_findings` off the file's `Analysed` directly, the same
+/// door `avra check`'s findings and `avra fix`'s proof both share
+/// (compiler/rule_pass.av).
+fn bracket_checked(body: string) -> string {
+    let p = provided("use @std.meta.{bracket}\n" + bracket_test_decl + body, "")
+    let a = p.entry_file()!
+    a
+        .rendered(rule_findings(Analysed { view: a.view, names: a.names, facts: a.facts }, a.view.stmts))
+}
+
 fn bracket_fires(body: string) -> bool {
-    provided("use @std.meta.{bracket}\n" + bracket_test_decl + body, "")
-        .findings()
-        .any(it.rule == "compiler.bypass_outside_bracket")
+    bracket_checked(body).contains("[compiler.bypass_outside_bracket]")
 }
 
 spec "compiler/idioms (bypass_outside_bracket)" {

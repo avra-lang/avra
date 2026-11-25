@@ -18,26 +18,20 @@
 //! listener closes, the parked accept wakes, and the port is left. The
 //! loop turns on the program's first task and the server answers on
 //! another.
-use @std.http_message.message.{Method}
+use @std.http_message.message.{Header, Method}
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
 use @std.avrac.compiler.{Toolchain}
 use @std.http.http.{Request, Unrouted, Response, text}
-use @std.http.route.{Route, Reach, mounted, fixed}
+use @std.http.route.{Route, mounted, fixed}
 use @std.http.server.{server}
 use @std.http.files.{Files, directory}
-use @std.http.assets.{Hosted, asset_answer}
-use @std.avrac.core.{distinct, some_list}
-use @std.http_compress.{precoded}
-use @std.hash.{blake3_hex}
-use @std.assets.{Picture, Blob, picture_of, blob_of}
-use @std.ui.realize.html.writer.{fetched_tags}
 use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
 use @std.net.{Bell, Listener}
 use @std.io.{IoError, read_text, stamp}
 use @std.io.watch.{Watch, watch}
 use @std.task.{signals, Signals as Supply}
 use @std.path.{joined_path, file_name}
-use @std.process.{Tool, EnvPair, cmd, inherited}
+use @std.process.{Tool, cmd, inherited}
 use @std.text.{parse_int}
 use @std.time.{Duration, ms, quiet, sleep, now_ms}
 
@@ -268,53 +262,10 @@ type Watched = { path: string, mark: Mark }
 
 // ── a page ──────────────────────────────────────────────────────
 
-/// What a page is served: the module as last built — named by its content
-/// and coded once — the number of the build that made it (0 until one
-/// succeeds), what the build said if it failed since, and the files the
-/// module bundles, served where its pages ask for them.
-type Standing = { module: Hosted, number: int, failure: string, assets: List<Hosted> = [] }
-
-/// The module built from `octets`, as a page fetches it: under a name that
-/// is its content's, so a browser keeps it for ever and a rebuild that
-/// changed it is a new name, coded once now and never per request.
-fn module_hosted(octets: Bytes) -> Hosted {
-    precoded(
-        Hosted {
-            name: "app.${blake3_hex(octets).substring(0, 32)}.wasm",
-            media: "application/wasm",
-            octets: octets,
-        },
-    )
-}
-
-/// THE FILES A MODULE BUNDLES, as its page asks for them: each file the
-/// build of `root` read as data, under the name the compiler gave it (its
-/// content's, as `@std/assets` names it) beneath `/assets/`.
-fn bundled_hosted(root: string) -> List<Hosted> {
-    let paths = match data_reads(root) { .Ok(read) -> read, .Err(_) -> [] }
-    [precoded(h) for path in paths for h in some_list(bundled_at(path))]
-}
-
-/// The file at `path` as an asset: a picture by the size and kind its
-/// header states, anything else a blob.
-fn bundled_at(path: string) -> Hosted? {
-    // LICENSED compiler.host_asked_directly: a file the build just read is served as it stands at this instant
-    let octets = match disk_host().octets(path) {
-        .Bytes(b) -> b,
-        .Missing or .Refused(_) -> { return null },
-    }
-    let digest = blake3_hex(octets)
-    let picture? = picture_of(octets, digest) else { return blob_hosted(blob_of(octets, digest)) }
-    match picture {
-        .Bundled(name, _, _, _, media, _) -> Hosted { name: "assets/${name}", media: media, octets: octets },
-        .Remote(_, _, _) -> blob_hosted(blob_of(octets, digest)),
-    }
-}
-
-fn blob_hosted(b: Blob) -> Hosted { Hosted { name: "assets/${b.name}", media: b.media, octets: b.octets } }
-
-/// No module: what stands before a build succeeds.
-fn no_module() -> Hosted { Hosted { name: "", media: "application/wasm", octets: "".bytes() } }
+/// What a page is served: the module as last built and the number of the
+/// build that made it — 0 until one succeeds — and what the build said if
+/// it failed since.
+type Standing = { module: Bytes, number: int, failure: string }
 
 /// One package's page being served. `moved` is rung when the standing
 /// changes.
@@ -328,7 +279,7 @@ export type Page = {
     watched: Cell<List<Watched>>,
     moved: Bell,
     backend: Backend? = null,
-    scripts: Cell<List<Hosted>>,
+    glue_files: List<string> = [],
 }
 
 /// The page glue beside the compiler: `runtime/dom` in a checkout,
@@ -346,7 +297,9 @@ fn page_at(root: string, target: string) -> Result<Page, int> {
         .Ok(b) -> b,
         .Err(why) -> { return .Err(unequipped(why)) },
     }
-    .Ok(page_of(root, tools, compiler, glue) with { backend: backend })
+    .Ok(
+        page_of(root, tools, compiler, glue) with { backend: backend, glue_files: glue_files(glue) },
+    )
 }
 
 /// The page of the package at `root`, built by `compiler` for
@@ -359,11 +312,10 @@ export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) 
         tools: tools,
         compiler: compiler,
         glue: glue,
-        standing: Cell.new(Standing { module: no_module(), number: 0, failure: "" }),
+        standing: Cell.new(Standing { module: "".bytes(), number: 0, failure: "" }),
         said: Cell.new(none_said),
         watched: Cell.new(none),
         moved: Bell {},
-        scripts: Cell.new(glue_hosted(glue)),
     }
 }
 
@@ -502,21 +454,10 @@ impl Page {
         let began = now_ms()
         let was = self.standing.get()
         let now = match self.built() {
-            .Ok(module) -> if module == was.module.octets {
-                was with { failure: "" }
-            } else {
-                Standing {
-                    module: module_hosted(module),
-                    number: was.number + 1,
-                    failure: "",
-                    assets: bundled_hosted(self.root),
-                }
-            },
+            .Ok(module) -> if module == was.module { was with { failure: "" } } else { Standing { module: module, number: was.number + 1, failure: "" } },
             .Err(report) -> was with { failure: report },
         }
         self.standing.set(now)
-        self.scripts.set(glue_hosted(self.glue))
-        self.backend?.told(self.page_env())
         if now.failure != "" { eprintln(now.failure) }
         // LICENSED input.clock: this turn's build duration is timing, never an input of what is built
         println(build_line(now, now_ms() - began))
@@ -529,7 +470,7 @@ impl Page {
     /// number, or `failed` saying what the build said.
     fn standing_event() -> Event {
         let now = self.standing.get()
-        if now.failure == "" { Event { event: "built", data: now.module.name } } else { Event { event: "failed", data: now.failure } }
+        if now.failure == "" { Event { event: "built", data: "${now.number}" } } else { Event { event: "failed", data: now.failure } }
     }
 
     /// The next event for a page that last heard the bell at `heard`
@@ -553,50 +494,22 @@ impl Page {
         )
     }
 
-    /// THE PAGE: the one the page's server draws, when it has a server that
-    /// draws one — the first paint is the server's, the module adopts it —
-    /// else the glue's own. Either carries the dev client and is never kept.
-    fn page(q: Request<Unrouted>) -> Response {
-        let drawn? = self.backend?.drawn(q) else { return document_answer(q, self.glue_page()) }
-        document_answer(
-            q,
-            (drawn.body.text() ?? "")
-                .replace("</body>", "${dev_tags(self.standing.get().module.name)}</body>"),
-        )
-    }
-
-    /// The files the page fetches, as the page's server is told them: the
-    /// module, the glue's place, and every file asked for as the document
-    /// arrives.
-    fn page_env() -> List<EnvPair> {
-        let module = self.standing.get().module.name
-        [
-            EnvPair {
-                name: "AVRA_PAGE_MODULE",
-                value: if module == "" { "" } else { "/${module}" },
-            },
-            EnvPair { name: "AVRA_PAGE_HOST", value: "" },
-            EnvPair {
-                name: "AVRA_PAGE_FETCHED",
-                value: ["/${f}" for f in self.fetched_names()].join(" "),
-            },
-        ]
-    }
-
-    /// The names of every file the page fetches as its document arrives.
-    fn fetched_names() -> List<string> {
-        let module = self.standing.get().module.name
-        [h.name for h in self.scripts.get()].concat(if module == "" { [] } else { [module] })
-    }
-
-    /// The glue's own page, titled, naming the module it is about to
-    /// load, every file it will fetch, and the dev client.
-    fn glue_page() -> string {
-        let module = self.standing.get().module.name
-        dev_document(self.glue, module)
-            .replace("<!--TITLE-->", file_name(self.root).replace("&", "&amp;").replace("<", "&lt;"))
-            .replace("<!--MODULE-->", if module == "" { "" } else { "./${module}" })
-            .replace("<!--FETCHED-->", fetched_tags(["./${f}" for f in self.fetched_names()]))
+    /// The page: the glue's own, titled, with the dev client and the
+    /// number of the module it is about to load.
+    fn page() -> Response {
+        match read_text(joined_path(self.glue, "page.html")) {
+            .Ok(html) -> unkept(
+                "text/html; charset=utf-8",
+                html
+                    .replace(
+                        "<!--TITLE-->",
+                        file_name(self.root).replace("&", "&amp;").replace("<", "&lt;"),
+                    )
+                    .replace("<!--DEV-->", dev_tags(self.standing.get().number))
+                    .bytes(),
+            ),
+            .Err(e) -> text(500, e.describe().message),
+        }
     }
 
     /// What the page's walk said, shown beside dev's own words: each warning once a module, since
@@ -611,124 +524,47 @@ impl Page {
         text(204, "")
     }
 
-    /// Every file the page fetches as it is served now: the glue it
-    /// reaches, and the module once one is built.
-    fn fetched() -> List<Hosted> {
+    /// The module as last built — or, before any build succeeded, what
+    /// the build said.
+    fn module() -> Response {
         let now = self.standing.get()
-        if now.number == 0 { self.scripts.get() } else { self.scripts.get().concat([now.module]).concat(now.assets) }
+        if now.number == 0 { return text(503, now.failure) }
+        unkept("application/wasm", now.module)
     }
 
-    /// The file a target names, of those the page fetches.
-    fn held(t: Bytes) -> Hosted? {
-        let asked = (t.text() ?? "").split("?")[0]
-        self.fetched().find("/${it.name}" == asked)
-    }
-
-    /// The routes answering the files the page fetches, a GET and a HEAD:
-    /// a target that names none is not theirs.
-    fn files() -> List<Route> {
-        [Route {
-            method: m,
-            pattern: "/{path...}",
-            reach: Reach.Rest,
-            serve: (q: Request<Unrouted>, t: Bytes) -> match self.held(t) {
-                h? -> asset_answer(q, h)
-                null -> null
-            },
-            reads: (t: Bytes) -> self.held(t) != null,
-        } for m in [Method.Get, Method.Head]]
-    }
-
-    /// The page, the channel and the files the page fetches.
+    /// The page, the module and the channel, then the glue's own files.
     export fn routes() -> List<Route> {
+        // LICENSED input.served_file: the glue's files are read as a browser asks for them, never an input of what is built
+        let glue = directory("/", fresh_files(self.glue))
         [
-            fixed(Method.Get, "/", (q: Request<Unrouted>) -> self.page(q)),
+            fixed(Method.Get, "/", (_q: Request<Unrouted>) -> self.page()),
+            fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
             fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
             fixed(Method.Post, "/@dev/said", (q: Request<Unrouted>) -> self.heard(q)),
         ]
-            .concat(shared(self.backend, self.files()))
+            .concat(shared(self.backend, self.glue_files, glue))
     }
 }
 
-/// The page's files, and what the page's server answers when the page has one.
-fn shared(backend: Backend?, files: List<Route>) -> List<Route> {
+/// The glue's files, and what the page's server answers when the page has one.
+fn shared(backend: Backend?, glue: List<string>, files: List<Route>) -> List<Route> {
     let b? = backend else { return files }
-    b.routes(files)
+    b.routes(glue, files)
 }
 
-/// The document dev serves, its holes still to fill: the glue's page with
-/// the dev client, which names the module `module` as the one it runs.
-fn dev_document(glue: string, module: string) -> string {
-    // LICENSED input.served_file: the glue's page is read as a browser asks for it, never an input of what is built
-    (read_text(joined_path(glue, "page.html")) catch "").replace("<!--DEV-->", dev_tags(module))
-}
-
-/// THE GLUE A PAGE FETCHES, read from what is served: each file the dev
-/// document names as a script or imports, and each file those import in
-/// turn — never a list kept by hand, and read again each build. Each is
-/// coded once, served under its own name, asked again each time and
-/// validated by its content.
-fn glue_hosted(glue: string) -> List<Hosted> {
-    [precoded(
-        Hosted {
-            name: name,
-            media: "text/javascript",
-            octets: octets,
-            kept: false,
-            tag: blake3_hex(octets).substring(0, 32),
-        },
-    ) for name in reached(glue, dev_document(glue, "")) for octets in some_list(glue_octets(glue, name))]
-}
-
-/// The octets of the glue file `name`, absent when the glue has none.
-fn glue_octets(glue: string, name: string) -> Bytes? {
-    // LICENSED input.served_file: the glue's files are read once for the page, never an input of what is built
-    match read_text(joined_path(glue, name)) { .Ok(t) -> t.bytes(), .Err(_) -> null }
-}
-
-/// The glue files `document` reaches: those it names, then those each of
-/// them names, every one once, in the order first named.
-fn reached(glue: string, document: string) -> List<string> {
-    mut seen: List<string> = []
-    mut next = asked_by(document)
-    while !next.is_empty() {
-        let fresh = distinct([n for n in next if !seen.contains(n)])
-        seen = seen.concat(fresh)
-        next = [s for n in fresh for s in asked_by(read_text(joined_path(glue, n)) catch "")]
+/// An answer no cache keeps: the next ask reads what stands then.
+fn unkept(kind: string, body: Bytes) -> Response {
+    Response {
+        headers: [
+            Header { name: "content-type", value: kind },
+            Header { name: "cache-control", value: "no-store" },
+        ],
+        body: body,
     }
-    seen
-}
-
-/// The files a script or a document asks for beside itself: each `./name`
-/// it imports (`from "./…"`, `import("./…")`) or loads (`src="./…"`).
-fn asked_by(source: string) -> List<string> {
-    let pieces = source.split("\"./")
-    [p.split("\"")[0] for j, p in pieces if j > 0 && asks(pieces[j - 1])]
-}
-
-/// Whether the text before a quoted `./name` asks for it.
-fn asks(before: string) -> bool { ["import(", "from ", "src="].any((word) -> before.ends_with(word)) }
-
-/// A document as dev answers it: coded, and asked again each time — a
-/// browser that holds it as it stands is answered 304.
-fn document_answer(q: Request<Unrouted>, html: string) -> Response {
-    let octets = html.bytes()
-    asset_answer(
-        q,
-        precoded(
-            Hosted {
-                name: "",
-                media: "text/html; charset=utf-8",
-                octets: octets,
-                kept: false,
-                tag: blake3_hex(octets).substring(0, 32),
-            },
-        ),
-    )
 }
 
 /// What the dev page carries that a production page does not.
-fn dev_tags(module: string) -> string {
+fn dev_tags(module: int) -> string {
     "<meta name=\"avra-module\" content=\"${module}\">\n<script type=\"module\" src=\"./dev.js\"></script>"
 }
 
@@ -741,7 +577,7 @@ fn not_watched(why: string) -> string {
 fn page_said(words: string) -> string { "dev: the page said: ${words}" }
 
 fn build_line(now: Standing, took_ms: int) -> string {
-    if now.failure == "" { return "dev: built module ${now.number} — ${now.module.octets.length} bytes in ${took_ms} ms" }
+    if now.failure == "" { return "dev: built module ${now.number} — ${now.module.length} bytes in ${took_ms} ms" }
     if now.number == 0 { "dev: the build failed — nothing is served yet" } else { "dev: the build failed — module ${now.number} is still served" }
 }
 

@@ -9,6 +9,9 @@ impl Builder {
     /// The seat a `ParamSyntax` rule wrote.
     fn seat() -> Result<LangNode, string> {
         let n = (self.tokens(self.slot_of("name")?)?).first()
+        // a bound stands on a parameter's name (`T: Bound`), which a rule labels as the seat's name
+        // and type; one written after a whole type, on a seat that writes no name, is refused here
+        if n == null && self.type_opt_of("bound")? != null { return .Err(bound_on_type()) }
         let ty = self.type_opt_of("ty")?
         let name = n?.text ?? ""
         .Ok(
@@ -46,3 +49,5 @@ impl Builder {
         .Ok(SeatSpread.Hole(holes.first() ?? 0 - 1))
     }
 }
+
+fn bound_on_type() -> string { "a bound stands on a type parameter of the impl — `G<T: Bound>`, never on a written type" }

@@ -1941,14 +1941,12 @@ int64_t avra_file_bytes(const char* path) {
 
 // THE FILE `from` PLACED AT `to` WITHOUT A BYTE WRITTEN: linked beside `to`, then renamed onto it, so
 // `to` is the old file or the new and never half of one. 0, or -errno where the two stand on file
-// systems a link can't join (the caller copies then). The link beside `to` never outlives the call:
-// a rename onto a link of the same file succeeds and moves nothing (POSIX), so it is unlinked after.
+// systems a link can't join (the caller copies then).
 int64_t avra_file_placed(const char* from, const char* to) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.placing.%d", to, (int)getpid()) >= (int)sizeof(tmp)) return -ENAMETOOLONG;
     unlink(tmp);
     if (link(from, tmp) != 0) return -errno;
     if (rename(tmp, to) != 0) { int e = errno; unlink(tmp); return -e; }
-    unlink(tmp);
     return 0;
 }

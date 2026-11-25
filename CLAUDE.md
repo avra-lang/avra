@@ -1088,16 +1088,6 @@ registry is the idiom engine's spec, written by dogfooding.
   When a computation is keyed AND its artifact is NAMED, derive both
   from ONE value (`settled_symbol`); two spellings of the identity a
   cache depends on is a wrong answer waiting for a second caller.
-- A CHECK THAT ASKS CAN WRITE: deciding whether a stale reader holds
-  must never re-work its answer. Asking a question settles it, and
-  what this process settles the store keeps. The part-aware meet
-  asked what a reader no longer standing had read, to tell whether
-  that read still held; the answer came back worked out and was
-  written standing where no root reaches it (a method seat's
-  `lowered_method_seat_default` across a rename), and the walk from
-  the cut, which goes down only, never saw it return. A decision about what a change
-  reaches reads what is held; a reader that stands no more is met
-  without asking.
 - Every diagnostic names a registered kind — its own identity,
   unique by construction — carries help or a structured fix where
   expressible, and has a golden rendering test.
@@ -1730,7 +1720,7 @@ Syntax the grammar lacks:
 Wants the typer does not carry yet:
 - A declaring annotation's argument is a literal or a const naming one: `@traced("a" + "b")` is "`traced` generates declarations, so its arguments come from the source alone" — not pinned (needs a package with `@std/meta`).
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
-- A bound lands on a free fn's, a component's and a method's own parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
+- A bound lands on a free fn's, a component's, a method's and an impl's target's parameters (`impl Tr for G<K: B>`, beside any its type declares) only: `type T<K: Tr, V>` is "expected `=`"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.

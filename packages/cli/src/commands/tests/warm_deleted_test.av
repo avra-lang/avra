@@ -2,41 +2,34 @@
 //! a deleted file moves its module, so nothing kept from it stands.
 use @std.io.{make_dirs, write_text, remove}
 use @std.time.{stamp}
+use commands.{checked_at}
 
-/// An app over a path dependency, the app's own `m` module holding two files, each warning. A
-/// dependency's warnings are its own check's (`avra check <dep>`), so the module that loses a file
-/// is the app's.
+/// An app over a path dependency whose `m` module holds two files, the second warning.
 fn wd_tree(name: string) -> string {
     let root = "/tmp/avra-warm-deleted-test/${name}-${stamp()}"
-    let _ = make_dirs("${root}/app/src/m")
-    let _ = make_dirs("${root}/lib/src")
+    let _ = make_dirs("${root}/app/src")
+    let _ = make_dirs("${root}/lib/src/m")
     let _ = write_text(
         "${root}/lib/avra.toml",
         "[package]\nname = \"@x/lib\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"x-lib\"\npath = \"src/main.av\"\n",
     )
     let _ = write_text("${root}/lib/src/main.av", "export fn top() -> int { 0 }\n")
-    let _ = write_text(
-        "${root}/app/src/m/one.av",
-        "export fn k(x: int) -> int {\n    let y: int = x\n    y ?? 1\n}\n",
-    )
-    let _ = write_text(
-        "${root}/app/src/m/two.av",
-        "export fn h(x: int) -> int {\n    let y: int = x\n    y ?? 2\n}\n",
-    )
+    let _ = write_text("${root}/lib/src/m/one.av", "export fn k(x: int) -> int { x ?? 1 }\n")
+    let _ = write_text("${root}/lib/src/m/two.av", "export fn h(x: int) -> int { x ?? 2 }\n")
     let _ = write_text(
         "${root}/app/avra.toml",
         "[package]\nname = \"app\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"app\"\npath = \"src/main.av\"\n\n[dependencies]\n\"@x/lib\" = { path = \"../lib\" }\n",
     )
     let _ = write_text(
         "${root}/app/src/main.av",
-        "use m.{k}\nuse @x.lib.{top}\nexport fn f() -> int { k(1) + top() }\n",
+        "use @x.lib.m.{k}\nexport fn f() -> int { k(1) }\n",
     )
     root
 }
 
 /// What a check of `root`'s app warns, its root spelled out of it.
 fn wd_warned(root: string) -> string? {
-    match layer_checked("${root}/app") {
+    match checked_at("${root}/app") {
         .Ok(c) -> c.warnings.replace(root, "<root>"),
         .Err(_) -> null,
     }
@@ -46,14 +39,14 @@ fn wd_warned(root: string) -> string? {
 fn wd_pair() -> List<string?> {
     let warm = wd_tree("warm")
     let _ = wd_warned(warm)
-    let _ = remove("${warm}/app/src/m/two.av")
+    let _ = remove("${warm}/lib/src/m/two.av")
     let cold = wd_tree("cold")
-    let _ = remove("${cold}/app/src/m/two.av")
+    let _ = remove("${cold}/lib/src/m/two.av")
     [wd_warned(warm), wd_warned(cold)]
 }
 
 spec "commands/check warm after a deletion" {
-    given "a module file that warned, deleted after a check" {
+    given "a dependency's module file that warned, deleted after a check" {
         then "the warm check says what a cold check says, and nothing of the deleted file" {
             let both = wd_pair()
             both[0] != null &&

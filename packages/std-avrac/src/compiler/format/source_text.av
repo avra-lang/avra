@@ -504,7 +504,7 @@ impl SourceText {
                 ]
             },
             .Return(_) or .Fail(_) or .Discard(_) -> [source_line(depth, self.worded_stmt(s, depth))],
-            .ImplDecl(of, _, target, _, fns) -> {
+            .ImplDecl(of, _, target, _, fns, _) -> {
                 let itp = self.store.impl_tparams_of(s)
                 [
                     self
@@ -514,6 +514,7 @@ impl SourceText {
                             [p.of for p in itp?.of ?? []],
                             target.of,
                             [p.of for p in itp?.target ?? []],
+                            self.store.impl_bounds_of(s),
                             fns,
                             self.stmt_end(s),
                             self.stmt_flat(s),
@@ -800,6 +801,12 @@ impl SourceText {
         "<${joined([source_name(p) for p in params], ", ")}>"
     }
 
+    /// An impl target's arguments, each with the bound it writes.
+    fn bounded_type_params(params: List<string>, bounds: List<TypeRef?>) -> string {
+        if params.is_empty() { return "" }
+        "<${joined(["${source_name(p)}${self.bound(if j < bounds.length { bounds[j] } else { null })}" for j, p in params], ", ")}>"
+    }
+
     fn bound(ty: TypeRef?) -> string {
         if ty == null { "" } else { ": ${written_type(ty!)}" }
     }
@@ -983,15 +990,17 @@ impl SourceText {
         of_tparams: List<string>,
         target: string,
         target_tparams: List<string>,
+        target_bounds: List<TypeRef?>,
         fns: List<StmtId>,
         end: int,
         one_line: bool,
         depth: int,
     ) -> string {
+        let targs = self.bounded_type_params(target_tparams, target_bounds)
         let head = if of == null {
-            "${exported}impl ${source_name(target)}${self.named_type_params(target_tparams)}"
+            "${exported}impl ${source_name(target)}${targs}"
         } else {
-            "${exported}impl ${source_name(of!)}${self.named_type_params(of_tparams)} for ${source_name(target)}${self.named_type_params(target_tparams)}"
+            "${exported}impl ${source_name(of!)}${self.named_type_params(of_tparams)} for ${source_name(target)}${targs}"
         }
         self.statement_block(head, fns, end, one_line, depth)
     }

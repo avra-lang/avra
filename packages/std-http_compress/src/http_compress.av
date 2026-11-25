@@ -37,8 +37,6 @@ use @std.http.http.{
     without_field,
 }
 use @std.http.body.{whole}
-use @std.http.codings.{coding_weight}
-use @std.http.assets.{Hosted, Coded}
 
 /// How a server codes: the smallest body worth coding, the effort of
 /// each format (zlib's 0 to 9, brotli's 0 to 11), and the most a
@@ -65,27 +63,6 @@ fn coded(c: Compression, q: Request<Unrouted>, next: Handler) -> Response {
         .Err(refusal) -> refusal,
     }
 }
-
-// ── Coded before it is served ───────────────────────────────────
-
-/// `h` with its octets coded once in every coding this layer writes that a
-/// browser reads — brotli, then gzip — each at its format's top effort, a
-/// coding kept only where it is smaller. What a server pays once, when the
-/// asset is made, it never pays per request.
-export fn precoded(h: Hosted) -> Hosted {
-    h with { coded: [c for f in [Format.Brotli, Format.Gzip] for c in smaller(h.octets, f)] }
-}
-
-/// `plain` coded in `f` at its top effort, when that is smaller.
-fn smaller(plain: Bytes, f: Format) -> List<Coded> {
-    match encoded(plain, f, top_effort) {
-        .Ok(b) -> if b.length < plain.length { [Coded { coding: coding_word(f), octets: b }] } else { [] },
-        .Err(_) -> [],
-    }
-}
-
-/// An effort past every format's top: each is clamped to its own.
-const top_effort: int = 11
 
 // ── Codings ─────────────────────────────────────────────────────
 
@@ -269,9 +246,54 @@ const coded_types: List<Bytes> = [
 /// that says nothing is sent what every client reads).
 fn preferred(fields: List<string>) -> Format? {
     if fields.is_empty() { return null }
-    let weighed = [coding_weight(fields, coding_word(f)) for f in codings()]
+    let members = fields.join(",").split(",")
+    let weighed = [weight_of(members, f) for f in codings()]
     let top? = [j for j, w in weighed if w > 0 && weighed.all(it <= w)].first() else { return null }
     codings()[top]
+}
+
+/// The weight, in thousandths, `members` give `f`: its own member's,
+/// else `*`'s, else none.
+fn weight_of(members: List<string>, f: Format) -> int {
+    let own? = members.find(same_format(format_named(coding_of(it)), f)) else { return star_weight(members) }
+    weight(own)
+}
+
+fn star_weight(members: List<string>) -> int {
+    let any_coding? = members.find(same_token(coding_of(it), "*")) else { return 0 }
+    weight(any_coding)
+}
+
+fn same_format(named: Format?, f: Format) -> bool {
+    let g? = named else { return false }
+    g == f
+}
+
+/// A member's coding: what precedes its parameters.
+fn coding_of(member: string) -> string { (member.split(";").first() ?? "").trim() }
+
+/// A member's weight in thousandths (RFC 9110 §12.4.2): 1000 when it
+/// carries no parameter, its `q` when that is its one parameter, and 0
+/// — naming nothing — for anything else.
+fn weight(member: string) -> int {
+    let params = member.split(";")
+    if params.length == 1 { return 1000 }
+    let q = params[1].trim()
+    if params.length > 2 || !(q.starts_with("q=") || q.starts_with("Q=")) { return 0 }
+    thousandths(q.substring(2, q.length)) ?? 0
+}
+
+/// A qvalue (RFC 9110 §12.4.2) in thousandths: `0`, `1`, or either
+/// with up to three decimals, `1`'s all zero; null otherwise.
+fn thousandths(s: string) -> int? {
+    let b = s.bytes()
+    if b.is_empty() || b.length > 5 || b.at(0) != 48 && b.at(0) != 49 { return null }
+    if b.length == 1 { return (b.at(0) - 48) * 1000 }
+    if b.at(1) != 46 || ![b.at(i) for i in 2..b.length].all(it >= 48 && it <= 57) { return null }
+    let frac = [b.at(i) - 48 for i in 2..b.length].concat([0, 0, 0]).slice(0, 3)
+    let v = (b.at(0) - 48) * 1000 + frac[0] * 100 + frac[1] * 10 + frac[2]
+    if v > 1000 { return null }
+    v
 }
 
 // ── Voices ──────────────────────────────────────────────────────

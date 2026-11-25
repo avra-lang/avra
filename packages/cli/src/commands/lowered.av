@@ -109,21 +109,6 @@ fn unmade_said(why: string, at: string) -> string { "avra: the program isn't mad
 /// disk as it is — and nothing of it is kept. Its refusal where the package has no entry, or no std
 /// stands beside this compiler.
 export fn build_reads(root: string) -> Result<List<string>, string> {
-    let read = reads_of(root)?
-    read.sources.concat(read.data).concat(read.manifests)
-}
-
-/// The files a build of the package at `root` reads AS DATA now — what its sources embed or bundle
-/// — where each stands; `build_reads`'s refusals.
-export fn data_reads(root: string) -> Result<List<string>, string> {
-    let read = reads_of(root)?
-    read.data
-}
-
-/// What a build of the package at `root` reads, by what each file is to it.
-type Reads = { sources: List<string>, data: List<string>, manifests: List<string> }
-
-fn reads_of(root: string) -> Result<Reads, string> {
     let bin? = entry_written(root) else { return .Err("${root} declares no entry point") }
     let disk? = disk_at(root, "") else { return .Err("no std stands beside this compiler") }
     let engine = query_engine(
@@ -132,11 +117,13 @@ fn reads_of(root: string) -> Result<Reads, string> {
         disk.name,
     )
     let files = entry_files(engine, disk.file_at(bin))
-    Reads {
-        sources: [disk.on_disk(f.package_name, f.path_in_package) for f in files],
-        data: [disk.on_disk(f.package_name, f.path_in_package) for f in distinct_files(flatten([file_embedded(engine, f) for f in files]))],
-        manifests: [joined_path(disk.package_root(p), "avra.toml") for p in distinct([f.package_name for f in files])],
-    }
+    let data = distinct_files(flatten([file_embedded(engine, f) for f in files]))
+    .Ok(
+        [disk.on_disk(f.package_name, f.path_in_package) for f in files.concat(data)]
+            .concat(
+                [joined_path(disk.package_root(p), "avra.toml") for p in distinct([f.package_name for f in files])],
+            ),
+    )
 }
 
 /// Whether one of the package's own sources imports the module `module`, as its `use` lines say.

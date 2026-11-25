@@ -57,8 +57,8 @@ fn committed() -> Result<string, HomeError> {
     let _ = jobs.home().depth()?
     let tx = transaction(ctx.db)?
     let _ = saved(tx, "ada")?
-    let id = tx.send(jobs, 7, id: "welcome-ada")?
-    let again = tx.send(jobs, 7, id: "welcome-ada")?
+    let id = jobs.send(7, id: "welcome-ada", tx: tx)?
+    let again = jobs.send(7, id: "welcome-ada", tx: tx)?
     let _ = tx.commit()?
     let d = jobs.home().take()?
     "one id ${id != null && id == again} | users ${counted(ctx.db, "SELECT count(*) FROM \"users\"")?} | depth ${jobs.home().depth()?} | item ${d?.item ?? 0}"
@@ -75,7 +75,7 @@ fn rolled_back() -> Result<string, HomeError> {
     let _ = jobs.home().depth()?
     let tx = transaction(ctx.db)?
     let _ = saved(tx, "ada")?
-    let _ = tx.send(jobs, 7, id: "welcome-ada")?
+    let _ = jobs.send(7, id: "welcome-ada", tx: tx)?
     let undone = tx.rollback()
     let inside = jobs.home().depth()?
     let fresh = jobs.send(8, id: "welcome-ada")?
@@ -102,10 +102,10 @@ fn refused() -> Result<string, HomeError> {
     let other_db = homed(Db.memory())?
     let other = transaction(other_db)?
     let open = transaction(ctx.db)?
-    let stale = refusal(kept.send(jobs, 1))
-    let undone = refusal(gone.send(jobs, 1, id: "n"))
-    let foreign = refusal(other.send(jobs, 1))
-    let unhomed = refusal(open.send(plain, 1))
+    let stale = refusal(jobs.send(1, tx: kept))
+    let undone = refusal(jobs.send(1, id: "n", tx: gone))
+    let foreign = refusal(jobs.send(1, tx: other))
+    let unhomed = refusal(plain.send(1, tx: open))
     let _ = open.commit()?
     let _ = other.rollback()
     "${stale} | ${undone} | ${foreign} | ${unhomed} | depth ${jobs.home().depth()?}"
@@ -152,7 +152,7 @@ fn first_use_inside() -> Result<string, HomeError> {
     }
     let tx = transaction(ctx.db)?
     let _ = saved(tx, "ada")?
-    let refused = refusal(tx.send(seen_before, 1))
+    let refused = refusal(seen_before.send(1, tx: tx))
     let still = tx.stands()
     let _ = tx.commit()?
     let opened = seen_before.send(3)?
@@ -161,7 +161,7 @@ fn first_use_inside() -> Result<string, HomeError> {
         durable: stored_with(int_wire(), clock: ticking)
     }
     let again = transaction(ctx.db)?
-    let joined = again.send(later, 2)?
+    let joined = later.send(2, tx: again)?
     let _ = again.rollback()
     "${refused} | tx stands ${still} | users ${counted(ctx.db, "SELECT count(*) FROM \"users\"")?} | opened inside ${joined != null} | b ${later.home().depth()?} | a opens after ${opened != null}"
 }
@@ -189,7 +189,7 @@ fn shape_after_rollback() -> Result<string, HomeError> {
     }
     let _ = ints.home().depth()?
     let tx = transaction(ctx.db)?
-    let _ = tx.send(texts, "a")?
+    let _ = texts.send("a", tx: tx)?
     let inside = counted(ctx.db, "SELECT count(*) FROM \"FlowShape\"")?
     let _ = tx.rollback()
     let undone = counted(ctx.db, "SELECT count(*) FROM \"FlowShape\"")?
@@ -214,11 +214,11 @@ fn delayed_in_tx() -> Result<string, HomeError> {
     }
     let _ = reminders.home().depth()?
     let undone = transaction(ctx.db)?
-    let _ = undone.send(reminders, 1, id: "remind", after: mins(10))?
+    let _ = reminders.send(1, id: "remind", after: mins(10), tx: undone)?
     let _ = undone.rollback()
     let gone = reminders.home().depth()?
     let kept = transaction(ctx.db)?
-    let id = kept.send(reminders, 2, id: "remind", after: mins(10))?
+    let id = reminders.send(2, id: "remind", after: mins(10), tx: kept)?
     let _ = kept.commit()?
     let q = reminders.home()
     let owed = q.depth()?
@@ -237,7 +237,7 @@ fn uncommitted_unseen() -> Result<string, HomeError> {
         name: "jobs"
         durable: stored_with(int_wire(), clock: ticking)
     }
-    queue<Dead<int>> letters {}
+    queue<Dead<int, string>> letters {}
     worker crew {
         reads: jobs
         each: (d: Delivery<int>) -> noted(seen, d)
@@ -246,11 +246,11 @@ fn uncommitted_unseen() -> Result<string, HomeError> {
     let _ = jobs.home().depth()?
     let serving = spawn run(crew)
     let undone = transaction(ctx.db)?
-    let _ = undone.send(jobs, 1)?
+    let _ = jobs.send(1, tx: undone)?
     sleep(ms(30))
     let _ = undone.rollback()
     let kept = transaction(ctx.db)?
-    let _ = kept.send(jobs, 2)?
+    let _ = jobs.send(2, tx: kept)?
     sleep(ms(30))
     let before = seen.get().length
     let _ = kept.commit()?

@@ -392,11 +392,7 @@ int64_t avra_cores_heir(int64_t quiet) {
     }
     // the test hook that holds an heir back, so a witness meets its work unfinished
     const char* lingers = getenv("AVRA_HEIR_LINGERS_MS");
-    if (lingers && *lingers) {
-        avra_clock_hold(1);
-        usleep((useconds_t)atoll(lingers) * 1000);
-        avra_clock_hold(-1);
-    }
+    if (lingers && *lingers) usleep((useconds_t)atoll(lingers) * 1000);
     return 0;
 }
 
@@ -460,17 +456,12 @@ static int pid_is_zombie(int64_t pid) {
     snprintf(path, sizeof path, "/proc/%lld/stat", (long long)pid);
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return 0;
-    // the clock: a proc file is the kernel's own record, read at once
     ssize_t got = read(fd, line, sizeof line - 1);
     close(fd);
     if (got <= 0) return 0;
     line[got] = 0;
-    // the command name is in parentheses and may hold one itself: the state follows the LAST `)`
-    ssize_t close_at = got - 1;
-    while (close_at >= 0 && line[close_at] != ')') close_at--;
-    if (close_at < 0) return 0;
-    const char* after = line + close_at;
-    return after[1] == ' ' && (after[2] == 'Z' || after[2] == 'X');
+    const char* after = strrchr(line, ')');
+    return after && after[1] == ' ' && (after[2] == 'Z' || after[2] == 'X');
 #elif defined(__APPLE__)
     struct proc_bsdinfo info;
     if (proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof info) != (int)sizeof info) return 0;

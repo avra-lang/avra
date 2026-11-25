@@ -72,6 +72,14 @@ fn leg_or_host(program: string, args: List<string>, env: Env, name: string, call
     }
 }
 
+/// Where a `.refuses` test's native leg is built — under `build/`,
+/// named by its path relative to the package root so two tests never
+/// collide.
+fn refuses_binary(root: string, path: string) -> string {
+    let safe = relative_path(root, path).replace("/", "_").replace(".", "_")
+    joined_path(joined_path(root, "build"), "refuses-${safe}")
+}
+
 /// What a built program under test runs in: the minimal environment.
 fn tested_env() -> Env {
     // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
@@ -81,6 +89,53 @@ fn tested_env() -> Env {
 /// What the eval leg runs in: the compiler's own environment, whole.
 fn compiler_env() -> Env {
     inherited()
+}
+
+/// One child-run test, both engines: the built program first (its own
+/// binary, cached like any other build), then the evaluator over the
+/// same scoped derivation, run through the light phase's own
+/// `@refuse-eval` hand-off — ending exactly as a native binary does,
+/// so one voice serves both. THE EVAL LEG IS THE COMPILER, so it runs in
+/// the compiler's own environment: a manifest's `[link]` hole is filled
+/// from it, and a leg without it derives nothing. The built program is
+/// a program under test and keeps the minimal one.
+fn one_refuses(self_binary: string, tools: Toolchain, call: RefusesCall) -> string? {
+    let ws = file_workspace(call.path)
+    let binary = refuses_binary(ws.root, call.path)
+    let native = match ws.linked_program(call.path, binary, tools) {
+        .Ok(b) -> b.binary,
+        .Err(e) -> { return "${call.path}: native build failed — ${e.describe().message}" },
+    }
+    let by_native = leg_or_host(native, [], tested_env(), "native", call)
+    if by_native != null { return "${call.path}: ${by_native!}" }
+    let by_eval = leg_or_host(
+        self_binary,
+        refuse_eval_words(ws.root, call.path),
+        compiler_env(),
+        "eval",
+        call,
+    )
+    if by_eval != null { return "${call.path}: ${by_eval!}" }
+    null
+}
+
+/// Every `.refuses` test judged in order; the first wrong voice stops
+/// the run and is spoken — the ordinary suites never run behind a
+/// refusal law that does not hold.
+fn checked_refuses(self_binary: string?, tools: Toolchain, calls: List<RefusesCall>) -> int {
+    let bin? = self_binary else {
+        eprintln("avra: could not find this compiler's own binary to run the evaluator leg")
+        return 1
+    }
+    for call in calls {
+        let wrong = one_refuses(bin, tools, call)
+        if wrong != null {
+            eprintln(wrong!)
+            return 1
+        }
+    }
+    println("${counted(calls.length, "refusal")} proved")
+    0
 }
 
 // ── The voices ──

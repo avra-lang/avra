@@ -194,7 +194,7 @@ fn exact_said(ty: SignedType) -> string { "${ty.spelled()} ${declared_files(ty).
 /// The files the declared types in `ty` are declared in, outermost first.
 fn declared_files(ty: SignedType) -> List<string> {
     let own = match ty.head {
-        .Declared(file, _) -> ["${file.package_name}/${file.path_in_package}"],
+        .Declared(file, _, _) -> ["${file.package_name}/${file.path_in_package}"],
         .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> [],
     }
     let parts = ty
@@ -214,7 +214,9 @@ export fn layout_said(l: Layout?) -> string { l?.spelled() ?? "absent" }
 /// A record as the check compares it.
 export fn record_said(r: RecordShape?) -> string {
     let shape? = r else { return "absent" }
-    "${shape.params} ${fields_said(shape.fields)}"
+    let said = "${shape.params} ${fields_said(shape.fields)}"
+    if shape.bounds.all(it == null) { return said }
+    "${said} ${[if b == null { "-" } else { b!.spelled() } for b in shape.bounds].join(",")}"
 }
 
 /// An enum as the check compares it.

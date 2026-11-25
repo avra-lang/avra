@@ -2,7 +2,8 @@
 // scope and shadow inside braces (multi-line expressions arrive
 // free — braces swallow their BREAKs), block memory releases
 // inside while the yield escapes, and nested fns refuse politely.
-use @std.avrac.testing.{shown, ir_of, judged}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, ir_of}
 use compiler.backend.{render_ir}
 
 spec "features/block" {
@@ -26,12 +27,12 @@ spec "features/block" {
     }
     given "wrong shapes" {
         then "a block without a value is void — a declared return refuses it" {
-            let a = judged("fn f() -> int {\n    let x = 1\n}\nf()")
+            let a = analyze_source("fn f() -> int {\n    let x = 1\n}\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("the body answers `void` but `f` declares `int`")
         }
         then "fn declarations live at the top level" {
-            let a = judged("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()")
+            let a = analyze_source("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("fn declarations live at the top level")
         }
