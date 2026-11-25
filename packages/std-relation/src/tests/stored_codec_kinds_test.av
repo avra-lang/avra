@@ -1,0 +1,99 @@
+// `@codec` carries a string-keyed map, a nested record, a record-payload enum and a
+// payload-free enum; an enum's variant is its place, guarded by the shape fingerprint; and a
+// `@relation` row with a nested record reads back under its own hash.
+use @std.relation.{codec, relation}
+use @std.relation.stable.{indexed_scope, CodecFault, Scope}
+
+type Todo = { key: string, n: int }
+
+@codec
+type Kinds = { tags: Map<string, List<string>>, todo: Todo, todos: List<Todo> }
+
+@codec
+enum Held { Only(t: Todo), Nothing }
+
+@codec
+enum Plain { Alpha, Beta }
+
+@codec
+enum Old { Alpha, Beta(n: int) }
+
+@codec
+enum Moved { Beta(n: int), Alpha }
+
+@relation
+type Board = { id: int, todo: Todo, todos: List<Todo> }
+
+fn here() -> dyn Scope { indexed_scope() }
+
+fn kinds() -> Kinds {
+    Kinds {
+        tags: {"a": ["x", "y"], "b": []},
+        todo: Todo { key: "k", n: -4 },
+        todos: [Todo { key: "j", n: 2 }],
+    }
+}
+
+fn kinds_back() -> bool {
+    match Kinds.decoded_in(here(), kinds().encoded_in(here())) {
+        .Ok(x) -> x.tags.keys().join(",") == "a,b" &&
+            x.tags.get("a")?.length == 2 &&
+            x.todo.n == -4 &&
+            x.todos[0].key == "j",
+        .Err(_) -> false,
+    }
+}
+
+fn held_back() -> bool {
+    match Held.decoded_in(here(), Held.Only(Todo { key: "k", n: 1 }).encoded_in(here())) {
+        .Ok(.Only(t)) -> t.n == 1,
+        .Ok(.Nothing) or .Err(_) -> false,
+    }
+}
+
+fn plain_back() -> bool {
+    match Plain.decoded_in(here(), Plain.Beta.encoded_in(here())) {
+        .Ok(.Beta) -> true,
+        .Ok(.Alpha) or .Err(_) -> false,
+    }
+}
+
+fn moved_refused() -> bool {
+    match Moved.decoded_in(here(), Old.Beta(1).encoded_in(here())) {
+        .Ok(_) -> false,
+        .Err(e) -> e == CodecFault.OtherShape,
+    }
+}
+
+fn board() -> Board { Board { id: 0, todo: Todo { key: "k", n: 1 }, todos: [Todo { key: "j", n: 2 }] } }
+
+fn row_back() -> bool {
+    match Board.decoded(board().encoded()) {
+        .Ok(x) -> x.todo.n == 1 && x.todos[0].key == "j" && x.stable_hash() == board().stable_hash(),
+        .Err(_) -> false,
+    }
+}
+
+spec "std/relation — the stored codec's kinds" {
+    given "a map and nested records" {
+        then "a string-keyed map, a record and a list of records read back whole" {
+            kinds_back()
+        }
+    }
+    given "enums" {
+        then "a record-payload enum and a payload-free one read back as themselves" {
+            held_back() && plain_back()
+        }
+        then "a variant is one octet past the eight-octet fingerprint" {
+            Old.Alpha.encoded_in(here()).length == 9
+        }
+        then "variants declared in another order refuse, never misread" {
+            moved_refused()
+        }
+    }
+    given "a relation row with a nested record" {
+        then "decodes under its own hash" {
+            row_back()
+        }
+    }
+}
