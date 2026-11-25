@@ -1,0 +1,45 @@
+//! The one reader of an `.Annotated` kind's matched mark, shared by
+//! the projection (lower.av's own field, the whole `{name, args}`
+//! struct) and the sort key (`order_value` below, one typed arg) — a
+//! word added to the vocabulary reaches both through `matched_mark`,
+//! so it cannot be missed in one and not the other
+//! (CLAUDE.md: "several spellings of one question is the defect").
+use core.{Annotation}
+use features.{Decl, Decls}
+
+/// The one annotation on `d` named `word`, read off the RAW syntax —
+/// its args still `ExprId`s, never the already-decoded
+/// `AnnotationFact` (whose args are already text, a literal's own
+/// kind lost by the time it gets there).
+export fn matched_mark(decls: Decls, d: Decl, word: string) -> Annotation? {
+    decls.store(d.id).annotations_of(d.stmt).find(it.name == word)
+}
+
+/// A sort value: an int literal compares as an int, a string as a
+/// string — never the other's clothes, and never re-parsed from text.
+export enum SortVal {
+    SInt(n: int)
+    SStr(s: string)
+}
+
+impl SortVal {
+    /// Its int, or null over a string — `dense`'s own question, never
+    /// a parse of the string back.
+    fn as_int() -> int? { match self { .SInt(n) -> n, .SStr(_) -> null } }
+}
+
+/// `it.mark.args[index]`'s own value, typed by the literal's own
+/// kind through core's value protocol — one projection, int first,
+/// text next, never a re-parse. Null for an unmatched mark, an
+/// out-of-range index, or a non-literal arg; each is its own named
+/// refusal at the call site, never a silent default.
+export fn order_value(decls: Decls, d: Decl, mark_word: string, index: int) -> SortVal? {
+    let m? = matched_mark(decls, d, mark_word) else { return null }
+    if index < 0 || index >= m.args.length { return null }
+    let arg = decls.store(d.id).expr(m.args[index])
+    let n? = arg.int_of() else {
+        let s? = arg.text_of() else { return null }
+        return SortVal.SStr(s)
+    }
+    SortVal.SInt(n)
+}

@@ -4,7 +4,7 @@
 //! path is in the kind's vocabulary. Nothing here walks a value —
 //! a collect carries none; its body is synthesised at lowering
 //! (compiler/lower/lower.av) from these same recorded parts.
-use core.{StmtId, TypeId, FileId, CollectKind, CollectScope, Projection, Plain, joined}
+use core.{StmtId, TypeId, FileId, CollectKind, CollectScope, Projection, Plain, OrderKey, OrderSpec, joined, sorted_by}
 use features.{TypeCx, Decl, Decls, nothing, duplicate_names}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
@@ -22,11 +22,10 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
     if cx.view.types.shape_of(declared) is .Error { return }
     checked_kind(cx, s, p.kind)
     checked_scope(cx, s, p.scope)
-    if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
     let entry_ty: TypeId? = cx.view.types.element(declared)
     if entry_ty == null { return cx.emit(not_a_list(cx.stmt_loc(s), p.name)) }
     checked_projection(cx, s, p.proj, p.kind, entry_ty!)
-    for k in p.order { if !known_path(p.kind, [k]) { cx.emit(unknown_path(cx.stmt_loc(s), [k])) } }
+    checked_order(cx, s, p.kind, p.scope, p.name, p.order)
 }
 
 /// `check_collect`'s twin over `collect enum` — no declared type, no
@@ -36,8 +35,7 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     let p? = cx.view.store.collect_enum_parts(s) else { return }
     checked_kind(cx, s, p.kind)
     checked_scope(cx, s, p.scope)
-    if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
-    for k in p.order { if !known_path(p.kind, [k]) { cx.emit(unknown_path(cx.stmt_loc(s), [k])) } }
+    checked_order(cx, s, p.kind, p.scope, p.name, p.order)
     let members = gathered_members(cx.view.decls, p.kind, p.scope, cx.view.file)
     for d in duplicate_names(
         "collect_enum.variant",
@@ -63,6 +61,80 @@ export fn gathered_members(decls: Decls, kind: CollectKind, scope: CollectScope,
         .UnknownKind(_) -> [],
     }
 }
+
+/// A collect's whole order: required, each key in the kind's
+/// vocabulary, no key comparing a whole annotation, no column mixing
+/// int and string, and -- under `dense` -- exactly one int column,
+/// unique and gap-free from 0.
+fn checked_order(
+    mut cx: TypeCx,
+    s: StmtId,
+    kind: CollectKind,
+    scope: CollectScope,
+    name: string,
+    order: OrderSpec,
+) {
+    if order.keys.is_empty() { return cx.emit(order_required(cx.stmt_loc(s), name)) }
+    for k in order.keys { checked_order_key(cx, s, kind, k) }
+    for k in order.keys { checked_order_mixed(cx, s, kind, scope, k) }
+    if order.dense { checked_dense(cx, s, kind, scope, order.keys) }
+}
+
+fn checked_order_key(mut cx: TypeCx, s: StmtId, kind: CollectKind, k: OrderKey) {
+    if k.path.length == 1 && k.path[0].of == "mark" && k.index == null {
+        return cx.emit(order_whole_mark(cx.stmt_loc(s)))
+    }
+    if !known_order_path(kind, k.path, k.index) { cx.emit(unknown_path(cx.stmt_loc(s), k.path)) }
+}
+
+/// A `by`-key's own vocabulary -- narrower than a projection field's:
+/// the four generic words (always comparable text) and an
+/// `.Annotated` kind's `mark.args[N]` (typed by the literal). Never
+/// `mark` alone (checked_order_key's own refusal) and never a
+/// component's own field -- no scalar the compiler can order by.
+fn known_order_path(kind: CollectKind, path: List<Plain>, index: int?) -> bool {
+    if path.length == 1 && index == null { return generic_words.contains(path[0].of) }
+    if path.length == 2 && index != null { return path[0].of == "mark" && path[1].of == "args" && kind is .Annotated }
+    false
+}
+
+/// Every gathered member's typed value for a `mark.args[N]` key --
+/// null when the path names no such key, a member's mark is
+/// unmatched, or its arg is not a literal: each the caller's own
+/// refusal, never a default.
+fn order_values(decls: Decls, kind: CollectKind, scope: CollectScope, owner: FileId, k: OrderKey) -> List<
+    SortVal,
+>? {
+    if k.path.length != 2 || k.path[0].of != "mark" || k.path[1].of != "args" || k.index == null { return null }
+    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
+    let members = gathered_members(decls, kind, scope, owner)
+    let vals = [order_value(decls, d, word, k.index!) for d in members]
+    if vals.any(it == null) { return null }
+    [v! for v in vals]
+}
+
+fn checked_order_mixed(mut cx: TypeCx, s: StmtId, kind: CollectKind, scope: CollectScope, k: OrderKey) {
+    let vals? = order_values(cx.view.decls, kind, scope, cx.view.file, k) else { return }
+    if vals.any(it is .SInt) && vals.any(it is .SStr) { cx.emit(order_mixed(cx.stmt_loc(s))) }
+}
+
+fn checked_dense(mut cx: TypeCx, s: StmtId, kind: CollectKind, scope: CollectScope, keys: List<OrderKey>) {
+    if keys.length != 1 { return cx.emit(dense_not_int(cx.stmt_loc(s))) }
+    let vals? = order_values(cx.view.decls, kind, scope, cx.view.file, keys[0]) else {
+        return cx.emit(dense_not_int(cx.stmt_loc(s)))
+    }
+    let ns = [v.as_int() for v in vals]
+    if ns.any(it == null) { return cx.emit(dense_not_int(cx.stmt_loc(s))) }
+    checked_dense_sequence(cx, s, [n! for n in ns])
+}
+
+fn checked_dense_sequence(mut cx: TypeCx, s: StmtId, ns: List<int>) {
+    for i, n in ns { if ns.index_of(n) != i { return cx.emit(dense_duplicate(cx.stmt_loc(s), n)) } }
+    let sorted = sorted_by(ns, before_int)
+    for i, n in sorted { if n != i { return cx.emit(dense_gap(cx.stmt_loc(s), i)) } }
+}
+
+fn before_int(a: int, b: int) -> bool { a < b }
 
 /// A REGISTRY match over `CollectKind` — the next kind (fn, case)
 /// answers here, never a string compare.
@@ -94,17 +166,18 @@ fn checked_projection(
     let missing = [n for n in fields.names if !written.contains(n)]
     let unknown = [n for n in written if !fields.names.contains(n)]
     if !missing.is_empty() || !unknown.is_empty() { cx.emit(field_mismatch(cx.stmt_loc(s), proj.ty.name, missing, unknown)) }
-    for f in proj.fields { if !known_path(kind, f.path) { cx.emit(unknown_path(cx.stmt_loc(s), f.path)) } }
+    for f in proj.fields { if !known_path(kind, f.path, f.index) { cx.emit(unknown_path(cx.stmt_loc(s), f.path)) } }
 }
 
 /// Whether `path` is in `kind`'s vocabulary — empty (the bare
 /// declaration) always is; one generic word always is; a kind's own
 /// word is this REGISTRY's, spelled per kind, never a string list
 /// grown ad hoc.
-fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
-    if path.is_empty() { return true }
-    if path.length > 1 { return false }
-    generic_words.contains(path[0].of) || kind_word(kind, path[0].of)
+fn known_path(kind: CollectKind, path: List<Plain>, index: int?) -> bool {
+    if path.is_empty() { return index == null }
+    if path.length == 1 { return index == null && (generic_words.contains(path[0].of) || kind_word(kind, path[0].of)) }
+    if path.length == 2 { return index != null && path[0].of == "mark" && path[1].of == "args" && kind is .Annotated }
+    false
 }
 
 /// A kind's OWN word, past the four generic ones — a REGISTRY over
@@ -218,5 +291,55 @@ fn unknown_path(at: Loc?, path: List<Plain>) -> Diag {
         "`${path_word(path)}` is not a field this kind's declarations answer",
         "in this collect",
         "the generic fields are name, module, file, doc — a kind may add its own",
+    )
+}
+
+fn order_whole_mark(at: Loc?) -> Diag {
+    refusal(
+        "collect.order_whole_mark",
+        at,
+        "`by it.mark` compares a whole annotation",
+        "in this collect's order",
+        "order by one of its args — `by it.mark.args[0]`",
+    )
+}
+
+fn order_mixed(at: Loc?) -> Diag {
+    refusal(
+        "collect.order_mixed",
+        at,
+        "this `by`-key's column holds both int and string literals",
+        "across the gathered declarations",
+        "an order compares one type — keep every declaration's arg the same kind",
+    )
+}
+
+fn dense_not_int(at: Loc?) -> Diag {
+    refusal(
+        "collect.dense_not_int",
+        at,
+        "`dense` orders a single int column",
+        "this order does not name one",
+        "`by` exactly one `it.mark.args[N]` whose literal is always an int",
+    )
+}
+
+fn dense_duplicate(at: Loc?, n: int) -> Diag {
+    refusal(
+        "collect.dense_duplicate",
+        at,
+        "`dense`'s order repeats ${n}",
+        "two declarations claim the same position",
+        "give each declaration its own index",
+    )
+}
+
+fn dense_gap(at: Loc?, i: int) -> Diag {
+    refusal(
+        "collect.dense_gap",
+        at,
+        "`dense`'s order has a gap at ${i}",
+        "no declaration claims this position",
+        "a dense order is unique and gap-free from 0",
     )
 }

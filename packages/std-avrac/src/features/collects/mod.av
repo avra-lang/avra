@@ -24,6 +24,11 @@ export fn collects() -> LanguageFeature {
         "collect.proj_type"    | "a collect's projection disagrees with its declared element"
         "collect.fields"       | "a collect's projection does not fill its type's fields exactly once"
         "collect.path"         | "a collect's `it` path is not in its kind's vocabulary"
+        "collect.order_whole_mark" | "a collect orders by a whole annotation, never one of its args"
+        "collect.order_mixed"  | "a collect's by-key column mixes int and string literals"
+        "collect.dense_not_int" | "a collect's dense order does not name a single int column"
+        "collect.dense_duplicate" | "a collect's dense order repeats a position"
+        "collect.dense_gap"    | "a collect's dense order skips a position"
         "collect.closure_fold" | "a library folds a closure collection at compile time"
         "collect.self_read"    | "a member reads its own collection while compiling"
         "collect_enum.variant" | "two collected members would name the same variant"
@@ -31,8 +36,8 @@ export fn collects() -> LanguageFeature {
     LanguageFeature collects {
         gram: grammar {
             stmt = "collect" n:NAME ":" t:type "=" ( k:PKG | k:NAME ) "in" sc:NAME "as" pt:NAME
-                "{" BREAK? ( fn:NAME ":" iw:NAME ( "." fp:NAME )? ( "," BREAK? fn:NAME ":" iw:NAME ( "." fp:NAME )? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )* ","? BREAK? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )? "}"
-                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* ","? )?
+                "{" BREAK? ( fn:NAME ":" iw:NAME ( "." fp:NAME ( "." fp2:NAME )? ( "[" fidx:NUMBER "]" )? )? ( "," BREAK? fn:NAME ":" iw:NAME ( "." fp:NAME ( "." fp2:NAME )? ( "[" fidx:NUMBER "]" )? )? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )* ","? BREAK? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )? "}"
+                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "." bk2:NAME )? ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME "." bk:NAME ( "." bk2:NAME )? ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
                 END
                 @expect("=", "expected `=` after a collect's type")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
@@ -40,15 +45,15 @@ export fn collects() -> LanguageFeature {
                 @expect("{", "expected `{` to open the projection — `as Entry { name: it.name }`")
                 @expect("}", "expected `}` to close the projection — each field is `name: it.path`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bk)
+                -> collect_decl(n, t, k, sc, pt, fn, iw, fp, fp2, fidx, bw, biw, bk, bk2, bidx, dn)
             stmt = "collect" "enum" n:NAME "=" ( k:PKG | k:NAME ) "in" sc:NAME
-                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* ","? )?
+                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "." bk2:NAME )? ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME "." bk:NAME ( "." bk2:NAME )? ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
                 END
                 @expect("NAME", "expected the collected enum's name — `collect enum Kind = …`")
                 @expect("=", "expected `=` after the collected enum's name")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_enum_decl(n, k, sc, bw, biw, bk)
+                -> collect_enum_decl(n, k, sc, bw, biw, bk, bk2, bidx, dn)
         }
         builders: rows
         diags: codes
