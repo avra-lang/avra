@@ -1,0 +1,61 @@
+use @std.avrac.features.{Decls, DocFact, new_decls, DeclFacts}
+use @std.avrac.core.{DeclId, FileId, DeclKind, no_stmt}
+use @std.avrac.query.{Kernel, Key}
+
+fn facts_with(doc: string) -> DeclFacts {
+    DeclFacts {
+        external: false,
+        stat: true,
+        is_grammar: false,
+        is_component: false,
+        span: null,
+        tparams: [],
+        bounds: [],
+        seats: [],
+        host: [],
+        annotated: false,
+        of: "",
+        doc: [doc],
+        annotations: [],
+    }
+}
+
+fn query_doc(decls: Decls, outer: Key, d: DeclId, runs: Cell<int>) -> int {
+    let kernel = decls.record_kernel
+    match kernel.ask(outer) {
+        .Compute -> {
+            kernel.begin(outer)
+            let _ = DocFact.get_db(decls.decl_rows.get(), decls.doc_facts, decls.doc_facts_side, d.index)
+            runs.set(runs.get() + 1)
+            kernel.settle(outer, runs.get())
+            runs.get()
+        },
+        rest -> runs.get(),
+    }
+}
+
+mut decls = new_decls()
+let f: FileId = decls.file_id("/w/src/lib.av", "lib", false)
+let a: DeclId = decls.mint("w::lib::A", f, no_stmt, "A", DeclKind.Const, true, "", null, false, null)
+let b: DeclId = decls.mint("w::lib::B", f, no_stmt, "B", DeclKind.Const, true, "", null, false, null)
+decls.adopt_facts(a, facts_with("doc for A, version 1"))
+decls.adopt_facts(b, facts_with("doc for B, version 1"))
+let kernel = decls.record_kernel
+let query_a = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+let query_b = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+kernel.set_input(bump, 0)
+let rev0 = kernel.revision()
+let runs_a: Cell<int> = Cell.new(0)
+let runs_b: Cell<int> = Cell.new(0)
+let a1 = query_doc(decls, query_a, a, runs_a)
+let b1 = query_doc(decls, query_b, b, runs_b)
+let rev1 = kernel.revision()
+kernel.set_input(bump, 1)
+let rev2 = kernel.revision()
+decls.adopt_facts(a, facts_with("doc for A, version 2"))
+let rev3 = kernel.revision()
+let deps_a = kernel.deps_of(query_a)
+let a2 = query_doc(decls, query_a, a, runs_a)
+let b2 = query_doc(decls, query_b, b, runs_b)
+"rev0=${rev0} rev1=${rev1} rev2=${rev2} rev3=${rev3} a1=${a1} b1=${b1} a2=${a2} b2=${b2} deps_a.length=${deps_a.length} deps_a=${["${d.family}:${d.arg}" for d in deps_a].join(",")}"
