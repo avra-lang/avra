@@ -1291,6 +1291,11 @@ static void sigfd_drain(void) {
 }
 #endif
 
+#if !AVRA_HOSTED
+static void (*g_host_loop)(void) = NULL;
+static void host_idle_native(int64_t timeout_ns);
+#endif
+
 // Waits for the poller up to `timeout_ns` (below zero: forever) and
 // claims whoever it names.
 static void poller_wait(int64_t timeout_ns) {
@@ -1302,6 +1307,11 @@ static void poller_wait(int64_t timeout_ns) {
 #if AVRA_HOSTED
     host_idle(timeout_ns);
 #else
+    // a host's loop waits in its place, and the poller then claims what it heard
+    if (g_host_loop) {
+        host_idle_native(timeout_ns);
+        timeout_ns = 0;
+    }
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1846,6 +1856,11 @@ void avra_task_entry(void) {
     shadow_set(g_current->sp);
     fiber_start();
 }
+// A hosted module's idle is its host's already: no loop attaches here.
+static int host_listens(void) { return 0; }
+static int host_current(void) { return 0; }
+static int host_turn_spent(void) { return 0; }
+static void host_callback_waited(void) {}
 #else
 #define fiber_switched(self, next) avra_fiber_switch(&(self)->sp, (next)->sp)
 // A fiber's first run: a stack from the pool, and at its top a frame
@@ -1860,6 +1875,84 @@ static void fiber_framed(Fiber* f, Stack s, size_t bytes) {
     memset(frame, 0, FIBER_FRAME);
     frame[FIBER_RETURN] = (uint64_t)(uintptr_t)fiber_start;
     f->sp = frame;
+}
+
+// ── The host's loop ─────────────────────────────────────────────
+//
+// THE HOST'S IDLE, ON A NATIVE TARGET: wasm's hosted idle, generalized. A host
+// whose own loop must hold the thread (an app's run loop) attaches it, and the
+// scheduler's idle returns to that loop until a source fires — where wasm's
+// host suspends the module, here the loop stands on a stack of its own and the
+// idle switches to it. While the loop runs the host IS the current fiber: what
+// it calls into the program may post and wake, never wait, and only an idle
+// program is resumed.
+
+static Fiber g_host_fib = { .state = FIBER_RUNNING, .canary = &g_untouched, .local = &avra_main_local };
+// The fiber that idled, while the host's loop runs; NULL during a turn.
+static Fiber* g_host_back = NULL;
+static int64_t g_host_wait = -1;
+static int64_t g_host_turn_at = 0;
+static int64_t g_host_budget_ns = 4000000;
+enum { HOST_STACK = 8 << 20 };
+
+static int host_listens(void) { return g_host_loop != NULL; }
+static int host_current(void) { return g_current == &g_host_fib; }
+
+static int host_turn_spent(void) {
+    return g_host_loop && now_ns() - g_host_turn_at > g_host_budget_ns;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void host_callback_waited(void) {
+    avra_trap("a host callback waited — what the host calls into the program may post and wake, never wait; a turn of the program is where it waits");
+}
+
+static void host_started(void) {
+    g_host_loop();
+    avra_trap("the host's loop returned");
+}
+
+static void host_stacked(void) {
+    stacks_settle();
+    char* low = reserved(HOST_STACK + g_page);
+    if (mprotect(low, g_page, PROT_NONE) != 0) avra_trap("the scheduler could not guard the host's stack");
+    g_host_fib.floor = (uintptr_t)(low + g_page);
+    uint64_t* frame = (uint64_t*)((((uintptr_t)low + g_page + HOST_STACK - 16) & ~(uintptr_t)15) - FIBER_FRAME);
+    memset(frame, 0, FIBER_FRAME);
+    frame[FIBER_RETURN] = (uint64_t)(uintptr_t)host_started;
+    g_host_fib.sp = frame;
+}
+
+static void host_idle_native(int64_t timeout_ns) {
+    if (!g_host_fib.sp) host_stacked();
+    Fiber* self = g_current;
+    g_host_wait = timeout_ns;
+    g_host_back = self;
+    g_current = &g_host_fib;
+    fiber_switched(self, &g_host_fib);
+    g_current = self;
+    g_host_back = NULL;
+    g_host_turn_at = now_ns();
+}
+
+void avra_host_attach(void (*loop)(void)) {
+    const char* budget = getenv("AVRA_HOST_BUDGET_MS");
+    if (budget && atoll(budget) > 0) g_host_budget_ns = atoll(budget) * 1000000;
+    g_host_loop = loop;
+}
+
+int avra_host_poller(void) {
+    poller_open();
+    return g_poller;
+}
+
+int64_t avra_host_wait_ns(void) { return g_host_wait; }
+
+int avra_host_idling(void) { return g_host_back != NULL; }
+
+void avra_host_resume(void) {
+    if (!g_host_back || !host_current()) avra_trap("a host callback ran the program inside a running turn — the host resumes the program only from its own loop, while the program idles");
+    fiber_switched(&g_host_fib, g_host_back);
 }
 
 // THE WIDE STACK: one reservation the size of the main thread's stack,
@@ -2083,6 +2176,11 @@ static Fiber* next_with_world(void) {
             else if (g_parked_fds > 0) g_until_poll = FAIR_TURNS;
             else g_until_poll = POLL_IDLE;
         }
+        // a turn past its budget lets the host's loop draw and hear before it goes on
+        if (g_ready_head && host_turn_spent()) {
+            poller_wait(0);
+            continue;
+        }
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) {
             // an ask counted during this pass, after its count was reset,
@@ -2091,7 +2189,7 @@ static Fiber* next_with_world(void) {
             g_in_world = 0;
             return next;
         }
-        if (g_timers_len == 0 && g_parked_fds == 0) {
+        if (g_timers_len == 0 && g_parked_fds == 0 && !host_listens()) {
             if (case_deadlocked()) continue;
             if (run_deadlocked()) { g_in_world = 0; return NULL; }
             deadlock_reported();
@@ -2142,6 +2240,7 @@ static void run_next_with_world(void) {
 
 __attribute__((always_inline))
 static inline void run_next(void) {
+    if (__builtin_expect(host_current(), 0)) host_callback_waited();
     if (queue_alone()) {
         Fiber* next = ready_pop();
         if (next) { switch_to(next); return; }
