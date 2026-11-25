@@ -1,0 +1,110 @@
+use @std.db.{model, Many}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.errors.{Error}
+
+@model
+type Entity = {
+    id: int = 0,
+    @unique name: string,
+    model: string,
+    born: int,
+    claims: Many<Claim> = Many {},
+}
+
+@model
+type Observation = {
+    id: int = 0,
+    @unique name: string,
+    revision: int,
+    payload: string,
+    digest: string,
+}
+
+@model
+type Run = {
+    id: int = 0,
+    @unique name: string,
+    producer: string,
+    scope: string,
+    revision: int,
+    input: Observation,
+}
+
+@model
+type Claim = {
+    id: int = 0,
+    entity: Entity,
+    property: string,
+    value: string,
+    schema: string,
+}
+
+@model
+type Support = {
+    id: int = 0,
+    run: Run,
+    claim: Claim,
+    until: int? = null,
+    @unique pair: string,
+}
+
+@model
+type Edge = {
+    id: int = 0,
+    claim: Claim,
+    target: string,
+    path: string,
+    @unique pair: string,
+}
+
+@model
+type Alias = {
+    id: int = 0,
+    entity: Entity,
+    namespace: string,
+    key: string,
+    run: Run,
+    until: int? = null,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Entity.create_table(db)?
+    Observation.create_table(db)?
+    Run.create_table(db)?
+    Claim.create_table(db)?
+    Support.create_table(db)?
+    Edge.create_table(db)?
+    Alias.create_table(db)?
+    db
+}
+
+fn sql_failure<T>(r: Result<T, SqlError>) -> Result<T, string> {
+    match r { .Ok(v) -> v, .Err(e) -> { fail "sql: ${e.message}" } }
+}
+
+fn model_failure<T>(r: Result<T, ModelError>) -> Result<T, string> {
+    match r { .Ok(v) -> v, .Err(e) -> { fail "model: ${e.describe().message}" } }
+}
+
+fn main() -> Result<string, string> {
+    mut db = sql_failure(seeded())?
+    let obs = model_failure(Observation { id: 0, name: "mail:1", revision: 1, payload: "hi", digest: "d" }.insert(db))?
+    let run = model_failure(Run { id: 0, name: "run:1", producer: "agent", scope: "mail:1", revision: 1, input: obs }.insert(db))?
+    let p1 = model_failure(Entity { id: 0, name: "p1", model: "Person", born: 1 }.insert(db))?
+    let p2 = model_failure(Entity { id: 0, name: "p2", model: "Person", born: 1 }.insert(db))?
+    let c1 = model_failure(Claim { id: 0, entity: p1, property: "name", value: "\"Ada\"", schema: "s" }.insert(db))?
+    let c2 = model_failure(Claim { id: 0, entity: p2, property: "email", value: "\"a@b\"", schema: "s" }.insert(db))?
+    let s1 = model_failure(Support { id: 0, run: run, claim: c1, until: null, pair: "run:1:1" }.insert(db))?
+    let s2 = model_failure(Support { id: 0, run: run, claim: c2, until: 7, pair: "run:1:2" }.insert(db))?
+    let _e = model_failure(Edge { id: 0, claim: c1, target: "p2", path: "assignee", pair: "1:p2:assignee" }.insert(db))?
+    let _a = model_failure(Alias { id: 0, entity: p1, namespace: "mail", key: "ada", run: run, until: null }.insert(db))?
+    let nested = sql_failure(Entity.with_claims(db, [p1, p2]))?
+    let claims = [k for ks in nested for k in ks]
+    let live = sql_failure(Support.where(db, until: .Is(null)))?
+    let a = sql_failure(Alias.where(db, namespace: "mail"))?
+    let linked = sql_failure(Claim.where(db, entity: p1))?
+    "${claims.length} ${live.length} ${a.length} ${linked.length} ${s1.id} ${s2.id} ${p2.id}"
+}
