@@ -1,8 +1,12 @@
 //! The neutral frame: std-ui's DOM patches as records a native host reads,
-//! one a line — `create <id> <prim>`, `text <id> <words>`, `place <id>
-//! <parent> <after>`, `remove <id>`, `listen <id> <seat>`. An id is one more
-//! than the page's number, so 0 names none. Words carry no line break.
-use @std.ui.realize.dom.patch.{Patch}
+//! one a line — `create <id> <tag>`, `text <id> <words>`, `place <id>
+//! <parent> <after>`, `remove <id>`, `listen <id> <seat> <prim>`,
+//! `unlisten <id> <seat>`, `attr <id> <name> <value>`, `dropattr <id> <name>`,
+//! `prop <id> <name> <value>`, `call <id> <verb>`, `var <id> <property>
+//! <value>`, `dropvar <id> <property>`, `style <bytes>`, `adopt <kinds>`. An id
+//! is one more than the page's number, so 0 names none. Words carry no line
+//! break.
+use @std.ui.realize.dom.patch.{Patch, Held}
 use @std.ui.tree.identity.{NodeId}
 use @std.ui.tree.seats.{row_at}
 
@@ -11,23 +15,30 @@ export fn neutral(patches: List<Patch>) -> string {
     [line for p in patches for line in recorded(p)].join("\n")
 }
 
-/// One patch's records: what a native host draws by, nothing a page alone reads.
+/// One patch's records.
 fn recorded(p: Patch) -> List<string> {
     match p {
-        .Create(id, tag) -> ["create ${wire_id(id)} ${prim_of_tag(tag.word())}"],
+        .Create(id, tag) -> ["create ${wire_id(id)} ${tag.word()}"],
         .CreateText(id, content) -> ["create ${wire_id(id)} text", "text ${wire_id(id)} ${unbroken(content)}"],
         .Place(id, parent, after) -> ["place ${wire_id(id)} ${wire_id_of(parent)} ${wire_id_of(after)}"],
         .Remove(id) -> ["remove ${wire_id(id)}"],
         .SetText(id, content) -> ["text ${wire_id(id)} ${unbroken(content)}"],
         .Listen(id, to) -> ["listen ${wire_id(id)} ${to.action.seat.number()} ${row_at(to.action.seat).prim.word()}"],
         .Unlisten(id, seat) -> ["unlisten ${wire_id(id)} ${seat.number()}"],
-        .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> [],
+        .SetAttr(id, name, value) -> ["attr ${wire_id(id)} ${name.word()} ${unbroken(value)}"],
+        .DropAttr(id, name) -> ["dropattr ${wire_id(id)} ${name.word()}"],
+        .SetProp(id, name, value) -> ["prop ${wire_id(id)} ${name.word()} ${held_word(value)}"],
+        .Call(id, verb) -> ["call ${wire_id(id)} ${verb}"],
+        .SetVar(id, property, value) -> ["var ${wire_id(id)} ${property} ${unbroken(value)}"],
+        .DropVar(id, property) -> ["dropvar ${wire_id(id)} ${property}"],
+        .Style(css) -> ["style ${css.length}"],
+        .Adopt(kinds, _) -> ["adopt ${kinds.join(",")}"],
     }
 }
 
-/// The prim a page's tag stands for, as far as a native host tells them apart.
-fn prim_of_tag(tag: string) -> string {
-    match tag { "button" -> "button", "h1" or "h2" or "h3" -> "heading", _ -> "surface" }
+/// A held value as one word run.
+fn held_word(h: Held) -> string {
+    match h { .Text(t) -> unbroken(t), .Flag(on) -> if on { "true" } else { "false" } }
 }
 
 fn wire_id(id: NodeId) -> int { id.n + 1 }

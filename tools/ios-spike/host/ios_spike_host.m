@@ -387,3 +387,6 @@ void avra_spike_attach(void) {
     g_target = [SpikeTarget new];
     avra_host_attach(host_loop);
 }
+
+// An app has no fork, so nothing is prepared for one.
+void avra_fork_hook(int (*prepare)(const char** why)) { (void)prepare; }
