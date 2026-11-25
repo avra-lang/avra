@@ -269,10 +269,17 @@ await page.close();
 
 const unpinned = found.filter((l) => !isPinned(l));
 const stale = pinned.filter((p) => !found.some((l) => l.startsWith(p)));
-for (const fam of families) console.log(`${found.some((l) => l.startsWith(fam.name + " ")) ? "fail" : "ok  "} ${fam.name}: ${fam.holds}`);
-console.log(`${found.some((l) => l.startsWith("scheme ")) ? "fail" : "ok  "} scheme: every case's canvas and surface are darker under dark than under light`);
-console.log(`${found.some((l) => l.startsWith("operable ")) ? "fail" : "ok  "} operable: a key gesture on a control is heard once (never, when disabled), and what it changed is drawn`);
-if (touch) console.log(`${found.some((l) => l.startsWith("touched ")) ? "fail" : "ok  "} touched: a tap is heard once (never, when disabled)`);
+// A family's verdict: it holds, it fails only where a ruling is pinned, or it FAILS.
+const verdict = (name, holds) => {
+  const mine = found.filter((l) => l.startsWith(name + " "));
+  const open = mine.filter((l) => !isPinned(l)).length;
+  const said = mine.length === 0 ? "ok    " : open === 0 ? "pinned" : "FAIL  ";
+  console.log(`${said} ${name}: ${holds}${mine.length && !open ? ` (${mine.length} failures, each pinned on its ruling)` : ""}`);
+};
+for (const fam of families) verdict(fam.name, fam.holds);
+verdict("scheme", "every case's canvas and surface are darker under dark than under light");
+verdict("operable", "a key gesture on a control is heard once (never, when disabled), and what it changed is drawn");
+if (touch) verdict("touched", "a tap is heard once (never, when disabled)");
 for (const l of unpinned) console.log(`FAIL ${l}`);
 for (const p of stale) console.log(`STALE pin, it fails no more: ${p}`);
 console.log(`storyboard: ${marked} frames, ${found.length} failures (${found.length - unpinned.length} pinned), in ${engine}${device ? ` (${device})` : ""}`);
