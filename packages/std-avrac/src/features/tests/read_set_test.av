@@ -169,7 +169,8 @@ spec "features/read_set — methods, verbs, lambdas and cells through a paramete
         then "reaches what its body reads" {
             only_state(
                 fn_reached(
-                    STATES + "type R = { x: int }\nimpl R {\n    fn get() -> int { self.x + filter }\n}\nfn via(r: R) -> int { r.get() }\n",
+                    STATES +
+                        "type R = { x: int }\nimpl R {\n    fn get() -> int { self.x + filter }\n}\nfn via(r: R) -> int { r.get() }\n",
                     "via",
                 ),
                 "filter",
@@ -178,7 +179,8 @@ spec "features/read_set — methods, verbs, lambdas and cells through a paramete
         then "a static fn called through the type reaches what its body reads" {
             only_state(
                 fn_reached(
-                    STATES + "type R = { x: int }\nimpl R {\n    static fn zero() -> R { R { x: filter } }\n}\nfn made() -> R { R.zero() }\n",
+                    STATES +
+                        "type R = { x: int }\nimpl R {\n    static fn zero() -> R { R { x: filter } }\n}\nfn made() -> R { R.zero() }\n",
                     "made",
                 ),
                 "filter",
@@ -186,7 +188,8 @@ spec "features/read_set — methods, verbs, lambdas and cells through a paramete
         }
         then "one reading nothing reaches nothing" {
             fn_reached(
-                STATES + "type R = { x: int }\nimpl R {\n    fn get() -> int { self.x }\n}\nfn via(r: R) -> int { r.get() }\n",
+                STATES +
+                    "type R = { x: int }\nimpl R {\n    fn get() -> int { self.x }\n}\nfn via(r: R) -> int { r.get() }\n",
                 "via",
             )
                 .is_empty()
@@ -196,39 +199,66 @@ spec "features/read_set — methods, verbs, lambdas and cells through a paramete
         then "whose row reads only what it's handed reaches nothing of its own" { fn_reached(STATES + "fn tidy(s: string) -> string { s.trim() }\n", "tidy").is_empty() }
         then "a walk applying a lambda reaches what the lambda reads" {
             only_state(
-                fn_reached(STATES + "fn kept(xs: List<int>) -> List<int> { xs.filter((x) -> x > filter) }\n", "kept"),
+                fn_reached(
+                    STATES +
+                        "fn kept(xs: List<int>) -> List<int> { xs.filter((x) -> x > filter) }\n",
+                    "kept",
+                ),
                 "filter",
             )
         }
         then "a walk applying a lambda that reads nothing reaches nothing" {
-            fn_reached(STATES + "fn doubled(xs: List<int>) -> List<int> { xs.map((x) -> x * 2) }\n", "doubled").is_empty()
+            fn_reached(
+                STATES + "fn doubled(xs: List<int>) -> List<int> { xs.map((x) -> x * 2) }\n",
+                "doubled",
+            )
+                .is_empty()
         }
         then "a walk applying a fn it was handed reaches what nothing names" {
             only_unknown(
-                fn_reached(STATES + "fn kept(xs: List<int>, f: fn(int) -> bool) -> List<int> { xs.filter(f) }\n", "kept"),
+                fn_reached(
+                    STATES +
+                        "fn kept(xs: List<int>, f: fn(int) -> bool) -> List<int> { xs.filter(f) }\n",
+                    "kept",
+                ),
             )
         }
         then "a cell's read of a module state reaches that state" {
-            only_state(fn_reached("state c: Cell<int> = Cell.new(0)\nfn peeked() -> int { c.get() }\n", "peeked"), "c")
+            only_state(
+                fn_reached(
+                    "state c: Cell<int> = Cell.new(0)\nfn peeked() -> int { c.get() }\n",
+                    "peeked",
+                ),
+                "c",
+            )
         }
     }
     given "a cell reached through a parameter" {
         then "a `state` seat is read through, never as nothing" { only_through(fn_reached(STATES + "fn peek(state n: int) -> int { n }\n", "peek"), "n") }
         then "a record's `state` field is read through the parameter it's on" {
             only_through(
-                fn_reached(STATES + "type Row = { state done: bool }\nfn is_done(r: Row) -> bool { r.done }\n", "is_done"),
+                fn_reached(
+                    STATES +
+                        "type Row = { state done: bool }\nfn is_done(r: Row) -> bool { r.done }\n",
+                    "is_done",
+                ),
                 "r",
             )
         }
         then "a cell a parameter holds is read through it" {
             only_through(
-                fn_reached(STATES + "type Holder = { c: Cell<int> }\nfn read(h: Holder) -> int { h.c.get() }\n", "read"),
+                fn_reached(
+                    STATES +
+                        "type Holder = { c: Cell<int> }\nfn read(h: Holder) -> int { h.c.get() }\n",
+                    "read",
+                ),
                 "h",
             )
         }
         then "a method reading its receiver's `state` field reads through the receiver" {
             let reached = fn_reached(
-                STATES + "type Row = { state done: bool }\nimpl Row {\n    fn finished() -> bool { self.done }\n}\nfn of(r: Row) -> bool { r.finished() }\n",
+                STATES +
+                    "type Row = { state done: bool }\nimpl Row {\n    fn finished() -> bool { self.done }\n}\nfn of(r: Row) -> bool { r.finished() }\n",
                 "of",
             )
             only_through(reached, "self")
