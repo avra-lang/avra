@@ -50,6 +50,7 @@ avrac-f    test packages/std-avrac — src/features' own files, and every dir of
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
+store-fuzz the store fuzzer's model self-test, then seeds 1-8 of 12 edits each over build/avra: warm == cold byte for byte, the store clean (`cache check`), the walk held, a fresh copy over the same machine store as the tree, nothing worked where nothing moved
 inputs     make inputs, every world read through the input door and every read a query body reaches held; and inputs.py --planted, two planted reads refused on the tree itself
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
@@ -561,6 +562,14 @@ slice_inputs() {
     row inputs-planted python3 tools/inputs.py --planted
 }
 
+# THE STORE FUZZED BY A MODEL, on a bounded budget: a failing seed is shrunk and said as a line that
+# replays it. Each store bug it exists for is found by it with its fix taken back
+# (`make store-fuzz-regressions`, a compiler built a bug, too long for a slice).
+slice_store_fuzz() {
+    row store-fuzz-model python3 tools/store_fuzz.py --self-test
+    row store-fuzz python3 tools/store_fuzz.py --compiler build/avra --seeds 1-8 --steps 12
+}
+
 slice_sound() {
     row sound-check-run env AVRA_SOUND_CHECK=1 build/avra check packages/cli
     cold cli
@@ -874,6 +883,7 @@ if compiler; then
         idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
         fmt) fmt_on "${1:-}" ;;
         inputs) slice_inputs ;;
+        store-fuzz) slice_store_fuzz ;;
         sound) slice_sound ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
