@@ -663,10 +663,11 @@ export fn stored_scalar(name: string) -> Kind? {
 /// — `type_exported("@std.ui.realize", "Attribute")`, the module as
 /// `Type.module` spells it. A derive reads its own library's
 /// declarations so: the file it runs over need not import them. Absent
-/// when the module exports no such type.
+/// when the module exports no such type: a private one is the module's own, which
+/// `type_declared` reads.
 export fn type_exported(module: string, name: string) -> Type? {
-    if name.contains(".") { return null }
-    avra_type_named("${module}.${name}")
+    let t? = type_declared(module, name) else { return null }
+    if t.exported { t } else { null }
 }
 
 /// The `Type` a MODULE declares under `name`, exported or kept private —
@@ -696,13 +697,13 @@ export fn held_of(t: Type) -> Held {
 
 /// What the type `name` holds, for a derive that reads a payload
 /// type's declaration instead of keeping a row for it. `owner` is the
-/// type being derived: the lookup is that type's MODULE's export of
-/// `name` (`type_exported`), so a type only a member's own file
-/// imported is not readable here — absence, which the derive answers
-/// by refusing the payload loudly. Absent for a name no module export
-/// declares.
+/// type being derived: the lookup is that type's MODULE's declaration of
+/// `name` (`type_declared`), exported or its own, so a type only a
+/// member's own file imported is not readable here — absence, which the
+/// derive answers by refusing the payload loudly. Absent for a name the
+/// module doesn't declare.
 export fn payload_of(owner: Type, name: string) -> Held? {
-    let t? = type_exported(owner.module, name) else { return null }
+    let t? = type_declared(owner.module, name) else { return null }
     held_of(t)
 }
 
