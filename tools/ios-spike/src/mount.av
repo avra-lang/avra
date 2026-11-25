@@ -15,7 +15,7 @@ use @std.ui.tree.identity.{Stand}
 use @std.ui.realize.native.patch.{NativePatch}
 use @std.time.{now_ns}
 use frame.{neutral}
-use kit.{rects}
+use kit.{rects, remembered}
 
 extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
@@ -125,7 +125,16 @@ export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
     let inbox = opened(app, based)
     page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
     heard().set((id: int, seat: int, s: Said?) -> spoke(app, at, NodeId { n: id - 1 }, seat, s))
-    replaced().set(() -> app.post_unowned(() -> placed_again(at)))
+    replaced()
+        .set(
+            () -> app
+                .post_unowned(
+                    () -> {
+                        remembered().forget()
+                        placed_again(at)
+                    },
+                ),
+        )
     scrolled_to()
         .set(
             (from: int, to: int, extent: int) -> app
@@ -139,7 +148,7 @@ export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
 fn paint_line(patches: List<NativePatch>, lower: int, serialize: int, place: int, bytes: int) -> string {
     let facts = [p for p in patches if is_fact(p)].length
     let made = [p for p in patches if is_create(p)].length
-    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} live_bytes_delta=${bytes}"
+    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} ${remembered().tally()} live_bytes_delta=${bytes}"
 }
 
 fn is_fact(p: NativePatch) -> bool {

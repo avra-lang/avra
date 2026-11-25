@@ -1,0 +1,87 @@
+//! A MEASURE THAT REMEMBERS: what another `Measure` answered, kept by the node's
+//! size key and the width asked, so a node already measured is not asked again.
+//! Target-neutral — it wraps any `Measure` — and forgotten whole when the target
+//! says its measures are stale (a width, a text size, an inset).
+use @std.ui.place.measure.{Measure, Extent}
+use @std.ui.style.tokens.{Size}
+use @std.ui.tree.node.{Node, Attribute}
+
+/// What a node's size can depend on: its primitive, its words, its rank, the
+/// attributes that carry text or room, and its type. Two nodes with one key
+/// measure alike.
+fn size_key(n: Node) -> string {
+    let s = n.box.style
+    let parts = [p for a in n.attrs for p in sized_part(a)]
+    "${n.prim.word()}|${n.words()}|${n.level()}|${s.text_size?.word() ?? ""}|${s.face?.word() ?? ""}|${s.line_height?.word() ?? ""}|${s.tracking?.word() ?? ""}|${parts.join("|")}"
+}
+
+/// An attribute's part in a size key: the ones that carry text or take room.
+fn sized_part(a: Attribute) -> List<string> {
+    match a {
+        .Title(t) -> ["title=${t}"],
+        .Placeholder(t) -> ["placeholder=${t}"],
+        .Skipped(_, rows, extent) -> ["skipped=${rows}x${extent}"],
+        .Open(on) -> ["open=${on}"],
+        rest -> [],
+    }
+}
+
+/// `inner`'s answers, remembered; `hits` and `misses` count the asks since
+/// they were last read.
+export type Remembered = {
+    inner: dyn Measure,
+    owns: Cell<Map<string, Extent>> = Cell.new({}),
+    narrowest: Cell<Map<string, int>> = Cell.new({}),
+    hits: Cell<int> = Cell.new(0),
+    misses: Cell<int> = Cell.new(0),
+}
+
+impl Remembered {
+    /// Everything remembered, forgotten: the target's measures went stale.
+    fn forget() {
+        self.owns.set({})
+        self.narrowest.set({})
+    }
+
+    /// The asks answered from memory and from `inner` since the last read, as words.
+    fn tally() -> string {
+        let said = "hits=${self.hits.get()} misses=${self.misses.get()}"
+        self.hits.set(0)
+        self.misses.set(0)
+        said
+    }
+}
+
+impl Measure for Remembered {
+    fn own(n: Node, avail: int) -> Extent {
+        let key = "${size_key(n)}@${avail}"
+        let kept? = self.owns.get().get(key) else {
+            self.misses.set(self.misses.get() + 1)
+            let fresh = self.inner.own(n, avail)
+            self.owns.put(key, fresh)
+            return fresh
+        }
+        self.hits.set(self.hits.get() + 1)
+        kept
+    }
+
+    fn min_own(n: Node) -> int {
+        let key = size_key(n)
+        let kept? = self.narrowest.get().get(key) else {
+            self.misses.set(self.misses.get() + 1)
+            let fresh = self.inner.min_own(n)
+            self.narrowest.put(key, fresh)
+            return fresh
+        }
+        self.hits.set(self.hits.get() + 1)
+        kept
+    }
+
+    fn kept(n: Node, path: string) -> int { self.inner.kept(n, path) }
+    fn hidden(n: Node) -> bool { self.inner.hidden(n) }
+    fn holds(n: Node) -> bool { self.inner.holds(n) }
+    fn gap_x(z: Size) -> int { self.inner.gap_x(z) }
+    fn gap_y(z: Size) -> int { self.inner.gap_y(z) }
+    fn pad_x(z: Size) -> int { self.inner.pad_x(z) }
+    fn pad_y(z: Size) -> int { self.inner.pad_y(z) }
+}
