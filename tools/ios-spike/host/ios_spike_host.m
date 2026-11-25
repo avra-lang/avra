@@ -527,7 +527,7 @@ static NSInteger g_scroll_seq;
 // A new window only when the rows on screen near the edge of the one standing,
 // reaching ahead of the scroll by what it will travel before the next paint.
 static void window_asked(void) {
-    if (g_row_h <= 0 || g_win_pending) return;
+    if (g_row_h <= 0 || g_win_pending || !g_deadline) return;
     CGFloat y = g_scroll.contentOffset.y - 16 - g_list_top;
     double now = CACurrentMediaTime();
     double v = g_last_t > 0 && now > g_last_t ? (y - g_last_y) / (now - g_last_t) / g_row_h : 0;
@@ -709,18 +709,16 @@ static void pooled(SpikeNode* n) {
 // THE PAIRING, read from a frame before it is applied: each subtree it creates
 // is matched by shape to a pooled one, whose nodes take the new numbers in
 // order. Answers the numbers whose create and inner place the pairing carries.
-static NSMutableSet<NSNumber*>* paired(NSArray<NSString*>* lines, NSMutableSet<NSNumber*>* roots) {
+static NSMutableSet<NSNumber*>* paired(NSArray<NSArray<NSString*>*>* records, NSMutableSet<NSNumber*>* roots) {
     NSMutableDictionary<NSNumber*, NSString*>* made_prim = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber*, NSNumber*>* parent_of = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber*, NSMutableArray<NSNumber*>*>* kids_of = [NSMutableDictionary new];
     NSMutableArray<NSNumber*>* order = [NSMutableArray new];
-    for (NSString* line in lines) {
-        if ([line hasPrefix:@"create "]) {
-            NSArray* w = [line componentsSeparatedByString:@" "];
+    for (NSArray<NSString*>* w in records) {
+        if ([w[0] isEqualToString:@"create"]) {
             made_prim[@([w[1] integerValue])] = w[2];
             [order addObject:@([w[1] integerValue])];
-        } else if ([line hasPrefix:@"place "]) {
-            NSArray* w = [line componentsSeparatedByString:@" "];
+        } else if ([w[0] isEqualToString:@"place"]) {
             NSNumber* id = @([w[1] integerValue]);
             NSNumber* parent = @([w[2] integerValue]);
             parent_of[id] = parent;
@@ -777,25 +775,21 @@ static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
     return w.count > from ? [[w subarrayWithRange:NSMakeRange(from, w.count - from)] componentsJoinedByString:@" "] : @"";
 }
 
-static void applied(NSString* frame) {
-    double s0 = CACurrentMediaTime();
-    NSArray<NSString*>* lines = [frame componentsSeparatedByString:@"\n"];
-    g_parse_s += CACurrentMediaTime() - s0;
+// A frame's records applied: each a record's words — the text frame's, split, or
+// the direct calls', as they came.
+static void apply_records(NSArray<NSArray<NSString*>*>* records) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     NSMutableSet<NSNumber*>* roots = [NSMutableSet new];
     double r0 = CACurrentMediaTime();
-    NSMutableSet<NSNumber*>* carried = paired(lines, roots);
+    NSMutableSet<NSNumber*>* carried = paired(records, roots);
     g_pair_s += CACurrentMediaTime() - r0;
-    for (NSString* line in lines) {
-        double p0 = CACurrentMediaTime();
-        NSArray<NSString*>* w = [line componentsSeparatedByString:@" "];
+    for (NSArray<NSString*>* w in records) {
         if (w.count < 2) continue;
         NSString* op = w[0];
         NSInteger nid = w[1].integerValue;
         SpikeNode* n = g_nodes[@(nid)];
         double t1 = CACurrentMediaTime();
-        g_parse_s += t1 - p0;
         if ([op isEqualToString:@"create"]) {
             if (![carried containsObject:@(nid)]) g_nodes[@(nid)] = taken(w[2], nid);
         } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
@@ -846,7 +840,29 @@ static void applied(NSString* frame) {
     [CATransaction commit];
 }
 
+// THE TEXT FRAME, read for debugging: its lines split into records.
+static void applied(NSString* frame) {
+    double s0 = CACurrentMediaTime();
+    NSMutableArray<NSArray<NSString*>*>* records = [NSMutableArray new];
+    for (NSString* line in [frame componentsSeparatedByString:@"\n"]) [records addObject:[line componentsSeparatedByString:@" "]];
+    g_parse_s += CACurrentMediaTime() - s0;
+    apply_records(records);
+}
+
 // THE PROGRAM'S FRAME: drawn at once once the window stands, kept until then.
+// What follows every frame applied: the unused records said, the first frame timed.
+static void frame_done(void) {
+    if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_FRAMES"]) {
+        for (NSString* u in g_unused) said([NSString stringWithFormat:@"unused: %@ x%lu", u, (unsigned long)[g_unused countForObject:u]]);
+        [g_unused removeAllObjects];
+    }
+    if (g_first_frame_ms < 0) {
+        [g_root.window layoutIfNeeded];
+        g_first_frame_ms = now_ms() - g_started_ms;
+        said([NSString stringWithFormat:@"first frame %.1f ms after the process started", g_first_frame_ms]);
+    }
+}
+
 void avra_spike_frame(const char* records) {
     NSString* frame = [NSString stringWithUTF8String:records];
     if (!g_root) {
@@ -857,15 +873,43 @@ void avra_spike_frame(const char* records) {
     double a0 = CACurrentMediaTime();
     applied(frame);
     g_apply_s += CACurrentMediaTime() - a0;
-    if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_FRAMES"]) {
-        for (NSString* u in g_unused) said([NSString stringWithFormat:@"unused: %@ x%lu", u, (unsigned long)[g_unused countForObject:u]]);
-        [g_unused removeAllObjects];
+    frame_done();
+}
+
+// THE DIRECT CALLS: the program says each patch as a call inside its turn, between
+// a begin and an end; nothing is written as text or parsed. A frame said before
+// the window stands waits for it.
+static NSMutableArray<NSArray<NSString*>*>* g_ops;
+static NSMutableArray<NSMutableArray<NSArray<NSString*>*>*>* g_pending_ops;
+
+static NSString* num(int64_t n) { return [NSString stringWithFormat:@"%lld", n]; }
+static NSString* text(const char* s) { return [NSString stringWithUTF8String:s]; }
+
+void avra_spike_begin(void) { g_ops = [NSMutableArray new]; }
+void avra_spike_create(int64_t id, const char* prim) { [g_ops addObject:@[ @"create", num(id), text(prim) ]]; }
+void avra_spike_fact_text(int64_t id, int64_t code, const char* under, const char* value) { [g_ops addObject:@[ @"fact", num(id), num(code), text(under), @"t", text(value) ]]; }
+void avra_spike_fact_flag(int64_t id, int64_t code, const char* under, int64_t on) { [g_ops addObject:@[ @"fact", num(id), num(code), text(under), @"f", on ? @"1" : @"0" ]]; }
+void avra_spike_fact_number(int64_t id, int64_t code, const char* under, int64_t n) { [g_ops addObject:@[ @"fact", num(id), num(code), text(under), @"n", num(n) ]]; }
+void avra_spike_fact_fraction(int64_t id, int64_t code, const char* under, double x) { [g_ops addObject:@[ @"fact", num(id), num(code), text(under), @"x", [NSString stringWithFormat:@"%g", x] ]]; }
+void avra_spike_drop(int64_t id, int64_t code, const char* under) { [g_ops addObject:@[ @"drop", num(id), num(code), text(under) ]]; }
+void avra_spike_place(int64_t id, int64_t parent, int64_t after) { [g_ops addObject:@[ @"place", num(id), num(parent), num(after) ]]; }
+void avra_spike_remove(int64_t id) { [g_ops addObject:@[ @"remove", num(id) ]]; }
+void avra_spike_listen(int64_t id, int64_t seat, const char* kind) { [g_ops addObject:@[ @"listen", num(id), num(seat), text(kind) ]]; }
+void avra_spike_unlisten(int64_t id, int64_t seat) { [g_ops addObject:@[ @"unlisten", num(id), num(seat) ]]; }
+void avra_spike_rect(int64_t id, int64_t x, int64_t y, int64_t w, int64_t h) { [g_ops addObject:@[ @"rect", num(id), num(x), num(y), num(w), num(h) ]]; }
+void avra_spike_content(int64_t w, int64_t h) { [g_ops addObject:@[ @"content", num(w), num(h) ]]; }
+void avra_spike_content_still(void) { [g_ops addObject:@[ @"content", @"still" ]]; }
+
+void avra_spike_end(void) {
+    if (!g_root) {
+        if (!g_pending_ops) g_pending_ops = [NSMutableArray new];
+        [g_pending_ops addObject:g_ops];
+        return;
     }
-    if (g_first_frame_ms < 0) {
-        [g_root.window layoutIfNeeded];
-        g_first_frame_ms = now_ms() - g_started_ms;
-        said([NSString stringWithFormat:@"first frame %.1f ms after the process started", g_first_frame_ms]);
-    }
+    double a0 = CACurrentMediaTime();
+    apply_records(g_ops);
+    g_apply_s += CACurrentMediaTime() - a0;
+    frame_done();
 }
 
 // ── What the witness reads: the accessibility tree ──────────────
@@ -1200,6 +1244,11 @@ int64_t avra_spike_narrowest(const char* prim, const char* words) {
         [g_target flipped:s];
     });
     for (NSString* f in g_pending) avra_spike_frame(f.UTF8String);
+    for (NSMutableArray* ops in g_pending_ops) {
+        g_ops = ops;
+        avra_spike_end();
+    }
+    [g_pending_ops removeAllObjects];
     [g_pending removeAllObjects];
     sources_armed();
     g_frames = [SpikeFrames new];

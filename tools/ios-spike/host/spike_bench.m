@@ -42,6 +42,7 @@ static void say(NSString* line) {
 @property(nonatomic) double fling_from;
 @property(nonatomic) BOOL slow;
 @property(nonatomic) CGFloat slow_from_y;
+@property(nonatomic, strong) NSMutableArray<NSNumber*>* gaps;
 @property(nonatomic) double fling_last;
 @property(nonatomic) NSInteger fling_frames;
 @property(nonatomic) double fling_longest;
@@ -67,6 +68,7 @@ static const double fling_s = 3.0;
         if (gap > self.fling_longest) self.fling_longest = gap;
         if (gap > 16.7) self.over16++;
         if (gap > 8.4) self.over8++;
+        if (self.slow) [self.gaps addObject:@(gap)];
     }
     self.fling_last = t;
     self.fling_frames++;
@@ -118,12 +120,18 @@ static void flung(void) {
         g_bench.over16 = g_bench.over8 = 0;
         g_bench.fling_last = 0;
         g_bench.slow = YES;
+        g_bench.gaps = [NSMutableArray new];
         g_bench.slow_from_y = g_bench.scroll.contentOffset.y;
         g_bench.fling_from = bench_now_s();
         g_bench.flinging = YES;
         later(fling_s + 1, ^{
             say([NSString stringWithFormat:@"slow scroll: %ld frames in %.1f s, longest gap %.1f ms, gaps over 16.7 ms %ld, over 8.3 ms %ld",
                 (long)g_bench.fling_frames, fling_s, g_bench.fling_longest, (long)g_bench.over16, (long)g_bench.over8]);
+            NSArray<NSNumber*>* s = [g_bench.gaps sortedArrayUsingSelector:@selector(compare:)];
+            if (s.count) {
+                double (^at)(double) = ^double(double q) { return s[MIN(s.count - 1, (NSUInteger)(q * s.count))].doubleValue; };
+                say([NSString stringWithFormat:@"slow scroll frame gaps: p50 %.1f ms, p90 %.1f, p99 %.1f, max %.1f", at(0.5), at(0.9), at(0.99), s.lastObject.doubleValue]);
+            }
             say(@"done");
             exit(0);
         });

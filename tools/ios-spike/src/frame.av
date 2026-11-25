@@ -11,6 +11,44 @@ use @std.ui.style.style.{Interaction}
 use @std.ui.tree.identity.{NodeId}
 use @std.ui.tree.seats.{row_at}
 
+extern fn avra_spike_create(id: int, prim: string)
+extern fn avra_spike_fact_text(id: int, code: int, under: string, value: string)
+extern fn avra_spike_fact_flag(id: int, code: int, under: string, on: int)
+extern fn avra_spike_fact_number(id: int, code: int, under: string, n: int)
+extern fn avra_spike_fact_fraction(id: int, code: int, under: string, x: float)
+extern fn avra_spike_drop(id: int, code: int, under: string)
+extern fn avra_spike_place(id: int, parent: int, after: int)
+extern fn avra_spike_remove(id: int)
+extern fn avra_spike_listen(id: int, seat: int, kind: string)
+extern fn avra_spike_unlisten(id: int, seat: int)
+
+/// `patches` said to the host as calls, one a patch, inside the turn.
+export fn said_directly(patches: List<NativePatch>) {
+    for p in patches { called(p) }
+}
+
+fn called(p: NativePatch) {
+    match p {
+        .Create(id, prim) -> avra_spike_create(wire_id(id), prim.word()),
+        .SetFact(id, f) -> fact_called(wire_id(id), f),
+        .DropFact(id, what, under) -> avra_spike_drop(wire_id(id), what.code(), under_word(under)),
+        .Place(id, parent, after) -> avra_spike_place(wire_id(id), wire_id_of(parent), wire_id_of(after)),
+        .Remove(id) -> avra_spike_remove(wire_id(id)),
+        .Listen(id, seat) -> avra_spike_listen(wire_id(id), seat.number(), row_at(seat).prim.word()),
+        .Unlisten(id, seat) -> avra_spike_unlisten(wire_id(id), seat.number()),
+    }
+}
+
+fn fact_called(id: int, f: Fact) {
+    let under = under_word(f.under)
+    match f.holds {
+        .Text(t) -> avra_spike_fact_text(id, f.what.code(), under, t),
+        .Flag(on) -> avra_spike_fact_flag(id, f.what.code(), under, if on { 1 } else { 0 }),
+        .Number(n) -> avra_spike_fact_number(id, f.what.code(), under, n),
+        .Fraction(x) -> avra_spike_fact_fraction(id, f.what.code(), under, x),
+    }
+}
+
 /// The frame `patches` say, as the host reads it.
 export fn neutral(patches: List<NativePatch>) -> string { [recorded(p) for p in patches].join("\n") }
 

@@ -14,12 +14,15 @@ use @std.ui.tree.standing.{Standing}
 use @std.ui.tree.identity.{Stand}
 use @std.ui.realize.native.patch.{NativePatch, moves_boxes}
 use @std.time.{now_ns}
-use frame.{neutral}
-use kit.{rects, remembered, solve_ns, rects_split}
+use frame.{neutral, said_directly}
+use kit.{rects, placed_directly, remembered, solve_ns, rects_split}
 
 extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
 extern fn avra_spike_log(words: string)
+extern fn avra_spike_begin()
+extern fn avra_spike_end()
+extern fn avra_spike_content_still()
 extern fn avra_mem_live() -> int
 
 /// What a tap reaches: the page the program paints, once it stands.
@@ -109,17 +112,27 @@ export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
             let patches = at.patches(root)
             let t1 = now_ns()
             on_screen.set(at.owners())
-            let said = neutral(patches)
-            let t2 = now_ns()
-            let r0 = now_ns()
-            let standing_page = at.page.get()
-            page_get_ns().set(now_ns() - r0)
-            let placed = if moves_boxes(patches) || shown_root().get().is_empty() { rects(root, standing_page) } else { "content still" }
-            let t3 = now_ns()
-            if !patches.is_empty() { avra_spike_frame(said) }
-            avra_spike_frame(placed)
+            let moving = moves_boxes(patches) || shown_root().get().is_empty()
+            if text_frame() {
+                let said = neutral(patches)
+                let t2 = now_ns()
+                let placed = if moving { rects(root, at.page.get()) } else { "content still" }
+                let t3 = now_ns()
+                if !patches.is_empty() { avra_spike_frame(said) }
+                avra_spike_frame(placed)
+                phases().set([t1 - t0, t2 - t1, t3 - t2])
+            } else {
+                avra_spike_begin()
+                said_directly(patches)
+                let t2 = now_ns()
+                if moving { placed_directly(root, at.page.get()) } else { avra_spike_content_still() }
+                let t3 = now_ns()
+                avra_spike_end()
+                phases().set([t1 - t0, t2 - t1, t3 - t2])
+            }
             shown_root().set([root])
-            avra_spike_log(paint_line(patches, t1 - t0, t2 - t1, t3 - t2, avra_mem_live() - live0))
+            let ph = phases().get()
+            avra_spike_log(paint_line(patches, ph[0], ph[1], ph[2], avra_mem_live() - live0))
         },
         on_screen,
         at.stands,
@@ -167,6 +180,15 @@ fn is_create(p: NativePatch) -> bool {
         .SetFact(_, _) or .DropFact(_, _, _) or .Place(_, _, _) or .Remove(_) or .Listen(_, _) or .Unlisten(_, _) -> false,
     }
 }
+
+/// Whether the host is told by the text frame, for reading (`AVRA_SPIKE_TEXT=1`),
+/// rather than by direct calls.
+once fn text_setting() -> string { env("AVRA_SPIKE_TEXT") ?? "" }
+
+fn text_frame() -> bool { text_setting() == "1" }
+
+/// The last paint's lower + diff, telling and placing, in nanoseconds.
+once fn phases() -> Cell<List<int>> { Cell.new([0, 0, 0]) }
 
 /// How long reading the page took, in nanoseconds.
 once fn page_get_ns() -> Cell<int> { Cell.new(0) }

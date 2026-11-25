@@ -98,6 +98,27 @@ export fn rects(root: Node, page: List<Native>) -> string {
     said
 }
 
+extern fn avra_spike_rect(id: int, x: int, y: int, w: int, h: int)
+extern fn avra_spike_content(w: int, h: int)
+
+/// The page placed in the host's width and its boxes said to the host as calls.
+export fn placed_directly(root: Node, page: List<Native>) {
+    let p1 = now_ns()
+    let placed = place(root, remembered(), avra_spike_width())
+    solve_ns().set(now_ns() - p1)
+    let top? = page.first() else { return }
+    rects_called(top, placed, 0, 0)
+    avra_spike_content(placed.rect.w, placed.rect.h)
+}
+
+fn rects_called(e: Native, p: Placed, x: int, y: int) {
+    let r = p.rect
+    avra_spike_rect(e.id.n + 1, r.x - x, r.y - y, r.w, r.h)
+    for j, k in e.kids {
+        if j < p.kids.length { rects_called(k, p.kids[j], r.x, r.y) }
+    }
+}
+
 /// `e`'s box at `p`, relative to its parent's corner (`x`, `y`), then its
 /// children's under it.
 fn rect_lines(e: Native, p: Placed, x: int, y: int) -> List<string> {
