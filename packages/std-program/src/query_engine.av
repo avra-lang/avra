@@ -266,6 +266,11 @@ export type QueryEngine = {
     settled_answers: HashKeyedTable<SettledAnswer>,
     /// The questions being answered now, innermost last.
     open_questions: Cell<List<OpenQuestion>>,
+    /// How many of `open_questions` are open now: a question closing lowers it, and the slot above
+    /// is written again by the next one opened, so opening and closing copy no list.
+    open_depth: Cell<int>,
+    /// The innermost of the questions open now, which every read made is recorded for.
+    innermost: Cell<OpenQuestion?>,
     /// The reads being gathered now, innermost last.
     gathering: Cell<List<ReadsGathered>>,
     /// How many questions were open where each read left unrecorded began, innermost last: a read
@@ -363,6 +368,8 @@ export fn query_engine(
         settled_answers: settled_answers,
         adopted: Cell.new(false),
         open_questions: open_questions,
+        open_depth: Cell.new(0),
+        innermost: Cell.new(null),
         gathering: gathering,
         unrecorded_at: unrecorded_at,
         readers: Cell.new(0),
@@ -822,7 +829,7 @@ impl QueryEngine {
     /// Holds the input being answered by the stamp of the path it just read, where that path wore
     /// `before` when the read began and wears it still.
     fn read_under(path: string, before: int?) {
-        let asker? = self.open_questions.get().last() else { return }
+        let asker? = self.open_top() else { return }
         let held? = before else { return }
         // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
         if stamp(path) != held { return }
@@ -1048,7 +1055,7 @@ impl QueryEngine {
 
     /// The input being answered read the path `path`: the package holding it joins what it read.
     fn input_read_at(path: string) {
-        let asker? = self.open_questions.get().last() else { return }
+        let asker? = self.open_top() else { return }
         self
             .read_sets
             .put(
@@ -1067,27 +1074,43 @@ impl QueryEngine {
         self.computed.push(definition.query_name)
         let compute = definition.compute
         let bytes = compute(self, asked.arguments)
-        self.open_questions.set(outer)
+        self.closed_to(outer)
         QueryRun { bytes: bytes, reads: reads }
     }
 
-    /// `asked` opened as the innermost question, its reads recorded in `reads`; answers the
-    /// questions open before it. A question asked while it's being answered is the caller's defect.
-    fn opened(asked: Question, reads: ReadTable) -> List<OpenQuestion> {
-        let outer = self.open_questions.get()
-        if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked, outer)) }
-        self
-            .open_questions
-            .push(
-                OpenQuestion {
-                    question: asked.known_as,
-                    query_name: asked.query_name,
-                    arguments: asked.arguments,
-                    reads: reads,
-                    reader: self.next_reader(),
-                },
-            )
+    /// `asked` opened as the innermost question, its reads recorded in `reads`; answers how many
+    /// questions were open before it, which closing it sets back (`open_depth`). A question asked
+    /// while it's being answered is the caller's defect.
+    fn opened(asked: Question, reads: ReadTable) -> int {
+        let outer = self.open_depth.get()
+        if self.question_open(asked.known_as) { defect(asked_while_being_answered(asked, self.open_questions.get().take(outer))) }
+        let open = OpenQuestion {
+            question: asked.known_as,
+            query_name: asked.query_name,
+            arguments: asked.arguments,
+            reads: reads,
+            reader: self.next_reader(),
+        }
+        if outer < self.open_questions.get().length { self.open_questions.set_at(outer, open) } else { self.open_questions.push(open) }
+        self.open_depth.set(outer + 1)
+        self.innermost.set(open)
         outer
+    }
+
+    /// The innermost question open now; absent with none open.
+    fn open_top() -> OpenQuestion? { self.innermost.get() }
+
+    /// Whether the question known as `question` is open now, being answered.
+    fn question_open(question: ContentHash) -> bool {
+        let open = self.open_questions.get()
+        for i in 0..self.open_depth.get() { if open[i].question.same_as(question) { return true } }
+        false
+    }
+
+    /// The questions open now set back to the `depth` outermost, the innermost of them asking again.
+    fn closed_to(depth: int) {
+        self.open_depth.set(depth)
+        self.innermost.set(if depth == 0 { null } else { self.open_questions.get()[depth - 1] })
     }
 
     /// THE ANSWER FOLDED FORWARD from its last one in this binary's frontier: the step handed the
@@ -1120,7 +1143,7 @@ impl QueryEngine {
         }
         let bytes = step(self, asked.arguments, last, [m! for m in moved])
         self.times.get()?.closed()
-        self.open_questions.set(outer)
+        self.closed_to(outer)
         let folded? = bytes else { return null }
         self.folded.push(asked.query_name)
         QueryRun { bytes: folded, reads: reads }
@@ -1200,7 +1223,7 @@ impl QueryEngine {
     fn record_read(read: RecordedRead) {
         if !self.recording() { return }
         self.gathered(read)
-        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
+        let asker? = self.open_top() else { return self.asked_alone.put(read.question, true) }
         asker.reads.put(read)
     }
 
@@ -1210,12 +1233,12 @@ impl QueryEngine {
         if !self.recording() { return }
         let gathering = self.gathering.get()
         if !gathering.is_empty() {
-            let depth = self.open_questions.get().length
+            let depth = self.open_depth.get()
             for g in gathering {
                 if g.depth == depth { g.reads.whole(question, answer) }
             }
         }
-        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(question, true) }
+        let asker? = self.open_top() else { return self.asked_alone.put(question, true) }
         asker.reads.whole(question, answer)
     }
 
@@ -1223,7 +1246,7 @@ impl QueryEngine {
     /// `recorded_again`: for an answer whose question's arguments say all those reads could tell it,
     /// as a face says all a declaration's reading back can. A question those reads ask records what
     /// it reads as ever.
-    fn unrecorded_begun() { self.unrecorded_at.set(self.unrecorded_at.get().concat([self.open_questions.get().length])) }
+    fn unrecorded_begun() { self.unrecorded_at.set(self.unrecorded_at.get().concat([self.open_depth.get()])) }
 
     /// Reads made by whoever is asking now are its reads again, as before the innermost
     /// `unrecorded_begun`.
@@ -1236,14 +1259,14 @@ impl QueryEngine {
     /// `recorded_again`, with just the questions open that were open there.
     fn recording() -> bool {
         let at? = self.unrecorded_at.get().last() else { return true }
-        at != self.open_questions.get().length
+        at != self.open_depth.get()
     }
 
     /// `read`, made with the questions open now, gathered by each gathering begun with just those open.
     fn gathered(read: RecordedRead) {
         let gathering = self.gathering.get()
         if gathering.is_empty() { return }
-        let depth = self.open_questions.get().length
+        let depth = self.open_depth.get()
         for g in gathering {
             if g.depth == depth { g.reads.put(read) }
         }
@@ -1257,7 +1280,7 @@ impl QueryEngine {
             .gathering
             .push(
                 ReadsGathered {
-                    depth: self.open_questions.get().length,
+                    depth: self.open_depth.get(),
                     reads: reads,
                     reader: self.next_reader(),
                 },
@@ -1274,10 +1297,9 @@ impl QueryEngine {
     /// open now, else the innermost question, else zero for none. Two reads under one serial reach
     /// the same tables.
     fn reader() -> int {
-        let open = self.open_questions.get()
         let inner = self.gathering.get().last()
-        if inner?.depth ?? -1 == open.length { return inner?.reader ?? 0 }
-        open.last()?.reader ?? 0
+        if inner?.depth ?? -1 == self.open_depth.get() { return inner?.reader ?? 0 }
+        self.open_top()?.reader ?? 0
     }
 
     /// The reads gathered since the innermost `reads_begun`, which ends there. Gathering none begun
