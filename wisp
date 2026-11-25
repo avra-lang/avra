@@ -3,7 +3,8 @@
 #
 #   ./wisp <command> [args…]               stdin and the status pass through
 #   ./wisp --path                          where the binary stands, built if need be
-#   ./wisp --key                           the package's key: a hash of its manifest and src/, tests aside
+#   ./wisp --key                           the package's key: a hash of its manifest and src/ as they
+#                                          stand on disk, tests aside
 #   ./wisp --compiler <avra> <…>           build with that compiler when no binary stands for the key
 #
 # A KEEPER IS NEVER JUDGED BY THE COMPILER UNDER TEST. The binary is main's:
@@ -25,9 +26,9 @@ package=packages/wisp
 
 key() {
     if git rev-parse --git-dir >/dev/null 2>&1; then
-        files=$(git ls-files -s -- "$package/avra.toml" "$package/src" ":(exclude,glob)$package/**/tests/**")
+        files=$(git ls-files -co --exclude-standard -- "$package/avra.toml" "$package/src" ":(exclude,glob)$package/**/tests/**")
         [ -n "$files" ] || { echo "wisp: git lists no $package here" >&2; exit 1; }
-        printf '%s\n' "$files" | git hash-object --stdin
+        for f in $files; do printf '%s %s\n' "$f" "$(git hash-object "$f")"; done | git hash-object --stdin
     else
         files=$(find "$package/avra.toml" "$package/src" -type f -not -path '*/tests/*' | sort)
         [ -n "$files" ] || { echo "wisp: no $package here" >&2; exit 1; }
