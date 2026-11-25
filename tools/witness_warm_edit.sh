@@ -31,7 +31,8 @@ grep -q "FAILURE" "$tmp/fail.err" \
 # the store the measurement ran over is the compiler's own.
 mkdir -p "$tmp/s/tools" "$tmp/s/build" "$tmp/s/packages/cli/src/commands" "$tmp/s/.avra-cache"
 cp "$root/tools/warm_edit_bench.sh" "$root/tools/host_key.sh" "$tmp/s/tools/"
-printf 'x · memo y\n' > "$tmp/s/packages/cli/src/commands/shared.av"
+# the line the bench edits, as it stands in the cli (warm_edit_bench.sh's SPEED_EDIT_LIT)
+printf 'x "build/libavra_runtime.a" y\n' > "$tmp/s/packages/cli/src/commands/shared.av"
 : > "$tmp/s/build/libavra_runtime.a"
 echo theirs > "$tmp/s/.avra-cache/sentinel"
 cat > "$tmp/s/build/avra" <<'RECORDS'
@@ -50,7 +51,8 @@ AVRA_WITNESS_LOG="$tmp/saw" SPEED_LOCAL=1 SPEED_ROUNDS=1 AVRA_SPEED_BIN="$tmp/s/
 # 1b. a measurement whose subshell dies is a NAMED refusal, never an unbound `$1`.
 mkdir -p "$tmp/m/tools" "$tmp/m/build" "$tmp/m/packages/cli/src/commands" "$tmp/m/.avra-cache"
 cp "$root/tools/warm_edit_bench.sh" "$root/tools/host_key.sh" "$tmp/m/tools/"
-printf 'x · memo y\n' > "$tmp/m/packages/cli/src/commands/shared.av"
+# the line the bench edits, as it stands in the cli (warm_edit_bench.sh's SPEED_EDIT_LIT)
+printf 'x "build/libavra_runtime.a" y\n' > "$tmp/m/packages/cli/src/commands/shared.av"
 : > "$tmp/m/build/libavra_runtime.a"
 cat > "$tmp/m/build/avra" <<'DIES'
 #!/bin/sh
