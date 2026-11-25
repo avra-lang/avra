@@ -1,0 +1,32 @@
+//! The board at `AVRA_BENCH_ROWS` tasks (10,000 by default), seeded through its
+//! hydration door and drawn once on a native page: how many elements and
+//! patches the first paint makes, and how long each step takes.
+use @ui.board.{tasks_written, view}
+use @std.ui.realize.native.live.{native_live}
+use @std.ui.realize.native.element.{Native}
+use @std.ui.realize.native.patch.{NativePatch}
+use @std.io.{env}
+use @std.text.{parse_int}
+use @std.time.{now_ms}
+
+fn rows() -> int { parse_int(env("AVRA_BENCH_ROWS") ?? "10000") ?? 10000 }
+
+fn tasks_json(n: int) -> string { "[${["{\"id\":${i + 1},\"title\":\"Task ${i + 1}\",\"done\":${if i % 3 == 0 { "true" } else { "false" }}}" for i in 0..n].join(",")}]" }
+
+fn count(e: List<Native>) -> int { e.fold(0, (a: int, x: Native) -> a + 1 + count(x.kids)) }
+
+fn creates(ps: List<NativePatch>) -> int {
+    [p for p in ps if match p { .Create(_, _) -> true, rest -> false }].length
+}
+
+let n = rows()
+let seeded = tasks_written(tasks_json(n))
+let page = native_live()
+let t0 = now_ms()
+let root = page.drawn(view())
+let t1 = now_ms()
+let patches = page.patches(root)
+let t2 = now_ms()
+println("rows ${n} seeded ${seeded}")
+println("elements ${count(page.page.get())} created ${creates(patches)} patches ${patches.length}")
+println("draw ${t1 - t0} ms, lower+diff ${t2 - t1} ms")
