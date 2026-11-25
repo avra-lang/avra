@@ -360,6 +360,10 @@ def written(m, where):
 
 # ---- the oracles ----------------------------------------------------------------------------
 
+class HarnessFailed(Exception):
+    """The harness can't hold a step to its invariants: its fault, never a find."""
+
+
 class Run:
     def __init__(self, compiler, where, fixture=None):
         self.compiler, self.where = os.path.abspath(compiler), where
@@ -423,8 +427,12 @@ class Run:
                 if any(n.startswith("frontier-") for n in names):
                     done = subprocess.run([self.compiler, "cache", "check", d], capture_output=True, text=True,
                                           env=self.env(), timeout=300)
+                    said = (done.stderr or done.stdout).replace(self.where, "<run>").strip()
+                    if done.returncode != 0 and "avra cache check:" not in said:
+                        # no `cache check` in this compiler: the harness can't hold the store at all
+                        raise HarnessFailed(f"`avra cache check` isn't this compiler's: {said[:200]}")
                     if done.returncode != 0:
-                        out.append((done.stderr or done.stdout).replace(self.where, "<run>").strip())
+                        out.append(said)
         return out
 
     def computed(self, pkg):
@@ -497,18 +505,27 @@ def ran(compiler, seed, ops, keep=False, fixture=None):
         first = run.built()
         if first["exit"] != 0:
             return (-1, f"the first cold build failed: {first['words'][-400:]}")
-        for m, moved, kind, index in replayed(seed, ops, fixture):
-            fixture.written(m, where)
-            warm = run.built()
-            cold = run.cold()
-            failed = (step_failure(run, warm, moved, kind, cold) or run.fresh_failure(warm) or
-                      run.work_failure(kind == "beside"))
-            if failed:
-                return (index, f"{kind}: {failed}")
-        return None
+        try:
+            return stepped(run, fixture, seed, ops, where)
+        except HarnessFailed as e:
+            return (-1, str(e))
     finally:
         if not keep:
             shutil.rmtree(where, ignore_errors=True)
+
+
+def stepped(run, fixture, seed, ops, where):
+    """Each step of the sequence built and held to the invariants: the step that failed and how, or
+    None."""
+    for m, moved, kind, index in replayed(seed, ops, fixture):
+        fixture.written(m, where)
+        warm = run.built()
+        cold = run.cold()
+        failed = (step_failure(run, warm, moved, kind, cold) or run.fresh_failure(warm) or
+                  run.work_failure(kind == "beside"))
+        if failed:
+            return (index, f"{kind}: {failed}")
+    return None
 
 
 def drawn(seed, steps, fixture=None):
@@ -599,9 +616,9 @@ def main():
             continue
         at, why = failed
         if at < 0:
-            # the fixture didn't build before any edit: the harness's fault, never a find
+            # the fixture didn't build, or the compiler can't check a store: the harness's fault, never a find
             broken += 1
-            print(f"store_fuzz: seed {seed} — the harness failed before any edit: {why}")
+            print(f"store_fuzz: seed {seed} — the harness failed: {why}")
             continue
         bad += 1
         least = ops[:at + 1] if a.no_shrink else shrunk(a.compiler, seed, ops, at, fixture)
