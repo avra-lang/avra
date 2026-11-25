@@ -1,0 +1,18 @@
+// proves: a cancel asked of a task that spins a `while` is heard at its
+// back-edge though the asker then only awaits it — nothing else is ready
+// and no timer stands, and the loop's own bound is never reached
+use @std.time.{ms, now_ms, sleep}
+
+let began = now_ms()
+let spinner = spawn {
+    mut turns = 0
+    while now_ms() - began < 3000 {
+        turns = turns + 1
+    }
+    turns
+}
+sleep(ms(5))
+spinner.cancel()
+defer eprintln("cut before the loop's own end: ${now_ms() - began < 2000}")
+let v = spinner.await
+println("unreached ${v}")

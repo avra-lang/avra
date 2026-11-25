@@ -1,0 +1,44 @@
+//! Parse-time lowering: the statement becomes the const that reads the
+//! file through its kind — `provided<Kind>("path")`, whose literal the
+//! embed law judges and whose kind the checker holds to `Provider` — and
+//! wears the `bundled` mark a library `collect` gathers it by. Both names
+//! are written where their libraries declare them (`note_written_in`), so
+//! no declaration of the landing file can stand in for either.
+use core.{scoped, Expr, Stmt, Scoped, Annotation, Slots, Built, computed}
+
+///
+/// STAYS A FUNCTION: one statement yields a const, a kind-checked read, an asset mark and an
+/// annotation, and a statement has no `means()` form.
+@computed
+fn asset_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let name = s.text_of("name")?
+    let kind? = s.type_opt_of("ty")? else { return .Err(unpinned_asset(name)) }
+    let path_at = s.at_of("path")?
+    let reading = store.marks()
+    let read = store
+        .alloc_expr(
+            Expr
+                .Call(
+                    scoped("provided"),
+                    [kind with { spliced: true }],
+                    [store.alloc_expr(Expr.StrLit(s.text_of("path")?), path_at)],
+                ),
+            s.built_at(),
+        )
+    store.note_written_in(reading, "@std.meta")
+    let c = store.alloc_stmt(Stmt.ConstDecl(scoped(name), kind, read), s.built_at())
+    store.mark_asset(c)
+    let marking = store.marks()
+    let callee = store.alloc_expr(Expr.Ident(scoped("bundled")), path_at)
+    store.note_written_in(marking, "@std.assets")
+    store.annotate(c, Annotation { name: "bundled", callee: callee, args: [], span: null })
+    .Ok(Built.Stmt(c))
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+/// An asset's type is written; the file's bytes do not choose it.
+fn unpinned_asset(name: string) -> string {
+    "an asset names its kind — `asset ${name}: Picture = \"…\"` — the file's octets do not choose it"
+}

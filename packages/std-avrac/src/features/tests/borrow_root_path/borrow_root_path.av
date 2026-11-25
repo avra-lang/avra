@@ -1,0 +1,57 @@
+// proves: the root decides — a writing call on a path rooted at a
+// `mut` local (a list's element, a record's field, two levels down,
+// a record holding a map, a list another name holds) stays in the
+// local; the same path rooted at `self` or a `mut` seat reaches the
+// caller.
+type R = { xs: List<int> }
+impl R {
+    mut fn add(v: int) { self.xs.push(v) }
+}
+type H = { r: R }
+type O = { h: H }
+type Reg = { tbl: Map<string, int> }
+impl Reg {
+    mut fn put(k: string) { self.tbl.set(k, 1) }
+}
+type Hold = { reg: Reg }
+type Box = { h: H }
+impl Box {
+    mut fn bump() { self.h.r.add(1) }
+}
+fn listed(r: R) -> int {
+    mut out: List<R> = []
+    out.push(r)
+    out[0].add(1)
+    out[0].xs.length
+}
+fn fielded(r: R) -> int {
+    mut h = H { r: r }
+    h.r.add(1)
+    h.r.xs.length
+}
+fn twice(r: R) -> int {
+    mut o = O { h: H { r: r } }
+    o.h.r.add(1)
+    o.h.r.xs.length
+}
+fn mapped(g: Reg) -> int {
+    mut w = Hold { reg: g }
+    w.reg.put("a")
+    w.reg.tbl.length
+}
+fn kept() -> string {
+    mut out = [R { xs: [] }]
+    let keep = out
+    out[0].add(1)
+    "${out[0].xs.length}${keep[0].xs.length}"
+}
+fn grow(mut h: H) { h.r.add(1) }
+let r = R { xs: [] }
+let g = Reg { tbl: {} }
+mut b = Box { h: H { r: R { xs: [] } } }
+b.bump()
+b.bump()
+mut hs = H { r: R { xs: [] } }
+grow(hs)
+grow(hs)
+"${listed(r)}${listed(r)}${r.xs.length} ${fielded(r)}${fielded(r)}${r.xs.length} ${twice(r)}${twice(r)}${r.xs.length} ${mapped(g)}${mapped(g)}${g.tbl.length} ${kept()} self:${b.h.r.xs.length} seat:${hs.r.xs.length}"

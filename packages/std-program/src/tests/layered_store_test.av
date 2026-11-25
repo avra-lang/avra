@@ -1,0 +1,185 @@
+// Separate engines over separate own stores and one shared store stand in for separate projects
+// built by one binary on one machine. What matters is what a later project finds: a question whose
+// every input lies under the shared roots is answered once for all of them, whoever asked first,
+// and a question that read anything else is answered in each project's own store.
+use @std.time.{stamp}
+use layered_store.{LayeredStore, PackagePlace, layered_store}
+use disk_store.{disk_store_at}
+use query_engine.{QueryDefinition, QueryEngine, query_engine, read_stamped}
+use saved_query.{ListedQuery, definitions_of, input, query, query_definition}
+
+once fn layered_world() -> Cell<Map<string, string>> {
+    let world: Map<string, string> = {}
+    Cell.new(world)
+}
+
+@input("summary")
+fn layered_text(engine: QueryEngine, path: string) -> string { read_stamped(engine, path, () -> layered_world().get().get(path) ?? "") }
+
+@query("summary")
+fn layered_length(engine: QueryEngine, path: string) -> int { layered_text(engine, path).length }
+
+@query("summary")
+fn layered_doubled(engine: QueryEngine, path: string) -> int { 2 * layered_length(engine, path) }
+
+@query("summary")
+fn layered_joined(engine: QueryEngine, first: string, second: string) -> string { "${layered_text(engine, first)}+${layered_text(engine, second)}" }
+
+collect layered_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn definitions_listed() -> List<QueryDefinition> { definitions_of(layered_queries) }
+
+/// A directory no test used before.
+fn fresh_directory(label: string) -> string { "/tmp/avra-layered-store/${stamp()}-${label}" }
+
+/// Where the packages these projects read stand: a std package the shared store serves, one pinned
+/// beneath it that it doesn't, and the project's own.
+fn places() -> List<PackagePlace> {
+    [
+        PackagePlace { name: "@std/x", root: "/std", shared: true },
+        PackagePlace { name: "pinned", root: "/std/pinned", shared: false },
+        PackagePlace { name: "proj", root: "/proj", shared: false },
+    ]
+}
+
+/// A project's store at `own` over the shared store at `shared`.
+fn project(own: string, shared: string) -> LayeredStore { layered_store(disk_store_at(own), disk_store_at(shared), places(), "test") }
+
+fn engine_over(store: LayeredStore) -> QueryEngine { query_engine(store, definitions_listed()) }
+
+/// The world with `path` reading `text`.
+fn world_set(path: string, text: string) { layered_world().put(path, text) }
+
+/// What a project at `own` over `shared` answers when `ask` asks, published, and how many questions
+/// it worked out.
+type Asked<T> = { answer: T, worked: int }
+
+fn asked_in<T>(own: string, shared: string, ask: fn(QueryEngine) -> T) -> Asked<T> {
+    let store = project(own, shared)
+    let engine = engine_over(store)
+    let answer = ask(engine)
+    let _ = store.saved()
+    Asked { answer: answer, worked: engine.worked_count() }
+}
+
+spec "layered_store — answers every project built by one binary shares, kept once" {
+    given "a question whose every input lies under the shared roots" {
+        then "another project finds it and works nothing out" {
+            let shared = fresh_directory("shared-one")
+            world_set("/std/a", "alpha")
+            let first = asked_in(fresh_directory("p1"), shared, (e) -> layered_length(e, "/std/a"))
+            let second = asked_in(fresh_directory("p2"), shared, (e) -> layered_length(e, "/std/a"))
+            first.answer == 5 && first.worked == 1 && second.answer == 5 && second.worked == 0
+        }
+    }
+    given "a question that read a project's own input" {
+        then "another project works it out again" {
+            let shared = fresh_directory("shared-two")
+            world_set("/proj/b", "beta")
+            let first = asked_in(fresh_directory("p1"), shared, (e) -> layered_length(e, "/proj/b"))
+            let second = asked_in(
+                fresh_directory("p2"),
+                shared,
+                (e) -> layered_length(e, "/proj/b"),
+            )
+            first.worked == 1 && second.worked == 1 && second.answer == 4
+        }
+    }
+    given "two programs asking one shared question, in either order" {
+        then "whichever asks second finds what the first kept" {
+            let one = fresh_directory("shared-order-one")
+            let two = fresh_directory("shared-order-two")
+            world_set("/std/c", "gamma")
+            world_set("/std/d", "delta")
+            world_set("/proj/e", "eps")
+            let a_first = asked_in(
+                fresh_directory("a"),
+                one,
+                (e) -> layered_joined(e, "/std/c", "/std/d"),
+            )
+                .worked
+            let b_second = asked_in(
+                fresh_directory("b"),
+                one,
+                (e) -> layered_joined(e, "/std/c", "/std/d"),
+            )
+                .worked
+            let b_first = asked_in(
+                fresh_directory("b"),
+                two,
+                (e) -> layered_joined(e, "/std/c", "/std/d"),
+            )
+                .worked
+            let a_second = asked_in(
+                fresh_directory("a"),
+                two,
+                (e) -> layered_joined(e, "/std/c", "/std/d"),
+            )
+                .worked
+            let mixed = asked_in(
+                fresh_directory("c"),
+                one,
+                (e) -> layered_joined(e, "/std/c", "/proj/e"),
+            )
+                .worked
+            a_first == 1 && b_second == 0 && b_first == 1 && a_second == 0 && mixed == 1
+        }
+    }
+    given "a question whose read was reused from the shared store" {
+        then "it is shared too, and a third project finds it" {
+            let shared = fresh_directory("shared-reused")
+            let own = fresh_directory("p1")
+            world_set("/std/f", "phi")
+            let _ = asked_in(own, shared, (e) -> layered_length(e, "/std/f"))
+            let doubled = asked_in(own, shared, (e) -> layered_doubled(e, "/std/f"))
+            let third = asked_in(fresh_directory("p3"), shared, (e) -> layered_doubled(e, "/std/f"))
+            doubled.answer == 6 && doubled.worked == 1 && third.answer == 6 && third.worked == 0
+        }
+    }
+    given "a shared input that changed after its answer was kept" {
+        then "the next project works it out again and answers what the input says now" {
+            let shared = fresh_directory("shared-moved")
+            world_set("/std/g", "gee")
+            let _ = asked_in(fresh_directory("p1"), shared, (e) -> layered_length(e, "/std/g"))
+            world_set("/std/g", "geeeee")
+            let after = asked_in(fresh_directory("p2"), shared, (e) -> layered_length(e, "/std/g"))
+            after.answer == 6 && after.worked == 1
+        }
+    }
+    given "an input under a root the project pins apart" {
+        then "it is the project's own, worked out in each project" {
+            let shared = fresh_directory("shared-pinned")
+            world_set("/std/pinned/h", "eta")
+            let first = asked_in(
+                fresh_directory("p1"),
+                shared,
+                (e) -> layered_length(e, "/std/pinned/h"),
+            )
+            let second = asked_in(
+                fresh_directory("p2"),
+                shared,
+                (e) -> layered_length(e, "/std/pinned/h"),
+            )
+            first.worked == 1 && second.worked == 1
+        }
+    }
+    given "a question that read a std package and the project's own" {
+        then "it names both packages it read, whichever it read first" {
+            let shared = fresh_directory("shared-named")
+            world_set("/std/i", "iota")
+            world_set("/proj/j", "jay")
+            let store = project(fresh_directory("p1"), shared)
+            let engine = engine_over(store)
+            let _ = layered_joined(engine, "/proj/j", "/std/i")
+            let _ = layered_joined(engine, "/std/i", "/proj/j")
+            let first = engine
+                .packages_read(layered_joined_question(engine, "/proj/j", "/std/i").known_as) ?? []
+            let second = engine
+                .packages_read(layered_joined_question(engine, "/std/i", "/proj/j").known_as) ?? []
+            let std_only = engine.packages_read(layered_text_question(engine, "/std/i").known_as) ?? []
+            first.join(",") == "@std/x,proj" &&
+                second.join(",") == "@std/x,proj" &&
+                std_only.join(",") == "@std/x"
+        }
+    }
+}

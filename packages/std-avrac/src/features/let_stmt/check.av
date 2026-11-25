@@ -1,0 +1,38 @@
+//! The let's typing law: an ANNOTATED binding holds what it
+//! declares — the shared declared-binding law, aimed by name. An
+//! unannotated let keeps inferring from its value.
+use core.{StmtId, ExprId, TypeId}
+use features.{TypeCx}
+use diagnostics.{Voice, refusal, said_as}
+
+/// BEFORE the value walks: the declaration records, and the want
+/// plants — a lambda or literal underneath hears its slot.
+export fn plant_let(mut cx: TypeCx, s: StmtId) {
+    let ann? = cx.view.store.binding_ty(s) else { return }
+    let declared = cx.bind_declared(s, ann)
+    let v: ExprId? = cx.view.store.stmt_value(s)
+    if v != null { cx.plant_want(v!, declared) }
+}
+
+/// AFTER: the walked value must be what the name declared.
+export fn check_let(mut cx: TypeCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return }
+    if cx.refuses_void_value(v) { return }
+    if cx.view.store.binding_ty(s) == null { return }
+    cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", cx.def_type(s))
+}
+
+/// A destructuring `let` the block never folded: it stands where no
+/// block holds the rest — a file's top level.
+export fn unfolded_let(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx.spoken(said_as("type.let_pattern", cx.loc_of(e), let_unblocked()))
+}
+
+/// A destructuring `let` at a file's top level.
+export fn let_unblocked() -> Voice {
+    Voice {
+        message: "a destructuring `let` takes the rest of a block as its scope, and a file's top level is no block",
+        label: "this `let`",
+        help: "destructure inside a fn body, or `match` the value",
+    }
+}

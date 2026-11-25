@@ -1,0 +1,1344 @@
+//! `@std/db` — a record type IS the schema. `@model` reads a
+//! declaration's fields (their names, their shapes, their marks) and
+//! answers the table DDL and the typed CRUD that agree with it —
+//! never a second, hand-kept schema description. It answers both the
+//! generated code AND the declaration's own contract in one `Declared`
+//! value: `made` is the `impl`, `problems` is every way the shape
+//! breaks the model law, spoken at the declaration itself.
+//!
+//!     use @std.db.{model}
+//!     use @std.sqlite.{Db}
+//!
+//!     @model
+//!     type User = {
+//!         id: int = 0
+//!         @unique email: string
+//!         name: string
+//!     }
+//!
+//! Every model's FIRST field is `id: int = 0` — the primary key SQLite
+//! mints, held in the type itself so a found row and an inserted one
+//! are the same shape. `@unique` marks a column's own constraint, and
+//! `@unique(board) title` a key over several: no two rows hold the same
+//! `title` within one `board`. The key's columns are the fields the mark
+//! names, in written order, then the field it stands on; a row holding
+//! nothing in one of them repeats no other.
+//! A key the model holds as a whole is declared on the type itself,
+//! `@unique(entity, property, value) type Fact = { … }`: its fields are
+//! named bare and checked against the type where they're written.
+//! `@index` is the same marks for rows found by their fields rather than
+//! held unique by them: `@index name` looks rows up by one column,
+//! `@index(board) due` by `board` then `due`, `@index(board, due)` on the
+//! type the same. A field's `@index` may hold only some rows:
+//! `@index(absent: done_at) due` the rows whose `done_at` is null,
+//! `present: done_at` the rest. Every index ends in the row's key, so
+//! `@index(absent: done_at) board` walks a board's open rows in key order.
+//!
+//! Stands ALONE with `@std/meta`, per CLAUDE.md's derive-isolation law
+//! — the file that types this trait must not also carry code the
+//! annotated file's own names could shadow.
+use @std.meta.{
+    Type,
+    Field,
+    Annotation,
+    Mark as FieldMark,
+    Kind,
+    Directive,
+    Diagnostic,
+    Declared,
+    Code,
+    Decls,
+    Stmts,
+    name,
+    literal,
+    type_named,
+    stored_scalar,
+    flat,
+    flat_field,
+    flat_made,
+    refuse_as_at,
+    beside,
+    declares,
+}
+use @std.errors.{Loc}
+use @std.sqlite.{Db, SqlValue, sql, prepared}
+use @std.sqlite.error.{SqlError}
+use @std.validate.{Checked, Issues, checker, decoder, stripped}
+use @std.time.{now}
+use apply.{Entry, MigrateError, claim_table, grown, lifted}
+use reads.{read_noted}
+use shape.{ColumnFacts, Index, Only, Shape, create_sql, index_line, quoted, shape_text}
+use scope.{Where, scope_clause, scope_text, scope_args}
+use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
+
+/// The phantom a one-to-many relation is held as. `cards: Many<Card>`
+/// stores nothing: the derive reads the rows through the child's own link
+/// (`board.cards(db)`), so the field only says which children a parent has.
+export type Many<T> = {}
+
+export trait Model {
+    static fn derive(t: Type) -> List<Directive> {
+        let read = stripped(t, claimed(t))
+        [beside(t, generated(t)), beside(t, checks(read)), beside(t, decodes(read))]
+            .concat([declares(filter_name(t, f), t.at, filter_enum(t, f)) for f in filtered_fields(t)])
+    }
+
+    /// The marks this derive reads: `@unique` makes a column unique, and
+    /// `@unique(a, b)` makes it unique within the fields named, `@index`
+    /// and `@index(a, b)` look rows up by the same columns,
+    /// `@soft_delete` makes `remove` keep the row, `@auto` makes a column
+    /// the database's to set, `@cascade` and `@set_null` say what removing a
+    /// parent does to a child, `@via(field)` names a `Many`'s link, and
+    /// `@renamed_from("old")` says a field continues a column of that name.
+    static fn marks(t: Type) -> List<string> { ["unique", "index", "soft_delete", "auto", "cascade", "set_null", "via", "renamed_from"] }
+}
+
+/// `@model` — the library's own name for `@derive(Model)`, so the
+/// declaration reads as what it is rather than a trait a reader has
+/// to look up. `made` is the generated `impl`, built even over a
+/// shape `problems` refuses (the `impl` it builds may be one nothing
+/// should call, but it never traps the compiler on a shape it was
+/// never built for) — `problems` is what actually stops the build,
+/// spoken as real diagnostics at the declaration itself.
+/// `@unique(a, b, …)` on a `@model` type: no two rows hold the same values in those fields together —
+/// a key over several columns, declared on the model itself. Its fields are the type's own, named
+/// bare and checked where they're written; each must be a column the model stores, and named once.
+/// A key of one field is that field's own `@unique` mark, refused here. A key declared twice is `@model`'s to refuse, once.
+export fn unique(t: Type, ..fields: List<Field>) -> List<Diagnostic> { model_index_problems(t, "unique", [f.name for f in fields]) }
+
+/// `@index(a, b, …)` on a `@model` type: the rows are found by those fields together, in that
+/// order — an index over several columns, declared on the model itself, its fields under
+/// `@unique`'s law.
+export fn index(t: Type, ..fields: List<Field>) -> List<Diagnostic> { model_index_problems(t, "index", [f.name for f in fields]) }
+
+/// What is wrong with the fields an index the type declares on itself names: none, a name it
+/// stores no column for, one named twice, or only one, which is that field's own mark.
+fn model_index_problems(t: Type, word: string, key: List<string>) -> List<Diagnostic> {
+    let at = key_written(t, word, key)?.at
+    if key.is_empty() { return [model_key_empty(t, word, at)] }
+    let problems = [model_key_unstored(t, word, n, at) for n in key if !stored(t).any(it.name == n)]
+        .concat([model_key_repeats(t, word, n, at) for j, n in key if key.index_of(n) < j])
+    if problems.is_empty() && key.length == 1 { return [model_key_single(t, word, key[0], at)] }
+    problems
+}
+
+/// The `@unique` or `@index` the type `t` wears over the fields `key`, in their order.
+fn key_written(t: Type, word: string, key: List<string>) -> Annotation? { t.annotations.find(it.name == word && it.args.join(",") == key.join(",")) }
+
+/// The keys a `@model` type declares on itself, `@unique(a, b, …)`, each as the fields it names.
+fn model_keys(t: Type) -> List<List<string>> { [a.args for a in t.annotations if a.name == "unique" && !a.args.is_empty()] }
+
+/// Whether a word declares an index: `@unique` or `@index`.
+fn indexing(word: string) -> bool { word == "unique" || word == "index" }
+
+export fn model(t: Type) -> Declared {
+    Declared { made: Model.derive(t), problems: shape_problems(t) }
+}
+
+/// `@model`'s contract: every refusal here is a package-namespaced
+/// `Diagnostic` (`@std/db: no_id_field`, ...), in the law's own words.
+fn shape_problems(t: Type) -> List<Diagnostic> {
+    if t.variants.length > 0 { return [enum_not_supported(t)] }
+    if !has_id_field(t) { return [no_id_field(t)] }
+    [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
+        .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
+        .concat([not_stored(f) for f in t.fields if unheld(f)])
+        .concat(
+            [p for f in non_id_fields(t) for m in f.marks if indexing(m.name) for p in mark_problems(t, f, m)],
+        )
+        .concat(sites_twice(t, sites(t)))
+}
+
+// ── Indexes. Each `@unique(…)` and `@index` a model declares is a SITE: the
+// index, the fields it is over, and where it was written. A bare `@unique` is
+// its column's own fact, no site. ──
+
+/// One index a model declares: the index, its fields by name, the word that
+/// declared it, where, and the field it stands on (none: the type itself).
+type Site = { index: Index, fields: List<string>, word: string, at: Loc?, on: string? }
+
+/// Every index a model declares, its fields' marks first in field order, then the type's own.
+fn sites(t: Type) -> List<Site> {
+    [field_site(t, f, m) for f in non_id_fields(t) if !is_many(f) for m in f.marks if indexes_alone(m)]
+        .concat([type_site(t, a) for a in t.annotations if indexing(a.name) && !a.args.is_empty()])
+}
+
+/// Whether a field's mark declares an index of its own: any `@index`, and a
+/// `@unique` that names fields beside its own.
+fn indexes_alone(m: FieldMark) -> bool { m.name == "index" || m.name == "unique" && !m.args.is_empty() }
+
+fn field_site(t: Type, f: Field, m: FieldMark) -> Site {
+    let fields = key_fields(f, m.args)
+    Site {
+        index: Index {
+            columns: [column_named(t, n) for n in fields],
+            unique: m.name == "unique",
+            only: only_of(t, m),
+        },
+        fields: fields,
+        word: m.name,
+        at: f.at,
+        on: f.name,
+    }
+}
+
+fn type_site(t: Type, a: Annotation) -> Site {
+    Site {
+        index: Index { columns: [column_named(t, n) for n in a.args], unique: a.name == "unique" },
+        fields: a.args,
+        word: a.name,
+        at: a.at,
+        on: null,
+    }
+}
+
+/// The rows a field's `@index` holds: `absent: f` those whose `f` is null,
+/// `present: f` the rest; every row when it says neither. A word it does
+/// not know is refused where it is written.
+fn only_of(t: Type, m: FieldMark) -> Only? {
+    let arg? = m.named.first() else { return null }
+    if !partial_word(arg.label) { return null }
+    Only { column: column_named(t, arg.value), absent: arg.label == "absent" }
+}
+
+fn partial_word(label: string) -> bool { label == "absent" || label == "present" }
+
+/// What is wrong with one field's `@unique(…)` or `@index` mark: a field no
+/// column holds, a name the model stores no column for, a field named twice,
+/// and the rows it says it holds.
+fn mark_problems(t: Type, f: Field, m: FieldMark) -> List<Diagnostic> {
+    if is_many(f) { return [index_no_column(f, m.name)] }
+    let fields = key_fields(f, m.args)
+    [index_unstored(t, f, m.name, n) for n in m.args if !stored(t).any(it.name == n)]
+        .concat([index_repeats(f, m.name, n) for j, n in fields if fields.index_of(n) < j])
+        .concat(partial_problems(t, f, m))
+}
+
+/// What is wrong with the rows a mark says it holds. A key holds every row;
+/// an index holds those one stored, nullable field is null or present in.
+fn partial_problems(t: Type, f: Field, m: FieldMark) -> List<Diagnostic> {
+    if m.name == "unique" { return [unique_partial(f, a.label) for a in m.named] }
+    if m.named.length > 1 { return [index_partial_twice(f)] }
+    [p for a in m.named for p in partial_arg_problems(t, f, a.label, a.value)]
+}
+
+fn partial_arg_problems(t: Type, f: Field, label: string, n: string) -> List<Diagnostic> {
+    if !partial_word(label) { return [index_partial_word(f, label)] }
+    let held? = stored(t).find(it.name == n) else { return [partial_unstored(t, f, n)] }
+    if nullable(held.kind) { [] } else { [index_partial_kind(f, held)] }
+}
+
+/// Each index declared again, refused where it is written the second time;
+/// and each plain index over the very columns of a key, which is already one.
+fn sites_twice(t: Type, all: List<Site>) -> List<Diagnostic> {
+    [site_twice(t, s, all.take(j)) for j, s in all if all.take(j).any(index_line(it.index) == index_line(s.index))]
+        .concat([index_redundant(t, s) for s in all if keyed_already(t, all, s)])
+}
+
+/// The second writing of an index: said of its field when both stand on it, else of the type.
+fn site_twice(t: Type, s: Site, before: List<Site>) -> Diagnostic {
+    let first = before.find(index_line(it.index) == index_line(s.index))
+    let subject = if s.on != null && first?.on == s.on { s.on! } else { t.name }
+    index_twice(s.word, s.fields, subject, s.at, s.on == null)
+}
+
+/// Whether a plain index over every row is over the very columns a key holds.
+fn keyed_already(t: Type, all: List<Site>, s: Site) -> bool {
+    if s.index.unique || s.index.only != null { return false }
+    let cols = s.index.columns.join(",")
+    all.any(it.index.unique && it.index.columns.join(",") == cols) ||
+        s.index.columns.length == 1 &&
+            table_columns(t).any(it.unique && it.name == s.index.columns[0])
+}
+
+/// A field no column holds: neither a `Many`, nor a link, nor a kind a column
+/// holds.
+fn unheld(f: Field) -> bool { !is_many(f) && link_target(f) == null && held(f.kind) == null }
+
+fn not_stored(f: Field) -> Diagnostic {
+    when {
+        flat_over_nullable(f.kind) -> flat_nullable(f)
+        unstored_record(f.kind) -> record_not_stored(f)
+        _ -> kind_not_stored(f)
+    }
+}
+
+/// A flat type whose one value is itself nullable: absence would be spelled
+/// twice, by the field and by the value inside it.
+fn flat_over_nullable(k: Kind) -> bool {
+    match k {
+        .Named(n, args) -> args.is_empty() && flat(n) && nullable(stored_scalar(n)!),
+        .Opt(inner) -> flat_over_nullable(inner),
+        rest -> false,
+    }
+}
+
+/// A record-typed field is a `@model` link, or a flat record that stores as its one
+/// scalar. Any other record has no column to store it in.
+fn unstored_record(k: Kind) -> bool {
+    match k {
+        .Named(n, args) -> args.is_empty() && n != "Many" && link_target_name(n) == null && stored_scalar(n) == null,
+        .Opt(inner) -> unstored_record(inner),
+        rest -> false,
+    }
+}
+
+/// The name of a `@model` record, or null when the name is not one.
+fn link_target_name(n: string) -> string? {
+    let t? = type_named(n) else { return null }
+    if t.annotations.any(it.name == "model") { return n }
+    null
+}
+
+fn record_not_stored(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "record_not_stored",
+        f.at,
+        "a record field is stored only as a `@model` link or as one scalar: `${f.name}` is a record with neither",
+        "make `${f.name}` a `@model` record, or a record of one scalar field, or store its fields",
+    )
+}
+
+fn flat_nullable(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "flat_nullable",
+        f.at,
+        "a flat type is a column of its one present value, and `${f.name}` is `${f.ty}`, whose value may be null",
+        "declare the value present in `${f.ty}` and the field `${f.name}: ${f.ty}?`",
+    )
+}
+
+fn kind_not_stored(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "kind_not_stored",
+        f.at,
+        "a `@model` field is a column — an int, a float, a bool, a string or `Bytes`, or a record of one int, float, bool or string, or a named type over one — or a link to another `@model`: `${f.name}` is `${f.ty}`, which no column holds",
+        "hold `${f.name}` as one of those, or as the rows of a `@model` of its own that links here",
+    )
+}
+
+// ── The shape a model must have ──────────────────────────────────
+
+/// The FIRST field, required, or `@model` refuses with `no_id_field`.
+fn has_id_field(t: Type) -> bool {
+    !t.fields.is_empty() && t.fields[0].name == "id" && t.fields[0].kind is .Int
+}
+
+fn nullable_int(k: Kind) -> bool {
+    match k { .Opt(inner) -> plain_int(inner), rest -> false }
+}
+
+/// A plain integer column: the kind itself, or a record that stores as one.
+fn plain_int(k: Kind) -> bool {
+    match k {
+        .Int -> true,
+        .Named(n, args) -> args.is_empty() && stored_scalar(n) != null && is_int_kind(stored_scalar(n)!),
+        rest -> false,
+    }
+}
+
+fn is_int_kind(k: Kind) -> bool {
+    match k { .Int -> true, rest -> false }
+}
+
+/// The same question `shape_problems` answers as diagnostics, asked
+/// here as a bool: `generated` builds NOTHING over a shape this
+/// fails, rather than an `impl` whose every method mistypes against a
+/// shape it was never built for. `shape_problems` is what SPEAKS the
+/// refusal; this is what stops a second, silent, unrelated pile of
+/// errors from speaking over it.
+fn shape_ok(t: Type) -> bool { t.variants.is_empty() && has_id_field(t) && shape_problems(t).is_empty() }
+
+/// The annotations a model owns — its marks and its own — which are no
+/// rule of the validation it brings.
+fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model", "crud"]) }
+
+/// The rules the type declares, run over a row before any SQL.
+fn checks(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    checker(t)
+}
+
+/// The type read from a body by the same rules: one door in. A model that
+/// holds links has no whole wire shape yet: its link travels as a key and
+/// the parent is fetched after, which the body alone cannot do, so it
+/// derives no decoder until the key-carrying projection exists.
+fn decodes(t: Type) -> Decls {
+    if !shape_ok(t) || t.fields.any(link_target(it) != null || is_many(it)) { return quote { impl ${t} { } } }
+    decoder(t)
+}
+
+fn generated(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    quote {
+        impl ${t} {
+            static fn table_name() -> string { ${literal(table_name_of(t))} }
+            static fn create_table_sql() -> string { ${literal(create_table_sql_of(t))} }
+
+            /// The table as the database holds it, one line per column in
+            /// name order — what the registry records when it is created.
+            static fn shape() -> string { ${literal(shape_text_of(t))} }
+
+            static fn create_table(db: Db) -> Result<int, SqlError> {
+                claim_table(db, ${literal(table_name_of(t))}, ${literal(owner_of(t))}, ${literal(declared_at_of(t))}, ${literal(shape_text_of(t))})
+            }
+
+            /// The table made if it is not there, and grown to this model's
+            /// shape if it is; a change that moves is refused with its words.
+            /// Answers how many steps it took.
+            static fn migrate(db: Db) -> Result<int, MigrateError> {
+                let _ = lifted(${name(t.name)}.create_table(db))?
+                grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
+            }
+
+            fn insert(db: Db) -> Result<${t}, ModelError> {
+                let _ = or_invalid(self.check())?
+                mut args: List<SqlValue> = []
+                ${[push_inserted(f) for f in inserted_fields(t)]}
+                or_attributed(db.run(sql(${literal(insert_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})?
+                ${inserted_row(t)}
+            }
+
+            /// This row written back, as ONE statement whose own WHERE carries the
+            /// scope, so the row it changes is a row within it at the moment of the
+            /// write; a row outside the scope changes nothing (answers 0).
+            fn update(db: Db, scope: Where? = null) -> Result<int, ModelError> {
+                let _ = or_invalid(self.check())?
+                mut args: List<SqlValue> = []
+                ${[push_bound(f) for f in written_fields(t)]}
+                args.push(.Int(self.id))
+                or_attributed(db.run(sql(${literal(update_sql_of(t))} + scope_text(scope), scope_args(args, scope))), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
+            }
+
+            ${where_decl(t)}
+
+            /// The row by key, held within `scope` (none: unheld).
+            static fn find(db: Db, id: int, scope: Where? = null) -> Result<${t}?, SqlError> {
+                read_noted(${literal(table_name_of(t))})
+                ${[cache_stmt(f) for f in links(t)]}
+                let s = prepared(db, sql(${literal(select_by_id_sql_of(t))} + scope_text(scope), scope_args([.Int(id)], scope)))?
+                defer s.reset()
+                if s.step()? { ${row_ctor(t)} } else { null }
+            }
+
+            /// The rows held within `scope` (none: every row), in the order they
+            /// were inserted.
+            static fn all(db: Db, scope: Where? = null) -> Result<List<${t}>, SqlError> {
+                ${all_body(t)}
+            }
+
+            /// This row with the scope's column set to the scope's value, so a
+            /// row written through a scope stays inside it.
+            fn in_scope(scope: Where?) -> ${t} {
+                let w? = scope else { return self }
+                mut held = self
+                ${[scope_set(f) for f in scoped_fields(t)]}
+                held
+            }
+
+            /// This row removed, as one scoped statement: a row outside the scope
+            /// is untouched, and nothing it owns is cascaded (answers 0).
+            fn remove(db: Db, scope: Where? = null) -> Result<int, ModelError> {
+                ${removal(t)}
+            }
+
+            ${soft_decls(t)}
+
+            ${link_decls(t)}
+
+            ${many_decls(t)}
+        }
+    }
+}
+
+// ── Reading and removing by the fields. ──
+
+/// The columns a request writes: every one but the key and the ones the
+/// database sets.
+fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_mark(f, "auto") && !is_many(f)] }
+
+/// The columns an insert writes: the written ones, and each `@auto` column, which
+/// is bound from the program's clock rather than left to a SQL default.
+fn inserted_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_many(f)] }
+
+// ── Relations. A field of another model's type is a LINK: the column
+// `<field>_id` holds its key, and a read fetches the parent. `Many<T>` is
+// the other end: no column, an accessor over the child's link. ──
+
+/// The model a link field points at, null for any other field.
+fn link_target(f: Field) -> string? {
+    match f.kind {
+        .Named(n, args) or .Opt(.Named(n, args)) -> if n != "Many" && args.is_empty() { link_target_name(n) } else { null },
+        rest -> null,
+    }
+}
+
+fn links(t: Type) -> List<Field> { [f for f in t.fields if link_target(f) != null] }
+
+fn is_many(f: Field) -> bool {
+    match f.kind { .Named(n, args) -> n == "Many" && args.length == 1, rest -> false }
+}
+
+/// The columns a model stores: its fields but the `Many`s.
+fn stored(t: Type) -> List<Field> { [f for f in t.fields if !is_many(f)] }
+
+/// The column a field is stored in: a link's key, else the field's own name.
+fn column_of(f: Field) -> string {
+    if link_target(f) != null { return "${f.name}_id" }
+    f.name
+}
+
+/// A link's per-call cache of parents already fetched.
+fn cache_name(f: Field) -> string { "parents_${f.name}" }
+
+fn cache_stmt(f: Field) -> Stmts {
+    quote {
+        // LICENSED let_stmt.unmutated_mut: `parent_of`'s call, in another template, fills it
+        mut ${cache_name(f)}: Map<string, ${link_target(f) ?? ""}> = {}
+    }
+}
+
+fn is_mark(f: Field, word: string) -> bool { f.marks.any(it.name == word) }
+
+fn soft_field(t: Type) -> Field? { t.fields.find(is_mark(it, "soft_delete")) }
+
+/// The row as the database holds it once written: re-read when it has
+/// columns the database set, else the value written with its new key.
+fn inserted_row(t: Type) -> Code {
+    if t.fields.all(!is_mark(it, "auto")) { return quote { self with { id: db.last_insert_rowid() } } }
+    quote {
+        {
+            let key = db.last_insert_rowid()
+            let held = modeled(${name(t.name)}.find(db, key))?
+            held ?? (self with { id: key })
+        }
+    }
+}
+
+/// `where`: a row per match of every field named, none named is every
+/// row. A soft-delete model's reads skip what was removed. A nullable
+/// field filters by its value; null names no filter.
+fn where_decl(t: Type) -> Decls {
+    let seats = [where_seat(t, f) for f in stored(t)]
+    quote { static fn where(db: Db, ..${seats}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } }
+}
+
+/// One filter seat — the shape the parameter list splices, its own name
+/// and type holes read off the field.
+fn where_seat(t: Type, f: Field) -> Decls {
+    quote { fn _(${f.name}: ${param_type(t, f)} = ${param_default(f)}) {} }
+}
+
+/// A filter's seat. A column that cannot hold null filters by its value,
+/// the seat nullable so that leaving it out names no filter; a nullable
+/// column takes a `Filter`, since null is itself a value to match.
+fn param_type(t: Type, f: Field) -> string {
+    if nullable(f.kind) { return filter_name(t, f) }
+    "${f.kind.spelled()}?"
+}
+
+/// The enum a nullable column's filter seat takes, generated beside
+/// the model so it needs no import: `Any` names no filter, `Is(v)` the
+/// value it must equal, `Is(null)` the rows where it IS NULL — null is a
+/// value to match there, so it cannot also mean "not given".
+fn filter_name(t: Type, f: Field) -> string { "${t.name}_${f.name}_filter" }
+
+fn filter_enum(t: Type, f: Field) -> Decls {
+    quote {
+        enum ${filter_name(t, f)} {
+            Any
+            Is(value: ${f.kind.spelled()})
+        }
+    }
+}
+
+fn param_default(f: Field) -> Code {
+    if nullable(f.kind) { quote { .Any } } else { quote { null } }
+}
+
+/// The columns whose `where` seat is a generated filter enum.
+fn filtered_fields(t: Type) -> List<Field> { if shape_ok(t) { [f for f in t.fields if nullable(f.kind)] } else { [] } }
+
+fn nullable(k: Kind) -> bool {
+    match k { .Opt(_) -> true, rest -> false }
+}
+
+fn filter_kind(k: Kind) -> Kind {
+    match k { .Opt(inner) -> inner, rest -> k }
+}
+
+fn where_body(t: Type) -> Stmts {
+    quote {
+        read_noted(${literal(table_name_of(t))})
+        mut clauses: List<string> = ${clauses_code(live_clause(t))}
+        mut args: List<SqlValue> = []
+        ${[cache_stmt(f) for f in links(t)]}
+        ${[filter_stmt(f) for f in stored(t)]}
+        let where_text = if clauses.is_empty() { "" } else { " WHERE " + clauses.join(" AND ") }
+        let s = prepared(db, sql(${literal(select_prefix_sql_of(t))} + where_text + ${literal(order_suffix_sql())}, args))?
+        defer s.reset()
+        mut rows: List<${t}> = []
+        while s.step()? { rows.push(${row_ctor(t)}) }
+        rows
+    }
+}
+
+/// `all`'s body: the live rows within the scope, with no filter seats.
+fn all_body(t: Type) -> Stmts {
+    quote {
+        read_noted(${literal(table_name_of(t))})
+        mut clauses: List<string> = ${clauses_code(live_clause(t))}
+        let args = scope_args([], scope)
+        ${[cache_stmt(f) for f in links(t)]}
+        if scope_clause(scope) != "" { clauses.push(scope_clause(scope)) }
+        let where_text = if clauses.is_empty() { "" } else { " WHERE " + clauses.join(" AND ") }
+        let s = prepared(db, sql(${literal(select_prefix_sql_of(t))} + where_text + ${literal(order_suffix_sql())}, args))?
+        defer s.reset()
+        mut rows: List<${t}> = []
+        while s.step()? { rows.push(${row_ctor(t)}) }
+        rows
+    }
+}
+
+/// The fields a scope can set: those whose column holds an int, text or flag.
+fn scoped_fields(t: Type) -> List<Field> {
+    [f for f in stored(t) if link_target(f) == null && scope_value(f) != null]
+}
+
+/// One field set from the scope's value when the scope names its column.
+fn scope_set(f: Field) -> Stmts {
+    quote {
+        if w.column == ${literal(column_of(f))} {
+            held = held with { ${f.name}: ${scope_value(f)!} }
+        }
+    }
+}
+
+/// The scope's value read as the field's kind; the field's own when it is another.
+fn scope_value(f: Field) -> Code? {
+    match f.kind {
+        .Int -> quote { match w.value { .Int(n) -> n, rest -> self.${f.name} } },
+        .Str -> quote { match w.value { .Text(x) -> x, rest -> self.${f.name} } },
+        .Bool -> quote { match w.value { .Int(n) -> n != 0, rest -> self.${f.name} } },
+        rest -> null,
+    }
+}
+
+fn clauses_code(live: string) -> Code {
+    if live.is_empty() { quote { [] } } else { quote { [${literal(live)}] } }
+}
+
+fn filter_stmt(f: Field) -> Stmts {
+    if nullable(f.kind) { return nullable_filter(f) }
+    quote {
+        if ${name(f.name)} != null {
+            clauses.push(${literal("${quoted(column_of(f))} = ?")})
+            args.push(${bound_value(f.kind, quote { ${name(f.name)}! })})
+        }
+    }
+}
+
+/// `Any` names no filter; `Is(null)` keeps the rows where the column is
+/// NULL, `Is(v)` those equal to `v`.
+fn nullable_filter(f: Field) -> Stmts {
+    quote {
+        if ${name(f.name)} is .Is(wanted) {
+            if wanted == null {
+                clauses.push(${literal("${quoted(column_of(f))} IS NULL")})
+            } else {
+                clauses.push(${literal("${quoted(column_of(f))} = ?")})
+                args.push(${bound_value(filter_kind(f.kind), quote { wanted! })})
+            }
+        }
+    }
+}
+
+// ── The other end of a link. ──
+
+/// The child model a `Many` field names.
+fn many_child(f: Field) -> string? {
+    match f.kind {
+        .Named(n, args) -> if n == "Many" && args.length == 1 { args[0].spelled() } else { null },
+        rest -> null,
+    }
+}
+
+/// The columns a `@renamed_from("old")` field continues, and the names they had:
+/// two lists of one length, a column and its old name at each index.
+fn renamed_to(t: Type) -> List<Code> { [literal(column_of(f)) for f in stored(t) if old_name(f) != null] }
+
+fn renamed_from(t: Type) -> List<Code> { [literal(old_name(f)!) for f in stored(t) if old_name(f) != null] }
+
+/// The name a field's column had before, as `@renamed_from("name")` says it.
+fn old_name(f: Field) -> string? {
+    let mark? = f.marks.find(it.name == "renamed_from") else { return null }
+    let word? = mark.args.first() else { return null }
+    if word.starts_with("\"") && word.ends_with("\"") && word.length >= 2 { word.substring(1, word.length - 1) } else { word }
+}
+
+/// The child's field that links back: `@via(field)` when written, else the
+/// child's one link to this model, read from the child's own declaration.
+fn inverse_link(t: Type, f: Field) -> string? {
+    let via = f.marks.find(it.name == "via")
+    if via != null && !via!.args.is_empty() { return via!.args[0] }
+    let child? = many_child(f) else { return null }
+    let declared? = type_named(child) else { return null }
+    let ours = [g.name for g in declared.fields if link_target(g) == t.name]
+    if ours.length == 1 { ours[0] } else { null }
+}
+
+/// The `Many` fields whose children go when this row does: the child's
+/// link says `@cascade`.
+/// `removal` held within a scope: the row's own statement carries it, and
+/// only a row it changed has its children cascaded.
+fn removal(t: Type) -> Code {
+    if soft_field(t) == null {
+        return quote { removed(db.run(sql(${literal(delete_sql_of(t))} + scope_text(scope), scope_args([.Int(self.id)], scope))), ${literal(table_name_of(t))}) }
+    }
+    quote {
+        let opened = modeled(db.begin_unless_open())?
+        defer db.finish_if_opened(opened)
+        ${[cascade_held(f) for f in cascading(t)]}
+        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))} + scope_text(scope), scope_args([.Int(now().ns), .Int(self.id)], scope))))?
+        if changed != 0 {
+            ${[cascade_stmt(f) for f in cascading(t)]}
+        }
+        if opened { let _ = modeled(db.commit())? }
+        changed
+    }
+}
+
+fn cascading(t: Type) -> List<Field> { [f for f in t.fields if is_many(f) && child_cascades(t, f)] }
+
+fn child_cascades(t: Type, f: Field) -> bool {
+    let child? = many_child(f) else { return false }
+    let link? = inverse_link(t, f) else { return false }
+    let declared? = type_named(child) else { return false }
+    declared.fields.any(it.name == link && is_mark(it, "cascade"))
+}
+
+/// A cascading child list, read while the parent is still live: a soft
+/// parent's children are read through it, so they are held before it goes.
+fn cascade_held(f: Field) -> Stmts {
+    quote { let ${"held_" + f.name} = modeled(self.${f.name}(db))? }
+}
+
+/// The held children removed, after the parent's own statement changed a row.
+fn cascade_stmt(f: Field) -> Stmts {
+    quote {
+        for kid in ${name("held_" + f.name)} { let _ = kid.remove(db)? }
+    }
+}
+
+/// For each link: `in_<field>`, the rows whose link is one of these
+/// parents, in one query however many there are.
+fn link_decls(t: Type) -> List<Decls> {
+    [link_decl(t, f) for f in links(t)]
+}
+
+fn link_decl(t: Type, f: Field) -> Decls {
+    let parent = link_target(f) ?? ""
+    let live = live_clause(t)
+    quote {
+        static fn ${"in_" + f.name}(db: Db, owners: List<${parent}>) -> Result<List<${t}>, SqlError> {
+            read_noted(${literal(table_name_of(t))})
+            if owners.is_empty() { return [] }
+            ${[cache_stmt(g) for g in links(t)]}
+            let marks = ["?" for _o in owners].join(", ")
+            let keys = [SqlValue.Int(o.id) for o in owners]
+            let text = ${literal(select_prefix_sql_of(t) + " WHERE " + quoted(column_of(f)) + " IN (")} + marks + ${literal(")" + if live.is_empty() { "" } else { " AND " + live } + order_suffix_sql())}
+            let s = prepared(db, sql(text, keys))?
+            defer s.reset()
+            mut rows: List<${t}> = []
+            while s.step()? { rows.push(${row_ctor(t)}) }
+            rows
+        }
+    }
+}
+
+/// Whether child `k` links to owner `o`; an optional link may hold none.
+fn owned_by(child: string, link: string) -> Code {
+    let declared? = type_named(child) else { return quote { k.${link}.id == o.id } }
+    let optional = declared.fields.any(it.name == link && nullable(it.kind))
+    if optional { quote { k.${link}?.id == o.id } } else { quote { k.${link}.id == o.id } }
+}
+
+/// For each `Many`: its rows, and the whole page's in one query.
+fn many_decls(t: Type) -> List<Decls> { [many_decl(t, f) for f in t.fields if is_many(f)] }
+
+fn many_decl(t: Type, f: Field) -> Decls {
+    let child = many_child(f) ?? ""
+    let link = inverse_link(t, f) ?? ""
+    quote {
+        /// The rows linked to this one.
+        fn ${f.name}(db: Db) -> Result<List<${child}>, SqlError> {
+            ${name(child)}.${"in_" + link}(db, [self])
+        }
+
+        /// These parents' rows, one list each, fetched in one query.
+        static fn ${"with_" + f.name}(db: Db, owners: List<${t}>) -> Result<List<List<${child}>>, SqlError> {
+            let kids = ${name(child)}.${"in_" + link}(db, owners)?
+            [[k for k in kids if ${owned_by(child, link)}] for o in owners]
+        }
+    }
+}
+
+/// The trash and its undo, for a soft-delete model alone.
+fn soft_decls(t: Type) -> List<Decls> {
+    if soft_field(t) == null { return [] }
+    [
+        quote {
+            /// The removed rows held within `scope` (none: every one), in the order
+            /// they were inserted.
+            static fn trash(db: Db, scope: Where? = null) -> Result<List<${t}>, SqlError> {
+                read_noted(${literal(table_name_of(t))})
+                ${[cache_stmt(f) for f in links(t)]}
+                let s = prepared(db, sql(${literal(trash_prefix_sql_of(t))} + scope_text(scope) + ${literal(order_suffix_sql())}, scope_args([], scope)))?
+                defer s.reset()
+                mut rows: List<${t}> = []
+                while s.step()? { rows.push(${row_ctor(t)}) }
+                rows
+            }
+
+            /// A removed row back among the living, as one scoped statement
+            /// (answers 0 outside the scope).
+            fn restore(db: Db, scope: Where? = null) -> Result<int, SqlError> {
+                db.run(sql(${literal(restore_sql_of(t))} + scope_text(scope), scope_args([.Int(self.id)], scope)))
+            }
+        },
+    ]
+}
+
+// ── `@model`'s refusals — each a `Diagnostic` at the type's own
+// declaration, stating the law broken in its own words, never a
+// generic "`@model` failed:" prefix flattening three different
+// mistakes into one sentence. A KIND IS A BARE WORD, never dotted —
+// `is_kind_word` (core/modules.av) refuses `.` in one, because the
+// package is ALREADY the namespace: `user_kind` prefixes it as
+// `@std/db:enum_not_supported`, so a self-chosen `model.` prefix
+// would only duplicate what the package name already says. ──
+
+fn enum_not_supported(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "enum_not_supported",
+        t.at,
+        "`@model` derives a table from a record's fields — `${t.name}` is an enum, with none",
+        "declare `${t.name}` as a record: `type ${t.name} = { id: int = 0, ... }`",
+    )
+}
+
+fn no_id_field(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "no_id_field",
+        t.at,
+        "every `@model`'s first field is `id: int = 0` — the primary key SQLite mints — and `${t.name}` ${first_field_words(t)}",
+        "add `id: int = 0` as `${t.name}`'s first field",
+    )
+}
+
+fn first_field_words(t: Type) -> string {
+    if t.fields.is_empty() { return "has no fields at all" }
+    "declares `${t.fields[0].name}: ${t.fields[0].ty}` first"
+}
+
+fn soft_delete_kind(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "soft_delete_kind",
+        f.at,
+        "`@soft_delete` holds the time a row was removed, a nullable integer, and `${f.name}` is `${f.ty}`",
+        "declare it `${f.name}: int? = null`",
+    )
+}
+
+/// What a word's index is called, and what its fields are to the rows.
+fn noun(word: string) -> string { if word == "unique" { "key" } else { "index" } }
+
+fn article(word: string) -> string { if word == "unique" { "a key" } else { "an index" } }
+
+fn found_by(word: string) -> string { if word == "unique" { "a row is unique by" } else { "rows are found by" } }
+
+fn fields_are(word: string) -> string { if word == "unique" { "a value is unique within" } else { "rows are found by" } }
+
+fn index_unstored(t: Type, f: Field, word: string, n: string) -> Diagnostic {
+    refuse_as_at(
+        "${word}_unstored",
+        f.at,
+        "`@${word}(…)` names the fields ${fields_are(word)}, each one a column, and `${t.name}` stores none for `${n}`",
+        "name fields `${t.name}` stores: ${[g.name for g in stored(t) if g.name != f.name].join(", ")}",
+    )
+}
+
+fn model_key_unstored(t: Type, word: string, n: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "${word}_unstored",
+        at,
+        "`@${word}(…)` names the fields ${fields_are(word)}, each one a column, and `${t.name}` stores none for `${n}`",
+        "name fields `${t.name}` stores: ${[g.name for g in stored(t)].join(", ")}",
+    )
+}
+
+fn model_key_repeats(t: Type, word: string, n: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "${word}_repeats",
+        at,
+        "${article(word)} holds each field once, and this one on `${t.name}` holds `${n}` twice",
+        "name `${n}` once",
+    )
+}
+
+fn model_key_empty(t: Type, word: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "${word}_empty",
+        at,
+        "${article(word)} names the fields ${found_by(word)}, and this one on `${t.name}` names none",
+        "name its fields — `@${word}(a, b)`",
+    )
+}
+
+fn model_key_single(t: Type, word: string, n: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "${word}_single",
+        at,
+        "${article(word)} on the model is several fields ${found_by(word)} together, and this one on `${t.name}` names only `${n}`",
+        "use the field's own `@${word}` mark — `@${word} ${n}: …`",
+    )
+}
+
+fn index_repeats(f: Field, word: string, n: string) -> Diagnostic {
+    refuse_as_at(
+        "${word}_repeats",
+        f.at,
+        "${article(word)} holds each field once, and this one on `${f.name}` holds `${n}` twice",
+        "name `${n}` once, and never the field the mark stands on",
+    )
+}
+
+fn index_twice(word: string, fields: List<string>, subject: string, at: Loc?, annotation: bool) -> Diagnostic {
+    refuse_as_at(
+        "${word}_twice",
+        at,
+        "${article(word)} is declared once, and the ${noun(word)} over ${["`${n}`" for n in fields].join(", ")} stands on `${subject}` twice",
+        "write the ${if annotation { "annotation" } else { "mark" }} once",
+    )
+}
+
+fn index_no_column(f: Field, word: string) -> Diagnostic {
+    refuse_as_at(
+        "${word}_kind",
+        f.at,
+        "${article(word)} is over columns, and `${f.name}` is `${f.ty}`, which stores none",
+        "mark a field the model stores, or the link `${many_child(f) ?? f.ty}` holds back to it",
+    )
+}
+
+fn index_redundant(t: Type, s: Site) -> Diagnostic {
+    refuse_as_at(
+        "index_redundant",
+        s.at,
+        "a key is already an index over its columns, and `@index` over ${["`${n}`" for n in s.fields].join(", ")} on `${t.name}` repeats one",
+        "drop the `@index`; the key finds those rows",
+    )
+}
+
+fn unique_partial(f: Field, label: string) -> Diagnostic {
+    refuse_as_at(
+        "unique_partial",
+        f.at,
+        "a key holds every row, and `@unique` on `${f.name}` says `${label}:`",
+        "drop `${label}:`, or find those rows by `@index(${label}: …)`",
+    )
+}
+
+fn index_partial_word(f: Field, label: string) -> Diagnostic {
+    refuse_as_at(
+        "index_partial_word",
+        f.at,
+        "an index holds every row, or the rows a field is `absent:` or `present:` in, and `@index` on `${f.name}` says `${label}:`",
+        "write `absent:` or `present:`",
+    )
+}
+
+fn index_partial_kind(f: Field, held: Field) -> Diagnostic {
+    refuse_as_at(
+        "index_partial_kind",
+        f.at,
+        "an index holds the rows where a nullable field is absent or present, and `${held.name}` is `${held.ty}`, which is never null",
+        "name a nullable field, or index every row",
+    )
+}
+
+fn partial_unstored(t: Type, f: Field, n: string) -> Diagnostic {
+    refuse_as_at(
+        "index_unstored",
+        f.at,
+        "an index holds the rows a column is absent or present in, and `${t.name}` stores none for `${n}`",
+        "name a nullable field `${t.name}` stores, or declare `${n}` on it",
+    )
+}
+
+fn index_partial_twice(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "index_partial_twice",
+        f.at,
+        "an index holds the rows one field says, and `@index` on `${f.name}` names more than one",
+        "keep one of `absent:` and `present:`",
+    )
+}
+
+fn auto_kind(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "auto_kind",
+        f.at,
+        "`@auto` is a time the database sets, an integer, and `${f.name}` is `${f.ty}`",
+        "declare it `${f.name}: int`",
+    )
+}
+
+// ── The DDL, built once from the fields — plain string assembly at
+// derive time, never a quote hole (a run of columns has no expression
+// position to splice into; a string is just a value). ──
+
+fn table_name_of(t: Type) -> string { t.name }
+
+fn quoted_table(t: Type) -> string { quoted(table_name_of(t)) }
+
+fn non_id_fields(t: Type) -> List<Field> { t.fields.slice(1, t.fields.length) }
+
+/// Reserved on every table, unconditionally, whether or not this phase
+/// reads it — a monotonic write counter Phase 7's compare-and-set
+/// authority needs on rows that already exist by the time it lands.
+/// Double-underscore-wrapped like `__avra_models__`, so no field an Avra
+/// program can declare will ever collide with it. Hidden: it never
+/// appears on the struct, in `find`'s column list, or anywhere a user
+/// can read or write from Phase 1.
+const VERSION_COLUMN: string = "__avra_version__"
+
+fn create_table_sql_of(t: Type) -> string { create_sql(table_name_of(t), table_columns(t)) }
+
+/// A model's columns as the database holds them: its stored fields, then the
+/// hidden version column.
+fn table_columns(t: Type) -> List<ColumnFacts> { [column_facts(f) for f in stored(t)].concat([version_facts()]) }
+
+fn version_facts() -> ColumnFacts {
+    ColumnFacts { name: VERSION_COLUMN, sql_type: "INTEGER", not_null: true, default: "1" }
+}
+
+fn column_facts(f: Field) -> ColumnFacts {
+    if f.name == "id" { return ColumnFacts { name: f.name, sql_type: "INTEGER", key: true } }
+    let parent? = link_target(f) else { return plain_facts(f) }
+    ColumnFacts {
+        name: column_of(f),
+        sql_type: "INTEGER",
+        not_null: !nullable(f.kind),
+        refs: parent,
+        on_delete: on_delete(f),
+    }
+}
+
+fn plain_facts(f: Field) -> ColumnFacts {
+    if is_mark(f, "auto") {
+        return ColumnFacts {
+            name: f.name,
+            sql_type: "INTEGER",
+            not_null: true,
+            default: auto_default(),
+        }
+    }
+    ColumnFacts {
+        name: f.name,
+        sql_type: sql_type_of(f.kind),
+        not_null: !nullable(f.kind),
+        unique: is_unique(f),
+    }
+}
+
+/// What removing a parent does to this child: `@cascade` removes it,
+/// `@set_null` clears the link, and neither refuses the removal
+/// (`NO ACTION`, which answers constraint code 787; `RESTRICT` would
+/// answer the trigger code 1811, SQLite building it from a trigger).
+fn on_delete(f: Field) -> string {
+    when {
+        is_mark(f, "cascade") -> "CASCADE"
+        is_mark(f, "set_null") -> "SET NULL"
+        _ -> "NO ACTION"
+    }
+}
+
+/// A model's table as the database is told about it: the value a const folds
+/// at compile time to give the program's whole schema.
+export fn model_shape(t: Type) -> Shape {
+    Shape {
+        name: table_name_of(t),
+        columns: table_columns(t),
+        indexes: [s.index for s in sites(t)],
+    }
+}
+
+fn shape_text_of(t: Type) -> string { shape_text(model_shape(t)) }
+
+/// Milliseconds since the epoch, as the database reads its own clock.
+fn auto_default() -> string { "0" }
+
+/// Whether a field's column is unique by itself: the bare mark.
+fn is_unique(f: Field) -> bool { uniques(f).any(it.is_empty()) }
+
+/// A field's `@unique` marks, each as the fields it names: none for the
+/// bare mark.
+fn uniques(f: Field) -> List<List<string>> { [m.args for m in f.marks if m.name == "unique"] }
+
+/// A key's fields: the ones its mark names, then the one it stands on.
+fn key_fields(f: Field, among: List<string>) -> List<string> { among.concat([f.name]) }
+
+/// A key's columns, in key order.
+fn key_columns(t: Type, f: Field, among: List<string>) -> List<string> {
+    [column_named(t, n) for n in key_fields(f, among)]
+}
+
+/// The column a model stores a field in. A name it stores nothing for is
+/// refused where it is written, and stands here as written.
+fn column_named(t: Type, n: string) -> string {
+    let f? = stored(t).find(it.name == n) else { return n }
+    column_of(f)
+}
+
+/// Every `@unique` mark's own field, declaration site and key, baked
+/// into `insert`/`update`'s generated body so a constraint violation
+/// resolves back through the schema the moment it happens — never a
+/// second lookup against `t` at run time, which the derive has no
+/// reason to keep around. The list's elements are a run, so no arity is
+/// known here.
+fn unique_fields_code(t: Type) -> Code {
+    let fields = [unique_field_code(t, f, among) for f in non_id_fields(t) for among in uniques(f)]
+    let keys = [model_key_code(t, k) for k in model_keys(t)]
+    quote { [..${fields.concat(keys)}] }
+}
+
+/// A key `t` declares on itself as the field a write's failure is attributed to: its last field,
+/// within the rest, marked whole.
+fn model_key_code(t: Type, k: List<string>) -> Code {
+    quote {
+        UniqueField {
+            name: ${literal(k.last() ?? "")},
+            columns: [..${[literal(column_named(t, n)) for n in k]}],
+            among: [..${[literal(n) for n in k.take(k.length - 1)]}],
+            whole: true,
+        }
+    }
+}
+
+fn unique_field_code(t: Type, f: Field, among: List<string>) -> Code {
+    quote {
+        UniqueField {
+            name: ${literal(f.name)},
+            columns: [..${[literal(c) for c in key_columns(t, f, among)]}],
+            among: [..${[literal(n) for n in among]}],
+        }
+    }
+}
+
+fn loc_file_code(file: string?) -> Code {
+    match file {
+        f? -> quote { ${literal(f)} }
+        null -> quote { null }
+    }
+}
+
+/// The type word a kind's column is declared under.
+fn sql_type_of(k: Kind) -> string {
+    let h? = held(k) else { return "a_model_field_kind_this_derive_has_no_sql_type_for" }
+    match h { .Int or .Flag -> "INTEGER", .Real -> "REAL", .Text -> "TEXT", .Octets -> "BLOB" }
+}
+
+/// A model with no field besides `id` has nothing to name in a column
+/// list SQLite will accept — `INSERT INTO t () VALUES ()` is a syntax
+/// error, so the zero-column case is its own, still-honest SQL.
+fn insert_sql_of(t: Type) -> string {
+    let fs = inserted_fields(t)
+    if fs.is_empty() { return "INSERT INTO ${quoted_table(t)} DEFAULT VALUES" }
+    let names = [quoted(column_of(f)) for f in fs].join(", ")
+    let marks = ["?" for f in fs].join(", ")
+    "INSERT INTO ${quoted_table(t)} (${names}) VALUES (${marks})"
+}
+
+fn select_prefix_sql_of(t: Type) -> string {
+    let names = [quoted(column_of(f)) for f in stored(t)].join(", ")
+    "SELECT ${names} FROM ${quoted_table(t)}"
+}
+
+fn order_suffix_sql() -> string { " ORDER BY ${quoted("id")}" }
+
+/// A soft-delete model's reads skip what was removed.
+fn live_clause(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "${quoted(f.name)} IS NULL"
+}
+
+fn select_by_id_sql_of(t: Type) -> string {
+    let live = live_clause(t)
+    "${select_prefix_sql_of(t)} WHERE ${quoted("id")} = ?${if live.is_empty() { "" } else { " AND " + live }}"
+}
+
+fn trash_prefix_sql_of(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "${select_prefix_sql_of(t)} WHERE ${quoted(f.name)} IS NOT NULL"
+}
+
+fn soft_remove_sql_of(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "UPDATE ${quoted_table(t)} SET ${quoted(f.name)} = ?, ${version_bump_clause()} WHERE ${quoted("id")} = ? AND ${quoted(f.name)} IS NULL"
+}
+
+fn restore_sql_of(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "UPDATE ${quoted_table(t)} SET ${quoted(f.name)} = NULL, ${version_bump_clause()} WHERE ${quoted("id")} = ?"
+}
+
+/// The version bump is always in `SET`, so a column-free model still
+/// gets a syntactically valid `UPDATE` with no special case — unlike
+/// `insert_sql_of`, which has no such column to fall back on.
+fn update_sql_of(t: Type) -> string {
+    let sets = [set_clause(f) for f in written_fields(t)].concat([version_bump_clause()]).join(", ")
+    "UPDATE ${quoted_table(t)} SET ${sets} WHERE ${quoted("id")} = ?"
+}
+
+fn set_clause(f: Field) -> string { "${quoted(column_of(f))} = ?" }
+
+fn version_bump_clause() -> string { "${quoted(VERSION_COLUMN)} = ${quoted(VERSION_COLUMN)} + 1" }
+
+fn delete_sql_of(t: Type) -> string {
+    "DELETE FROM ${quoted_table(t)} WHERE ${quoted("id")} = ?"
+}
+
+// ── The table-name claim registry — TWO different @model types
+// sharing a bare name (across modules, no language law stops it) will
+// otherwise write into ONE physical table with no error at all if
+// their shapes ever happen to line up. `create_table` claims its name
+// here before ever touching the real table, naming the exact file
+// that claimed it first, the moment a second claimant disagrees. ──
+
+/// What the whole program's migration needs of one model: its table, where it
+/// was declared, its shape text and the columns it continues under new names.
+export fn model_entry(t: Type) -> Entry {
+    Entry {
+        name: table_name_of(t),
+        owner: owner_of(t),
+        declared_at: declared_at_of(t),
+        shape: shape_text_of(t),
+        renamed_to: [column_of(f) for f in stored(t) if old_name(f) != null],
+        renamed_from: [old_name(f)! for f in stored(t) if old_name(f) != null],
+    }
+}
+
+/// A model's identity: its package-qualified module. It survives moving
+/// or recloning the project, which a file path does not.
+fn owner_of(t: Type) -> string { t.module }
+
+/// The declaring file, kept in the registry for a reader only.
+fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
+
+// ── Binding a field OUT (a value crossing to SQLite) and reading one
+// IN (a column crossing back) — one exhaustive dispatch each way, over
+// what the column holds. ──
+
+/// What one column holds, as the driver binds and reads it.
+enum Held { Int, Flag, Real, Text, Octets }
+
+/// What a kind's column holds: a nullable's is what it holds when present,
+/// a flat record's is its one field's. Absent for a kind no column holds,
+/// which the model's contract refuses where the field is declared.
+fn held(k: Kind) -> Held? {
+    match k {
+        .Int -> Held.Int,
+        .Bool -> Held.Flag,
+        .Float -> Held.Real,
+        .Str -> Held.Text,
+        .Bytes -> Held.Octets,
+        .Opt(inner) -> held(inner),
+        .Named(n, args) -> if args.is_empty() && flat(n) && !flat_over_nullable(k) { held(stored_scalar(n)!) } else { null },
+        .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+fn bound(f: Field) -> Code { bound_value(f.kind, quote { self.${f.name} }) }
+
+/// A value of kind `k`, as the column holds it; a nullable one is NULL
+/// when absent.
+fn bound_value(k: Kind, v: Code) -> Code {
+    match k {
+        .Opt(inner) -> quote { if ${v} == null { .Null } else { ${bound_value(inner, quote { ${v}! })} } },
+        .Named(n, _) -> if flat(n) { bound_value(stored_scalar(n)!, quote { ${v}.${flat_field(n)} }) } else { quote { .Int(${v}.id) } },
+        rest -> bound_scalar(k, v),
+    }
+}
+
+/// A present scalar as the column holds it. Octets bind as a blob of their
+/// own length, so a run of none is an empty blob and never NULL.
+fn bound_scalar(k: Kind, v: Code) -> Code {
+    let h? = held(k) else { return quote { a_model_field_kind_this_derive_does_not_bind_yet() } }
+    match h {
+        .Int -> quote { .Int(${v}) },
+        .Flag -> quote { .Int(if ${v} { 1 } else { 0 }) },
+        .Real -> quote { .Real(${v}) },
+        .Text -> quote { .Text(${v}) },
+        .Octets -> quote { .Blob(${v}) },
+    }
+}
+
+fn push_bound(f: Field) -> Code {
+    quote { args.push(${bound(f)}) }
+}
+
+/// An insert's value for a column: an `@auto` column is the program's clock in
+/// nanoseconds, every other column is what the row holds.
+fn push_inserted(f: Field) -> Code {
+    if is_mark(f, "auto") { return quote { args.push(.Int(now().ns)) } }
+    push_bound(f)
+}
+
+/// A column read straight off the STANDING statement — never through
+/// `Row`/`SqlValue`, which `first_as` (std-sqlite's `sql.av`) is what
+/// buys this: a found row costs no values list, no per-cell box, and
+/// no `Row` record, only the scalars the struct literal actually holds.
+fn read_at(f: Field, i: int) -> Code {
+    let parent? = link_target(f) else { return read_kind(f.kind, i) }
+    let fetched = quote { parent_of(${name(cache_name(f))}, db, s.int_at(${i})?, (d: Db, key: int) -> ${name(parent)}.find(d, key))? }
+    if f.kind is .Opt(_) { return quote { if s.class_at(${i})? is .Null { null } else { ${fetched} } } }
+    fetched
+}
+
+/// What field `j` of a row is built from: the column it reads, or for a
+/// `Many` the phantom it is.
+fn field_value(t: Type, j: int) -> Code {
+    let f = t.fields[j]
+    if is_many(f) { return quote { Many {} } }
+    read_at(f, [g for g in t.fields.slice(0, j) if !is_many(g)].length)
+}
+
+fn read_kind(k: Kind, i: int) -> Code {
+    match k {
+        .Opt(inner) -> quote { if s.class_at(${i})? is .Null { null } else { ${read_kind(inner, i)} } },
+        .Named(n, _) -> flat_made(n, read_kind(stored_scalar(n)!, i)),
+        rest -> read_scalar(k, i),
+    }
+}
+
+/// A present scalar read off column `i`. The class said the cell is not
+/// NULL, so a blob of no octets reads as an empty run.
+fn read_scalar(k: Kind, i: int) -> Code {
+    let h? = held(k) else { return quote { a_model_field_kind_this_derive_does_not_read_yet() } }
+    match h {
+        .Int -> quote { s.int_at(${i})? },
+        .Flag -> quote { s.int_at(${i})? != 0 },
+        .Real -> quote { s.real_at(${i})? },
+        .Text -> quote { s.text_at(${i})? },
+        .Octets -> quote { s.blob_at(${i})? },
+    }
+}
+
+/// The row literal a column read fills: one entry per field, spliced as
+/// a run, so no arity is known here. Wired into `find` and the reads,
+/// above.
+fn row_ctor(t: Type) -> Code { quote { ${t} { ..${[row_init(t, f, j) for j, f in t.fields]} } } }
+
+/// One literal entry, named off the field it reads.
+fn row_init(t: Type, f: Field, j: int) -> Code { quote { W { ${f.name}: ${field_value(t, j)} } } }

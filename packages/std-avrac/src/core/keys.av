@@ -1,0 +1,78 @@
+//! A KEY: what tells a keyed node from its siblings, made from a value of any type that compares by
+//! value and holds no fraction: its type's kind, the word that carries it, and the text a text key is.
+//! A number, a truth and an enum's tag ride the word, so a key of one makes no text and no box.
+
+impl Lowering {
+    /// `v`, a value of `ty` that may be absent, as the `Key?` `want`: its key where it is present,
+    /// absent where it isn't.
+    mut fn key_held(v: Reg, ty: SignedType, want: SignedType) -> Reg {
+        let l = self.laid_out(want)
+        let key = want.unwrapped()
+        self
+            .region(self.present(v, ty), l) { cx ->
+                cx
+                    .lifted(cx.key_made(cx.carried(v, ty), ty.unwrapped(), cx.laid_out(key)), key, want)
+            } else { cx -> cx.absent_of(want, l) }
+    }
+
+    /// `v`, a value of `ty`, as `@std/meta`'s `Key`, of layout `l`.
+    mut fn key_made(v: Reg, ty: SignedType, l: Layout) -> Reg {
+        self
+            .record_packed(l, [self.const_int(self.key_kind_of(ty)), self.key_word(v, ty), self.key_text(v, ty)])
+    }
+
+    /// The kind a key of `ty` wears: 0 for text, whatever names it, so a reader can say a text key as it
+    /// is written; any other type a number of its spelling.
+    fn key_kind_of(ty: SignedType) -> int {
+        if self.texted(ty) { 0 } else { key_kind(ty.spelled()) }
+    }
+
+    /// Whether a key of `ty` is text: text itself, a named type over it, or a record of one such field.
+    fn texted(ty: SignedType) -> bool {
+        let shape = self.program.checked.named_shape(ty)
+        if shape != null { return self.texted(shape!) }
+        if ty.owns(OwnType.Str) { return true }
+        if ty.owned() != null || self.variants_of(ty) != null { return false }
+        let fields? = self.fields_of(ty) else { return false }
+        fields.length == 1 && fields[0].ty != null && self.texted(fields[0].ty!)
+    }
+
+    /// The word a key of `v`, of `ty`, rides: the number, the truth as 1 or 0, the enum's tag, the one
+    /// field's own word; 0 for text.
+    mut fn key_word(v: Reg, ty: SignedType) -> Reg {
+        let shape = self.program.checked.named_shape(ty)
+        if shape != null { return self.key_word(v, shape!) }
+        if ty.owns(OwnType.Str) { return self.const_int(0) }
+        if ty.owns(OwnType.Bool) {
+            return self
+                .region(v, Layout.Word) { cx -> cx.const_int(1) } else { cx -> cx.const_int(0) }
+        }
+        if ty.owned() != null { return v }
+        if self.variants_of(ty) != null { return self.tag_of(v) }
+        let field = self.fields_of(ty)![0].ty!
+        self.key_word(self.only_field(v, ty, field), field)
+    }
+
+    /// The text a key of `v`, of `ty`, carries: the text itself for a text key, the one field's own;
+    /// none (the empty text the binary holds) for any other.
+    mut fn key_text(v: Reg, ty: SignedType) -> Reg {
+        let shape = self.program.checked.named_shape(ty)
+        if shape != null { return self.key_text(v, shape!) }
+        if ty.owns(OwnType.Str) { return v }
+        if ty.owned() != null || self.variants_of(ty) != null { return self.const_str("") }
+        let field = self.fields_of(ty)![0].ty!
+        self.key_text(self.only_field(v, ty, field), field)
+    }
+}
+
+/// Whether `ty` is `@std/meta`'s `Key`.
+export fn meta_key(ty: SignedType) -> bool {
+    match ty.head {
+        .Declared(file, name) -> file.package_name == "@std/meta" && name == "Key",
+        _ -> false,
+    }
+}
+
+/// The kind a key of the type spelled `spelled` wears where it is no text: a number of the spelling,
+/// never 0, so two keys of two types are two keys, the same in every build.
+fn key_kind(spelled: string) -> int { 1 + spelled.chars().fold(7, (h: int, c: int) -> (h * 31 + c) % 1000000007) }

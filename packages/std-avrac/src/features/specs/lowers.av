@@ -1,0 +1,72 @@
+//! A `then` case on the program layer: its body lowered as a block answering a bool, and, where it
+//! fails, both sides shown when its answer is one equality over values the runtime spells, else
+//! the note that says why they aren't — the old runner's own words, inside the failure arm alone.
+use core.{BinOp, BoxKind, ExprId, Layout, Lowering, Reg, rt_sig_of}
+use features.specs.{case_note_text}
+use features.expr_spine.{sides_compared}
+
+/// The case whose body is `body`, lowered: its answer, with its failure shown.
+export fn case_lowered(mut cx: Lowering, body: ExprId) -> Reg {
+    let lead = cx.store.lead_of(body)
+    let tail? = cx.store.tail_of(body) else { return noted(cx, cx.lower(body)) }
+    cx.scope_enter()
+    cx.opened()
+    cx.lets_written(lead, body)
+    for s in lead { cx.lower_stmt(s) }
+    let answer = sided(cx, tail)
+    cx.closed_giving(answer)
+    cx.scope_exit(answer)
+    answer
+}
+
+/// The tail of a case's body, lowered, its failure shown.
+fn sided(mut cx: Lowering, tail: ExprId) -> Reg {
+    let eq? = equality(cx, tail) else { return noted(cx, cx.born(tail)) }
+    let sides? = sides_compared(cx, eq.left, eq.right) else { return noted(cx, cx.born(tail)) }
+    let left? = spelled(cx, eq.left, sides.left) else { return noted(cx, sides.same) }
+    let right? = spelled(cx, eq.right, sides.right) else { return noted(cx, sides.same) }
+    cx
+        .void_region(cx.not(sides.same)) { c ->
+            said(c, "        actual:   ", left)
+            said(c, "        expected: ", right)
+        }
+    sides.same
+}
+
+/// The two sides of an equality.
+type Equality = { left: ExprId, right: ExprId }
+
+/// The sides of `e` where it is one `a == b`.
+fn equality(cx: Lowering, e: ExprId) -> Equality? {
+    match cx.store.expr(e) {
+        .Binary(op, l, r) -> if op == BinOp.Eq { Equality { left: l, right: r } } else { null },
+        rest -> null,
+    }
+}
+
+/// `ok`, with the note a failing case prints when its body is not one equality over values the
+/// runtime spells.
+fn noted(mut cx: Lowering, ok: Reg) -> Reg {
+    cx
+        .void_region(cx.not(ok)) { c -> c.run_row(rt_sig_of("avra_puts")!, [c.const_str(case_note_text)]) }
+    ok
+}
+
+/// The line `prefix` then `text`.
+fn said(mut cx: Lowering, prefix: string, text: Reg) {
+    let line = cx
+        .call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_str_concat")!, [cx.const_str(prefix), text])
+    cx.run_row(rt_sig_of("avra_puts")!, [line])
+}
+
+/// The value of `e`, held in `v`, as text: a text as itself, a number or a truth by the runtime's
+/// row; absent for any other.
+fn spelled(mut cx: Lowering, e: ExprId, v: Reg) -> Reg? {
+    match cx.layout_at(e) {
+        .Word -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_int_text")!, [v]),
+        .Real -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_float_text")!, [v]),
+        .Truth -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_bool_text")!, [v]),
+        .Boxed(box) -> if box is .Text { v } else { null },
+        rest -> null,
+    }
+}

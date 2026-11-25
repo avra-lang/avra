@@ -1,0 +1,65 @@
+//! The fn declaration's StmtSemantics: at top level the body walks
+//! under its OWN params; inside a block it refuses. Its runtime
+//! value is nothing — the body runs at call time, and lowering
+//! collects declarations on its own axis.
+use core.{StmtId, Reg}
+use core.stmt.{FnDecl, ExternFn, Return}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, nested_fns}
+
+impl StmtSemantics for FnDecl {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        if cx.refuses_nested(s, "resolve.nested_fn", nested_fns()) { return }
+        match cx.view.store.stmt(s) {
+            .FnDecl(_, _, fparams, _, body) -> {
+                cx.check_params(fparams, s)
+                for p in fparams {
+                    if p.default != null { cx.walk_default(p.default!) }
+                }
+                cx.walk_under(fparams, body)
+            },
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_fn(cx, s)
+    }
+
+}
+
+impl StmtSemantics for ExternFn {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        if cx.refuses_nested(s, "resolve.nested_fn", nested_fns()) { return }
+        match cx.view.store.stmt(s) {
+            .FnDecl(_, _, fparams, _, body) -> {
+                cx.check_params(fparams, s)
+                for p in fparams {
+                    if p.default != null { cx.walk_default(p.default!) }
+                }
+                cx.walk_under(fparams, body)
+            },
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_fn(cx, s)
+    }
+
+}
+
+/// The return statement's semantics: the value walks, the fn's
+/// declared answer judges it, lowering exits at the site.
+impl StmtSemantics for Return {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_return(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        lower_return(cx, s)
+    }
+}

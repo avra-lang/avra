@@ -1,0 +1,548 @@
+//! Lowers a program to IR. The driver owns refusal, statement order,
+//! registers, and the slot tables; HOW a statement or node lowers —
+//! brackets included — lives in its owning feature. Lowering emits
+//! PURE semantics — the memory pass owns every Retain and Release.
+//! A definition's register is its slot (a mut binding's is a CELL,
+//! loaded at each read), a param IS its register (params mint
+//! first), so names cost nothing.
+//! Each fn lowers to its OWN body with its own registers; `main` is
+//! the statement list.
+use @std.meta.{derive}
+use @std.relation.{codec}
+use @std.io.{env}
+use @std.errors.{Frame, Loc}
+use @std.text.{text_before}
+use core.{
+    CalledFn,
+    FnWrapper,
+    IndexRange,
+    BoxedValue,
+    Ids,
+    rt_sigs,
+    Fingerprint,
+    StmtId,
+    ExprId,
+    Expr,
+    TypeId,
+    Type,
+    Reg,
+    Ins,
+    Level,
+    TypeRegistry,
+    joined,
+    flatten,
+    sorted_by,
+    root_kind_of,
+    pattern_kinds,
+    Arm,
+    SyntaxArena,
+    DeclId,
+    FileId,
+    Arrow,
+    RtSig,
+    RtKind,
+    extern_kind_name,
+    inout_row,
+    no_marks,
+    state_mark,
+    Param,
+    SeatMark,
+    Static,
+    Slot,
+    StaticBox,
+    CollectParts,
+    CollectKind,
+    CollectScope,
+    Plain,
+    DeclKind,
+    Layout,
+    filled,
+}
+use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
+use compiler.hosts.{HostFnOwed, host_fn_owed_diag}
+use features.{
+    LowerCx,
+    BodyFrame,
+    FnSig,
+    Sub,
+    SeatValue,
+    new_emitter,
+    viewed,
+    Decl,
+    Decls,
+    Jobs,
+    Wanted,
+    Lift,
+    Wrap,
+    Unsettled,
+    Settled,
+    SettleRoot,
+    AnnotationFact,
+    Lifted,
+    MetaVal,
+    new_meta_heap,
+}
+use features.collects.{generic_words, collect_field_text, sort_value, sort_key_before, SortValue}
+use compiler.{any_root}
+
+/// One lowered body: instructions in order and each register's type
+/// (dense by Reg). For a fn, the first `params.length` registers ARE
+/// the params, and `gives` is the register RetVal answers with.
+@derive(Fingerprint)
+@codec
+export type Body = {
+    name: string,
+    params: List<TypeId>,
+    ret: TypeId,
+    gives: Reg?,
+    ins: List<Ins>,
+    reg_types: List<TypeId>,
+    /// Each register's layout, by its index: what the memory pass reads of a register. Filled where
+    /// the lowering hands its bodies on (`Decls.laid`).
+    layouts: List<Layout> = [],
+    /// Each seat's layout and the answer's: what a declaration of the body reads. Filled with
+    /// `layouts`.
+    seats: List<Layout> = [],
+    answer: Layout? = null,
+    /// The file whose unit lowered this — what lets a program's IR be split
+    /// into one module per file. Absent for a body no file owns (a synthetic
+    /// entry), which is a GROWTH: every existing construction site is
+    /// untouched.
+    file: FileId? = null,
+    /// Instantiations may be emitted by more than one cached object.
+    weak: bool = false,
+    /// Where a task's body was written, `file:line` — what a trace and
+    /// a listing name the task by. Absent for a body that is no task's.
+    site: string? = null,
+    /// The file the body was written in, spelled: what a program's bodies are split into modules by,
+    /// so an edit moves the module of the file it touches. Absent for a body no file holds.
+    home: string? = null,
+    /// Its registers holding a fn value's box, each with the box's type: what a program layer's code
+    /// hash tells a call through a value apart by.
+    boxed: List<BoxedValue> = [],
+    /// The declared fn's own seat marks, `mut`/`const`/`isolated`
+    /// written and `consumed` inferred (R3) — what the memory pass
+    /// reads to seed a consuming param scope-owned at entry, and what
+    /// a DIRECT, by-name caller reads to decide retain-or-hand-over
+    /// at a `.Call`. This body's OWN currency, never a fn VALUE's
+    /// type (`Decls.seat_mark` never merges `consumed` in — features/
+    /// checks.av's `fn_fits` says why): a `.CallPtr` through a value
+    /// or a `dyn` dispatch reads the plain marks a fn value carries
+    /// and treats every seat as borrowed. A GROWTH: a synthetic body
+    /// (a lambda, a wrapper) declares no seat a caller could mark, so
+    /// its default is the empty list every plain seat already reads
+    /// as.
+    marks: List<SeatMark> = [],
+    /// A HOST FN's own — its name is a symbol of the host seam, which
+    /// the backend defines beside it under its row's shape. A GROWTH:
+    /// every other body answers false.
+    hosted: bool = false,
+    /// Whether its code reads the whole program — a code hash's answer, a body standing in for one
+    /// not made yet — so a build keeps it in a module apart from the program's other bodies, whose
+    /// key moves with any edit.
+    program_wide: bool = false,
+    /// Whether the body writes no cell, as the memory pass reads it of its own instructions
+    /// (`writes_no_cell`): carried by a stub with no instructions of its own, a body another bucket
+    /// lowers. A GROWTH: false, a call that may write any cell, for every other body.
+    writes_no_cell: bool = false,
+}
+
+impl Decls {
+    /// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
+    /// arguments, a fn at its settled seats, a root no declaration owns. A plain
+    /// declaration's body — a declared instance's included — is its FILE's
+    /// content, its unit wearing the file (`lower_root`'s `home`); an
+    /// instantiation is its PROGRAM's. THE DECLARATION
+    /// ANSWERS, never the ask: a plain fn wanted from inside an instantiation
+    /// arrives under its caller's substitution and is the same body all the same.
+    fn instantiated(w: Wanted) -> bool {
+        if !w.seats.is_empty() { return true }
+        let d? = w.decl else { return w.root != null }
+        self.generic(d)
+    }
+
+    /// Whether a body lowers only at type arguments: its own, or its type's.
+    fn generic(d: DeclId) -> bool { !self.tparams(d).is_empty() || !self.tparams(self.decl(d).parent ?? d).is_empty() }
+}
+
+/// The lowering facts: every fn body, the entry body (`main` — its
+/// specialness is explicit: no params, the answer's puts, exit 0), the
+/// registry that names the types, and any defects.
+/// A package in the program's closure that owns native code, and the
+/// library the tree DERIVES for it. The path is derived from the
+/// package's manifest NAME and never named by a manifest: a manifest
+/// path the toolchain OPENS is a load primitive, which is §2.3's
+/// write-primitive law at the same force.
+/// A package of the closure that owns native code: its manifest name,
+/// its library's stem, and the externs it declares — what names the
+/// package a missing symbol belongs to.
+export type LinkedPackage = { name: string, library: string, externs: List<string> = [], wasm: bool = false }
+
+export type Lowered = {
+    fns: List<Body>,
+    entry: Body,
+    types: TypeRegistry,
+    diagnostics: List<Diag>,
+    // the host fns the program declares `extern` — rows the backend
+    // declares and the evaluator refuses
+    externs: List<RtSig>,
+    /// The program's OWN closure, as libraries the evaluator may open.
+    /// Empty for a bare file, which has no packages and no closure.
+    libraries: List<LinkedPackage> = [],
+    // the settled aggregates its bodies read by address, each once
+    statics: List<Static>,
+    /// The code hashes the program answers, each `target=hash` — what
+    /// the program's own module, which holds their bodies, is keyed by.
+    code_hashes: List<string> = [],
+    /// Each code hash asked, and the file whose body asked it — what a
+    /// file keeps beside its object, so a build that holds it still
+    /// answers its asks.
+    hash_asks: List<HashAsk> = [],
+    /// The bodies as lowered, before the memory pass — what a file's
+    /// code is kept as, so a held file's record and a fresh body hash
+    /// alike.
+    unmanaged: List<Body> = [],
+    /// Each fn a run made lazily holds as a value and has not made yet: made the first time the run
+    /// calls it, through the wrapper a value of it is called through.
+    deferred: List<DeferredFn> = [],
+}
+
+/// A fn a lazily made program holds as a value: the call that reaches it, and the wrapper a value of
+/// it is called through.
+export type DeferredFn = { callee: CalledFn, wrapper: FnWrapper? }
+
+/// A code hash a body asks, and the file the body is in — none for a
+/// body no file owns.
+export type HashAsk = { by: FileId?, target: string }
+
+impl Decls {
+    /// The program's extern fns by symbol — what every emitter refuses
+    /// an unknown callee against.
+    fn extern_names() -> List<string> { [x.name for x in self.standing_externs()] }
+
+    /// The externs the program reached as registry rows: typing a call to an extern
+    /// stood its module, so every callee has one, and a held module nothing called
+    /// is no row.
+    /// A row is read only where a body calls its extern, and typing that body read the extern's
+    /// signature: unheard, a unit stands on the externs it calls and on no other.
+    fn extern_rows() -> List<RtSig> {
+        let none: List<RtSig> = []
+        let rows = Cell.new(none)
+        self
+            .record_kernel
+            .unheard(() -> rows.set([self.extern_row_of(d) for d in self.standing_externs()]))
+        rows.get()
+    }
+
+    /// An extern's runtime row. The WIDTHS are read back from the
+    /// program — the annotation the seat wrote — because the signature
+    /// carries the type that crosses (`int`) and never the machine
+    /// width: a width is a property of a SEAT, and the store is where
+    /// the seats are.
+    fn extern_row_of(d: Decl) -> RtSig {
+        let sig: FnSig? = self.sig(d.id)?.fn_sig()
+        // THE WIDTHS ARE A DECLARATION FACT, not a store read: a held extern has no
+        // store, and a width is a property of a SEAT — the one parse fact the row
+        // cannot derive from the signature alone (`int` crosses, but at what width).
+        let host: List<string> = self.facts_or(d.id).host
+        let params: List<TypeId> = sig?.params ?? []
+        inout_row(
+            self.symbol(d.id),
+            extern_kind_name(
+                self.types,
+                host_name(host, host.length - 1),
+                sig?.ret ?? self.type(void),
+            ),
+            [self.host_seat_kind(d.id, host, j, p) for j, p in params],
+            [self.host_cell_kind(d.id, host, j, p) for j, p in params],
+        )
+    }
+
+    /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
+    /// ADDRESS of the caller's cell, so it is a POINTER whatever the
+    /// cell holds; every other seat is its width or its type's kind.
+    fn host_seat_kind(d: DeclId, host: List<string>, j: int, p: TypeId) -> RtKind {
+        if self.seat_mark(d, j).mutable { return RtKind.Ptr }
+        extern_kind_name(self.types, host_name(host, j), p)
+    }
+
+    /// The width of the CELL behind an inout seat — what the backend
+    /// normalises after the call. `Void` for every seat that is not one.
+    fn host_cell_kind(d: DeclId, host: List<string>, j: int, p: TypeId) -> RtKind {
+        if !self.seat_mark(d, j).mutable { return RtKind.Void }
+        extern_kind_name(self.types, host_name(host, j), p)
+    }
+}
+
+/// The annotation seat `j` wrote: the host names carry one per parameter and the ANSWER
+/// last, so the answer's index is the length and is never a seat.
+fn host_name(host: List<string>, j: int) -> string {
+    if j < 0 || j >= host.length { return "" }
+    host[j]
+}
+
+/// The roots of a frame whose code is the one expression `e`, none when it has
+/// none.
+fn framed(e: ExprId?) -> List<ExprId>? {
+    let r? = e else { return null }
+    [r]
+}
+
+/// One unit LOWERED: its body with the lambdas it lifted and the
+/// wrappers it minted (they never escape it), the bodies of OTHER
+/// declarations it wants — the program asks for those, and asking
+/// twice reuses — and every voice lowering earned.
+@derive(Fingerprint)
+@codec
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
+
+impl Decls {
+
+}
+
+/// The bodies a worklist reaches, each name once, the statics they
+/// read, and what they spoke.
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, hashes: List<HashAsk> }
+
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, instantiated: fn(Wanted) -> bool) -> Drained {
+    mut wants = [w for w in pending]
+    mut fns: List<Body> = []
+    mut spoken: List<Diag> = []
+    mut statics: List<Static> = []
+    mut hashes: List<HashAsk> = []
+    mut seen: Map<string, bool> = {}
+    mut minted = 0
+    while !wants.is_empty() && minted < unit_ceiling {
+        let w = wants.pop()
+        // A HELD FILE'S BODIES ARE ITS STORED OBJECT, so they are never asked for.
+        // An instantiation is no file's content: it lowers in every program that
+        // wants it, WEAK and owned by no file — and its home is reported, because
+        // a home that is held has no body to lower from.
+        let roams = instantiated(w)
+        let fresh = claim_seen(seen, w.name)
+        if fresh {
+            minted = minted + 1
+            let u = unit_of(w)
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for b in u.bodies { fns.push(if roams { b with { file: null, weak: true } } else { b }) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for d in u.voices.list { spoken.push(d) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for more in u.wants {
+                wants.push(more)
+            }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for st in u.statics { statics.push(st) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for h in u.hashes { hashes.push(HashAsk { by: if roams { null } else { w.file }, target: h }) }
+        }
+    }
+    if !wants.is_empty() {
+        spoken
+            .push(
+                defect_at(
+                    null,
+                    "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported",
+                ),
+            )
+    }
+    Drained { fns: fns, spoken: spoken, statics: statics, hashes: hashes }
+}
+
+/// Each static once: units read one const independently and each
+/// lays it out, so the program keeps the first of a name.
+fn distinct_statics(xs: List<Static>) -> List<Static> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<Static> = []
+    for s in xs {
+        if seen.get(s.name) == null {
+            seen.set(s.name, true)
+            out.push(s)
+        }
+    }
+    out
+}
+
+/// THE POINTER-CONSTANT LAW. A `ConstInt` aimed at a pointer-riding
+/// register IS the null pointer in both engines — absence is the
+/// zero of its type — so a NON-ZERO one would be read as null by
+/// each, agreeing on the wrong answer. Refused HERE, ahead of both:
+/// the backend's emitter has no failure channel and the interpreter
+/// has one, so a guard in either alone would make them disagree on a
+/// single instruction. A pointer is minted only by a runtime row
+/// (`avra_ptr_at`), whose answer reaches its register through a call,
+/// so no constant ever aims at one and the guard never arms.
+export fn minted_pointers(types: TypeRegistry, bodies: List<Body>) -> List<Diag> {
+    [pointer_constant(b.name) for b in bodies if mints_a_pointer(types, b)]
+}
+
+fn mints_a_pointer(types: TypeRegistry, b: Body) -> bool {
+    b.ins.any(is_pointer_constant(types, b.reg_types, it))
+}
+
+fn is_pointer_constant(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> bool {
+    match i { .ConstInt(d, v) -> v != 0 && types.rides_pointer(reg_types[d.index]), _ -> false }
+}
+
+fn pointer_constant(name: string) -> Diag {
+    defect_at(
+        null,
+        "a non-zero constant reached a pointer register in `${name}` — a pointer's only constant is null",
+    )
+}
+
+/// The ceiling on DISTINCT bodies one program mints. A source
+/// bounds its own count; only polymorphic recursion — each turn a
+/// wider substitution, none ever repeated — climbs forever.
+const unit_ceiling: int = 100000
+
+/// Where the first host fn of `d`'s name stands in `hosted`.
+fn first_named(decls: Decls, hosted: List<DeclId>, d: DeclId) -> int {
+    [j for j, x in hosted if decls.decl(x).name == decls.decl(d).name].first() ?? 0
+}
+
+/// A step that calls a hosted fn and keeps its answer.
+type KeptCall = { dst: Reg, callee: string, args: List<Reg> }
+
+fn kept_call(i: Ins) -> KeptCall? {
+    match i {
+        .CallRt(dst, callee, args) -> KeptCall { dst: dst, callee: callee, args: args },
+        rest -> null,
+    }
+}
+
+/// A step that calls a hosted fn for nothing.
+type BareCall = { callee: string, args: List<Reg> }
+
+fn bare_call(i: Ins) -> BareCall? {
+    match i { .CallRtVoid(callee, args) -> BareCall { callee: callee, args: args }, rest -> null }
+}
+
+/// THE PROGRAM ANSWERS ITS OWN HOST FNS. A call that names a symbol one
+/// of the program's host fns defines is a call to that body, whoever
+/// declared the name bodiless — so an evaluated run needs no linker to
+/// join the two. A linked build keeps the call as written: there each
+/// file's object is the same whatever program links it, and the symbol
+/// is the linker's to resolve.
+export fn hosted_within(l: Lowered) -> Lowered {
+    let own = [b.name for b in l.fns if b.hosted]
+    if own.is_empty() { return l }
+    let nothing_ty = l.types.type(void)
+    l with { fns: [answering(b, own, nothing_ty) for b in l.fns], entry: answering(l.entry, own, nothing_ty) }
+}
+
+/// `b` with each call of a symbol in `own` made a call to that body, each register it gains a `void`.
+fn answering(b: Body, own: List<string>, nothing_ty: TypeId) -> Body {
+    mut regs = [t for t in b.reg_types]
+    let ins = [own_call(i, own, regs, nothing_ty) for i in b.ins]
+    b with { ins: ins, reg_types: regs, layouts: b.layouts.concat(filled(regs.length - b.reg_types.length, Layout.Void)) }
+}
+
+/// One step, a call of a host fn's symbol made a call to its body.
+fn own_call(i: Ins, own: List<string>, mut regs: List<TypeId>, nothing_ty: TypeId) -> Ins {
+    let kept? = kept_call(i) else { return own_bare_call(i, own, regs, nothing_ty) }
+    if own.contains(kept.callee) { Ins.Call(kept.dst, kept.callee, kept.args) } else { i }
+}
+
+/// A call for nothing gains the register a body's answer lands in.
+fn own_bare_call(i: Ins, own: List<string>, mut regs: List<TypeId>, nothing_ty: TypeId) -> Ins {
+    let unkept? = bare_call(i) else { return i }
+    if !own.contains(unkept.callee) { return i }
+    regs.push(nothing_ty)
+    Ins.Call(Reg { index: regs.length - 1 }, unkept.callee, unkept.args)
+}
+
+/// A member beside its `by` key — one TYPED value per `by` field, a
+/// TUPLE, so two different keys never read as one and a tie keeps both —
+/// and its qualified name, which orders a tie.
+type SortedMember = { key: List<SortValue>, named: string, decl: Decl }
+
+/// Every matching declaration, in `by` order — shared by both collect
+/// flavors (a value's rows, an enum's variants); only `Decls` is
+/// needed, never a whole `Analysis`, since ordering is a fact of the
+/// declaration table alone.
+export fn ordered_collect_members(
+    decls: Decls,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+    owner: FileId,
+) -> List<Decl> {
+    let found = decls.gathered_into(kind, scope, owner)
+    let keyed = [SortedMember {
+        key: [sort_value(decls, kind, k, d) for k in order],
+        named: decls.qualified_name(d),
+        decl: d,
+    } for d in found]
+    [m.decl for m in sorted_by(keyed, member_before)]
+}
+
+/// `by` order, and a tie by qualified name — never by the order files were read in.
+fn member_before(x: SortedMember, y: SortedMember) -> bool {
+    if sort_key_before(x.key, y.key) { return true }
+    !sort_key_before(y.key, x.key) && text_before(x.named, y.named)
+}
+
+/// WHAT ONE PROJECTED FIELD READS OFF EACH MEMBER — decided once per field
+/// from the collect's own types, and dispatched on by the lowering and by a
+/// held collector's key alike, so a read the lowering learns is one the key
+/// folds.
+export enum FieldPlan {
+    /// The declaration crossed WHOLE as the `@std/meta` value its seat names
+    /// (`Fn`/`Type`/`Named`/`Trait`), for a bare `it` whose seat asks for one.
+    Crossed
+    /// The declaration ITSELF, a callable fn value, for any other bare `it`.
+    Value
+    /// A component instance's root-kind indices, off its written body.
+    RootKind
+    /// Every node kind a component instance's patterns name, off its written body.
+    NodeKinds
+    /// An `.Annotated` kind's matched mark, for `it.mark`.
+    Mark
+    /// A component's OWN field, read off its instance's built value.
+    Component(word: string)
+    /// The GENERIC text projection, const.
+    Text(path: List<Plain>)
+}
+
+/// A projected field's declared type; the absorbing one when none is.
+fn field_seat(decls: Decls, entry_ty: TypeId, name: string) -> TypeId {
+    decls.field_type_named(entry_ty, name) ?? decls.types.intern(Type.Error)
+}
+
+// ── voices ──
+
+/// A statement a module file runs at `at`, where only the entry, at `entry`, runs statements.
+export fn entry_only_refused(at: Loc?, entry: string) -> Diag {
+    refusal(
+        "lower.entry_only",
+        at,
+        "a module file holds declarations — only the entry `${entry}` runs statements",
+        "runs here",
+        "move it into the entry, or wrap it in a fn the entry calls",
+    )
+}
+
+/// CLAIM A NAME: true the first time, and the seat is MUT so the write lands in the
+/// caller's map rather than copying it — the copy-on-write was the walk's whole cost.
+fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
+    if seen.get(name) != null { return false }
+    seen.set(name, true)
+    true
+}
+
+impl Decls {
+
+    fn mangle(name: string, sub: Sub) -> string {
+        let ids = joined([self.type_symbol(a) for a in sub.args], "_")
+        if sub.consts.is_empty() { return "${name}\$${ids}" }
+        "${name}\$${ids}@${joined(sub.consts, "_")}"
+    }
+}
+
+/// Why a const's value can't hold a code hash: what the old path's refusal says, and what the program
+/// layer's settlement traps with.
+export fn code_hash_unheld() -> string { "a const's value cannot hold a code hash — at compile time the program is only what the const reaches" }
+
+/// Where a const's value that holds a code hash goes wrong.
+export const CODE_HASH_REACHED: string = "reaches `code_hash`"

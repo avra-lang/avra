@@ -1,0 +1,1298 @@
+//! The fn feature's typing rules. The call: the target's signature
+//! is the law — arity exact, every argument matching its param; the
+//! declared return answers either way; Error arguments absorb. The
+//! declaration: the body types under its params AND its type
+//! parameters — checked ONCE, abstractly (a T can only move). A
+//! generic call INSTANTIATES: pins pre-fill, arguments unify, a
+//! fully-bound param falls back to the ordinary assignment law, and
+//! the representation laws re-judge every substituted slot.
+use core.{
+    void_ref,
+    EmbedKind,
+    EmbedBase,
+    ExprId,
+    StmtId,
+    TypeId,
+    Arrow,
+    TypeRef,
+    spelled,
+    DeclId,
+    Param,
+    Binding,
+    mut_mark,
+    rt_sigs,
+    RtSig,
+    RtKind,
+    Box,
+    TypeRegistry,
+    extern_kind,
+    width_named,
+}
+use features.{
+    embed_literal_law,
+    no_pins,
+    Pins,
+    Placed,
+    TypeCx,
+    FnSig,
+    nothing,
+    this_is,
+    tparams_refused,
+    unpinned_of,
+    type_name_decl,
+}
+use diagnostics.{Voice, refusal, said_as}
+
+export fn check_fn(mut cx: TypeCx, s: StmtId) {
+    match cx.view.store.stmt(s) {
+        .FnDecl(fname, _, fparams, fret, body) -> {
+            defaults_law(cx, s, fname.text(), fparams)
+            variadic_law(cx, s, fname.text(), fparams)
+            if cx.view.store.is_host_fn(s) { host_fn_law(cx, s, fname.text(), fparams) }
+            checked_fn(cx, s, fname.text(), fret ?? void_ref, body)
+        },
+        .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname.text(), hparams, hret),
+        rest -> nothing(),
+    }
+}
+
+/// THE HOST INOUT LAW at the DECLARATION: a `mut` seat hands C the
+/// ADDRESS of the caller's cell, so the cell's machine shape IS the
+/// contract, and only a few shapes line up. A MANAGED value is out —
+/// C cannot keep the refcount contract a box demands. A NARROW WIDTH
+/// is out — the cell is 64 bits and a 32-bit write through it leaves
+/// the top half stale, which is B3's defect wearing the other hat.
+fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
+    for j, pp in hparams {
+        if pp.promises.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
+    }
+    crossing_law(cx, s, hname, hparams)
+    callback_law(cx, s, hname, hparams)
+    let row? = rt_sigs().find(it.name == hname) else { return }
+    row_shape_law(cx, s, row, hparams, hret)
+    row_absence_law(cx, s, hname, hparams)
+}
+
+/// THE HOST FN LAW. An `extern fn` with a body DEFINES the symbol its
+/// name spells: a host calls it by that name, and a bodiless `extern fn`
+/// of the name elsewhere is answered by it. So its name is no runtime
+/// row's — that symbol has a body already — and its seats and answer
+/// are what crosses the seam in ONE register with no promise attached:
+/// a word, a float, or a pointer to text or octets. A `mut` or `const`
+/// seat is a promise between Avra callers, and the host makes none.
+fn host_fn_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    if rt_sigs().any(it.name == hname) { host_fn_names_a_row(cx, s, hname) }
+    for p in hparams {
+        if p.promises.mutable || p.promises.settled { host_seat_promises(cx, s, hname, p) }
+    }
+    let sig? = cx.stmt_sig(s) else { return nothing() }
+    for j, p in sig.params {
+        if !host_handed(cx.view.types, p) { host_seat_unhanded(cx, s, hname, hparams[j].name.text(), p) }
+    }
+    if !(cx.view.types.shape_of(sig.ret) is .Void) && !host_handed(cx.view.types, sig.ret) { host_answer_unhanded(cx, s, hname, sig.ret) }
+}
+
+/// What crosses a host fn's seam: Avra's one integer, a float, text,
+/// octets or a raw pointer — each one register wide in both engines'
+/// own shape, which is what lets the body be called as it stands.
+fn host_handed(types: TypeRegistry, ty: TypeId) -> bool {
+    match types.shape_of(ty) {
+        .Int or .Float or .Str or .Bytes or .Ptr or .Error -> true,
+        rest -> false,
+    }
+}
+
+/// THE PLAIN HALF OF THE SEAT LAW, AND THE ANSWER — one law, because
+/// a crossing has two ends and each was found unheld the same way. A
+/// `mut` seat is already held by `inout_able` above; a PLAIN one was
+/// held by nothing, so a record, a list or a map at a `const char*`
+/// seat compiled clean and crossed — the native binary handing C the
+/// box's address and answering garbage, the evaluator staging a
+/// HANDLE into its own table as if it were an address. THE ANSWER WAS
+/// HELD BY NOTHING TOO: a record, an enum, a `dyn` or a `Bytes`
+/// answered by a non-row extern checked CLEAN, and then the evaluator
+/// said `defect:` while the native binary SEGFAULTED.
+///
+/// A ROW WITH AN ARM IS THE EXEMPTION, and it is not a special case:
+/// the arm, on both sides, MATERIALISES the aggregate, which is
+/// exactly what the uniform frame cannot do. `avra_str_join` has taken
+/// a `List<string>` that way since before this law, and `avra_fd_taken`
+/// has answered `Bytes` that way. A row with NO evaluator arm is
+/// called through the uniform frame like any extern, so the frame's
+/// law holds for it: a closure handed to `avra_task_spawn` would reach
+/// C as a handle the evaluator made up.
+fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    if rt_sigs().any(it.name == hname && it.armed()) { return nothing() }
+    let sig? = cx.stmt_sig(s) else { return nothing() }
+    for j, p in sig.params {
+        if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
+    }
+    if !answerable(cx.view.types, sig.ret) { answer_cannot_cross(cx, s, hname, sig.ret) }
+}
+
+/// THE CALLBACK LAW (spec law 26): a C frame between two Avra frames is
+/// not unwound, so a callback under a cancel answers zero — and C that
+/// follows the pointer it was handed reads the null page. A seat typed
+/// as a fn whose answer RIDES A POINTER is refused at the declaration.
+fn callback_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    let sig? = cx.stmt_sig(s) else { return nothing() }
+    for j, ty in sig.params {
+        let answer? = fn_answer_of(cx.view.types, ty) else { continue }
+        if cx.view.types.rides_pointer(answer) { callback_pointer(cx, s, hname, hparams[j].name.text()) }
+    }
+}
+
+/// The answer of a fn-typed shape, absent for every other shape.
+fn fn_answer_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
+    match types.shape_of(ty) { .Fn(_, _, ret) -> ret, rest -> null }
+}
+
+fn callback_pointer(mut cx: TypeCx, s: StmtId, hname: string, seat: string) {
+    cx.emit(said_as("flow.callback_pointer", cx.stmt_loc(s), callback_pointer_voice(hname, seat)))
+}
+
+/// WHAT A PLAIN EXTERN SEAT MAY WEAR: a machine word, or ONE pointer
+/// C can read — text, octets, an opaque host pointer, or absence over
+/// those. Everything else that RIDES a pointer is a box in OUR
+/// layout, and its address means nothing on the far side.
+///
+/// SPELLED AS WHAT IS ALLOWED, and the catch-all is the honest
+/// direction rather than a hole: every type the language grows is
+/// REFUSED at this seat until someone decides it crosses, which is a
+/// loud answer a writer can act on. A forbidden list would have
+/// admitted each new type in silence, and C is on the other side of
+/// this door.
+///
+/// `void` IS NOT ONE, and it read as one until a program wrote it: a
+/// `void` seat reaches the evaluator's frame as `defect: a `void`
+/// seat reached the extern frame` — whose own comment claimed no
+/// declaration could write it — and LLVM refuses the module the
+/// backend emits for it. Two internal failures for one user mistake.
+fn crossable(types: TypeRegistry, ty: TypeId) -> bool {
+    let held = types.carried(ty) ?? ty
+    match types.shape_of(held) {
+        .Int or .Float or .Bool or .Str or .Bytes or .Ptr or .Error -> true,
+        rest -> false,
+    }
+}
+
+/// WHAT AN EXTERN'S ANSWER MAY WEAR, and it is NOT the seat's set:
+/// the two ends of a crossing carry different things, so the
+/// asymmetry is spelled rather than shared.
+///
+/// `void` is allowed here and refused at a seat — an extern that
+/// answers nothing is the ordinary shape. `Bytes` is allowed at a
+/// SEAT and refused here, and that is the whole difference: a seat
+/// hands C a box whose length the caller already knows, while an
+/// answer would have to INVENT one for a pointer the callee owns.
+/// The evaluator has no arm for it and the native binary reads
+/// foreign memory as ours.
+fn answerable(types: TypeRegistry, ty: TypeId) -> bool {
+    let held = types.carried(ty) ?? ty
+    match types.shape_of(held) {
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Error -> true,
+        rest -> false,
+    }
+}
+
+/// A ROW'S SEAT TAKES NO ABSENCE, and this is the half the seat law
+/// could not hold: `row_agrees` compares ABI KINDS, and a nullable
+/// fills the same `Ptr` its present twin does, so `avra_host_env(name:
+/// string?)` wore the row's shape exactly and `null` crossed. The
+/// COMPILER KNOWS THESE BODIES — they are core's own C, and every one
+/// of them reads the pointer it is handed — which is why the refusal
+/// is by name here and the capability stays for a package, whose C may
+/// take a pointer-or-NULL and mean it.
+fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    let sig? = cx.stmt_sig(s) else { return }
+    for j, p in sig.params {
+        if !hparams[j].promises.mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
+    }
+}
+
+/// AN EXTERN THAT NAMES A RUNTIME ROW WEARS THE ROW'S SHAPE: as many
+/// seats as the row, and at each of the row's pointer seats a type
+/// that IS the box the row reads — `avra_str_len` reads a text
+/// header, and a list handed there answers its byte size as a
+/// length, in a clean program. `ptr` is the raw crossing and fits
+/// any box; a row that names no box takes every one.
+fn row_shape_law(mut cx: TypeCx, s: StmtId, row: RtSig, hparams: List<Param>, hret: TypeRef) {
+    // THE WRONG COUNT IS ONE MISTAKE AND IT IS SPOKEN ALONE: a
+    // declaration whose arity disagrees may be naming a row its
+    // writer did not mean, and every seat and answer complaint under
+    // it would be about a fn they were not declaring.
+    if hparams.length != row.params.length { return row_arity(cx, s, row, hparams.length) }
+    for j, pp in hparams {
+        if row.params[j] is .Ptr && !fits_box(pp.ty, row.box_at(j)) { seat_not_the_box(cx, s, row, j, pp) }
+    }
+    row_answer_law(cx, s, row, hret)
+}
+
+/// A ROW'S ANSWER IS THE ROW'S, NOT THE DECLARATION'S. The seat law
+/// held every argument and left the value coming BACK unheld: an
+/// extern naming a row could answer any type at all, so
+/// `extern fn avra_array_new() -> bool` checked clean and the two
+/// engines then disagreed about what it answered — the evaluator
+/// printing a list where native printed `true`. The declared answer
+/// must ride the currency the row answers in.
+fn row_answer_law(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
+    let sig? = cx.stmt_sig(s) else { return }
+    let got = extern_kind(cx.view.types, written_ret(hret), sig.ret)
+    if !same_kind(got, row.ret) { return answer_not_the_row(cx, s, row, hret, got) }
+    // AND WHICH BOX IT HANDS BACK, for the same reason a seat names
+    // the box it reads: `avra_array_new` answers a LIST, and declaring
+    // it `Bytes` rides a pointer like any other box, so the kind
+    // agrees and the program then reads a list's header as octets —
+    // "a non-Bytes value reached a byte operation in a clean program",
+    // which is the compiler blaming itself for what it accepted.
+    if row.ret is .Ptr && !fits_box(hret, row.answer) { answer_not_the_box(cx, s, row, hret) }
+}
+
+/// The WIDTH a return annotation named, when it named one — a bare
+/// name carries no arguments and is the only shape a width word can
+/// wear, exactly as a seat's is.
+export fn written_ret(hret: TypeRef) -> TypeRef? {
+    if width_named(hret.name) == null { return null }
+    hret
+}
+
+/// Two kinds are the same currency when they are the same variant.
+/// EXHAUSTIVE OVER THE PAIR THAT MATTERS: a narrow width and a word
+/// are DIFFERENT — `i32` against the row's `I64` is the truncation
+/// the width keeper exists for, one seam over.
+export fn same_kind(a: RtKind, b: RtKind) -> bool {
+    match a {
+        .I64 -> b is .I64,
+        .Ptr -> b is .Ptr,
+        .Void -> b is .Void,
+        .I32 -> b is .I32,
+        .U32 -> b is .U32,
+        .F64 -> b is .F64,
+    }
+}
+
+/// Whether a written seat type is the box a row's pointer seat reads.
+/// TEXT AND OCTETS ARE ONE HEADERED BOX natively, read at the header's
+/// length either way, so a text row takes a `Bytes` (those bytes viewed
+/// as text) and an octet row takes a `string` — the engines agree on
+/// both, and the program tests beside `features/bytes` pin it.
+export fn fits_box(t: TypeRef?, b: Box) -> bool {
+    let written? = t else { return false }
+    if written.name == "ptr" { return true }
+    match b {
+        .Any -> true,
+        .Text or .Bytes -> headered_text(written.name),
+        .List -> written.name == "List",
+        .Map -> written.name == "Map",
+    }
+}
+
+/// The types a `mut` extern seat may wear, by the word the seat
+/// WROTE. A `ptr` cell is a `void**` to C and `ptr?` is its twin
+/// with absence; an INTEGER cell must name its WIDTH, and a bare
+/// `int` is refused there though it is fine everywhere else.
+///
+/// THE REASON A BARE `int` IS REFUSED, which is the whole of this
+/// law: an integer inout is correct for an `int64_t*` and SILENTLY
+/// WRONG for an `int*`, and nothing at the seat distinguishes them.
+/// Measured on one C body through both spellings — `int` answers
+/// 4294967295 where `i32` answers -1. A seat that is right for three
+/// prototypes and wrong for nineteen must make the author say which,
+/// and `i64` is how they say "the wide one" out loud.
+export fn inout_able(t: TypeRef?) -> bool {
+    let written? = t else { return false }
+    ["ptr", "i64", "i32", "u32"].contains(written.name)
+}
+
+fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
+    let sig: FnSig? = cx.stmt_sig(s)
+    let want: TypeId = sig?.ret ?? cx.error_type
+    // the declared answer plants the want before the body walks, so a
+    // `match`/`when` tail judges (and may WIDEN) each arm against it
+    // directly rather than joining the arms bottom-up and reconciling
+    // after — the same channel a default's or a case's own want takes
+    cx.plant_want(body, want)
+    cx.walk_under(s, body)
+    let got: TypeId = cx.type_at(body)
+    // a body that did not parse has spoken already; its answer is
+    // whatever the hole left, not a second mistake
+    if !cx.accepts(body, want) && !holds_error(cx, body) { body_disagrees(cx, body, fname, fret, got) }
+}
+
+/// THE DEFAULT LAWS at the declaration. A default is ONE body, lowered
+/// once, so a seat whose type names a type parameter defaults only in
+/// a fn lowered once; a `mut` seat is a place and a `const` seat a
+/// settled value, which a default body is neither; and a call writes
+/// its seats in order, so a seat without a default after one with a
+/// default could never be left to it.
+fn defaults_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
+    let first? = [j for j, p in params if p.default != null].first() else { return }
+    if !cx.view.decls.lowered_once(cx.decl_of(s)) {
+        let open = [p for p in params if default_opens(cx, s, p)]
+        if !open.is_empty() { return generic_default(cx, open[0], fname) }
+    }
+    for p in params {
+        if p.default != null && (p.promises.mutable || p.promises.settled || p.promises.state) { marked_default(cx, p, fname) }
+    }
+    let unfilled? = params.slice(first, params.length).find(it.default == null) else { return }
+    required_after_default(cx, unfilled, params[first])
+}
+
+/// THE VARIADIC LAW at the declaration: a `..rest: List<T>` seat is the
+/// last, the only one, and a list — it takes whatever the call leaves.
+fn variadic_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
+    let at? = params.find_index(it.is_rest()) else { return }
+    let p = params[at]
+    if at != params.length - 1 || params.filter(it.is_rest()).length > 1 { return variadic_misplaced(cx, s, p, fname) }
+    let listed = (cx.stmt_sig(s)?.params ?? []).last()
+    if listed == null || cx.view.types.element(cx.view.types.seen_through(listed!)) == null { variadic_unlisted(cx, s, p, fname) }
+}
+
+fn variadic_misplaced(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
+    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_not_last(p.name.text(), fname)))
+}
+
+/// A `..seat` of `fname` that stands before another seat, or beside a second one.
+export fn rest_not_last(seat: string, fname: string) -> Voice {
+    Voice {
+        message: "`..${seat}` takes the rest of `${fname}`'s arguments, so it is the one seat that stands last",
+        label: "this seat",
+        help: "move it to the end, and keep one",
+    }
+}
+
+/// A `..seat` of `fname` whose type is no list.
+export fn rest_unlisted(seat: string, fname: string) -> Voice {
+    Voice {
+        message: "`..${seat}` of `${fname}` collects its arguments into a list",
+        label: "this seat",
+        help: "declare it a list — `..${seat}: List<T>`",
+    }
+}
+
+fn variadic_unlisted(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
+    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_unlisted(p.name.text(), fname)))
+}
+
+/// Whether a seat's default answers a type naming a type parameter.
+fn default_opens(cx: TypeCx, s: StmtId, p: Param) -> bool {
+    if p.default == null { return false }
+    let d? = cx.view.decls.default_named(cx.decl_of(s), p.name.text()) else { return false }
+    let ret? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return false }
+    cx.view.types.open(ret)
+}
+
+/// THE DEFAULT LAW, at the body: a seat's default (walked under the
+/// seat's want) is accepted by the seat — every call that leaves the
+/// seat unwritten then runs it without judging it again.
+export fn fits_seat_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeId) {
+    if cx.accepts(d, want) { return }
+    let n = cx.name_at(d)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.param_default",
+                    cx.loc_of(d),
+                    d,
+                    "parameter `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`",
+                    want,
+                ),
+        )
+}
+
+/// Whether a body's statements hold a parse recovery.
+fn holds_error(cx: TypeCx, body: ExprId) -> bool {
+    let stmts: List<StmtId> = match cx.view.store.expr(body) { .Block(ss) -> ss, _ -> [] }
+    stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error)
+}
+
+/// A call through a FN-TYPED VALUE — a lambda, a captured fn, a
+/// fn-typed param: the value's own seats judge the arguments.
+fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {
+    if !pins.is_empty() { return value_takes_no_pins(cx, e, callee) }
+    if !cx.nameless(callee, args) { return cx.error_type }
+    let bound = cx.target_type(e)
+    let made: TypeId? = named_construction(cx, e, callee, args, bound)
+    if made != null { return made! }
+    let held: Arrow? = cx.view.types.arrow_parts(bound)
+    if held != null {
+        let arrow = held!
+        return cx.seats_judged(e, callee, arrow.seats, arrow.marks, arrow.answer, args)
+    }
+    if cx.errored_ty(bound) { return cx.error_type }
+    if names_component(cx, bound) { return component_called(cx, e, callee) }
+    not_callable(cx, e, callee, bound)
+}
+
+/// A NAMED TYPE CONSTRUCTS BY CALL — `UserId(5)`. It takes ONE
+/// argument of the shape it stands over, judged by the ORDINARY
+/// SEAT LAW, so arity and the value refuse in the call's own words
+/// and this rule owes no voice of its own. Absent when the callee
+/// names no type, or names one that stands over nothing.
+fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, bound: TypeId) -> TypeId? {
+    let d? = type_name_decl(cx.view.types.shape_of(bound)) else { return null }
+    // the DECLARATION first: the name's mark is made when it is
+    let _ = cx.view.decls.sig(d)
+    let named = cx.view.decls.self_type_of(d)
+    let of? = cx.view.types.stands_for(named) else { return null }
+    let _ = cx.seals(cx.loc_of(e), named, "converted into here")
+    cx.seats_judged(e, callee, [of], [], named, args)
+}
+
+/// A GENERIC callee unifies; a plain one type-checks directly. The
+/// tparams come from the declaration itself — the registry the
+/// resolver already found.
+fn dispatched_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    callee: string,
+    pins: List<TypeRef>,
+    args: List<ExprId>,
+    s: FnSig,
+) -> TypeId {
+    let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
+    let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
+    let reads = cx.view.decls.embed_kind_of(d)
+    if reads != null {
+        let refused: TypeId? = embed_law(cx, e, placed.args[0], reads!, EmbedBase.Beside)
+        if refused != null { return refused! }
+    }
+    if cx.view.decls.is_meta_fn(d, "provided") {
+        let refused: TypeId? = provided_law(cx, e, placed.args[0], pins)
+        if refused != null { return refused! }
+    }
+    if cx.view.decls.is_meta_fn(d, "code_hash") && !names_a_fn(cx, placed.args[0]) { return code_hash_unnamed(cx, placed.args[0]) }
+    if cx.view.decls.is_meta_fn(d, "marks") &&
+        placed.args.length == 2 &&
+        !names_a_fn(cx, placed.args[1]) { return marks_unnamed(cx, placed.args[1]) }
+    if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
+    if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, placed.args) }
+    let tp: List<string> = cx.tparams(d)
+    if tp.is_empty() {
+        if !pins.is_empty() { takes_no_pins(cx, e, callee) }
+        return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args)
+    }
+    generic_call(cx, e, callee, pins, placed, s, d, tp)
+}
+
+/// The instantiation: pins pre-fill by position, the written
+/// arguments unify the rest against their seats, every Var must land,
+/// and the answer is the return with the bindings applied. Recorded
+/// for mono.
+fn generic_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    callee: string,
+    pins: List<TypeRef>,
+    placed: Placed,
+    s: FnSig,
+    decl: DeclId,
+    tp: List<string>,
+) -> TypeId {
+    if tparams_refused(tp) { return cx.error_type }
+    let args = placed.args
+    if args.length != placed.wants.length {
+        cx.wrong_arity(e, callee, s.params.length, args.length)
+        return cx.error_type
+    }
+    mut bound = pinned_slots(cx, e, callee, pins, decl, tp)
+    // a pin that failed to name a type already spoke — absorb
+    for b in bound.slots {
+        if b != null && cx.errored_ty(b!) { return cx.error_type }
+    }
+    mut spoke = false
+    for j, a in args {
+        if !generic_argument(cx, callee, j, placed.wants[j], a, decl, bound) { spoke = true }
+    }
+    for pin in placed.pins {
+        if !cx.unify(pin.want, pin.have, decl, bound) {
+            let _ = cx.spread_field_type(pin.at, callee, pin.name, pin.have, pin.want)
+            spoke = true
+        }
+    }
+    if spoke { return cx.error_type }
+    if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
+    let missing: string? = unpinned_of(tp, bound)
+    if missing != null && args.any(spoke_already(cx, it)) { return cx.error_type }
+    if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { cx.hungry(e) } }
+    let concrete = cx.bound_closed(bound)
+    if !cx.bounds_hold(e, decl, concrete, "in this call") { return cx.error_type }
+    if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
+    let settled: List<string> = cx.subst_at(e)?.consts ?? []
+    cx.record_subst(e, decl, concrete, settled)
+    cx.view.types.substituted(s.ret, decl, concrete)
+}
+
+/// An argument that already refused — itself, or a fn whose answer
+/// did — pins nothing, and has said so in its own words. One still
+/// hungry when the walk ends speaks for itself in that same pass.
+fn spoke_already(cx: TypeCx, a: ExprId) -> bool {
+    if cx.facts.hungry_at(a) { return cx.starving }
+    if cx.errored(a) { return true }
+    let arrow? = cx.view.types.arrow_parts(cx.type_at(a)) else { return false }
+    cx.errored_ty(arrow.answer)
+}
+
+/// A Var the arguments leave free is pinned by the ANSWER's seat: the
+/// declared return unifies with the want the seat planted (`let xs:
+/// List<int> = empty()`, `Store { exprs: new_arena() }`, an argument
+/// seat, a fn's declared answer). With no want yet the call goes
+/// HUNGRY, like a generic literal, and speaks only when the walk ends
+/// starving.
+fn pinned_by_answer(cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
+    let wanted? = cx.want_at(e) else { return }
+    if cx.unify(ret, wanted, decl, bound) || cx.view.types.carried(ret) != null { return }
+    let present? = cx.view.types.carried(wanted) else { return }
+    let _ = cx.unify(ret, present, decl, bound)
+}
+
+/// The representation laws re-judge every substituted slot — a
+/// binding cannot smuggle past what a declaration would refuse.
+fn lawful_instantiation(mut cx: TypeCx, e: ExprId, s: FnSig, decl: DeclId, concrete: List<TypeId>) -> bool {
+    for pt in s.params {
+        if refused_instantiation(cx, e, pt, decl, concrete) { return false }
+    }
+    !refused_instantiation(cx, e, s.ret, decl, concrete)
+}
+
+/// One substituted type checked against the representation laws.
+fn refused_instantiation(
+    mut cx: TypeCx,
+    e: ExprId,
+    raw: TypeId,
+    decl: DeclId,
+    concrete: List<TypeId>,
+) -> bool {
+    let offender? = cx.unlawful_side(cx.view.types.substituted(raw, decl, concrete)) else { return false }
+    side_unholdable(cx, e, offender)
+    true
+}
+
+/// Explicit pins fill the slots by position — all of them, or none.
+fn pinned_slots(
+    mut cx: TypeCx,
+    e: ExprId,
+    callee: string,
+    pins: List<TypeRef>,
+    _decl: DeclId,
+    tp: List<string>,
+) -> Pins {
+    mut bound = no_pins(tp.length)
+    if pins.is_empty() { return bound }
+    if pins.length != tp.length {
+        wrong_pin_count(cx, e, callee, tp.length, pins.length)
+        return bound
+    }
+    for j, tr in pins {
+        bound.pin(j, cx.written(e, tr))
+    }
+    bound
+}
+
+/// One generic argument: unification first; when the param's Vars
+/// are ALREADY all bound (pins, or earlier arguments), the param is
+/// effectively concrete and the ordinary assignment law judges it —
+/// which is what lets `null` and widening ride a pinned `T?`.
+fn generic_argument(
+    mut cx: TypeCx,
+    callee: string,
+    j: int,
+    param: TypeId,
+    a: ExprId,
+    decl: DeclId,
+    mut bound: Pins,
+) -> bool {
+    if cx.agreed(a, param, decl, bound) { return true }
+    if cx.shape_at(a) is .Null {
+        null_cannot_pin(cx, callee, j, param, a)
+        return false
+    }
+    cx.wrong_argument(callee, j, cx.as_bound(param, decl, bound), a)
+    false
+}
+
+/// `return v` — legal only inside a fn, and `v` must be ACCEPTED
+/// by the declared answer (widening recorded, like every slot).
+export fn check_return(mut cx: TypeCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return bare_return(cx, s) }
+    let early: TypeId? = cx.enclosing_ret()
+    if early != null { cx.plant_want(v, early!) }
+    cx.walk(v)
+    let want: TypeId? = cx.enclosing_ret()
+    if want == null {
+        no_fn_to_answer(cx, s)
+        return
+    }
+    if cx.errored(v) { return }
+    if cx.accepts(v, want!) { return }
+    wrong_return(cx, s, v, want!)
+}
+
+/// THE HOST INOUT LAW at the CALL: only a LOCAL binding owns a cell,
+/// and the cell's address is what the seat hands over. A parameter,
+/// a capture, a pattern bind and a receiver are registers with
+/// nothing behind them, so handing one over would pass the VALUE and
+/// the callee's write would land in a copy nobody reads.
+fn inout_args_law(mut cx: TypeCx, callee: string, d: DeclId, args: List<ExprId>) {
+    let marks = cx.declared_marks(d, 0, args.length)
+    for j, a in args {
+        if mut_mark(marks, j) && cellless_place(cx, a) { seat_wants_a_local(cx, a, callee, j) }
+    }
+}
+
+/// A `mut` PLACE whose root owns no cell — a parameter, a capture, a
+/// pattern bind, a receiver. A value and a non-`mut` root are the
+/// SEAT LAW's to refuse and it already has, so this law asks only
+/// about what that one accepted: one mistake, one message.
+fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
+    let root? = cx.view.store.place_root(a) else { return false }
+    let b: Binding? = cx.names.binding(root)
+    cx.is_mut(root) && b != null && !(b! is .Def)
+}
+
+// ── The voices ──
+
+fn generic_default(mut cx: TypeCx, p: Param, fname: string) {
+    cx
+        .emit(
+            said_as(
+                "type.param_default",
+                cx.loc_of(p.default!),
+                default_opened(p.name.text(), fname),
+            ),
+        )
+}
+
+/// The seat `seat` of `fname` carrying a default whose type names one of `fname`'s type parameters.
+export fn default_opened(seat: string, fname: string) -> Voice {
+    Voice {
+        message: "`${seat}` carries a default, and its type names a type parameter of `${fname}` — a default is one body, lowered once, and that type differs per call",
+        label: "defaulted here",
+        help: "drop the default, or give `${fname}` a plain twin that fills the seat",
+    }
+}
+
+fn marked_default(mut cx: TypeCx, p: Param, fname: string) {
+    cx
+        .emit(
+            said_as(
+                "type.param_default",
+                cx.loc_of(p.default!),
+                default_marked(p.name.text(), seat_kind(p), fname),
+            ),
+        )
+}
+
+/// The seat `seat` of `fname`, a `kind` seat, carrying a default.
+export fn default_marked(seat: string, kind: string, fname: string) -> Voice {
+    Voice {
+        message: "`${seat}` is a ${kind} seat of `${fname}`, and a default body is neither a place nor a settled value",
+        label: "defaulted here",
+        help: "drop the default — every call writes this seat",
+    }
+}
+
+fn required_after_default(mut cx: TypeCx, unfilled: Param, first: Param) {
+    cx
+        .emit(
+            said_as(
+                "type.param_default",
+                cx.loc_of(first.default!),
+                default_before_plain(unfilled.name.text(), first.name.text()),
+            ),
+        )
+}
+
+/// A seat `unfilled` with no default written after `first`, the first seat with one.
+export fn default_before_plain(unfilled: string, first: string) -> Voice {
+    Voice {
+        message: "`${unfilled}` has no default and follows `${first}`, which has one — defaulted seats come last",
+        label: "the first default",
+        help: "move the defaulted seats last, or give `${unfilled}` a default too",
+    }
+}
+
+/// The word for a seat's contract, as the default law names it.
+fn seat_kind(p: Param) -> string {
+    if p.promises.mutable { "`mut`" } else { "`const`" }
+}
+
+fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, got: TypeId) {
+    let gn = cx.view.types.name_of(got)
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(body),
+                "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`",
+                this_is(gn),
+                "the body's last expression is the answer — make it a `${spelled(fret)}`, or change the declared answer",
+            ),
+        )
+}
+
+fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId { cx.spoken(said_as("type.lambda", cx.loc_of(e), fn_value_pinned(callee))) }
+
+/// A call pinning type arguments on `callee`, a fn value.
+export fn fn_value_pinned(callee: string) -> Voice {
+    Voice {
+        message: "`${callee}` is a fn VALUE — it takes no type arguments",
+        label: "pinned here",
+        help: "drop the `<…>` — a fn value is already pinned to one signature",
+    }
+}
+
+/// Whether an argument names a declared fn — what `code_hash` hashes.
+fn names_a_fn(cx: TypeCx, f: ExprId) -> bool {
+    let d? = cx.bound_decl(f) else { return false }
+    cx.view.decls.decl(d).kind is .Fn
+}
+
+fn code_hash_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId { cx.spoken(said_as("type.code_hash_named", cx.loc_of(f), hashed_unnamed())) }
+
+fn marks_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId { cx.spoken(said_as("type.marks_named", cx.loc_of(f), marked_unnamed())) }
+
+/// What a meta fn taking a declared fn by name says of a value that names none.
+const NAMES_NO_DECLARED_FN: string = "this names no declared fn"
+
+/// `marks` asked after what names no declared fn.
+export fn marked_unnamed() -> Voice {
+    Voice {
+        message: "`marks` asks after a declared fn, named where it is called",
+        label: NAMES_NO_DECLARED_FN,
+        help: "name the fn the annotation is — `marks(a, secret)` — never its name as text, a value or a call",
+    }
+}
+
+/// `code_hash` handed what names no declared fn.
+export fn hashed_unnamed() -> Voice {
+    Voice {
+        message: "`code_hash` hashes a declared fn, named where it is called",
+        label: NAMES_NO_DECLARED_FN,
+        help: "name the fn itself — `code_hash(answer)` — never a value or a call",
+    }
+}
+
+fn embed_computed_path(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("type.embed_literal", cx.loc_of(e), embed_computed_voice())) }
+
+/// Whether a callee's name stands for a component — a record a block
+/// instantiates, never a fn.
+fn names_component(cx: TypeCx, bound: TypeId) -> bool {
+    match cx.view.types.shape_of(bound) {
+        .TypeName(decl, _) -> cx.view.decls.facts_of(decl)?.is_component ?? false,
+        _ -> false,
+    }
+}
+
+fn component_called(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "`${callee}` is a component, and a parenthesis after its word is read as a call",
+                "called here",
+                "an instance's head value follows its word bare — `${callee} value` — so bind a longer one first: `let value = …`",
+            ),
+        )
+}
+
+/// THE PROVIDED LAW: the kind is written (a pin, or the seat's own type),
+/// and the file is judged as an octets embed from the package's root.
+/// Null when the call may stand.
+fn provided_law(mut cx: TypeCx, e: ExprId, path: ExprId, pins: List<TypeRef>) -> TypeId? {
+    if pins.is_empty() && cx.want_at(e) == null { return provided_unpinned(cx, e) }
+    embed_law(cx, e, path, EmbedKind.Octets, EmbedBase.Root)
+}
+
+fn provided_unpinned(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.provided_kind",
+                cx.loc_of(e),
+                "`provided` names its kind — the file's octets do not choose it",
+                "no kind written here",
+                "write it: `provided<Picture>(\"art/logo.svg\")`, or give the const its type",
+            ),
+        )
+}
+
+/// THE EMBED LAW, at the literal: the path is written, it stays inside
+/// the package that writes it, no link stands on the way to it, and
+/// what stands there is text. Null when the const may read it.
+fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId, kind: EmbedKind, base: EmbedBase) -> TypeId? {
+    let rel? = cx.view.store.expr(path).text_of() else { return embed_computed_path(cx, e) }
+    let fault = match cx.view.decls.embed_placed(cx.view.file, rel, kind, base) {
+        .Ok(_) -> { return null },
+        .Err(why) -> why,
+    }
+    cx
+        .spoken(said_as(embed_fault_kind(fault), cx.loc_of(path), embed_fault_voice(fault, rel, base)))
+}
+
+fn not_callable(mut cx: TypeCx, e: ExprId, callee: string, bound: TypeId) -> TypeId {
+    cx
+        .spoken(
+            said_as(
+                "type.lambda",
+                cx.loc_of(e),
+                name_uncallable(callee, cx.view.types.name_of(bound)),
+            ),
+        )
+}
+
+/// A call of the name `callee`, which holds a value of `held`, no fn.
+export fn name_uncallable(callee: string, held: string) -> Voice {
+    Voice {
+        message: "`${callee}` is not callable — it holds a `${held}`",
+        label: "called here",
+        help: "only fns and fn-typed values take arguments",
+    }
+}
+
+fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) { cx.emit(said_as("type.mismatch", cx.loc_of(e), pins_refused(callee, 0, 1))) }
+
+fn unpinned_by_arguments(mut cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
+    cx.spoken(said_as("type.mismatch", cx.loc_of(e), param_unpinned(tparam, callee)))
+}
+
+/// What the program wrote into an instance of the component `word`, of `found`, handed by the
+/// instance's expansion to a seat of `want` that it does not fill: said in the instance's words,
+/// since the program wrote the instance and never the call its expansion makes.
+export fn instance_seat_unfilled(word: string, want: string, found: string) -> Voice {
+    Voice {
+        message: if found == "void" {
+            "what `${word}` is written with does not fit the seat `${word}` hands it to, which takes `${want}`"
+        } else {
+            "what `${word}` is written with is `${found}`, and the seat `${word}` hands it to takes `${want}`"
+        },
+        label: "written here",
+        help: if want.starts_with("fn(") {
+            "write it over what that seat hands it — `{ q -> … }` takes it as `q`"
+        } else {
+            "write it as a `${want}`"
+        },
+    }
+}
+
+/// A call of `callee` that leaves its type parameter `tparam` filled by nothing.
+export fn param_unpinned(tparam: string, callee: string) -> Voice {
+    Voice {
+        message: "`${tparam}` is not pinned by the arguments",
+        label: "in this call",
+        help: "write the type explicitly — `${callee}<...>(...)`",
+    }
+}
+
+fn side_unholdable(mut cx: TypeCx, e: ExprId, offender: TypeId) {
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "this call makes a `Result` side `${cx.view.types.name_of(offender)}`, which a side cannot hold yet",
+                "in this call",
+                "a `Result` side holding nothing is recorded — answer what the verb wrote",
+            ),
+        )
+}
+
+fn wrong_pin_count(mut cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
+    cx.emit(said_as("type.mismatch", cx.loc_of(e), pins_refused(callee, want, found)))
+}
+
+/// The seat `name` of a fn, written with no type.
+export fn param_typeless(name: string) -> Voice {
+    Voice {
+        message: "parameter `${name}` declares no type",
+        label: "declared here",
+        help: "write `${name}: <type>`",
+    }
+}
+
+/// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
+export fn pins_refused(callee: string, want: int, found: int) -> Voice {
+    if want == 0 {
+        return Voice {
+            message: "`${callee}` takes no type arguments",
+            label: "pinned here",
+            help: "drop the `<…>` — this fn declares no type parameters",
+        }
+    }
+    Voice {
+        message: "`${callee}` takes ${want} type arguments, found ${found}",
+        label: "pinned here",
+        help: "write exactly ${want} type argument(s) — `${callee}<…>`",
+    }
+}
+
+fn null_cannot_pin(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId) {
+    cx
+        .emit(
+            said_as(
+                "type.mismatch",
+                cx.loc_of(a),
+                null_unpinning(callee, j + 1, cx.view.types.name_of(param)),
+            ),
+        )
+}
+
+/// A bare `null` handed argument `place` of `callee`, a seat of `want` naming a type parameter
+/// nothing fills.
+export fn null_unpinning(callee: string, place: int, want: string) -> Voice {
+    Voice {
+        message: "argument ${place} of `${callee}` wants `${want}`, found `null`",
+        label: "always absent",
+        help: "a bare `null` cannot pin `T` — write `${callee}<...>(...)`",
+    }
+}
+
+fn no_fn_to_answer(mut cx: TypeCx, s: StmtId) { cx.emit(said_as("type.return", cx.stmt_loc(s), return_fnless())) }
+
+/// A `return` no fn encloses.
+export fn return_fnless() -> Voice {
+    Voice {
+        message: "a `return` answers a fn, and there is none enclosing",
+        label: "returned here",
+        help: "at the top level the last statement IS the answer",
+    }
+}
+
+fn bare_return(mut cx: TypeCx, s: StmtId) {
+    let want? = cx.enclosing_ret() else { return no_fn_to_answer(cx, s) }
+    if cx.view.types.shape_of(want) is .Void { return }
+    cx.emit(said_as("type.return", cx.stmt_loc(s), return_bare(cx.view.types.name_of(want))))
+}
+
+/// A bare `return` in a fn that declares it answers `want`.
+export fn return_bare(want: string) -> Voice {
+    Voice {
+        message: "a bare `return` answers nothing, but this fn declares `${want}`",
+        label: "here",
+        help: "write `return <value>`, or declare no return",
+    }
+}
+
+fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
+    let gn = cx.name_at(v)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.return",
+                    cx.stmt_loc(s),
+                    v,
+                    "`return` answers `${cx.view.types.name_of(want)}`, this is `${gn}`",
+                    want,
+                ),
+        )
+}
+
+fn row_arity(mut cx: TypeCx, s: StmtId, row: RtSig, declared: int) {
+    cx
+        .emit(
+            said_as(
+                "type.row_shape",
+                cx.stmt_loc(s),
+                row_arity_voice(row.name, row.params.length, declared),
+            ),
+        )
+}
+
+fn answer_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
+    cx
+        .emit(
+            said_as(
+                "type.row_shape",
+                cx.stmt_loc(s),
+                answer_box_voice(
+                    row.name,
+                    box_word(row.answer),
+                    spelled(hret),
+                    box_seat(row.answer),
+                ),
+            ),
+        )
+}
+
+fn answer_not_the_row(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef, got: RtKind) {
+    cx
+        .emit(
+            said_as(
+                "type.row_shape",
+                cx.stmt_loc(s),
+                answer_kind_voice(row.name, kind_word(row.ret), spelled(hret), kind_word(got)),
+            ),
+        )
+}
+
+/// A runtime kind as a reader meets it.
+export fn kind_word(k: RtKind) -> string {
+    match k {
+        .I64 -> "a word",
+        .Ptr -> "a pointer",
+        .Void -> "nothing",
+        .I32 -> "a 32-bit signed word",
+        .U32 -> "a 32-bit unsigned word",
+        .F64 -> "a double",
+    }
+}
+
+fn seat_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, j: int, pp: Param) {
+    let b = row.box_at(j)
+    cx
+        .emit(
+            said_as(
+                "type.row_shape",
+                cx.stmt_loc(s),
+                seat_box_voice(
+                    row.name,
+                    j,
+                    box_word(b),
+                    spelled(pp.ty ?? void_written),
+                    box_seat(b),
+                ),
+            ),
+        )
+}
+
+/// The two names a headered text or octet box wears at a seat.
+fn headered_text(name: string) -> bool {
+    name == "string" || name == "Bytes"
+}
+
+export fn box_word(b: Box) -> string {
+    match b {
+        .Any -> "any box",
+        .Text -> "a text box",
+        .Bytes -> "an octet box",
+        .List -> "a list box",
+        .Map -> "a map box",
+    }
+}
+
+export fn box_seat(b: Box) -> string {
+    match b {
+        .Any -> "ptr",
+        .Text -> "string",
+        .Bytes -> "Bytes",
+        .List -> "List<…>",
+        .Map -> "Map<string, …>",
+    }
+}
+
+fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Param) {
+    cx
+        .emit(
+            said_as(
+                "type.host_seat",
+                cx.stmt_loc(s),
+                inout_unable_voice(hname, j, spelled(pp.ty ?? void_written)),
+            ),
+        )
+}
+
+fn host_fn_names_a_row(mut cx: TypeCx, s: StmtId, hname: string) { cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_row_voice(hname))) }
+
+fn host_seat_promises(mut cx: TypeCx, s: StmtId, hname: string, p: Param) {
+    cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_promise_voice(hname, p.name.text())))
+}
+
+fn host_seat_unhanded(mut cx: TypeCx, s: StmtId, hname: string, seat: string, p: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.host_fn",
+                cx.stmt_loc(s),
+                host_seat_voice(hname, seat, cx.view.types.name_of(p)),
+            ),
+        )
+}
+
+fn host_answer_unhanded(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.host_fn",
+                cx.stmt_loc(s),
+                host_answer_voice(hname, cx.view.types.name_of(ret)),
+            ),
+        )
+}
+
+fn seat_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.host_seat",
+                cx.stmt_loc(s),
+                crossing_voice(hname, j, cx.view.types.name_of(p)),
+            ),
+        )
+}
+
+fn answer_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.host_seat",
+                cx.stmt_loc(s),
+                answer_crossing_voice(hname, cx.view.types.name_of(ret)),
+            ),
+        )
+}
+
+fn row_seat_takes_no_absence(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.host_absence",
+                cx.stmt_loc(s),
+                absence_voice(hname, j, cx.view.types.name_of(p)),
+            ),
+        )
+}
+
+fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) { cx.emit(said_as("type.host_seat", cx.loc_of(a), cellless_seat(callee, j))) }
+
+/// A place handed the `mut` seat `j` of the extern `callee` that is no `mut` binding's own cell, which
+/// is what C writes through.
+export fn cellless_seat(callee: string, j: int) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${callee}` is `mut`, and only a LOCAL binding has a cell to hand over",
+        label: "handed here",
+        help: "bind it in this body first — `mut x = …` — then hand `x`; a parameter, a capture and a pattern bind are values with no cell behind them",
+    }
+}
+
+/// The stand-in when a seat wrote no type at all — the declare pass
+/// already refused it; the voice must still name something.
+const void_written: TypeRef = TypeRef {
+    name: "void",
+    applied: [],
+    optional: false,
+    dynamic: false,
+    arrow: false,
+    span: null,
+}
+
+// ── The extern-declaration voices, one per refusal, shared by both paths ──
+
+/// A callback seat `seat` of `hname` whose answer rides a pointer the C would follow under a cancel.
+export fn callback_pointer_voice(hname: string, seat: string) -> Voice {
+    Voice {
+        message: "seat `${seat}` of `${hname}` is a callback under a cancel, and it answers a pointer the C would follow",
+        label: "declared here",
+        help: "a callback under a cancel answers zero — answer a word, or read nothing on the C side when it does",
+    }
+}
+
+/// The runtime row `row`, of `seats` seats, declared with `declared`.
+export fn row_arity_voice(row: string, seats: int, declared: int) -> Voice {
+    Voice {
+        message: "`${row}` is a runtime row of ${seats} seat(s), declared here with ${declared}",
+        label: "this extern",
+        help: "declare the row's seats, or name a fn the runtime does not carry",
+    }
+}
+
+/// The runtime row `row`, answering `box` (a box's words), declared to answer `written`.
+export fn answer_box_voice(row: string, box: string, written: string, seat: string) -> Voice {
+    Voice {
+        message: "`${row}` answers ${box}, this declares `${written}`",
+        label: "this extern",
+        help: "a runtime row answers the box its C body built — declare the answer `${seat}`, or `ptr` for the raw crossing",
+    }
+}
+
+/// The runtime row `row`, answering in `kind`, declared to answer `written`, which rides `got`.
+export fn answer_kind_voice(row: string, kind: string, written: string, got: string) -> Voice {
+    Voice {
+        message: "`${row}` answers ${kind}, this declares `${written}`, which rides ${got}",
+        label: "this extern",
+        help: "a runtime row answers what its C body answers — declare the answer the row names, or name a fn the runtime does not carry",
+    }
+}
+
+/// Seat `j` of the runtime row `row`, which reads `box`, declared `written`.
+export fn seat_box_voice(row: string, j: int, box: string, written: string, seat: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${row}` reads ${box}, this is `${written}`",
+        label: "this extern",
+        help: "a runtime row reads the box its header names — declare the seat `${seat}`, or `ptr` for the raw crossing",
+    }
+}
+
+/// The `mut` seat `j` of `hname`, wearing `written`, which no cell C writes is.
+export fn inout_unable_voice(hname: string, j: int, written: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${hname}` is `mut` and wears `${written}` — a `mut` host seat hands C the ADDRESS of the caller's cell",
+        label: "declared here",
+        help: "a cell C writes is `ptr`, `ptr?`, or an integer at its declared width — `i32` for `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`; a bare `int` is refused here alone, as only the declaration knows its width, and a managed value cannot cross: C keeps no refcount for what it writes",
+    }
+}
+
+/// The host fn `hname`, named as the runtime's own symbol.
+export fn host_row_voice(hname: string) -> Voice {
+    Voice {
+        message: "`${hname}` is the runtime's own symbol — a host fn cannot define it again",
+        label: "defined here",
+        help: "name the host fn for what the host asks of this program",
+    }
+}
+
+/// The seat `seat` of the host fn `hname`, marked.
+export fn host_promise_voice(hname: string, seat: string) -> Voice {
+    Voice {
+        message: "seat `${seat}` of the host fn `${hname}` is marked — a host makes no promise about a seat",
+        label: "marked here",
+        help: "drop the mark: a host fn's seats are plain values",
+    }
+}
+
+/// The seat `seat` of the host fn `hname`, wearing `ty`, which no host hands over.
+export fn host_seat_voice(hname: string, seat: string, ty: string) -> Voice {
+    Voice {
+        message: "seat `${seat}` of the host fn `${hname}` wears `${ty}`, which no host can hand over",
+        label: "declared here",
+        help: "a host fn's seat is `int`, `float`, `string`, `Bytes` or `ptr`",
+    }
+}
+
+/// The host fn `hname`, answering `ty`, which no host takes.
+export fn host_answer_voice(hname: string, ty: string) -> Voice {
+    Voice {
+        message: "the host fn `${hname}` answers `${ty}`, which no host can take",
+        label: "declared here",
+        help: "a host fn answers `int`, `float`, `string`, `Bytes`, `ptr`, or nothing",
+    }
+}
+
+/// Seat `j` of `hname`, wearing `ty`, which cannot cross to C.
+export fn crossing_voice(hname: string, j: int, ty: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${hname}` wears `${ty}`, which cannot cross to C",
+        label: "declared here",
+        help: "a host seat is a machine word or one pointer C reads — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those; any other box has an address C cannot follow. Pass its parts one at a time, or make the callee a runtime row",
+    }
+}
+
+/// The answer of `hname`, wearing `ty`, which cannot cross back from C.
+export fn answer_crossing_voice(hname: string, ty: string) -> Voice {
+    Voice {
+        message: "the answer of `${hname}` wears `${ty}`, which cannot cross to C",
+        label: "declared here",
+        help: "an extern's answer is what ONE frame reads back out of a register: a machine word (`int`, `bool`, a width word), a `float`, a pointer (`ptr`, `ptr?`), text (`string`, `string?`), or nothing at all. Everything else is a box in Avra's layout and a foreign address is not one — the compiled program reads C memory as ours and the evaluator has no arm to make a box from an address. `Bytes` is refused HERE though a seat takes it: a seat hands C a box whose length the caller already knows, and an answer would have to invent one. Answer `ptr` and read the bytes yourself, or make the callee a runtime row, whose arm materialises the box on both sides.",
+    }
+}
+
+/// Seat `j` of the runtime row `hname`, wearing the nullable `ty`.
+export fn absence_voice(hname: string, j: int, ty: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${hname}` wears `${ty}`, and a runtime row's seat takes no absence",
+        label: "declared here",
+        help: "a runtime row reads the pointer it is handed, so its seat takes no absence — spell it without the `?` (a package's own C may take a pointer-or-NULL)",
+    }
+}

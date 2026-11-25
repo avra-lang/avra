@@ -1,0 +1,252 @@
+//! `avra expand <file>` — the file as compiled: what each instance became and
+//! each sugar means under its statement, and each generated declaration after
+//! the item it was made over, under the line that says who asked and which
+//! template wrote it. Through the command as a shell runs it. `avra_ran`,
+//! `scratch_dir` and `exit_is_zero` are the neighbouring tests' own: this
+//! module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// What `avra expand` prints for a one-file program of `source`.
+fn expanded(source: string) -> string {
+    let dir = "${scratch_dir()}/expand_${stamp()}"
+    let _ = make_dirs(dir)
+    let _ = write_text("${dir}/p.av", source)
+    match avra_ran(["expand", "${dir}/p.av"]) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { "refused: ${o.out.stdout}${o.out.stderr}" },
+        .Err(_) -> "the command did not run",
+    }
+}
+
+/// What `avra expand` prints for the entry `main` of a package beside the provider package
+/// `@x/<dep>`, whose one file is `provider`.
+fn expanded_beside(main: string, dep: string, provider: string) -> string { expanded_at(beside(main, dep, provider)) }
+
+/// A package whose entry is `main`, beside the provider package `@x/<dep>`, whose one file is
+/// `provider`: its root.
+fn beside(main: string, dep: string, provider: string) -> string {
+    let root = "${scratch_dir()}/expand_${dep}_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = make_dirs("${root}/vendor/${dep}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/${dep}\" = { path = \"vendor/${dep}\" }\n",
+    )
+    let _ = write_text(
+        "${root}/vendor/${dep}/avra.toml",
+        "[package]\nname = \"@x/${dep}\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/vendor/${dep}/src/${dep}.av", provider)
+    let _ = write_text("${root}/src/main.av", main)
+    root
+}
+
+/// What `avra expand` prints for the entry of the package at `root`.
+fn expanded_at(root: string) -> string {
+    match avra_ran(["expand", "${root}/src/main.av"]) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { "refused: ${o.out.stdout}${o.out.stderr}" },
+        .Err(_) -> "the command did not run",
+    }
+}
+
+/// The provider with its first fn, above the template, written over three lines rather than one:
+/// every item below it moved, the template's two lines further down.
+fn provider_grown() -> string {
+    quote_provider()
+        .replace(
+            "fn shout(s: string) -> string { \"\${s}!\" }",
+            "fn shout(s: string) -> string {\n    \"\${s}!!\"\n}",
+        )
+}
+
+/// A component library's file: its components, with the `Code` they are written over.
+fn components_of(provider: string) -> string { "use @std.meta.{Code}\n" + provider }
+
+fn runs_provider() -> string {
+    "use @std.meta.{Type, Field, Directive, Decls, Code}\n" +
+        "fn field_of(f: Field) -> Decls { quote { type _ = { \${f.name}: \${f.ty} } } }\n" +
+        "fn keyed_of(f: Field) -> Decls { quote { type _ = { @key \${f.name}: \${f.ty} } } }\n" +
+        "fn five_of(f: Field) -> Decls { quote { type _ = { \${f.name}: \${f.ty} = 5 } } }\n" +
+        "fn init_of(f: Field) -> Code { quote { W { \${f.name}: self.\${f.name} } } }\n" +
+        "export trait Runs {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let all = [field_of(f) for f in t.fields]\n" +
+        "        let none: List<Decls> = []\n" +
+        "        let keys = [keyed_of(f) for f in t.fields]\n" +
+        "        let two = [five_of(f) for f in t.fields.slice(0, 2)]\n" +
+        "        let one = [field_of(f) for f in t.fields.slice(2, 3)]\n" +
+        "        let inits = [init_of(f) for f in t.fields]\n" +
+        "        let rest = [init_of(f) for f in t.fields.slice(1, 3)]\n" +
+        "        let no_inits: List<Code> = []\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n" +
+        "            type \${t}Copy = { ..\${all} }\n" +
+        "            type \${t}Empty = { ..\${none} }\n" +
+        "            type \${t}Beside = { first: int, ..\${all}, last: int }\n" +
+        "            type \${t}Trail = { ..\${all}, }\n" +
+        "            type \${t}Keys = { ..\${keys} }\n" +
+        "            type \${t}Two = { ..\${two}, mid: int = 7, ..\${one} }\n" +
+        "            type \${t}Owt = { ..\${one}, mid: int = 7, ..\${two} }\n" +
+        "            impl \${t} {\n" +
+        "                fn rebuilt() -> \${t} { \${t} { ..\${inits} } }\n" +
+        "                fn beside() -> \${t} { \${t} { x: 7, ..\${rest}, } }\n" +
+        "                static fn none_run() -> \${t} { \${t} { x: 1, y: 2, z: 3, ..\${no_inits} } }\n" +
+        "            }\n" +
+        "        } }]\n" +
+        "    }\n" +
+        "}\n"
+}
+
+fn runs_program(tail: string) -> string {
+    "use @std.meta.{derive}\nuse @x.prov.{Runs}\n@derive(Runs)\ntype P = { x: int, y: int, z: int }\n${tail}"
+}
+
+fn quote_provider() -> string {
+    "use @std.meta.{Type, Fn, Directive, Code, literal, as_code, code_nodes}\nfn shout(s: string) -> string { \"\${s}!\" }\n/// A template naming this file's private helper.\nexport trait Loud {\n    static fn derive(t: Type) -> List<Directive> {\n        let name = literal(t.name)\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn loud() -> string { shout(\${name}) } } } }]\n    }\n}\nexport fn wrapped(f: Fn, body: Code) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_wrapped() -> int {\n            let tmp = 1\n            let picked = \${body}\n            picked() + tmp\n        }\n    } }]\n}\nexport fn runs(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 1 }, quote { 2 }]\n    let sneaked: Code = as_code(code_nodes(parts))\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_runs() -> int { [\${sneaked}].length }\n    } }]\n}\nexport fn spliced_args(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 1 }, quote { 2 }, quote { 3 }]\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_spliced() -> int { [\${..parts}].length }\n    } }]\n}\nexport fn spliced0(f: Fn) -> List<Directive> {\n    let parts: List<Code> = []\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_spliced0() -> int {\n            let xs: List<int> = [\${..parts}]\n            xs.length\n        }\n    } }]\n}\nexport fn spliced1(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 9 }]\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_spliced1() -> int { [\${..parts}].length }\n    } }]\n}\nexport fn spliced_call(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 1 }, quote { 2 }, quote { 3 }]\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn add3(a: int, b: int, c: int) -> int { a + b + c }\n        fn \${f}_call() -> int { add3(\${..parts}) }\n    } }]\n}\nexport fn holed(f: Fn, x: string) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_holed() -> int {\n            let \${x} = 1\n            x + 1\n        }\n    } }]\n}\n"
+}
+
+fn loud_program() -> string {
+    "use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype Point = { x: int }\nPoint { x: 1 }.loud()"
+}
+
+fn wrapped_program() -> string {
+    "use @std.meta.{derive}\nuse @x.prov.{wrapped}\nfn tmp() -> int { 10 }\n@wrapped(quote { tmp })\nfn go() -> int { 0 }\ngo_wrapped()"
+}
+
+fn inverting() -> string {
+    "export component inverted(head: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            ~7 + ~\${self.head} + \${self.body}\n        }\n    }\n}\n"
+}
+
+fn sql_provider() -> string {
+    "export type Select = { cols: List<string>, relation: string, cond: Where? }\nexport type Where = { col: string, value: int }\nexport fn query(cols: List<string>, relation: string, cond: Where?) -> Select { Select { cols: cols, relation: relation, cond: cond } }\nexport fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME ( \"WHERE\" w:where )? -> query(c, t, w)\n    where = c:NAME \"=\" v:NAME -> eq(c, v)\n}\n"
+}
+
+fn limited_provider() -> string {
+    "export type Span = { n: int }\nexport fn span(n: int) -> Span {\n    Span { n: n }\n}\nexport component limited(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            {\n                let limit: Span = \${self.limit}\n                let outer = limit.n\n                \${self.body} + outer\n            }\n        }\n    }\n}\n"
+}
+
+fn ui() -> string {
+    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component field(label: string) {}\n\nexport component button(label: string) {}\n\nexport component form {\n    fields: List<field> = []\n    buttons: List<button> = []\n}\n\nexport component panel {\n    rows: List<row> = []\n    notes: List<string> = []\n}\n\nexport component hook {\n    run: fn(int) -> int\n}\n\nexport component chain {\n    hooks: List<hook> = []\n    rows: List<row> = []\n}\n"
+}
+
+spec "avra expand — the file as compiled" {
+    given "a fn wearing a declaring annotation" {
+        then "the written fn stands as written, and what the annotation made follows it, named for who asked" {
+            let shown = expanded(
+                "use @std.meta.{Fn, Directive, traced}\n\n@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)\n",
+            )
+            shown
+                    .contains(
+                        "@traced(\"x\")\nfn sum(a: int, b: int) -> int {\n    a + b\n}\n\n// from @traced on sum\nfn sum_traced(a: int, b: int) -> int {",
+                    ) &&
+                shown.ends_with("\n\nsum(1, 2)\n")
+        }
+    }
+    given "a type wearing a derive" {
+        then "the impl the derive made follows the type, with the template that wrote it" {
+            expanded(
+                "use @std.meta.{derive}\nuse @std.program.saved_derive.{Saved}\n\n@derive(Saved)\ntype P = { x: int }\n\n1\n",
+            )
+                .contains("// from @derive on P — template @std/program/src/saved_derive.av:")
+        }
+    }
+    given "a component instance" {
+        then "what it became is noted under its statement" {
+            expanded(
+                "component nest(depth: int) {\n    extra: int = 0\n    fn total() -> int { self.depth + self.extra }\n}\n\nlet n = nest 2 {\n    extra: 3\n}\n\"\${n.total()}\"\n",
+            )
+                .contains(
+                    "let n = nest 2 {\n    extra: 3\n}\n\n// `nest` expands to:\n//     nest { depth: 2, extra: 3 }\n",
+                )
+        }
+    }
+    given "a sugar" {
+        then "what it means is noted under its statement" {
+            expanded("let m = ~7\n\"\${m}\"\n").contains("let m = ~7\n\n// `~7` means `7 ^ -1`\n")
+        }
+    }
+    given "a file nothing generates over" {
+        then "it is its statements, a blank line apart" {
+            expanded("fn f() -> int { 1 }\nf()\n") == "fn f() -> int {\n    1\n}\n\nf()\n"
+        }
+    }
+    given "a provider's component, instanced" {
+        then "the note says what the instance became, and the module its names resolve in" {
+            let shown = expanded_beside(
+                "use @x.c.{limited, span}\nlet v = limited span(1) { 1 }\nv\n",
+                "c",
+                components_of(limited_provider()),
+            )
+            shown.contains("limited span(1) {") &&
+                shown.contains("// `limited` (from @x.c) expands to:") &&
+                shown.contains("let limit: Span = span(1)")
+        }
+        then "a sugar inside the expansion is noted as written" {
+            let shown = expanded_beside(
+                "use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv\n",
+                "c",
+                components_of(inverting()),
+            )
+            shown.contains("~7") && shown.contains("~5") && shown.contains("`~7` means `7 ^ -1`")
+        }
+        then "a data component's instance is noted as the record literal it became" {
+            let shown = expanded_beside(
+                "use @x.c.{row, grid, secret, note, badge, card, vault, split, field, button, form, panel, hook, chain}\ngrid report {\n    title: \"Orders\"\n    row 1\n}\nreport.title\n",
+                "c",
+                components_of(ui()),
+            )
+            shown.contains("grid report {") &&
+                shown.contains("name: \"report\",") &&
+                shown.contains("rows: collect {")
+        }
+    }
+    given "a sublanguage's block" {
+        then "it prints as written" {
+            expanded_beside(
+                "use @x.sql.{sql, Select, Where}\nlet uid = 7\nlet q: Select = sql { SELECT name FROM users WHERE id = \${uid} }\n1\n",
+                "sql",
+                sql_provider(),
+            )
+                .contains("sql { SELECT name FROM users WHERE id = \${uid} }")
+        }
+    }
+    given "a provider's derive and its declaring annotation" {
+        then "the template is named beside the annotation that asked" {
+            expanded_beside(loud_program() + "\n", "prov", quote_provider())
+                .contains("// from @derive on Point — template @x/prov/src/prov.av:7")
+        }
+        then "after an edit above the template, the same store names the template's new line" {
+            let root = beside(loud_program() + "\n", "prov", quote_provider())
+            let before = expanded_at(root)
+            let _ = write_text("${root}/vendor/prov/src/prov.av", provider_grown())
+            before.contains("// from @derive on Point — template @x/prov/src/prov.av:7\n") &&
+                expanded_at(root)
+                    .contains("// from @derive on Point — template @x/prov/src/prov.av:9\n")
+        }
+        then "the user's code is spliced as written, the template's own binder kept apart from it" {
+            expanded_beside(wrapped_program() + "\n", "prov", quote_provider())
+                .contains(
+                    "fn go_wrapped() -> int {\n    let tmp_template = 1\n    let picked = tmp\n    picked() + tmp_template\n}",
+                )
+        }
+    }
+    given "run holes in a derived type's field list" {
+        then "a run beside written fields keeps every field's place" {
+            expanded_beside(runs_program("1") + "\n", "prov", runs_provider())
+                .contains(
+                    "type PBeside = {\n    first: int,\n    x: int,\n    y: int,\n    z: int,\n    last: int,\n}",
+                )
+        }
+        then "a spliced field keeps its marks" {
+            expanded_beside(runs_program("1") + "\n", "prov", runs_provider())
+                .contains("type PKeys = {\n    @key x: int,\n    @key y: int,\n    @key z: int,\n}")
+        }
+    }
+    given "a declaring annotation handed a const" {
+        then "it makes one declaration, named for the fn it stands on" {
+            let shown = expanded(
+                "use @std.meta.{Fn, Directive, traced}\n\nconst Label = \"x\"\n@traced(Label)\nfn sum(a: int, b: int) -> int { a + b }\nsum_traced(1, 2)\n",
+            )
+            shown.split("// from @traced on sum\n").length == 2
+        }
+    }
+}

@@ -1,0 +1,1581 @@
+//! HOW A BODY BECOMES IR: the core its body means, walked node by node through each feature's rule,
+//! every register typed by its layout. The context holds the instructions and the registers as they
+//! mint, the names in scope, and what the program answers about the names a body reads; it speaks
+//! every control and value shape through its verbs, so a rule never brackets a region by hand. A
+//! node no rule lowers yet is named, never guessed at.
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+use @std.program.address.{SourceFileAddress}
+
+/// What a lowering reads of the program: what the checked program answers, what a top-level name
+/// the body reads or calls is, the declared method a value of a type has by a name, and the static
+/// fn a type has by a name.
+export type LoweredProgram = {
+    checked: CheckedProgram,
+    /// The lambdas, by the symbol each lifts under, whose box carries the frame of contexts it is made
+    /// under and whose body enters it: those that read a context, as the program they are lowered for
+    /// finds (compiler/item_context_framing.av). None for a program that declares no context.
+    framed: List<string>,
+    /// The context a name names, as a read or a set reaches it, read where the template that wrote it
+    /// stands (its home) before where the body stands.
+    contexts: fn(string, string?) -> HeldContext?,
+    /// What a top-level name is, read where the template that wrote the read stands (its home, as an
+    /// origin spells it) before where the body stands.
+    named: fn(string, string?) -> NamedValue?,
+    method: fn(SignedType, string) -> CalledFn?,
+    /// The lambdas lifted so far, each body its own unit.
+    lifts: Cell<List<LiftedBody>>,
+    /// The symbol a lambda written at an offset lifts under.
+    lift_symbol: fn(int) -> string,
+    statics: fn(SignedType, string) -> CalledFn?,
+    /// Each static of one name several impls of a type give, a callee of its own; empty where at most
+    /// one gives it.
+    statics_among: fn(SignedType, string) -> List<CalledFn>,
+    /// Each method of one name several impls of a type give, as `statics_among` says.
+    methods_among: fn(SignedType, string) -> List<CalledFn>,
+    /// The statics a type the program declares has, each with a mark it wears.
+    marked: fn(SignedType) -> List<MarkedStatic>,
+    /// The verb `@std/prelude` writes a body for on a type the language owns, as a call reaches it.
+    verb: fn(SignedType, string) -> CalledFn?,
+    /// The verb `@std/prelude` declares on a type the language owns, its body written or the
+    /// compiler's, as a call reaches it: what its seats take and the defaults it writes.
+    declared_verb: fn(SignedType, string) -> CalledFn?,
+    /// The data laid out so far, each under its own name once.
+    data: Cell<List<Static>>,
+    /// The name a literal at a node, of a type, is laid out under as data.
+    literal_symbol: fn(ExprId, SignedType) -> string,
+    /// The methods a `dyn` of a trait has, in the trait's order; absent for a type that's no trait the
+    /// program declares.
+    traits: fn(SignedType) -> List<TraitMember>?,
+    /// Whether a `dyn` of a trait is placed: its trait wears `@std/meta`'s `placed`, so a box of it is
+    /// drawn under the frame of contexts it was placed under.
+    placed: fn(SignedType) -> bool,
+    /// The symbol a type the program declares is known by, absent for any other.
+    type_symbol: fn(SignedType) -> string?,
+    /// The types tagged so far, each once.
+    tagged: Cell<List<SignedType>>,
+    /// The wrappers of the declared fns named as values so far, each once.
+    wrappers: Cell<List<FnWrapper>>,
+    /// How many statements were lowered so far in a shape other lowerings may give them otherwise.
+    reshaped: Cell<int>,
+    /// The fn whose body is the default of the field of that name a record declares, absent where
+    /// the program declares none.
+    defaults: fn(SignedType, string) -> CalledFn?,
+    /// The module states a part of a body reads, as the program's read set finds them.
+    states: fn(StatesAsked) -> StatesRead,
+    /// The role of the field of that name a record declares, absent for a field the compiler doesn't
+    /// fill.
+    roles: fn(SignedType, string) -> FilledRole?,
+    /// The site a record literal at a node was written at: one number a literal, the same each time
+    /// it is built.
+    site: fn(ExprId) -> int,
+    /// The fn a module the toolchain carries (`@std.meta`) declares by a name, absent where it declares
+    /// none.
+    toolchain_fn: fn(string, string) -> CalledFn?,
+    /// The name the body's file is known by where a template it writes points home.
+    home: string,
+    /// The offset of the body's file that a place `lo` of the body's store stands at, where a template
+    /// it writes points home: the store counts its places from its item's start.
+    home_at: fn(int) -> int,
+    /// What a const the body declares at a statement settles to at compile time, its value of a type
+    /// reading, of what the body binds, only the consts before it that settled: each handed in.
+    body_const: fn(StmtId, SignedType, List<ConstSeed>) -> NamedValue = unsettled_in_body,
+    /// Where a node was written, as a task's site names it to a trace — its file and its line — absent
+    /// for a node no source line wrote.
+    written_at: fn(ExprId) -> string? = written_nowhere,
+    /// Whether a pattern's bare name names a top-level value it compares with, read among written
+    /// names alone where the pattern reads its names (`home`, a template's file, else the body's own):
+    /// a binder's question never asks what generators make, so it's absent for a name only a
+    /// generator gives such a value.
+    compared: fn(string, string?) -> bool?,
+    /// Whether a `while` the body or a lambda it lifts writes was lowered: its back edge is a cancel
+    /// point.
+    spins: Cell<bool>,
+    /// What a law asks this lowering to note of each written node, its lambdas' included; absent for
+    /// every lowering that builds.
+    notes: NodeNotes? = null,
+}
+
+/// What a lowering notes of the written nodes of its store, the first `written` of them: the node it
+/// stands in now, and what it met at each.
+export type NodeNotes = { written: int, at: Cell<int>, met: Cell<List<NodeMet>> }
+
+/// Notes, empty, for a store whose first `written` nodes are written.
+export fn node_notes(written: int) -> NodeNotes {
+    let met: Cell<List<NodeMet>> = Cell.new([])
+    NodeNotes { written: written, at: Cell.new(-1), met: met }
+}
+
+/// What lowering met at the written node `node`: a declared fn or a default called, by its callee;
+/// a call through a value; a runtime row that may switch the task out; a technique declined.
+@derive(Saved)
+export enum NodeMet {
+    Calls(node: int, callee: CalledFn)
+    Value(node: int)
+    Waits(node: int, row: string)
+    /// A representation technique the node is a candidate for declined, and why.
+    Declined(node: int, why: Declined)
+}
+
+/// A static of a type and one mark it wears: the static's name; the declaration the mark names, read
+/// where the mark is written — its name and the file declaring it, absent where it names nothing; and
+/// the text the mark's first argument writes, absent where that is no text.
+@derive(Saved)
+export type MarkedStatic = { name: string, mark: string, mark_in: SourceFileAddress?, arg: string? }
+
+/// What a body tests for its task: nothing, where what it calls is being surveyed; the unwinding
+/// flag after each call that may reach a cancel point; or that and the tick at each `while`'s back
+/// edge, where the program links a scheduler.
+@derive(Saved)
+export enum TaskChecks {
+    Surveyed
+    Tested
+    Scheduled
+}
+
+impl TaskChecks {
+    /// Whether a call that may reach a cancel point is followed by the unwinding test.
+    fn tests() -> bool {
+        match self { .Surveyed -> false, .Tested or .Scheduled -> true }
+    }
+
+    /// Whether a `while`'s back edge reads the tick.
+    fn ticks() -> bool {
+        match self { .Surveyed or .Tested -> false, .Scheduled -> true }
+    }
+
+    /// Whether the program can unwind: only a scheduler it links meets a cancel or a passed limit.
+    fn unwinds() -> bool { self.ticks() }
+
+    /// Whether a test at `site` is placed, a fn's call where `reaches` says the fn may reach a cancel
+    /// point.
+    fn keeps(site: TestSite, reaches: fn(CalledFn) -> bool) -> bool {
+        match site {
+            .Waits -> self.tests(),
+            .Calls(callee) -> self.tests() && reaches(callee),
+            .Ticks -> self.ticks(),
+        }
+    }
+}
+
+/// What a top-level name a body reads or calls is, as its code reads it.
+export enum NamedValue {
+    Fn(callee: CalledFn)
+    /// A `const` whose value is written as a literal.
+    Literal(value: Literal)
+    /// A `const` the compiler settles: the words its value is carried in, and the data the binary
+    /// holds for the one that's a box.
+    Settled(words: List<SettledWord>, data: Static)
+    /// A `const` that doesn't settle yet, or a `collect` whose members aren't known yet, and why.
+    Unsettled(why: string)
+    /// A value a unit builds where it's read, called with nothing: a `collect`'s list, a component
+    /// instance's value.
+    Built(callee: CalledFn)
+    /// A module `state` of type `held`: its unit answers the one-slot box that keeps it, built at its
+    /// first read; a read is what the box holds now, a write what it holds next.
+    Kept(callee: CalledFn, held: SignedType)
+}
+
+/// What a `collect`'s projection reads off one member, a value per field.
+export type CollectedRow = { values: List<CollectedValue> }
+
+/// What one projected field reads off a member.
+export enum CollectedValue {
+    /// The member itself, a fn, as a value (`it`).
+    Member(callee: CalledFn)
+    /// The member itself, a const as its value, a declared type as its `Type` (`it`).
+    Valued(value: NamedValue)
+    /// A text its declaration spells (`it.name`).
+    Spelled(value: Literal)
+    /// Numbers its declaration's written body answers (`it.root_kind`).
+    Numbers(values: List<int>)
+    /// A field of a component instance's own value (`it.run`): the unit its value is built by, called,
+    /// the value's type, and the field read off it.
+    Field(instance: CalledFn, of: SignedType, name: string)
+    /// The mark a member wears (`it.mark`): its name and the literals it's written with.
+    Marked(name: string, args: List<Literal>)
+}
+
+/// One word a settled value is carried in: its slot, and the register it's read into.
+@derive(Saved)
+export type SettledWord = { slot: Slot, layout: Layout }
+
+/// A context as a read or a set reaches it: the key its frame's entries wear, the type it holds, and
+/// the unit answering the one-slot box its default is kept in, absent where it's required.
+export type HeldContext = { key: int, held: SignedType, start: CalledFn? }
+
+/// A fn a body calls: where it's declared, the symbol its code is known by, whether C defines it,
+/// whether a call hands it its arguments by position into seats that promise nothing and have no
+/// default, and for a method, the type it's a method of, whether it writes its receiver, and why
+/// that isn't known where it isn't.
+@derive(Saved)
+export type CalledFn = {
+    file: SourceFileAddress,
+    name: string,
+    symbol: string,
+    external: bool,
+    plain: bool,
+    /// Whether it's a host fn: a body of its own, called by the bare symbol the host calls, which
+    /// the backend defines beside it.
+    hosted: bool = false,
+    owner: string? = null,
+    /// For a method, a static or a trait's body, the file declaring the type `owner` names.
+    of: SourceFileAddress? = null,
+    /// Whether it's a static fn of `owner`.
+    statics: bool = false,
+    writes: bool = false,
+    /// Whose default it is, where it's one: the field `name` of the record `owner`, or the seat `name`
+    /// of the fn `owner`, or of the method `seat_of` of the type `owner`.
+    defaulted: Defaulting = Defaulting.Not,
+    /// For a method's seat's default, the method.
+    seat_of: string? = null,
+    /// How many type parameters it declares.
+    type_params: int = 0,
+    /// For a generic fn's unit, what each type parameter is to the machine under it.
+    parameters: List<ParameterLayout> = [],
+    /// For a generic fn's unit, the type filling each type parameter.
+    fills: List<SignedType> = [],
+    /// For a generic fn's unit, each seat past a receiver as its type arguments fill it.
+    seats: List<SignedType> = [],
+    unproved: string? = null,
+    /// For a method its type never writes, the trait whose own body gives it.
+    given_by: string? = null,
+    /// Each seat a call fills, where every one takes a value: empty where one takes a `state` or
+    /// `const` argument.
+    params: List<CalledSeat> = [],
+    /// For a generic fn, whether each type parameter carries a bound.
+    bounded: List<bool> = [],
+    /// For a collect's unit, whether it gathers `in closure`, which a program reads over its own.
+    gathers_closure: bool = false,
+    /// For such a unit, the package of the program a walk met it in.
+    gathered_for: string? = null,
+    /// The lambdas of its body, by their symbols, whose boxes carry their frame of contexts in the
+    /// program a walk met it in: none in a program that declares no context.
+    framed: List<string> = [],
+    /// For one of several impls of a type giving a method of one name, the trait it implements, as
+    /// it writes it.
+    given_in: string? = null,
+    /// For a suite's case, the item its spec stands in and its place among the spec's cases.
+    case_item: int? = null,
+    /// For a unit settling `const` seats, each seat and the value it settles to.
+    settled: List<SettledSeat> = [],
+    case_index: int = 0,
+}
+
+/// Whose default a body is: none's, a record's field's, or a fn's seat's.
+@derive(Saved)
+export enum Defaulting {
+    Not
+    Field
+    Seat
+}
+
+impl Defaulting {
+    /// The word a key tells it apart by.
+    fn word() -> string {
+        match self { .Not -> "", .Field -> "field", .Seat -> "seat" }
+    }
+}
+
+/// A seat of a fn a call fills: its name, its type, whether a write reaches the caller through it,
+/// whether it has a default, and whether it takes the arguments a call leaves.
+@derive(Saved)
+export type CalledSeat = { name: string, ty: SignedType, mutable: bool, defaulted: bool, rest: bool, state: bool = false, settled: bool = false }
+
+/// A `const` seat of a fn's unit, by its place among the fn's seats, and the value every call of the
+/// unit settles it to.
+@derive(Saved)
+export type SettledSeat = { at: int, value: Literal }
+
+/// The symbol of the unit of the fn known as `symbol` whose `const` seats settle as `settled` says:
+/// the digest of each seat's place and value.
+export fn settled_symbol(symbol: string, settled: List<SettledSeat>) -> string {
+    let spelled = ["${s.at}=${literal_spelled(s.value)}" for s in settled].join(";")
+    "${symbol}\$@${fp_str(spelled) & 9223372036854775807}"
+}
+
+/// The key a unit's settled seat at `at` is kept under among the consts its body settled.
+export fn settled_seat_key(at: int) -> string { "seat ${at}" }
+
+/// A literal as its kind and its value, each kind apart: text by its length first.
+fn literal_spelled(v: Literal) -> string {
+    match v {
+        .Int(n) -> "i${n}",
+        .Float(bits) -> "f${bits}",
+        .Bool(b) -> "b${b}",
+        .Text(t) -> "t${t.length}:${t}",
+    }
+}
+
+/// A register holding a fn value's box, and the key of the type the box is of: the fn type's seats'
+/// and answer, seen through a name and a `?` and with no seat's marks, so every way a program
+/// spells one box's type keys it alike.
+@derive(Saved)
+export type BoxedValue = { reg: int, of: string }
+
+/// A value written as a literal.
+@derive(Saved)
+export enum Literal {
+    Int(v: int)
+    Float(bits: int)
+    Bool(v: bool)
+    Text(s: string)
+}
+
+/// The literal an expression is: a number, a truth, a float or text; absent for any other.
+export fn literal_of(x: Expr) -> Literal? {
+    let n = x.int_of()
+    if n != null { return Literal.Int(n!) }
+    let b = x.bool_of()
+    if b != null { return Literal.Bool(b!) }
+    let f = x.bits_of()
+    if f != null { return Literal.Float(f!) }
+    let text? = x.text_of() else { return null }
+    Literal.Text(text)
+}
+
+impl Literal {
+    /// The type the language gives the literal.
+    fn type() -> SignedType {
+        owned_type(
+            match self {
+                .Int(_) -> "int",
+                .Float(_) -> "float",
+                .Bool(_) -> "bool",
+                .Text(_) -> "string",
+            },
+        )
+    }
+}
+
+/// What a name bound in a body holds: its value in a register, or a cell its value is read from; and
+/// the binding's type.
+export enum Bound {
+    Value(r: Reg, ty: SignedType)
+    /// A `const` written in the body: the register its value is in. A pattern naming it compares with
+    /// it rather than binding.
+    Const(r: Reg, ty: SignedType)
+    Slot(cell: Reg, ty: SignedType)
+    /// A name a lambda's body reads from further out: a lane of its box, `lanes` naming each in the
+    /// order the body first reads it.
+    Outer(name: string, ty: SignedType, lanes: Cell<List<Lane>>)
+    /// A written seat of a value that rides no pointer: the one-slot box its caller handed over in its
+    /// place, read and written in place.
+    Held(box: Reg, ty: SignedType)
+    /// A `state` local: the Cell it holds its value in, the one place every lambda that reaches it
+    /// reads and writes.
+    Shared(cell: Reg, ty: SignedType)
+    /// A `state` a lambda's body reaches from further out: its lane holds the Cell, never a copy.
+    OuterShared(name: string, ty: SignedType, lanes: Cell<List<Lane>>)
+}
+
+impl Bound {
+    /// The binding's type.
+    fn type() -> SignedType {
+        match self {
+            .Value(_, t) or .Const(_, t) or .Slot(_, t) or .Outer(_, t, _) or .Held(_, t) or .Shared(_, t) or .OuterShared(_, t, _) -> t,
+        }
+    }
+
+    /// What a lambda's body reached from inside it sees this binding as: a `state`'s Cell shared, any
+    /// other binding's value copied into its lane.
+    fn outer(name: string, lanes: Cell<List<Lane>>) -> Bound {
+        match self {
+            .Shared(_, t) or .OuterShared(_, t, _) -> Bound.OuterShared(name, t, lanes),
+            .Value(_, t) or .Const(_, t) or .Slot(_, t) or .Outer(_, t, _) or .Held(_, t) -> Bound.Outer(name, t, lanes),
+        }
+    }
+}
+
+/// One body being lowered. An identity: every rule writes the one table.
+export type Lowering = {
+    store: SyntaxArena,
+    program: LoweredProgram,
+    /// Each node's type in the core, by its index.
+    types: List<SignedType?>,
+    /// The type each node's seat wants, by its index, where its seat names one.
+    seats: Map<string, SignedType>,
+    /// What the body's fn answers.
+    answer: SignedType,
+    /// The instructions, in order.
+    ins: Cell<List<Ins>>,
+    /// Each register's layout, by its index: a register mints with the instruction that defines it.
+    layouts: Cell<List<Layout>>,
+    /// The names in scope, innermost last.
+    scopes: Cell<List<Map<string, Bound>>>,
+    /// What wasn't lowered, in the order it was met.
+    missing: Cell<List<string>>,
+    /// The fns the body calls, each once.
+    callees: Cell<List<CalledFn>>,
+    /// How many loops stand open around what's being lowered.
+    loops: Cell<int>,
+    /// The type each register was made as, by its index, where its node's type says more.
+    worn: Cell<Map<string, SignedType>>,
+    /// Whether each `mut` binding's cell, by its register's index, was seeded with a value read from
+    /// a place.
+    seeds: Cell<Map<string, bool>>,
+    /// The `while`s a `for` means, by index: a walk's back edge is no cancel point.
+    walks: Cell<List<int>>,
+    /// What each scope in view runs as it ends, innermost last, each in the order it was met.
+    endings: Cell<List<List<Ending>>>,
+    /// How many cleanup regions the body opened.
+    cleanups: Cell<int>,
+    /// How many scopes stood open outside each loop open around what's being lowered, innermost last.
+    loop_floors: Cell<List<int>>,
+    /// The labels of each loop open around what's being lowered, innermost last: a `for` is labelled by
+    /// the names it binds.
+    labels: Cell<List<List<string>>>,
+    /// Whether the body is a task's, which answers its value in a one-cell list.
+    tasked: bool = false,
+    /// The task tests met, each lowered beside the instructions and placed once the program's reach
+    /// is known.
+    tests: Cell<List<TaskTest>>,
+    /// The `once` bodies lowered, each with the held tests that stand inside it.
+    /// Whether a task test is being lowered: one met inside it stands in it.
+    holding: bool = false,
+    /// Whether a call being lowered stands where no task test follows it: a deferred body's call.
+    untested: bool = false,
+    /// Whether the body is an `@unbroken` fn's own: its `while`s are no cancel points and read no tick.
+    unbroken: bool = false,
+    /// The probe a map write being lowered took before its value, lent to the one read of its value
+    /// that reads the place and the key the write does.
+    lent: LentProbe? = null,
+    /// The body's seats past a receiver that a write reaches the caller through: its `mut` ones.
+    written_seats: List<string> = [],
+    /// The `collect`s open around what's being lowered, innermost last.
+    gathers: Cell<List<Gathering>>,
+    /// The slot of the `once` fn whose body is being lowered, which every exit that answers keeps.
+    once_kept: OnceKept? = null,
+    /// The `within`s open around what's being lowered, innermost last.
+    withins: Cell<List<WithinMark>>,
+    /// The places handed to written seats of the calls being lowered, innermost last, each written
+    /// back once its call returns.
+    handing: Cell<List<HandedPlace>>,
+    /// Each index operand of a place being handed and the register it was lowered into, once, which
+    /// every read of it answers until the place is written back.
+    pins: Cell<List<Pin>>,
+    /// Each register holding a fn value's box and the type the box is of, where one is known: what a
+    /// code hash reads to tell a call through a value apart by the value's type.
+    boxed: Cell<List<BoxedValue>>,
+    /// Each `ctx` set the body makes and each call it makes through a `dyn` box, as a survey of the
+    /// contexts a program reads finds them in its code (compiler/item_context_reads.av).
+    marks: Cell<ContextMarks>,
+    /// The plain `let`s, by their statements' indices, a writing method writes through: each seeds
+    /// its value in a cell.
+    celled_lets: Cell<List<int>>,
+    /// Each const the body declares that settled at compile time, by its statement's index, and each
+    /// seat its unit settles, by `settled_seat_key`: what a const after it that reads it is handed.
+    settled_consts: Cell<Map<string, ConstSeed>>,
+    /// The seats, by place among the fn's, its unit settles to a value every call of it gives.
+    settled_seats: List<int> = [],
+    /// The frame an unwind out of the body pushes, as the binary's data: its label and where it was
+    /// written. Absent for a body no source names.
+    frame: Static? = null,
+    /// The names the body reads, as its typing resolved them.
+    names: NamesRead = NamesRead { reads: [] },
+    /// The expressions the body's own code is, which a page reads at paint time; absent for a body
+    /// whose code is not one expression (the entry's statements).
+    roots: List<ExprId>? = null,
+}
+
+/// The label of a loop a lowering opens for itself: no name the program writes spells it.
+const UNWRITTEN_LOOP: string = " unwritten"
+
+/// What a `break` or `continue` with no loop of the program's to leave is missed as.
+const LOOPLESS_JUMP: string = "a jump outside a loop"
+
+/// A walk over a list's places, or a count's: the list it reads, absent for a count; how far it goes;
+/// the cell holding where it stands; and what each turn binds, with its layout. A walk over a text's
+/// code points reads the text, stands at byte offsets, and counts the code points before it in
+/// `ordinal`.
+export type ListWalk = { list: Reg?, len: Reg, at: Reg, elem: SignedType, elem_layout: Layout, ordinal: Reg? = null }
+
+/// A walk over a map: its keys walked as a list, its values read once beside them.
+export type MapWalk = { keys: ListWalk, values: Reg }
+
+/// A task, or a list of them, a scope joins as it ends: in `reg`, or where `held` lays out what it
+/// holds, in the cell `reg` is, read as the scope ends.
+export type TaskHeld = { reg: Reg, many: bool, held: Layout? = null }
+
+/// A body of `store` to lower, typed in the core as `types` with its seats' wants `seats`, its fn
+/// answering `answer`.
+export fn lowering(
+    store: SyntaxArena,
+    program: LoweredProgram,
+    types: List<SignedType?>,
+    seats: Map<string, SignedType>,
+    answer: SignedType,
+) -> Lowering {
+    let ins: Cell<List<Ins>> = Cell.new([])
+    let layouts: Cell<List<Layout>> = Cell.new([])
+    let scopes: Cell<List<Map<string, Bound>>> = Cell.new([no_names()])
+    let missing: Cell<List<string>> = Cell.new([])
+    let callees: Cell<List<CalledFn>> = Cell.new([])
+    let loops: Cell<int> = Cell.new(0)
+    let worn: Cell<Map<string, SignedType>> = Cell.new({})
+    let seeds: Cell<Map<string, bool>> = Cell.new({})
+    let walks: Cell<List<int>> = Cell.new([])
+    let endings: Cell<List<List<Ending>>> = Cell.new([no_endings()])
+    let cleanups: Cell<int> = Cell.new(0)
+    let loop_floors: Cell<List<int>> = Cell.new([])
+    let labels: Cell<List<List<string>>> = Cell.new([])
+    let tests: Cell<List<TaskTest>> = Cell.new([])
+    let gathers: Cell<List<Gathering>> = Cell.new([])
+    let withins: Cell<List<WithinMark>> = Cell.new([])
+    let handing: Cell<List<HandedPlace>> = Cell.new([])
+    let pins: Cell<List<Pin>> = Cell.new([])
+    let boxed: Cell<List<BoxedValue>> = Cell.new([])
+    let marks: Cell<ContextMarks> = Cell.new(ContextMarks {})
+    let celled_lets: Cell<List<int>> = Cell.new([])
+    let settled_consts: Cell<Map<string, ConstSeed>> = Cell.new({})
+    Lowering {
+        store: store,
+        program: program,
+        types: types,
+        seats: seats,
+        answer: answer,
+        ins: ins,
+        layouts: layouts,
+        scopes: scopes,
+        missing: missing,
+        callees: callees,
+        loops: loops,
+        worn: worn,
+        seeds: seeds,
+        walks: walks,
+        endings: endings,
+        cleanups: cleanups,
+        loop_floors: loop_floors,
+        labels: labels,
+        tests: tests,
+        gathers: gathers,
+        withins: withins,
+        handing: handing,
+        pins: pins,
+        boxed: boxed,
+        marks: marks,
+        celled_lets: celled_lets,
+        settled_consts: settled_consts,
+    }
+}
+
+/// A scope with nothing bound in it yet.
+fn no_names() -> Map<string, Bound> {
+    let names: Map<string, Bound> = {}
+    names
+}
+
+impl Lowering {
+    /// The const before it a body const reads, bound to what it settled to.
+    mut fn seeded(c: ConstSeed) { self.bind(c.name, Bound.Const(self.const_read(c.value, c.ty), c.ty)) }
+
+    // ── The walk ────────────────────────────────────────────────────
+
+    /// `e`'s value, emitted: what the node means, by its rule.
+    mut fn lower(e: ExprId) -> Reg { self.lowered_as(e, false) }
+
+    /// `e` as a value nothing reads, emitted: what it does.
+    mut fn dropped(e: ExprId) -> Reg { self.lowered_as(e, true) }
+
+    /// `e` emitted, then lifted into what its seat takes; a dropped value is lifted nowhere, and a
+    /// pinned one is the register it was lowered into.
+    mut fn lowered_as(e: ExprId, dropped: bool) -> Reg {
+        if dropped {
+            let core = self.meaning_of(e)
+            let was = self.standing_at(e)
+            let r = self.store.expr(core).lowered_dropped(self, core)
+            self.stood(was)
+            return r
+        }
+        let pinned = self.pinned(e)
+        if pinned != null { return pinned! }
+        let born = self.born(e)
+        let seat? = self.seat_at(e) else { return born }
+        let ty? = self.type_at(self.meaning_of(e)) else { return born }
+        self.lifted(born, self.worn_as(born) ?? ty, seat)
+    }
+
+    /// `e`'s value as its own type holds it, emitted by the rule of the core node it means: what a
+    /// node that hands its seat on (a block its tail) asks for.
+    mut fn born(e: ExprId) -> Reg {
+        let core = self.meaning_of(e)
+        let was = self.standing_at(e)
+        let r = self.store.expr(core).lowered(self, core)
+        self.stood(was)
+        r
+    }
+
+    /// The written node `e` noted as the one this lowering stands in, where a law asks; answers the
+    /// one it stood in before, for `stood`.
+    fn standing_at(e: ExprId) -> int {
+        let notes? = self.program.notes else { return -1 }
+        let was = notes.at.get()
+        if e.index < notes.written { notes.at.set(e.index) }
+        was
+    }
+
+    /// The node this lowering stood in before, stood in again.
+    fn stood(was: int) {
+        let notes? = self.program.notes else { return }
+        notes.at.set(was)
+    }
+
+    /// The core node `e` means: itself where it's core already; an instance's value, the literal its
+    /// meaning minted, where the meaning also judges it.
+    fn meaning_of(e: ExprId) -> ExprId {
+        let meant? = self.store.instance_value(e) ?? self.store.meant(e) else { return e }
+        self.meaning_of(meant)
+    }
+
+    /// `s`, emitted: what it means, by its rule.
+    mut fn lower_stmt(s: StmtId) {
+        let meant? = self.store.stmt_meant(s) else { return self.store.stmt(s).stmt_lowered(self, s) }
+        self.store.stmt(s).meant_lowered(self, s, meant)
+    }
+
+    /// A block's statements, then its tail's value, lowered in the scope open now, which joins what they
+    /// hold where it ends; any other node lowered.
+    mut fn lowered_open(e: ExprId) -> Reg {
+        let core = self.meaning_of(e)
+        if self.store.block_stmts(core) == null { return self.lower(e) }
+        self.lets_written(self.store.lead_of(core), core)
+        for s in self.store.lead_of(core) { self.lower_stmt(s) }
+        let tail? = self.store.tail_of(core) else { return self.hollow_of(owned_type("void")) }
+        self.born(tail)
+    }
+
+    /// A statement lowered in a shape other lowerings may give it otherwise, counted.
+    mut fn reshaped() { self.program.reshaped.set(self.program.reshaped.get() + 1) }
+
+    /// A branch whose value nothing reads: a block's statements in a scope of names of their own, or
+    /// the one expression it is, dropped.
+    mut fn arm_stmts(value: ExprId) {
+        let stmts? = self.store.block_stmts(value) else {
+            let _ = self.dropped(value)
+            return
+        }
+        self.opened()
+        for s in stmts { self.lower_stmt(s) }
+        self.closed()
+    }
+
+    /// `e` isn't lowered yet: its kind noted, and a register nothing reads in its place.
+    mut fn unlowered(e: ExprId) -> Reg { self.missed_as("`${self.store.expr(e).surface().node}`") }
+
+    /// `s` isn't lowered yet: its kind noted.
+    mut fn stmt_unlowered(s: StmtId) { self.missed("`${self.store.stmt(s).surface().node}`") }
+
+    /// What isn't lowered yet, noted.
+    mut fn missed(what: string) { self.missing.push(what) }
+
+    /// What isn't lowered yet, noted, and a register nothing reads in its place.
+    mut fn missed_as(what: string) -> Reg {
+        self.missed(what)
+        self.mint(Layout.Void)
+    }
+
+    // ── Types and layouts ───────────────────────────────────────────
+
+    /// The type `e` has in the core, absent when typing didn't find one.
+    fn type_at(e: ExprId) -> SignedType? { if e.index < self.types.length { self.types[e.index] } else { null } }
+
+    /// `e`'s type as a read sees it: a named type's shape, any other type itself.
+    fn seen_at(e: ExprId) -> SignedType? {
+        let t? = self.type_at(e) else { return null }
+        self.named_over(t) ?? t
+    }
+
+    /// This lowering with `e` read as `ty`: a value of a named type, at a read, is its shape.
+    fn reading_as(e: ExprId, ty: SignedType) -> Lowering { self with { types: [if at == e.index { ty } else { t } for at, t in self.types] } }
+
+    /// The type `e`'s seat wants, absent where its seat names none.
+    fn seat_at(e: ExprId) -> SignedType? { self.seats.get("${e.index}") }
+
+    /// A binding's type: as the statement `s` writes it, read where its template stands, else its
+    /// value's.
+    fn binding_type(written: TypeRef?, value: ExprId, s: StmtId) -> SignedType? {
+        let ty? = written else { return self.type_at(value) }
+        self.written_by(ty, self.store.seat_home(s, LandedSeat.Names))
+    }
+
+    /// What a value of `ty` is to the machine; a type whose layout isn't known is noted.
+    mut fn laid_out(ty: SignedType) -> Layout {
+        let laid? = self.program.checked.layout(ty) else {
+            self.missed("the layout of `${ty.spelled()}`${self.unlaid_part(ty, [])}")
+            return Layout.Void
+        }
+        laid
+    }
+
+    /// Where `ty`, whose layout isn't known, holds the first part whose layout isn't: a field, a
+    /// variant's payload, or a type argument, followed down; or that it names no type at all;
+    /// nothing where every part is known.
+    fn unlaid_part(ty: SignedType, met: List<string>) -> string {
+        if met.contains(ty.spelled()) { return "" }
+        if ty.head is .Unnamed { return ", which names no type where it's read" }
+        let seen = met.concat([ty.spelled()])
+        let parts = [UnlaidPart { said: "its field `${f.name}`", ty: f.ty! } for f in self.fields_of(ty) ?? [] if f.ty != null]
+            .concat(
+                [UnlaidPart { said: "its variant `${v.name}`'s payload `${p.name}`", ty: p.ty! } for v in self.variants_of(ty) ?? [] for p in v.payloads if p.ty != null],
+            )
+            .concat([UnlaidPart { said: "its argument `${a.spelled()}`", ty: a } for a in ty.args])
+        let first? = parts.find((p) -> self.program.checked.layout(p.ty) == null) else { return "" }
+        ", ${first.said}${self.unlaid_part(first.ty, seen)}"
+    }
+
+    /// What `e`'s value is to the machine; an untyped node is noted.
+    mut fn layout_at(e: ExprId) -> Layout {
+        let ty? = self.type_at(e) else {
+            self.missed("an untyped `${self.store.expr(e).surface().node}`")
+            return Layout.Void
+        }
+        self.laid_out(ty)
+    }
+
+    /// `e` isn't typed: noted, with where under it typing first found no type, and a register nothing
+    /// reads in its place.
+    mut fn untyped(e: ExprId) -> Reg { self.missed_as(self.untyped_said(e)) }
+
+    /// The words for `e` untyped, naming the first node under it typing found no type for.
+    fn untyped_said(e: ExprId) -> string {
+        let said = "an untyped `${self.store.expr(e).surface().node}`"
+        let first? = self.store.every_expr(e).find((x) -> x != e && self.type_at(x) == null) else { return said }
+        "${said}, first under it an untyped `${self.store.expr(first).surface().node}`"
+    }
+
+    /// A type written in the body, resolved, each bounded parameter of the unit it lowers in standing
+    /// for the type filling it, as the body's typed nodes do.
+    fn written(ty: TypeRef) -> SignedType { self.written_by(ty, null) }
+
+    /// `written`, read where the template whose home is `home` stands before where the body stands.
+    fn written_by(ty: TypeRef, home: string?) -> SignedType {
+        mut fills: Map<string, SignedType> = {}
+        for j, p in self.program.checked.parameters { if p.fill != null { fills.set("${j}", p.fill!) } }
+        (self.program.checked.written)(ty, home).filled(fills)
+    }
+
+    /// The fields of the record `ty` is, each typed under its arguments; absent for a type that's no
+    /// record, or that doesn't give the record every argument.
+    fn fields_of(ty: SignedType) -> List<FieldSeat>? {
+        kept_answer(
+            self.program.checked.memos,
+            self.program.checked.memos.fields,
+            "fields_of",
+            ty,
+            () -> self.fields_worked_out(ty),
+            fields_said,
+        )
+    }
+
+    /// The fields of the record `ty` is, worked out from its declaration.
+    fn fields_worked_out(ty: SignedType) -> List<FieldSeat>? {
+        if ty.nullable() || ty.dynamic { return null }
+        let record? = (self.program.checked.record_of)(ty) else { return null }
+        if ty.args.length != record.params { return null }
+        [f with { ty: f.ty?.bound(ty.args) } for f in record.fields]
+    }
+
+    /// The shape the named type `ty` stands over, absent for any other type.
+    fn named_over(ty: SignedType) -> SignedType? { (self.program.checked.named_of)(ty) }
+
+    /// The variants of the enum `ty` is, `Result` among them, each payload typed under its arguments;
+    /// absent for a type that's no enum, or that doesn't give the enum every argument.
+    fn variants_of(ty: SignedType) -> List<VariantSeat>? {
+        kept_answer(
+            self.program.checked.memos,
+            self.program.checked.memos.variants,
+            "variants_of",
+            ty,
+            () -> self.variants_worked_out(ty),
+            variants_said,
+        )
+    }
+
+    /// The variants of the enum `ty` is, worked out from its declaration.
+    fn variants_worked_out(ty: SignedType) -> List<VariantSeat>? {
+        let shape? = self.program.checked.enum_shape(ty) else { return null }
+        if ty.args.length != shape.params { return null }
+        [v with { payloads: [p with { ty: p.ty?.bound(ty.args) } for p in v.payloads] } for v in shape.variants]
+    }
+
+    /// What each of `seats` is to the machine, absent when one's type isn't known.
+    mut fn seat_layouts(seats: List<FieldSeat>) -> List<Layout>? {
+        if seats.any(it.ty == null) { return null }
+        [self.laid_out(s.slot_type()!) for s in seats]
+    }
+
+    /// What a top-level name the body reads or calls at `e` is.
+    fn named(e: ExprId, name: string) -> NamedValue? { (self.program.named)(name, self.store.home_of(e)) }
+
+    /// The declared method `name` a value of `ty` has, absent where the program declares none.
+    fn method(ty: SignedType, name: string) -> CalledFn? { (self.program.method)(ty, name) }
+
+    /// The static fn `name` the type `ty` has, absent where the program declares none.
+    fn static_fn(ty: SignedType, name: string) -> CalledFn? { (self.program.statics)(ty, name) }
+
+    /// The one static `name` among those several impls give `ty` whose seats take `args` as typing
+    /// typed them; absent where none or more than one does.
+    fn static_among(ty: SignedType, name: string, args: List<ExprId>) -> CalledFn? { self.chosen_callee((self.program.statics_among)(ty, name), args) }
+
+    /// The one method `name` among those several impls give `ty` whose seats take `args` as typing
+    /// typed them; absent where none or more than one does.
+    fn method_among(ty: SignedType, name: string, args: List<ExprId>) -> CalledFn? { self.chosen_callee((self.program.methods_among)(ty, name), args) }
+
+    /// The one of `callees` whose seats take `args`, each of the type typing gave it, by position.
+    fn chosen_callee(callees: List<CalledFn>, args: List<ExprId>) -> CalledFn? {
+        let typed = [self.type_at(a) for a in args]
+        let fitting = [c for c in callees if c.params.length == args.length &&
+            (0..args.length).all(typed[it]?.spelled() == c.params[it].ty.spelled())]
+        if fitting.length == 1 { fitting[0] } else { null }
+    }
+
+    /// The verb `name` the prelude writes a body for on `ty`, a type the language owns; absent for
+    /// any other.
+    fn bodied_verb(ty: SignedType, name: string) -> CalledFn? { (self.program.verb)(ty, name) }
+
+    /// The verb `name` the prelude declares on `ty`, a type the language owns, its body written or
+    /// not; absent for any other.
+    fn declared_verb(ty: SignedType, name: string) -> CalledFn? { (self.program.declared_verb)(ty, name) }
+
+    /// Whether the type `ty` names is declared with type parameters.
+    fn generic_declared(ty: SignedType) -> bool {
+        (self.program.checked.record_of)(ty)?.params ?? 0 > 0 ||
+            self.program.checked.enum_shape(ty)?.params ?? 0 > 0
+    }
+
+    // ── Names ───────────────────────────────────────────────────────
+
+    /// `name` bound in the innermost scope.
+    mut fn bind(name: string, b: Bound) {
+        let scopes = self.scopes.get()
+        mut innermost = scopes.last()!
+        innermost.set(name, b)
+        self.scopes.set_at(scopes.length - 1, innermost)
+    }
+
+    /// What `name` is bound to here, absent when the body binds it nowhere in view.
+    fn bound(name: string) -> Bound? { reversed(self.scopes.get()).find(it.has(name))?.get(name) }
+
+    /// Whether `name` here is one of the fn's seats: bound in the outermost scope, where the seats
+    /// are, and nowhere further in.
+    fn seat_named(name: string) -> bool {
+        let scopes = self.scopes.get()
+        reversed(scopes).find_index(it.has(name)) == scopes.length - 1
+    }
+
+    /// The fn's seat `name` of type `ty`: the next register, as the seats mint in order.
+    mut fn seated(name: string, ty: SignedType) { self.bind(name, Bound.Value(self.mint(self.laid_out(ty)), ty)) }
+
+    /// The `state` seat `name` of `ty`: the caller's Cell, shared as a `state` of the body's own is.
+    mut fn seated_state(name: string, ty: SignedType) { self.bind(name, Bound.Shared(self.mint(self.laid_out(cell_of(ty))), ty)) }
+
+    /// The fn's seat `name` of type `ty`, `written` where the fn writes through it: one that rides no
+    /// pointer is handed its place, the box its caller holds it in; any other as `seated` binds it.
+    mut fn seated_written(name: string, ty: SignedType, written: bool) {
+        if !written || !self.place_handed(ty) { return self.seated(name, ty) }
+        self.bind(name, Bound.Held(self.mint(self.seat_laid(ty, written)), ty))
+    }
+
+    /// What a seat of `ty` takes to the machine: the box its place is handed in where it's `written`
+    /// and handed one, else its value.
+    mut fn seat_laid(ty: SignedType, written: bool) -> Layout { self.laid_out(if written && self.place_handed(ty) { cell_of(ty) } else { ty }) }
+
+    /// A read of `b` at `e`: its register, or what its cell holds now — read as a shape its named type
+    /// stands over, at any depth, which is free; where a test proved a nullable binding present, what
+    /// it carries. A read typed any other way isn't lowered yet.
+    mut fn read(e: ExprId, b: Bound) -> Reg {
+        let ty = b.type()
+        let worn = self.type_at(e)?.spelled()
+        let plain = worn != null && self.stands_over(ty, worn!)
+        if !plain && !(ty.nullable() && worn == ty.unwrapped().spelled()) { return self.missed_as("a narrowed read") }
+        let held = self.held(b)
+        if plain { held } else { self.carried(held, ty) }
+    }
+
+    /// Whether a value of `ty` is the type spelled `worn`, or a named type standing over it, at any
+    /// depth.
+    fn stands_over(ty: SignedType, worn: string) -> bool {
+        if ty.spelled() == worn { return true }
+        let shape? = self.named_over(ty) else { return false }
+        shape.spelled() != ty.spelled() && self.stands_over(shape, worn)
+    }
+
+    /// What `b` holds now, as its own type: its register, what its cell holds, or its lane of the box.
+    mut fn held(b: Bound) -> Reg {
+        match b {
+            .Value(r, _) or .Const(r, _) -> r,
+            .Slot(cell, ty) -> self.loaded(self.laid_out(ty), cell),
+            .Outer(name, ty, lanes) -> {
+                let l = self.laid_out(ty)
+                self.unboxed_at(l, Reg { index: 0 }, capture_slot(lanes, name, l.slots()))
+            },
+            .Held(box, ty) -> self.proven_read(self.laid_out(ty), box, 0),
+            .Shared(_, ty) or .OuterShared(_, ty, _) -> self.proven_read(self.laid_out(ty), self.shared_cell(b)!, 0),
+        }
+    }
+
+    /// The Cell a `state` binding holds its value in — its own, or its lane of the lambda's box;
+    /// absent for any other binding.
+    mut fn shared_cell(b: Bound) -> Reg? {
+        match b {
+            .Shared(cell, _) -> cell,
+            .OuterShared(name, ty, lanes) -> {
+                let l = self.laid_out(cell_of(ty))
+                self.unboxed_at(l, Reg { index: 0 }, capture_slot(lanes, name, l.slots()))
+            },
+            .Value(_, _) or .Const(_, _) or .Slot(_, _) or .Outer(_, _, _) or .Held(_, _) -> null,
+        }
+    }
+
+    /// What a lambda's box carries for the binding `b` it captures: a `state`'s Cell, any other
+    /// binding's value.
+    mut fn lane_value(b: Bound) -> Reg { self.shared_cell(b) ?? self.held(b) }
+
+    /// What a box carries in the lane `name`: what the binding `name` holds.
+    mut fn lane_of(name: string) -> Reg { self.lane_value(self.bound(name)!) }
+
+    // ── Registers ───────────────────────────────────────────────────
+    // A register is minted with the instruction that defines it, after every register that
+    // instruction reads: operands first, the answer last.
+
+    /// A fresh register of layout `l`.
+    mut fn mint(l: Layout) -> Reg {
+        let r = Reg { index: self.layouts.get().length }
+        self.layouts.push(l)
+        r
+    }
+
+    /// `i`, emitted.
+    mut fn emit(i: Ins) {
+        if self.program.notes != null { self.noted_ins(i) }
+        self.ins.push(i)
+    }
+
+    /// A call of the runtime's row `row`, noted where it may switch the task out.
+    fn noted_row(row: string) {
+        if rt_waits(row) { self.noted((at: int) -> NodeMet.Waits(at, row)) }
+    }
+
+    /// What the instruction `i` meets, noted: a call through a value, a row that may switch out.
+    fn noted_ins(i: Ins) {
+        if i is .CallPtr { return self.noted((at: int) -> NodeMet.Value(at)) }
+        let row? = hosted_symbol(i) else { return }
+        self.noted_row(row)
+    }
+
+    /// What register `r` is to the machine.
+    fn layout_of(r: Reg) -> Layout { self.layouts.get()[r.index] }
+
+    // ── Constants ───────────────────────────────────────────────────
+
+    mut fn const_int(n: int) -> Reg { self.word_at(Layout.Word, n) }
+
+    mut fn const_bool(b: bool) -> Reg {
+        let r = self.mint(Layout.Truth)
+        self.emit(Ins.ConstBool(r, b))
+        r
+    }
+
+    mut fn const_str(s: string) -> Reg {
+        let r = self.mint(Layout.Boxed(BoxKind.Text))
+        self.emit(Ins.ConstStr(r, s))
+        r
+    }
+
+    /// A float constant, given as its IEEE-754 bits.
+    mut fn const_float(bits: int) -> Reg {
+        let r = self.mint(Layout.Real)
+        self.emit(Ins.ConstFloat(r, bits))
+        r
+    }
+
+    /// The word `n` in a register of layout `l`: a void's nothing, a pointer's null.
+    mut fn word_at(l: Layout, n: int) -> Reg {
+        let r = self.mint(l)
+        self.emit(Ins.ConstInt(r, n))
+        r
+    }
+
+    /// A literal's constant.
+    mut fn constant(v: Literal) -> Reg {
+        match v {
+            .Int(n) -> self.const_int(n),
+            .Float(bits) -> self.const_float(bits),
+            .Bool(b) -> self.const_bool(b),
+            .Text(s) -> self.const_str(s),
+        }
+    }
+
+    // ── Operations ──────────────────────────────────────────────────
+
+    /// An eager binary operation, its operands one layout, answering a value of layout `l`.
+    mut fn bin(l: Layout, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// `!src`.
+    mut fn not(src: Reg) -> Reg {
+        let dst = self.mint(Layout.Truth)
+        self.emit(Ins.Un(dst, UnOp.Not, src))
+        dst
+    }
+
+    /// The registers `elems` as one value of layout `l`.
+    mut fn pack(l: Layout, elems: List<Reg>) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Pack(dst, elems))
+        dst
+    }
+
+    // ── Calls ───────────────────────────────────────────────────────
+
+    /// A call of the body the program answers `target`'s code hash with, answering a value of
+    /// layout `l`.
+    mut fn code_hash_called(l: Layout, target: CalledFn) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Call(dst, code_hash_symbol(target.symbol), []))
+        dst
+    }
+
+    /// A call of a declared fn by its symbol, answering a value of layout `l`.
+    mut fn call_fn(l: Layout, callee: CalledFn, args: List<Reg>) -> Reg {
+        self.reached(callee)
+        let dst = self.mint(l)
+        self.emit(Ins.Call(dst, callee.symbol, args))
+        self.task_test(TestSite.Calls(callee)) { cx -> cx.unwound_test() }
+        dst
+    }
+
+    /// `callee` among the fns the body reaches, once.
+    mut fn reached(callee: CalledFn) {
+        self.noted((at: int) -> NodeMet.Calls(at, callee))
+        if !self.callees.get().any(it.symbol == callee.symbol) { self.callees.push(callee) }
+    }
+
+    /// What `met` says of the written node this lowering stands in, noted where a law asks.
+    fn noted(met: fn(int) -> NodeMet) {
+        let notes? = self.program.notes else { return }
+        let at = notes.at.get()
+        if at >= 0 { notes.met.push(met(at)) }
+    }
+
+    /// A call of a fn C defines, answering a value of layout `l`; one answering nothing answers a
+    /// void's register.
+    mut fn call_c(l: Layout, symbol: string, args: List<Reg>) -> Reg {
+        match l {
+            .Void -> {
+                self.emit(Ins.CallRtVoid(symbol, args))
+                self.unwound_after(rt_waits(symbol))
+                self.word_at(Layout.Void, 0)
+            },
+            .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> {
+                let dst = self.mint(l)
+                self.emit(Ins.CallRt(dst, symbol, args))
+                self.unwound_after(rt_waits(symbol))
+                dst
+            },
+        }
+    }
+
+    /// A call of the runtime's row `row`, answering a value of layout `l`.
+    mut fn call_row(l: Layout, row: RtSig, args: List<Reg>) -> Reg { self.call_c(l, row.name, args) }
+
+    /// A call of the runtime's row `row`, which answers nothing.
+    mut fn run_row(row: RtSig, args: List<Reg>) {
+        self.emit(Ins.CallRtVoid(row.name, args))
+        self.unwound_after(row.waits)
+    }
+
+    /// A call of the runtime's row `row` answering a value of layout `l`, or nothing, where the answer
+    /// and each argument cross as the one word each is; a wider value crosses boxed, which isn't
+    /// lowered yet.
+    mut fn call_words(l: Layout, row: RtSig, args: List<Reg>) -> Reg {
+        if !(l.one_word() || l.inline() || l.empty()) || !self.crossable(args) { return self.missed_as(wider_than_a_word(row)) }
+        self.call_crossed(l, row, args)
+    }
+
+    /// A call of the runtime's row `row`, which answers nothing, each argument crossing as the one
+    /// word it is; a wider value crosses boxed, which isn't lowered yet.
+    mut fn run_words(row: RtSig, args: List<Reg>) {
+        if !self.crossable(args) { return self.missed(wider_than_a_word(row)) }
+        self.run_crossed(row, args)
+    }
+
+    // ── The test after a call ───────────────────────────────────────
+    // A call that may reach a cancel point is followed by one read of the running task's unwinding
+    // flag; set, the fn leaves at once, answering a hollow its caller never reads, since the caller
+    // tests in turn. Each test is lowered where it stands and held beside the body, so one lowering
+    // serves every placement.
+
+    /// The unwinding test, after a call that `may` reach a cancel point.
+    mut fn unwound_after(may: bool) {
+        if !may { return }
+        self.task_test(TestSite.Waits) { cx -> cx.unwound_test() }
+    }
+
+    /// The running task's unwinding flag read, and the fn left where it's set.
+    mut fn unwound_test() { self.void_region(self.flag_read(RtFlag.Unwinding)) { cx -> cx.unwound_exit() } }
+
+    /// A task test at `site`, lowered by `body` with its own instructions and notes, its registers
+    /// minted in place, then held: every placement keeping it splices it back where it stood.
+    mut fn task_test(site: TestSite, body: fn(mut Lowering) -> void) {
+        if self.untested { return }
+        if self.holding {
+            body(self)
+            return
+        }
+        let ins = self.ins
+        let missing = self.missing
+        let first = self.layouts.get().length
+        self.ins = Cell.new([])
+        self.missing = Cell.new([])
+        self.holding = true
+        body(self)
+        self.holding = false
+        let held = TaskTest {
+            site: site,
+            at: ins.get().length,
+            ins: self.ins.get(),
+            first: first,
+            count: self.layouts.get().length - first,
+            missed_at: missing.get().length,
+            missing: self.missing.get(),
+        }
+        self.ins = ins
+        self.missing = missing
+        self.tests.push(held)
+    }
+
+    /// What the fn answers leaving unwinding: a task an empty cell, which no joiner reads as a value;
+    /// any other fn a hollow no caller reads.
+    mut fn exit_answer() -> Reg {
+        if self.tasked { return self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_new")!, []) }
+        self.hollow_of(self.answer)
+    }
+
+    /// The flag `flag` read in place: one load, no call, answering as its layout says.
+    mut fn flag_read(flag: RtFlag) -> Reg {
+        let r = self.mint(flag_layout(flag))
+        self.emit(Ins.FlagRead(r, flag))
+        r
+    }
+
+    /// A loop's back edge: a `while` the source writes spins, and where the program links a scheduler
+    /// reads the tick, whose taken side lets others run; a walk's back edge is neither.
+    mut fn back_edge(s: StmtId) {
+        if self.walks.get().contains(s.index) || self.unbroken { return }
+        self.program.spins.set(true)
+        self.task_test(TestSite.Ticks) { cx -> cx.tick_test() }
+    }
+
+    /// The tick read, and the scheduler run where it's taken.
+    mut fn tick_test() {
+        self
+            .void_region(self.flag_read(RtFlag.Tick)) { cx -> cx.run_row(rt_sig_of("avra_tick_cold")!, []) }
+    }
+
+    /// The `while`s among `stmts` a walk means: their back edges are no cancel point.
+    mut fn walking(stmts: List<StmtId>) { self.walks.set(self.walks.get().concat([s.index for s in stmts])) }
+
+    // ── Regions ─────────────────────────────────────────────────────
+    // A region is ONE expression whose arms are blocks handed the context, so no rule opens a bracket
+    // it doesn't close. The answer mints last, after every arm's.
+
+    /// A two-armed region answering a value of layout `l`: `taken` when `cond` holds, else `other`.
+    mut fn region(
+        cond: Reg,
+        l: Layout,
+        taken: fn(mut Lowering) -> Reg,
+        other: fn(mut Lowering) -> Reg,
+    ) -> Reg {
+        // LICENSED compiler.if_start_raw: this IS the verb
+        self.emit(Ins.IfStart(cond))
+        // LICENSED compiler.arm_end_raw: this IS the verb
+        self.emit(Ins.ArmEnd(taken(self)))
+        let last = other(self)
+        let dst = self.mint(l)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+        dst
+    }
+
+    /// A region over `selector` answering a value of layout `l`: arm `j` taken where the selector is
+    /// `cases[j]`, and arm `cases.length` where it's none of them.
+    mut fn switched(selector: Reg, cases: List<int>, l: Layout, arm: fn(mut Lowering, int) -> Reg) -> Reg {
+        self.emit(Ins.SwitchStart(selector, cases))
+        for j in 0..cases.length {
+            // LICENSED compiler.arm_end_raw: this IS the verb
+            self.emit(Ins.ArmEnd(arm(self, j)))
+        }
+        let last = arm(self, cases.length)
+        let dst = self.mint(l)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+        dst
+    }
+
+    /// A two-armed region whose value nothing reads: each arm closes on a word nobody reads.
+    mut fn void_branches(
+        cond: Reg,
+        taken: fn(mut Lowering) -> void,
+        other: fn(mut Lowering) -> void,
+    ) {
+        // LICENSED compiler.if_start_raw: this IS the verb
+        self.emit(Ins.IfStart(cond))
+        taken(self)
+        // LICENSED compiler.arm_end_raw: this IS the verb
+        self.emit(Ins.ArmEnd(self.const_int(0)))
+        other(self)
+        let last = self.const_int(0)
+        let dst = self.mint(Layout.Word)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+    }
+
+    /// A region whose value nothing reads: `body` runs where `cond` holds, and nothing where it doesn't.
+    mut fn void_region(cond: Reg, body: fn(mut Lowering) -> void) {
+        // LICENSED compiler.if_start_raw: this IS the verb
+        self.emit(Ins.IfStart(cond))
+        body(self)
+        // LICENSED compiler.arm_end_raw: this IS the verb
+        self.emit(Ins.ArmEnd(self.const_int(0)))
+        let last = self.const_int(0)
+        let dst = self.mint(Layout.Word)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+    }
+
+    // ── Scopes ──────────────────────────────────────────────────────
+
+    /// A scope opens: what it makes is released where it ends.
+    mut fn scope_enter() {
+        // LICENSED compiler.scope_enter_raw: this IS the verb
+        self.emit(Ins.ScopeEnter(Level.Application))
+    }
+
+    /// A scope ends, `gives` escaping it.
+    mut fn scope_exit(gives: Reg?) {
+        // LICENSED compiler.scope_exit_raw: this IS the verb
+        self.emit(Ins.ScopeExit(gives))
+    }
+
+    // ── Loops ───────────────────────────────────────────────────────
+    // `loop_start`, the condition's instructions, `loop_cond`, which opens the turn's scope, the body,
+    // then `loop_end`.
+
+    /// A loop opens: its labels and its floor, the scopes standing outside it, each kept beside every
+    /// other open loop's from here, so a jump out of a loop its condition opens finds the loop it
+    /// names.
+    mut fn loop_start() {
+        self.loops.set(self.loops.get() + 1)
+        self.labels.push([])
+        self.loop_floors.push(self.endings.get().length)
+        // LICENSED compiler.loop_start_raw: this IS the verb
+        self.emit(Ins.LoopStart)
+    }
+
+    /// The condition each turn tests, then the turn's scope, which the loop's floor stands under.
+    mut fn loop_cond(more: Reg) {
+        // LICENSED compiler.loop_cond_raw: this IS the verb
+        self.emit(Ins.LoopCond(more))
+        self.scope_enter()
+        let floors = self.loop_floors.get()
+        self.loop_floors.set_at(floors.length - 1, self.endings.get().length)
+        self.opened()
+    }
+
+    /// The condition `cond` the open loop tests each turn: a jump the program wrote in it aims at the
+    /// loop around this one, whose turn begins only once its condition holds.
+    mut fn loop_tested(cond: ExprId) {
+        self.unwritten()
+        let more = self.lower(cond)
+        self.labelled([])
+        self.loop_cond(more)
+    }
+
+    mut fn loop_end() {
+        self.closed()
+        let floors = self.loop_floors.get()
+        self.loop_floors.set(floors.take(floors.length - 1))
+        self.scope_exit(null)
+        // LICENSED compiler.loop_end_raw: this IS the verb
+        self.emit(Ins.LoopEnd)
+        self.loops.set(self.loops.get() - 1)
+        let labels = self.labels.get()
+        self.labels.set(labels.take(labels.length - 1))
+    }
+
+    /// The innermost loop's turn ends here, what its turn's scopes hold ended: its next begins when
+    /// `again`, else the loop ends.
+    mut fn jumped(again: bool) {
+        if self.loops.get() == 0 { return self.missed(LOOPLESS_JUMP) }
+        self.ended_from(self.loop_floors.get().last() ?? 0, Leaving.Plain)
+        self.emit(Ins.LoopJump(0, again))
+    }
+
+    /// A `break` or `continue` the program wrote with no label: the innermost loop the program wrote
+    /// ends here, or turns, every scope inside it ended; a loop a lowering opens for its own scan is
+    /// passed over.
+    mut fn jumped_written(again: bool) {
+        let labels = self.labels.get()
+        let at? = [j for j, names in labels if !names.contains(UNWRITTEN_LOOP)].last() else { return self.missed(LOOPLESS_JUMP) }
+        self.ended_from(self.loop_floors.get()[at], Leaving.Plain)
+        self.emit(Ins.LoopJump(labels.length - 1 - at, again))
+    }
+
+    /// The innermost open loop is the lowering's own, which no jump the program wrote leaves.
+    mut fn unwritten() { self.labelled([UNWRITTEN_LOOP]) }
+
+    /// A `break` or `continue` of the open loop labelled `label`, the innermost so labelled, every
+    /// scope inside it ended.
+    mut fn jumped_to(label: string, again: bool) {
+        let labels = self.labels.get()
+        let at? = [j for j, names in labels if names.contains(label)].last() else { return self.missed("a jump naming no loop around it") }
+        self.ended_from(self.loop_floors.get()[at], Leaving.Plain)
+        self.emit(Ins.LoopJump(labels.length - 1 - at, again))
+    }
+
+    /// The innermost open loop labelled by `names`: a jump naming one leaves or turns that loop.
+    mut fn labelled(names: List<string>) {
+        let labels = self.labels.get()
+        self.labels.set(labels.take(labels.length - 1).concat([names]))
+    }
+
+    // ── Walks ───────────────────────────────────────────────────────
+
+    /// A walk over the list `list` of `elem`s, from its start to its length.
+    mut fn walk_list(list: Reg, elem: SignedType) -> ListWalk {
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [list])
+        ListWalk {
+            list: list,
+            len: len,
+            at: self.seeded_cell(Layout.Word, self.const_int(0)),
+            elem: elem,
+            elem_layout: self.laid_out(elem),
+        }
+    }
+
+    /// A count from `lo` up to `hi`, each read already.
+    mut fn walk_count(lo: Reg, hi: Reg) -> ListWalk {
+        ListWalk {
+            list: null,
+            len: hi,
+            at: self.seeded_cell(Layout.Word, lo),
+            elem: owned_type("int"),
+            elem_layout: Layout.Word,
+        }
+    }
+
+    /// A walk over the map `m` whose keys are `key`s: its keys and its values read once, side by side.
+    mut fn walk_map(m: Reg, key: SignedType) -> MapWalk {
+        let keys = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_keys")!, [m])
+        let values = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_vals")!, [m])
+        MapWalk { keys: self.walk_list(keys, key), values: values }
+    }
+
+    /// The key at the place `here` of the map walk `w`.
+    mut fn key_at(w: MapWalk, here: Reg) -> Reg { self.element_at(w.keys.elem_layout, w.keys.list!, here) }
+
+    /// The value of `value` at the place `here` of the map walk `w`.
+    mut fn value_at(w: MapWalk, value: SignedType, here: Reg) -> Reg { self.element_at(self.laid_out(value), w.values, here) }
+
+    /// A walk over the octets `b`, each an `int`, from the first to their length.
+    mut fn walk_octets(b: Reg) -> ListWalk {
+        ListWalk {
+            list: b,
+            len: self.call_row(Layout.Word, rt_sig_of("avra_bytes_len")!, [b]),
+            at: self.seeded_cell(Layout.Word, self.const_int(0)),
+            elem: owned_type("int"),
+            elem_layout: Layout.Word,
+        }
+    }
+
+    /// The octet at `at` of the octets `b`, an `int`.
+    mut fn octet_at(b: Reg, at: Reg) -> Reg { self.call_row(Layout.Word, rt_sig_of("avra_bytes_at")!, [b, at]) }
+
+    /// A count over the range `r`, its start and its end: from the start up to the end.
+    mut fn walk_range(r: Reg) -> ListWalk { self.walk_count(self.range_start(r), self.range_end(r)) }
+
+    /// The start of the range `r`.
+    mut fn range_start(r: Reg) -> Reg { self.extracted(Layout.Word, r, 0) }
+
+    /// The end of the range `r`.
+    mut fn range_end(r: Reg) -> Reg { self.extracted(Layout.Word, r, 1) }
+
+    /// A turn of the walk opened: the loop, its test that the walk stands short of its length, the
+    /// turn's scope, then the step past this place — one, or a code point's sequence. Answers where it
+    /// stands.
+    mut fn walk_turn(w: ListWalk) -> Reg {
+        self.loop_start()
+        let here = self.loaded(Layout.Word, w.at)
+        self.loop_cond(self.bin(Layout.Truth, BinOp.Lt, here, w.len))
+        let step = if w.ordinal == null { self.const_int(1) } else { self.sequence_width(w.list!, here, w.len) }
+        self.stored(w.at, self.bin(Layout.Word, BinOp.Add, here, step))
+        here
+    }
+
+    /// The place of the turn standing at `here` among the walk's elements: where it stands, or how
+    /// many code points came before it, asked once a turn.
+    mut fn walk_place(w: ListWalk, here: Reg) -> Reg {
+        let ordinal? = w.ordinal else { return here }
+        let seen = self.loaded(Layout.Word, ordinal)
+        self.stored(ordinal, self.bin(Layout.Word, BinOp.Add, seen, self.const_int(1)))
+        seen
+    }
+
+    /// The element the turn standing at `here` reads off the list `w` walks: a code point of a text's.
+    mut fn walked_element(w: ListWalk, here: Reg) -> Reg {
+        if w.ordinal != null { return self.code_point_at(w, here) }
+        self.element_at(w.elem_layout, w.list!, here)
+    }
+
+    // ── Cells ───────────────────────────────────────────────────────
+
+    /// A cell of layout `l`, holding `seed`: the seed minted before the cell.
+    mut fn seeded_cell(l: Layout, seed: Reg) -> Reg {
+        let cell = self.mint(l)
+        self.emit(Ins.Alloca(cell))
+        self.emit(Ins.Store(cell, seed))
+        cell
+    }
+
+    /// What `cell` holds now, a value of layout `l`.
+    mut fn loaded(l: Layout, cell: Reg) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Load(dst, cell))
+        dst
+    }
+
+    /// `v` written into `cell`.
+    mut fn stored(cell: Reg, v: Reg) { self.emit(Ins.Store(cell, v)) }
+
+    // ── Exits ───────────────────────────────────────────────────────
+
+    /// The fn leaves here, answering `answer`, or nothing, what every scope holds ended first.
+    mut fn answer_exit(answer: Reg?) {
+        let gives = answer ?? self.hollow_of(owned_type("void"))
+        self.ended_from(0, if answer == null { Leaving.Plain } else { Leaving.Answering(answer!) })
+        self.kept_once(gives)
+        self.emit(Ins.FnExit(gives))
+    }
+
+    // ── Hollows ─────────────────────────────────────────────────────
+    // A value of a type that's never read but must be total: what an arm that left yields, and what
+    // a block ending in a statement answers.
+
+    /// A value of `ty` nobody reads: a nullable's absence, else its type's zero.
+    mut fn hollow_of(ty: SignedType) -> Reg {
+        let l = self.laid_out(ty)
+        if ty.nullable() { self.absent_of(ty, l) } else { self.zero_of(l) }
+    }
+
+    /// The zero of layout `l`: each field's zero, a value enum's spare tag beside a zero word.
+    mut fn zero_of(l: Layout) -> Reg {
+        match l {
+            .Tagged(_) -> self.pack(l, [self.const_int(ABSENT_TAG), self.const_int(0)]),
+            .Fields(fields) -> self.pack(l, [self.zero_of(f) for f in fields]),
+            .Truth -> self.const_bool(false),
+            .Real -> self.const_float(0),
+            .Maybe(value) -> self.pack(l, [self.const_bool(false), self.zero_of(value)]),
+            .Void or .Word or .Boxed(_) or .Bare -> self.word_at(l, 0),
+        }
+    }
+
+    /// The absence of `ty`, a nullable of layout `l`: a null pointer, a spare tag, or a pair whose
+    /// flag is false.
+    mut fn absent_of(ty: SignedType, l: Layout) -> Reg {
+        match l {
+            .Maybe(_) -> {
+                let payload = self.hollow_of(ty.unwrapped())
+                self.pack(l, [self.const_bool(false), payload])
+            },
+            .Tagged(_) -> self.pack(l, [self.const_int(ABSENT_TAG), self.const_int(0)]),
+            .Word -> self.pack(l, [self.const_int(ABSENT_TAG)]),
+            .Void or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) -> self.word_at(l, 0),
+        }
+    }
+}
+
+/// How a value of `ty` holds tasks its scope joins: false for one task, true for a list of them or
+/// the language's group of them; absent for any other value.
+fn tasks_held(ty: SignedType?) -> bool? {
+    let t? = ty else { return null }
+    if t.nullable() || t.dynamic { return null }
+    let own? = t.own() else { return null }
+    match own {
+        .Task -> false,
+        .Tasks -> true,
+        .List -> if t.args.first()?.owns(OwnType.Task) ?? false { true } else { null },
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Bytes or .Map or .Cell or .Range or .Result -> null,
+    }
+}
+
+/// A value wider than a word crossing `row`, which isn't lowered yet.
+fn wider_than_a_word(row: RtSig) -> string { "a value wider than a word crossing `${row.name}`" }
+
+/// An enum's spare tag: the one no variant has, which its nullable spends on absence.
+export const ABSENT_TAG: int = -1
+
+/// THE IDENTITY A DECLARED FN IS ASKED AFTER BY, the key an annotation naming it carries: the file
+/// that declares it, spelled by package and path, and its name.
+export fn decl_key(file: SourceFileAddress, name: string) -> string { "${file.package_name}/${file.path_in_package}.${name}" }
+
+/// The file and name a `decl_key` spells, absent where it spells none: a scoped package's name holds
+/// one `/` of its own, a path ends in `.av`, and a name holds no `.`.
+export fn decl_keyed(key: string) -> DeclKeyed? {
+    let dotted = key.split(".")
+    if dotted.length < 2 { return null }
+    let parts = dotted.take(dotted.length - 1).join(".").split("/")
+    let scoped = parts.first()?.starts_with("@") ?? false
+    let head = if scoped { 2 } else { 1 }
+    if parts.length <= head { return null }
+    DeclKeyed {
+        file: SourceFileAddress {
+            package_name: parts.take(head).join("/"),
+            path_in_package: parts.drop(head).join("/"),
+        },
+        name: dotted.last()!,
+    }
+}
+
+/// A declared fn's file and name, as its key spells them.
+export type DeclKeyed = { file: SourceFileAddress, name: string }
+
+/// The symbol of the body that answers `target`'s code hash.
+export fn code_hash_symbol(target: string) -> string { "${CODE_HASH_PREFIX}${target}" }
+
+/// The fn whose code hash the body `symbol` answers; absent for any other symbol.
+export fn code_hash_target(symbol: string) -> string? {
+    if symbol.starts_with(CODE_HASH_PREFIX) { symbol.substring(CODE_HASH_PREFIX.length, symbol.length) } else { null }
+}
+
+/// What a code hash's body is named by, before the fn whose hash it answers.
+const CODE_HASH_PREFIX: string = "avra.code_hash."
+
+/// A part of a type, as a layout's refusal names it, and its type.
+type UnlaidPart = { said: string, ty: SignedType }
+
+/// How the program layer names a file in an origin, a template's or a component's: its package,
+/// then its path.
+export fn template_home(file: SourceFileAddress) -> string { "${file.package_name}:${file.path_in_package}" }
+
+/// The file a template's own name for it names; absent for a name no program layer wrote.
+export fn template_file(home: string) -> SourceFileAddress? {
+    let at = home.index_of(":")
+    if at < 0 { return null }
+    SourceFileAddress {
+        package_name: home.substring(0, at),
+        path_in_package: home.substring(at + 1, home.length),
+    }
+}
+
+/// A const a body declares that settled, as a const after it that reads it is handed it: its name,
+/// its type, and what it settled to.
+export type ConstSeed = { name: string, ty: SignedType, value: NamedValue }
+
+/// A program that settles no const a body declares.
+fn written_nowhere(_e: ExprId) -> string? { null }
+
+fn unsettled_in_body(_s: StmtId, _ty: SignedType, _seeds: List<ConstSeed>) -> NamedValue { NamedValue.Unsettled("a const a body declares, which this program doesn't settle") }

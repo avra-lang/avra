@@ -1,0 +1,79 @@
+// Type arguments written as a PREFIX: a call, a record's literal and a component's instance each
+// pin their leading parameters with what they write; the rest are inferred — from the arguments,
+// then the seat the value stands in — and, where nothing pins one, take the default its declaration
+// writes (`E = never`), else are refused naming how to pin them.
+use @std.avrac.testing.{shown, refused_with, judged}
+
+spec "features/fns — type arguments written as a prefix" {
+    given "each form pins its leading parameters" {
+        then "a call" {
+            shown("fn second<A, B>(a: A, b: B) -> B { b }\nsecond<int>(1, \"x\")") == "x"
+        }
+        then "a record's literal" {
+            shown(
+                "type Pair<A, B> = { a: A, b: B }\nlet p = Pair<int> { a: 1, b: true }\n\"\${p.a} \${p.b}\"",
+            ) == "1 true"
+        }
+        then "a component's instance" {
+            shown(
+                "component box<A, B> {\n    a: A\n    b: B\n}\nbox<int> held {\n    a: 1\n    b: \"x\"\n}\n\"\${held.a} \${held.b}\"",
+            ) == "1 x"
+        }
+        then "more type arguments than it takes still refuses" {
+            refused_with(
+                "fn one<A>(a: A) -> A { a }\none<int, string>(1)",
+                "`one` takes 1 type arguments, found 2",
+            )
+        }
+    }
+    given "a declared default" {
+        then "is used where nothing pins the parameter" {
+            shown("fn made<T, E = never>(v: T) -> List<E> { [] }\nmade(3).length") == "0"
+        }
+        then "is overridden by a written argument" {
+            shown(
+                "fn made<T, E = never>(v: T) -> E? { null }\nlet e: string? = made<int, string>(3)\n\"\${e == null}\"",
+            ) == "true"
+        }
+        then "is overridden by what an argument pins" {
+            shown("fn made<T, E = never>(v: T, e: E) -> E { e }\nmade<int>(3, \"late\")") == "late"
+        }
+    }
+    given "a parameter nothing pins and no default names" {
+        then "a literal is refused, its help naming the field that could pin it" {
+            let a = judged(
+                "type Pair<A, B> = { a: A, b: B? = null }\nfn g() -> int { Pair<int> { a: 1 }.a }\ng()",
+            )
+            a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains(
+                        "`B` is not pinned — `Pair` takes it, and nothing this literal writes names it",
+                    ) &&
+                a
+                    .report()
+                    .contains(
+                        "write it — `Pair<int, B> { … }` — or write `b:` with a value whose type names it",
+                    )
+        }
+        then "a call is refused as one nothing pins" {
+            refused_with(
+                "fn made<T, E>(v: T) -> E? { null }\nlet e = made<int>(3)\n1",
+                "`E` is not pinned by the arguments",
+            )
+        }
+    }
+    given "`never`" {
+        then "a nullable of it holds `null`" {
+            shown(
+                "type Dead<T, E> = { item: T, why: E }\ntype Sink<X> = { held: List<X> }\nlet s: Sink<Dead<int, never>>? = null\n\"\${s == null}\"",
+            ) == "true"
+        }
+        then "a nullable of it holds no value" {
+            refused_with(
+                "type Dead<T, E> = { item: T, why: E }\ntype Sink<X> = { held: List<X> }\nlet s: Sink<Dead<int, never>>? = Sink { held: [Dead { item: 1, why: \"late\" }] }\n1",
+                "never",
+            )
+        }
+    }
+}

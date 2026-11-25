@@ -1,0 +1,35 @@
+//! `avra run --eval <file>` of a source file standing in no package: read as a package of that one
+//! file, so a fn it declares is the program's own. `avra_said_in` is the neighbouring tests' own:
+//! this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A directory holding no package, one per run; `source` written there as `one.av`.
+fn lone_holding(name: string, source: string) -> string {
+    let dir = "/tmp/avra-eval-lone-test/${stamp()}/${name}"
+    let _ = make_dirs(dir)
+    let _ = write_text("${dir}/one.av", source)
+    dir
+}
+
+spec "avra run --eval — a lone file" {
+    given "a file in no package that declares a fn and calls it" {
+        then "it evaluates, the fn its own" {
+            avra_said_in(
+                lone_holding("fn", "fn f(n: int) -> int { n + 1 }\nprintln(\"\${f(41)}\")\n"),
+                ["run", "--eval", "one.av"],
+            ) == "42"
+        }
+    }
+    given "a file in no package that declares a type and a method" {
+        then "it evaluates over them" {
+            avra_said_in(
+                lone_holding(
+                    "type",
+                    "type P = { x: int }\nimpl P { fn twice() -> int { self.x * 2 } }\nprintln(\"\${P { x: 4 }.twice()}\")\n",
+                ),
+                ["run", "--eval", "one.av"],
+            ) == "8"
+        }
+    }
+}

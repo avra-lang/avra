@@ -1,0 +1,120 @@
+//! WHERE A `let v? = … else { … }` CAN'T STAND: its `else` falls through to the binding it skipped,
+//! or what it binds from is never absent, or always is. The first read off the item's syntax, the
+//! others off its typed nodes — a subject typing doesn't know whole is left alone.
+use core.{At, ExprId, NodeKind, OwnType, SignedType, Span, StmtId, SyntaxArena}
+use compiler.laws.{Found, Reach, law}
+use diagnostics.{Voice}
+use features.nullable.{asked_absent, bound_absent, bound_present, else_stays}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The `let … else` `at` of `store` where its source wrote it, not a template; absent for any other
+/// node.
+fn let_else_written(store: SyntaxArena, at: At) -> StmtId? {
+    let s? = at.stmt() else { return null }
+    if store.stmt_origins.at(s.index) == null && store.stmt(s) is .LetElse { s } else { null }
+}
+
+/// The statements a `let … else`'s `else` runs; none for any other statement.
+fn else_run(store: SyntaxArena, s: StmtId) -> List<StmtId> {
+    match store.stmt(s) { .LetElse(_, _, stmts) -> stmts, rest -> [] }
+}
+
+/// The name a `let … else` binds, as its refusals say it.
+fn bind_of(store: SyntaxArena, s: StmtId) -> string { store.let_name(s) ?? "this binding" }
+
+/// The `let … else` `at` of `view`'s item where its `else` doesn't leave.
+fn falling_elses(view: ItemView, at: At) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.stmt_span(s!), args: [bind_of(store, s!)] } for s in [let_else_written(store, at)] if s != null && !leaves(store, else_run(store, s!))]
+}
+
+/// Whether statements run in order leave: their last one does.
+fn leaves(store: SyntaxArena, stmts: List<StmtId>) -> bool {
+    let last? = stmts.last() else { return false }
+    store.diverges(last)
+}
+
+/// The `let … else` `at` of `view`'s typed nodes where its subject stands among them and is never
+/// absent, or always is: its binding's name, then the subject's type spelled, or none where it is
+/// always absent.
+fn unasked_elses(view: ItemView, at: At) -> List<Found> {
+    let t? = typed_of(view) else { return [] }
+    let s? = let_else_written(t.store, at) else { return [] }
+    [Found { at: t.store.expr_span(v!), args: [bind_of(t.store, s)].concat(present_words(ty!)) } for v in [t.store.stmt_value(s)] if v != null && v!.index >= t.lo && v!.index < t.hi for ty in [(t.type_at)(v!.index)] if ty != null && unasked(ty!)]
+}
+
+/// Whether a subject of `ty` makes the null check pointless: always absent, or a type the language
+/// owns, known whole, never absent.
+fn unasked(ty: SignedType) -> bool {
+    if ty.absence() { return true }
+    ty.head is .Owned &&
+        !ty.dynamic &&
+        !ty.generic() &&
+        !ty.inferred() &&
+        ty.nulls == 0 &&
+        !ty.owns(OwnType.Void)
+}
+
+/// The subject's type spelled where it is present, none where it is always absent.
+fn present_words(ty: SignedType) -> List<string> { if ty.absence() { [] } else { [ty.spelled()] } }
+
+/// a `let … else`'s `else` leaves
+export law else_leaves {
+    kind: "type.let_else"
+    on: [NodeKind.StmtLetElse]
+    judge: falling_elses
+    reach: Reach.Stored
+    judged_if: read_cleanly
+    voice: stays_words
+    witness: "fn f(x: int?) -> int {\n    let v? = x else { 1 }\n    v\n}\n\nf(2)\n"
+}
+
+/// a `let … else` binds from a value that may be absent
+export law let_else_asks {
+    kind: "type.let_else"
+    on: [NodeKind.StmtLetElse]
+    judge: unasked_elses
+    reach: Reach.Typed
+    judged_if: read_cleanly
+    voice: unasked_words
+    witness: "fn f() -> int {\n    let v? = 1 else { return 0 }\n    v\n}\n\nf()\n"
+}
+
+fn stays_words(a: List<string>) -> Voice { else_stays(a[0]) }
+
+fn unasked_words(a: List<string>) -> Voice { if a.length > 1 { bound_present(a[0], a[1]) } else { bound_absent(a[0]) } }
+
+/// The `match … { b? -> …, null -> … }` `at` of `view`'s typed nodes, its file's own and no `?.`
+/// chain, whose own law speaks, where its subject is never absent, or always is: the bind's name,
+/// then the subject's type spelled, or none where it is always absent.
+fn unasked_matches(view: ItemView, at: At) -> List<Found> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null || t.store.chained_by(e) { return [] }
+    [Found { at: t.store.expr_span(m.subject), args: [m.bind].concat(present_words(ty!)) } for m in asking(t.store, e) for ty in [(t.type_at)(m.subject.index)] if ty != null && unasked(ty!)]
+}
+
+/// An asking match's subject and the name its present arm binds.
+type Asking = { subject: ExprId, bind: string }
+
+/// The asking match `e` is; none for any other node.
+fn asking(store: SyntaxArena, e: ExprId) -> List<Asking> {
+    match store.expr(e) {
+        .MatchOpt(subject, bind, _, _) -> [Asking { subject: subject, bind: bind.text() }],
+        rest -> [],
+    }
+}
+
+/// a `match … { b? -> … }` asks of a value that may be absent
+export law match_opt_asks {
+    kind: "type.match_opt"
+    on: [NodeKind.ExprMatchOpt]
+    judge: unasked_matches
+    reach: Reach.Typed
+    judged_if: read_cleanly
+    voice: asked_words
+    witness: "match null {\n    v? -> 1\n    null -> 2\n}\n"
+}
+
+fn asked_words(a: List<string>) -> Voice { if a.length > 1 { bound_present(a[0], a[1]) } else { asked_absent(a[0]) } }

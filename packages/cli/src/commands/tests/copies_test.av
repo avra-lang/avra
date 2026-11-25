@@ -1,0 +1,68 @@
+//! `avra check` says a write through a `mut` local that stays in it, the
+//! local and the write in one statement of a file or in two. `avra_ran` and
+//! `scratch_dir` are the neighbouring tests' own: this module shares one
+//! namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A package whose entry is `source`; its root.
+fn entry_of(name: string, source: string) -> string {
+    let root = "${scratch_dir()}/copies_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"copies\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/main.av", source)
+    root
+}
+
+/// What a check of the entry `source` says, on either stream.
+fn check_said(name: string, source: string) -> string {
+    match avra_ran(["check", entry_of(name, source)]) {
+        .Ok(o) -> "${o.out.stdout}${o.out.stderr}",
+        .Err(_) -> "",
+    }
+}
+
+spec "avra check — a write through a copy" {
+    given "a `mut` local one statement seeds from a const and a later one writes" {
+        then "the write is said to stay in the copy" {
+            check_said(
+                "const",
+                "fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nmut ys = XS\nys.push(3)\n\"\${XS.length} \${ys.length}\"\n",
+            )
+                .contains("`ys` is a copy of `XS` — a write through it will not reach `XS`")
+        }
+    }
+    given "a `mut` local seeded from what a cell holds, written by a later statement" {
+        then "the write is said not to reach the cell" {
+            check_said(
+                "held",
+                "let c = Cell.new([1])\nmut snapshot = c.get()\nsnapshot.push(2)\nc.get().length\n",
+            )
+                .contains("`snapshot` is a copy of what `c` holds — a write through it will not reach `c`")
+        }
+    }
+    given "a `mut` local whose path a later statement hands a `mut` seat" {
+        then "the write is said to stay in the local" {
+            check_said(
+                "path",
+                "type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nmut b = B { xs: [] }\ngrow(b.xs)\nb.xs.length\n",
+            )
+                .contains("`b` is a local — a write through `b.xs` stays in `b`")
+        }
+    }
+    given "a copy handed the `mut` seat of a fn value a local holds" {
+        then "the write is said to stay in the copy" {
+            check_said(
+                "value",
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    let f: fn(mut R) -> void = grow\n    mut q = p\n    f(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"\n",
+            )
+                .contains("`q` is a copy of `p` — a write through it will not reach `p`")
+        }
+    }
+    given "a `mut` local built fresh and written by a later statement" {
+        then "nothing is said of a copy" {
+            !check_said("fresh", "mut ys = [1, 2]\nys.push(3)\nys.length\n")
+                .contains("type.alias_copy")
+        }
+    }
+}

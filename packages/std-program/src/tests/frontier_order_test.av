@@ -1,0 +1,163 @@
+// THE FRONTIER'S ORDER IS NOT ITS WORK: a frontier keeps its places in the order of their questions'
+// hashes, and a question's hash moves with its query's code. One graph of queries, built under several
+// spellings of its code, is several orders of the same places; a warm process after one edit must
+// work out the same answers, and the same set of them, under every one, and answer what a cold
+// process answers. Separate stores over one directory stand in for separate processes.
+use @std.io.{make_dirs}
+use @std.text.{parse_int}
+use @std.time.{stamp}
+use answer_record.{question}
+use disk_store.{disk_store_at}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+
+/// What `name` answers about `argument`, asked as this binary asks it.
+fn asked(e: QueryEngine, name: string, argument: string) -> string {
+    e
+        .answer_to(question(name, e.definitions.get().get(name)!.code_hash, argument.bytes()))
+        .copied()
+        .text() ?? ""
+}
+
+/// A query of `code`, cutting where `cuts` says.
+fn query(name: string, code: string, cuts: bool, compute: fn(QueryEngine, Bytes) -> Bytes) -> QueryDefinition {
+    QueryDefinition {
+        query_name: name,
+        code_hash: code,
+        is_input: false,
+        cuts: cuts,
+        compute: compute,
+    }
+}
+
+/// `text` reads the world. `length` cuts and moves with any edit that changes a length; `echo`
+/// repeats the text and doesn't cut, so an edit only reaches past it. `measured` cuts, reads both and
+/// moves with the length; `steady` cuts and only says whether it's past zero, which stands; `shown`
+/// reads `steady`. `through` cuts, and a change reaches it ONLY through `echo`, a place merely
+/// reached: it must still be decided, and worked out again where it moved.
+fn binary(code: string, world: Map<string, string>) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "text",
+            code_hash: code,
+            is_input: true,
+            compute: (_e, a) -> (world.get(a.text() ?? "") ?? "").bytes(),
+        },
+        query("length", code, true, (e, a) -> "${asked(e, "text", a.text() ?? "").length}".bytes()),
+        query("echo", code, false, (e, a) -> asked(e, "text", a.text() ?? "").bytes()),
+        query(
+            "measured",
+            code,
+            true,
+            (e, a) -> "${asked(e, "length", a.text() ?? "")}:${asked(e, "echo", a.text() ?? "").length > 0}"
+                .bytes(),
+        ),
+        query(
+            "steady",
+            code,
+            true,
+            (e, a) -> "${parse_int(asked(e, "measured", a.text() ?? "").split(":")[0]) ?? 0 > 0}"
+                .bytes(),
+        ),
+        query("shown", code, false, (e, a) -> "shown ${asked(e, "steady", a.text() ?? "")}".bytes()),
+        query("through", code, true, (e, a) -> "${asked(e, "echo", a.text() ?? "").length}".bytes()),
+    ]
+}
+
+/// Every path's answers the roots give, one line.
+fn answers(e: QueryEngine) -> string {
+    ["${asked(e, "shown", p)} ${asked(e, "through", p)} ${asked(e, "measured", p)}" for p in PATHS]
+        .join(" | ")
+}
+
+/// Every query the binary defines, in one fixed order.
+const NAMES: List<string> = ["text", "length", "echo", "measured", "steady", "shown", "through"]
+
+const PATHS: List<string> = ["a", "b", "c", "d"]
+
+fn world(edited: bool) -> Map<string, string> {
+    {
+        "a": if edited { "abcd" } else { "abc" },
+        "b": "xy",
+        "c": if edited { "q" } else { "pp" },
+        "d": "zzzz",
+    }
+}
+
+/// One process of the binary spelled `code` over `directory` in `world`: its answers, then what it
+/// worked out, counted by query, and how many places its frontier's change reached, so an order
+/// can't tell two runs apart.
+type Ran = { answers: string, worked: string }
+
+fn ran(directory: string, code: string, edited: bool) -> Ran {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, binary(code, world(edited)))
+    let said = answers(engine)
+    engine.frontier_kept()
+    let _ = store.saved()
+    let worked = engine.computed_queries()
+    Ran {
+        answers: said,
+        worked: ["${n}:${worked.filter(it == n).length}" for n in NAMES].join(",") +
+            " reached:${engine.reached.get()}",
+    }
+}
+
+/// The warm process after the edit, over a store a cold process in the unedited world left.
+fn warm_after_edit(code: string) -> Ran {
+    let directory = "/tmp/avra-frontier-order/${stamp()}-${code}"
+    let _ = make_dirs(directory) catch ""
+    let _ = ran(directory, code, false)
+    ran(directory, code, true)
+}
+
+/// What a cold process answers in the edited world.
+fn cold_edited(code: string) -> string {
+    let directory = "/tmp/avra-frontier-order/${stamp()}-cold-${code}"
+    let _ = make_dirs(directory) catch ""
+    ran(directory, code, true).answers
+}
+
+/// One process of program `program` of the binary over `directory`, asking only its own path: the
+/// engine it asked with, once its store is saved.
+fn program_ran(directory: string, program: string) -> QueryEngine {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, binary("c1", world(false)), program)
+    let _ = "${asked(engine, "shown", program)} ${asked(engine, "through", program)}"
+    engine.frontier_kept()
+    let _ = store.saved()
+    engine
+}
+
+/// The spellings of the code: each is another order of the same places.
+const CODES: List<string> = ["c1", "c2", "c3", "k7", "q9", "zz", "m4", "w0"]
+
+spec "frontier — its order is not its work" {
+    given "one graph under eight orders" {
+        then "every order works out the same set of answers after one edit" {
+            let worked = [warm_after_edit(c).worked for c in CODES]
+            worked.all(it == worked[0])
+        }
+        then "every order answers what a cold process answers" {
+            CODES.all((c) -> warm_after_edit(c).answers == cold_edited(c))
+        }
+        then "a cut a change reaches only through a place merely reached is still decided, and worked out where it moved" {
+            let warm = warm_after_edit("c1")
+            warm.answers.contains("shown true 4 4:true") &&
+                !warm.worked.split(",").contains("through:0")
+        }
+    }
+    given "programs sharing one store" {
+        then "each of four programs keeps its own frontier: its next process works nothing out and checks no record" {
+            let directory = "/tmp/avra-frontier-order/${stamp()}-shared"
+            let _ = make_dirs(directory) catch ""
+            for p in PATHS { let _ = program_ran(directory, p) }
+            PATHS
+                .all(
+                    (p) -> {
+                        let warm = program_ran(directory, p)
+                        warm.worked_count() == 0 && warm.records_checked_count() == 0
+                    },
+                )
+        }
+    }
+}

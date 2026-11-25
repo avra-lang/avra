@@ -1,0 +1,64 @@
+//! A task recurses as deep in a dev build as in a release one: a binary emitted unoptimised links
+//! the deeper task stack its frames need (runtime/avra_task_stack_unoptimised.c), and a runaway still
+//! ends with the scheduler's own words and a status of 2 in either mode. The programs are the wasm
+//! fixtures' own (tools/wasm-fixtures). `avra_ran`, `binary_ran`, `scratch_dir` and `tree_root` are
+//! the neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, read_text, write_text}
+use @std.process.{Exit, Outcome, ProcessError}
+use @std.time.{stamp}
+
+/// The wasm fixture `name`, copied to a package of its own under the tree's scratch directory.
+fn fixture_copy(name: string) -> string {
+    let from = "${tree_root()}/tools/wasm-fixtures/${name}"
+    let root = "${scratch_dir()}/task_stack_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", text_of("${from}/avra.toml"))
+    let _ = write_text("${root}/src/main.av", text_of("${from}/src/main.av"))
+    root
+}
+
+/// The text of the file at `path`, empty where it can't be read.
+fn text_of(path: string) -> string {
+    match read_text(path) { .Ok(t) -> t, .Err(_) -> "" }
+}
+
+/// The fixture `name` built with `flags`, then run: what it said and how it ended; absent where it
+/// didn't build.
+fn built_and_ran(name: string, flags: List<string>) -> Result<Outcome, ProcessError>? {
+    let root = fixture_copy(name)
+    match avra_ran(["build"].concat(flags).concat([root])) {
+        .Ok(o) -> if exit_is_zero(o.exit) { binary_ran("${root}/src/main") } else { null },
+        .Err(_) -> null,
+    }
+}
+
+/// Whether a run printed `line` and ended clean.
+fn printed(ran: Result<Outcome, ProcessError>?, line: string) -> bool {
+    let r? = ran else { return false }
+    clean_stdout(r) == line
+}
+
+/// Whether a run ended with status 2 saying the scheduler's stack-overflow words.
+fn overflowed(ran: Result<Outcome, ProcessError>?) -> bool {
+    let r? = ran else { return false }
+    match r {
+        .Ok(o) -> ended_two(o.exit) && "${o.out.stdout}${o.out.stderr}".contains("a task's stack overflowed"),
+        .Err(_) -> false,
+    }
+}
+
+/// Whether a run left by status 2, a trap's.
+fn ended_two(e: Exit) -> bool {
+    match e { .Code(2) -> true, .Clean or .Code(_) or .Signal(_, _) -> false }
+}
+
+spec "a task's stack — as deep in a dev build as in a release one" {
+    given "a task recursing 5000 deep" {
+        then "runs to its end in a dev build" { printed(built_and_ran("stack", []), "5001 5001\n") }
+        then "and in a release build" { printed(built_and_ran("stack", ["--release"]), "5001 5001\n") }
+    }
+    given "a task recursing past any stack" {
+        then "ends 2 with the scheduler's words in a dev build" { overflowed(built_and_ran("stack_overflow", [])) }
+        then "and in a release build" { overflowed(built_and_ran("stack_overflow", ["--release"])) }
+    }
+}

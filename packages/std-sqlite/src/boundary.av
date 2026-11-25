@@ -1,0 +1,66 @@
+//! WHAT THE GUARDS MUST SEE. Avra's `string` carries its length; C's
+//! ends at the first NUL. So a value crossing into C is judged by the
+//! callee on DIFFERENT BYTES than the caller passed.
+//!
+//! THE SPLIT THIS HEADER USED TO NAME IS GONE. It listed `==`,
+//! `contains`, `index_of`, `split` and `replace` as NUL-LOSSY C string
+//! calls, against a NUL-SAFE half that read the header. `f57372a`
+//! changed all five to `memcmp`/`memmem` over the length. Measured:
+//! `"ab\0cd"` has length 5, is UNEQUAL to `"ab"`, `contains("cd")`
+//! answers true, `index_of("cd")` answers 3, and splitting on the NUL
+//! gives two parts. **A NUL IS AN ORDINARY CHARACTER ON THE AVRA SIDE.**
+//!
+//! THE RULE IS UNCHANGED AND THE GUARD IS STILL NECESSARY, because the
+//! truncation was never on our side of the seam — it is at the EXTERN
+//! SEAT and only there. `sqlite3_open` stops at the first NUL whatever
+//! Avra can see, so a guard and the thing it guards must still read the
+//! same bytes, and a value whose meaning changes at the boundary is not
+//! a value anyone meant to pass. What changed is the REASON: nothing
+//! here was ever blind, and the door is a boundary door rather than a
+//! compensation for lossy primitives.
+//!
+//! A NUL HAS NO LITERAL SPELLING. `"\0x"` is THREE characters —
+//! backslash, `0`, `x` — so `@std/text`'s `from_codepoint` and
+//! `from_codepoints` are the only way to mint one.
+//!
+//! This was not theoretical. A path `from_codepoints([0, 120])` — a NUL
+//! then an `x`, length 2 — reaches SQLite as the EMPTY STRING: the
+//! private temporary database deleted at close, every write succeeding
+//! and the data silently gone. That is the trap this door exists to
+//! prevent and it is unaffected by any of the above.
+
+// ── The pointer sentinels ───────────────────────────────────────
+//
+// Two of SQLite's arguments are POINTER VALUES rather than pointers to
+// anything: the destructor seat of every `bind_*` and `result_*` takes
+// either `SQLITE_STATIC` — `(void*)0` — or `SQLITE_TRANSIENT` —
+// `(void*)-1` — and SQLite COMPARES the value before it would ever call
+// through it (`vendor/sqlite3.h:6429-6430`).
+
+/// `SQLITE_TRANSIENT` itself, from the header, through this package's
+/// own C (`src/c/sqlite_sentinel.c`). A DOOR PER CONSTANT RATHER THAN A VERB
+/// THAT BUILDS ANY POINTER: a general `ptr_at(address)` would answer
+/// this sentinel and every other address besides, and a capability that
+/// wide cannot be made safe by a check — only unnecessary.
+extern fn avra_sqlite_transient() -> ptr?
+
+/// `SQLITE_TRANSIENT`: SQLite COPIES the bytes before the bind returns,
+/// so nothing the caller holds has to outlive anything. This is the
+/// default every bind should take.
+export fn transient() -> ptr? { avra_sqlite_transient() }
+
+/// `SQLITE_STATIC`: the caller promises the bytes stay valid until the
+/// statement is finalized or the parameter is rebound
+/// (`vendor/sqlite3.h:4946-4950`). Avra cannot enforce that promise —
+/// a released box is a use-after-free INSIDE SQLite, where the
+/// runtime's refcounter is blind by construction — so this is a named
+/// hatch and never a default.
+export fn static_bytes() -> ptr? { null }
+
+// ONE THING TO KNOW BEFORE A REAL CALLBACK IS EVER BOUND.
+// `SQLITE_TRANSIENT` is a FUNCTION pointer type, and clang SIGNS
+// function pointers on arm64e — it does not sign pointers to ordinary
+// data. `(void*)-1` is safe here only because SQLite compares it and
+// never calls through it. The day this driver binds a real destructor,
+// or any other C callback, that stops being true and the pointer has to
+// be signed like the function pointer it is.

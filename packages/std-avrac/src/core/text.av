@@ -1,0 +1,76 @@
+//! Text similarity — the substrate under "did you mean" suggestions.
+use @std.text.{text_before}
+
+/// Levenshtein distance between two strings, by bytes.
+export fn edit_distance(a: string, b: string) -> int {
+    // Both lengths are `strlen`, and the inner loop runs a*b times —
+    // re-asking there made the distance O(a*b*(a+b)).
+    let an = a.length
+    let bn = b.length
+    if an == 0 { return bn }
+    if bn == 0 { return an }
+    mut prev: List<int> = []
+    mut j = 0
+    while j <= bn {
+        prev.push(j)
+        j = j + 1
+    }
+    mut i = 1
+    while i <= an {
+        mut cur: List<int> = [i]
+        mut k = 1
+        while k <= bn {
+            let cost = if a.char_code(i - 1) == b.char_code(k - 1) { 0 } else { 1 }
+            mut m = prev[k] + 1
+            if cur[k - 1] + 1 < m { m = cur[k - 1] + 1 }
+            if prev[k - 1] + cost < m { m = prev[k - 1] + cost }
+            cur.push(m)
+            k = k + 1
+        }
+        prev = cur
+        i = i + 1
+    }
+    prev[b.length]
+}
+
+/// A nearby name and how far away it is.
+export type Closest = { name: string, distance: int }
+
+/// The nearest candidate within distance 2 — never an exact match,
+/// ties to the earliest candidate.
+export fn closest(name: string, candidates: List<string>) -> Closest? {
+    mut best: Closest? = null
+    for c in candidates {
+        let d = edit_distance(name, c)
+        if best == null || d < best!.distance { best = Closest { name: c, distance: d } }
+    }
+    if best != null && best!.distance >= 1 && best!.distance <= 2 { best } else { null }
+}
+
+/// "72 programs", "1 program" — a count with its noun.
+export fn counted(n: int, noun: string) -> string {
+    "${n} ${noun}${if n == 1 { "" } else { "s" }}"
+}
+
+/// Names in byte order — a host listing made deterministic.
+export fn sorted_texts(xs: List<string>) -> List<string> { sorted_by(xs, text_before) }
+
+/// Byte order on TUPLES of text: component by component, a shorter
+/// tuple before its own extension. Never a join — `("a.b", "c")` and
+/// `("a", "b.c")` are two keys, not one.
+export fn tuple_before(a: List<string>, b: List<string>) -> bool {
+    for j, x in a {
+        if j >= b.length { return false }
+        if x != b[j] { return text_before(x, b[j]) }
+    }
+    a.length < b.length
+}
+
+/// A joined record's fields, every one kept: an empty line is one empty
+/// field, and an empty last field is a field — `split` drops a trailing
+/// empty segment, which a decoder must never do.
+export fn wire_fields(line: string, sep: string) -> List<string> {
+    if line.is_empty() { return [""] }
+    let parts = line.split(sep)
+    if line.ends_with(sep) { parts.concat([""]) } else { parts }
+}

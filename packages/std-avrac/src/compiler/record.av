@@ -1,0 +1,605 @@
+//! THE INTERFACE, REMEMBERED AND REBUILT — what stands in for a file's
+//! declarations when the file is not read.
+//!
+//! A caller needs a declaration's SIGNATURE, never its body, so a module is
+//! answered from its RECORD: flat text, one line per declaration — a shape word,
+//! the file, the ordinal, the name, the kind, the facts, the shape's payload —
+//! beside the module's interface digest, its imports, and one `file` line per
+//! file: the text its lines were read from and the files its compile-time runs
+//! read. A SHAPE IS CARRIED, not just a name: a type's identity is a per-run id,
+//! so a struct carries its fields and an enum its variants, and loading walks
+//! the imports first — a field of another module's type interns only once that
+//! module's types exist.
+use @std.text.{parse_int}
+use @std.relation.engine.{list_cell}
+use core.{
+    Record as RecordForm,
+    ChildSlot,
+    Event as ComponentEvent,
+    CollectKind,
+    CollectScope,
+    Plain,
+    wire_fields,
+    some_list,
+    digest_of,
+    blake_key,
+    joined,
+    sorted_texts,
+    distinct,
+    flatten,
+    grouped_by,
+    same_decl,
+    module_path,
+    ModulePath,
+    TypeRegistry,
+    TypeId,
+    DeclId,
+    DeclKind,
+    FileId,
+    SeatMark,
+    Span,
+}
+use @std.text.{hex, unhex}
+use features.{
+    implements_kind,
+    admits_package,
+    ExternNote,
+    DeclSig,
+    DeclFacts,
+    AnnotationFact,
+    LitArg,
+    NamedLit,
+    LitKind,
+    CancelReach,
+    tree_saved,
+    tree_unsaved,
+}
+use compiler.lower.{Body, FieldPlan}
+use compiler.store.{Store, Stored, node_key}
+use @std.path.{relative_path}
+
+/// ONE FILE A COMPILE-TIME RUN READ, as the reader's own line carries it: the file,
+/// its text digest at write, and — when the run read a DECLARATION of it — that
+/// declaration's ref and its syntax hash at write. A read with no declaration, or
+/// one whose file was held, keeps empty ref and print and is judged by its text.
+/// `outline` is the read file's declaration outline at write: a renamed, added or
+/// removed declaration beside the one read moves the reader's module interface
+/// without moving the read itself, and is known from syntax alone.
+export type RunRead = { path: string, digest: string, ref: string, print: string, outline: string }
+
+/// WHERE ONE FILE STANDS IN ITS MODULE'S RECORD: its `file` line, and the run of its
+/// declaration lines — a record lists a file's declarations together — and the
+/// files its compile-time runs read. Asked per file, a scan of the whole record
+/// is the module's lines squared.
+type Placed = { file: List<string>, runs: List<RunRead>, lo: int, hi: int }
+
+fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
+    mut out: Map<string, Placed> = {}
+    for j, parts in fields {
+        if places_file(parts) {
+            let runs? = runs_of(parts) else { continue }
+            out.set(parts[1], Placed { file: parts, runs: runs, lo: 0, hi: 0 })
+        } else if declares(parts) && parts.length > 1 {
+            let at = out.get(parts[1]) ?? Placed { file: [], runs: [], lo: 0, hi: 0 }
+            out.set(parts[1], at with { lo: if at.hi == 0 { j } else { at.lo }, hi: j + 1 })
+        }
+    }
+    out
+}
+
+/// One file's declaration lines.
+fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
+    if at == null { [] } else { fields.slice(at!.lo, at!.hi) }
+}
+
+/// A NAME IS ANY TEXT — a case's is a sentence — so the two name fields spell the
+/// record's own separators out, and a tab or a line break in one stays one field.
+fn field_text(s: string) -> string { s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n") }
+
+/// `field_text`, read back.
+fn text_of_field(s: string) -> string {
+    if !s.contains("\\") { return s }
+    mut out = ""
+    mut i = 0
+    while i < s.length {
+        let escaped = s.char_code(i) == 92 && i + 1 < s.length
+        let at = if escaped { i + 1 } else { i }
+        let c = s.substring(at, at + 1)
+        out = out + if !escaped { c } else { match c { "t" -> "\t", "n" -> "\n", _ -> c } }
+        i = at + 1
+    }
+    out
+}
+
+/// One record line as its fields, the two NAME fields read back.
+export fn read_fields(line: string) -> List<string> {
+    [if j == 5 || j == 7 { text_of_field(x) } else { x } for j, x in line.split("\t")]
+}
+
+/// THE SHAPE WORD — a declaration line's first column. A header line
+/// ("file"/"import"/"gathers"/"iface"/"bytes") is not a declaration and has none.
+enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern, Collect, State }
+
+fn shape_of(word: string) -> Shape? {
+    match word {
+        "struct" -> .Struct,
+        "boxed" -> .Boxed,
+        "enum" -> .Enum,
+        "named" -> .Named,
+        "alias" -> .Alias,
+        "const" -> .Const,
+        "aims" -> .Aims,
+        "opaque" -> .Opaque,
+        "fn" -> .Fn,
+        "extern" -> .Extern,
+        "collect" -> .Collect,
+        "state" -> .State,
+        _ -> null,
+    }
+}
+
+/// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
+/// (interface.av, the one writer). `payload` is what is left past the facts
+/// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
+/// marks, written bits, bounds, whether it may reach a cancel point), read
+/// through `RowShape`'s verbs below.
+type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
+
+/// A declaration's shape: its word and the payload past the facts block — what fills a
+/// declaration's signature, read the same from its record line and from its own row.
+type RowShape = { shape: Shape, payload: List<string> }
+
+impl Row {
+    fn shaped() -> RowShape { RowShape { shape: self.shape, payload: self.payload } }
+}
+
+impl RowShape {
+    /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
+    /// writes one field, and one with nothing to say writes it empty.
+    fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
+
+    /// The `;`-joined list at payload field `j` — empty for an empty or absent one.
+    fn list_at(j: int) -> List<string> {
+        let raw = self.field(j)
+        if raw.is_empty() { [] } else { raw.split(";") }
+    }
+
+    /// `Struct`/`Boxed`'s fields, `Enum`'s arms, `Fn`/`Extern`'s seats — the
+    /// shapes whose payload opens with a `;`-joined list.
+    fn items() -> List<string> { self.list_at(0) }
+
+    /// `Fn`/`Extern`'s seat marks, one per seat.
+    fn marks() -> List<SeatMark> { [mark_of_word(w) for w in self.list_at(2)] }
+
+    /// `Fn`/`Extern`'s written-seat bits, a `1`/`0` per seat.
+    fn writes() -> string { self.field(3) }
+
+    /// `Fn`'s bounded seats' trait arguments, one `seat=wire|wire` each.
+    fn bounds() -> List<string> { self.list_at(4) }
+
+    /// `Fn`/`Extern`'s cancel bits, how it waits then whether it spins: a
+    /// record that says nothing says it may, a row among what it reaches.
+    fn reach() -> CancelReach {
+        let waits = self.field(5)
+        CancelReach {
+            parks: waits != "0",
+            spins: self.field(6) != "0",
+            links: waits != "0" && waits != "1",
+        }
+    }
+}
+
+/// THE MEMO PATTERN, ONCE: a cache checked, a value made and kept on a miss.
+/// A generic METHOD is recorded, not landed (F2031), so this is a free fn —
+/// `mut cache` is what lets its write land in the caller's map. NOT for a
+/// `make` that itself needs a `mut` seat on the value the cache lives in — a
+/// lambda's capture is a copy, and a copy cannot fill a `mut` seat (F2048);
+/// `bytes_key_cached`/`obj_key_cached`/`view_parts` below stay hand-written.
+fn memoized<T>(mut cache: Map<string, T>, key: string, make: fn() -> T) -> T {
+    let known: T? = cache.get(key)
+    if known != null { return known! }
+    let made = make()
+    cache.set(key, made)
+    made
+}
+
+/// EVERY NAME A MODULE EXPORTS — its imports first, so a reader can walk the closure in
+/// the order that makes each shape internable.
+/// A seat with neither promise written.
+const no_seat_mark: SeatMark = SeatMark { mutable: false, settled: false }
+
+/// A LIST OF STRINGS, EACH SLICED BY ITS OWN RECORDED LENGTH — never searched for.
+/// `list_field`'s `~` join reads an element's own `~` as another boundary; a doc line
+/// or an annotation's literal argument is free text a program wrote, so it can hold
+/// any byte the record format itself uses as punctuation. Reading `packed` never
+/// inspects an element's bytes for a separator, only jumps by the length recorded
+/// beside it, so nothing an element contains can be mistaken for the list's own shape.
+fn packed(xs: List<string>) -> string { "${xs.length};${joined(["${x.length}:${x}" for x in xs], "")}" }
+
+/// The inverse, by the list's own count: `"0~"` is the empty list, and a
+/// length-prefixed element survives whether or not it is empty.
+fn read_list(field: string) -> List<string> {
+    let parts = wire_fields(field, "~")
+    let n = parse_int(parts[0]) ?? 0
+    [item_of_field(p) for p in parts.slice(1, 1 + n)]
+}
+
+/// One list element: its length prefix dropped, the value whole.
+fn item_of_field(p: string) -> string {
+    let at = p.index_of(":")
+    if at < 0 { return p }
+    p.substring(at + 1, p.length)
+}
+
+/// A record's plans read back; null for any it never wrote.
+fn plans_of(field: string) -> List<FieldPlan>? {
+    let each? = hex_fields_of(field) else { return null }
+    let plans = [plan_of_field(f) for f in each]
+    if plans.any(it == null) { return null }
+    [p! for p in plans]
+}
+
+fn plan_of_field(field: string) -> FieldPlan? {
+    let words? = hex_fields_of(field) else { return null }
+    if words.is_empty() { return null }
+    match words[0] {
+        "crossed" -> FieldPlan.Crossed,
+        "value" -> FieldPlan.Value,
+        "root_kind" -> FieldPlan.RootKind,
+        "node_kinds" -> FieldPlan.NodeKinds,
+        "mark" -> FieldPlan.Mark,
+        "component" -> if words.length == 2 { FieldPlan.Component(words[1]) } else { null },
+        "text" -> FieldPlan.Text([Plain(w) for w in words.slice(1, words.length)]),
+        _ -> null,
+    }
+}
+
+/// What a collect gathers by, as a record's two words.
+fn kind_words(kind: CollectKind) -> List<string> {
+    match kind { .Annotated(w) -> ["mark", w], .Component(w) -> ["component", w] }
+}
+
+/// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
+export enum Reads {
+    Entry
+    Home
+    Moved
+    Unkept
+    Consts
+    Unholdable
+    RunBy(string)
+    Undecodable(string)
+    Reached
+    BodyAsked
+    AsksUnread
+    Gathered(string)
+    GathersUnread
+    CodesUnread
+    Remembered(string)
+}
+
+export type ReadFile = { path: string, why: Reads }
+
+impl Reads {
+    fn says() -> string {
+        match self {
+            .Entry -> "the entry",
+            .Home -> "a home of instantiations owed",
+            .Moved -> "its text moved",
+            .Unkept -> "nothing kept stands in: what it sees moved, or it was never built",
+            .Consts -> "a const's kept value is gone",
+            .Unholdable -> "it declares what a record cannot carry",
+            .RunBy(by) -> "its bodies run while ${by} compiles",
+            .Undecodable(why) -> "its module's record refused whole: ${why}",
+            .Reached -> "a program the evaluator runs reaches it",
+            .BodyAsked -> "a compile-time run called one of its bodies",
+            .AsksUnread -> "what its bodies ask could not be read back",
+            .Gathered(by) -> "what its collect gathers from ${by} moved",
+            .GathersUnread -> "its record's `gathers` line cannot be read",
+            .CodesUnread -> "what its code is could not be read back",
+            .Remembered(said) -> said,
+        }
+    }
+}
+
+/// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
+/// under its module's NAME and an object under its file's CONTENT, so two programs share
+/// the object and not the record: one that holds a file by an object another stored
+/// would read lines it wrote itself, before the edit. The record says what it read.
+fn written_from(at: Placed?, print: string) -> bool {
+    at != null && at!.file.length >= 3 && at!.file[2] == print
+}
+
+/// Whether a record line is a DECLARATION's — the rest say what the module imports,
+/// gathers and digests to, (`ref`) what a held file's own body once referenced, or (`reexport`)
+/// a name its `export use` lines put on the module's surface.
+fn declares(parts: List<string>) -> bool {
+    parts[0] != "import" &&
+        parts[0] != "gathers" &&
+        parts[0] != "bytes" &&
+        parts[0] != "iface" &&
+        parts[0] != "file" &&
+        parts[0] != "ref" &&
+        parts[0] != "maker" &&
+        parts[0] != "reexport"
+}
+
+/// Whether a line names nothing where a name is owed: a CASE's name is any text,
+/// the empty one included.
+fn nameless(parts: List<string>) -> bool { parts[5].is_empty() && parts[6] != "case" }
+
+/// WHETHER A FILE MAY BE HELD — a grammar record's spec and an extern fn's raw seat
+/// spellings are their own parse and are not in the interface, so a file that declares
+/// either is a MISS and parses. The honest boundary: the interface carries what it
+/// carries, and a fact it cannot is a rebuild, not a guess.
+
+/// A SEAT'S PROMISES as one character each, in a fixed order — the
+/// record's spelling of `SeatMark`, so every promise survives the trip.
+/// EVERY `SeatMark` FIELD GETS A CHARACTER: a field this word does not
+/// spell is a field the record silently drops the day it is read back
+/// (CLAUDE.md, "a hash that forgets a payload").
+export fn mark_word(m: SeatMark) -> string {
+    "${flag_char(m.mutable, "m")}${flag_char(m.settled, "s")}${flag_char(m.state, "t")}${flag_char(m.unshared, "i")}${flag_char(m.consumed, "o")}"
+}
+
+/// `mark_word`'s fixed width — a `Type.Fn`'s wire (interface.av's
+/// `wire_body`/`read_type_wire`) packs one word per seat into ONE
+/// unseparated bits string, so the decoder must slice at exactly this
+/// width or every seat past the first reads as another seat's tail.
+const mark_word_width: int = 5
+
+fn flag_char(on: bool, c: string) -> string { if on { c } else { "-" } }
+
+/// The inverse, by position — a word of any other length is the plain
+/// unwritten seat, the shape of every seat that promises nothing.
+fn mark_of_word(w: string) -> SeatMark {
+    if w.length != mark_word_width { return no_seat_mark }
+    SeatMark {
+        mutable: w.substring(0, 1) == "m",
+        settled: w.substring(1, 2) == "s",
+        state: w.substring(2, 3) == "t",
+        unshared: w.substring(3, 4) == "i",
+        consumed: w.substring(4, 5) == "o",
+    }
+}
+
+/// THE DECLARATION KIND a record's shape and kind column name. `Struct`/`Boxed`
+/// are always a `Record` and `Named` always `Named` — their kind column reads
+/// "type" either way, so the SHAPE alone tells them apart; every other shape
+/// reads its kind from the kind column, which is theirs to spell — an `Enum`'s
+/// says whether a `collect enum` made it.
+fn declared_kind(shape: Shape, word: string) -> DeclKind? {
+    match shape {
+        .Struct or .Boxed -> .Record,
+        .Enum -> enum_kind(word),
+        .Named -> .Named,
+        .Alias -> .Alias,
+        .Const -> .Const,
+        .Collect -> .Collect,
+        .State -> .State,
+        .Aims -> .Impl,
+        .Fn or .Extern or .Opaque -> kind_of_word(word),
+    }
+}
+
+/// The kind an `Enum` shape's kind column names — an enum or a `collect enum`,
+/// and nothing else.
+fn enum_kind(word: string) -> DeclKind? {
+    let k? = kind_of_word(word) else { return null }
+    match k {
+        .Enum or .CollectEnum -> k,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> null,
+    }
+}
+
+/// THE KIND WORD a record's kind column spells — the shapes that need it:
+/// `Fn`/`Extern`'s Fn-vs-Method, `Opaque`'s trait/syntax/default/main/case/builtin.
+fn kind_of_word(word: string) -> DeclKind? {
+    match word {
+        "fn" -> .Fn,
+        "enum" -> .Enum,
+        "trait" -> .Trait,
+        "syntax" -> .Syntax,
+        "method" -> .Method,
+        "default" -> .Default,
+        "impl" -> .Impl,
+        "main" -> .Main,
+        "case" -> .Case,
+        "const" -> .Const,
+        "builtin" -> .Builtin,
+        "collect" -> .Collect,
+        "collect_enum" -> .CollectEnum,
+        _ -> null,
+    }
+}
+
+// ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
+
+/// Whether a record line is a `file` line naming a path.
+fn places_file(parts: List<string>) -> bool { parts.length >= 3 && parts[0] == "file" }
+
+/// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
+/// digest of each text its compile-time runs read ("" for one that is gone), the
+/// set each of its package-wide collects gathered, and every module its bodies can
+/// see with that module's interface key and how many files it held. The key is
+/// these parts' digest, so a key and the parts it is shown as never disagree.
+export type KeyParts = { module: string, path: string, text: string, runs: List<string>, gathered: List<string>, seen: List<SeenPart> }
+
+/// A plain free fn of a module as the narrowed view names it: the module's place in the
+/// view, and its interface form.
+type NamedForm = { dep: int, form: string }
+
+/// A plain free fn of one file as its contract reads: its name and its form.
+type FnForm = { name: string, form: string }
+
+/// A module's view split by what a name reaches: the digest of the lines no name reaches, per
+/// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
+export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<string>, named: Map<string, List<NamedForm>> }
+
+/// A module a file sees: its name, its interface's bytes key, its file count.
+export type SeenPart = { module: string, bytes_key: string, files: int }
+
+/// A MODULE'S REACH, as it is walked: the files reached, each beside the module whose
+/// record places it, and those modules in the order they joined with each one's
+/// index — `late` holds the ones not yet asked of the files already walked.
+type Reach = {
+    home: string,
+    sees: Map<string, bool>,
+    placed: Map<string, string>,
+    files: List<string>,
+    owners: List<string>,
+    walked: Map<string, bool>,
+    mods: List<string>,
+    indexes: List<Map<string, List<string>>>,
+    late: List<string>,
+}
+
+impl Reach {
+    /// A file joins once, when a module the walk sees places it — never the walk's own.
+    mut fn add(t: string) {
+        if self.walked.get(t) != null { return }
+        let d? = self.placed.get(t) else { return }
+        if d == self.home || self.sees.get(d) == null { return }
+        self.walked.set(t, true)
+        self.files.push(t)
+        self.owners.push(d)
+        if !self.mods.contains(d) {
+            self.mods.push(d)
+            self.late.push(d)
+        }
+    }
+
+    mut fn add_all(ts: List<string>) { for t in ts { self.add(t) } }
+
+    /// The reached files one module places.
+    fn files_of(d: string) -> List<string> { [f for i, f in self.files if self.owners[i] == d] }
+}
+
+/// `seen_wire`, read back — the empty row is nothing seen, and null for a row
+/// that is not one.
+export fn seen_of(raw: string) -> List<SeenPart>? {
+    if raw.is_empty() { return [] }
+    let seen = [if r.length == 4 && r[0] == "seen" { seen_row(r) } else { null } for r in [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]]
+    if seen.any(it == null) { return null }
+    [s! for s in seen]
+}
+
+/// `parts_wire`, read back — null for a row that is not one.
+export fn parts_of(raw: string) -> KeyParts? {
+    let rows = [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]
+    let module? = field_named(rows, "module") else { return null }
+    let path? = field_named(rows, "path") else { return null }
+    let text? = field_named(rows, "text") else { return null }
+    let seen = [seen_row(r) for r in rows if r.length == 4 && r[0] == "seen"]
+    if seen.any(it == null) { return null }
+    KeyParts {
+        module: module,
+        path: path,
+        text: text,
+        runs: [r[1] for r in rows if r.length == 2 && r[0] == "run"],
+        gathered: [r[1] for r in rows if r.length == 2 && r[0] == "gathered"],
+        seen: [s! for s in seen],
+    }
+}
+
+fn field_named(rows: List<List<string>>, name: string) -> string? {
+    let row? = rows.find(it.length == 2 && it[0] == name) else { return null }
+    row[1]
+}
+
+fn seen_row(r: List<string>) -> SeenPart? {
+    let files? = parse_int(r[3]) else { return null }
+    SeenPart { module: r[1], bytes_key: r[2], files: files }
+}
+
+/// ONE PART OF A KEY THAT MOVED: what it is, how it read then and reads now, and
+/// for a module's interface the contract lines it lost (`- `) and gained (`+ `).
+export type PartMoved = { part: KeyPart, was: string, now: string, lines: List<string> }
+
+/// Which part of a key moved: the file's own text, what its compile-time runs
+/// read, or a module it sees — one it came to see, one it no longer sees, or one
+/// whose interface moved.
+export enum KeyPart {
+    Text
+    Runs
+    Came(module: string)
+    Went(module: string)
+    Interface(module: string)
+    Gathered
+}
+
+impl KeyPart {
+    fn says() -> string {
+        match self {
+            .Text -> "its text",
+            .Runs -> "what its compile-time runs read",
+            .Came(m) or .Went(m) -> "module ${m}",
+            .Interface(m) -> "module ${m}'s interface",
+            .Gathered -> "what its collects gathered",
+        }
+    }
+}
+
+/// The lines one interface lost and the other gained — nothing when either
+/// side was never kept.
+fn forms_moved(was: List<string>?, now: List<string>?) -> List<string> {
+    if was == null || now == null { return [] }
+    ["- ${f}" for f in was! if !now!.contains(f)]
+        .concat(["+ ${f}" for f in now! if !was!.contains(f)])
+}
+
+/// The files a record says one file's compile-time runs read.
+fn kept_runs(at: Placed?) -> List<RunRead> { at?.runs ?? [] }
+
+/// `hex_fields` read back; null when a part is no text's hex — a field this
+/// compiler never wrote.
+fn hex_fields_of(field: string) -> List<string>? {
+    let xs = [unhex(part)?.text() for part in field.split("|")]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
+}
+
+/// A hex cell read back: empty text for an empty cell. `split` DROPS a run's
+/// trailing empty run, so a cell that was written empty arrives absent.
+fn unhex_text(s: string) -> string? {
+    if s.is_empty() { return "" }
+    let b? = unhex(s) else { return null }
+    b.text()
+}
+
+/// `read_wire` read back — a legacy part with no `~` is a path alone, a read
+/// whose file was named before a declaration rode it. The cells are read
+/// through core's `wire_fields` — which keeps the empty LAST cell `split`
+/// drops — then padded to four: a plain read ends `~~~`, and a raw split
+/// reads it two cells short.
+fn read_of_wire(s: string) -> RunRead? {
+    if !s.contains("~") {
+        let text? = unhex_text(s) else { return null }
+        return RunRead { path: tree_unsaved(text), digest: "", ref: "", print: "", outline: "" }
+    }
+    let parts = wire_fields(s, "~")
+    if parts.length > 5 { return null }
+    let cells = parts.concat(["", "", "", "", ""]).slice(0, 5)
+    let pt? = unhex_text(cells[0]) else { return null }
+    let dt? = unhex_text(cells[1]) else { return null }
+    let rt? = unhex_text(cells[2]) else { return null }
+    let qt? = unhex_text(cells[3]) else { return null }
+    let ot? = unhex_text(cells[4]) else { return null }
+    RunRead { path: tree_unsaved(pt), digest: dt, ref: tree_unsaved(rt), print: qt, outline: ot }
+}
+
+/// `reads_field` read back; null when a part is no read — a field this compiler
+/// never wrote.
+export fn reads_of(field: string) -> List<RunRead>? {
+    if field.is_empty() { return [] }
+    let xs = [read_of_wire(part) for part in field.split("|")]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
+}
+
+/// A `file` line's runs read back; null when one is no read's hex — a line this
+/// compiler never wrote, so it places nothing.
+fn runs_of(parts: List<string>) -> List<RunRead>? {
+    if parts.length < 4 { return [] }
+    reads_of(parts[3])
+}

@@ -1,0 +1,99 @@
+// proves: a `@query` keeps its answer per call and reruns only after a
+// write to what it read; it writes no rows of its own — an insert in its
+// body is refused and files no row; rows it hands a named owner upsert by key and replace
+// a keyless set on a rerun, a second owner of one key is refused, and a
+// replacement of what the query itself read this revision is refused on
+// a Db that takes late writes — in both engines
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Input = { @key name: string, live: bool }
+
+@relation
+type Owned = { id: int, @key name: string, n: int }
+
+@relation
+type Loose = { tag: string }
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+once fn heard() -> Cell<List<string>> { Cell.new([]) }
+
+fn noted(w: string) {
+    let h = heard()
+    h.push(w)
+}
+
+/// A Db whose refusals are heard, never trapped.
+fn logged() -> Db {
+    let db = new_db()
+    db.heard_by(noted)
+    db
+}
+
+/// Every live input name as a row of the owner `mirror`, and a loose tag each.
+@query
+fn mirror(db: Db, bump: int) -> int {
+    let r = runs()
+    r.set(r.get() + 1)
+    let live = [i for i in Input.all(db) if i.live]
+    let _ = Owned.replaced(db, "mirror", [Owned { id: 0, name: i.name, n: bump } for i in live])
+    let _ = Loose.replaced(db, "mirror", [Loose { tag: i.name } for i in live])
+    live.length
+}
+
+/// A second owner of the key `a`.
+@query
+fn rival(db: Db) -> int {
+    let _ = Owned.replaced(db, "rival", [Owned { id: 0, name: "a", n: 99 }])
+    1
+}
+
+/// Replaces what it read.
+@query
+fn looping(db: Db) -> int {
+    let seen = Loose.all(db).length
+    let _ = Loose.replaced(db, "looping", [Loose { tag: "x" }])
+    seen
+}
+
+/// Writes with no owner.
+@query
+fn ownerless(db: Db) -> int {
+    let _ = Loose.insert(db, tag: "bare")
+    1
+}
+
+fn memoized() -> string {
+    let db = logged()
+    let _ = Input.insert(db, name: "a", live: true)
+    let _ = Input.insert(db, name: "b", live: true)
+    let first = mirror(db, 1)
+    let again = mirror(db, 1)
+    let kept_runs = runs().get()
+    let a_id = Owned.by_key(db, OwnedKey { name: "a" })?.id ?? -1
+    let _ = Input.insert(db, name: "b", live: false)
+    let rerun = mirror(db, 1)
+    "${first}${again}${rerun} ${kept_runs} ${Owned.all(db).length} ${Loose.all(db).length} ${Owned.by_key(db, OwnedKey { name: "a" })?.id ?? -1 == a_id} ${runs().get()}"
+}
+
+fn owners() -> string {
+    let db = logged()
+    let _ = Input.insert(db, name: "a", live: true)
+    let _ = mirror(db, 7)
+    let before = heard().get().length
+    let _ = rival(db)
+    let two = heard().get().length - before
+    let read = "${looping(db)}${looping(db)}"
+    "${two} ${read} ${heard().get().length - before} ${Loose.all(db).length} ${Owned.by_key(db, OwnedKey { name: "a" })!.n}"
+}
+
+fn unowned_write() -> string {
+    let db = logged()
+    let before = heard().get().length
+    let _ = ownerless(db)
+    "${heard().get().length - before} ${Loose.all(db).length}"
+}
+
+"${memoized()} | ${owners()} | ${unowned_write()} | ${heard().get().join(" | ")}"

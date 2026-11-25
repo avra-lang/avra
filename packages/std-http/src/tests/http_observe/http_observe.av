@@ -1,0 +1,28 @@
+// proves: observing, evaluated and native alike — a caller's trace
+// joined, the handler handed this server's span, the request id kept
+// and echoed, and a record logged per request.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{Body}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.observe.{Observe, Served, observing}
+
+fn asked(fields: string) -> Request<Unrouted> {
+    let raw = "POST /votes HTTP/1.1\r\nHost: h\r\n${fields}\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: Body.Empty, peer: "t", params: Unrouted {} }
+}
+
+let log: Cell<List<Served>> = Cell.new([])
+let layer = observing(Observe { log: (s: Served) -> log.set(log.get().concat([s])) })
+let r = layer(
+    asked(
+        "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nX-Request-Id: vote-1\r\n",
+    ),
+    (q) -> text(201, (q.header("traceparent") ?? "-").substring(0, 36)),
+)
+let s = log.get()[0]
+println("${r.status} ${r.body.text() ?? "?"} ${r.header("x-request-id") ?? "-"}")
+"${s.method} ${s.target} ${s.status} ${s.trace} ${s.parent ?? "-"} ${s.span.length} ${s.id}"

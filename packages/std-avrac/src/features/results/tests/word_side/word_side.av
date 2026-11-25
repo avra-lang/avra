@@ -1,0 +1,59 @@
+// proves: a `Result` whose side is a record of one word field is that word and a tag, wherever it
+// stands — a local, a seat, an answer, a record's field, a list's element, a map's value, a cell, a
+// nullable, an enum's payload, a closure's capture, a generic's fill, a `once` answer — on its `Ok`
+// side, its `Err` side and both, through `?`, `catch` and `match`, with the ids 0 and -1 among the
+// values, in both engines.
+type Id = { index: int }
+
+type Held = { name: string, got: Result<Id, string> }
+
+enum Step {
+    Idle
+    Done(r: Result<Id, string>)
+}
+
+fn found(n: int) -> Result<Id, string> { if n < -1 { .Err("gone ${n}") } else { .Ok(Id { index: n }) } }
+
+fn lost(n: int) -> Result<string, Id> { if n < -1 { .Err(Id { index: n }) } else { .Ok("kept ${n}") } }
+
+fn either(n: int) -> Result<Id, Id> { if n % 2 == 0 { .Ok(Id { index: n }) } else { .Err(Id { index: -n }) } }
+
+fn passed(n: int) -> Result<Id, string> {
+    let got = found(n)?
+    Id { index: got.index + 100 }
+}
+
+fn read(r: Result<Id, string>) -> int { match r { .Ok(id) -> id.index, .Err(e) -> e.length * 1000 } }
+
+fn read_lost(r: Result<string, Id>) -> int { match r { .Ok(s) -> s.length, .Err(id) -> id.index } }
+
+fn read_either(r: Result<Id, Id>) -> int { match r { .Ok(id) -> id.index, .Err(id) -> id.index * 10 } }
+
+fn same<T>(x: T) -> T { x }
+
+fn maybe(r: Result<Id, string>?) -> int {
+    let got? = r else { return -7 }
+    read(got)
+}
+
+fn stepped(s: Step) -> int { match s { .Idle -> -9, .Done(r) -> read(r) } }
+
+once fn first() -> Result<Id, string> { found(0) }
+
+let zero = found(0)
+let minus = found(-1)
+let gone = found(-5)
+let h = Held { name: "h", got: found(7) }
+let rs = [found(3), found(-2), found(-1)]
+let by: Map<string, Result<Id, string>> = {"a": found(4), "b": found(-3)}
+let cell = Cell.new(found(1))
+cell.set(found(-1))
+let none: Result<Id, string>? = null
+let some: Result<Id, string>? = found(9)
+let shift = (k: int) -> read(zero) + read(minus) + k
+let a = "${read(zero)} ${read(minus)} ${read(gone)} ${read(h.got)} ${read(rs[0])},${read(rs[1])},${read(rs[2])}"
+let b = "${read(by.get("a")!)} ${read(by.get("b")!)} ${read(cell.get())} ${maybe(none)} ${maybe(some)}"
+let c = "${stepped(Step.Idle)} ${stepped(Step.Done(found(-1)))} ${stepped(Step.Done(found(-4)))} ${shift(5)}"
+let d = "${read(same(minus))} ${read(first())} ${read(passed(-1))} ${read(passed(-8))} ${(found(-6) catch Id { index: 42 }).index}"
+let e = "${read_lost(lost(-1))} ${read_lost(lost(-3))} ${read_either(either(0))} ${read_either(either(-1))} ${read_either(either(3))}"
+"${a} | ${b} | ${c} | ${d} | ${e}"

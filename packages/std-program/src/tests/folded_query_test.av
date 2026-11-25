@@ -1,0 +1,186 @@
+// `@folded_query`: an answer worked out again from its last one, held to its body. Each process
+// keeps its frontier for the next, and every answer is compared with a cold store's.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use query_engine.{MovedRead, QueryDefinition, QueryEngine, query_engine}
+use saved_query.{ListedQuery, definitions_of, folded_query, input, query_definition}
+use saved_derive.{Saved}
+use sorted.{sorted_by}
+use @std.meta.{derive}
+use @std.text.{text_before}
+
+once fn the_graph() -> Cell<Map<string, string>> {
+    let graph: Map<string, string> = {}
+    Cell.new(graph)
+}
+
+/// The nodes an edge leaves `node` for, as the graph spells them.
+@input("summary")
+fn edges_of(_engine: QueryEngine, node: string) -> List<string> {
+    [m for m in (the_graph().get().get(node) ?? "").split(" ") if !m.is_empty()]
+}
+
+/// What `from` reaches, and every edge it met, each in name order.
+@derive(Saved)
+type Reach = { nodes: List<string>, edges: List<string> }
+
+/// Every node `from` reaches, itself among them, and each edge out of one.
+@folded_query(reach_again, "summary")
+fn reach(engine: QueryEngine, from: string) -> Reach {
+    mut queue = [from]
+    mut seen: Map<string, bool> = {}
+    mut edges: List<string> = []
+    mut at = 0
+    while at < queue.length {
+        let n = queue[at]
+        at = at + 1
+        if seen.has(n) { continue }
+        seen.set(n, true)
+        for m in edges_of(engine, n) {
+            edges.push(edge(n, m))
+            queue.push(m)
+        }
+    }
+    Reach { nodes: in_order(seen.keys()), edges: in_order(edges) }
+}
+
+/// The reach again where each node whose edges moved only gained edges into what it reached.
+fn reach_again(engine: QueryEngine, _from: string, last: Reach, moved: List<MovedRead>) -> Reach? {
+    let nodes = [n! for m in moved for n in [edges_of_node_in(m.question)] if n != null]
+    if nodes.length != moved.length { return null }
+    let was = [edges_of_was(engine, m) for m in moved]
+    if was.any(it == null) { return null }
+    let before = [edge(nodes[i], to) for i, w in was for to in w!]
+    let now = [edge(n, to) for n in nodes for to in edges_of(engine, n)]
+    let kept = before.all((e) -> now.contains(e))
+    let inside = now.all((e) -> last.nodes.contains(e.substring(e.index_of(">") + 1, e.length)))
+    if !kept || !inside { return null }
+    Reach {
+        nodes: last.nodes,
+        edges: in_order(last.edges.filter((e) -> !before.contains(e)).concat(now)),
+    }
+}
+
+fn edge(from: string, to: string) -> string { "${from}>${to}" }
+
+fn in_order(xs: List<string>) -> List<string> { sorted_by(xs, (a: string, b: string) -> text_before(a, b)) }
+
+collect listed_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn process(store: StoreInMemory) -> QueryEngine { query_engine(store, definitions_of(listed_queries)) }
+
+/// The graph spelled as `node:edges` lines, set as the world.
+fn graph_is(lines: List<string>) {
+    the_graph().set({})
+    for line in lines {
+        the_graph()
+            .put(
+                line.substring(0, line.index_of(":")),
+                line.substring(line.index_of(":") + 1, line.length),
+            )
+    }
+}
+
+/// One process asking `reach(from)`, its frontier kept: what it answered, spelled, and whether it
+/// folded.
+type Asked = { spelled: string, folded: bool }
+
+fn asked(store: StoreInMemory, from: string) -> Asked {
+    let e = process(store)
+    let r = reach(e, from)
+    e.frontier_kept()
+    Asked { spelled: spelled(r), folded: e.folded_queries().contains("reach") }
+}
+
+fn spelled(r: Reach) -> string { "${r.nodes.join(",")}|${r.edges.join(",")}" }
+
+/// What a cold store answers for the graph as it is now.
+fn cold(from: string) -> string { spelled(reach(process(store_in_memory()), from)) }
+
+/// Whether a process asking now answers as a cold store does, and folds exactly where `folds`.
+fn holds(store: StoreInMemory, from: string, folds: bool) -> bool {
+    let a = asked(store, from)
+    a.spelled == cold(from) && a.folded == folds
+}
+
+spec "folded_query — an answer worked out again from its last one" {
+    given "a cold store" {
+        then "the body runs" {
+            graph_is(["a:b", "b:c", "c:a"])
+            holds(store_in_memory(), "a", false)
+        }
+    }
+    given "a cycle, and an edge added inside what it reaches" {
+        then "the answer is folded forward, and is the body's" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:c", "c:a"])
+            let _ = asked(store, "a")
+            graph_is(["a:b", "b:c a", "c:a"])
+            holds(store, "a", true)
+        }
+    }
+    given "an edge out to a node not reached yet" {
+        then "the step answers none and the body runs" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:c", "c:a"])
+            let _ = asked(store, "a")
+            graph_is(["a:b", "b:c", "c:a d", "d:"])
+            holds(store, "a", false)
+        }
+    }
+    given "an edge removed, to a state never seen" {
+        then "the step answers none and the body runs" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:c", "c:a d", "d:"])
+            let _ = asked(store, "a")
+            graph_is(["a:b", "b:c", "c:a", "d:"])
+            holds(store, "a", false)
+        }
+    }
+    given "an edge added, removed, and added again" {
+        then "each answer is the body's" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:c", "c:a", "d:a"])
+            let first = asked(store, "a").spelled == cold("a")
+            graph_is(["a:b", "b:c", "c:a d", "d:a"])
+            let added = holds(store, "a", false)
+            graph_is(["a:b", "b:c", "c:a", "d:a"])
+            let removed = holds(store, "a", false)
+            graph_is(["a:b", "b:c", "c:a d", "d:a"])
+            first && added && removed && asked(store, "a").spelled == cold("a")
+        }
+    }
+    given "a read that moves and moves back" {
+        then "folding forward, then back, answers as the body does each time" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:c", "c:a"])
+            let _ = asked(store, "a")
+            graph_is(["a:b c", "b:c", "c:a"])
+            let there = holds(store, "a", true)
+            graph_is(["a:b", "b:c", "c:a"])
+            there && asked(store, "a").spelled == cold("a")
+        }
+    }
+    given "a fold, then a change to a read the fold carried but didn't ask" {
+        then "the carried read still moves the answer" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:c", "c:a d", "d:"])
+            let _ = asked(store, "a")
+            graph_is(["a:b c", "b:c", "c:a d", "d:"])
+            let folded = holds(store, "a", true)
+            graph_is(["a:b c", "b:c", "c:a d", "d:b"])
+            folded && holds(store, "a", true)
+        }
+    }
+    given "a node the answer never reached" {
+        then "its edges moving leave the answer standing" {
+            let store = store_in_memory()
+            graph_is(["a:b", "b:a", "x:y"])
+            let _ = asked(store, "a")
+            graph_is(["a:b", "b:a", "x:z"])
+            let e = process(store)
+            spelled(reach(e, "a")) == cold("a") &&
+                e.folded_queries().is_empty() &&
+                e.worked_count() == 0
+        }
+    }
+}

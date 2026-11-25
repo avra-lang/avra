@@ -1,0 +1,108 @@
+// resolve_select checks a parsed SqlSelect against a table-name ->
+// Type lookup, structurally — table names resolve, column
+// references (bare and qualified, through every clause, and through
+// every subquery a query carries) resolve against the right table's
+// real fields. A stub lookup (never type_named) exercises the whole
+// pass in isolation; wiring type_named in is the sql {} sublanguage's
+// own job, a separate slice.
+use @std.sql.parser.{parse_sql, SqlNode, SqlSelect}
+use @std.sql.resolve.{resolve_select, ResolveDiag}
+use @std.meta.{Type, Field, Kind}
+
+fn field(name: string, kind: Kind) -> Field {
+    Field {
+        name: name,
+        ty: kind.spelled(),
+        at: null,
+        kind: kind,
+        marks: [],
+        doc: null,
+        annotations: [],
+    }
+}
+
+fn model(name: string, fields: List<Field>) -> Type {
+    Type { name: name, fields: fields, variants: [], at: null, doc: null, annotations: [] }
+}
+
+fn stub_lookup(name: string) -> Type? {
+    match name {
+        "Post" -> model(
+            "Post",
+            [field("id", Kind.Int), field("title", Kind.Str), field("author_id", Kind.Int)],
+        ),
+        "User" -> model("User", [field("id", Kind.Int), field("name", Kind.Str)]),
+        rest -> null,
+    }
+}
+
+fn resolved_select(source: string) -> SqlSelect? {
+    let o = parse_sql(source)
+    if !o.diagnostics.is_empty() || o.result == null { return null }
+    match o.result! { .Node(n) -> match n { .Sel(s) -> s, _ -> null }, _ -> null }
+}
+
+fn messages(source: string) -> string? {
+    let s? = resolved_select(source) else { return null }
+    [d.message for d in resolve_select(s, stub_lookup)].join(" | ")
+}
+
+spec "sql/resolve" {
+    given "a query naming a real model and real fields" {
+        then "no diagnostics" {
+            messages("SELECT id, title FROM Post WHERE author_id = 1") == ""
+        }
+    }
+    given "an unknown table" {
+        then "names the model, and every column beneath it fails too" {
+            messages("SELECT id FROM Ghost") == "no model named `Ghost` | no table in this FROM has a field `id`"
+        }
+    }
+    given "an unknown bare column on a known table" {
+        then "one diagnostic" {
+            messages("SELECT id, nope FROM Post") == "no table in this FROM has a field `nope`"
+        }
+    }
+    given "a JOIN with every column correctly qualified" {
+        then "no diagnostics" {
+            messages(
+                "SELECT p.id, p.title FROM Post AS p JOIN User AS u ON u.id = p.author_id WHERE u.name = 'x'",
+            ) == ""
+        }
+    }
+    given "a qualified column that names the wrong field" {
+        then "names the real table, not the alias" {
+            messages("SELECT p.id FROM Post AS p WHERE p.missing = 1") == "`Post` has no field `missing`"
+        }
+    }
+    given "an unqualified column two joined tables both have" {
+        then "ambiguous, naming the count" {
+            messages("SELECT id FROM Post AS p JOIN User AS u ON u.id = p.author_id") == "`id` is ambiguous — 2 tables in this FROM have it"
+        }
+    }
+    given "a qualifier naming no table in this FROM" {
+        then "its own diagnostic" {
+            messages("SELECT x.id FROM Post AS p") == "`x` names no table in this FROM"
+        }
+    }
+    given "IN (SELECT ...) with a bad subquery" {
+        then "the subquery is checked against its OWN scope" {
+            messages("SELECT id FROM Post WHERE id IN (SELECT id FROM Ghost)") == "no model named `Ghost` | no table in this FROM has a field `id`"
+        }
+    }
+    given "EXISTS (SELECT ...) with a bad column" {
+        then "resolved recursively" {
+            messages("SELECT id FROM Post WHERE EXISTS (SELECT 1 FROM User WHERE nope = 1)") == "no table in this FROM has a field `nope`"
+        }
+    }
+    given "a scalar subquery in a comparison" {
+        then "resolved recursively" {
+            messages("SELECT id FROM Post WHERE (SELECT id FROM Ghost) = 1") == "no model named `Ghost` | no table in this FROM has a field `id`"
+        }
+    }
+    given "a WITH binding" {
+        then "the CTE's own query is resolved too, against its OWN scope" {
+            messages("WITH recent AS (SELECT nope FROM Post) SELECT id FROM Post") == "no table in this FROM has a field `nope`"
+        }
+    }
+}

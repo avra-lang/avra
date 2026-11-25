@@ -1,0 +1,163 @@
+// VALUE RECORDS: a record of ints lives in registers and is boxed only
+// where a one-word seat holds it. Each attack puts one where a box, an
+// identity or a shared holder meets it, and reads it back.
+type Span = { lo: int, hi: int }
+type Tri = { a: int, b: int, c: int }
+type Moved = { x: int, y: int }
+type Spanned = Span
+type Box<T> = { held: T }
+
+trait Show {
+    fn show() -> string
+}
+
+impl Show for Tri {
+    fn show() -> string { "${self.a}${self.b}${self.c}" }
+}
+
+/// A `mut` seat of a value record writes through to the caller.
+fn bump(mut m: Moved) { m.x = m.x + 100 }
+
+const ALL: List<Span> = [Span { lo: 1, hi: 2 }, Span { lo: 3, hi: 4 }]
+
+fn made(n: int) -> Span { Span { lo: n, hi: n * 2 } }
+
+fn celled() -> string {
+    let c = Cell.new(made(1))
+    let d = c
+    c.set(made(5))
+    "${d.get().hi}"
+}
+
+fn seated() -> string {
+    mut m = Moved { x: 1, y: 2 }
+    bump(m)
+    "${m.x}"
+}
+
+/// A name over a value record travels as the record: through a fn, a
+/// list, a const, a nullable and an early exit.
+fn keep(s: Spanned) -> Spanned { s }
+
+const NAMED: Spanned = Spanned(Span { lo: 8, hi: 9 })
+
+fn named_or(x: Spanned?) -> int {
+    let s? = x else { return -1 }
+    [keep(s)].length
+}
+
+fn named() -> string {
+    let xs = [keep(Spanned(made(4))), NAMED]
+    let none: Spanned? = null
+    "${xs.length}/${named_or(xs[1])}/${named_or(none)}"
+}
+
+fn generic_box() -> string {
+    let b: Box<Span> = Box { held: made(7) }
+    "${b.held.hi}"
+}
+
+fn hi_of(x: Span?) -> string {
+    let s? = x else { return "-" }
+    "${s.hi}"
+}
+
+fn nullable_list() -> string {
+    let xs: List<Span?> = [made(2), null, made(3)]
+    [hi_of(x) for x in xs].join(",")
+}
+
+fn captured_then_changed() -> string {
+    mut s = made(1)
+    let f = () -> s.hi
+    s = made(9)
+    "${f()}/${s.hi}"
+}
+
+fn in_result(k: int) -> Result<Span, string> {
+    if k > 0 { return .Ok(made(k)) }
+    .Err("none")
+}
+
+fn resulted() -> string {
+    let a = in_result(3) catch e -> made(0)
+    let b = in_result(0) catch e -> made(0)
+    "${a.hi}/${b.hi}"
+}
+
+fn dynamic() -> string {
+    let d: dyn Show = Tri { a: 1, b: 2, c: 3 }
+    d.show()
+}
+
+fn nested_lists() -> string {
+    let xss = [[made(1), made(2)], [made(3)]]
+    "${xss[0][1].hi}/${xss[1][0].lo}"
+}
+
+fn static_list() -> string {
+    "${ALL[1].hi}/${ALL.length}"
+}
+
+fn mapped() -> string {
+    mut m: Map<string, Tri> = {}
+    m.set("t", Tri { a: 4, b: 5, c: 6 })
+    let t = m.get("t") ?? Tri { a: 0, b: 0, c: 0 }
+    m.set("t", t with { c: 60 })
+    "${t.c}/${(m.get("t") ?? t).c}"
+}
+
+/// A `once` answer that is a value record rides the cache boxed.
+once fn origin() -> Span { made(21) }
+
+fn onced() -> string {
+    "${origin().hi}/${origin().lo}"
+}
+
+type Held = { name: string, at: Span }
+
+fn nudged(mut h: Held) { h.at.hi = 100 }
+
+/// A field of a value record written: the record is packed again with
+/// the field replaced and written back where it lives — a cell, a
+/// record's slot, a list element, a `mut` seat — and a copy taken
+/// before the write keeps the old value.
+fn field_written() -> string {
+    mut s = made(1)
+    s.lo = 5
+    s.hi = s.lo + 1
+    mut h = Held { name: "h", at: made(3) }
+    let before = h
+    h.at.lo = 9
+    mut xs = [made(1), made(2)]
+    let ys = xs
+    xs[1].hi = 20
+    mut acc = Span { lo: 0, hi: 0 }
+    for i in 0..4 { acc.hi = acc.hi + i }
+    nudged(h)
+    "${s.lo},${s.hi},${h.at.lo},${h.at.hi},${before.at.lo},${xs[1].hi},${ys[1].hi},${acc.hi}"
+}
+
+fn popped() -> string {
+    mut xs = [made(1), made(2)]
+    let last = xs.pop()
+    "${last.hi}/${xs.length}"
+}
+
+[
+    celled(),
+    seated(),
+    named(),
+    generic_box(),
+    nullable_list(),
+    captured_then_changed(),
+    resulted(),
+    dynamic(),
+    nested_lists(),
+    static_list(),
+    mapped(),
+    onced(),
+    popped(),
+    field_written(),
+]
+    .join(" ")

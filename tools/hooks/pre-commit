@@ -1,0 +1,85 @@
+#!/bin/sh
+# Refuses a commit whose staged Avra files are not canonical.
+# The fix is printed: `build/avra fmt --write <files>`.
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.av')
+[ -n "$files" ] || exit 0
+# NO COMPILER, NO COMMIT: a check that examined nothing is not a pass. There is no bypass.
+if [ ! -x build/avra ]; then
+    echo "pre-commit: staged Avra and no build/avra in this worktree — formatting cannot be checked, so the commit is refused" >&2
+    echo "pre-commit: get a compiler — \`sh tools/work run\` fetches main's published one, or \`make try\` / \`make bootstrap\` builds one" >&2
+    exit 1
+fi
+base=$(git merge-base origin/main HEAD 2>/dev/null || :)
+# THE COMPILER SAYS WHAT IT WAS BUILT FROM, AND IT IS NOT OLDER THAN THE MERGE-BASE: a binary copied in by
+# hand has no stamp and an unknown age, so its `fmt` may disagree with main's. The stamp (`make avra` writes
+# build/.avra-built-from: source hash, then the commit) is read and reported; a compiler built from a commit
+# with compiler-source commits between it and the merge-base is stale. `age` says so in $why (empty: usable).
+stamp=build/.avra-built-from
+age() {
+    why=
+    built_hash=
+    built_at=
+    if [ ! -s "$stamp" ]; then
+        why="build/avra says nothing about what it was built from (no $stamp), so its age is unknown"
+        return
+    fi
+    read -r built_hash built_at _built_gen < "$stamp"
+    [ "$built_at" != edited ] || return 0
+    behind=0
+    if [ -n "$base" ] && git merge-base --is-ancestor "$built_at" "$base" 2>/dev/null; then
+        behind=$(git rev-list --count "$built_at..$base" -- $(sh tools/compiler_paths.sh . 2>/dev/null) ':(exclude,glob)**/tests/**' 2>/dev/null || echo 0)
+    fi
+    [ "$behind" = 0 ] || why="build/avra was built at $(printf '%.8s' "$built_at"), $behind compiler commit(s) older than this branch's merge-base — its fmt may disagree with main's"
+}
+# A STALE COMPILER IS REPLACED, NEVER WORKED AROUND: the one the depot or a worktree holds (`work compiler`),
+# else, on Linux, the compiler published for the merge-base's source. Formatting is never skipped — what
+# neither door answers is refused below, as before.
+refreshed() {
+    [ -f tools/work ] && sh tools/work compiler >&2 2>&1
+    age
+    [ -n "$why" ] || return 0
+    [ "$(uname -s)" = Linux ] && [ -f tools/compiler_release.py ] && [ -n "$base" ] || return 1
+    python3 tools/compiler_release.py install "$base" >&2 &&
+        printf '%s %s\n' "$(python3 tools/compiler_release.py key-of "$base")" "$base" > "$stamp" &&
+        age
+    [ -z "$why" ]
+}
+age
+if [ -n "$why" ]; then
+    echo "pre-commit: $why — looking for a current one" >&2
+    if refreshed; then
+        echo "pre-commit: replaced it with one built at $(printf '%.8s' "$built_at")" >&2
+    else
+        echo "pre-commit: $why, so the commit is refused" >&2
+        echo "pre-commit: \`sh tools/work main-compiler\` builds main's once for every lane, then \`sh tools/work compiler\` takes it from the depot; \`make avra\` (twice) brings it level" >&2
+        exit 1
+    fi
+fi
+if [ "$built_at" = edited ]; then
+    echo "pre-commit: formatting with a compiler built from this tree's own edits ($(printf '%.8s' "$built_hash"))" >&2
+else
+    echo "pre-commit: formatting with the compiler built at $(printf '%.8s' "$built_at") ($(printf '%.8s' "$built_hash"))" >&2
+fi
+# What is checked is the STAGED text, read where the file stands, so its
+# package and every sublanguage it uses resolve as they do for the real file.
+# A file whose working copy differs from the index is checked through a hidden
+# sibling holding the staged text.
+checked=""
+siblings=""
+trap 'for s in $siblings; do rm -f "$s"; done' EXIT
+for f in $files; do
+    if git diff --quiet -- "$f"; then
+        checked="$checked $f"
+    else
+        s="$(dirname "$f")/.staged-$(basename "$f")"
+        git show ":$f" > "$s"
+        siblings="$siblings $s"
+        checked="$checked $s"
+    fi
+done
+out=$(build/avra fmt --check $checked 2>&1)
+status=$?
+[ "$status" -eq 0 ] && exit 0
+echo "$out" >&2
+echo "pre-commit: staged Avra is not canonical — run: build/avra fmt --write $(echo $files)" >&2
+exit 1

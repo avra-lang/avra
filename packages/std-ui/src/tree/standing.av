@@ -1,0 +1,360 @@
+//! `tree/standing.av` — WHERE THE WALK STANDS. `describe` is the walk
+//! that makes a tree, and a `Standing` is one node of it: under its
+//! parent's, at its own step (`tree/identity.av`). It is where a
+//! component INSTANCE is kept from paint to paint, so the state an
+//! instance owns follows the instance and nothing else.
+//!
+//! A PAINT OFFERS WHAT STOOD, ONCE. Each standing a paint reaches is
+//! opened: what stood there after the last paint — an instance, the
+//! standings under it — is offered to this one, and what this paint
+//! does not take is gone with the paint. So an instance lives exactly
+//! while a paint reaches it: no list of the living, no sweep.
+//!
+//! THE APP OWNS WHAT STANDS. A kept instance is held by the standing
+//! itself, behind a fn — the trie holds every component alike and
+//! needs no type. A component's own `Kept<T>` is only the typed seat
+//! an instance is handed across; it holds nothing between two calls.
+//! A screen that is dropped takes its instances with it.
+//!
+//! AN INSTANCE TOLD FROM ITS SIBLINGS BY ORDER ALONE IS SAID. Siblings
+//! one site made and no key tells apart keep their state by their turn,
+//! so a reorder hands one's state to another. The walk cannot refuse a
+//! tree it is handed; it says so (`warnings`), once a component a paint.
+use tree.identity.{Step, StepRows, StepTable}
+
+/// A kept instance as its standing holds it: which component's it is,
+/// and the fn that hands it to that component's seat.
+type Hold = { owner: int, give: fn() -> void }
+
+/// A standing under another, by the step it stands at.
+type Under = { step: Step, standing: Standing }
+
+/// One node of the walk: what stands here now, and what stood here
+/// after the last paint, still on offer. `by_order` is whether this
+/// paint told it from a sibling by order alone, `step` the path it
+/// stands at under the nearest node that is DRAWN — a composition draws
+/// nothing of its own, and a walk's root stands at none — and `said` what the walk it belongs to has said
+/// this paint.
+export type Standing = {
+    hold: Cell<Hold?>,
+    under: Cell<List<Under>>,
+    was_hold: Cell<Hold?>,
+    was_under: Cell<List<Under>>,
+    by_order: Cell<bool>,
+    step: Cell<Step?>,
+    route: Cell<string>,
+    said: Cell<List<string>>,
+    window: Cell<Window?>,
+    counted: Cell<int>,
+    placed: Cell<StepRows?>,
+    extent: Cell<int>,
+    geometry: Cell<bool>,
+    limit: Cell<int>,
+    pin: Cell<string?>,
+    pin_at: Cell<int>,
+    reveal: Cell<string?>,
+    honored: Cell<int>,
+    /// The frame entry of `ctx theme` the nearest node drawn above was drawn under, one cell the whole
+    /// walk shares: a node drawn under another carries its theme, and gives the cell back as it found
+    /// it once what stands under it is drawn. A root's is none of them, so a root always does.
+    entry: Cell<int>,
+}
+
+/// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
+export type Window = { from: int, to: int }
+
+/// How many rows a page builds of a windowed list before its host has told
+/// the window: a screenful and a little over.
+export const first_window: int = 40
+
+/// The root of a walk: a standing nothing has stood at.
+export fn standing() -> Standing {
+    let nothing: List<string> = []
+    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false), Cell.new(0), Cell.new(0 - 1))
+}
+
+/// A standing nothing has stood at, in the walk that says into `said`.
+fn stands_in(
+    said: Cell<List<string>>,
+    counted: Cell<int>,
+    geometry: Cell<bool>,
+    limit: Cell<int>,
+    entry: Cell<int>,
+) -> Standing {
+    let none: Hold? = null
+    let unplaced: StepRows? = null
+    let nowhere: string? = null
+    let stepless: Step? = null
+    let empty: List<Under> = []
+    let unwindowed: Window? = null
+    Standing {
+        hold: Cell.new(none),
+        under: Cell.new(empty),
+        was_hold: Cell.new(none),
+        was_under: Cell.new(empty),
+        by_order: Cell.new(false),
+        step: Cell.new(stepless),
+        route: Cell.new(""),
+        said: said,
+        window: Cell.new(unwindowed),
+        counted: counted,
+        placed: Cell.new(unplaced),
+        extent: Cell.new(0),
+        geometry: geometry,
+        limit: limit,
+        pin: Cell.new(nowhere),
+        pin_at: Cell.new(-1),
+        reveal: Cell.new(nowhere),
+        honored: Cell.new(0),
+        entry: entry,
+    }
+}
+
+impl Standing {
+    /// A paint begins at this standing, the walk's root: nothing is said
+    /// yet, and what stands becomes what stood.
+    fn begun() {
+        self.said.set([])
+        self.counted.set(0)
+        // A paint's root is drawn under no node, so it always carries the theme it is drawn in.
+        self.entry.set(0 - 1)
+        self.opened()
+    }
+
+    /// What the walk said this paint.
+    fn warnings() -> List<string> { self.said.get() }
+
+    /// The walk says `words`, once a paint.
+    fn says(words: string) {
+        if !self.said.get().contains(words) { self.said.push(words) }
+    }
+
+    /// A paint reaches this standing: what stands becomes what stood.
+    fn opened() {
+        self.was_hold.set(self.hold.get())
+        self.was_under.set(self.under.get())
+        self.hold.set(null)
+        self.under.set([])
+    }
+
+    /// The standings under this one at `steps`, each opened: the one
+    /// that stood at a step, else a new one. A step nobody names is
+    /// gone with everything under it. `shared` says which steps are told
+    /// from a sibling's by order alone; `drawn` whether this standing's
+    /// own node is drawn, so the path under it starts over. A standing found
+    /// again keeps its path and route: who it is is where it stands, so they
+    /// are made once, when it first stands.
+    fn children(steps: List<Step>, shared: List<bool>, drawn: bool) -> List<Standing> {
+        let was = self.was_under.get()
+        let stood = StepTable.of([u.step for u in was])
+        let found = [stood.find(s) for s in steps]
+        let now = [Under {
+            step: s,
+            standing: if found[j] == null { stands_in(self.said, self.counted, self.geometry, self.limit, self.entry) } else { was[found[j]!].standing },
+        } for j, s in steps]
+        let above = if drawn { null } else { self.step.get() }
+        for j, u in now {
+            u.standing.opened()
+            u.standing.by_order.set(shared[j])
+            if found[j] == null { self.first_stands(u, above) }
+        }
+        self.under.set(now)
+        [u.standing for u in now]
+    }
+
+    /// A standing under this one at the step of `u`, standing there for the first time: its path under
+    /// the nearest drawn node (`above`), and its route, the one text it is found by from a target.
+    fn first_stands(u: Under, above: Step?) {
+        u.standing.step.set(if above == null { u.step } else { Step.Through(above!, u.step) })
+        u.standing.route.set("${self.route.get()}/${u.step.spelled()}")
+    }
+
+    /// `children`, for the rows of a WINDOWED list: `steps` are the rows in
+    /// the window, opened as `children` opens them, the first at index
+    /// of `at_rows`. A standing that holds an instance and stood at a step outside
+    /// the window stays, unopened, while its row is in the source — what a
+    /// row's instance holds survives its scrolling away, and goes only when
+    /// its key leaves the source. Each kept row remembers the index it was
+    /// last found at: `still` says that index still holds it, and while every
+    /// kept row passes, the source is not walked. One that fails has `find`
+    /// walk the source once, answering every step's index.
+    fn children_windowed(
+        steps: List<Step>,
+        shared: List<bool>,
+        at_rows: List<int>,
+        still: fn(Step, int) -> bool,
+        find: fn() -> StepRows,
+    ) -> List<Standing> {
+        let opened = self.children(steps, shared, false)
+        let in_window = StepTable.of(steps)
+        let placed = self.placed.get() ?? StepRows.of([], [])
+        let held = [u for u in self.was_under.get() if in_window.find(u.step) == null && u.standing.held() > 0]
+        let lost = held.any((u) -> !self.stays(placed.at(u.step), u.step, still))
+        let found = if lost { find() } else { placed }
+        let carried = [u for u in held if found.at(u.step) != null]
+        self.under.set(self.under.get().concat(carried))
+        self
+            .placed
+            .set(
+                StepRows
+                    .of(
+                        steps.concat([u.step for u in carried]),
+                        at_rows.concat([found.at(u.step) ?? 0 for u in carried]),
+                    ),
+            )
+        opened
+    }
+
+    /// Whether a kept row, last found at `at`, is still there.
+    fn stays(at: int?, step: Step, still: fn(Step, int) -> bool) -> bool {
+        let i? = at else { return false }
+        still(step, i)
+    }
+
+    /// The window a list stands with, for `count` rows: the one a target
+    /// told it, kept inside the rows there are — else the first screenful.
+    fn window_of(count: int) -> Window {
+        let told? = self.window.get() else {
+            let room = if self.limit.get() > 0 { self.limit.get() } else { count }
+            let first = Window { from: 0, to: if count < room { count } else { room } }
+            self.window.set(first)
+            return first
+        }
+        let to = if told.to > count { count } else { told.to }
+        let from = if told.from > to { to } else { told.from }
+        Window { from: if from < 0 { 0 } else { from }, to: to }
+    }
+
+    /// The target keeps room for rows a list leaves unbuilt (a page's
+    /// scroll height): a windowed list stands a spacer for them from its
+    /// first paint, so the target finds the list and measures it.
+    fn geometric() { self.geometry.set(true) }
+
+    /// The target's screen holds `rows` rows: a windowed list not yet told
+    /// its window builds that many. With no viewport it builds them all.
+    fn first_rows(rows: int) { self.limit.set(rows) }
+
+    /// Whether a windowed list stands spacers for its unbuilt rows.
+    fn spaces() -> bool { self.geometry.get() || self.extent.get() > 0 }
+
+    /// How tall a row stands in the target's measure, as the target last
+    /// measured it: none (zero) until it has.
+    fn extent_of() -> int { self.extent.get() }
+
+    /// A target tells the list standing here how tall its rows measure.
+    fn measured(extent: int) { self.extent.set(extent) }
+
+    /// The row the target's focus rests on, by key, kept built wherever the
+    /// window goes: none when the focus is elsewhere.
+    fn pinned_key() -> string? { self.pin.get() }
+
+    /// Where the pinned row was last found.
+    fn pin_found() -> int { self.pin_at.get() }
+
+    /// The target tells the list its focus rests on the row at `key`.
+    fn pin_to(key: string?) { self.pin.set(key) }
+
+    /// The pinned row was found at `i`.
+    fn pin_noted(i: int) { self.pin_at.set(i) }
+
+    /// The number of the last ask to show a row that the list honored.
+    fn honored_nth() -> int { self.honored.get() }
+
+    /// The list brings `key` into view for ask number `nth`: its window moves
+    /// there, and the row asks the target to scroll to it, once.
+    fn reveals(key: string, nth: int) {
+        self.honored.set(nth)
+        self.reveal.set(key)
+    }
+
+    /// The key a target is asked to scroll to, until it has.
+    fn revealing() -> string? { self.reveal.get() }
+
+    /// The target has scrolled to the revealed row.
+    fn revealed() { self.reveal.set(null) }
+
+    /// A target tells the list standing here which rows to build.
+    fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }
+
+    /// Rows a windowed list built this paint, summed over the walk: the
+    /// witness that a long list builds a bounded number.
+    fn tally(rows: int) { self.counted.set(self.counted.get() + rows) }
+
+    /// How many rows windowed lists built this walk.
+    fn built() -> int { self.counted.get() }
+
+    /// The standing at `path` below this one, the path a standing stands at.
+    fn find(path: string) -> Standing? {
+        if self.route.get() == path { return self }
+        for u in self.under.get() {
+            let hit? = u.standing.find(path) else { continue }
+            return hit
+        }
+        null
+    }
+
+    /// The paths of the windowed lists at and below this standing.
+    fn windows() -> List<string> {
+        let own = if self.window.get() == null { [] } else { [self.route.get()] }
+        own.concat([u.standing.windows() for u in self.under.get()].flatten())
+    }
+
+    /// How many standings stand here and below, this one included: what a
+    /// paint keeps of the walk.
+    fn standings() -> int {
+        mut below = 1
+        for u in self.under.get() { below = below + u.standing.standings() }
+        below
+    }
+
+    /// How many instances stand here and below — the lifetime witness.
+    fn held() -> int {
+        let own = if self.hold.get() == null { 0 } else { 1 }
+        mut below = 0
+        for u in self.under.get() { below = below + u.standing.held() }
+        own + below
+    }
+}
+
+/// The typed seat ONE component's instances are handed across, the
+/// number that tells its holds from every other component's, and the
+/// component's name as a reader is told it.
+export type Kept<T> = { owner: int, name: string, seat: Cell<T?> }
+
+/// Components that keep instances, counted out.
+state owners: int = 0
+
+/// The seat of the component named `name`, with a number no other
+/// component wears.
+export fn kept<T>(name: string) -> Kept<T> {
+    owners = owners + 1
+    let empty: T? = null
+    Kept { owner: owners, name: name, seat: Cell.new(empty) }
+}
+
+/// THE INSTANCE THAT STANDS IS THE FIRST ONE BUILT THERE. The instance
+/// of `k`'s component that stood at `at` after the last paint — and it
+/// stands on; absent when none did, and then `fresh` stands from now.
+/// A standing another component held is not this one's to read.
+export fn stood<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
+    if at.by_order.get() { at.says(told_by_order(k.name)) }
+    let was? = at.was_hold.get() else { return stands(k, at, fresh) }
+    if was.owner != k.owner { return stands(k, at, fresh) }
+    was.give()
+    let held = k.seat.get()
+    k.seat.set(null)
+    at.hold.set(was)
+    held
+}
+
+/// `fresh` stands at `at` from now; nothing stood, so nothing answers.
+fn stands<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
+    at.hold.set(Hold { owner: k.owner, give: () -> k.seat.set(fresh) })
+    null
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn told_by_order(name: string) -> string {
+    "`${name}` keeps state, and here its instances are told apart by their order alone — they share a key, or one site made them and none wears one: give each its own `key`"
+}

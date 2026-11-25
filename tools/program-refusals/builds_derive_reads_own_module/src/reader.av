@@ -1,0 +1,19 @@
+//! A derive that reads, through `payload_of`, a record its type's own module exports.
+use @std.meta.{Type, Directive, Decls, Held, payload_of, literal}
+
+export trait Reads {
+    static fn derive(t: Type) -> List<Directive> {
+        let found = payload_of(t, "Elem")
+        let said = if found == null { "NOT readable" } else { held_said(found!) }
+        let source: Decls = quote { export fn ${"reads_${t.name}"}() -> string { ${literal(said)} } }
+        [Directive { twin: "", name: t.name, at: t.at, source: source }]
+    }
+}
+
+/// What a read answers, in words.
+fn held_said(h: Held) -> string {
+    match h {
+        .Record(fields) -> "a record of [${[f.name for f in fields].join(", ")}]",
+        .Enum(variants) -> "an enum of [${[v.name for v in variants].join(", ")}]",
+    }
+}

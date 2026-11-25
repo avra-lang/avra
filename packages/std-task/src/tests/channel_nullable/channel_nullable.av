@@ -1,0 +1,20 @@
+//! proves a channel carries a PRESENT null of a nullable element: an
+//! `int?` channel's sender parks with `null` pending, the reader claims
+//! it and takes it back as PRESENT, and an empty channel still answers
+//! absent. Absence and a present null are told apart at every layer.
+use @std.task.{open_channel, Channel, Sink}
+use @std.time.{ms, sleep}
+
+fn feed(ch: Channel<int?>) {
+    let _ = ch.sink.send(null)
+    ch.sink.close()
+}
+
+let ch = open_channel<int?>(0)
+let t = spawn feed(ch)
+sleep(ms(20))
+let got = ch.source.next()
+let _ = t.await
+let empty = open_channel<int?>(1)
+let nothing = empty.source.taken()
+"present=${got != null} absent=${nothing == null}"

@@ -1,0 +1,93 @@
+//! A min-heap of names, each under the number it is ranked by. The
+//! least is read and taken in O(log n); the storage is written in place
+//! and never shrinks.
+
+/// One entry: the name, the number it is ranked by, and a mark its
+/// holder reads it back by.
+export type Ranked = { at: int, name: string, mark: int }
+
+/// The heap. Held by copy: every copy is the same heap. `span` is the
+/// storage's own length, so a push reads a scalar.
+export type Heap = { slots: Cell<List<Ranked>>, len: Cell<int>, span: Cell<int> }
+
+/// A heap holding nothing.
+export fn heap() -> Heap {
+    let slots: Cell<List<Ranked>> = Cell.new([])
+    Heap { slots: slots, len: Cell.new(0), span: Cell.new(0) }
+}
+
+impl Heap {
+    /// How many entries the heap holds.
+    fn length() -> int { self.len.get() }
+
+    /// The least entry, left where it is.
+    fn first() -> Ranked? {
+        if self.len.get() == 0 { return null }
+        self.slot(0)
+    }
+
+    /// Add one entry.
+    fn push(r: Ranked) {
+        let n = self.len.get()
+        if n == self.span.get() {
+            self.slots.push(r)
+            self.span.set(n + 1)
+        } else {
+            self.slots.set_at(n, r)
+        }
+        self.len.set(n + 1)
+        self.rise(n)
+    }
+
+    /// Take the least entry.
+    fn pop() -> Ranked? {
+        let n = self.len.get()
+        if n == 0 { return null }
+        let top = self.slot(0)
+        self.len.set(n - 1)
+        if n > 1 {
+            self.slots.set_at(0, self.slot(n - 1))
+            self.sink()
+        }
+        top
+    }
+
+    /// Every entry, in no order; the heap holds nothing after.
+    fn emptied() -> List<Ranked> {
+        let all = [self.slot(i) for i in 0..self.len.get()]
+        self.len.set(0)
+        all
+    }
+
+    fn slot(i: int) -> Ranked { self.slots.get()[i] }
+
+    /// Lift the entry at `from` above every parent it is less than.
+    fn rise(from: int) {
+        mut i = from
+        while i > 0 {
+            let up = (i - 1) / 2
+            let low = self.slot(i)
+            let high = self.slot(up)
+            if high.at <= low.at { return }
+            self.slots.set_at(i, high)
+            self.slots.set_at(up, low)
+            i = up
+        }
+    }
+
+    /// Lower the root below every child that is less than it.
+    fn sink() {
+        let n = self.len.get()
+        mut i = 0
+        while 2 * i + 1 < n {
+            let left = 2 * i + 1
+            let least = if left + 1 < n && self.slot(left + 1).at < self.slot(left).at { left + 1 } else { left }
+            let high = self.slot(i)
+            let low = self.slot(least)
+            if high.at <= low.at { return }
+            self.slots.set_at(i, low)
+            self.slots.set_at(least, high)
+            i = least
+        }
+    }
+}

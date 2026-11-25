@@ -1,0 +1,71 @@
+//! A PROGRAM'S BUILD KEY COVERS EVERY REACHED PACKAGE'S OWN OBJECTS, not only its `.av` sources: a
+//! C-only edit moves no source's digest, so without this a kept binary linked against an older
+//! object stays kept. `linked_digests` (commands/tapes.av) reads each object's real bytes; a real
+//! build in a process of its own proves the binary follows the object. `avra_ran_in`,
+//! `scratch_dir` and `shell_ran` are the neighbouring tests' own: this module shares one namespace.
+use commands.{linked_digests}
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd}
+use @std.time.{stamp}
+
+/// A package of one program calling `avra_robj_value`, which its manifest links from `obj.o`, the
+/// object compiled to answer `value`: its root.
+fn object_package(name: string, value: int) -> string {
+    let root = "${scratch_dir()}/reached_objects/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nobjects = [\"obj.o\"]\n",
+    )
+    let _ = write_text(
+        "${root}/src/main.av",
+        "extern fn avra_robj_value() -> int\nprintln(\"\${avra_robj_value()}\")\n",
+    )
+    let _ = object_answering(root, value)
+    root
+}
+
+/// `obj.o` under `root` compiled again to answer `value`, whether it was.
+fn object_answering(root: string, value: int) -> bool {
+    let _ = write_text("${root}/o.c", "long avra_robj_value(void) { return ${value}; }\n")
+    shell_ran("cc -c -fPIC '${root}/o.c' -o '${root}/obj.o'")
+}
+
+/// What the program under `root` prints, built by `avra build` and run.
+fn built_says(root: string) -> string? {
+    let built = match avra_ran_in(root, ["build", "src/main.av"]) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout.trim() } else { return null },
+        .Err(_) -> { return null },
+    }
+    let t = match tool(built) { .Ok(t) -> t, .Err(_) -> { return null } }
+    match (cmd(t, []) with { timeout: hang_bound() }).outcome() {
+        .Ok(o) -> o.out.stdout.trim(),
+        .Err(_) -> null,
+    }
+}
+
+spec "avra build — a program's key covers its reached objects' bytes" {
+    then "an unedited object answers the same digest twice" {
+        let root = object_package("same", 1)
+        let words = ["${root}/obj.o"]
+        linked_digests(words).join("\n") == linked_digests(words).join("\n")
+    }
+    then "an edited object moves the digest" {
+        let root = object_package("moved", 1)
+        let words = ["${root}/obj.o"]
+        let before = linked_digests(words).join("\n")
+        let _ = object_answering(root, 2)
+        before != linked_digests(words).join("\n")
+    }
+    then "an unedited object builds the same program again" {
+        let root = object_package("rebuilt", 1)
+        let first = built_says(root)
+        first == "1" && built_says(root) == "1"
+    }
+    then "an object edited under a kept binary is linked again: the program answers the new object" {
+        let root = object_package("relinked", 1)
+        let before = built_says(root)
+        let _ = object_answering(root, 2)
+        before == "1" && built_says(root) == "2"
+    }
+}

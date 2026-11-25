@@ -1,0 +1,132 @@
+//! The expansion and crossing pass: macros, derives and marks that
+//! materialize generated declarations, and the meta value a crossing
+//! produces. Moved out of the workspace god-object.
+use @std.errors.{Loc}
+use core.{
+    scoped,
+    Pat,
+    Expr,
+    StmtId,
+    Span,
+    Param,
+    Variant,
+    Mark,
+    same_stmt,
+    same_expr,
+    same_decl,
+    DeclId,
+    FileId,
+    ExprId,
+    fp,
+    flatten,
+    some_list,
+    TypeId,
+    Type,
+    same_file,
+    FnParts,
+    ImplParts,
+    TypeRef,
+    SeatMark,
+    mark_at,
+    plain_mark,
+    source_spelled,
+    named_ref,
+    spelled,
+    Scoped,
+    DeclKind,
+    CollectKind,
+    CollectScope,
+    faceted,
+}
+use features.{
+    AnnotationFact,
+    Unsettled,
+    unsettled_label,
+    MetaVal,
+    MetaHeap,
+    new_meta_heap,
+    Lifted,
+    Namespace,
+    FnSig,
+    StructSig,
+    EnumSig,
+    nothing,
+    FileView,
+    spelled_type,
+    Generation,
+    Decl,
+}
+use features.{arg_text}
+use @std.meta.{
+    Directive,
+    Node,
+    Fn as MetaFn,
+    Type as MetaType,
+    Named,
+    Trait as MetaTrait,
+    Param as MetaParam,
+    Field as MetaField,
+    Spelled as MetaSpelled,
+    Variant as MetaVariant,
+    Kind,
+    Annotation as MetaAnnotation,
+    MarkArg as MetaMarkArg,
+    Stmts as MetaStmts,
+}
+use core.{
+    joined,
+    fp_str,
+    Stmt,
+    StmtId,
+    Arm,
+    BodyView,
+    HoleKind,
+    Filled,
+    Inits,
+    spoiled_inits,
+    Rebuilder,
+    SyntaxArena,
+    copier,
+    hole_runs,
+    quote_kind,
+    all_codes,
+    is_name_cont,
+}
+use diagnostics.{loc_at, Diag}
+use compiler.families.{Family}
+use compiler.lower.{ordered_collect_members}
+use @std.testing.{words}
+
+/// A literal an annotation argument reaches, in the file it stands.
+export type Spelled = { file: FileId, e: ExprId }
+
+/// A mark and the file that wrote it.
+/// A mark, the file that wrote it, and — for a gathered member's — the
+/// enum it is held to.
+type WornMark = { mark: Mark, file: FileId, gatherer: string? = null }
+
+/// Each of `marks`, worn where `f` wrote it.
+fn worn_in(f: FileId, marks: List<Mark>) -> List<WornMark> { [WornMark { mark: m, file: f } for m in marks] }
+
+/// A lifted call's absent answer — nothing crossed, in a heap of
+/// its own.
+fn absent_lifted() -> Lifted { Lifted { answer: MetaVal.Absent, heap: new_meta_heap() } }
+
+/// An annotation as its source spells it: its name, then each argument's own text.
+fn annotation_said(p: Parsed, name: string, args: List<ExprId>) -> string {
+    "${name}(${[written(p, e) for e in args].join(", ")})"
+}
+
+/// An expression's source text — for one with no place in this file's text
+/// (none at all, or a copy spanned in its origin's), its literal's own text.
+fn written(p: Parsed, e: ExprId) -> string {
+    let here: Span? = if p.store.spanned_elsewhere(e) { null } else { p.store.expr_span(e) }
+    let at? = here else { return arg_text(p.store, e) }
+    p.source.text.substring(at.lo, at.hi)
+}
+
+/// What a declaration wearing nothing but marks claims: the compiler's own words alone —
+/// no derive stands on it to read the rest. Unknowable when it wears anything else.
+fn marks_alone(marks: List<Mark>, worn: List<AnnotationFact>) -> List<string>? {
+    if marks.length == worn.length { own_marks() } else { null }
+}

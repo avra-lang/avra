@@ -1,0 +1,294 @@
+//! A QUOTE PATTERN OVER CODE: whether a code value takes a quote pattern is `matched_runs` asked of
+//! the store the code reads and the place it stands, over the pattern's shape — computed once, from
+//! the pattern's own store, and laid out as the binary's data. Each binder then holds what stands at
+//! the places the match answered for it: code at its one place, a run's code at each of its places,
+//! a name its text.
+
+/// What a quote pattern's match over one code value answered: the runs each binder holds open, of
+/// type `answer`, and the code's reads.
+export type QuoteRuns = { runs: Reg, answer: SignedType, read: CodeRead }
+
+/// A code value's reads: what it's read off (`of`) and that one's type, the place it stands (`at`)
+/// and that one's type, and the store the place is in.
+export type CodeRead = { of: Reg, of_ty: SignedType, at: Reg, at_ty: SignedType, store: Reg }
+
+/// A value read off another, and its type.
+export type FieldValue = { reg: Reg, ty: SignedType }
+
+impl Lowering {
+    /// The runs the quote pattern `body` holds open in the code `v` of `subject`: `matched_runs` over
+    /// the code's store and place, the pattern's shape laid out as data. Absent, said, where the
+    /// subject isn't code a matcher reads or the toolchain carries no matcher.
+    mut fn quote_runs(v: Reg, subject: SignedType, body: ExprId) -> QuoteRuns? {
+        if rule_subject(subject) {
+            self.run_row(rt_sig_of("avra_trap")!, [self.const_str(rule_uncalled())])
+            return null
+        }
+        let matcher? = (self.program.toolchain_fn)(OWN_CORE, "matched_runs") else {
+            self.missed(no_matcher())
+            return null
+        }
+        if matcher.params.length != 3 {
+            self.missed(no_matcher())
+            return null
+        }
+        let read? = self.code_read(v, subject) else {
+            self.missed(not_code(subject))
+            return null
+        }
+        let root? = quote_pat_root(self.store, body) else {
+            self.missed(rootless())
+            return null
+        }
+        let holes = quote_pat_holes(self.store, body)
+        let shape_ty = matcher.params[2].ty
+        let shape? = self
+            .shape_data(quote_pat_shape(self.store, root, holes, quote_pat_names(holes)), shape_ty) else {
+            self.missed(unlaid_shape(shape_ty))
+            return null
+        }
+        let answer = list_of(list_of(matcher.params[1].ty)) with { nulls: 1 }
+        QuoteRuns {
+            runs: self.call_fn(self.laid_out(answer), matcher, [read.store, read.at, shape]),
+            answer: answer,
+            read: read,
+        }
+    }
+
+    /// What each binder of the quote pattern `body` holds in the code `v` of `subject` that took it,
+    /// in the binders' order. Absent, said, where a binder isn't read yet.
+    mut fn quote_binds(v: Reg, subject: SignedType, body: ExprId) -> List<FieldValue>? {
+        if rule_subject(subject) { return self.uncalled_binds(v, subject, body) }
+        let q? = self.quote_runs(v, subject, body) else { return null }
+        let holes = quote_pat_holes(self.store, body)
+        let spans = self.carried(q.runs, q.answer)
+        let span_ty? = q.answer.unwrapped().listed() else {
+            self.missed(no_matcher())
+            return null
+        }
+        let bound = [self.quote_bound(q, holes, n, self.slot_read(self.laid_out(span_ty), spans, j), subject) for j, n in quote_pat_names(holes)]
+        if bound.any(it == null) { return null }
+        [b! for b in bound]
+    }
+
+    /// What the binder `n` holds at its places `span`: a run its places' code listed, a name the text
+    /// at its one place, else the code there. Absent, said, for a type binder.
+    mut fn quote_bound(
+        q: QuoteRuns,
+        holes: List<QuoteHole>,
+        n: string,
+        span: Reg,
+        subject: SignedType,
+    ) -> FieldValue? {
+        if quote_pat_is_type(holes, n) { return self.type_bound(q, span) }
+        if quote_pat_is_run(holes, n) {
+            let listed = list_of(subject)
+            let builder? = self.run_builder(q.read.of_ty) else {
+                self.missed(no_run_builder(subject))
+                return null
+            }
+            return FieldValue {
+                reg: self.call_fn(self.laid_out(listed), builder, [q.read.of, span]),
+                ty: listed,
+            }
+        }
+        let at = self.slot_read(self.laid_out(q.read.at_ty), span, 0)
+        if quote_pat_is_text(holes, n) {
+            let namer? = (self.program.toolchain_fn)(OWN_CORE, "own_name_at") else {
+                self.missed(no_matcher())
+                return null
+            }
+            let text = owned_type("string")
+            let maybe = text with { nulls: 1 }
+            return FieldValue {
+                reg: self.carried(self.call_fn(self.laid_out(maybe), namer, [q.read.store, at]), maybe),
+                ty: text,
+            }
+        }
+        let fields? = self.fields_of(subject) else {
+            self.missed(not_code(subject))
+            return null
+        }
+        FieldValue {
+            reg: self
+                .record_packed(
+                    self.laid_out(subject),
+                    [if f.name == OF_FIELD { q.read.of } else { at } for f in fields],
+                ),
+            ty: subject,
+        }
+    }
+
+    /// What each binder of the quote pattern `body` over a package rule's subject `v` of `subject`
+    /// stands in as, its fn never called: the subject for code, an empty list of it for a run, empty
+    /// text for a name.
+    mut fn uncalled_binds(v: Reg, subject: SignedType, body: ExprId) -> List<FieldValue> {
+        let holes = quote_pat_holes(self.store, body)
+        [self.uncalled_bind(holes, n, v, subject) for n in quote_pat_names(holes)]
+    }
+
+    /// The stand-in the binder `n` holds over a package rule's subject `v` of `subject`.
+    mut fn uncalled_bind(holes: List<QuoteHole>, n: string, v: Reg, subject: SignedType) -> FieldValue {
+        if quote_pat_is_text(holes, n) { return FieldValue { reg: self.const_str(""), ty: owned_type("string") } }
+        if !quote_pat_is_run(holes, n) { return FieldValue { reg: v, ty: subject } }
+        let listed = list_of(subject)
+        FieldValue {
+            reg: self
+                .call_row(self.laid_out(listed), rt_sig_of("avra_array_sized")!, [self.const_int(0)]),
+            ty: listed,
+        }
+    }
+
+    /// The written type at a type binder's one place `span`, present by construction.
+    mut fn type_bound(q: QuoteRuns, span: Reg) -> FieldValue? {
+        let reader? = (self.program.toolchain_fn)(OWN_CORE, "own_type_at") else {
+            self.missed(no_matcher())
+            return null
+        }
+        let written? = (self.program.checked.toolchain_type)(OWN_CORE, WRITTEN_TYPE) else {
+            self.missed(type_binder())
+            return null
+        }
+        let maybe = written with { nulls: 1 }
+        let at = self.slot_read(self.laid_out(q.read.at_ty), span, 0)
+        FieldValue {
+            reg: self.carried(self.call_fn(self.laid_out(maybe), reader, [q.read.store, at]), maybe),
+            ty: written,
+        }
+    }
+
+    /// The verb that lists the code at each place of a run, by what the code is read off: the one whose
+    /// first seat takes `of_ty`.
+    fn run_builder(of_ty: SignedType) -> CalledFn? {
+        let builders = [c! for h in code_handles() for c in [(self.program.toolchain_fn)(OWN_FEATURES, h.runs)] if c != null]
+        builders.find(it.params.first()?.ty?.spelled() == of_ty.spelled())
+    }
+
+    /// The code `v` of `subject`'s reads: what it's read off, its place, and the store its reader's
+    /// view holds. Absent for a value that isn't code.
+    mut fn code_read(v: Reg, subject: SignedType) -> CodeRead? {
+        let fields? = self.fields_of(subject) else { return null }
+        if fields.length != 2 { return null }
+        let of? = self.field_named(v, subject, OF_FIELD) else { return null }
+        let at? = self.field_named(v, subject, AT_FIELD) else { return null }
+        let view? = self.field_named(of.reg, of.ty, VIEW_FIELD) else { return null }
+        let store? = self.field_named(view.reg, view.ty, STORE_FIELD) else { return null }
+        CodeRead { of: of.reg, of_ty: of.ty, at: at.reg, at_ty: at.ty, store: store.reg }
+    }
+
+    /// The field `name` of the record `v` of `ty`, read; absent for a record with no such field typed.
+    mut fn field_named(v: Reg, ty: SignedType, name: string) -> FieldValue? {
+        let fields? = self.fields_of(ty) else { return null }
+        let n? = fields.find_index(it.name == name) else { return null }
+        let field? = fields[n].ty else { return null }
+        let laid? = self.seat_layouts(fields) else { return null }
+        FieldValue { reg: self.field_read(v, ty, laid, n), ty: field }
+    }
+
+    /// The shape `s`, a value of `shape_ty`, laid out as the binary's data under a name its content
+    /// makes, so two patterns of one shape read one datum; absent where its enums lay out otherwise
+    /// than as data reads them.
+    mut fn shape_data(s: Shape, shape_ty: SignedType) -> Reg? {
+        let boxes: Cell<List<StaticBox>> = Cell.new([])
+        let root? = self.shape_slot(s, shape_ty, boxes) else { return null }
+        if boxed_slot_at(root) == null { return null }
+        let laid = boxes.get()
+        self
+            .laid_static(
+                self.laid_out(shape_ty),
+                "quote\$shape\$${fp_list([b.fingerprint() for b in laid])}",
+                laid,
+            )
+    }
+
+    /// The slot a shape takes: its variant's box, the tag then its payloads' cells, child first.
+    fn shape_slot(s: Shape, shape_ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let l? = self.program.checked.layout(shape_ty) else { return null }
+        match l {
+            .Boxed(_) -> {},
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> { return null },
+        }
+        let variants? = self.variants_of(shape_ty) else { return null }
+        match s {
+            .Hole(index) -> variant_box(variants, "Hole", [Slot.Int(index)], boxes),
+            .Run(index) -> variant_box(variants, "Run", [Slot.Int(index)], boxes),
+            .TypedNode(shallow, kids, opens) -> {
+                let tag? = variants.find_index(it.name == "TypedNode") else { return null }
+                let open_ty? = variants[tag].payloads.last()?.ty?.listed() else { return null }
+                let kid_slots = [self.shape_slot(k, shape_ty, boxes) for k in kids]
+                let open_slots = [self.open_slot(o, open_ty, boxes) for o in opens]
+                if kid_slots.any(it == null) || open_slots.any(it == null) { return null }
+                let kid_box = pushed(boxes, StaticBox.Slots([k! for k in kid_slots]))
+                let open_box = pushed(boxes, StaticBox.Slots([o! for o in open_slots]))
+                variant_box(variants, "TypedNode", [Slot.Int(shallow), kid_box, open_box], boxes)
+            },
+        }
+    }
+
+    /// The slot an `Open` of `open_ty` takes in a list's box: the box of its variant, which a value
+    /// enum crosses into a list in and a boxed one is.
+    fn open_slot(o: Open, open_ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let variants? = self.variants_of(open_ty) else { return null }
+        let l? = self.program.checked.layout(open_ty) else { return null }
+        match l {
+            .Tagged(_) or .Boxed(_) -> {},
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> { return null },
+        }
+        match o {
+            .Name(i) -> variant_box(variants, "Name", [Slot.Int(i)], boxes),
+            .Type(i) -> variant_box(variants, "Type", [Slot.Int(i)], boxes),
+        }
+    }
+}
+
+/// The box of the variant `name`, its tag then `cells`: a boxed enum's value, and a value enum's crossing.
+fn variant_box(
+    variants: List<VariantSeat>,
+    name: string,
+    cells: List<Slot>,
+    boxes: Cell<List<StaticBox>>,
+) -> Slot? {
+    let tag? = variants.find_index(it.name == name) else { return null }
+    pushed(boxes, StaticBox.Slots([Slot.Int(tag)].concat(cells)))
+}
+
+/// The compiler's own written type.
+const WRITTEN_TYPE: string = "TypeRef"
+
+/// The fields a code value is read by.
+const OF_FIELD: string = "of"
+
+const AT_FIELD: string = "at"
+
+const VIEW_FIELD: string = "view"
+
+const STORE_FIELD: string = "store"
+
+/// Whether `ty` is `@std/meta`'s `Subject`: what a package's rule matches over, read by the compiler
+/// that checks with the rule, so the rule's own fn holds no matcher and is never called.
+export fn rule_subject(ty: SignedType) -> bool {
+    match ty.head {
+        .Declared(file, name) -> file.package_name == META_PACKAGE_NAME && name == SUBJECT,
+        rest -> false,
+    }
+}
+
+const META_PACKAGE_NAME: string = "@std/meta"
+
+const SUBJECT: string = "Subject"
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn rule_uncalled() -> string { "a package's rule is matched by the compiler, never called" }
+
+fn no_matcher() -> string { "a quote pattern with no matcher the toolchain carries" }
+
+fn not_code(subject: SignedType) -> string { "a quote pattern over `${subject.spelled()}`, which isn't code a matcher reads" }
+
+fn rootless() -> string { "a quote pattern with no single root" }
+
+fn unlaid_shape(shape_ty: SignedType) -> string { "a quote pattern whose `${shape_ty.spelled()}` doesn't lay out as data" }
+
+fn type_binder() -> string { "a quote pattern's type binder, where no written type is declared" }
+
+fn no_run_builder(subject: SignedType) -> string { "a quote pattern's run over `${subject.spelled()}`" }

@@ -1,0 +1,104 @@
+//! THE SUITE — every proof a package carries, as ONE binary linked through the
+//! store: its spec cases, and its PROGRAM tests — a source file with the text
+//! it must print beside it. Every proof is both engines: a program the
+//! evaluator has not agreed with since anything it can see last moved runs
+//! there first, and a disagreement stops the run before a binary exists.
+use core.{sorted_texts, joined, flatten, distinct, module_path, TypeRegistry, counted, FileId}
+use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
+use @std.io.{make_dirs}
+use compiler.backend.{run_scheduled}
+use compiler.store.{Store, Stored, node_key}
+use compiler.lower.{Lowered}
+
+/// How many schedules a suite runs, and the one its i-th run uses — the
+/// runtime's settings, read as the native leg reads them.
+extern fn avra_sched_runs_wanted() -> int
+extern fn avra_sched_schedule_at(i: int) -> int
+
+/// HOW A PROGRAM RUN AS A CHILD MUST END — the marker beside it says
+/// which: a trap, or a verdict (the program's own run cancelled). Each
+/// ends its process, so neither is ever called in a suite's own.
+export enum ChildEnd {
+    Trap
+    Verdict
+}
+
+impl ChildEnd {
+    /// The marker's extension beside the program.
+    fn marker() -> string {
+        match self { .Trap -> "refuses", .Verdict -> "verdict" }
+    }
+
+    /// The exit its child owes.
+    fn code() -> int {
+        match self { .Trap -> 2, .Verdict -> 1 }
+    }
+}
+
+/// Every end a marker names — the ONE list discovery and `is_program`
+/// both read.
+fn child_ends() -> List<ChildEnd> { [ChildEnd.Trap, ChildEnd.Verdict] }
+
+/// THE EXTENSIONS A PROOF BESIDE A FILE WEARS, any one making it a program and not a module: the
+/// text it prints, and each end a marker names.
+export fn program_markers() -> List<string> { ["expected"].concat([e.marker() for e in child_ends()]) }
+
+/// One child-run program: `voice` is the text its stderr must carry,
+/// `end` how it must end.
+export type RefusesCall = { path: string, voice: string, end: ChildEnd }
+
+/// The file beside a program that wears its stem and this extension.
+fn beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
+
+/// Whether a run scoped to `only` reaches `path`: every path when unscoped (no scope),
+/// else a path that is, or lies under, one of the scopes.
+export fn in_scope(only: List<string>, path: string) -> bool {
+    if only.is_empty() { return true }
+    let at = normalized(path)
+    only.any((scope) -> at == normalized(scope) || under_dir(at, normalized(scope)))
+}
+
+/// One program's disagreement with the evaluator, as none or one.
+/// A program's evaluated leg under the schedules its native leg runs:
+/// schedule 0, then — only when it chose — the next, up to the setting.
+export fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
+    // LICENSED input.test_setting: how many orders a suite runs, never an input of what is built
+    let runs = avra_sched_runs_wanted()
+    quarrel_from(lo, pr, 0, runs)
+}
+
+fn quarrel_from(lo: Lowered, pr: ProgramCall, i: int, runs: int) -> List<string> {
+    if i >= runs { return [] }
+    // LICENSED input.test_setting: which order a suite runs, never an input of what is built
+    let schedule = avra_sched_schedule_at(i)
+    // PATH MODE WALKED EVERY ORDER: -1 names no schedule left to run.
+    if schedule < 0 { return [] }
+    match run_scheduled(lo, pr.symbol, schedule) {
+        .Ok(r) -> when {
+            r.out != pr.expected -> [said_otherwise_under(pr, r.out, schedule)]
+            r.choices == 0 -> []
+            _ -> quarrel_from(lo, pr, i + 1, runs)
+        },
+        .Err(why) -> [eval_wrecked(pr, why)],
+    }
+}
+
+// ── The voices ──
+
+fn said_otherwise(pr: ProgramCall, out: string) -> string {
+    "${pr.label}: eval != expected\n${out}"
+}
+
+/// What a schedule printed when it was not what the program must, and the
+/// number that replays it.
+fn said_otherwise_under(pr: ProgramCall, out: string, schedule: int) -> string {
+    if schedule == 0 { return said_otherwise(pr, out) }
+    "${pr.label}: eval != expected under schedule ${schedule} — AVRA_SCHED_SEED=${schedule} replays it\n${out}"
+}
+
+fn eval_wrecked(pr: ProgramCall, why: string) -> string {
+    "${pr.label}: eval FAILED\n${why}"
+}
+
+/// What a suite says of the programs it owes proofs for: `owed` of `of` evaluated, in `ms`.
+export fn proofs_said(owed: int, of: int, ms: int) -> string { "proofs: ${owed} of ${of} programs owed, evaluated in ${ms} ms" }

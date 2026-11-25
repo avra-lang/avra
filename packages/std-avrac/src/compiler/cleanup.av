@@ -1,0 +1,35 @@
+//! THE UNBOUNDED CLEANUP LAW: a `defer` or `errdefer` runs under the
+//! shield a cold exit raises, so a wait in its body is bounded by the
+//! `within` that body writes and by nothing else. A body that PARKS —
+//! reaches a cancel point, the settled cancel fact (`cancel_reach.av`)
+//! — outside every `within` it writes is refused: the wait would
+//! outlast the thing it was cleaning and no bound would cut it.
+//!
+//! Run at lowering, where the cancel fact is settled
+//! (`Program.lowered_bodies` touches it first): judging earlier would
+//! read a half-built answer.
+use core.{DeclId, ExprId, FileId, Span, Stmt, StmtId, SyntaxArena, some_list, flatten}
+use compiler.{WaitReader, NodeWait}
+use diagnostics.{Diag, Voice, said_as}
+
+/// Whether a deferred statement is an `errdefer`.
+fn runs_on_error(store: SyntaxArena, st: StmtId) -> bool {
+    match store.stmt(st) { .Defer(_, on_error) -> on_error, rest -> false }
+}
+
+/// Whether `inner` stands inside `outer`; an unknown span is no
+/// evidence of a bound, so it never counts.
+fn inside(inner: Span?, outer: Span) -> bool {
+    let i? = inner else { return false }
+    i.lo >= outer.lo && i.hi <= outer.hi
+}
+
+/// A `word` — `defer` or `errdefer` — whose body waits as `wait` says, which no `within` it writes
+/// bounds.
+export fn cleanup_unbounded(word: string, wait: string) -> Voice {
+    Voice {
+        message: "this `${word}`'s body waits, and no `within` it writes bounds the wait — it ${wait}",
+        label: "waits here",
+        help: "bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`",
+    }
+}

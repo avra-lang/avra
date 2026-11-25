@@ -1,0 +1,102 @@
+//! A PROGRAM'S PACKAGE GRAPH, admitted off its manifests through whatever holds them: each row
+//! entered once, the directory each package stands in, and what the admission says.
+use compiler.host.{Manifest, library_stem, read_manifest}
+use diagnostics.{Diag, SourceFile, new_source_file}
+use @std.errors.{Loc}
+use @std.path.{joined_path, normalized}
+
+/// How a graph reads what holds its manifests: a file's text where there is one, and a path as it
+/// stands whole.
+export type GraphHeld = { text_at: fn(string) -> string?, absolute: fn(string) -> string }
+
+/// The package a graph is rooted at: its name and directory, which the graph holds before any row.
+export type GraphRoot = { name: string, dir: string }
+
+/// What admitting a package graph's rows said, and the manifests it read them off.
+export type AdmittedSaid = { voices: List<Diag>, sources: List<SourceFile> }
+
+/// What admitting no row says.
+export const NOTHING_ADMITTED: AdmittedSaid = AdmittedSaid { voices: [], sources: [] }
+
+/// The toolchain's packages, by the prefix their names wear.
+const STD: string = "@std/"
+
+impl GraphHeld {
+    /// The manifest at `dir` as its text reads, an empty one where it has none.
+    fn manifest_source(dir: string) -> SourceFile {
+        let path = joined_path(dir, "avra.toml")
+        new_source_file(path, (self.text_at)(path) ?? "")
+    }
+
+    /// The name the package at `root` is addressed by: its manifest's, else, a directory with
+    /// none, `unnamed`.
+    fn package_named(root: string, unnamed: string) -> string {
+        let named = read_manifest(self.manifest_source(root)).name
+        if named.is_empty() { unnamed } else { named }
+    }
+
+    /// THE ROWS OF THE MANIFEST AT `dir` ADMITTED (`admission`, then `entering`): depth first,
+    /// each key once, a row serving tests followed from the root alone, and a row naming a std
+    /// package a pin that wins for the whole graph. Each package entered is set in `dirs` by its
+    /// directory; what the admission says goes to `admitted`'s voices, the manifest it was read
+    /// off to its sources. `chain` is the packages depending on the one at `dir`.
+    fn rows_admitted(
+        dir: string,
+        root: bool,
+        chain: List<string>,
+        home: GraphRoot,
+        mut dirs: Map<string, string>,
+        mut admitted: AdmittedSaid,
+    ) {
+        let src = self.manifest_source(dir)
+        admitted.sources.push(src)
+        for d in read_manifest(src).deps {
+            if d.dev && !root { continue }
+            let p? = d.path else { continue }
+            let at = normalized(joined_path(dir, p))
+            let chained = dep_chain(d, chain)
+            let known = if d.key == home.name { home.dir } else { dirs.get(d.key) }
+            let row = Admitting { key: d.key, dir: at, at: d.at, chain: chained, known: known }
+            match admission(row, self.absolute, (f) -> (self.text_at)(f) != null) {
+                .Refused(said) -> admitted.voices.push(said),
+                .Held -> { continue },
+                .Entered -> self.package_entered(d.key, at, d.at, chained, home, dirs, admitted),
+            }
+        }
+    }
+
+    /// The package `key` entered at `at`, named by a row standing at `row`: set in `dirs`, its
+    /// entry law's voices said, and its own rows admitted where that law lets them be.
+    fn package_entered(
+        key: string,
+        at: string,
+        row: Loc?,
+        chain: List<string>,
+        home: GraphRoot,
+        mut dirs: Map<string, string>,
+        mut admitted: AdmittedSaid,
+    ) {
+        dirs.set(key, at)
+        let m = read_manifest(self.manifest_source(at))
+        let said = entering(key, at, row, m)
+        admitted.voices = admitted
+            .voices
+            .concat(said.voices)
+            .concat(if m.raw.is_empty() { [] } else { [raw_borrowed(row, key)] })
+        if said.admits { self.rows_admitted(at, false, chain.concat([key]), home, dirs, admitted) }
+    }
+}
+
+/// Where the package `package` of a program stands: a path dependency's directory, a std package's
+/// under the toolchain's `std`, else the root's — the program `name` standing at `root`.
+export fn package_stands(
+    package: string,
+    name: string,
+    root: string,
+    std: string,
+    deps: Map<string, string>,
+) -> string {
+    let dep = deps.get(package)
+    if dep != null { return dep! }
+    if package != name && package.starts_with(STD) { joined_path(std, library_stem(package)) } else { root }
+}

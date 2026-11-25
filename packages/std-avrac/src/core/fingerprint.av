@@ -1,0 +1,334 @@
+//! `@derive(Fingerprint)` — a value's identity as ONE number, folded
+//! by the ARITY LAW: a tag, the type's NAME, then exactly one value
+//! per field or payload, so two shapes collide only if their parts
+//! do. What every `finish(key, value, HASH)` hand-wrote, derived.
+//!
+//! IT DISPATCHES ON `Kind`, NEVER ON A SPELLING. A field's shape is
+//! what decides its fold — `List<T>` folds through `fp_list`, `T?`
+//! folds to one value, a declared name folds through its own
+//! `fingerprint()`. A registry over type TEXT is a registry nothing
+//! checks, and telling `List<int>` from a type named `Listen` would
+//! be a substring test.
+//!
+//! THE TAG IS ONE RESERVED NUMBER AND THE TYPE'S NAME SEPARATES.
+//! Generated code lands in the ANNOTATED file, whose own source
+//! spells no fold call for `make fingerprints` to read — so a
+//! per-type tag would be invisible. ONE literal tag lives HERE,
+//! where the keeper sees it, and the type's name folded first is
+//! what keeps two derived types apart. `fp` seeds with `fp_mix(tag,
+//! parts.length)` and mixes multiplicatively, so this is not the
+//! additive renumbering that separates nothing.
+//!
+//! A FIELD WITH NO STRUCTURAL READING IS REFUSED BY THE COMPILER,
+//! not skipped here. Every shape `Kind` does not fold defers to the
+//! value's own `fingerprint()`, so a `Voices`, a fn value or a map
+//! is F2030 "`Voices` has no method `fingerprint`" at the generated
+//! code, homed to the annotation. The two exits are the trait's:
+//! implement it by hand (what a type carrying its own identity does)
+//! or stop deriving. SKIPPING a field silently is the one thing this
+//! must never do — that is "a hash that forgets a payload", and the
+//! forgetting leaves no mark at the site.
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Kind,
+    Code,
+    Arms,
+    Directive as MetaDirective,
+    Decls as MetaDecls,
+    name,
+    as_code,
+    int_node,
+    type_named,
+    beside,
+}
+use @std.relation.stable.{indexed_scope}
+
+// ── The field-mark registry. `@local` is this process's own: no child,
+// out of identity, its value stays on the node. `@facet(table)` leaves
+// the gathered payload for the side table the mark names: no child
+// either, and still part of what the node is. ONE row says each, and a
+// shape derive asks HERE — never the mark's own word. ──
+
+/// The mark that takes a field out of what a value IS.
+export const local_word: string = "local"
+
+/// The mark that takes a field's value out of the payload, for a side
+/// table the mark names.
+export const facet_word: string = "facet"
+
+/// How a field's mark routes it.
+export enum FieldRoute {
+    /// Unmarked — a payload, a child, part of the node.
+    Plain
+    /// `@local` — no child, out of identity, the value stays on the node.
+    Local
+    /// `@facet(table)` — no child; the value leaves the payload for the
+    /// side table `table` names, and still tells one node from another.
+    Facet(side: string)
+}
+
+/// The route a field's marks name. A field wears at most one; one
+/// wearing both reads as a facet.
+export fn field_route(f: Field) -> FieldRoute {
+    let facet? = f.marks.find(it.name == facet_word) else {
+        if f.marks.any(it.name == local_word) { return FieldRoute.Local }
+        return FieldRoute.Plain
+    }
+    FieldRoute.Facet(facet.args.first() ?? "")
+}
+
+/// Whether the field is one a shape derive REACHES: a `@local` field and
+/// a `@facet` field are no child, and neither folds from the payload.
+export fn reached(f: Field) -> bool {
+    match field_route(f) { .Plain -> true, .Local or .Facet(_) -> false }
+}
+
+/// Whether the gathered payload CARRIES the field: a facet does not.
+export fn carried(f: Field) -> bool {
+    match field_route(f) { .Facet(_) -> false, .Plain or .Local -> true }
+}
+
+/// The side table a `@facet` field names, absent for any other field.
+export fn facet_table(f: Field) -> string? {
+    match field_route(f) { .Facet(side) -> side, .Plain or .Local -> null }
+}
+
+/// The side table a WRITTEN field's own marks name — the same question
+/// asked of the store's `Mark`, before the crossing makes a `Field`.
+export fn facet_on(marks: List<Mark>) -> string? {
+    let m? = marks.find(it.name == facet_word) else { return null }
+    m.args.first()
+}
+
+/// Whether a written field's marks name a facet.
+export fn faceted(marks: List<Mark>) -> bool { facet_on(marks) != null }
+
+// ── The ANCHOR. A route says what a payload CARRIES; an anchor says
+// where the node it belongs to BEGINS. It rides beside the route and
+// never in it: an anchored payload is carried and reached like any
+// other, and only the span its rule allocated at changes. ──
+
+/// The mark that anchors a node at the written span of the payload it
+/// names, where the whole rule's branch would otherwise be that span.
+export const anchor_word: string = "anchor"
+
+/// The mark on an expression payload a rule may leave unwritten: absent,
+/// it is an error node no pass walks — a signature's missing body.
+export const hollow_word: string = "hollow"
+
+/// Whether the payload stands hollow where its label is absent.
+export fn is_hollow(f: Field) -> bool { f.marks.any(it.name == hollow_word) }
+
+/// Whether the payload is its node's anchor. One payload of a node is,
+/// and the assembly refuses a second — a node begins in ONE place.
+export fn has_anchor(f: Field) -> bool { f.marks.any(it.name == anchor_word) }
+
+/// The mark that lets each expression of a list payload ride the
+/// pronoun: one that reads `it` is built as a one-seat lambda.
+export const pronoun_word: string = "pronoun"
+
+/// Whether the payload's expressions ride the pronoun.
+export fn rides_pronoun(f: Field) -> bool { f.marks.any(it.name == pronoun_word) }
+
+export trait Fingerprint {
+    /// `@local` and `@facet` fields are not part of what a value folds.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
+
+    static fn derive(t: MetaType) -> List<MetaDirective> {
+        [beside(t, quote { impl ${t} { ${body_of(t)} } })]
+    }
+}
+
+/// A record folds its fields; an enum chooses, then folds a
+/// variant's payload. A type that is neither has nothing to fold and
+/// answers its name alone, which is still an identity.
+fn body_of(t: MetaType) -> MetaDecls {
+    if t.annotations.any(it.name == "codec") {
+        return quote {
+            fn fingerprint() -> int { ${name(t.name)}.digest_in(indexed_scope(), self) }
+            fn fingerprint_in(ids: Ids) -> int { ${name(t.name)}.digest_in(ids.as_scope(), self) }
+        }
+    }
+    quote {
+        fn fingerprint() -> int { ${folding(t, plain_folds())} }
+        fn fingerprint_in(ids: Ids) -> int { ${folding(t, id_folds())} }
+    }
+}
+
+/// What a method folding `self` answers: the variant chosen, or the
+/// record's fields, each named payload folded by `leaf`.
+fn folding(t: MetaType, leaf: Folds) -> Code {
+    if !t.variants.is_empty() { return quote { match self { ${arms_of(t, leaf)} } } }
+    record_fold(t, leaf)
+}
+
+/// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
+fn record_fold(t: MetaType, leaf: Folds) -> Code {
+    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields if reached(f)])
+}
+
+/// One arm per variant: its INDEX pins the arity, so two variants of
+/// one type cannot fold alike however their payloads line up.
+fn arms_of(t: MetaType, leaf: Folds) -> List<Arms> {
+    [variant_arm(t.name, v, j, leaf) for j, v in t.variants]
+}
+
+fn variant_arm(owner: string, v: MetaVariant, at: int, leaf: Folds) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${parted_at(owner, at, [])} } }
+    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds([f for f in v.fields if reached(f)], leaf))} }
+}
+
+/// A payload's own FIELD NAMES are the binders — the names the
+/// declaration wrote, so an arm reads as the declaration does. A
+/// BINDER HOLE TAKES NAMES, not templates. The carried fields bind;
+/// a `@facet` field is not in the payload at all.
+fn binders(v: MetaVariant) -> List<string> {
+    [f.name for f in v.fields if carried(f)]
+}
+
+fn payload_folds(kept: List<Field>, leaf: Folds) -> List<Code> {
+    [folded(f.kind, name(f.name), leaf) for f in kept]
+}
+
+/// The type's NAME folded first, then its parts. THE NAME IS FOLDED
+/// WHERE THE DERIVE RUNS, not where the value does: the derive knows
+/// the name at compile time, so it spends `fp_str` ONCE and splices
+/// the number. A generated fold that walked a constant string on
+/// every call would cost what the hand hashes it replaces do not.
+fn parted(owner: string, parts: List<Code>) -> Code {
+    mixed(int_lit(fp_str(owner)), parts)
+}
+
+/// A variant's fold: the name, then the variant's INDEX, then its
+/// payload.
+fn parted_at(owner: string, at: int, parts: List<Code>) -> Code {
+    mixed(int_lit(fp_str(owner)), [int_lit(at)].concat(parts))
+}
+
+/// THE ONE SITE THAT WRITES THE TAG, and it writes it as a LITERAL.
+/// `make fingerprints` reads the tag space from what the source
+/// SPELLS, so a tag spelled through a fn is invisible to the one
+/// instrument that guards it — and the keeper reads the space
+/// correctly, which is why the honest way to claim a number is to
+/// let it see one.
+fn int_lit(v: int) -> Code { as_code(int_node(v)) }
+
+/// `derived([head, ..rest])` as the fold it is, step by step: the same number, with no list made
+/// for each value folded.
+fn mixed(head: Code, rest: List<Code>) -> Code {
+    mut acc = quote { derived_with(derived_from(${int_lit(rest.length + 1)}), ${head}) }
+    for p in rest { acc = quote { derived_with(${acc}, ${p}) } }
+    acc
+}
+
+/// THE TAG, AS A VALUE: the fold every derived identity wears and
+/// every hand-written one must match — the reserved number, then the
+/// parts the caller built (the type's name, the variant's index, one
+/// value per field). The generated code CALLS this, or its two steps
+/// below, rather than spelling the tag, so the number is claimed in one place
+/// and a type whose identity is written by hand folds to the same
+/// number as the type next to it.
+export fn derived(parts: List<int>) -> int { fp(1, parts) }
+
+/// The tag's fold begun for `count` parts: `derived`'s first step.
+export fn derived_from(count: int) -> int { fp_mix(1, count) }
+
+/// One more part folded in: `derived`'s every later step.
+export fn derived_with(folded: int, part: int) -> int { fp_mix(folded, part) }
+
+/// How a fold reaches a named value: `own` folds it by its own method, `held` folds a
+/// generic record of one parameter, handed the fold of what it holds.
+type Folds = { own: fn(Code) -> Code, held: fn(Code, Code) -> Code, coded: fn(Code, string) -> Code }
+
+impl Folds {
+    fn own_of(e: Code) -> Code {
+        (self.own)(e)
+    }
+
+    fn held_of(e: Code, cell: Code) -> Code {
+        (self.held)(e, cell)
+    }
+
+    fn coded_of(e: Code, n: string) -> Code {
+        (self.coded)(e, n)
+    }
+}
+
+/// A fold whose every named value goes to `leaf`.
+fn leaf_folds(leaf: fn(Code) -> Code) -> Folds {
+    Folds {
+        own: leaf,
+        held: (e: Code, _cell: Code) -> leaf(e),
+        coded: (e: Code, _n: string) -> leaf(e),
+    }
+}
+
+/// A named value folds by its own `fingerprint()`.
+fn plain_folds() -> Folds {
+    Folds {
+        own: (e: Code) -> quote { ${e}.fingerprint() },
+        held: (e: Code, cell: Code) -> quote { ${e}.fingerprint_with(${cell}) },
+        coded: (e: Code, n: string) -> quote { ${name(n)}.digest_in(indexed_scope(), ${e}) },
+    }
+}
+
+/// A named value folds by its own `fingerprint_in`: a fold that reads
+/// an arena id through the durable name it indexes.
+fn id_folds() -> Folds {
+    Folds {
+        own: (e: Code) -> quote { ${e}.fingerprint_in(ids) },
+        held: (e: Code, cell: Code) -> quote { ${e}.fingerprint_with_in(ids, ${cell}) },
+        coded: (e: Code, n: string) -> quote { ${name(n)}.digest_in(ids.as_scope(), ${e}) },
+    }
+}
+
+/// ONE FOLD PER SHAPE, every variant answering. A shape this does not
+/// spell structurally defers to `leaf`, which names a method of the
+/// value; the compiler refuses a type that has none — naming the type
+/// and the method, which is the honest refusal.
+fn folded(k: Kind, e: Code, leaf: Folds) -> Code {
+    match k {
+        .Int -> e,
+        .Bool -> quote { (if ${e} { 1 } else { 0 }) },
+        .Str -> quote { fp_str(${e}) },
+        .List(elem) -> quote { fp_list([${folded(elem, quote { each }, leaf)} for each in ${e}]) },
+        .Opt(inner) -> optional(inner, e, leaf),
+        .Result(ok, err) -> answered(ok, err, e, leaf),
+        .Map(_, value) -> quote { fp_list([${mixed(quote { fp_str(key) }, [folded(value, quote { held }, leaf)])} for key, held in ${e}]) },
+        .Named(n, args) -> if args.is_empty() && wears_codec(n) { leaf.coded_of(e, n) } else { generic(args, e, leaf) },
+        .Float or .Ptr or .Void or .Cell(_) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> leaf.own_of(e),
+    }
+}
+
+/// A TYPE THAT WEARS `@codec` folds by its codec's digest — one derivation for its bytes, its
+/// key and its fold alike.
+fn wears_codec(n: string) -> bool {
+    let t? = type_named(n) else { return false }
+    t.annotations.any(it.name == "codec")
+}
+
+/// A GENERIC RECORD OF ONE PARAMETER folds through its own `fingerprint_with`, handed the
+/// fold of its argument — the type cannot fold what it holds, the derive can. Any other
+/// named type folds itself.
+fn generic(args: List<Kind>, e: Code, leaf: Folds) -> Code {
+    let arg? = args.first() else { return leaf.own_of(e) }
+    leaf.held_of(e, quote { (cell) -> ${folded(arg, quote { cell }, leaf)} })
+}
+
+/// ABSENCE IS ITS OWN VALUE, and it is told apart BY ARITY: absence
+/// folds one part, presence folds two. An additive offset would be
+/// the renumbering that separates nothing — a present value whose own
+/// fold is -1 reads as null.
+fn optional(inner: Kind, e: Code, leaf: Folds) -> Code {
+    quote { (if ${e} == null { ${mixed(int_lit(0), [])} } else { ${mixed(int_lit(1), [folded(inner, quote { ${e}! }, leaf)])} }) }
+}
+
+/// The SIDE is a part, not a tag: two tags under a multiplicative
+/// fold would separate the sides, and one tag with the side as the
+/// first part separates them the same way every other choice here
+/// does — so the file claims ONE number and the keeper sees it.
+fn answered(ok: Kind, err: Kind, e: Code, leaf: Folds) -> Code {
+    quote { (match ${e} { .Ok(held) -> ${mixed(int_lit(0), [folded(ok, quote { held }, leaf)])}, .Err(held) -> ${mixed(int_lit(1), [folded(err, quote { held }, leaf)])} }) }
+}

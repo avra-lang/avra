@@ -1,0 +1,33 @@
+// Tasks on a hosted scheduler: two tasks spawned, each parked on a timer many
+// times over while it builds text between the parks, and joined in turn. The
+// text is built by runtime code that spills to the stack, so two tasks that
+// shared one stack would overwrite each other. The output is the same on
+// every engine.
+use @std.time.{ms, sleep}
+
+fn leaf(k: int) -> int {
+    sleep(ms(1))
+    k + 1
+}
+
+fn worker(n: int) -> int {
+    mut seen = 0
+    for i in 0..20 {
+        sleep(ms(1))
+        let got = select {
+            r in spawn leaf(i) -> r
+        }
+        let line = "${n}:${i}:${got}"
+        seen = seen + line.length
+    }
+    seen
+}
+
+fn main() {
+    let a = spawn worker(10)
+    let b = spawn worker(200)
+    println("spawned")
+    println("${a.await} ${b.await}")
+}
+
+main()

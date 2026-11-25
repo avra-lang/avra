@@ -1,0 +1,237 @@
+use @std.json.{Json}
+use @std.validate.{Value}
+use data.{as_value}
+use store.publish.{Publication, Record, RecordMode}
+use store.identity.{Identity}
+use store.merge.{Merge}
+use store.tombstone.{Tombstone}
+
+export enum Operation {
+    Schema
+    Observe(id: string, payload: string)
+    Observation(id: string, revision: int)
+    Publish(publication: Publication)
+    Get(id: string)
+    Value(id: string)
+    Find(model: string, limit: int)
+    Edges(id: string, incoming: bool)
+    Traverse(id: string, depth: int, limit: int)
+    Explain(id: string, property: string)
+    Resolve(namespace: string, key: string)
+    Aliases(id: string)
+    Merge(decision: Merge)
+    Split(decision: string)
+    Merges(entity: string)
+    Tombstone(decision: Tombstone)
+    Revive(decision: string)
+    Tombstones(entity: string)
+    Dirty
+}
+
+/// Protocol parsing knows operations; model data belongs to standard validation.
+export fn operation(j: Json) -> Result<Operation, string> {
+    let op = text(j, "op")?
+    match op {
+        "schema" -> {
+            closed(j, ["op"])?
+            Operation.Schema
+        },
+        "observe" -> {
+            closed(j, ["op", "id", "payload"])?
+            Operation.Observe(text(j, "id")?, text(j, "payload")?)
+        },
+        "observation" -> {
+            closed(j, ["op", "id", "revision"])?
+            Operation.Observation(text(j, "id")?, optional_int(j, "revision", 0)?)
+        },
+        "publish" -> {
+            closed(
+                j,
+                [
+                    "op",
+                    "id",
+                    "producer",
+                    "scope",
+                    "input",
+                    "input_revision",
+                    "schema",
+                    "expected_revision",
+                    "records",
+                ],
+            )?
+            Operation
+                .Publish(
+                    Publication {
+                        id: text(j, "id")?,
+                        producer: text(j, "producer")?,
+                        scope: text(j, "scope")?,
+                        input: text(j, "input")?,
+                        input_revision: integer(j, "input_revision")?,
+                        schema: text(j, "schema")?,
+                        expected_revision: integer(j, "expected_revision")?,
+                        records: [record(v)? for v in array(j, "records")?],
+                    },
+                )
+        },
+        "get" -> {
+            closed(j, ["op", "id"])?
+            Operation.Get(text(j, "id")?)
+        },
+        "value" -> {
+            closed(j, ["op", "id"])?
+            Operation.Value(text(j, "id")?)
+        },
+        "find" -> {
+            closed(j, ["op", "model", "limit"])?
+            Operation.Find(text(j, "model")?, optional_int(j, "limit", 100)?)
+        },
+        "edges" -> {
+            closed(j, ["op", "id", "incoming"])?
+            Operation.Edges(text(j, "id")?, optional_bool(j, "incoming", false)?)
+        },
+        "traverse" -> {
+            closed(j, ["op", "id", "depth", "limit"])?
+            Operation
+                .Traverse(text(j, "id")?, optional_int(j, "depth", 2)?, optional_int(j, "limit", 100)?)
+        },
+        "explain" -> {
+            closed(j, ["op", "id", "property"])?
+            Operation.Explain(text(j, "id")?, text(j, "property")?)
+        },
+        "resolve" -> {
+            closed(j, ["op", "namespace", "key"])?
+            Operation.Resolve(text(j, "namespace")?, text(j, "key")?)
+        },
+        "aliases" -> {
+            closed(j, ["op", "id"])?
+            Operation.Aliases(text(j, "id")?)
+        },
+        "merge" -> {
+            closed(j, ["op", "id", "left", "right", "decider"])?
+            Operation
+                .Merge(
+                    Merge {
+                        id: text(j, "id")?,
+                        left: text(j, "left")?,
+                        right: text(j, "right")?,
+                        decider: text(j, "decider")?,
+                    },
+                )
+        },
+        "split" -> {
+            closed(j, ["op", "id"])?
+            Operation.Split(text(j, "id")?)
+        },
+        "merges" -> {
+            closed(j, ["op", "id"])?
+            Operation.Merges(optional_text(j, "id", "")?)
+        },
+        "tombstone" -> {
+            closed(j, ["op", "id", "entity", "decider"])?
+            Operation
+                .Tombstone(
+                    Tombstone {
+                        id: text(j, "id")?,
+                        entity: text(j, "entity")?,
+                        decider: text(j, "decider")?,
+                    },
+                )
+        },
+        "revive" -> {
+            closed(j, ["op", "id"])?
+            Operation.Revive(text(j, "id")?)
+        },
+        "tombstones" -> {
+            closed(j, ["op", "id"])?
+            Operation.Tombstones(optional_text(j, "id", "")?)
+        },
+        "dirty" -> {
+            closed(j, ["op"])?
+            Operation.Dirty
+        },
+        rest -> { fail "unknown operation: ${op}" },
+    }
+}
+
+fn record(j: Json) -> Result<Record, string> {
+    closed(j, ["id", "model", "value", "mode", "locator", "identities"])?
+    let value? = j.get("value") else { fail "record needs value" }
+    let locator = match j.get("locator") {
+        found? -> as_value(found)
+        null -> Value.Null
+    }
+    Record {
+        id: text(j, "id")?,
+        model: text(j, "model")?,
+        value: as_value(value),
+        mode: record_mode(j)?,
+        locator: locator,
+        identities: identities(j)?,
+    }
+}
+
+fn identities(j: Json) -> Result<List<Identity>, string> {
+    let found? = j.get("identities") else { return [] }
+    match found {
+        .Arr(items) -> [identity(item)? for item in items],
+        rest -> { fail "identities must be an array" },
+    }
+}
+
+fn identity(j: Json) -> Result<Identity, string> {
+    closed(j, ["namespace", "key"])?
+    Identity { namespace: text(j, "namespace")?, external_key: text(j, "key")? }
+}
+
+fn record_mode(j: Json) -> Result<RecordMode, string> {
+    if j.get("mode") == null { return RecordMode.Complete }
+    match text(j, "mode")? {
+        "complete" -> RecordMode.Complete,
+        "partial" -> RecordMode.Partial,
+        rest -> { fail "record mode must be complete or partial" },
+    }
+}
+
+fn closed(j: Json, allowed: List<string>) -> Result<int, string> {
+    match j {
+        .Obj(fields) -> {
+            for i, f in fields {
+                if !allowed.contains(f.key) { fail "unknown protocol field: ${f.key}" }
+                if fields.slice(0, i).any(it.key == f.key) { fail "duplicate protocol field: ${f.key}" }
+            }
+            0
+        },
+        rest -> { fail "request must be a JSON object" },
+    }
+}
+
+fn text(j: Json, key: string) -> Result<string, string> {
+    let value? = j.get(key)?.text() else { fail "${key} must be a string" }
+    value
+}
+
+fn integer(j: Json, key: string) -> Result<int, string> {
+    let value? = j.get(key)?.int() else { fail "${key} must be an integer" }
+    value
+}
+
+fn array(j: Json, key: string) -> Result<List<Json>, string> {
+    let value? = j.get(key) else { fail "${key} must be an array" }
+    match value { .Arr(items) -> items, rest -> { fail "${key} must be an array" } }
+}
+
+fn optional_text(j: Json, key: string, fallback: string) -> Result<string, string> {
+    if j.get(key) == null { return fallback }
+    text(j, key)
+}
+
+fn optional_int(j: Json, key: string, fallback: int) -> Result<int, string> {
+    if j.get(key) == null { return fallback }
+    integer(j, key)
+}
+
+fn optional_bool(j: Json, key: string, fallback: bool) -> Result<bool, string> {
+    if j.get(key) == null { return fallback }
+    let value? = j.get(key)?.truth() else { fail "${key} must be a boolean" }
+    value
+}

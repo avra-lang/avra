@@ -1,0 +1,40 @@
+//! Closures: `(x: int) -> x * 2` — a fn as a VALUE. The body
+//! captures outer names BY VALUE into the closure's box; the box
+//! is `[code address, captures…]` and a call rides CallPtr with
+//! the box at seat 0, exactly as `self` rides a method call.
+//! `fn(int) -> bool` is the type a fn value wears (`fn(int)`
+//! answers nothing). An unannotated seat HEARS its slot's mark as
+//! it hears its type, so a trailing block on `fn(mut Cx) -> R`
+//! writes through the context it is handed. A trailing block of
+//! MATCH ARMS is a fn body too: `xs.filter { .Ok(v) -> v > 0, _ ->
+//! false }` is `xs.filter((it) -> match it { .Ok(v) -> v > 0, _ ->
+//! false })` — the first arm's pattern anchors the parse away from
+//! a lone bind (`{ x -> body }` stays the ordinary one-seat
+//! lambda, unchanged, both spellings one node).
+use features.{LanguageFeature}
+use features.closures.{pronoun_lambda}
+// LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
+// file — a rule that states a payload writes a `Fixed` literal, and one that builds a node in
+// place writes a `Term`. Resolve needs the names the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn closures() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind               | summary
+        "type.lambda"      | "a lambda's parameters, body, and captures obey the closure laws"
+        "type.not_offered" | "a lambda takes a record seat's fields by name, and only the fields it offers"
+    }
+    LanguageFeature closures {
+        gram: grammar {
+            type = "fn" "(" ( seats:fn_seat ( "," seats:fn_seat )* ","? )? ")" ( "->" answer:type )? -> Record.TypeRef(name = "fn", optional = false, dynamic = false, arrow = true)
+            fn_seat = ( settled:"const" )? ( mutable:"mut" )? ty:type -> Record.FnSeat
+            primary = "(" ( params:seat ( "," params:seat )* ","? )? ")" "->" body:expression -> Expr.Lambda
+            trailing = "{" BREAK* arms:arms_head ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> Expr.ArmsBody(arms = arms, trailing = true)
+            arms_head = pats:nonbind_pattern ( "if" guard:expression )? "->" value:expression -> Record.Arm
+            nonbind_pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> Pat.Lit(value = Expr.BoolLit(value = true)) | "false" -> Pat.Lit(value = Expr.BoolLit(value = false)) | bits:FRACTION -> Pat.Lit(value = Expr.FloatLit(bits = bits)) | value:NUMBER -> Pat.Lit(value = Expr.IntLit(value = value))
+        }
+        diags: codes
+    }
+    closures
+}

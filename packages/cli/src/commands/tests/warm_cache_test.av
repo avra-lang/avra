@@ -1,0 +1,130 @@
+//! A DURABLE-TIER PROPERTY, MADE A PERMANENT TEST: `avra build` twice
+//! over one package, editing a DEPENDENCY between them — the shape
+//! avra-8sb5.57.19, .24 and .40 were each found by, by hand, then
+//! proved fixed and never given a lasting test. `avra_bin`,
+//! `scratch_dir` and `built_printed` are the neighbouring tests' own:
+//! this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A package minted fresh: a library `entry` imports, and `entry`
+/// itself. Answers the package's root, the library's own path (what
+/// the edit lands on) and the entry file `avra build` takes.
+type CachePackage = { root: string, lib: string, entry: string }
+
+fn cache_package() -> CachePackage {
+    let root = "${scratch_dir()}/warm_cache_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"warm_cache\"\nversion = \"0.1.0\"\n",
+    )
+    let entry = "${root}/src/entry.av"
+    let _ = write_text(entry, "use lib.{factor}\nprintln(\"\${factor() * 10}\")\n")
+    let lib = "${root}/src/lib.av"
+    let _ = write_text(lib, "export fn factor() -> int { 2 }\n")
+    CachePackage { root: root, lib: lib, entry: entry }
+}
+
+/// A DURABLE-TIER PROPERTY'S HARNESS: `avra build` over `entry` (BUILD
+/// ONE — its own answer discarded, since only its CACHE matters), one
+/// file rewritten from `before` to `after`, then `avra build` over
+/// `entry` AGAIN (BUILD TWO) — reusing `built_printed` for that second
+/// build alone, so what the caller reads back is what the SECOND run's
+/// binary answers, never the first's.
+fn second_build_value(edited: string, before: string, after: string, entry: string) -> string? {
+    let _ = write_text(edited, before)
+    let _ = avra_ran(["build", entry])
+    let _ = write_text(edited, after)
+    built_printed(entry)
+}
+
+spec "avra build — a durable-tier property survives an edit between two builds" {
+    given "a package built once, then edited between two `avra build` runs of the same entry" {
+        then "the second build answers a binary that reflects the edit, not the first build's cache" {
+            let p = cache_package()
+            built_printed(p.entry) == "20\n" &&
+                second_build_value(
+                    p.lib,
+                    "export fn factor() -> int { 2 }\n",
+                    "export fn factor() -> int { 3 }\n",
+                    p.entry,
+                ) == "30\n"
+        }
+        then "an edit that keeps the same answer still leaves a clean second build" {
+            let p = cache_package()
+            second_build_value(
+                p.lib,
+                "export fn factor() -> int { 2 }\n",
+                "export fn factor() -> int { 1 + 1 }\n",
+                p.entry,
+            ) == "20\n"
+        }
+    }
+}
+
+/// A package whose `lib` — held on a second build — imports ONE FILE of a
+/// dependency's directory module, whose file in turn imports one file of a
+/// third package's: the shape a record keeps under the DIRECTORY's name
+/// while the `use` line names the file. Answers the entry and the sibling
+/// file beside the one `lib` names.
+type HeldChain = { entry: string, sibling: string }
+
+fn held_chain() -> HeldChain {
+    let root = "${scratch_dir()}/held_chain_${stamp()}"
+    let dep = "${root}/vendor/dep"
+    let deeper = "${root}/vendor/deeper"
+    let _ = make_dirs("${root}/src")
+    let _ = make_dirs("${dep}/src")
+    let _ = make_dirs("${deeper}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+    )
+    let _ = write_text(
+        "${dep}/avra.toml",
+        "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/deeper\" = { path = \"../deeper\" }\n",
+    )
+    let _ = write_text(
+        "${deeper}/avra.toml",
+        "[package]\nname = \"@acme/deeper\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${deeper}/src/deeper.av", "export fn other() -> int { 1 }\n")
+    let _ = write_text("${deeper}/src/core.av", "export fn base() -> int { 39 }\n")
+    let _ = write_text("${dep}/src/dep.av", "export fn unused() -> int { 1 }\n")
+    let _ = write_text(
+        "${dep}/src/frame.av",
+        "use @acme.deeper.core.{base}\nexport fn framed() -> int { base() + 1 }\n",
+    )
+    let _ = write_text(
+        "${root}/src/lib.av",
+        "use @acme.dep.frame.{framed}\nexport fn go() -> int { framed() + 1 }\n",
+    )
+    let entry = "${root}/src/entry.av"
+    let _ = write_text(entry, entry_asking("go()"))
+    HeldChain { entry: entry, sibling: "${dep}/src/dep.av" }
+}
+
+fn entry_asking(value: string) -> string { "use lib.{go}\nprintln(\"\${${value}}\")\n" }
+
+spec "avra build — a warm store links every file a held file's `use` names" {
+    given "a held file naming one file of a dependency's directory module, which names one of a third package's" {
+        then "a second build after an entry edit links the named files of both packages" {
+            let c = held_chain()
+            second_build_value(c.entry, entry_asking("go()"), entry_asking("go() + 1"), c.entry) == "42\n"
+        }
+        then "a second build after an edit to the named file's sibling links them too" {
+            let c = held_chain()
+            second_build_value(
+                c.sibling,
+                "export fn unused() -> int { 1 }\n",
+                "export fn unused() -> int { 2 }\n",
+                c.entry,
+            ) == "41\n"
+        }
+        then "a second build with nothing edited answers as the first" {
+            let c = held_chain()
+            built_printed(c.entry) == "41\n" && built_printed(c.entry) == "41\n"
+        }
+    }
+}

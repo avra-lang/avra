@@ -1,0 +1,37 @@
+//! proves: a wait row on a descriptor with nothing to read parks its
+//! task — a time beside it wins while the peer is silent, the poller's
+//! news wins once the peer writes — evaluated as compiled
+use @std.net.{listen, connect, Conn, NetError}
+use @std.time.{ms, secs, sleep, now_ns}
+
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+
+fn said(claim: int) -> string { "${claim >> 32}:${claim & 4294967295}" }
+
+/// Parks on `fd` readable (arm 1) beside a time `wait` ms off (arm 0).
+fn read_or_time(fd: int, wait: int) -> string {
+    avra_wait_fd(fd, 0, 1, 2)
+    avra_wait_until(now_ns() + wait * 1000000, 0, 9)
+    said(avra_wait_park())
+}
+
+fn wrote(c: Conn) -> int {
+    sleep(ms(5))
+    match c.write("x".bytes()) { .Ok(n) -> n, .Err(_) -> -1 }
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let a = connect("127.0.0.1", l.port, secs(2))?
+    let b = l.accept()?
+    let silent = read_or_time(b.fd, 20)
+    let writer = spawn wrote(a)
+    let woken = read_or_time(b.fd, 5000)
+    let got = match b.try_read(8) { .Ok(_) -> "read", .Err(e) -> e.verb }
+    let again = read_or_time(b.fd, 20)
+    .Ok("${silent} ${woken} ${writer.await} ${got} ${again}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

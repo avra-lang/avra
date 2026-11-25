@@ -1,0 +1,22 @@
+// A listed producer whose rows are read from another module: the listing
+// and the relation both answer from this file's declarations.
+use @std.relation.{relation, query, over}
+use @std.relation.db.{Db}
+
+@relation
+export type Icon = { @key name: string, dir: string }
+
+/// The producer's keys: two directories.
+@query
+export fn icon_dirs(_db: Db) -> List<string> { ["a", "b"] }
+
+/// Every icon in `dir`, filed as the producer's rows.
+@over(icon_dirs)
+export fn icons_in(db: Db, dir: string) -> List<Icon> {
+    let rows = [Icon { name: "${dir}${n}", dir: dir } for n in 0..2]
+    let _ = Icon.replaced(db, dir, rows)
+    rows
+}
+
+/// The listing's row count, asked from another module.
+export fn listed_count(db: Db) -> int { icons_in_listed(db).length }

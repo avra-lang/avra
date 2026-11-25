@@ -1,0 +1,18 @@
+// A `mut` SEAT WRITTEN THROUGH A FN VALUE: a place rooted in the seat handed to a fn value's `mut`
+// seat is a write through it, so the seat isn't one its fn never writes.
+use @std.avrac.testing.{refusals}
+
+spec "features/fns (a mut seat written by a fn value)" {
+    given "a place rooted in a `mut` seat" {
+        then "handed to a `mut` seat of a fn value read out of a list is a write" {
+            refusals(
+                "type C = { n: int }\ntype H = { c: C, fs: List<fn(mut C) -> int> }\nfn bump(mut c: C) -> int {\n    c.n = c.n + 1\n    c.n\n}\nfn run(mut h: H) -> int { h.fs[0](h.c) }\nmut h = H { c: C { n: 1 }, fs: [bump] }\n\"\${run(h)} \${h.c.n}\"",
+            ) == 0
+        }
+        then "handed to a seat of a fn value that takes a value is none" {
+            refusals(
+                "type C = { n: int }\ntype H = { c: C, fs: List<fn(C) -> int> }\nfn peek(c: C) -> int { c.n }\nfn run(mut h: H) -> int { h.fs[0](h.c) }\nmut h = H { c: C { n: 1 }, fs: [peek] }\nrun(h)",
+            ) == 1
+        }
+    }
+}

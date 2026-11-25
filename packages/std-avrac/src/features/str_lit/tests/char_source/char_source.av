@@ -1,0 +1,47 @@
+// proves: a `for` and a comprehension walk a chars view as the text
+// itself — an index counts code points, an early exit leaves, a
+// rebound text is walked as it stood, a temporary lives the walk long.
+fn made(n: int) -> string { "é" + "${n}" + "€" }
+
+fn first_wide(s: string) -> int {
+    for i, c in s.chars() { if c > 127 { return i * 1000000 + c } }
+    -1
+}
+
+fn skipping(s: string) -> int {
+    mut n = 0
+    for c in s.chars() {
+        if c == 108 { continue }
+        if c == 111 { break }
+        n = n + c
+    }
+    n
+}
+
+fn rebinding() -> string {
+    mut s = "aé"
+    mut seen = ""
+    for c in s.chars() {
+        s = s + "x${c}"
+        seen = seen + "${c},"
+    }
+    seen + s
+}
+
+fn nested(s: string) -> int {
+    mut n = 0
+    for i, a in s.chars() {
+        for j, b in s.chars() { if a == b && i != j { n = n + 1 } }
+    }
+    n
+}
+
+mut temp = 0
+for c in made(7).chars() { temp = temp + c }
+let kept = [i for i, c in made(12).chars() if c > 127]
+let cut = "é".substring(0, 1) + "a"
+mut hostile = ""
+for i, c in cut.chars() { hostile = hostile + "${i}:${c} " }
+mut none = 0
+for c in "".chars() { none = none + 1 }
+"${first_wide("ab€")} ${skipping("héllo")} ${rebinding()} ${nested("aéaé")} ${temp} ${kept.length}:${kept[1]} ${hostile}${none}"

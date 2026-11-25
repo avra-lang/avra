@@ -1,0 +1,45 @@
+//! The shape `compiler/db.av`'s abandoned `@derive(Unwrap)` attempted:
+//! one hand-derived unwrap fn per single-payload variant of a large
+//! enum, generated as free-standing fns (never an `impl` block) —
+//! mirrors `compiler/rows_derive.av`'s own `Rows` trait, which DOES
+//! ship, so any difference in behavior is the derive/quote system's,
+//! not this trait's shape.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive}
+use @std.text.{codepoints, from_codepoints}
+
+extern fn avra_trap(message: string)
+
+export trait Unwrap {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [unwrap_fn(t, v) for v in t.variants if v.fields.length == 1]
+    }
+
+    static fn marks(t: MetaType) -> List<string> { [] }
+}
+
+fn unwrap_fn(t: MetaType, v: MetaVariant) -> Directive {
+    let ty = v.fields[0].ty
+    Directive {
+        twin: "",
+        name: v.name,
+        at: v.at,
+        source: quote {
+            fn ${lower_first(v.name)}_of(r: ${t.name}) -> ${ty} {
+                match r {
+                    .${v}(value) -> value,
+                    rest -> {
+                        avra_trap("defect: unwrap expected")
+                        ${lower_first(v.name)}_of(r)
+                    },
+                }
+            }
+        },
+    }
+}
+
+fn lower_first(s: string) -> string {
+    let codes = codepoints(s)
+    let first? = codes.first() else { return s }
+    let lowered = if first >= 65 && first <= 90 { first + 32 } else { first }
+    from_codepoints([lowered].concat(codes.slice(1, codes.length)))
+}

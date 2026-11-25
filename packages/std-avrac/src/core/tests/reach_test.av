@@ -1,0 +1,44 @@
+// Strong sets and reach rows over int graphs: 0 -> 1, 1 <-> 2, 2 -> 3, 4 -> 3, 5 alone; and a
+// chain deep enough that a walk by calls would be a depth of calls.
+use @std.avrac.core.{reached_by, row_has, strong_sets}
+
+fn diamond() -> List<List<int>> { [[1], [2], [1, 3], [], [3], []] }
+
+/// Which of `sources` reach `node` of `refs`, as text.
+fn reaching(refs: List<List<int>>, sources: List<int>, node: int) -> string {
+    let sets = strong_sets(refs)
+    let rows = reached_by(refs, sets, sources)
+    let w = rows.length / sets.count()
+    let row = rows.slice(sets.of[node] * w, sets.of[node] * w + w)
+    ["${k}" for k, _s in sources if row_has(row, k)].join(",")
+}
+
+/// A set refers only to itself and to sets of a lower number.
+fn ordered(refs: List<List<int>>) -> bool {
+    let sets = strong_sets(refs)
+    [v for v, us in refs if us.any(sets.of[it] > sets.of[v])].is_empty()
+}
+
+fn chain(n: int) -> List<List<int>> { [if v + 1 < n { [v + 1] } else { [0] } for v in 0..n] }
+
+spec "core/reach" {
+    given "a graph's strong sets" {
+        then "a cycle's members share one set and nothing else does" {
+            let s = strong_sets(diamond())
+            s.of[1] == s.of[2] && s.count() == 5
+        }
+        then "a set refers only to itself and to lower sets" { ordered(diamond()) }
+        then "a long cycle is one set, walked without a depth of calls" { strong_sets(chain(200000)).count() == 1 }
+    }
+    given "which sources reach a node" {
+        then "each source reaches itself" { reaching(diamond(), [0, 4], 0) == "0" && reaching(diamond(), [0, 4], 4) == "1" }
+        then "a node reached by two paths is reached once by each source" { reaching(diamond(), [0, 4], 3) == "0,1" }
+        then "a cycle is reached whole" { reaching(diamond(), [0], 2) == "0" && reaching(diamond(), [2], 1) == "0" }
+        then "a node no source reaches has an empty row" { reaching(diamond(), [0, 4], 5) == "" }
+        then "a negative source reaches nothing" { reaching(diamond(), [-1, 4], 3) == "1" }
+        then "sources past one word keep their bits" {
+            let many = [0 for _k in 0..70].concat([4])
+            reaching(diamond(), many, 3).ends_with(",70") && reaching(diamond(), many, 4) == "70"
+        }
+    }
+}

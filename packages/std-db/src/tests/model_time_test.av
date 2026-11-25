@@ -1,0 +1,151 @@
+// A `Time` field is an INTEGER column holding its nanoseconds, and a table
+// made when the column went under another type word is still that table.
+use @std.db.{model}
+use @std.db.apply.{MigrateError}
+use @std.db.error.{ModelError, modeled}
+use @std.errors.{Error}
+use @std.io.{list_dir, make_dirs}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.time.{Time, stamp}
+
+@model
+type Stamp = {
+    id: int = 0,
+    at: Time,
+    seen: Time?,
+}
+
+/// A type word that names no affinity SQLite knows, as a table made by an
+/// earlier derive carries it.
+const EARLIER: string = "a_model_field_kind_this_derive_has_no_sql_type_for"
+
+fn kind_of(r: Result<int, MigrateError>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(e) -> e.describe().kind }
+}
+
+fn held(r: Stamp) -> string { "${r.at.ns}|${r.seen?.ns ?? -1}" }
+
+fn kept(at: int, seen: Time?) -> Result<string, ModelError> {
+    let db = modeled(Db.memory())?
+    let _ = modeled(Stamp.create_table(db))?
+    let made = Stamp { at: Time { ns: at }, seen: seen }.insert(db)?
+    let found? = modeled(Stamp.find(db, made.id))? else { return "gone" }
+    let class = (modeled(db.scalar(sql("SELECT typeof(at) || ' ' || typeof(seen) FROM \"Stamp\"")))?)
+        .text() catch "?"
+    "${held(found)} ${class}"
+}
+
+fn said(r: Result<string, ModelError>) -> string {
+    match r { .Ok(t) -> t, .Err(_) -> "failed" }
+}
+
+/// The shape text `Stamp` was recorded under when both columns went by the
+/// earlier word.
+fn earlier_shape() -> string {
+    Stamp
+        .shape()
+        .replace("at|INTEGER|", "at|${EARLIER}|")
+        .replace("seen|INTEGER|", "seen|${EARLIER}|")
+}
+
+/// A file database as an earlier derive left it: the table under the earlier
+/// word, its shape recorded so under this model's own claim, and one row written.
+fn earlier(dir: string) -> Result<Db, SqlError> {
+    let _ = make_dirs(dir)
+    let db = Db.open("${dir}/app.db")?
+    let _ = Stamp.create_table(db)?
+    let _ = db.run(sql("DROP TABLE \"Stamp\""))?
+    let _ = db
+        .run(
+            sql(
+                Stamp
+                    .create_table_sql()
+                    .replace("\"at\" INTEGER", "\"at\" ${EARLIER}")
+                    .replace("\"seen\" INTEGER", "\"seen\" ${EARLIER}"),
+            ),
+        )?
+    let _ = db
+        .run(
+            sql(
+                "UPDATE \"__avra_models__\" SET shape = ? WHERE table_name = 'Stamp'",
+                [.Text(earlier_shape())],
+            ),
+        )?
+    let _ = db.run(sql("INSERT INTO \"Stamp\" (at, seen) VALUES (1000000000000000123, NULL)"))?
+    db
+}
+
+fn table_sql(db: Db) -> Result<string, SqlError> {
+    (db.scalar(sql("SELECT sql FROM sqlite_master WHERE name = 'Stamp'"))?).text()
+}
+
+fn recorded(db: Db) -> Result<string, SqlError> {
+    (db.scalar(sql("SELECT shape FROM \"__avra_models__\" WHERE table_name = 'Stamp'"))?).text()
+}
+
+/// The earlier database opened by this derive: what migrating it says, twice,
+/// and whether the table itself was left as it was while its record caught up.
+fn carried() -> Result<string, SqlError> {
+    let db = earlier("/tmp/avra-db-time-test/${stamp()}")?
+    let before = table_sql(db)?
+    let _ = Stamp.create_table(db)?
+    let first = kind_of(Stamp.migrate(db))
+    let again = kind_of(Stamp.migrate(db))
+    "${first} ${again} ${table_sql(db)? == before && before.contains(EARLIER)} ${recorded(db)? == Stamp.shape()}"
+}
+
+/// The earlier database's row read, and a new one written beside it, after
+/// the migration.
+fn carried_rows() -> Result<string, SqlError> {
+    let db = earlier("/tmp/avra-db-time-test/${stamp()}")?
+    let _ = kind_of(Stamp.migrate(db))
+    let _ = Stamp { at: Time { ns: 7 }, seen: Time { ns: 9 } }.insert(db)
+    let classes = (db
+        .scalar(sql("SELECT group_concat(typeof(at) || ' ' || typeof(seen), ',') FROM \"Stamp\""))?)
+        .text()?
+    "${[held(r) for r in Stamp.all(db)?].join(",")} ${classes}"
+}
+
+/// How many copies migrating the earlier database took, and what the copy holds.
+fn carried_copy() -> Result<string, SqlError> {
+    let dir = "/tmp/avra-db-time-test/${stamp()}"
+    let db = earlier(dir)?
+    let _ = kind_of(Stamp.migrate(db))
+    let baks = (list_dir(dir) catch []).filter(it.ends_with(".bak"))
+    let bak? = baks.first() else { return "no copy" }
+    let copy = Db.open_read("${dir}/${bak}")?
+    let rows = (copy.scalar(sql("SELECT count(*) FROM \"Stamp\""))?).int()?
+    "${baks.length} ${rows}"
+}
+
+fn shown(r: Result<string, SqlError>) -> string {
+    match r { .Ok(t) -> t, .Err(e) -> "failed: ${e.message}" }
+}
+
+spec "std/db a Time field" {
+    given "the model's table" {
+        then "holds an INTEGER column, required or not as the field says" {
+            Stamp.create_table_sql().contains("\"at\" INTEGER NOT NULL, \"seen\" INTEGER,")
+        }
+        then "and records both under that word" {
+            Stamp.shape().contains("at|INTEGER|notnull") &&
+                Stamp.shape().contains("seen|INTEGER|null")
+        }
+    }
+    given "an instant written" {
+        then "comes back to the nanosecond, held as an integer" {
+            said(kept(1000000000000000123, Time { ns: 5 })) == "1000000000000000123|5 integer integer"
+        }
+        then "an absent one is NULL and comes back absent" { said(kept(0, null)) == "0|-1 integer null" }
+    }
+    given "a file database whose table went under an earlier type word" {
+        then "migrates in a step a column that rewrites no table: the record catches up, and a second run does nothing" {
+            shown(carried()) == "ok 2 ok 0 true true"
+        }
+        then "its row reads as it was written, and new rows are held alike" {
+            shown(carried_rows()) == "1000000000000000123|-1,7|9 integer null,integer integer"
+        }
+        then "and the copy taken before the record changed holds the row" { shown(carried_copy()) == "1 1" }
+    }
+}

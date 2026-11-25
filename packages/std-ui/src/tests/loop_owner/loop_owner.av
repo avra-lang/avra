@@ -1,0 +1,61 @@
+// proves: work belongs to the control that asked. A press starts a period
+// and a slow answer; while its button stands they land, and when the
+// button leaves the screen the period stops and the answer in flight is
+// dropped, eval == native.
+// The real loop (`looped`), not the driven one: it counts the loop's tasks and the answers a cut takes with them.
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.ui.app.{repeating}
+use @std.ui.native.sources.{answered}
+use @std.time.{ms, sleep}
+
+state standing: int = 1
+state ticks: int = 0
+state answers: int = 0
+
+fn slow() -> int {
+    sleep(ms(100))
+    7
+}
+
+fn tick() -> bool {
+    ticks = ticks + 1
+    true
+}
+
+fn land(n: int) -> bool {
+    answers = answers + n
+    true
+}
+
+fn go() {
+    let _ = repeating(ms(10), tick)
+    let _ = answered(slow, land)
+}
+
+fn view() -> item {
+    item { items: [button "Go" { on press { go() } } for _n in 0..standing] }
+}
+
+let screen = headless(view)
+screen
+    .looped(
+        () -> {
+            let _ = screen.press("Go")
+            screen.advance(ms(120))
+            println("standing: ticks>=4 ${ticks >= 4} answers=${answers}")
+            let _ = screen.press("Go")
+            screen.advance(ms(20))
+            let _ = screen
+                .turn(
+                    () -> {
+                        standing = 0
+                        true
+                    },
+                )
+            let before = ticks
+            screen.advance(ms(200))
+            println("left: ticks stopped ${ticks == before} answers=${answers}")
+        },
+    )
+"tasks held ${screen.shown.app.jobs.get()}"
