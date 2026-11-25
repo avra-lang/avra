@@ -23,7 +23,7 @@ use frontier.{
     place_key,
 }
 use package_sets.{NO_NAMES, NameSets, name_sets}
-use input_stamps.{InputStamp, places_held}
+use input_stamps.{InputStamp, KeptStamps, places_held}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
 use interned.{HIGH_LANE, LOW_LANE}
@@ -129,8 +129,8 @@ export trait AnswerStore {
     /// that binary's frontier, each file of it whole or not at all.
     fn keep_frontier(print: string, learned: FrontierLearned)
 
-    /// Every input this store holds by a stamp.
-    fn input_stamps() -> List<InputStamp>
+    /// Every input this store holds by a stamp, read as each is asked.
+    fn kept_stamps() -> KeptStamps
 
     /// Keeps `stamps` as every input this store holds by a stamp, in place of those it held.
     fn keep_input_stamps(stamps: List<InputStamp>)
@@ -306,7 +306,7 @@ export type QueryEngine = {
     /// Where this process's asks spend their time, absent while they aren't timed.
     times: Cell<QueryTimes?>,
     /// The inputs the store held by a stamp, by question, once read.
-    stamps_kept: Cell<HashKeyedTable<InputStamp>?>,
+    stamps_kept: Cell<KeptStamps?>,
     /// The inputs this process read under one stamp, or found held by one, by question.
     stamps_seen: HashKeyedTable<InputStamp>,
     /// THE PACKAGES EACH QUESTION SETTLED HERE READ, as a set's id in `sets`: an input's, the package
@@ -358,7 +358,7 @@ export fn query_engine(
     let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
     let verifying: HashKeyedTable<bool> = hash_keyed_table()
     let times: Cell<QueryTimes?> = Cell.new(null)
-    let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
+    let stamps_kept: Cell<KeptStamps?> = Cell.new(null)
     let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
     let read_sets: HashKeyedTable<int> = hash_keyed_table()
     let reached: Cell<int> = Cell.new(0)
@@ -864,10 +864,9 @@ impl QueryEngine {
     }
 
     /// The inputs the store holds by a stamp, read once.
-    fn kept_stamps() -> HashKeyedTable<InputStamp> {
+    fn kept_stamps() -> KeptStamps {
         let read? = self.stamps_kept.get() else {
-            let kept: HashKeyedTable<InputStamp> = hash_keyed_table()
-            for s in self.store.input_stamps() { kept.put(s.question, s) }
+            let kept = self.store.kept_stamps()
             self.stamps_kept.set(kept)
             return kept
         }
@@ -879,8 +878,7 @@ impl QueryEngine {
     fn stamps_kept_now() {
         let now = [s with { answer: a! } for s in self.stamps_seen.values() for a in [self.settled_held(s.question)?.answer()] if a != null]
         let kept = self.kept_stamps()
-        if now.length == kept.values().length &&
-            now.all((s) -> kept.get(s.question)?.same_as(s) ?? false) { return }
+        if now.length == kept.length() && now.all((s) -> kept.get(s.question)?.same_as(s) ?? false) { return }
         self.store.keep_input_stamps(now)
     }
 
