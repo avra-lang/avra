@@ -1,6 +1,6 @@
 use @std.validate.{FieldShape, FieldKind, Value, Entry}
 use @std.config.{Variable}
-use settings.{projections, projected, leaves_of, LANDINGS, NAMED_FILE, Setting}
+use settings.{projections, projected, leaves_of, LANDINGS, NAMED_FILE, RUNTIME_FILE, Setting}
 
 /// One section holding one package holding `leaves`.
 fn shaped(package: string, leaves: List<FieldShape>) -> List<FieldShape> {
@@ -51,6 +51,15 @@ fn refused(package: string, kind: FieldKind, v: Value, variables: List<Variable>
     }
 }
 
+/// The text a declaration of one leaf of `package` projects into `file`.
+fn laid_in(package: string, file: string, kind: FieldKind, v: Value) -> string {
+    match projections(
+        shaped(package, [leaf("x", kind)]),
+        unset(package, one("x", v)),
+        named("debug.${package}.x", "AVRA_X"),
+    ) { .Ok(ps) -> ps.find(it.file == file)?.text ?? "", .Err(_) -> "" }
+}
+
 /// The text a declaration of one leaf projects into `program`'s file.
 fn laid(kind: FieldKind, v: Value) -> string {
     match projections(
@@ -64,7 +73,7 @@ spec "settings — the one declaration and its projections" {
     given "the tree's declaration" {
         then "it projects into each landing and the oracle's names, nothing refused" {
             match projected() {
-                .Ok(ps) -> [p.file for p in ps].join(" ") == [d.file for d in LANDINGS].concat([NAMED_FILE]).join(" "),
+                .Ok(ps) -> [p.file for p in ps].join(" ") == [d.file for d in LANDINGS].concat([NAMED_FILE, RUNTIME_FILE]).join(" "),
                 .Err(_) -> false,
             }
         }
@@ -92,6 +101,29 @@ spec "settings — the one declaration and its projections" {
         }
         then "the one read of the environment carries its licence" {
             laid(FieldKind.Bool, Value.Bool(false)).contains("// LICENSED input.debug_flag:")
+        }
+    }
+    given "the runtime's header" {
+        then "a leaf is named by its exact variable" {
+            laid_in("runtime", RUNTIME_FILE, FieldKind.Int, Value.Null)
+                .contains("// debug.runtime.x: a whole number, else unset\n#define AVRA_SET_X \"AVRA_X\"")
+        }
+        then "a switch's reader reads its declared default" {
+            laid_in("runtime", RUNTIME_FILE, FieldKind.Bool, Value.Bool(true))
+                .contains(
+                    "static inline int avra_set_x(void) { return avra_setting_switch(AVRA_SET_X, 1); }",
+                )
+        }
+        then "a number has no reader of its own" {
+            !laid_in("runtime", RUNTIME_FILE, FieldKind.Int, Value.Int(3)).contains("avra_set_x(")
+        }
+        then "a runtime leaf lands in no Avra file" {
+            !laid_in("runtime", LANDINGS[0].file, FieldKind.Bool, Value.Bool(false))
+                .contains("AVRA_X")
+        }
+        then "an Avra package's leaf is named in the header too" {
+            laid_in("program", RUNTIME_FILE, FieldKind.Bool, Value.Bool(false))
+                .contains("#define AVRA_SET_X \"AVRA_X\"")
         }
     }
     given "a declaration that cannot be projected" {
