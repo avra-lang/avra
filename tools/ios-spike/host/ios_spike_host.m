@@ -131,6 +131,7 @@ static NSCountedSet<NSString*>* g_unused;
 static double g_first_frame_ms = -1;
 static double g_apply_s;
 static NSInteger g_measures;
+static double g_measure_s;
 static BOOL g_toggling;
 static double g_started_ms;
 
@@ -518,9 +519,10 @@ static SpikeScrollWatch* g_scroll_watch;
 // A paint reached the views: what it cost the host, and the instrument told.
 static void painted(void) {
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
-        said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld", g_apply_s * 1e6, (long)g_measures]);
+        said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6]);
     g_apply_s = 0;
     g_measures = 0;
+    g_measure_s = 0;
     bench_first_applied();
     if (g_toggling) { g_toggling = NO; bench_toggle_applied(); }
     if (g_row_h <= 0) {
@@ -802,27 +804,73 @@ int64_t avra_spike_width(void) {
     return (int64_t)(UIScreen.mainScreen.bounds.size.width - 32);
 }
 
-// A throwaway control of `prim` with these words, fitted to `avail` across.
-static UIView* sample(NSString* prim, NSString* words, NSString* placeholder) {
-    SpikeNode* n = [SpikeNode new];
-    n.prim = prim;
-    made(n);
-    if (words.length) worded(n, words);
-    if (placeholder.length && [n.control isKindOfClass:[UITextField class]]) ((UITextField*)n.control).placeholder = placeholder;
-    return n.title ?: n.view;
+static int64_t sixtieths(CGFloat points) { return (int64_t)llround(points * 60); }
+
+// A control's own chrome, read once from one real instance of each.
+typedef struct { CGSize sw; CGFloat field_h; CGFloat bar_h; CGFloat slider_h; CGSize spinner; } Chrome;
+
+static Chrome chrome(void) {
+    static Chrome c;
+    static BOOL read;
+    if (read) return c;
+    read = YES;
+    c.sw = [UISwitch new].intrinsicContentSize;
+    UITextField* f = [UITextField new];
+    f.borderStyle = UITextBorderStyleRoundedRect;
+    f.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    c.field_h = f.intrinsicContentSize.height;
+    c.bar_h = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault].intrinsicContentSize.height;
+    c.slider_h = [UISlider new].intrinsicContentSize.height;
+    c.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium].intrinsicContentSize;
+    return c;
 }
 
-static int64_t sixtieths(CGFloat points) { return (int64_t)llround(points * 60); }
+// Words in a text style, wrapped to `avail` points.
+static CGSize words_in(NSString* s, UIFontTextStyle style, CGFloat avail) {
+    if (s.length == 0) return CGSizeMake(0, 0);
+    CGRect r = [s boundingRectWithSize:CGSizeMake(avail, CGFLOAT_MAX)
+                               options:NSStringDrawingUsesLineFragmentOrigin
+                            attributes:@{NSFontAttributeName : [UIFont preferredFontForTextStyle:style]}
+                               context:nil];
+    return CGSizeMake(ceil(r.size.width), ceil(r.size.height));
+}
+
+// A control's size from its words and its chrome, no control built.
+static CGSize fitted(NSString* p, NSString* s, CGFloat avail) {
+    Chrome c = chrome();
+    if ([p isEqualToString:@"text"]) return words_in(s, UIFontTextStyleBody, avail);
+    if ([p isEqualToString:@"heading"]) return words_in(s, UIFontTextStyleTitle2, avail);
+    if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"]) {
+        CGSize w = words_in(s, UIFontTextStyleBody, avail - 24);
+        return CGSizeMake(w.width + 24, w.height + 12);
+    }
+    if ([p isEqualToString:@"field"]) {
+        CGSize w = words_in(s, UIFontTextStyleBody, avail);
+        return CGSizeMake(MAX(w.width, 200), w.height + 8 + c.field_h);
+    }
+    if ([p isEqualToString:@"switch"] || [p isEqualToString:@"checkbox"]) {
+        CGSize w = words_in(s, UIFontTextStyleBody, avail - c.sw.width - 8);
+        return CGSizeMake(c.sw.width + 8 + w.width, MAX(c.sw.height, w.height));
+    }
+    if ([p isEqualToString:@"progress"] || [p isEqualToString:@"slider"]) {
+        CGSize w = words_in(s, UIFontTextStyleBody, avail);
+        return CGSizeMake(200, w.height + 8 + ([p isEqualToString:@"progress"] ? c.bar_h : c.slider_h));
+    }
+    if ([p isEqualToString:@"divider"]) return CGSizeMake(300, 1.0 / UIScreen.mainScreen.scale);
+    if ([p isEqualToString:@"spinner"]) return c.spinner;
+    if ([p isEqualToString:@"image"] || [p isEqualToString:@"icon"]) return words_in(@"▢", UIFontTextStyleCaption1, avail);
+    if ([p isEqualToString:@"key"]) return CGSizeMake(0, 0);
+    return words_in(s, [p isEqualToString:@"card"] ? UIFontTextStyleTitle3 : UIFontTextStyleHeadline, avail);
+}
 
 int64_t avra_spike_measure(const char* prim, const char* words, const char* placeholder, int64_t avail) {
     g_measures++;
+    double t0 = CACurrentMediaTime();
     NSString* p = [NSString stringWithUTF8String:prim];
     NSString* s = [NSString stringWithUTF8String:words];
     BOOL container = [@[ @"row", @"column", @"surface", @"list", @"item", @"card", @"form", @"fieldset", @"dialog" ] containsObject:p];
-    if (container && s.length == 0) return 0;
-    UIView* v = sample(p, s, [NSString stringWithUTF8String:placeholder]);
-    CGSize fit = [v systemLayoutSizeFittingSize:CGSizeMake(avail, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityFittingSizeLevel verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    if ([v isKindOfClass:[UILabel class]] || [v isKindOfClass:[UIButton class]]) fit = [v sizeThatFits:CGSizeMake(avail, CGFLOAT_MAX)];
+    CGSize fit = container && s.length == 0 ? CGSizeMake(0, 0) : fitted(p, s, avail);
+    g_measure_s += CACurrentMediaTime() - t0;
     CGFloat w = MIN(ceil(fit.width), (CGFloat)avail);
     return sixtieths(w) * 1000000 + sixtieths(ceil(fit.height));
 }
