@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR, and this counts
 the reads that are not: a call in the compiler or its CLI that asks the
 disk, the environment, a tool, a child process, the clock, the process
@@ -34,6 +35,8 @@ evaluator, timing, a debug flag) and takes it out. The file only falls:
 
     python3 tools/inputs.py            # the table; refuses a new site
     python3 tools/inputs.py --accept   # prunes what a move made gone
+    python3 tools/inputs.py --self-test  # its own witnesses alone, the tree not read
+    python3 tools/inputs.py --planted    # two planted reads refused on the tree itself
 
 INSIDE A QUERY'S BODY A LICENCE IS NO DOOR. A query's answer is kept under
 its question and served to every later process whose recorded reads hold,
@@ -847,5 +850,18 @@ def main(planted=()):
                  "(inside a query body only the door, or the engine's records)")
 
 
+def selftests():
+    """The keeper's own witnesses alone, every refusal and acceptance of its tables and the query
+    door: the tree is not read."""
+    selftest()
+    query_selftest()
+    print("inputs: self-test passed — the input door's refusals and the query door's, each witnessed")
+
+
 if __name__ == "__main__":
-    planted_witness() if "--planted" in sys.argv else main()
+    if "--self-test" in sys.argv:
+        selftests()
+    elif "--planted" in sys.argv:
+        planted_witness()
+    else:
+        main()
