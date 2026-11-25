@@ -292,6 +292,8 @@ static void attr_set(SpikeNode* n, NSString* name, NSString* value) {
             s.tag = n.nid;
             [s addTarget:g_target action:@selector(flipped:) forControlEvents:UIControlEventValueChanged];
             s.accessibilityIdentifier = v.accessibilityIdentifier;
+            s.isAccessibilityElement = YES;
+            s.accessibilityLabel = v.accessibilityLabel;
             n.prim = @"checkbox";
             n.view = s;
         }
@@ -396,6 +398,10 @@ void avra_spike_frame(const char* records) {
 // ── What the witness reads: the accessibility tree ──────────────
 
 static void announced(UIView* v, NSMutableArray<NSString*>* out) {
+    if ([v isKindOfClass:[UISwitch class]] && v.accessibilityLabel.length) {
+        [out addObject:[NSString stringWithFormat:@"switch %@: %@", ((UISwitch*)v).on ? @"on" : @"off", v.accessibilityLabel]];
+        return;
+    }
     if (v.isAccessibilityElement && v.accessibilityLabel.length) [out addObject:[NSString stringWithFormat:@"%@%@", (v.accessibilityTraits & UIAccessibilityTraitButton) ? @"button: " : @"label: ", v.accessibilityLabel]];
     for (UIView* c in v.subviews) announced(c, out);
 }
@@ -486,23 +492,47 @@ static UIView* found_kind(UIView* v, Class k) {
     return nil;
 }
 
-// The board's script: a task typed and added, then the About dialog opened.
+static UISwitch* switch_for(UIView* v, NSString* words) {
+    if ([v isKindOfClass:[UISwitch class]] && [v.accessibilityLabel isEqualToString:words]) return (UISwitch*)v;
+    for (UIView* c in v.subviews) {
+        UISwitch* f = switch_for(c, words);
+        if (f) return f;
+    }
+    return nil;
+}
+
+static void board_said(NSString* when) {
+    said([NSString stringWithFormat:@"board %@: %@", when, [a11y_said() componentsJoinedByString:@" | "]]);
+}
+
+// The board's script: "Buy milk" typed and added at 3 s, ticked done at 7 s;
+// the About dialog opened at 15 s when AVRA_SPIKE_BOARD_SCRIPT is 1.
 static void board_scripted(void) {
-    after(1.5, ^{
+    after(3, ^{
+        board_said(@"loaded");
         UITextField* f = (UITextField*)found_kind(g_root, [UITextField class]);
         f.text = @"Buy milk";
         [g_target typed:f];
         after(0.5, ^{
-            UIButton* add = (UIButton*)a11y_find(g_root, @"Add");
-            [add sendActionsForControlEvents:UIControlEventTouchUpInside];
-            said([NSString stringWithFormat:@"board after Add: %@", [a11y_said() componentsJoinedByString:@" | "]]);
+            [(UIButton*)a11y_find(g_root, @"Add") sendActionsForControlEvents:UIControlEventTouchUpInside];
         });
     });
-    after(4.5, ^{
-        UIButton* about = (UIButton*)a11y_find(g_root, @"About");
-        [about sendActionsForControlEvents:UIControlEventTouchUpInside];
-        after(0.5, ^{ said([NSString stringWithFormat:@"board dialog up: %@", g_vc.presentedViewController ? @"yes" : @"no"]); });
+    after(7, ^{
+        board_said(@"after Add");
+        UISwitch* s = switch_for(g_root, @"Buy milk");
+        said([NSString stringWithFormat:@"board switch for Buy milk: %@", s ? @"found" : @"none"]);
+        if (s) {
+            s.on = YES;
+            [g_target flipped:s];
+        }
     });
+    after(10, ^{ board_said(@"after tick"); });
+    after(14, ^{ board_said(@"at 14 s"); });
+    if ([NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BOARD_SCRIPT"] isEqualToString:@"1"]) {
+        after(15, ^{
+            [(UIButton*)a11y_find(g_root, @"About") sendActionsForControlEvents:UIControlEventTouchUpInside];
+        });
+    }
 }
 
 static void witnessed(UIWindow* w) {
@@ -616,3 +646,6 @@ void avra_spike_attach(void) {
 
 // An app has no fork, so nothing is prepared for one.
 void avra_fork_hook(int (*prepare)(const char** why)) { (void)prepare; }
+
+// A line the program asks the host to say, flushed at once.
+void avra_spike_log(const char* words) { said([NSString stringWithUTF8String:words]); }

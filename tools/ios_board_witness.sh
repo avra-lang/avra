@@ -25,8 +25,8 @@ trap 'xcrun simctl shutdown "$udid" > /dev/null 2>&1' EXIT
 xcrun simctl install "$udid" "$work/Spike.app" || fail "install failed"
 out=$work/board.out
 : > "$out"
-env SIMCTL_CHILD_AVRA_SPIKE_BOARD=1 SIMCTL_CHILD_AVRA_SPIKE_FRAMES=1 ${AVRA_BOARD_SCRIPT:+SIMCTL_CHILD_AVRA_SPIKE_BOARD_SCRIPT=1} \
-    timeout 30 xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" > "$out" 2>&1 &
+env SIMCTL_CHILD_AVRA_SPIKE_BOARD=1 SIMCTL_CHILD_AVRA_SPIKE_FRAMES=1 ${AVRA_BOARD_SCRIPT:+SIMCTL_CHILD_AVRA_SPIKE_BOARD_SCRIPT=$AVRA_BOARD_SCRIPT} ${AVRA_SPIKE_SERVER:+SIMCTL_CHILD_AVRA_SPIKE_SERVER=$AVRA_SPIKE_SERVER} \
+    timeout ${AVRA_BOARD_FOR:-30} xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" > "$out" 2>&1 &
 # shots at the given seconds after launch (AVRA_BOARD_SHOTS, default "8"), named <shot>[-<n>].png
 n=0; t0=0
 for at in ${AVRA_BOARD_SHOTS:-8}; do

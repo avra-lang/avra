@@ -2,7 +2,9 @@
 //! frame the host draws; a tap echoes back as the node's number and seat.
 use @std.ui.app.{App, Msg, owned_app, stood}
 use @std.ui.native.sources.{opened, served}
-use @std.ui.native.net.{unwired}
+use @std.ui.native.net.{over_http, unwired}
+use @std.http_message.message.{Method, Reply, Request}
+use @std.io.{env}
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.tree.identity.{Owner, NodeId}
 use @std.ui.tree.node.{Node, Said}
@@ -12,6 +14,7 @@ use frame.{neutral}
 
 extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
+extern fn avra_spike_log(words: string)
 
 /// What a tap reaches: the page the program paints, once it stands.
 once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -> false) }
@@ -41,6 +44,31 @@ fn tapped(app: App, at: Live, node: NodeId, seat: int) -> bool {
     app.send(Msg.Turn(() -> at.fire(node, s, null), "${node.n}"))
 }
 
+/// The server a route is asked of: `AVRA_SPIKE_SERVER`, a scheme and host
+/// with no trailing slash.
+once fn server() -> string { env("AVRA_SPIKE_SERVER") ?? "" }
+
+/// `r` over `@std/http`, a same-origin route made absolute on the server.
+fn based(r: Request) -> Result<Reply, string> {
+    avra_spike_log("net called for ${r.url}, server `${server()}`")
+    if server() == "" { return unwired(r) }
+    let url = if r.url.starts_with("/") { server() + r.url } else { r.url }
+    avra_spike_log("net asks ${url}")
+    let answer = over_http(r with { url: url })
+    match answer {
+        .Ok(reply) -> avra_spike_log("net answered ${reply.status}"),
+        .Err(why) -> avra_spike_log("net failed: ${why}"),
+    }
+    answer
+}
+
+/// `route`'s reply as text, asked once over the spike's network: null when
+/// nothing answered.
+export fn read_once(route: string) -> string? {
+    let r = Request { method: Method.Get, url: route }
+    match based(r) { .Ok(reply) -> reply.body.text_lossy(), .Err(_) -> null }
+}
+
 /// Nothing to do between turns.
 fn idle() {}
 
@@ -60,7 +88,7 @@ export fn mount<V: View>(view: fn() -> V) {
         at.stands,
     )
     stood(app)
-    let inbox = opened(app, unwired)
+    let inbox = opened(app, based)
     page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
     heard().set((id: int, seat: int, s: Said?) -> spoke(app, at, NodeId { n: id - 1 }, seat, s))
     app.paint()

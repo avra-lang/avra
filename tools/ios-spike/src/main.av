@@ -1,8 +1,8 @@
 //! Slice 1: a label Avra supplies and a button whose press changes a `state`,
 //! drawn by the UIKit host (`mount.av`).
 use @std.ui.components.{text, button}
-use mount.{mount}
-use @ui.board.{view}
+use mount.{mount, read_once}
+use @ui.board.{tasks_written, view}
 use @std.io.{env}
 use @std.time.{ms, sleep}
 
@@ -45,5 +45,11 @@ fn spun() -> int {
 
 let ticker = spawn ticked()
 let spinner = if env("AVRA_SPIKE_SPIN") == "1" { spawn spun() } else { spawn 0 }
-if env("AVRA_SPIKE_BOARD") == "1" { mount(view) } else { mount(shown) }
+if env("AVRA_SPIKE_BOARD") == "1" {
+    let tasks = read_once("/tasks")
+    if tasks != null { let _ = tasks_written(tasks!) }
+    mount(view)
+} else {
+    mount(shown)
+}
 println("served ${ticker.await} ${spinner.await}")
