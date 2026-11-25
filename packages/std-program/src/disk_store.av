@@ -21,12 +21,14 @@ use @std.io.{
     drafted,
     env,
     exists,
+    link,
     list_dir,
     make_dirs,
     opened_for_append,
     read_text,
     remove,
     stamp,
+    truncate_to,
     write_text,
 }
 use @std.meta.{derive}
@@ -746,6 +748,9 @@ once fn share_read() -> Cell<bool> { Cell.new(false) }
 /// Whether this process has said it waits for a save.
 once fn wait_said() -> Cell<bool> { Cell.new(false) }
 
+/// Whether `r` holds.
+fn is_ok(r: Result<string, IoError>) -> bool { match r { .Ok(_) -> true, .Err(_) -> false } }
+
 /// Waits out a save of the store at `directory` a process left behind is still writing, so what
 /// the store is read as holds everything the process before it learned; a wait is said, once a
 /// process. A save that never finished is said by the first process to find it so, once.
@@ -761,11 +766,14 @@ fn saves_awaited(directory: string) {
         wait_said().set(true)
         let _ = lock.awaited() catch 0
     }
+    let record = "${directory}/${UNFINISHED_FILE}"
+    // its first line: what follows it is the room the record took. SAID ONCE: every process that
+    // opens the store at once may read it, and the one whose removal of it holds says it
     // LICENSED input.store_io: the store's own files, never an input of what is answered
-    let unfinished = read_text("${directory}/${UNFINISHED_FILE}") catch ""
-    if !unfinished.is_empty() {
-        let _ = remove("${directory}/${UNFINISHED_FILE}")
-        eprintln(unfinished)
+    if exists(record) {
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
+        let unfinished = (read_text(record) catch "").split("\n").first() ?? ""
+        if is_ok(remove(record)) { eprintln(if unfinished.trim().is_empty() { save_unsaid(directory) } else { unfinished }) }
     }
     let _ = lock.closed() catch 0
 }
@@ -783,8 +791,45 @@ export fn save_held(directory: string) -> AppendFile? {
     null
 }
 
-/// The save of the store at `directory` left to an heir, unfinished until `save_finished`.
-export fn save_left(directory: string) { let _ = write_text("${directory}/${UNFINISHED_FILE}", save_unfinished(directory)) catch "" }
+/// The save of the store at `directory` left to an heir, unfinished until `save_finished`. Its
+/// record is said in the room the store took (`room_taken`), padded to keep it, so a save that
+/// fails because the disk filled says why where a new file wouldn't fit.
+export fn save_left(directory: string) {
+    let record = "${directory}/${UNFINISHED_FILE}"
+    let room = "${directory}/${ROOM_FILE}"
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    if exists(room) && is_ok(link(room, record)) { let _ = remove(room) }
+    said_in_place(record, padded_to_room("${save_unfinished(directory)}\n"))
+}
+
+/// The room a failed save's record takes before the build writes: more than any cause it says.
+const UNFINISHED_ROOM: int = 4096
+
+/// The file that holds the room an unfinished save's record takes, until a save is left to an heir.
+const ROOM_FILE: string = "saving.room"
+
+/// The room a save's record is said in, taken in the store at `directory` where it isn't yet. A
+/// process left to save takes none: its record already stands in the room its build took.
+fn room_taken(directory: string) {
+    let room = "${directory}/${ROOM_FILE}"
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    if !saving_apart().get() && !exists(room) { let _ = write_text(room, padded_to_room("")) catch "" }
+}
+
+/// The room a save's record is said in given back to the disk of the store at `directory`: its save
+/// has ended here, and no record will be said in it.
+fn room_given_back(directory: string) { let _ = remove("${directory}/${ROOM_FILE}") }
+
+/// `said` and as many spaces after it as fill `UNFINISHED_ROOM`.
+fn padded_to_room(said: string) -> string { said + [" " for _i in 0..max_of(UNFINISHED_ROOM - said.length, 0)].join("") }
+
+/// The record at `path` holding `said` alone: emptied, then written, in the room it already takes.
+fn said_in_place(path: string, said: string) {
+    let _ = truncate_to(path, 0) catch ""
+    let into? = match opened_for_append(path) { .Ok(f) -> f, .Err(_) -> null } else { return }
+    let _ = into.write(said.bytes()) catch 0
+    let _ = into.closed() catch 0
+}
 
 /// The save of the store at `directory` finished: nothing is left to say of it, or `failed`, why it
 /// kept nothing, is.
@@ -793,7 +838,7 @@ export fn save_finished(directory: string, failed: string?) {
         let _ = remove("${directory}/${UNFINISHED_FILE}")
         return
     }
-    let _ = write_text("${directory}/${UNFINISHED_FILE}", save_failed(directory, why)) catch ""
+    said_in_place("${directory}/${UNFINISHED_FILE}", "${save_failed(directory, why)}\n")
 }
 
 // ── The voices ──
@@ -803,6 +848,9 @@ fn waiting_for_save() -> string { "avra: waiting for the last build's save" }
 
 /// A save left to an heir ended before it finished.
 fn save_unfinished(directory: string) -> string { "avra: the last build's save of ${directory} did not finish; what it learned is worked out again" }
+
+/// A save left to an heir ended with no room left in its store to say how.
+fn save_unsaid(directory: string) -> string { "avra: the last build's save of ${directory} did not finish, and its store had no room left to say why; what it learned is worked out again" }
 
 /// A save left to an heir failed.
 fn save_failed(directory: string, why: string) -> string { "avra: the last build's save of ${directory} failed: ${why}; what it learned is worked out again" }
@@ -1443,6 +1491,14 @@ impl DiskStore {
     /// Publishes what this process learned as one pack, absorbing packs no bigger than it, and
     /// answers how many octets it wrote. A process that learned nothing writes nothing.
     fn saved() -> Result<int, IoError> {
+        let saved = self.saved_whole()
+        room_given_back(self.directory)
+        saved
+    }
+
+    /// What this process learned published, compacted where the store has outgrown its last
+    /// compaction: how many octets were written.
+    fn saved_whole() -> Result<int, IoError> {
         if self.compacts_on_saving() { return self.compacted() }
         let written = if self.has_news() { self.published(absorbed_by(self.entries_learned(), self.packs.get()), false)? } else { 0 }
         self.frontier_published(false)
@@ -1742,9 +1798,11 @@ fn live_over(packs: List<MappedPack>, segment: Segment, seeds: List<ContentHash>
 
 fn max_of(a: int, b: int) -> int { if a > b { a } else { b } }
 
-/// A draft beside the store's packs, absent when none can be opened.
+/// A draft beside the store's packs, absent when none can be opened. The room a failed save's
+/// record says why in is taken first, while the disk holds it.
 fn opened_draft(directory: string) -> Draft? {
     let _ = make_dirs(directory) catch ""
+    room_taken(directory)
     match drafted("${directory}/learned") { .Ok(draft) -> draft, .Err(_) -> null }
 }
 
