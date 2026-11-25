@@ -10,12 +10,17 @@ use @std.ui.tree.identity.{Owner, NodeId}
 use @std.ui.tree.node.{Node, Said}
 use @std.ui.tree.seats.{seat_numbered}
 use @std.ui.tree.view.{View}
+use @std.ui.tree.standing.{Standing}
+use @std.ui.tree.identity.{Stand}
+use @std.ui.realize.native.patch.{NativePatch}
+use @std.time.{now_ns}
 use frame.{neutral}
 use kit.{rects}
 
 extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
 extern fn avra_spike_log(words: string)
+extern fn avra_mem_live() -> int
 
 /// What a tap reaches: the page the program paints, once it stands.
 once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -> false) }
@@ -91,18 +96,27 @@ fn placed_again(at: NativeLive) -> bool {
 fn idle() {}
 
 /// `view` drawn by the UIKit host until the program's loop ends.
-export fn mount<V: View>(view: fn() -> V) {
+export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
     avra_spike_attach()
     let at = native_live()
+    if first_rows > 0 { at.stands.first_rows(first_rows) }
     let on_screen: Cell<List<Owner>> = Cell.new([])
     let app = owned_app(
-        view,
+        () -> Timed { inner: view() },
         (root: Node) -> {
+            let t0 = now_ns()
+            let live0 = avra_mem_live()
             let patches = at.patches(root)
+            let t1 = now_ns()
             on_screen.set(at.owners())
-            if !patches.is_empty() { avra_spike_frame(neutral(patches)) }
-            avra_spike_frame(rects(root, at.page.get()))
+            let said = neutral(patches)
+            let t2 = now_ns()
+            if !patches.is_empty() { avra_spike_frame(said) }
+            let placed = rects(root, at.page.get())
+            let t3 = now_ns()
+            avra_spike_frame(placed)
             shown_root().set([root])
+            avra_spike_log(paint_line(patches, t1 - t0, t2 - t1, t3 - t2, avra_mem_live() - live0))
         },
         on_screen,
         at.stands,
@@ -112,6 +126,62 @@ export fn mount<V: View>(view: fn() -> V) {
     page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
     heard().set((id: int, seat: int, s: Said?) -> spoke(app, at, NodeId { n: id - 1 }, seat, s))
     replaced().set(() -> app.post_unowned(() -> placed_again(at)))
+    scrolled_to()
+        .set(
+            (from: int, to: int, extent: int) -> app
+                .post_unowned(() -> window_moved(app, from, to, extent)),
+        )
     app.paint()
     served(app, inbox, idle)
+}
+
+/// One paint's phases in microseconds and its counters, as the host logs it.
+fn paint_line(patches: List<NativePatch>, lower: int, serialize: int, place: int, bytes: int) -> string {
+    let facts = [p for p in patches if is_fact(p)].length
+    let made = [p for p in patches if is_create(p)].length
+    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} live_bytes_delta=${bytes}"
+}
+
+fn is_fact(p: NativePatch) -> bool {
+    match p {
+        .SetFact(_, _) -> true,
+        .Create(_, _) or .DropFact(_, _, _) or .Place(_, _, _) or .Remove(_) or .Listen(_, _) or .Unlisten(_, _) -> false,
+    }
+}
+
+fn is_create(p: NativePatch) -> bool {
+    match p {
+        .Create(_, _) -> true,
+        .SetFact(_, _) or .DropFact(_, _, _) or .Place(_, _, _) or .Remove(_) or .Listen(_, _) or .Unlisten(_, _) -> false,
+    }
+}
+
+/// How long the last tree took to build, in nanoseconds.
+once fn tree_ns() -> Cell<int> { Cell.new(0) }
+
+/// A view whose drawing is timed: what it draws is its inner view's.
+type Timed = { inner: dyn View }
+
+impl View for Timed {
+    fn stand() -> Stand { self.inner.stand() }
+
+    fn describe(at: Standing) -> List<Node> {
+        let t = now_ns()
+        let drawn = self.inner.describe(at)
+        tree_ns().set(now_ns() - t)
+        drawn
+    }
+}
+
+/// What the host's scroll reaches: the windowed list's new rows.
+once fn scrolled_to() -> Cell<fn(int, int, int) -> bool> { Cell.new((_f: int, _t: int, _e: int) -> false) }
+
+/// The host scrolled the windowed list to rows `from` up to `to`, each `extent`
+/// points tall.
+extern fn avra_spike_scrolled(from: int, to: int, extent: int) { let _ = (scrolled_to().get())(from, to, extent) }
+
+/// The first windowed list moved to rows `from` up to `to`.
+fn window_moved(app: App, from: int, to: int, extent: int) -> bool {
+    let path? = app.stands.windows().first() else { return false }
+    app.scrolled(path, from, to, extent, null)
 }

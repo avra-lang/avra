@@ -11,11 +11,13 @@ work=$tree/build/ios-spike
 shot=${1:-board}
 id=dev.avra.spike
 fail() { echo "ios-board: FAIL — $*" >&2; exit 1; }
+if [ -z "${AVRA_BOARD_NOBUILD:-}" ]; then
 xcrun --sdk $sdk clang -target arm64-apple-ios17.0-simulator -fobjc-arc -O2 -Wall -Werror -c \
     -o "$tree/build/$sdk/ios_spike_host.o" "$tree/tools/ios-spike/host/ios_spike_host.m" || fail "the UIKit host did not build"
 built=$(cd "$tree" && "$avra" build --target arm64-apple-ios-simulator tools/ios-spike) || fail "the spike did not build"
 [ -d "$work/Spike.app" ] || fail "run tools/ios_spike_witness.sh once first: it writes Spike.app"
 mv "$built" "$work/Spike.app/spike"
+fi
 codesign -f -s - "$work/Spike.app" > /dev/null 2>&1 || fail "the app could not be signed"
 udid=$(xcrun simctl list devices available | awk '/^-- iOS (26|18)/ { on = 1; next } /^--/ { on = 0 } on && $0 ~ dev' dev="${AVRA_BOARD_DEVICE:-iPhone}" |
     sed -n 's/.*(\([0-9A-F-]\{36\}\)).*/\1/p' | head -n 1)
@@ -25,7 +27,7 @@ trap 'xcrun simctl shutdown "$udid" > /dev/null 2>&1' EXIT
 xcrun simctl install "$udid" "$work/Spike.app" || fail "install failed"
 out=$work/board.out
 : > "$out"
-env SIMCTL_CHILD_AVRA_SPIKE_BOARD=1 SIMCTL_CHILD_AVRA_SPIKE_FRAMES=1 ${AVRA_BOARD_SCRIPT:+SIMCTL_CHILD_AVRA_SPIKE_BOARD_SCRIPT=$AVRA_BOARD_SCRIPT} ${AVRA_SPIKE_SERVER:+SIMCTL_CHILD_AVRA_SPIKE_SERVER=$AVRA_SPIKE_SERVER} \
+env SIMCTL_CHILD_AVRA_SPIKE_BOARD=${AVRA_BOARD_MODE:-1} ${AVRA_BOARD_FRAMES_OFF:-SIMCTL_CHILD_AVRA_SPIKE_FRAMES=1} ${AVRA_SPIKE_BENCH:+SIMCTL_CHILD_AVRA_SPIKE_BENCH=1} ${AVRA_SPIKE_ROWS:+SIMCTL_CHILD_AVRA_SPIKE_ROWS=$AVRA_SPIKE_ROWS} ${AVRA_BOARD_SCRIPT:+SIMCTL_CHILD_AVRA_SPIKE_BOARD_SCRIPT=$AVRA_BOARD_SCRIPT} ${AVRA_SPIKE_SERVER:+SIMCTL_CHILD_AVRA_SPIKE_SERVER=$AVRA_SPIKE_SERVER} \
     timeout ${AVRA_BOARD_FOR:-30} xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" > "$out" 2>&1 &
 # shots at the given seconds after launch (AVRA_BOARD_SHOTS, default "8"), named <shot>[-<n>].png
 n=0; t0=0

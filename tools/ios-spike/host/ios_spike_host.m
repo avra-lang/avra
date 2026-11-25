@@ -11,6 +11,7 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include "avra_facts.gen.h"
+#include "spike_bench.m"
 
 void avra_host_attach(void (*loop)(void));
 int avra_host_poller(void);
@@ -21,6 +22,7 @@ void avra_trap(const char* words);
 
 void avra_spike_tapped(int64_t id, int64_t seat);
 void avra_spike_resized(void);
+void avra_spike_scrolled(int64_t from, int64_t to, int64_t extent);
 void avra_spike_said(int64_t id, int64_t seat, int64_t flag, const char* words);
 int64_t avra_spike_sync(int64_t waits);
 
@@ -127,6 +129,9 @@ static UIViewController* g_vc;
 static NSMutableArray<NSString*>* g_pending;
 static NSCountedSet<NSString*>* g_unused;
 static double g_first_frame_ms = -1;
+static double g_apply_s;
+static NSInteger g_measures;
+static BOOL g_toggling;
 static double g_started_ms;
 
 @interface SpikeTarget : NSObject
@@ -473,6 +478,57 @@ static void framed(SpikeNode* n, CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
     }
 }
 
+// THE WINDOW: the rows of the first windowed list the scroll view shows,
+// with an overscan above and below, at the height the solver gave a row.
+static CGFloat g_row_h;
+static CGFloat g_list_top;
+static NSInteger g_win_from = -1;
+static NSInteger g_win_to = -1;
+static const NSInteger overscan = 10;
+
+static void list_found(void) {
+    for (SpikeNode* n in g_nodes.allValues) {
+        if (!is(n, @"list")) continue;
+        g_list_top = [n.view convertRect:n.view.bounds toView:g_root].origin.y;
+        for (UIView* k in n.view.subviews)
+            if (k.subviews.count > 0 && k.frame.size.height > 0) { g_row_h = k.frame.size.height; return; }
+    }
+}
+
+static void window_asked(void) {
+    if (g_row_h <= 0) return;
+    CGFloat y = g_scroll.contentOffset.y - 16 - g_list_top;
+    NSInteger from = MAX(0, (NSInteger)floor(y / g_row_h) - overscan);
+    NSInteger to = from + (NSInteger)ceil(g_scroll.bounds.size.height / g_row_h) + 2 * overscan;
+    if (from == g_win_from && to == g_win_to) return;
+    if (!avra_host_idling()) return;
+    g_win_from = from;
+    g_win_to = to;
+    avra_spike_scrolled(from, to, (int64_t)llround(g_row_h));
+    resumed();
+}
+
+@interface SpikeScrollWatch : NSObject <UIScrollViewDelegate>
+@end
+@implementation SpikeScrollWatch
+- (void)scrollViewDidScroll:(UIScrollView*)s { window_asked(); }
+@end
+static SpikeScrollWatch* g_scroll_watch;
+
+// A paint reached the views: what it cost the host, and the instrument told.
+static void painted(void) {
+    if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
+        said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld", g_apply_s * 1e6, (long)g_measures]);
+    g_apply_s = 0;
+    g_measures = 0;
+    bench_first_applied();
+    if (g_toggling) { g_toggling = NO; bench_toggle_applied(); }
+    if (g_row_h <= 0) {
+        list_found();
+        if (g_row_h > 0) dispatch_async(dispatch_get_main_queue(), ^{ window_asked(); });
+    }
+}
+
 static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
     return w.count > from ? [[w subarrayWithRange:NSMakeRange(from, w.count - from)] componentsJoinedByString:@" "] : @"";
 }
@@ -508,6 +564,7 @@ static void applied(NSString* frame) {
         } else if ([op isEqualToString:@"content"] && w.count >= 3) {
             g_root.frame = CGRectMake(16, 16, w[1].doubleValue, w[2].doubleValue);
             g_scroll.contentSize = CGSizeMake(g_scroll.bounds.size.width, w[2].doubleValue + 32);
+            painted();
         } else if ([op isEqualToString:@"unlisten"]) {
         } else {
             [g_unused addObject:op];
@@ -523,7 +580,9 @@ void avra_spike_frame(const char* records) {
         return;
     }
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_FRAMES"]) said([@"frame: " stringByAppendingString:[frame stringByReplacingOccurrencesOfString:@"\n" withString:@" ; "]]);
+    double a0 = CACurrentMediaTime();
     applied(frame);
+    g_apply_s += CACurrentMediaTime() - a0;
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_FRAMES"]) {
         for (NSString* u in g_unused) said([NSString stringWithFormat:@"unused: %@ x%lu", u, (unsigned long)[g_unused countForObject:u]]);
         [g_unused removeAllObjects];
@@ -756,6 +815,7 @@ static UIView* sample(NSString* prim, NSString* words, NSString* placeholder) {
 static int64_t sixtieths(CGFloat points) { return (int64_t)llround(points * 60); }
 
 int64_t avra_spike_measure(const char* prim, const char* words, const char* placeholder, int64_t avail) {
+    g_measures++;
     NSString* p = [NSString stringWithUTF8String:prim];
     NSString* s = [NSString stringWithUTF8String:words];
     BOOL container = [@[ @"row", @"column", @"surface", @"list", @"item", @"card", @"form", @"fieldset", @"dialog" ] containsObject:p];
@@ -768,6 +828,7 @@ int64_t avra_spike_measure(const char* prim, const char* words, const char* plac
 }
 
 int64_t avra_spike_narrowest(const char* prim, const char* words) {
+    g_measures++;
     NSString* s = [NSString stringWithUTF8String:words];
     UIFont* f = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     CGFloat widest = 0;
@@ -809,6 +870,15 @@ int64_t avra_spike_narrowest(const char* prim, const char* words) {
     g_vc = vc;
     self.window = w;
     [w makeKeyAndVisible];
+    g_scroll_watch = [SpikeScrollWatch new];
+    g_scroll.delegate = g_scroll_watch;
+    bench_attach(g_scroll, ^{
+        UISwitch* s = (UISwitch*)found_kind(g_root, [UISwitch class]);
+        if (!s) return;
+        g_toggling = YES;
+        s.on = !s.on;
+        [g_target flipped:s];
+    });
     for (NSString* f in g_pending) avra_spike_frame(f.UTF8String);
     [g_pending removeAllObjects];
     sources_armed();
@@ -817,6 +887,7 @@ int64_t avra_spike_narrowest(const char* prim, const char* words) {
     resumed();
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_WITNESS"]) witnessed(w);
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BOARD_SCRIPT"]) board_scripted();
+    bench_start();
 }
 @end
 

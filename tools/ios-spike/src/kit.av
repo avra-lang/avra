@@ -40,8 +40,16 @@ fn title_in(a: Attribute) -> List<string> {
     match a { .Title(t) -> [t], rest -> [] }
 }
 
+/// The room a windowed list's spacer stands for: its unbuilt rows at the
+/// height each took.
+fn spacer_of(a: Attribute) -> List<int> {
+    match a { .Skipped(_, rows, extent) -> [rows * extent], rest -> [] }
+}
+
 /// What a node's own content asks of UIKit: a container's is its title.
 fn asked(n: Node, avail: int) -> Extent {
+    let spacer = [h for a in n.attrs for h in spacer_of(a)]
+    if !spacer.is_empty() { return Extent { w: 0, h: spacer.sum() * fine } }
     let packed = avra_spike_measure(n.prim.word(), shown_words(n), placeholder_of(n), avail / fine)
     Extent { w: packed / 1000000, h: packed % 1000000 }
 }

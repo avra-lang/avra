@@ -1,0 +1,37 @@
+//! W2: the board's task row in a windowed list of N tasks. The row is the
+//! board's own `task_row` shape (a checkbox, its title, a Remove button inside
+//! an item), copied because the board does not export it.
+use @std.ui.components.{button, checkbox, column, item, list, text}
+use @std.ui.tree.rows.{windowed}
+
+/// One task.
+type Row = { id: string, title: string, done: bool }
+
+state rows: List<Row> = []
+
+/// `n` tasks, every third done.
+export fn fill(n: int) { rows = [Row { id: "t${j}", title: "Task ${j + 1}", done: j % 3 == 0 } for j in 0..n] }
+
+fn marked(id: string, done: bool) { rows = [if r.id == id { r with { done: done } } else { r } for r in rows] }
+
+fn removed(id: string) { rows = [r for r in rows if r.id != id] }
+
+component task_row(row: Row) {
+    item {
+        checkbox self.row.title {
+            shown: self.row.done
+            on change { checked -> marked(self.row.id, checked) }
+        }
+        button "Remove" { on press { removed(self.row.id) } }
+    }
+}
+
+/// The tasks, built a window at a time.
+export component windowed_board {
+    column {
+        text "${rows.length} tasks"
+        list { windowed(rows, (r: Row) -> r.id, (r: Row) -> task_row r { key: r.id }) }
+    }
+}
+
+export fn windowed_view() -> windowed_board { windowed_board {} }

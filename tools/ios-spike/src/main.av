@@ -3,6 +3,8 @@
 use @std.ui.components.{text, button}
 use mount.{mount, read_once}
 use @ui.board.{tasks_written, view}
+use rows.{fill, windowed_view}
+use @std.text.{parse_int}
 use @std.io.{env}
 use @std.time.{ms, sleep}
 
@@ -36,6 +38,9 @@ fn ticked() -> int {
     n
 }
 
+/// `n` tasks as the board's server would send them, every third done.
+fn seeded(n: int) -> string? { "[${["{\"id\":${i + 1},\"title\":\"Task ${i + 1}\",\"done\":${if i % 3 == 0 { "true" } else { "false" }}}" for i in 0..n].join(",")}]" }
+
 /// A task that spins on the CPU and never waits.
 fn spun() -> int {
     mut x = 0
@@ -45,8 +50,12 @@ fn spun() -> int {
 
 let ticker = spawn ticked()
 let spinner = if env("AVRA_SPIKE_SPIN") == "1" { spawn spun() } else { spawn 0 }
-if env("AVRA_SPIKE_BOARD") == "1" {
-    let tasks = read_once("/tasks")
+let board_rows = parse_int(env("AVRA_SPIKE_ROWS") ?? "") ?? 0
+if env("AVRA_SPIKE_BOARD") == "2" {
+    fill(if board_rows > 0 { board_rows } else { 10000 })
+    mount(windowed_view, 40)
+} else if env("AVRA_SPIKE_BOARD") == "1" {
+    let tasks = if board_rows > 0 { seeded(board_rows) } else { read_once("/tasks") }
     if tasks != null { let _ = tasks_written(tasks!) }
     mount(view)
 } else {
