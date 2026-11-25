@@ -1,7 +1,7 @@
 //! The native target over the page's own matcher: one element per node, facts
 //! compared and sent, and a diff that says only what changed.
 use @std.ui.realize.native.element.{Native, lowered}
-use @std.ui.realize.native.patch.{NativePatch, native_diff}
+use @std.ui.realize.native.patch.{NativePatch, native_diff, moves_boxes}
 use @std.ui.realize.native.fact.{Fact, Scalar, What, same, style_facts}
 use @std.ui.realize.tests.support.{holding, keyed, leaf, text_node, button_node, switch_node}
 use @std.ui.realize.tests.support.spoken.{stamped_with}
@@ -96,6 +96,23 @@ spec "std/ui native — the diff" {
                 holding(.Column, [leaf(.Button, [.Label("Add")])]),
             )
                 .join(" | ") == "drop disabled"
+        }
+    }
+    given "what a paint moves" {
+        then "a toggled check moves no box" {
+            let first = native_diff([], lowered(holding(.Column, [switch_node("a", false)])), 0)
+            !moves_boxes(
+                native_diff(
+                    first.page,
+                    lowered(holding(.Column, [switch_node("a", true)])),
+                    first.next,
+                )
+                    .patches,
+            )
+        }
+        then "changed words move one" {
+            let first = native_diff([], lowered(counter(0)), 0)
+            moves_boxes(native_diff(first.page, lowered(counter(1)), first.next).patches)
         }
     }
     given "a fraction" {

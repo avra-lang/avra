@@ -563,6 +563,8 @@ static void applied(NSString* frame) {
             else n.said_seat = w[2].integerValue;
         } else if ([op isEqualToString:@"rect"] && w.count >= 6) {
             framed(n, w[2].doubleValue, w[3].doubleValue, w[4].doubleValue, w[5].doubleValue);
+        } else if ([op isEqualToString:@"content"] && w.count == 2) {
+            painted();
         } else if ([op isEqualToString:@"content"] && w.count >= 3) {
             g_root.frame = CGRectMake(16, 16, w[1].doubleValue, w[2].doubleValue);
             g_scroll.contentSize = CGSizeMake(g_scroll.bounds.size.width, w[2].doubleValue + 32);

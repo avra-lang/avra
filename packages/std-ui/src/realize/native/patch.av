@@ -8,7 +8,7 @@ use tree.seats.{Seat}
 use style.style.{Interaction}
 use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
 use realize.native.element.{Native}
-use realize.native.fact.{Fact, What, about, agree}
+use realize.native.fact.{Fact, What, about, agree, moves_box}
 
 /// One change to a native host's elements. `Place` puts an element under its
 /// parent — the root when absent — right after a sibling, or first.
@@ -20,6 +20,19 @@ export enum NativePatch {
     Remove(id: NodeId)
     Listen(id: NodeId, seat: Seat)
     Unlisten(id: NodeId, seat: Seat)
+}
+
+/// Whether `patches` can move a box: anything but a fact that only changes how a
+/// box looks or what it says to a reader.
+export fn moves_boxes(patches: List<NativePatch>) -> bool { patches.any(moves) }
+
+fn moves(p: NativePatch) -> bool {
+    match p {
+        .SetFact(_, f) -> moves_box(f.what),
+        .DropFact(_, what, _) -> moves_box(what),
+        .Create(_, _) or .Place(_, _, _) or .Remove(_) -> true,
+        .Listen(_, _) or .Unlisten(_, _) -> false,
+    }
 }
 
 /// The patches between two native trees, the elements as they now stand
