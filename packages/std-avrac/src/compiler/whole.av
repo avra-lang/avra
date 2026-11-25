@@ -196,7 +196,7 @@ export fn manifest_library(m: Manifest, externs: List<string>) -> LinkedPackage?
         name: m.name,
         library: "build/lib${library_stem(m.name)}",
         externs: externs,
-        wasm: !m.wasm_objects.is_empty(),
+        wasm: !platform_objects(m, object_dir(Platform.Wasm)).is_empty(),
     }
 }
 
@@ -209,10 +209,11 @@ export fn manifest_link_words(
     is_root: bool,
     world: LinkWorld,
     shared: bool = false,
+    dir: string = "",
 ) -> List<string> {
     let search = link_filled(m.search, world)
     let standing = if shared && m.shared != "" { search.find((d) -> shared_beside(d, m.shared, world)) } else { null }
-    [joined_path(root, o) for o in link_filled(m.objects, world)]
+    [joined_path(root, o) for o in link_filled(platform_objects(m, dir), world)]
         .concat(["-L${d}" for d in search])
         .concat(
             if standing != null { ["-l${m.shared}", "-Wl,-rpath,${standing!}"] } else { ["-l${l}" for l in link_filled(m.libs, world)] },
@@ -226,10 +227,26 @@ fn shared_beside(dir: string, name: string, world: LinkWorld) -> bool {
         (world.there)(joined_path(dir, "lib${name}.dylib"))
 }
 
-/// The words a non-host link carries of the package `m` at `root`: the `wasm_objects` it names, its
+/// The words a wasm link carries of the package `m` at `root`: the objects it carries there, its
 /// holes filled; never a native `-L`, `-l` or `[link.raw]`.
 export fn manifest_wasm_words(m: Manifest, root: string, world: LinkWorld) -> List<string> {
-    [joined_path(root, o) for o in link_filled(m.wasm_objects, world)]
+    [joined_path(root, o) for o in link_filled(platform_objects(m, object_dir(Platform.Wasm)), world)]
+}
+
+/// THE OBJECTS THE PACKAGE `m` CARRIES ON THE PLATFORM WHOSE OBJECT DIRECTORY IS `dir` (the host's
+/// is empty): its `[link.objects_for]` set for that directory where it names one, else `objects`.
+/// An entry names its file once, and the platform says where it is built: `dir` stands between
+/// the entry's directory and its file.
+export fn platform_objects(m: Manifest, dir: string) -> List<string> {
+    let named = m.objects_for.find((p) -> p.dir == dir)
+    [in_platform_dir(o, dir) for o in named?.objects ?? m.objects]
+}
+
+/// The object `entry` names, built for the platform whose object directory is `dir`.
+fn in_platform_dir(entry: string, dir: string) -> string {
+    if dir == "" { return entry }
+    let parts = entry.split("/")
+    parts.take(parts.length - 1).concat([dir, parts.last() ?? entry]).join("/")
 }
 
 /// The variables a word's `${NAME}` holes name, in order.

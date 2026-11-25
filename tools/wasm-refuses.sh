@@ -1,6 +1,6 @@
 #!/bin/sh
 # What a non-host target does with a row or a package it has no body for: a
-# core ROW, or a package whose manifest names no `wasm_objects`, is
+# core ROW, or a package whose manifest carries no objects on wasm32, is
 # refused BY NAME — never a linker's "undefined symbol", which accuses the
 # innocent. A package that DOES name a wasm object links instead.
 set -eu
