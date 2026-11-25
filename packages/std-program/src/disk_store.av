@@ -12,6 +12,7 @@
 //! within it when it opens, and each span where it's read: a pack that lies is foreign, a span that
 //! lies is a miss, and a compaction drops both. Beside the packs lies each binary's frontier, a base
 //! and the deltas over it, every file named by the hash of its octets.
+use settings.{program_settings}
 use @std.io.{
     AppendFile,
     Draft,
@@ -469,7 +470,7 @@ once fn wave_table() -> Cell<List<ptr>> {
 /// out. A record found there is checked like any kept record, read by read, by the process that
 /// takes it. Whether there is a table; with none, each process works alone, as before.
 export fn wave_sharing_begun(directory: string) -> bool {
-    if wave_alone() != null { return false }
+    if program_settings().debug.wave_alone { return false }
     if !wave_table().get().is_empty() {
         if wave_table_of().get() == directory { return false }
         wave_sharing_ended(true)
@@ -491,10 +492,6 @@ export fn wave_sharing_ended(gone: bool) {
     wave_table().set([])
     if gone { avra_shared_ended(shared) }
 }
-
-/// `AVRA_WAVE_ALONE`: a wave's processes share nothing while they work.
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn wave_alone() -> string? { env("AVRA_WAVE_ALONE") }
 
 /// WHETHER THIS PROCESS KEEPS WHAT IT LEARNS IN THE BUILD'S TABLE: a wave's processes do, and the
 /// asking process only while a wave it waits on runs. What it learns between waves reaches the next
@@ -742,10 +739,6 @@ const UNFINISHED_FILE: string = "saving.unfinished"
 
 /// Whether this process is one left to save a store: it waits for no save, its own least of all.
 export once fn saving_apart() -> Cell<bool> { Cell.new(false) }
-
-/// `AVRA_QTRACE`: the store says when it reads an answer from a share.
-// LICENSED input.debug_flag: a trace line is said, never read by an answer
-once fn shares_traced() -> string? { env("AVRA_QTRACE") }
 
 /// Whether this process has said it read an answer from a share.
 once fn share_read() -> Cell<bool> { Cell.new(false) }
@@ -1150,7 +1143,7 @@ impl AnswerStore for DiskStore {
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
         let unpublished? = self.unpublished_answer(answer) else {
             let read = first_answering(self.packs.get(), (pack) -> pack.answer_bytes(answer))
-            if read != null && shares_traced() != null { self.share_read_said(answer) }
+            if read != null && program_settings().user.qtrace { self.share_read_said(answer) }
             return read
         }
         unpublished
