@@ -94,7 +94,6 @@ Cause	packages/std-avrac/src/compiler/codes.av	message_of	spelled	the words a pa
 Cause	packages/std-avrac/src/compiler/codes.av	help_of	spelled	the advice a parse voice gives
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_name	spelled	whether a declaration is found by its name
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_type	spelled	whether a declaration names a type
-DeclKind	packages/std-avrac/src/compiler/interface.av	record_shape	spelled	the shape a held declaration's record line is written as
 Shape	packages/std-avrac/src/compiler/record.av	declared_kind	spelled	the declaration kind a record line mints
 Origin	packages/std-avrac/src/features/worklist.av	at	spelled	which file a node's own name resolves in
 Origin	packages/std-avrac/src/features/worklist.av	spanned_at	spelled	which file's text a node's span indexes
