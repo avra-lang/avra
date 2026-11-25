@@ -176,7 +176,8 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         # (a) a failing check is the cause behind every other state: name the
         # job — line, and rerun the failed jobs once.
         if failed:
-            want_rerun = t.get("attempt", 1) == 1 and f"rerun:{n}:{head}" not in rerun
+            want_rerun = (t.get("attempt", 1) == 1 and f"rerun:{n}:{head}" not in rerun
+                          and not p.get("test_live"))
             key = f"told:{n}:{head}"
             if want_rerun or key not in told:
                 body = f"BLOCKED: {t['job']} — {t['line']}"
@@ -419,6 +420,11 @@ def collect(repo, state):
         p["autoMerge"] = raw.get("autoMergeRequest") is not None
         p["nodeId"] = raw.get("id")
         p["test"] = test_of(repo, raw)
+        # A `test` run still pending is a run live on this PR: a rerun now would
+        # cancel it, the group being one per event.
+        p["test_live"] = any(c.get("status", "COMPLETED") != "COMPLETED"
+                             for c in raw.get("statusCheckRollup") or []
+                             if (c.get("name") or c.get("context")) == "test")
         prs.append(p)
     # Enrich only a failing PR that will be acted on (untold, or attempt 1).
     detail = 0
@@ -568,6 +574,11 @@ SELFTEST = [
     ("failed-pr-reruns-once",
      dict(prs=[_pr(1, "FAILURE")], runs=[], state=_empty_state()),
      [("comment", 1), ("rerun", 901)]),
+    # a failed run with another test run live on the PR is told, never rerun: the
+    # rerun would cancel the live one.
+    ("failed-with-live-run-not-rerun",
+     dict(prs=[_pr(3, "FAILURE", test_live=True)], runs=[], state=_empty_state()),
+     [("comment", 3)]),
     # the same head a second time: named as already told, never rerun twice.
     ("rerun-not-twice",
      dict(prs=[_pr(1, "FAILURE", test={"conclusion": "FAILURE", "runId": 901,

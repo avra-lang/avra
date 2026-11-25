@@ -49,8 +49,11 @@ on:
 
 # The event is part of the group: a run asked for by hand on a ref never
 # cancels that ref's own PR check or train.
+# A `labeled` run is its own group: the label and the open of one PR start two runs
+# on one head, and a shared group had each cancel the other. The mode is read from the
+# PR at run time, so either run gives the same verdict.
 concurrency:
-  group: checks-${{ github.event_name }}-${{ github.ref }}
+  group: checks-${{ github.event_name }}-${{ github.event.action == 'labeled' && 'labeled' || 'run' }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -68,6 +71,7 @@ jobs:
     timeout-minutes: 65
     outputs:
       full: ${{ steps.plan.outputs.full }}
+      mirror: ${{ steps.plan.outputs.mirror }}
       compiler_source: ${{ steps.release.outputs.source }}
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
@@ -185,8 +189,19 @@ jobs:
             [ -n "$pr_json" ] || echo "::warning::the PR's state could not be read; the full gate runs"
             [ "$(printf '%s' "$pr_json" | python3 tools/pr_mode.py)" = light ] && full=0
           fi
+          # A LABELED RUN NEVER DOUBLES A GATE: when another run on this head is or was the
+          # full one, this run waits for it and mirrors its verdict (tools/ci_dup_run.py).
+          mirror=
+          if [ "$event" = pull_request ] && [ "${{ github.event.action }}" = labeled ]; then
+            dup=$(GH_TOKEN="$GH_TOKEN" python3 tools/ci_dup_run.py --repo "${{ github.repository }}" \
+              --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}") || dup=work
+            case "$dup" in
+                mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0 ;;
+            esac
+          fi
           {
             echo "full=${full}"
+            echo "mirror=${mirror}"
             echo "changed=${changed}"
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
@@ -899,7 +914,12 @@ jobs:
         name: light gate compiler
         run: |
           echo "light gate: compiler steps skipped — the tree's compiler is not the published one; ready or label full-ci for a verdict"
-      - if: needs.prepare.outputs.full == '0'
+      - if: needs.prepare.outputs.mirror != ''
+        name: mirror
+        run: |
+          echo "test: another run for this head carries the verdict — ${{ needs.prepare.outputs.mirror }}"
+          case "${{ needs.prepare.outputs.mirror }}" in "success "*) exit 0 ;; *) exit 1 ;; esac
+      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.mirror == ''
         name: light draft
         run: |
           echo "test: NOT A VERDICT — a draft runs the light gate; ready the PR or add the full-ci label for the whole gate"

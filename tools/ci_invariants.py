@@ -26,12 +26,21 @@ lists and refuses by name:
   run-mode         a PR's run mode is read from the API at run time (tools/pr_mode.py),
                    never from the event payload; a light run whose compiler is not
                    the published one skips the gate and says so.
+<<<<<<< ours
   compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
                    before it builds one: the route rides the wire, and the build branch
                    comes last.
   path-gate        `runtime-keep` runs on a PR only when prepare's path gate
                    (tools/ci_path_gate.py) says a path it reads changed; main's
                    push and a hand-run owe it always.
+=======
+  race-split       a `labeled` run never shares its concurrency group with the other
+                   pull_request runs, so the label and the open of one PR cannot
+                   cancel each other; the run mode is read at run time, so the
+                   runs that remain give one verdict.
+  dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
+                   it never runs a second gate beside it (tools/ci_dup_run.py).
+>>>>>>> theirs
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -207,6 +216,7 @@ def check_release_order(jobs):
 LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
 
 
+<<<<<<< ours
 def check_path_gate(workflow_text):
     """`runtime-keep` is conditioned on prepare's path-gate output, and that
     output is the path gate's own decision. Answers (refusals, words)."""
@@ -220,6 +230,54 @@ def check_path_gate(workflow_text):
     if refusals:
         return refusals, []
     return [], ["path-gate: runtime-keep runs on the path gate's decision"]
+=======
+def check_race_split(workflow_text):
+    """The concurrency group separates `labeled` runs from the others, and the
+    run mode is read at run time. Answers (refusals, words)."""
+    m = re.search(r"^concurrency:\s*\n\s*group: (.+)$", workflow_text, re.M)
+    refusals = []
+    if not m:
+        refusals.append("the workflow names no concurrency group")
+    elif "github.event.action == 'labeled'" not in m.group(1):
+        refusals.append("the concurrency group does not split `labeled` runs: a label and an open cancel each other")
+    if "tools/pr_mode.py" not in workflow_text:
+        refusals.append("the run mode is not read at run time")
+    if refusals:
+        return refusals, []
+    return [], ["race-split: a labeled run has its own concurrency group"]
+
+
+def check_dup_run(workflow_text):
+    """The labeled run asks tools/ci_dup_run.py for the verdict and mirrors it, and
+    the test job's light and verdict steps stand down for a mirror. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    if "tools/ci_dup_run.py" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_dup_run.py whether a labeled run owes the gate")
+    if "mirror: ${{ steps.plan.outputs.mirror }}" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not expose the mirror verdict")
+    test = jobs.get("test", "")
+    if "needs.prepare.outputs.mirror != ''" not in test:
+        refusals.append("`test` does not mirror another run's verdict")
+    if "needs.prepare.outputs.full == '0' && needs.prepare.outputs.mirror == ''" not in test:
+        refusals.append("`test` names a light draft beside a mirrored verdict")
+    if refusals:
+        return refusals, []
+    return [], ["dup-run: a labeled run mirrors the full run on its head"]
+
+
+def check_ready_race(pr_mode_mod):
+    """#701's race: a PR readied while its update runs. Its mode is the PR's state at
+    run time, so the ready run and the synchronize run both read full. Answers (refusals, words)."""
+    refusals = []
+    if pr_mode_mod.mode('{"draft": false, "labels": []}') != "full":
+        refusals.append("a readied PR is not read as full, so a run queued before the ready event would stay light")
+    if pr_mode_mod.mode('{"draft": true, "labels": []}') != "light":
+        refusals.append("a draft without the label is not read as light")
+    if refusals:
+        return refusals, []
+    return [], ["ready-race: a readied PR's run is full whichever event started it"]
+>>>>>>> theirs
 
 
 def check_run_mode(workflow_text):
@@ -408,10 +466,16 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
                   lambda: check_run_mode(workflow_text),
+<<<<<<< ours
                   lambda: check_compiler_route(
                       open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
                       open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
                   lambda: check_path_gate(workflow_text),
+=======
+                  lambda: check_race_split(workflow_text),
+                  lambda: check_dup_run(workflow_text),
+                  lambda: check_ready_race(__import__("pr_mode")),
+>>>>>>> theirs
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -607,6 +671,7 @@ rt-header:
     assert ungated_gate != real_wf
     assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
 
+<<<<<<< ours
     real_wf = open(CHECKS, encoding="utf-8").read()
     assert check_path_gate(real_wf)[0] == [], check_path_gate(real_wf)
     ungated_rk = real_wf.replace("    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
@@ -616,6 +681,25 @@ rt-header:
 
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
           "light-draft, run-mode, path-gate, warm-edit held on fixtures")
+=======
+    real_race = open(CHECKS, encoding="utf-8").read()
+    assert check_race_split(real_race)[0] == [], check_race_split(real_race)
+    # the ready and the synchronize race of one head share a group: refused unless the
+    # group splits, so the fixture that breaks the split is named
+    shared = real_race.replace("${{ github.event.action == 'labeled' && 'labeled' || 'run' }}", "run")
+    assert shared != real_race
+    assert any("labeled" in x for x in check_race_split(shared)[0]), check_race_split(shared)
+
+    real_dup = open(CHECKS, encoding="utf-8").read()
+    assert check_dup_run(real_dup)[0] == [], check_dup_run(real_dup)
+    unmirrored = real_dup.replace("needs.prepare.outputs.mirror != ''", "needs.prepare.outputs.mirror == ''", 1)
+    assert unmirrored != real_dup
+    assert any("mirror" in x for x in check_dup_run(unmirrored)[0]), check_dup_run(unmirrored)
+    import pr_mode as _pm
+    assert check_ready_race(_pm)[0] == [], check_ready_race(_pm)
+    print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
+          "light-draft, run-mode, race-split, dup-run, ready-race, warm-edit held on fixtures")
+>>>>>>> theirs
     return 0
 
 
