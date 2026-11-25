@@ -2,6 +2,10 @@
 // tell, names unique on the view, and the varied cases that draw what their base draws set aside.
 use @std.ui.components.{button, text}
 use @std.ui.tree.story.{Case, Story, Told}
+use @std.ui.tree.view.{tree_of}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.env.{Env}
+use @std.text.{cells}
 use @std.ui.tree.viewed.{ViewRow, Viewed, views}
 use @std.ui.tree.story.{stories}
 use @std.ui_gallery.{Shelf, Pin, shelves, untold, matching, pins_of}
@@ -41,6 +45,12 @@ fn count(s: Shelf?) -> int {
 
 fn pin_said(pins: List<Pin>) -> string { [[p.family, p.view, p.case, p.dial, p.why, p.waits].join(" ") for p in pins].join(" | ") }
 
+/// The cases whose terminal drawing at `width` columns holds a line wider than that, in the
+/// terminal's own cells (an ideograph two, an emoji its joiner holds one glyph).
+fn overflowing(width: int) -> List<string> {
+    ["${s.viewed.name}/${c.name}" for s in all() for c in s.cases if render(tree_of(c.view), Env {}, width).split("\n").any(cells(it) > width)]
+}
+
 fn says_unbroken(s: Shelf) -> bool { s.cases.all(it.name.contains("unbroken")) }
 
 spec "@std/ui_gallery storyboard" {
@@ -61,6 +71,10 @@ spec "@std/ui_gallery storyboard" {
     }
     given "a view no story tells" {
         then "is named as untold" { untold(shelves([row("lone")], [])).join(", ") == "lone" }
+    }
+    given "the terminal, held to a narrow width" {
+        then "no case std-ui's stories tell draws a line wider than 24 columns at 24" { overflowing(24).join(", ") == "" }
+        then "nor at 12" { overflowing(12).join(", ") == "" }
     }
     given "the claims' baseline" {
         then "a pin line names its family, view, case, dial, why and what ends it" {
