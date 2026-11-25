@@ -3,6 +3,8 @@
 //! every node where it was; and what its top level sees held to what the workspace's namespace
 //! binds, name for name, wherever the workspace's declaration was written. Says each file that
 //! differs and how many it read.
+use settings.{cli_settings}
+use @std.avrac.core.settings.{avrac_settings}
 use @std.program.pass.{Pass}
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
@@ -286,8 +288,7 @@ impl Runnable for TapesCmd {
         let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions(), disk.name)
         let ledger = if args.has_flag("passes_shown") { if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table } } else { LedgerSaid.Unsaid }
-        // LICENSED input.timing: a phase timing is reported, never an input of what is found
-        if env("AVRA_QUERY_TIMES") == "1" || !(ledger is .Unsaid) { engine.time_queries() }
+        if avrac_settings().debug.query_times || !(ledger is .Unsaid) { engine.time_queries() }
         if args.option("share") != "" { return share_said(store, engine, disk, args.option("share")) }
         let code = held(engine, disk, args, argued)
         ledger_said(
@@ -328,8 +329,7 @@ fn package_places(root: string, name: string, std: string, deps: Map<string, str
 /// laid in it: on unless `AVRA_MACHINE_STORE=0` (`AVRA_MACHINE_STORE_DIR` places it), and none
 /// where it can't stand.
 fn machine_layer() -> MachineLayer? {
-    // LICENSED input.debug_flag: whether answers are shared across packages decides where they're kept, never what they are
-    if env("AVRA_MACHINE_STORE") == "0" { return null }
+    if !cli_settings().debug.machine_store { return null }
     let directory? = machine_store_dir() else { return null }
     let print? = own_print() else { return null }
     if !machine_store_stands(directory) { return null }
@@ -339,8 +339,7 @@ fn machine_layer() -> MachineLayer? {
 
 /// Where the machine's store stands: `AVRA_MACHINE_STORE_DIR`, else `tapes` in the machine's cache.
 fn machine_store_dir() -> string? {
-    // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
-    let placed = env("AVRA_MACHINE_STORE_DIR")
+    let placed = cli_settings().debug.machine_store_dir
     if placed != null { return placed }
     let cache? = machine_cache() else { return null }
     joined_path(cache, "tapes")
@@ -459,8 +458,7 @@ fn disk_built(
     release: bool,
 ) -> Result<string, int> {
     let stem = native_stem + binary_suffix(platform_of(tools?.target ?? ""))
-    // LICENSED input.asked: the build's mode, carried in its question, so its answer is keyed by it
-    let mode = match build_mode(env("AVRA_PROGRAM_MODE") ?? "", tools?.target ?? "", release) {
+    let mode = match build_mode(cli_settings().user.program_mode, tools?.target ?? "", release) {
         .Ok(m) -> m,
         .Err(why) -> {
             eprintln("avra: ${why}")
@@ -468,8 +466,7 @@ fn disk_built(
         },
     }
     let root = disk.root
-    // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    let asks_timed = env("AVRA_QUERY_TIMES") == "1"
+    let asks_timed = avrac_settings().debug.query_times
     let worked = program_worked(
         joined_path(root, ".avra-cache/tapes"),
         disk.name,
@@ -480,8 +477,7 @@ fn disk_built(
     )
     let store = worked.store
     let engine = worked.engine
-    // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    if timed || env("AVRA_QUERY_TIMES") == "1" || !(ledger_asked().get() is .Unsaid) { engine.time_queries() }
+    if timed || avrac_settings().debug.query_times || !(ledger_asked().get() is .Unsaid) { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return .Err(refused!) }
     let _ = program_placed(worked, disk.file_at(bin), ahead_count(), asks_timed)
@@ -491,7 +487,7 @@ fn disk_built(
         worked,
         asked.entry,
         ahead_count(),
-        env("AVRA_QUERY_TIMES") == "1",
+        avrac_settings().debug.query_times,
         () -> {
             let refusing = phased(
                 engine,
@@ -558,7 +554,7 @@ fn disk_built(
         Pass.Link,
         () -> binary_placed(kept_of(built), stem) ?? fallback_placed(kept_of(built), stem),
     )
-    if place_kill_hook() == "1" { exit(.Code(137)) }
+    if cli_settings().debug.kill_after_place { exit(.Code(137)) }
     store_left_kept(engine, store)
     times_said(engine)
     let counted = objects_counted().get()
@@ -820,9 +816,8 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
 fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
     // LICENSED input.live_process: whether this process is the first, which no heir outlives; no compile answer reads it
     let first = this_process() == 1
-    // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    let quiet = env("AVRA_QUERY_TIMES") != "1"
-    if kept_here() != null ||
+    let quiet = !avrac_settings().debug.query_times
+    if cli_settings().debug.store_kept_here ||
         first ||
         !saved_by_heir(store, quiet, () -> kept_and_said(engine, store)) {
         store_kept(engine, store)
@@ -834,15 +829,8 @@ fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
 fn kept_and_said(engine: QueryEngine, store: LayeredStore) -> string? {
     phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
     let saved = phased(engine, "the store saved", Pass.StoreSave, () -> store.saved())
-    // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    if env("AVRA_QUERY_TIMES") == "1" { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
+    if avrac_settings().debug.query_times { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
     unsaved_cause(store, saved)
-}
-
-/// `AVRA_STORE_KEPT_HERE`: a build keeps its store before it answers.
-once fn kept_here() -> string? {
-    // LICENSED input.debug_flag: where the store is saved moves no answer
-    env("AVRA_STORE_KEPT_HERE")
 }
 
 /// The engine's frontier and its store, kept for the next build to read.
@@ -876,10 +864,8 @@ fn unsaved_cause(store: LayeredStore, saved: Result<int, IoError>) -> string? {
 /// How many processes a build lowers its declared bodies across: `AVRA_WORK_AHEAD_CORES`, else at
 /// most four of the machine's cores; one under `AVRA_WORK_AHEAD_OFF`.
 fn ahead_count() -> int {
-    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
-    if env("AVRA_WORK_AHEAD_OFF") == "1" { return 1 }
-    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
-    let told? = parse_int(env("AVRA_WORK_AHEAD_CORES") ?? "") else { return if cores_online() < MOST_AHEAD { cores_online() } else { MOST_AHEAD } }
+    if cli_settings().debug.work_ahead_off { return 1 }
+    let told? = cli_settings().debug.work_ahead_cores else { return if cores_online() < MOST_AHEAD { cores_online() } else { MOST_AHEAD } }
     told
 }
 
@@ -1250,16 +1236,14 @@ collect listed_build_facts: List<ListedQuery> = @query_definition in self as Lis
 /// Where `engine`'s process spent its time, when it timed its asks: the families with the most time
 /// of their own, then the whole split by side.
 fn times_said(engine: QueryEngine) {
-    // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    if env("AVRA_QUERY_TIMES") != "1" { return }
+    if !avrac_settings().debug.query_times { return }
     let times? = engine.kept_times() else { return }
     eprintln("time: ${times.spoken(15)}")
     eprintln("phases: ${times.phases_spoken()}")
     eprintln("split: ${times.split()}")
     eprintln("cutoff: ${engine.cutoff_said()}")
     eprintln(held_spoken())
-    // LICENSED input.timing: a phase timing is reported, never an input of what is found
-    if env("AVRA_QUERY_FAMILIES") == "1" { eprintln("families:\n${times.every_family()}") }
+    if cli_settings().debug.query_families { eprintln("families:\n${times.every_family()}") }
 }
 
 /// How many answers `engine` worked out here, by the query that asked each, inputs aside.
@@ -2291,8 +2275,7 @@ export fn program_tested(paths: List<string>, timed: bool = false) -> int {
         if !stands { eprintln(proofs_said(tally.owed, printing.length, tally.owed_ns / 1000000)) }
         s.engine.frontier_kept()
         let _ = s.store.saved()
-        // LICENSED input.timing: a phase timing is reported, never an input of what is found
-        if env("AVRA_QUERY_TIMES") == "1" {
+        if avrac_settings().debug.query_times {
             eprintln(
                 "worked: ${s.engine.worked_count()} answers here; ${worked_by_query(s.engine)}",
             )
@@ -2532,18 +2515,8 @@ fn suite_key(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, pa
     )
 }
 
-/// The test hook that kills a build between placing its binary and saving its store, read once a
-/// process.
-once fn place_kill_hook() -> string {
-    // LICENSED input.debug_flag: a test hook that kills a build after its binary is placed and before its store is saved, so a store a killed build leaves is witnessed
-    env("AVRA_KILL_AFTER_PLACE") ?? ""
-}
-
-/// The test hook naming a program test whose making traps, read once a process.
-once fn trap_hook() -> string {
-    // LICENSED input.debug_flag: a test hook that traps the making of the program test it names, so the guard over each test's making is witnessed
-    env("AVRA_RAN_TRAP") ?? ""
-}
+/// The test hook naming a program test whose making traps.
+fn trap_hook() -> string { cli_settings().debug.ran_trap }
 
 /// How the evaluator's run of the program test `pr` differs from what it expects, run in a process
 /// of its own as a suite runs it, so a test that signals or ends the process that runs it ends only
@@ -2832,9 +2805,7 @@ fn object_kept(path: string) -> ObjectKept? {
 
 /// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
 fn objects_ceiling() -> int {
-    // LICENSED input.debug_flag: the store's own ceiling, never an input of what is built
-    let told = env("AVRA_OBJ_MAX_BYTES")
-    parse_int(told ?? "") ?? OBJECT_BYTES_KEPT
+    avrac_settings().user.obj_max_bytes ?? OBJECT_BYTES_KEPT
 }
 
 /// The kept objects' ceiling where none is told: two gigabytes.
@@ -3559,7 +3530,4 @@ fn manifest_said(h: ProgramFile) -> string {
 }
 
 /// Whether each link says its command line on stderr: `AVRA_LINK_TRACE=1`.
-fn link_traced() -> bool {
-    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-    env("AVRA_LINK_TRACE") == "1"
-}
+fn link_traced() -> bool { cli_settings().debug.link_trace }

@@ -3,6 +3,7 @@
 //! store already lets many processes publish at once, so nothing is shared but the directory, and
 //! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
 //! didn't work ahead reaches the same ones by itself.
+use settings.{program_settings}
 use pass.{Pass}
 use layered_store.{LayeredStore, program_store_at}
 use disk_store.{
@@ -121,7 +122,7 @@ fn merge_begun(store: LayeredStore, process_count: int) -> int {
     if process_count < 2 ||
         store.own.packs.get().length < 2 ||
         store.entries_published() < worth_merging_apart() ||
-        merged_here() != null {
+        program_settings().debug.merged_here {
         let _ = store.merged()
         return NO_GROUP
     }
@@ -134,9 +135,9 @@ fn merge_begun(store: LayeredStore, process_count: int) -> int {
         return NO_GROUP
     }
     if core < process_count {
-        let merged = share_unmerged() != "${core}" &&
+        let merged = program_settings().debug.share_unmerged != "${core}" &&
             store.share_merged(key_shares(process_count)[core])
-        if merged && shares_said() != null { eprintln("store: share ${core} of ${process_count} published") }
+        if merged && program_settings().user.qtrace { eprintln("store: share ${core} of ${process_count} published") }
         let _ = avra_cores_leave(group, core, 1, if merged { 0 } else { 1 })
     }
     group
@@ -154,24 +155,7 @@ fn merge_ended(store: LayeredStore, group: int, process_count: int) {
 
 /// How many answers and questions are worth merging apart: `AVRA_MERGED_APART_FROM`, a witness's way
 /// to merge a small store apart, else `WORTH_MERGING_APART`.
-fn worth_merging_apart() -> int { parse_int(merged_apart_from() ?? "") ?? WORTH_MERGING_APART }
-
-/// `AVRA_MERGED_APART_FROM`: how many answers and questions a witness has merged apart.
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn merged_apart_from() -> string? { env("AVRA_MERGED_APART_FROM") }
-
-/// `AVRA_SHARE_UNMERGED`: the share of that number is left unmerged by its process, for a witness
-/// that a share nobody published costs time and no answer.
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn share_unmerged() -> string? { env("AVRA_SHARE_UNMERGED") }
-
-/// `AVRA_QTRACE`: each process that merged a share says it published it.
-// LICENSED input.debug_flag: a trace line is said, never read by an answer
-once fn shares_said() -> string? { env("AVRA_QTRACE") }
-
-/// `AVRA_MERGED_HERE`: the asking process merges its cores' packs itself.
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn merged_here() -> string? { env("AVRA_MERGED_HERE") }
+fn worth_merging_apart() -> int { program_settings().debug.merged_apart_from ?? WORTH_MERGING_APART }
 
 /// Answers every unknown item across processes, each taking the next item no other has taken
 /// and asking it where it knows nothing of it, and says whether any process ran: none where fewer than
@@ -292,9 +276,9 @@ export fn asked_beside<T, R>(
     if core < 1 {
         within_and_gone<T, R>(store, engine, items, work with { process_count: 1 }, group, core)
     }
-    if beside_hook() == "killed" { let _ = avra_cores_killed(group, 0) }
+    if program_settings().debug.beside == "killed" { let _ = avra_cores_killed(group, 0) }
     wave_writes(true)
-    let wanted = meanwhile() && beside_hook() != "unwanted"
+    let wanted = meanwhile() && program_settings().debug.beside != "unwanted"
     wave_writes(false)
     if !wanted { let _ = avra_cores_killed(group, 0) }
     engine.kept_times()?.opened("the cores", TimedSide.Outside, Pass.Lower)
@@ -313,13 +297,6 @@ export fn asked_beside<T, R>(
     engine.kept_times()?.closed()
     if work.timed { eprintln("beside: ${taken}") }
     true
-}
-
-/// `AVRA_BESIDE`: a witness's way into a process answering beside the asking one — `killed` ends
-/// it before it is waited for, `unwanted` has the asking process want nothing of it.
-once fn beside_hook() -> string {
-    // LICENSED input.debug_flag: a test hook that ends a process early, so what it owed is witnessed answered without it
-    env("AVRA_BESIDE") ?? ""
 }
 
 /// A process forked within a build: takes turns at `items` with the engine it was forked holding,
@@ -356,7 +333,7 @@ fn shared_taken(engine: QueryEngine, processes: int) -> string {
         engine.shared_let_go()
         return "no core's answers taken: a process of this build ended before it published"
     }
-    let why? = engine.took_shared(unproven() == null) else { return "${processes} cores' answers taken" }
+    let why? = engine.took_shared(!program_settings().debug.ahead_unproven) else { return "${processes} cores' answers taken" }
     "no core's answers taken: ${why}"
 }
 
@@ -544,7 +521,7 @@ once fn waves_forked() -> Cell<int> { Cell.new(0) }
 /// THE WITNESS'S EDIT, made between a wave and its merge: `AVRA_AHEAD_EDIT` as
 /// `<wave>:<path>=<text>`, written after the wave of that number, counted from 0, forked.
 fn edited_mid_build(wave: int) {
-    let spelled? = ahead_edit() else { return }
+    let spelled? = program_settings().debug.ahead_edit else { return }
     let colon = spelled.index_of(":")
     let equals = spelled.index_of("=")
     if colon < 0 || equals < colon || spelled.substring(0, colon) != "${wave}" { return }
@@ -553,13 +530,4 @@ fn edited_mid_build(wave: int) {
         spelled.substring(equals + 1, spelled.length),
     )
 }
-
-/// `AVRA_AHEAD_EDIT`: a witness's edit between a wave and its merge.
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn ahead_edit() -> string? { env("AVRA_AHEAD_EDIT") }
-
-/// `AVRA_AHEAD_UNPROVEN`: the cores' answers taken with no input proved, for a witness that the
-/// proof is what catches an input that moved.
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn unproven() -> string? { env("AVRA_AHEAD_UNPROVEN") }
 
