@@ -113,6 +113,8 @@ static void sources_armed(void) {
 @property(nonatomic) double amount;
 @property(nonatomic, strong) UIViewController* sheet;
 @property(nonatomic, strong) UIColor* ink;
+@property(nonatomic) CGFloat pad_start;
+@property(nonatomic) CGFloat pad_top;
 @end
 @implementation SpikeNode
 @end
@@ -292,11 +294,13 @@ static UIColor* ink_colour(NSString* ink) {
 
 // A spacing step in points.
 static CGFloat step(NSString* z) {
-    NSDictionary<NSString*, NSNumber*>* by = @{ @"none" : @0, @"xs" : @4, @"s" : @8, @"m" : @12, @"l" : @20, @"xl" : @28, @"xxl" : @40 };
+    NSDictionary<NSString*, NSNumber*>* by = @{ @"none" : @0, @"xs" : @4, @"s" : @8, @"m" : @16, @"l" : @32, @"xl" : @48 };
     return by[z] ? by[z].doubleValue : 8;
 }
 
 static void padded(SpikeNode* n, int code, NSString* z) {
+    if (code == AVRA_FACT_pad_start) n.pad_start = step(z);
+    if (code == AVRA_FACT_pad_top) n.pad_top = step(z);
     if (![n.view isKindOfClass:[UIStackView class]]) return;
     UIStackView* s = (UIStackView*)n.view;
     s.layoutMarginsRelativeArrangement = YES;
@@ -416,6 +420,8 @@ static void fact_set(SpikeNode* n, int code, NSString* under, NSString* kind, NS
         }
         break;
     case AVRA_FACT_mode: moded(value); break;
+    case AVRA_FACT_align: case AVRA_FACT_distribute: case AVRA_FACT_wrap: case AVRA_FACT_width: case AVRA_FACT_height: case AVRA_FACT_grow: case AVRA_FACT_order:
+    case AVRA_FACT_margin_start: case AVRA_FACT_margin_end: case AVRA_FACT_margin_top: case AVRA_FACT_margin_bottom: break;
     default: [g_unused addObject:[NSString stringWithFormat:@"fact %d", code]];
     }
 }
@@ -463,9 +469,7 @@ static void framed(SpikeNode* n, CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
     n.view.frame = CGRectMake(x, y, w, h);
     if (n.title) {
         CGSize s = [n.title sizeThatFits:CGSizeMake(w, CGFLOAT_MAX)];
-        CGFloat inset = 0;
-        for (UIView* k in n.view.subviews) if (k != n.title) inset = inset == 0 ? k.frame.origin.x : MIN(inset, k.frame.origin.x);
-        n.title.frame = CGRectMake(inset, inset, w - 2 * inset, s.height);
+        n.title.frame = CGRectMake(n.pad_start, n.pad_top, w - 2 * n.pad_start, s.height);
     }
 }
 
@@ -770,8 +774,9 @@ int64_t avra_spike_narrowest(const char* prim, const char* words) {
     for (NSString* word in [s componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet])
         widest = MAX(widest, ceil([word sizeWithAttributes:@{NSFontAttributeName : f}].width));
     NSString* p = [NSString stringWithUTF8String:prim];
+    if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"])
+        return sixtieths(ceil([s sizeWithAttributes:@{NSFontAttributeName : f}].width) + 25);
     if ([p isEqualToString:@"switch"] || [p isEqualToString:@"checkbox"]) widest += 59;
-    if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"]) widest += 25;
     if ([p isEqualToString:@"field"] || [p isEqualToString:@"progress"] || [p isEqualToString:@"slider"]) widest = MAX(widest, 120);
     return sixtieths(widest);
 }
