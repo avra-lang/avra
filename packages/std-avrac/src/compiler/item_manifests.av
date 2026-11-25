@@ -2,9 +2,9 @@
 //! through the engine as an input, and held to the manifest's laws in the old path's own voices
 //! (`manifest_read`). Each manifest is judged on its own, so an edit to one re-judges it alone; the
 //! walk over them reads only what each one's rows name.
-use compiler.host.{manifest_read}
+use compiler.host.{ManifestRead, manifest_read}
 use features.{Budgets, budgets_of}
-use diagnostics.{Diag, new_source_file}
+use diagnostics.{Diag, SourceFile, new_source_file}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -45,7 +45,7 @@ export fn manifest_judged(engine: QueryEngine, package: string) -> ManifestJudge
             bytes: budgets_of().bytes,
         }
     }
-    let read = manifest_read(new_source_file("${package}/${MANIFEST}", text))
+    let read = judged_read(new_source_file("${package}/${MANIFEST}", text))
     ManifestJudged {
         refuses: read.voices.any(refuses),
         warns: read.voices.any((d) -> !refuses(d)),
@@ -99,7 +99,13 @@ export fn manifest_file(package: string) -> SourceFileAddress { SourceFileAddres
 export fn is_manifest(file: SourceFileAddress) -> bool { file.path_in_package == MANIFEST }
 
 /// What the manifest `text`, standing at `path`, says, in the old path's voices.
-export fn manifest_voices(path: string, text: string) -> List<Diag> { manifest_read(new_source_file(path, text)).voices }
+export fn manifest_voices(path: string, text: string) -> List<Diag> { judged_read(new_source_file(path, text)).voices }
+
+/// A manifest read whole, its targets held to what the text alone cannot say (`target_laws`).
+export fn judged_read(src: SourceFile) -> ManifestRead {
+    let read = manifest_read(src)
+    read with { voices: read.voices.concat(target_laws(read.manifest)) }
+}
 
 /// Whether `d` fails a build: anything above a warning.
 fn refuses(d: Diag) -> bool { !(d.severity is .Warning) }

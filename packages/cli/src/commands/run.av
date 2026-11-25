@@ -1,19 +1,49 @@
 //! `avra run` — evaluate a program and print its value.
 use @std.cli.{CliResult, Runnable, command, flag}
 
-use @std.avrac.compiler.host.{no_target}
+use @std.avrac.compiler.host.{no_entry}
 use @std.avrac.diagnostics.{render_among}
 use @std.avrac.compiler.backend.{Ended}
+use @std.avrac.compiler.{TargetRow, target_named, target_triple}
 use @std.path.{dir_of, joined_path}
 
 type RunCmd = {}
 
 impl Runnable for RunCmd {
     fn run(args: CliResult) -> int {
-        // a wasm run builds the module, on the path the door chooses, and hands it to the host
-        // runner; the program layer or the evaluator answers every other run
-        if args.option("target") != "" { return run_wasm_command(args) }
+        // a target runs where its host does — an app with no `--target` runs its first; a raw wasm
+        // triple builds the module and hands it to the host runner; the program layer or the
+        // evaluator answers every other run
+        let spelled = args.option("target")
+        let first = if spelled == "" { app_targets(path_arg(args)).first() } else { null }
+        let row = first ?? target_named(spelled)
+        if row != null { return target_ran(args, row!, first != null) }
+        if spelled != "" { return run_wasm_command(args) }
         if args.has_flag("eval") { program_evaluated(args) } else { program_ran(args) }
+    }
+}
+
+/// `avra run` of the target `row`, saying so first where it is the app's first, `named`: WHAT RUN
+/// MEANS IS THE HOST'S. A process's binary runs attached to this terminal; a page is built and
+/// served at a printed local address, its server beside it, nothing watched; an iOS app boots one
+/// simulator, is installed and launched there, its output attached.
+fn target_ran(args: CliResult, row: TargetRow, named: bool) -> int {
+    let path = path_arg(args)
+    if named { eprintln(first_target_said(row)) }
+    match row.host {
+        .Process -> {
+            let m = manifest_at(package_root(path) ?? path)
+            let binary = match built_as(args, path, target_triple(row, m), row.name) {
+                .Ok(b) -> b,
+                .Err(code) -> { return code },
+            }
+            match run_binary(binary) {
+                .Ok(exit) -> status_of_exit(exit),
+                .Err(e) -> refused_by_host(e),
+            }
+        },
+        .Page -> page_served(args, path, row.triple, false),
+        .Ios -> unequipped(app_unbundled(row)),
     }
 }
 
@@ -22,7 +52,7 @@ impl Runnable for RunCmd {
 fn program_ran(args: CliResult) -> int {
     let path = path_arg(args)
     if is_a_dir(path) && entry_written(path) == null {
-        println(render_among(no_target(path), []))
+        println(render_among(no_entry(path), []))
         return 1
     }
     let binary = match built_binary(args) { .Ok(b) -> b, .Err(code) -> { return code } }
@@ -39,7 +69,7 @@ fn program_evaluated(args: CliResult) -> int {
     }
     let root = package_root(path) ?? path
     let entry? = entry_written(root) else {
-        println(render_among(no_target(root), []))
+        println(render_among(no_entry(root), []))
         return 1
     }
     program_refuse_evaluated(root, joined_path(root, entry), live: true)
@@ -52,6 +82,12 @@ export fn ended_as(e: Ended) -> int {
     match e { .Clean -> 0, .Trapped(words) -> said(words, 2), .Cancelled(words) -> said(words, 1) }
 }
 
+fn first_target_said(row: TargetRow) -> string { "avra: running `${row.name}`, the first of `[app] targets`" }
+
+fn app_unbundled(row: TargetRow) -> string {
+    "`${row.name}` runs as an app, installed from its bundle, and the bundle slice that writes one has not landed — `avra build --target ${row.name}` builds its binary"
+}
+
 fn said(words: string, code: int) -> int {
     eprintln("avra: ${words}")
     code
@@ -60,7 +96,7 @@ fn said(words: string, code: int) -> int {
 export command run {
     description: "Run a program and print its value"
     flags: [time, wasm_reactor, wasm_debug, eval]
-    options: [target]
+    options: [target, port, host]
     args: [file]
     run: RunCmd {}
 }

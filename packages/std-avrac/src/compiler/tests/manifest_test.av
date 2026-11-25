@@ -37,7 +37,88 @@ fn tooled(rest: string) -> string {
     )
 }
 
+/// A manifest for `app` with a `[bin]`, carrying these lines after it.
+fn binned(rest: string) -> string { packaged("\n[bin]\npath = \"src/main.av\"\n${rest}") }
+
 spec "compiler/manifest" {
+    given "[app] and [target.<name>]" {
+        then "targets and the server are read, in the order written" {
+            let m = read(
+                binned("\n[app]\ntargets = [\"web\", \"terminal\"]\nserver = \"server\"\n"),
+            )
+            m.voices.length == 0 &&
+                [w.word for w in m.manifest.app!.targets].join(",") == "web,terminal" &&
+                m.manifest.server == "server"
+        }
+        then "no `[app]` is no app, and no server" {
+            let m = read(binned(""))
+            m.voices.length == 0 && m.manifest.app == null && m.manifest.server == null
+        }
+        then "`[dev] server` is read as `[app] server`, said once" {
+            let m = read(binned("\n[dev]\nserver = \"server\"\n"))
+            m.manifest.server == "server" &&
+                m.voices.length == 1 &&
+                m.voices[0].kind == "manifest.dev_server_moved"
+        }
+        then "`[app] server` wins over `[dev] server`, which then says nothing" {
+            let m = read(binned("\n[app]\nserver = \"api\"\n\n[dev]\nserver = \"old\"\n"))
+            m.manifest.server == "api" && m.voices.length == 0
+        }
+        then "`[target.ios] min` is read as written" {
+            let m = read(binned("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"17.2\"\n"))
+            m.voices.length == 0 &&
+                m.manifest.deltas.length == 1 &&
+                m.manifest.deltas[0].name == "ios" &&
+                m.manifest.deltas[0].min == "17.2"
+        }
+        then "an app with no `[bin]` is refused alone" {
+            speaks(packaged("\n[app]\ntargets = [\"terminal\"]\n"), "manifest.app_without_bin")
+        }
+        then "the bundle's keys are unknown keys until the bundle slice, and say so" {
+            let m = read(
+                binned(
+                    "\n[app]\nid = \"dev.avra.x\"\nname = \"X\"\nicon = \"i.png\"\n\n[target.web]\nbase = \"/\"\n",
+                ),
+            )
+            m.voices.length == 4 &&
+                m
+                    .voices
+                    .all(
+                        (v) -> v.kind == "manifest.unknown_key" &&
+                            (v.help ?? "").contains("the bundle slice brings"),
+                    )
+        }
+        then "a key no target section takes is an unknown key" {
+            speaks(binned("\n[target.ios]\nmax = \"18.0\"\n"), "manifest.unknown_key")
+        }
+    }
+    given "[app] rendered" {
+        then "`[dev] server` renders with its code, its line and its move" {
+            let text = binned("\n[dev]\nserver = \"server\"\n")
+            let shown = render(read(text).voices[0], new_source_file("avra.toml", text))
+            shown
+                    .starts_with(
+                        "warning[manifest.dev_server_moved]: `[dev] server` is `[app] server` — the server is part of what the app is\n  ╭─[avra.toml:9:1]",
+                    ) &&
+                shown.contains("move the line under `[app]`")
+        }
+        then "an app with no `[bin]` renders at its header" {
+            let text = packaged("\n[app]\ntargets = [\"terminal\"]\n")
+            render(read(text).voices[0], new_source_file("avra.toml", text))
+                .starts_with(
+                    "error[manifest.app_without_bin]: an app runs a program, and this manifest declares no `[bin]`\n  ╭─[avra.toml:5:1]",
+                )
+        }
+        then "a bundle key renders as unknown, naming the slice that brings it" {
+            let text = binned("\n[app]\nid = \"dev.avra.x\"\n")
+            let shown = render(read(text).voices[0], new_source_file("avra.toml", text))
+            shown
+                    .starts_with(
+                        "warning[manifest.unknown_key]: `id` is not a key of `[app]` yet\n  ╭─[avra.toml:9:1]",
+                    ) &&
+                shown.contains("the bundle slice brings `id` — until it lands, nothing reads it")
+        }
+    }
     given "[process.tools]" {
         then "tools are read in both spellings, with their provenance and their terminator" {
             let m = read(tooled(""))

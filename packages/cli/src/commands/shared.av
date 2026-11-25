@@ -11,6 +11,9 @@ use @std.avrac.compiler.{
     triple_settled,
     object_dir,
     Platform,
+    TargetRow,
+    target_named,
+    target_triple,
 }
 use @std.avrac.core.{joined, distinct, some_list}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
@@ -494,23 +497,38 @@ fn unequipped(why: string) -> int {
     2
 }
 
-/// The binary an argued build writes — or the exit code its refusal spoke.
+/// The binary an argued build writes — or the exit code its refusal spoke. `--target` takes a
+/// target's word (`web`), which builds under the package's `build/<word>/`, or a raw triple.
 /// The cache is the library's; the link and the print are the caller's.
 export fn built_binary(args: CliResult) -> Result<string, int> {
     let path? = slotted_path(args) else { return .Err(2) }
-    let target = args.option("target")
-    let tools = if target == "" {
+    let spelled = args.option("target")
+    let row? = target_named(spelled) else { return built_as(args, path, spelled, null) }
+    built_as(args, path, target_triple(row, manifest_at(package_root(path) ?? path)), row.name)
+}
+
+/// The program at `path` built for the triple `triple` — under its package's `build/<word>/` where
+/// the target `word` names it — its binary's path, or the exit code its refusal spoke.
+fn built_as(args: CliResult, path: string, triple: string, word: string?) -> Result<string, int> {
+    let tools = if triple == "" {
         null
     } else {
         match toolchain_with(
             host_lookup(),
-            target,
+            triple,
             args.has_flag("wasm_reactor"),
             args.has_flag("wasm_debug"),
             !args.has_flag("no_wasm_fallback"),
         ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
     }
-    let built = if is_a_dir(path) { program_built(path, timed(args), tools, args.has_flag("release")) } else { program_file_built(path, timed(args), tools, args.has_flag("release")) }
+    let release = args.has_flag("release")
+    let built = if !is_a_dir(path) {
+        program_file_built(path, timed(args), tools, release)
+    } else if word == null {
+        program_built(path, timed(args), tools, release)
+    } else {
+        target_built(path, word!, timed(args), tools, release)
+    }
     let binary = match built { .Ok(b) -> b, .Err(code) -> { return .Err(code) } }
     if !exists_at(binary) {
         eprintln("avra: the program layer wrote no binary at ${binary}")
@@ -519,9 +537,33 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
     .Ok(binary)
 }
 
-/// `avra build`: the binary's path on stdout, or the refusal.
+/// The targets the package at `path` ships as, its `[app] targets` in order; none where it is no
+/// app's root. A word no row names is the manifest's refusal, said by its laws.
+export fn app_targets(path: string) -> List<TargetRow> {
+    if !is_a_dir(path) { return [] }
+    [row! for w in manifest_at(path).app?.targets ?? [] for row in [target_named(w.word)] if row != null]
+}
+
+/// `avra build`: the binary's path on stdout, or the refusal. An app with no `--target` builds every
+/// target it ships as, then the server beside it, a line each; its status is the first that failed.
 fn cached_build(args: CliResult) -> int {
-    match built_binary(args) {
+    let path = path_arg(args)
+    let targets = if args.option("target") == "" { app_targets(path) } else { [] }
+    if targets.is_empty() { return said_built(built_binary(args)) }
+    let m = manifest_at(path)
+    let built = [said_built(built_as(args, path, target_triple(row, m), row.name)) for row in targets]
+    let server = if m.server == null { 0 } else { said_built(server_built(args, path, m.server!)) }
+    built.concat([server]).find(it != 0) ?? 0
+}
+
+/// The server package `named` beside the app at `root`, built for this machine.
+fn server_built(args: CliResult, root: string, named: string) -> Result<string, int> {
+    program_built(normalized(joined_path(root, named)), timed(args), null, args.has_flag("release"))
+}
+
+/// A build's binary said on stdout, its status answered: 0, or the exit its refusal spoke.
+fn said_built(built: Result<string, int>) -> int {
+    match built {
         .Ok(binary) -> {
             println(binary)
             0

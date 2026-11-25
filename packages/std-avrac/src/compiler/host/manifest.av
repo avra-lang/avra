@@ -44,10 +44,24 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// platform's object directory (`wasm32`, an Apple SDK's name), and its set, spelled as `objects`
 /// is — none where the package's C has no build there.
 @codec
-export type PlatformObjects = { dir: string, objects: List<string> }
+export type PlatformObjects = { dir: string, objects: List<string>, at: Loc? = null }
+
+/// A target an `[app]` row names, and where it names it.
+@codec
+export type TargetWord = { word: string, at: Loc? }
+
+/// `[app]`: what the app ships as — the targets `avra build` builds, in the author's order — and
+/// where its header stands. The server beside it is `Manifest.server`.
+@codec
+export type AppRow = { targets: List<TargetWord>, at: Loc? }
+
+/// `[target.<name>]`: what one target needs beyond what is derived — `min`, the oldest release a
+/// target's OS runs it on, where its row takes one.
+@codec
+export type TargetDelta = { name: string, at: Loc?, min: string?, min_at: Loc? }
 
 @codec
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, objects_for: List<PlatformObjects> = [], search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, objects_for: List<PlatformObjects> = [], search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, server: string? = null, app: AppRow? = null, deltas: List<TargetDelta> = [] }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -113,12 +127,15 @@ export fn manifest_read(src: SourceFile) -> ManifestRead {
     }
     if version != "" && !is_semver(version) { r.speak(r.bad_version(version)) }
     r.profiles()
+    if r.doc.has_section("app") && !r.doc.has_section("bin") { r.speak(r.app_without_bin()) }
     let made = Manifest {
         name: name,
         version: version,
-        bin: r.target("bin", "src/main.av"),
-        lib: r.target("lib", "src/lib.av"),
-        dev_server: r.dev_server(),
+        bin: r.entry("bin", "src/main.av"),
+        lib: r.entry("lib", "src/lib.av"),
+        server: r.server(),
+        app: r.app(),
+        deltas: r.deltas(),
         excludes: r.excludes(),
         objects: r.linked("objects"),
         objects_for: r.objects_for(),
@@ -165,88 +182,128 @@ fn is_number(s: string) -> bool {
     !s.is_empty() && all_codes(s, is_digit)
 }
 
-/// The sections a manifest may hold, and the keys each takes.
-fn known_section(name: string) -> bool {
-    name == "package" ||
-        name == "bin" ||
-        name == "lib" ||
-        name == "dependencies" ||
-        name == "dev-dependencies" ||
-        name == "features" ||
-        name == "build" ||
-        name == "link" ||
-        name == "link.raw" ||
-        name == "link.objects_for" ||
-        name == "lifted" ||
-        name == "dev" ||
-        name.starts_with("profile.") ||
-        is_process_section(name)
+/// How a section heads its name: whole, or as a prefix a name of its own follows
+/// (`[profile.release]`, `[process.tools.clang]`, `[target.ios]`).
+enum Heading {
+    Whole
+    Prefix
+}
+
+/// A section a manifest may hold: its name, how it is headed, and whether its keys are its own to
+/// name (a dependency's, a feature's, a platform's) or only those `KEYS` gives it.
+type SectionRow = { name: string, heading: Heading, open: bool }
+
+/// The sections this compiler reads.
+const SECTIONS: List<SectionRow> = table<SectionRow> {
+    name               | heading        | open
+    "package"          | Heading.Whole  | false
+    "bin"              | Heading.Whole  | false
+    "lib"              | Heading.Whole  | false
+    "dependencies"     | Heading.Whole  | true
+    "dev-dependencies" | Heading.Whole  | true
+    "features"         | Heading.Whole  | true
+    "build"            | Heading.Whole  | true
+    "link"             | Heading.Whole  | false
+    "link.raw"         | Heading.Whole  | false
+    "link.objects_for" | Heading.Whole  | true
+    "lifted"           | Heading.Whole  | false
+    "dev"              | Heading.Whole  | false
+    "app"              | Heading.Whole  | false
+    "target."          | Heading.Prefix | false
+    "profile."         | Heading.Prefix | false
+    "process"          | Heading.Whole  | false
+    "process.tools"    | Heading.Whole  | true
+    "process.env"      | Heading.Whole  | false
+    "process.tools."   | Heading.Prefix | false
+}
+
+/// When a key is read: by this compiler, or by the slice that brings an app's bundle.
+enum Lands {
+    Now
+    WithBundle
+}
+
+/// A key a section takes: the section as `SECTIONS` heads it (a prefixed one by its whole name where
+/// its keys are its own, `target.ios`), the key, when it is read, and — for a `[link]` row of words —
+/// what it holds and how one is written, in its refusal's words.
+type KeyRow = { section: string, key: string, lands: Lands, holds: string?, writes: string? }
+
+/// The keys this compiler reads, and the ones the bundle slice will.
+const KEYS: List<KeyRow> = table<KeyRow> {
+    section          | key               | lands            | holds                                         | writes
+    "package"        | "name"            | Lands.Now        | null                                          | null
+    "package"        | "version"         | Lands.Now        | null                                          | null
+    "package"        | "edition"         | Lands.Now        | null                                          | null
+    "package"        | "authors"         | Lands.Now        | null                                          | null
+    "package"        | "license"         | Lands.Now        | null                                          | null
+    "package"        | "description"     | Lands.Now        | null                                          | null
+    "package"        | "repository"      | Lands.Now        | null                                          | null
+    "package"        | "exclude"         | Lands.Now        | null                                          | null
+    "bin"            | "path"            | Lands.Now        | null                                          | null
+    "bin"            | "name"            | Lands.Now        | null                                          | null
+    "lib"            | "path"            | Lands.Now        | null                                          | null
+    "lib"            | "name"            | Lands.Now        | null                                          | null
+    "link"           | "objects"         | Lands.Now        | "object files, by path from the package root" | "write the path alone"
+    "link"           | "search"          | Lands.Now        | "directories"                                 | "write the directory alone — the `-L` is ours to add"
+    "link"           | "libs"            | Lands.Now        | "library names"                               | "write the name alone — `m`, not `-lm`"
+    "link"           | "shared"          | Lands.Now        | null                                          | null
+    "link"           | "dynamic_symbols" | Lands.Now        | null                                          | null
+    "link.raw"       | "flags"           | Lands.Now        | null                                          | null
+    "lifted"         | "steps"           | Lands.Now        | null                                          | null
+    "lifted"         | "memory"          | Lands.Now        | null                                          | null
+    "dev"            | "server"          | Lands.Now        | null                                          | null
+    "app"            | "targets"         | Lands.Now        | null                                          | null
+    "app"            | "server"          | Lands.Now        | null                                          | null
+    "app"            | "id"              | Lands.WithBundle | null                                          | null
+    "app"            | "name"            | Lands.WithBundle | null                                          | null
+    "app"            | "icon"            | Lands.WithBundle | null                                          | null
+    "target.ios"     | "min"             | Lands.Now        | null                                          | null
+    "target.web"     | "base"            | Lands.WithBundle | null                                          | null
+    "profile."       | "opt_level"       | Lands.Now        | null                                          | null
+    "profile."       | "debug"           | Lands.Now        | null                                          | null
+    "profile."       | "overflow_checks" | Lands.Now        | null                                          | null
+    "profile."       | "incremental"     | Lands.Now        | null                                          | null
+    "profile."       | "coverage"        | Lands.Now        | null                                          | null
+    "process"        | "max_capture"     | Lands.Now        | null                                          | null
+    "process"        | "enforce"         | Lands.Now        | null                                          | null
+    "process.env"    | "base"            | Lands.Now        | null                                          | null
+    "process.env"    | "pass"            | Lands.Now        | null                                          | null
+    "process.env"    | "set"             | Lands.Now        | null                                          | null
+    "process.tools." | "from"            | Lands.Now        | null                                          | null
+    "process.tools." | "var"             | Lands.Now        | null                                          | null
+    "process.tools." | "default"         | Lands.Now        | null                                          | null
+    "process.tools." | "at"              | Lands.Now        | null                                          | null
+    "process.tools." | "terminator"      | Lands.Now        | null                                          | null
+    "process.tools." | "min"             | Lands.Now        | null                                          | null
+}
+
+/// The row that heads the section `name`; absent for a section this compiler does not read.
+fn section_row(name: string) -> SectionRow? { SECTIONS.find(heads(it, name)) }
+
+/// Whether the row `s` heads the section `name`.
+fn heads(s: SectionRow, name: string) -> bool {
+    match s.heading { .Whole -> name == s.name, .Prefix -> name.starts_with(s.name) }
+}
+
+/// The row for `key` under the section `name`: its own row where its keys are its own
+/// (`target.ios`), else its heading row's.
+fn key_row(name: string, key: string) -> KeyRow? {
+    let heading = section_row(name)?.name ?? name
+    KEYS.find(it.section == name && it.key == key) ?? KEYS
+        .find(it.section == heading && it.key == key)
 }
 
 /// `[process]` and what hangs off it: the tools, each inline or as
 /// its own table, and the environment a child sees.
 fn is_process_section(name: string) -> bool {
-    name == "process" || name == "process.tools" || name == "process.env" || is_tool_table(name)
+    section_row(name)?.name?.starts_with("process") ?? false
 }
 
 fn is_tool_table(name: string) -> bool {
     name.starts_with("process.tools.")
 }
 
-fn known_key(section: string, key: string) -> bool {
-    if section == "package" {
-        return [
-            "name",
-            "version",
-            "edition",
-            "authors",
-            "license",
-            "description",
-            "repository",
-            "exclude",
-        ]
-            .contains(key)
-    }
-    if section == "bin" || section == "lib" { return key == "path" || key == "name" }
-    if section == "link" {
-        return ["objects", "search", "libs", "shared", "dynamic_symbols"].contains(key)
-    }
-    if section == "link.raw" { return key == "flags" }
-    if section == "lifted" { return key == "steps" || key == "memory" }
-    if section == "dev" { return key == "server" }
-    if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
-    if section == "process" { return key == "max_capture" || key == "enforce" }
-    if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
-    if is_tool_table(section) { return is_tool_key(key) }
-    true
-}
-
-/// What a `[link]` row holds, in the words its refusal uses.
-///
-/// AN OBJECT ROW IS ROOTED AT THE PACKAGE, NOT BOUNDED BY IT. The path
-/// is joined to the package's root (`package_link`, workspace.av) and
-/// nothing refuses one that climbs out — every row in this tree does,
-/// because the build tree sits ABOVE every package. Saying "under the
-/// package root" claimed a boundary no row keeps.
-fn link_shape(key: string) -> string {
-    match key {
-        "objects" -> "object files, by path from the package root",
-        "search" -> "directories",
-        rest -> "library names",
-    }
-}
-
-fn link_help(key: string) -> string {
-    match key {
-        "objects" -> "write the path alone",
-        "search" -> "write the directory alone — the `-L` is ours to add",
-        rest -> "write the name alone — `m`, not `-lm`",
-    }
-}
-
-fn is_tool_key(key: string) -> bool {
-    ["from", "var", "default", "at", "terminator", "min"].contains(key)
-}
+fn is_tool_key(key: string) -> bool { key_row("process.tools.", key) != null }
 
 /// The provenance a row's `from` word names; absence for a word that
 /// names none.
@@ -311,7 +368,7 @@ impl Reader {
                 for e in self.doc.entries_of(s) { self.speak(self.rootless_key(e)) }
                 continue
             }
-            if !known_section(s) {
+            let row? = section_row(s) else {
                 self
                     .speak(
                         warning(
@@ -322,10 +379,15 @@ impl Reader {
                             "check the spelling — a section this compiler does not read has no effect",
                         ),
                     )
-            } else {
-                for e in self.doc.entries_of(s) {
-                    if !known_key(s, e.key) { self.speak(self.unknown_key(s, e)) }
+                continue
+            }
+            if row.open { continue }
+            for e in self.doc.entries_of(s) {
+                let key? = key_row(s, e.key) else {
+                    self.speak(self.unknown_key(s, e))
+                    continue
                 }
+                match key.lands { .Now -> {}, .WithBundle -> self.speak(self.bundle_key(s, e)) }
             }
         }
     }
@@ -469,17 +531,46 @@ impl Reader {
         null
     }
 
-    /// A target's entry path: the written one, the section's
-    /// default when the section is declared bare, absence when it
-    /// is not declared.
-    /// `[dev] server`: the package, beside this one, whose program `avra dev`
-    /// runs to answer what the page does not.
-    fn dev_server() -> string? {
-        let v? = self.doc.get("dev", "server") else { return null }
-        toml_text(v)
+    /// `[app] server`: the package, beside this one, that serves the app — `[dev] server` read the
+    /// same, and said to be `[app]`'s.
+    fn server() -> string? {
+        let app? = self.doc.get("app", "server") else {
+            let dev? = self.doc.entry("dev", "server") else { return null }
+            self.speak(self.dev_server_moved(dev))
+            return toml_text(dev.value)
+        }
+        toml_text(app)
     }
 
-    fn target(section: string, default_path: string) -> string? {
+    /// `[app]`: the targets it ships as, each where it is written, and the server beside it.
+    fn app() -> AppRow? {
+        if !self.doc.has_section("app") { return null }
+        let row = self.doc.entry("app", "targets")
+        let at = if row == null { null } else { self.entry_at(row!) }
+        AppRow {
+            targets: [TargetWord { word: w, at: at } for w in self.words_of("app", "targets")],
+            at: self.header_at("app"),
+        }
+    }
+
+    /// `[target.<name>]`: each target's deltas, as written.
+    fn deltas() -> List<TargetDelta> {
+        [self.delta(h.name) for h in self.doc.headers if h.name.starts_with("target.")]
+    }
+
+    fn delta(section: string) -> TargetDelta {
+        let min = self.doc.entry(section, "min")
+        TargetDelta {
+            name: section.substring(7, section.length),
+            at: self.header_at(section),
+            min: if min == null { null } else { toml_text(min!.value) },
+            min_at: if min == null { null } else { self.entry_at(min!) },
+        }
+    }
+
+    /// An entry's path: the written one, the section's default when the section is declared bare,
+    /// absence when it is not declared.
+    fn entry(section: string, default_path: string) -> string? {
         if !self.doc.has_section(section) { return null }
         let v? = self.doc.get(section, "path") else { return default_path }
         toml_text(v) ?? default_path
@@ -564,8 +655,9 @@ impl Reader {
     /// OPTION where the row takes a name or a path.
     fn linked(key: string) -> List<string> {
         let words = self.words_of("link", key)
+        let row = key_row("link", key)!
         for w in words {
-            if w.starts_with("-") { self.speak(self.link_option(key, w)) }
+            if w.starts_with("-") { self.speak(self.link_option(key, row.holds!, row.writes!, w)) }
         }
         words
     }
@@ -598,7 +690,11 @@ impl Reader {
     /// `[link.objects_for]`: each platform whose set differs from `objects`, by its object
     /// directory, each entry spelled as `objects` spells one.
     fn objects_for() -> List<PlatformObjects> {
-        [PlatformObjects { dir: e.key, objects: self.words_of("link.objects_for", e.key) } for e in self.doc.entries_of("link.objects_for")]
+        [PlatformObjects {
+            dir: e.key,
+            objects: self.words_of("link.objects_for", e.key),
+            at: self.entry_at(e),
+        } for e in self.doc.entries_of("link.objects_for")]
     }
 
     fn words_of(section: string, key: string) -> List<string> {
@@ -646,13 +742,13 @@ impl Reader {
         )
     }
 
-    fn link_option(key: string, word: string) -> Diag {
+    fn link_option(key: string, holds: string, writes: string, word: string) -> Diag {
         refusal(
             "manifest.link_option",
             self.entry_at(self.doc.entry("link", key)!),
-            "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option",
+            "`${key}` takes ${holds}, and `${word}` spells a linker option",
             "here",
-            "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest",
+            "${writes} — `[link.raw]` carries an option, and only in the program's own manifest",
         )
     }
 
@@ -673,6 +769,36 @@ impl Reader {
             "`${e.key}` under `[link]` is `true` or `false`",
             "here",
             "write `${e.key} = true`",
+        )
+    }
+
+    fn dev_server_moved(e: TomlEntry) -> Diag {
+        warning(
+            "manifest.dev_server_moved",
+            self.entry_at(e),
+            "`[dev] server` is `[app] server` — the server is part of what the app is",
+            "read as `[app] server`",
+            "move the line under `[app]` — `[app]\nserver = \"${toml_text(e.value) ?? "server"}\"`",
+        )
+    }
+
+    fn app_without_bin() -> Diag {
+        refusal(
+            "manifest.app_without_bin",
+            self.header_at("app"),
+            "an app runs a program, and this manifest declares no `[bin]`",
+            "this app",
+            "add `[bin]` with `path` — the entry is `[bin] path`, never an `[app]` key",
+        )
+    }
+
+    fn bundle_key(s: string, e: TomlEntry) -> Diag {
+        warning(
+            "manifest.unknown_key",
+            self.entry_at(e),
+            "`${e.key}` is not a key of `[${s}]` yet",
+            "ignored",
+            "the bundle slice brings `${e.key}` — until it lands, nothing reads it",
         )
     }
 
@@ -812,13 +938,61 @@ export fn unset_link_variable(at: Loc?, key: string, word: string, name: string)
     )
 }
 
-export fn no_target(root: string) -> Diag {
+export fn no_entry(root: string) -> Diag {
     refusal(
-        "manifest.no_target",
+        "manifest.no_entry",
         null,
         "`${root}/avra.toml` declares no `[bin]`, and `src/main.av` does not exist — nothing to run",
         "",
         "add `[bin]` with `path`, or `src/main.av`",
+    )
+}
+
+/// A target word no target row names.
+export fn unknown_target(at: Loc?, word: string, known: string) -> Diag {
+    refusal(
+        "manifest.unknown_target",
+        at,
+        "`${word}` is no target this compiler builds — the targets are ${known}",
+        "here",
+        "name one of ${known}; a raw triple goes to `--target`, never to the manifest",
+    )
+}
+
+/// A `[target.<name>]` for a target the app does not ship.
+export fn unshipped_target(at: Loc?, word: string) -> Diag {
+    warning(
+        "manifest.unshipped_target",
+        at,
+        "`[target.${word}]` is for a target `[app] targets` does not list, so no build reads it",
+        "read by no build",
+        "add `\"${word}\"` to `[app] targets`, or drop the section",
+    )
+}
+
+/// A `min` that is not a release the target's OS can be built for.
+export fn bad_target_min(at: Loc?, word: string, written: string, oldest: string) -> Diag {
+    refusal(
+        "manifest.bad_target_min",
+        at,
+        "`[target.${word}] min` is a release, `${oldest}` or later — `${written}` is not",
+        "here",
+        "write the oldest release the app runs on — `min = \"${oldest}\"`",
+    )
+}
+
+/// A `[link.objects_for]` key no platform has; `target` where the key is a target's word.
+export fn unknown_object_dir(at: Loc?, key: string, dirs: string, target: string?) -> Diag {
+    refusal(
+        "manifest.unknown_object_dir",
+        at,
+        "`${key}` is no platform's object directory — the directories are ${dirs}",
+        "here",
+        if target == null {
+            "key the set by the platform's object directory, as the build names it"
+        } else {
+            "`${key}` is a target — objects are keyed by platform: `${target!}`"
+        },
     )
 }
 
