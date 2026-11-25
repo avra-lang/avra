@@ -26,7 +26,7 @@ export const TARGETS: List<TargetRow> = table<TargetRow> {
 }
 
 /// The target the word `word` names; absent for a word no row has.
-export fn target_named(word: string) -> TargetRow? { TARGETS.find(it.name == word) }
+export fn named_target(word: string) -> TargetRow? { TARGETS.find(it.name == word) }
 
 /// The target words, spelled for a refusal.
 export fn target_words() -> string { ["`${r.name}`" for r in TARGETS].join(", ") }
@@ -83,7 +83,7 @@ export fn target_triple(row: TargetRow, m: Manifest) -> string {
 
 /// The oldest release the target `word` may name as its `min`; absent where its OS takes none.
 fn oldest_release(word: string) -> string? {
-    let row? = target_named(word) else { return null }
+    let row? = named_target(word) else { return null }
     apple_os(row.triple.split("-"))?.min
 }
 
@@ -118,7 +118,7 @@ export fn object_dirs() -> List<string> {
 /// `[link.objects_for]` key is a platform's object directory.
 export fn target_laws(m: Manifest) -> List<Diag> {
     let shipped = [w.word for w in m.app?.targets ?? []]
-    let words = [unknown_target(w.at, w.word, target_words()) for w in m.app?.targets ?? [] if target_named(w.word) == null]
+    let words = [unknown_target(w.at, w.word, target_words()) for w in m.app?.targets ?? [] if named_target(w.word) == null]
     let deltas = flatten([delta_laws(d, shipped) for d in m.deltas])
     let dirs = object_dirs()
     let objects = [unknown_object_dir(p.at, p.dir, ["`${d}`" for d in dirs].join(", "), object_dir_of_word(p.dir)) for p in m.objects_for if !dirs.contains(p.dir)]
@@ -127,7 +127,7 @@ export fn target_laws(m: Manifest) -> List<Diag> {
 
 /// What the `[target.<name>]` `d` owes, where `shipped` are the targets the app lists.
 fn delta_laws(d: TargetDelta, shipped: List<string>) -> List<Diag> {
-    if target_named(d.name) == null { return [unknown_target(d.at, d.name, target_words())] }
+    if named_target(d.name) == null { return [unknown_target(d.at, d.name, target_words())] }
     let unshipped = if shipped.contains(d.name) { [] } else { [unshipped_target(d.at, d.name)] }
     let written? = d.min else { return unshipped }
     let oldest? = oldest_release(d.name) else { return unshipped }
@@ -137,7 +137,7 @@ fn delta_laws(d: TargetDelta, shipped: List<string>) -> List<Diag> {
 
 /// The object directory of the target the word `word` names, where it is one.
 fn object_dir_of_word(word: string) -> string? {
-    let row? = target_named(word) else { return null }
+    let row? = named_target(word) else { return null }
     let dir = object_dir(platform_of(row.triple))
     if dir == "" { null } else { dir }
 }

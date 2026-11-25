@@ -2,7 +2,7 @@
 // targets owe it beyond its text, each refusal in its own words.
 use @std.avrac.diagnostics.{new_source_file, render}
 
-use compiler.{BuildHost, TARGETS, hosts_of, judged_read, object_dirs, target_named, target_triple}
+use compiler.{BuildHost, TARGETS, hosts_of, judged_read, object_dirs, named_target, target_triple}
 use compiler.host.{ManifestRead}
 
 fn read(text: string) -> ManifestRead { judged_read(new_source_file("avra.toml", text)) }
@@ -24,10 +24,10 @@ spec "compiler/targets" {
             TARGETS.all((r) -> TARGETS.filter(it.name == r.name).length == 1)
         }
         then "a word names its host" {
-            target_named("terminal")?.host == BuildHost.Process &&
-                target_named("web")?.host == BuildHost.Page &&
-                target_named("ios")?.host == BuildHost.Ios &&
-                target_named("watch") == null
+            named_target("terminal")?.host == BuildHost.Process &&
+                named_target("web")?.host == BuildHost.Page &&
+                named_target("ios")?.host == BuildHost.Ios &&
+                named_target("watch") == null
         }
         then "a raw triple stands beside its platform's host" {
             hosts_of("").first() == BuildHost.Process &&
@@ -35,12 +35,12 @@ spec "compiler/targets" {
                 hosts_of("arm64-apple-ios-simulator").first() == BuildHost.Ios
         }
         then "a target's triple settles on its manifest's `min`, else its OS's oldest" {
-            let ios = target_named("ios")!
+            let ios = named_target("ios")!
             let pinned = read(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"17.2\"\n"))
             let bare = read(app("\n[app]\ntargets = [\"ios\"]\n"))
             target_triple(ios, pinned.manifest) == "arm64-apple-ios17.2-simulator" &&
                 target_triple(ios, bare.manifest) == "arm64-apple-ios17.0-simulator" &&
-                target_triple(target_named("web")!, bare.manifest) == "wasm"
+                target_triple(named_target("web")!, bare.manifest) == "wasm"
         }
         then "every object directory is a platform's, and the host's own is none of them" {
             object_dirs().join(",") == "wasm32,iphoneos,iphonesimulator"
