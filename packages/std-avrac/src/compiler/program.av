@@ -216,7 +216,33 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
         BlockWords {},
     )
     let tokens = [t for t in lexed.tokens if t.kind != TokenKind.Break]
-    let o = run_from<Token, LangNode>(lang.syntax!, "type", tokens, avra_lexeme(), build)
+    let o = match lang.untold {
+        generated? -> {
+            let by_index: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string> = (
+                ix,
+                args,
+                loc,
+            ) -> build_row(
+                generated.rows[ix],
+                avra_builders[ix],
+                store,
+                args,
+                loc_span(loc),
+                text,
+                BlockWords {},
+            )
+            avra_untold_type(
+                tokens,
+                avra_lexeme(),
+                avra_token_tables(tokens, avra_lits(), generated.kinds, generated.worn),
+                generated.kinds,
+                by_index,
+            )
+        }
+        null -> {
+            run_from<Token, LangNode>(lang.syntax!, "type", tokens, avra_lexeme(), build)
+        }
+    }
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
 }
