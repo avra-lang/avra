@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # THE PROGRAM LAYER REFUSES WHAT THE OLD PATH REFUSED, CODE BY CODE: every registered code's witness
 # (packages/std-avrac/src/compiler/dev/witnesses.av, dumped by tools/witness-files) laid out on disk
 # as a package and built on the program layer — checked, where the old refusal stood in a test file,

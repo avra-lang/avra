@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # EVERY DOOR TAKES THE PROGRAM LAYER, OR REFUSES NAMING WHAT IS MISSING, AS THE OLD PATH DID.
 # Over tools/program-doors/ — `lone/probe.av`, a file in no package; `app`, a package with an entry
 # and a program test; `specs`, a library whose suite holds a spec — each copied cold, each door run

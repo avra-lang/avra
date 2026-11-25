@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # A DEFER'S CALL WAITS AS THE TASK SURVEY SAYS, READ OFF THE ITEMS' SUMMARIES: the defer law asks
 # whether a fn it calls may switch the task out of the summaries each item keeps
 # (packages/std-avrac/src/compiler/item_waits.av), and asks the task survey, which lowers bodies,

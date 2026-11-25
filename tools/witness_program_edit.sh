@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's edit-* slice (tools/gate.sh), never twice
 # A WARM EDIT BUILDS WHAT A COLD BUILD OF THE EDIT BUILDS, on the program layer.
 # A no-op build over a cold store first builds the cold product. Then for each
 # edit: the store the cold build left, the edit, a warm build with every fold

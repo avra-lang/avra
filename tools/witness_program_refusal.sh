@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's refusal-* slice (tools/gate.sh), never twice
 # THE PROGRAM LAYER REFUSES WHAT THE OLD PATH REFUSED, IN ITS WORDS, AND BUILDS WHAT IT BUILT. The old
 # path's last word on each case is frozen in the case: it was asked once, at cbc437f4, before its
 # deletion, and every expectation below is what it said then (a case it never judged holds the
